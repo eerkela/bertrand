@@ -2557,7 +2557,6 @@ private:
     template <typename in>
     using err_type = _search_error<void, in, E, Es...>::type;
 
-    bool m_compiled;
     union storage {
         template <typename V>
         struct _Result { using type = meta::remove_rvalue<V>; };
@@ -2589,18 +2588,13 @@ private:
         };
         using Error = _Error<E, Es...>::type;
 
-        struct type {
-            bool ok;
-            union Data {
-                Result result;
-                Error error;
-                constexpr ~Data() noexcept {}
-            } data;
+        union type {
+            Result result;
+            Error error;
 
             // default constructor for void results
             constexpr type() noexcept requires(meta::is_void<value_type>) :
-                ok(true),
-                data{.result = {}}
+                result()
             {}
 
             // forwarding constructor for non-void rvalue or prvalue results
@@ -2612,8 +2606,7 @@ private:
             constexpr type(As&&... args)
                 noexcept(meta::nothrow::constructible_from<value_type, As...>)
             :
-                ok(true),
-                data{.result = Result(std::forward<As>(args)...)}
+                result(std::forward<As>(args)...)
             {}
 
             // forwarding constructor for lvalue results that converts to a pointer
@@ -2622,8 +2615,7 @@ private:
             constexpr type(V& v)
                 noexcept(meta::nothrow::convertible_to<V, value_type>)
             :
-                ok(true),
-                data{.result = &static_cast<value_type>(v)}
+                result(&static_cast<value_type>(v))
             {}
 
             // error constructor
@@ -2631,115 +2623,86 @@ private:
             constexpr type(V&& e)
                 noexcept(noexcept(_Error<E, Es...>{}(std::forward<V>(e))))
             :
-                ok(false),
-                data{.error = _Error<E, Es...>{}(std::forward<V>(e))}
+                error(_Error<E, Es...>{}(std::forward<V>(e)))
             {}
 
-            constexpr type(const type& other)
-                noexcept(meta::nothrow::copyable<Result> && meta::nothrow::copyable<Error>)
-                requires(requires{meta::copyable<Result> && meta::copyable<Error>;})
-            :
-                ok(other.ok),
-                data(other.ok ?
-                    Data{.result = other.data.result} :
-                    Data{.error = other.data.error}
-                )
-            {}
+            constexpr ~type() noexcept {}
 
-            constexpr type(type&& other)
-                noexcept(meta::nothrow::movable<Result> && meta::nothrow::movable<Error>)
-                requires(requires{meta::movable<Result> && meta::movable<Error>;})
-            :
-                ok(other.ok),
-                data(other.ok ?
-                    Data{.result = std::move(other.data.result)} :
-                    Data{.error = std::move(other.data.error)}
-                )
-            {}
-
-            constexpr type& operator=(const type& other) noexcept(
+            static constexpr type construct(bool ok, const type& other) noexcept(
                 false
             ) {
                 if (ok) {
-                    if (other.ok) {
-                        /// TODO: check to see for assignment, etc.  Do this as
-                        /// intelligently as possible
-                        data.result = other.data.result;
-                    } else {
-                        std::destroy_at(&data.result);
-                        std::construct_at(
-                            &data.error,
-                            other.data.error
-                        );
-                    }
+                    return {.result = other.result};
                 } else {
-                    if (other.ok) {
-                        std::destroy_at(&data.error);
-                        std::construct_at(
-                            &data.result,
-                            other.data.result
-                        );
-                    } else {
-                        /// TODO: check to see for assignment, etc.  Do this as
-                        /// intelligently as possible
-                        data.error = other.data.error;
-                    }
+                    return {.error = other.error};
                 }
-                ok = other.ok;
-                return *this;
             }
 
-            constexpr type& operator=(type&& other) noexcept(
+            static constexpr type construct(bool ok, type&& other) noexcept(
                 false
             ) {
                 if (ok) {
-                    if (other.ok) {
-                        /// TODO: check to see for assignment, etc.  Do this as
-                        /// intelligently as possible
-                        data.result = std::move(other.data.result);
-                    } else {
-                        std::destroy_at(&data.result);
-                        std::construct_at(
-                            &data.error,
-                            std::move(other.data.error)
-                        );
-                    }
+                    return {.result = std::move(other.result)};
                 } else {
-                    if (other.ok) {
-                        std::destroy_at(&data.error);
-                        std::construct_at(
-                            &data.result,
-                            std::move(other.data.result)
-                        );
-                    } else {
-                        /// TODO: check to see for assignment, etc.  Do this as
-                        /// intelligently as possible
-                        data.error = std::move(other.data.error);
-                    }
+                    return {.error = std::move(other.error)};
                 }
-                ok = other.ok;
-                return *this;
             }
 
-            constexpr ~type() noexcept(
-                meta::nothrow::destructible<Result> &&
-                meta::nothrow::destructible<Error>
+            constexpr void assign(bool ok, bool other_ok, const type& other) noexcept(
+                false
             ) {
                 if (ok) {
-                    std::destroy_at(&data.result);
+                    if (other.has_result()) {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        result = other.result;
+                    } else {
+                        std::destroy_at(&result);
+                        std::construct_at(&error, other.error);
+                    }
                 } else {
-                    std::destroy_at(&data.error);
+                    if (other.has_result()) {
+                        std::destroy_at(&error);
+                        std::construct_at(&result, other.result);
+                    } else {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        error = other.error;
+                    }
                 }
             }
 
-            template <size_t I> requires (I < errors::size())
-            constexpr decltype(auto) get_error(this auto&& self) noexcept {
-                if constexpr (sizeof...(Es) == 0) {
-                    return std::forward<decltype(self)>(self).data.error;
+            constexpr void assign(bool ok, bool other_ok, type&& other) noexcept(
+                false
+            ) {
+                if (ok) {
+                    if (other.has_result()) {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        result = std::move(other.result);
+                    } else {
+                        std::destroy_at(&result);
+                        std::construct_at(&error, std::move(other.error));
+                    }
                 } else {
-                    return std::forward<decltype(self)>(
-                        self
-                    ).data.error.m_storage.template get<I>();
+                    if (other.has_result()) {
+                        std::destroy_at(&error);
+                        std::construct_at(&result, std::move(other.result));
+                    } else {
+                        /// TODO: check to see for assignment, etc.  Do this as
+                        /// intelligently as possible
+                        error = std::move(other.error);
+                    }
+                }
+            }
+
+            constexpr void destroy(bool ok) noexcept(
+                false
+            ) {
+                if (ok) {
+                    std::destroy_at(&result);
+                } else {
+                    std::destroy_at(&error);
                 }
             }
         };
@@ -2748,18 +2711,21 @@ private:
         type run_time;
         constexpr ~storage() noexcept {}
     } m_storage;
+    bool m_compiled;
+    bool m_ok;
 
 public:
     /* Default constructor for void result types. */
     [[nodiscard]] constexpr Expected() noexcept requires(meta::is_void<value_type>) :
-        m_compiled(std::is_constant_evaluated()),
         m_storage([] noexcept -> storage {
             if consteval {
                 return {.compile_time = {}};
             } else {
                 return {.run_time = {}};
             }
-        }())
+        }()),
+        m_compiled(std::is_constant_evaluated()),
+        m_ok(true)
     {}
 
     /* Forwarding constructor for `value_type`. */
@@ -2768,7 +2734,6 @@ public:
         noexcept(storage{.compile_time = {std::forward<Args>(args)...}}) &&
         noexcept(storage{.run_time = {std::forward<Args>(args)...}})
     ) :
-        m_compiled(std::is_constant_evaluated()),
         m_storage([](auto&&... args) noexcept(
             noexcept(storage{.compile_time = {std::forward<Args>(args)...}}) &&
             noexcept(storage{.run_time = {std::forward<Args>(args)...}})
@@ -2778,7 +2743,9 @@ public:
             } else {
                 return {.run_time = {std::forward<Args>(args)...}};
             }
-        }(std::forward<Args>(args)...))
+        }(std::forward<Args>(args)...)),
+        m_compiled(std::is_constant_evaluated()),
+        m_ok(true)
     {}
 
     /* Error state constructor.  This constructor only participates in overload
@@ -2793,7 +2760,6 @@ public:
         noexcept(storage{.compile_time = {std::forward<V>(e)}}) &&
         noexcept(storage{.run_time = {std::forward<V>(e)}})
     ) :
-        m_compiled(std::is_constant_evaluated()),
         m_storage([](auto&& e) noexcept(
             noexcept(storage{.compile_time = {std::forward<V>(e)}}) &&
             noexcept(storage{.run_time = {std::forward<V>(e)}})
@@ -2803,7 +2769,9 @@ public:
             } else {
                 return {.run_time = {std::forward<V>(e)}};
             }
-        }(std::forward<V>(e)))
+        }(std::forward<V>(e))),
+        m_compiled(std::is_constant_evaluated()),
+        m_ok(false)
     {}
 
     /* Copy constructor. */
@@ -2811,19 +2779,30 @@ public:
         noexcept(meta::nothrow::copyable<typename storage::type>)
         requires(requires{meta::copyable<typename storage::type>;})
     :
-        m_compiled(other.compiled()),
         m_storage([](const Expected& other) noexcept(
             meta::nothrow::copyable<typename storage::type>
         ) -> storage {
             if consteval {
-                return {.compile_time = other.m_storage.compile_time};
+                return {.compile_time = storage::type::construct(
+                    other.has_result(),
+                    other.m_storage.compile_time
+                )};
             } else {
                 if (other.compiled()) {
-                    return {.compile_time = other.m_storage.compile_time};
+                    return {.compile_time = storage::type::construct(
+                        other.has_result(),
+                        other.m_storage.compile_time
+                    )};
+                } else {
+                    return {.run_time = storage::type::construct(
+                        other.has_result(),
+                        other.m_storage.run_time
+                    )};
                 }
-                return {.run_time = other.m_storage.run_time};
             }
-        }(other))
+        }(other)),
+        m_compiled(other.compiled()),
+        m_ok(other.has_result())
     {}
 
     /* Move constructor. */
@@ -2831,19 +2810,30 @@ public:
         noexcept(meta::nothrow::movable<typename storage::type>)
         requires(requires{meta::movable<typename storage::type>;})
     :
-        m_compiled(other.compiled()),
         m_storage([](Expected&& other) noexcept(
             meta::nothrow::movable<typename storage::type>
         ) -> storage {
             if consteval {
-                return {.compile_time = std::move(other.m_storage.compile_time)};
+                return {.compile_time = storage::type::construct(
+                    other.has_result(),
+                    std::move(other.m_storage.compile_time)
+                )};
             } else {
                 if (other.compiled()) {
-                    return {.compile_time = std::move(other.m_storage.compile_time)};
+                    return {.compile_time = storage::type::construct(
+                        other.has_result(),
+                        std::move(other.m_storage.compile_time)
+                    )};
+                } else {
+                    return {.run_time = storage::type::construct(
+                        other.has_result(),
+                        std::move(other.m_storage.run_time)
+                    )};
                 }
-                return {.run_time = std::move(other.m_storage.run_time)};
             }
-        }(std::move(other)))
+        }(std::move(other))),
+        m_compiled(other.compiled()),
+        m_ok(other.has_result())
     {}
 
     /* Copy assignment operator. */
@@ -2852,11 +2842,19 @@ public:
     ) {
         if (this != &other) {
             if consteval {
-                m_storage.compile_time = other.m_storage.compile_time;
+                m_storage.compile_time.assign(
+                    has_result(),
+                    other.has_result(),
+                    other.m_storage.compile_time
+                );
             } else {
                 if (compiled()) {
                     if (other.compiled()) {
-                        m_storage.compile_time = other.m_storage.compile_time;
+                        m_storage.compile_time.assign(
+                            has_result(),
+                            other.has_result(),
+                            other.m_storage.compile_time
+                        );
                     } else {
                         std::destroy_at(&m_storage.compile_time);
                         std::construct_at(
@@ -2872,11 +2870,16 @@ public:
                             other.m_storage.compile_time
                         );
                     } else {
-                        m_storage.run_time = other.m_storage.run_time;
+                        m_storage.run_time.assign(
+                            has_result(),
+                            other.has_result(),
+                            other.m_storage.run_time
+                        );
                     }
                 }
             }
             m_compiled = other.compiled();
+            m_ok = other.has_result();
         }
         return *this;
     }
@@ -2887,11 +2890,19 @@ public:
     ) {
         if (this != &other) {
             if consteval {
-                m_storage.compile_time = std::move(other.m_storage.compile_time);
+                m_storage.compile_time.assign(
+                    has_result(),
+                    other.has_result(),
+                    std::move(other.m_storage.compile_time)
+                );
             } else {
                 if (compiled()) {
                     if (other.compiled()) {
-                        m_storage.compile_time = std::move(other.m_storage.compile_time);
+                        m_storage.compile_time.assign(
+                            has_result(),
+                            other.has_result(),
+                            std::move(other.m_storage.compile_time)
+                        );
                     } else {
                         std::destroy_at(&m_storage.run_time);
                         std::construct_at(
@@ -2907,11 +2918,16 @@ public:
                             std::move(other.m_storage.compile_time)
                         );
                     } else {
-                        m_storage.run_time = std::move(other.m_storage.run_time);
+                        m_storage.run_time.assign(
+                            has_result(),
+                            other.has_result(),
+                            std::move(other.m_storage.run_time)
+                        );
                     }
                 }
             }
             m_compiled = other.compiled();
+            m_ok = other.has_result();
         }
         return *this;
     }
@@ -2927,9 +2943,9 @@ public:
             }
         } else {
             if (compiled()) {
-                std::destroy_at(&m_storage.compile_time);
+                m_storage.compile_time.destroy(has_result());
             } else {
-                std::destroy_at(&m_storage.run_time);
+                m_storage.run_time.destroy(has_result());
             }
         }
     }
@@ -2948,13 +2964,7 @@ public:
     /* True if the `Expected` stores a valid result.  `False` if it is in an error
     state. */
     [[nodiscard]] constexpr bool has_result() const noexcept {
-        if consteval {
-            return m_storage.compile_time.ok;
-        } else {
-            return compiled() ?
-                m_storage.compile_time.ok :
-                m_storage.run_time.ok;
-        }
+        return m_ok;
     }
 
     /* Access the valid state.  Throws a `BadUnionAccess` assertion if the expected is
@@ -2969,22 +2979,22 @@ public:
         }
         if constexpr (meta::lvalue<value_type>) {
             if consteval {
-                return *std::forward<Self>(self).m_storage.compile_time.data.result;
+                return *std::forward<Self>(self).m_storage.compile_time.result;
             } else {
                 if (self.compiled()) {
-                    return *std::forward<Self>(self).m_storage.compile_time.data.result;
+                    return *std::forward<Self>(self).m_storage.compile_time.result;
                 } else {
-                    return *std::forward<Self>(self).m_storage.run_time.data.result;
+                    return *std::forward<Self>(self).m_storage.run_time.result;
                 }
             }
         } else {
             if consteval {
-                return (std::forward<Self>(self).m_storage.compile_time.data.result);
+                return (std::forward<Self>(self).m_storage.compile_time.result);
             } else {
                 if (self.compiled()) {
-                    return (std::forward<Self>(self).m_storage.compile_time.data.result);
+                    return (std::forward<Self>(self).m_storage.compile_time.result);
                 } else {
-                    return (std::forward<Self>(self).m_storage.run_time.data.result);
+                    return (std::forward<Self>(self).m_storage.run_time.result);
                 }
             }
         }
@@ -2993,13 +3003,7 @@ public:
     /* True if the `Expected` is in an error state.  `False` if it stores a valid
     result. */
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        if consteval {
-            return !m_storage.compile_time.ok;
-        } else {
-            return compiled() ?
-                !m_storage.compile_time.ok :
-                !m_storage.run_time.ok;
-        }
+        return !m_ok;
     }
 
     /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
@@ -3012,12 +3016,12 @@ public:
             }
         }
         if consteval {
-            return (std::forward<Self>(self).m_storage.compile_time.data.error);
+            return (std::forward<Self>(self).m_storage.compile_time.error);
         } else {
             if (self.compiled()) {
-                return (std::forward<Self>(self).m_storage.compile_time.data.error);
+                return (std::forward<Self>(self).m_storage.compile_time.error);
             } else {
-                return (std::forward<Self>(self).m_storage.run_time.data.error);
+                return (std::forward<Self>(self).m_storage.run_time.error);
             }
         }
     }
@@ -3883,6 +3887,9 @@ namespace bertrand {
                 [](std::string_view x, std::string_view y) { return 4; }
             }, u2, u3) == 2);
         }
+
+        static_assert(sizeof(TypeError) == 24);
+        static_assert(sizeof(Expected<int, TypeError>) == 32);
     }
 
 }

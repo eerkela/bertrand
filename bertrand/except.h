@@ -51,18 +51,23 @@ types can still be used in a pure C++ context, but the `from_python()` and
 `to_python()` methods will be disabled. */
 struct Exception {
 private:
+
     /* Exception internals are stored in a tagged union to differentiate between
     compile time and runtime exceptions. */
-    bool m_compiled;
     union storage {
-        /* At compile time, all we store is the message, without any traceback info. */
-        struct CompileTime {
-            std::string_view message;
-        } compile_time;
+        /* At compile time, all we store is the message, without any traceback info.
+        This is held as a pointer to a raw character buffer with static storage
+        duration in order to equalize the size of the compile-time and runtime
+        cases. */
+        const char* compile_time;
 
         /* At runtime, we also store a full traceback to the error location, as well
-        as a mutable cache for the `what()` message. */
+        as a mutable cache for the `what()` message.  This information is stored in a
+        unique pointer so as not to contribute to the `Exception`'s overall size. */
         struct RunTime {
+            /// TODO: I can probably inline the message buffer into the `RunTime`
+            /// struct itself, which would provide more locality and reduce the
+            /// number of overall allocations on the exception path.
             std::string message;
             mutable size_t skip;
             mutable bool resolved;
@@ -178,10 +183,12 @@ private:
                     std::destroy_at(&trace.raw);
                 }
             }
-        } run_time;
+        };
+        std::unique_ptr<RunTime> run_time;
 
         constexpr ~storage() noexcept {}
     } m_storage;
+    bool m_compiled;
 
     static std::string format_frame(const cpptrace::stacktrace_frame& frame) {
         std::string result = "    File \"" + frame.filename + "\", line ";
@@ -203,49 +210,60 @@ protected:
         constexpr get_trace operator++(int) const noexcept { return {skip + 1}; }
     };
 
-    template <typename Msg> requires (meta::constructible_from<std::string, Msg>)
-    constexpr explicit Exception(get_trace trace, Msg&& msg) noexcept :
-        m_compiled(std::is_constant_evaluated()),
-        m_storage([](get_trace& trace, auto&& msg) noexcept -> storage {
+    constexpr explicit Exception(get_trace trace, std::string_view msg) noexcept :
+        m_storage([](get_trace& trace, std::string_view msg) noexcept -> storage {
             if consteval {
-                return {.compile_time = {std::forward<Msg>(msg)}};
+                return {.compile_time = msg.data()};
             } else {
-                return {.run_time = {
+                return {.run_time = std::make_unique<typename storage::RunTime>(
                     cpptrace::generate_raw_trace(1),  // skip wrapping lambda
                     trace.skip,
-                    std::forward<Msg>(msg)
-                }};
+                    msg
+                )};
             }
-        }(trace, std::forward<Msg>(msg)))
+        }(trace, msg)),
+        m_compiled(std::is_constant_evaluated())
     {}
 
 public:
-    template <meta::convertible_to<std::string_view> T = std::string_view>
-    [[nodiscard]] constexpr explicit Exception(T&& msg = {}) noexcept :
-        m_compiled(std::is_constant_evaluated()),
+    [[nodiscard]] constexpr explicit Exception(
+        std::string_view msg = {}
+    ) noexcept :
         m_storage([](auto&& msg) noexcept -> storage {
             if consteval {
-                return {.compile_time = {std::forward<T>(msg)}};
+                return {.compile_time = msg.data()};
             } else {
-                return {.run_time = {std::forward<T>(msg)}};
+                return {.run_time = std::make_unique<typename storage::RunTime>(msg)};
             }
-        }(std::forward<T>(msg)))
+        }(msg)),
+        m_compiled(std::is_constant_evaluated())
     {}
 
-    template <meta::convertible_to<std::string> Msg = std::string>
-    [[nodiscard]] explicit Exception(cpptrace::raw_trace&& trace, Msg&& msg = {}) noexcept :
-        m_compiled(false),
-        m_storage{.run_time = {std::move(trace), 0, std::forward<Msg>(msg)}}
+    [[nodiscard]] explicit Exception(
+        cpptrace::raw_trace&& trace,
+        std::string_view msg = {}
+    ) noexcept :
+        m_storage{.run_time = std::make_unique<typename storage::RunTime>(
+            std::move(trace),
+            0,
+            msg
+        )},
+        m_compiled(false)
     {}
 
-    template <meta::convertible_to<std::string> Msg = std::string>
-    [[nodiscard]] explicit Exception(cpptrace::stacktrace&& trace, Msg&& msg = {}) noexcept :
-        m_compiled(false),
-        m_storage{.run_time = {std::move(trace), 0, std::forward<Msg>(msg)}}
+    [[nodiscard]] explicit Exception(
+        cpptrace::stacktrace&& trace,
+        std::string_view msg = {}
+    ) noexcept :
+        m_storage{.run_time = std::make_unique<typename storage::RunTime>(
+            std::move(trace),
+            0,
+            msg
+        )},
+        m_compiled(false)
     {}
 
     [[nodiscard]] constexpr Exception(const Exception& other) noexcept :
-        m_compiled(other.compiled()),
         m_storage([](const Exception& other) noexcept -> storage {
             if consteval {
                 return {.compile_time = other.m_storage.compile_time};
@@ -253,23 +271,26 @@ public:
                 if (other.compiled()) {
                     return {.compile_time = other.m_storage.compile_time};
                 }
-                return {.run_time = other.m_storage.run_time};
+                return {.run_time = std::make_unique<typename storage::RunTime>(
+                    *other.m_storage.run_time
+                )};
             }
-        }(other))
+        }(other)),
+        m_compiled(other.compiled())
     {}
 
     [[nodiscard]] constexpr Exception(Exception&& other) noexcept :
-        m_compiled(other.compiled()),
         m_storage([](Exception&& other) noexcept -> storage {
             if consteval {
-                return {.compile_time = std::move(other.m_storage.compile_time)};
+                return {.compile_time = other.m_storage.compile_time};
             } else {
                 if (other.compiled()) {
-                    return {.compile_time = std::move(other.m_storage.compile_time)};
+                    return {.compile_time = other.m_storage.compile_time};
                 }
                 return {.run_time = std::move(other.m_storage.run_time)};
             }
-        }(std::move(other)))
+        }(std::move(other))),
+        m_compiled(other.compiled())
     {}
 
     constexpr Exception& operator=(const Exception& other) noexcept {
@@ -284,7 +305,9 @@ public:
                         std::destroy_at(&m_storage.compile_time);
                         std::construct_at(
                             &m_storage.run_time,
-                            other.m_storage.run_time
+                            std::make_unique<typename storage::RunTime>(
+                                *other.m_storage.run_time
+                            )
                         );
                     }
                 } else {
@@ -295,7 +318,9 @@ public:
                             other.m_storage.compile_time
                         );
                     } else {
-                        m_storage.run_time = other.m_storage.run_time;
+                        m_storage.run_time = std::make_unique<typename storage::RunTime>(
+                            *other.m_storage.run_time
+                        );
                     }
                 }
             }
@@ -307,11 +332,11 @@ public:
     constexpr Exception& operator=(Exception&& other) noexcept {
         if (this != &other) {
             if consteval {
-                m_storage.compile_time = std::move(other.m_storage.compile_time);
+                m_storage.compile_time = other.m_storage.compile_time;
             } else {
                 if (compiled()) {
                     if (other.compiled()) {
-                        m_storage.compile_time = std::move(other.m_storage.compile_time);
+                        m_storage.compile_time = other.m_storage.compile_time;
                     } else {
                         std::destroy_at(&m_storage.compile_time);
                         std::construct_at(
@@ -364,7 +389,7 @@ public:
                 return (std::forward<Self>(self));
             }
             ++n;  // always skip this method
-            typename storage::RunTime& s = self.m_storage.run_time;
+            typename storage::RunTime& s = *self.m_storage.run_time;
             if (s.resolved) {
                 if (n >= s.trace.full.frames.size()) {
                     s.trace.full.frames.clear();
@@ -396,7 +421,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[curr.frames.size() - offset];
-            typename storage::RunTime& s = self.m_storage.run_time;
+            typename storage::RunTime& s = *self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.trace.full.frames.size(); i-- > s.skip;) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -439,7 +464,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[offset];
-            typename storage::RunTime& s = self.m_storage.run_time;
+            typename storage::RunTime& s = *self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.skip; i < s.trace.full.frames.size(); ++i) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -472,7 +497,7 @@ public:
             if (m_compiled) {
                 return nullptr;
             }
-            const typename storage::RunTime& r = m_storage.run_time;
+            const typename storage::RunTime& r = *m_storage.run_time;
             if (r.resolved) {
                 return &r.trace.full;
             }
@@ -501,12 +526,12 @@ public:
     /* The raw text of the exception message, sans traceback. */
     [[nodiscard]] constexpr std::string_view message() const noexcept {
         if consteval {
-            return m_storage.compile_time.message;
+            return m_storage.compile_time;
         } else {
             if (m_compiled) {
-                return m_storage.compile_time.message;
+                return m_storage.compile_time;
             }
-            return m_storage.run_time.message;
+            return m_storage.run_time->message;
         }
     }
 
@@ -515,12 +540,12 @@ public:
     will be omitted. */
     [[nodiscard]] constexpr const char* what() const noexcept {
         if consteval {
-            return m_storage.compile_time.message.data();
+            return m_storage.compile_time;
         } else {
             if (m_compiled) {
-                return m_storage.compile_time.message.data();
+                return m_storage.compile_time;
             }
-            const typename storage::RunTime& r = m_storage.run_time;
+            const typename storage::RunTime& r = *m_storage.run_time;
             if (r.what.empty()) {
                 r.what = "Traceback (most recent call last):\n";
                 if (const cpptrace::stacktrace* trace = this->trace()) {
@@ -537,7 +562,7 @@ public:
     /* Clear the exception's what() cache, forcing it to be recomputed the next time
     it is requested. */
     void flush() noexcept {
-        m_storage.run_time.what.clear();
+        m_storage.run_time->what.clear();
     }
 
     /* A type index for this exception, which can be searched in the global
@@ -571,12 +596,9 @@ public:
 #define BERTRAND_EXCEPTION(CLS, BASE)                                                   \
     struct CLS : BASE {                                                                 \
     protected:                                                                          \
-                                                                                        \
-        template <typename Msg> requires (meta::constructible_from<std::string, Msg>)   \
-        explicit constexpr CLS(get_trace trace, Msg&& msg) noexcept : BASE(             \
-            trace++,                                                                    \
-            std::forward<Msg>(msg)                                                      \
-        ) {}                                                                            \
+        explicit constexpr CLS(get_trace trace, std::string_view msg) noexcept :        \
+            BASE(trace++, msg)                                                          \
+        {}                                                                              \
                                                                                         \
     public:                                                                             \
         [[nodiscard]] virtual std::type_index type() const noexcept override {          \
@@ -585,29 +607,23 @@ public:
         [[noreturn]] virtual void raise() const override { throw *this; }               \
         [[noreturn]] virtual void raise() && override { throw std::move(*this); }       \
                                                                                         \
-        template <meta::convertible_to<std::string_view> Msg = std::string_view>        \
-        [[nodiscard]] explicit constexpr CLS(Msg&& msg = {}) noexcept : BASE(           \
-            get_trace{},                                                                \
-            std::forward<Msg>(msg)                                                      \
-        ) {}                                                                            \
+        [[nodiscard]] explicit constexpr CLS(std::string_view msg = {}) noexcept :      \
+            BASE(get_trace{}, msg)                                                      \
+        {}                                                                              \
                                                                                         \
-        template <meta::convertible_to<std::string> Msg = std::string>                  \
         [[nodiscard]] explicit CLS(                                                     \
             cpptrace::raw_trace&& trace,                                                \
-            Msg&& msg = {}                                                              \
-        ) noexcept : BASE(                                                              \
-            std::move(trace),                                                           \
-            std::forward<Msg>(msg)                                                      \
-        ) {}                                                                            \
+            std::string_view msg = {}                                                   \
+        ) noexcept :                                                                    \
+            BASE(std::move(trace), msg)                                                 \
+        {}                                                                              \
                                                                                         \
-        template <meta::convertible_to<std::string> Msg = std::string>                  \
         [[nodiscard]] explicit CLS(                                                     \
             cpptrace::stacktrace&& trace,                                               \
-            Msg&& msg = {}                                                              \
-        ) noexcept : BASE(                                                              \
-            std::move(trace),                                                           \
-            std::forward<Msg>(msg)                                                      \
-        ) {}                                                                            \
+            std::string_view msg = {}                                                   \
+        ) noexcept :                                                                    \
+            BASE(std::move(trace), msg)                                                 \
+        {}                                                                              \
     };
 
 
