@@ -39,23 +39,6 @@ namespace impl {
 */
 
 
-/// TODO: it might be possible to extract the backing union from the `Exception` class
-/// and use it within `Expected<>` to densely pack all of the discriminators.  That
-/// would reduce the overhead of expecteds down to 24-32 bytes, depending on whether
-/// there are multiple error states, which is amazingly efficient, and perfectly
-/// matches `std::expected`.
-
-/// TODO: the way this works is by lifting the union and as much consolidated logic
-/// as possible into impl::ExceptionStorage<T>, where `T` is a CRTP type that the
-/// `ExceptionStorage` class is convertible to by injecting a boolean discriminator
-/// into a factory method.  Then, when I store the exceptions within `Expected<>`,
-/// I would actually wrap each one in `impl:ExceptionStorage<T>` and return a new
-/// exception/union from `error()` each time, using trivial copy semantics.
-
-
-
-
-
 /// TODO: in C++26 with constexpr exceptions, `Exception` can inherit from
 /// std::exception, but not before, since its constructors are not marked as constexpr
 
@@ -69,6 +52,88 @@ types can still be used in a pure C++ context, but the `from_python()` and
 struct Exception {
 private:
 
+    /* At runtime, we also store a full traceback to the error location, as well
+    as a mutable cache for the `what()` message.  This information is stored in a
+    reference-counted pointer so as not to contribute to the `Exception`'s overall
+    size, and allow fast copy/move semantics. */
+    struct info {
+        /// TODO: figure out skips to hide exception internals
+        mutable std::atomic<size_t> refcount;
+        mutable size_t skip;
+        mutable bool resolved;
+        union Trace {
+            mutable cpptrace::raw_trace raw;
+            mutable cpptrace::stacktrace full;
+            constexpr ~Trace() noexcept {}
+        } trace;
+        mutable std::string what;
+        size_t length;
+
+        /* The exception message is inlined directly after this header struct. */
+        char* data() noexcept {
+            return reinterpret_cast<char*>(this + 1);
+        }
+
+        /* The exception message is inlined directly after this header struct. */
+        const char* data() const noexcept {
+            return reinterpret_cast<const char*>(this + 1);
+        }
+
+        /* Custom reference counting is used to ensure efficient copy semantics. */
+        const info* incref() const noexcept {
+            ++refcount;
+            return this;
+        }
+
+        /* Custom reference counting is used to ensure efficient copy semantics. */
+        void decref() noexcept {
+            if (--refcount == 0) {
+                delete[] reinterpret_cast<std::byte*>(this);
+            }
+        }
+
+        info(std::string_view msg) noexcept :
+            refcount(1),
+            skip(0),
+            resolved(false),
+            trace{.raw = cpptrace::generate_raw_trace(1)}, // skip this constructor
+            length(msg.size())
+        {
+            std::copy_n(msg.data(), msg.size(), data());
+            data()[msg.size()] = '\0';
+        }
+
+        info(cpptrace::raw_trace&& trace, size_t skip, std::string_view msg) noexcept :
+            refcount(1),
+            skip(skip),
+            resolved(false),
+            trace{.raw = std::move(trace)},
+            length(msg.size())
+        {
+            std::copy_n(msg.data(), msg.size(), data());
+            data()[msg.size()] = '\0';
+        }
+
+        info(cpptrace::stacktrace&& trace, size_t skip, std::string_view msg) noexcept :
+            refcount(1),
+            skip(skip),
+            resolved(true),
+            trace{.full = std::move(trace)},
+            length(msg.size())
+        {
+            std::copy_n(msg.data(), msg.size(), data());
+            data()[msg.size()] = '\0';
+        }
+
+        constexpr ~info() noexcept {
+            if (resolved) {
+                std::destroy_at(&trace.full);
+            } else {
+                std::destroy_at(&trace.raw);
+            }
+        }
+    };
+
     /* Exception internals are stored in a tagged union to differentiate between
     compile time and runtime exceptions. */
     union storage {
@@ -78,111 +143,17 @@ private:
         cases. */
         const char* compile_time;
 
-        /* At runtime, we also store a full traceback to the error location, as well
-        as a mutable cache for the `what()` message.  This information is stored in a
-        reference-counted pointer so as not to contribute to the `Exception`'s overall
-        size, and allow fast copy/move semantics. */
-        struct type {
-            /// TODO: figure out skips to hide exception internals
-            mutable std::atomic<size_t> refcount;
-            mutable size_t skip;
-            mutable bool resolved;
-            union Trace {
-                mutable cpptrace::raw_trace raw;
-                mutable cpptrace::stacktrace full;
-                constexpr ~Trace() noexcept {}
-            } trace;
-            mutable std::string what;
-            size_t length;
-
-            /* The exception message is inlined directly after this header struct. */
-            char* data() noexcept {
-                return reinterpret_cast<char*>(this + 1);
-            }
-
-            /* The exception message is inlined directly after this header struct. */
-            const char* data() const noexcept {
-                return reinterpret_cast<const char*>(this + 1);
-            }
-
-            /* Custom reference counting is used to ensure efficient copy semantics. */
-            const type* incref() const noexcept {
-                ++refcount;
-                return this;
-            }
-
-            /* Custom reference counting is used to ensure efficient copy semantics. */
-            void decref() noexcept {
-                if (--refcount == 0) {
-                    delete[] reinterpret_cast<std::byte*>(this);
-                }
-            }
-
-            type(std::string_view msg) noexcept :
-                refcount(1),
-                skip(0),
-                resolved(false),
-                trace{.raw = cpptrace::generate_raw_trace(1)}, // skip this constructor
-                length(msg.size())
-            {
-                std::copy_n(msg.data(), msg.size(), data());
-                data()[msg.size()] = '\0';
-            }
-
-            type(
-                cpptrace::raw_trace&& trace,
-                size_t skip,
-                std::string_view msg
-            ) noexcept :
-                refcount(1),
-                skip(skip),
-                resolved(false),
-                trace{.raw = std::move(trace)},
-                length(msg.size())
-            {
-                std::copy_n(msg.data(), msg.size(), data());
-                data()[msg.size()] = '\0';
-            }
-
-            type(
-                cpptrace::stacktrace&& trace,
-                size_t skip,
-                std::string_view msg
-            ) noexcept :
-                refcount(1),
-                skip(skip),
-                resolved(true),
-                trace{.full = std::move(trace)},
-                length(msg.size())
-            {
-                std::copy_n(msg.data(), msg.size(), data());
-                data()[msg.size()] = '\0';
-            }
-
-            constexpr ~type() noexcept {
-                if (resolved) {
-                    std::destroy_at(&trace.full);
-                } else {
-                    std::destroy_at(&trace.raw);
-                }
-            }
-        };
-
         /* The storage pointer also includes enough buffer space to hold the exception
         message inline, in order to limit heap allocations.  The `type` header will
         occupy the first `sizeof(type)` bytes of the buffer, followed by the message,
         whose length is included in the header, followed by a null byte. */
-        type* run_time;
-
-        /// TODO: if/when I separate this union out into an implementation detail,
-        /// I could provide constructors that automate the allocation/assignment
-        /// details.  That would probably be the maximal reusage way to do this.
+        info* run_time;
 
         constexpr ~storage() noexcept {}
-    } m_storage;
-    bool m_compiled;
+    };
 
-    using info = storage::type;
+    storage m_storage;
+    bool m_compiled;
 
     static std::string format_frame(const cpptrace::stacktrace_frame& frame) {
         std::string result = "    File \"" + frame.filename + "\", line ";
@@ -209,14 +180,14 @@ protected:
             if consteval {
                 return {.compile_time = msg.data()};
             } else {
-                return {.run_time = std::construct_at(
+                return {.run_time = std::launder(std::construct_at(
                     reinterpret_cast<info*>(
                         new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
                     ),
                     cpptrace::generate_raw_trace(1),
                     trace.skip,
                     msg
-                )};
+                ))};
             }
         }(trace, msg)),
         m_compiled(std::is_constant_evaluated())
@@ -230,12 +201,12 @@ public:
             if consteval {
                 return {.compile_time = msg.data()};
             } else {
-                return {.run_time = std::construct_at(
+                return {.run_time = std::launder(std::construct_at(
                     reinterpret_cast<info*>(
                         new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
                     ),
                     msg
-                )};
+                ))};
             }
         }(msg)),
         m_compiled(std::is_constant_evaluated())
@@ -245,14 +216,14 @@ public:
         cpptrace::raw_trace&& trace,
         std::string_view msg = {}
     ) noexcept :
-        m_storage{.run_time = std::construct_at(
+        m_storage{.run_time = std::launder(std::construct_at(
             reinterpret_cast<info*>(
                 new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
             ),
             std::move(trace),
             0,
             msg
-        )},
+        ))},
         m_compiled(false)
     {}
 
@@ -260,14 +231,14 @@ public:
         cpptrace::stacktrace&& trace,
         std::string_view msg = {}
     ) noexcept :
-        m_storage{.run_time = std::construct_at(
+        m_storage{.run_time = std::launder(std::construct_at(
             reinterpret_cast<info*>(
                 new std::byte[sizeof(info) + msg.size() + 1]  // +1 for null
             ),
             std::move(trace),
             0,
             msg
-        )},
+        ))},
         m_compiled(false)
     {}
 
@@ -387,7 +358,7 @@ public:
                 return (std::forward<Self>(self));
             }
             ++n;  // always skip this method
-            typename storage::type& s = *self.m_storage.run_time;
+            info& s = *self.m_storage.run_time;
             if (s.resolved) {
                 if (n >= s.trace.full.frames.size()) {
                     s.trace.full.frames.clear();
@@ -419,7 +390,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[curr.frames.size() - offset];
-            typename storage::type& s = *self.m_storage.run_time;
+            info& s = *self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.trace.full.frames.size(); i-- > s.skip;) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -462,7 +433,7 @@ public:
                 return std::forward<Self>(self);  // no frames to cut
             }
             cpptrace::frame_ptr pivot = curr.frames[offset];
-            typename storage::type& s = *self.m_storage.run_time;
+            info& s = *self.m_storage.run_time;
             if (s.resolved) {
                 for (size_t i = s.skip; i < s.trace.full.frames.size(); ++i) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
@@ -543,7 +514,7 @@ public:
             if (m_compiled) {
                 return m_storage.compile_time;
             }
-            const typename storage::type& r = *m_storage.run_time;
+            const info& r = *m_storage.run_time;
             if (r.what.empty()) {
                 r.what = "Traceback (most recent call last):\n";
                 if (const cpptrace::stacktrace* trace = this->trace()) {
