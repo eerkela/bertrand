@@ -1631,7 +1631,7 @@ namespace meta {
 
     template <typename T>
     concept addressable = requires(T t) {
-        { &t } -> std::convertible_to<T*>;
+        { &t } -> std::convertible_to<as_pointer<T>>;
     };
 
     template <addressable T>
