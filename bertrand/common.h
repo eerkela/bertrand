@@ -3527,7 +3527,7 @@ public:
 
     /* Evaluate a template template parameter over the given arguments. */
     template <template <typename...> class T> requires(requires{typename T<Ts...>;})
-    using evaluate = T<Ts...>;
+    using eval = T<Ts...>;
 
     /* Get a new pack with one or more types appended after the current contents. */
     template <typename... Us>
