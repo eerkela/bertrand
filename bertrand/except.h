@@ -150,9 +150,7 @@ private:
         info* run_time;
 
         constexpr ~storage() noexcept {}
-    };
-
-    storage m_storage;
+    } m_storage;
     bool m_compiled;
 
     static std::string format_frame(const cpptrace::stacktrace_frame& frame) {
