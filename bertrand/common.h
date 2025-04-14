@@ -4410,15 +4410,6 @@ namespace impl {
         }
     };
 
-    struct Invert {
-        template <meta::has_invert T>
-        static constexpr decltype(auto) operator()(T&& value)
-            noexcept(meta::nothrow::has_invert<T>)
-        {
-            return (~std::forward<T>(value));
-        }
-    };
-
     struct PreIncrement {
         template <meta::has_preincrement T>
         static constexpr decltype(auto) operator()(T&& value)
@@ -4668,6 +4659,15 @@ namespace impl {
             noexcept(meta::nothrow::has_irshift<L, R>)
         {
             return (std::forward<L>(lhs) >>= std::forward<R>(rhs));
+        }
+    };
+
+    struct BitwiseNot {
+        template <meta::has_invert T>
+        static constexpr decltype(auto) operator()(T&& value)
+            noexcept(meta::nothrow::has_invert<T>)
+        {
+            return (~std::forward<T>(value));
         }
     };
 

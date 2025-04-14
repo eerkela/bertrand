@@ -3,7 +3,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include <string_view>
 
 
 namespace bertrand {
@@ -671,15 +670,18 @@ namespace meta {
 
         template <typename F, typename... Args>
         concept visitor =
-            meta::visitor<F, Args...> && detail::visit<F, Args...>::nothrow;
+            meta::visitor<F, Args...> &&
+            detail::visit<F, Args...>::template nothrow_returns<
+                meta::visit_type<F, Args...>
+            >;
 
         template <typename F, typename... Args>
         concept exhaustive =
-            meta::exhaustive<F, Args...> && detail::visit<F, Args...>::nothrow;
+            visitor<F, Args...> && meta::exhaustive<F, Args...>;
 
         template <typename F, typename... Args>
         concept consistent =
-            meta::consistent<F, Args...> && detail::visit<F, Args...>::nothrow;
+            visitor<F, Args...> && meta::consistent<F, Args...>;
 
         template <typename F, typename... Args> requires (visitor<F, Args...>)
         using visit_type = meta::visit_type<F, Args...>;
@@ -695,10 +697,6 @@ namespace meta {
 
 
 namespace impl {
-
-    /// TODO: visitable<T> should probably expose more information that can be used in
-    /// visit<>, but it's hard to know what exactly I need.  I probably need some way
-    /// to flatten Optional<std::optional<T>> and std::optional<Optional<T>>
 
     /* Scaling is needed to uniquely encode the index sequence of all possible
     permutations for a given set of union types. */
@@ -736,7 +734,7 @@ namespace impl {
         std::index_sequence<Next...>,
         F&& func,
         A&&... args
-    ) noexcept(meta::nothrow::visitor<F, A...>) {
+    ) noexcept(meta::nothrow::visit_returns<R, F, A...>) {
         static constexpr size_t I = sizeof...(Prev);
         if constexpr (I + 1 == sizeof...(A)) {
             return std::forward<F>(func)(
@@ -1266,42 +1264,109 @@ namespace impl {
         using errors = meta::unqualify<T>::errors;
         using empty = void;
 
-        template <typename R, size_t I, typename F, typename... A>
-            requires (
-                I < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<I, A...>> &&
-                meta::visitor<F, A...>
-            )
-        static constexpr R dispatch(F&& func, A&&... args)
-            noexcept(meta::nothrow::visitor<F, A...>)
-        {
-            static constexpr auto vtable = []<size_t... Prev, size_t... Next>(
-                std::index_sequence<Prev...>,
-                std::index_sequence<Next...>
-            ) {
-                return std::array{
-                    // valid state has to handle void types
-                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
-                        meta::nothrow::visitor<F, A...>
-                    ) -> R {
-                        /// TODO: what's the best way to handle void?
-                    },
-                    // error state has to recur on union types
-                    +[](meta::as_lvalue<F> func, meta::as_lvalue<A>... args) noexcept(
-                        meta::nothrow::visitor<F, A...>
-                    ) -> R {
-                        /// TODO: differentiate between single error and unions of
-                        /// errors.  delegates to `visitable<Union<errors...>>::dispatch()`
-                        /// to reuse existing logic
-                    }
-                };
-            }(
-                std::make_index_sequence<I>{},
-                std::make_index_sequence<sizeof...(A) - I - 1>{}
-            );
+        /* The active index of an expected is 0 for the empty state and > 0 for the
+        error states. */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            /// TODO: has_result() + m_storage.error_index()?
+            return 0;
+        }
 
-            // search the vtable based on valid/error state of the expected
-            return vtable[meta::unpack_arg<I>(args...).has_error()](func, args...);
+        /* Dispatch to the proper state of this expected, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not an
+        error state, then return an error indicating as such.  Otherwise, implicitly
+        propagate the empty state. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < pack::size() &&
+                meta::visit_returns<R, F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+
+            // error states are implicitly propagated if left unhandled
+            if constexpr (J > 0) {
+                using type = decltype((meta::unpack_arg<I>(
+                    std::forward<A>(args)...
+                ).m_storage.template get_error<J>()));
+                if constexpr (meta::visitor<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    type,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    return visit_recursive<R, idx>(
+                        meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).m_storage.template get_error<J>(),
+                        prev,
+                        next,
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                } else if constexpr (meta::convertible_to<type, R>) {
+                    return meta::unpack_arg<I>(
+                        std::forward<A>(args)...
+                    ).m_storage.template get_error<J>();
+                } else {
+                    static_assert(
+                        false,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+
+            // non-empty state returns an error if unhandled
+            } else {
+                if constexpr (meta::visitor<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    decltype((meta::unpack_arg<I>(
+                        std::forward<A>(args)...
+                    ).m_storage.get_result())),
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    return visit_recursive<R, idx>(
+                        meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).m_storage.get_result(),
+                        prev,
+                        next,
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
+                    return BadUnionAccess(
+                        "failed to invoke visitor for empty expected argument" +
+                        impl::int_to_static_string<I>
+                    );
+                } else {
+                    static_assert(
+                        false,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
         }
     };
 
@@ -1778,18 +1843,14 @@ public:
     details. */
     template <typename F, typename Self, typename... Args>
         requires (meta::visitor<F, Self, Args...>)
-    constexpr meta::visit_type<F, Self, Args...> visit(
-        this Self&& self,
-        F&& f,
-        Args&&... args
-    ) noexcept(
+    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return bertrand::visit(
+        return (bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
-        );
+        ));
     }
 
     /// TODO: Don't directly convert Ts... to the common type in the noexcept
@@ -2149,14 +2210,14 @@ public:
     as for `bertrand::visit()`. */
     template <typename Self, typename... Args>
         requires (meta::visitor<impl::Call, Self, Args...>)
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
-        noexcept(meta::nothrow::visitor<impl::Call, Self, Args...>)
-    {
-        return bertrand::visit(
+    constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
+        meta::nothrow::visitor<impl::Call, Self, Args...>
+    ) {
+        return (bertrand::visit(
             impl::Call{},
             std::forward<Self>(self),
             std::forward<Args>(args)...
-        );
+        ));
     }
 
     /* Monadic subscript operator.  If any of the union types support indexing with the
@@ -2168,14 +2229,14 @@ public:
     an `Expected<R, BadUnionAccess>`, just as for `bertrand::visit()`. */
     template <typename Self, typename... Key>
         requires (meta::visitor<impl::Subscript, Self, Key...>)
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
-        noexcept(meta::nothrow::visitor<impl::Subscript, Self, Key...>)
-    {
-        return bertrand::visit(
+    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
+        meta::nothrow::visitor<impl::Subscript, Self, Key...>
+    ) {
+        return (bertrand::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
-        );
+        ));
     }
 };
 
@@ -2409,8 +2470,8 @@ public:
         this Self&& self,
         V&& fallback
     ) noexcept(
-        meta::nothrow::convertible_to<meta::common_type<access<Self>, V>, access<Self>> &&
-        meta::nothrow::convertible_to<meta::common_type<access<Self>, V>, V>
+        meta::nothrow::convertible_to<access<Self>, meta::common_type<access<Self>, V>> &&
+        meta::nothrow::convertible_to<V, meta::common_type<access<Self>, V>>
     ) {
         if (self.has_value()) {
             return std::forward<Self>(self).m_storage.value();
@@ -2429,18 +2490,14 @@ public:
     invoked with the output from `.value()`. */
     template <typename F, typename Self, typename... Args>
         requires (meta::visitor<F, Self, Args...>)
-    constexpr meta::visit_type<F, Self, Args...> visit(
-        this Self&& self,
-        F&& f,
-        Args&&... args
-    ) noexcept(
+    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return bertrand::visit(
+        return (bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
-        );
+        ));
     }
 
     /* If the optional is not empty, invoke a boolean predicate on the value, returning
@@ -2574,14 +2631,14 @@ public:
     will not be invoked for the empty state. */
     template <typename Self, typename... Args>
         requires (meta::visitor<impl::Call, Self, Args...>)
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
-        noexcept(meta::nothrow::visitor<impl::Call, Self, Args...>)
-    {
-        return bertrand::visit(
+    constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
+        meta::nothrow::visitor<impl::Call, Self, Args...>
+    ) {
+        return (bertrand::visit(
             impl::Call{},
             std::forward<Self>(self),
             std::forward<Args>(args)...
-        );
+        ));
     }
 
     /* Monadic subscript operator.  If the optional type is a container that supports
@@ -2589,14 +2646,14 @@ public:
     in another optional.  Otherwise, it will propagate the empty state. */
     template <typename Self, typename... Key>
         requires (meta::visitor<impl::Subscript, Self, Key...>)
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
-        noexcept(meta::nothrow::visitor<impl::Subscript, Self, Key...>)
-    {
-        return bertrand::visit(
+    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
+        meta::nothrow::visitor<impl::Subscript, Self, Key...>
+    ) {
+        return (bertrand::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
-        );
+        ));
     }
 };
 
@@ -2678,6 +2735,8 @@ private:
         Result result;
         Error error;
 
+        constexpr ~storage() noexcept {}
+
         // forwarding constructor for rvalue or prvalue results
         template <typename... As>
             requires (
@@ -2707,8 +2766,7 @@ private:
             error(_Error<E, Es...>{}(std::forward<V>(e)))
         {}
 
-        constexpr ~storage() noexcept {}
-
+        // perfectly forward the result, dereferencing if necessary
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) get_result(this Self&& self) noexcept {
             if constexpr (meta::lvalue<value_type>) {
@@ -2718,22 +2776,19 @@ private:
             }
         }
 
-        template <typename Self, size_t I> requires (I < errors::size())
-        [[nodiscard]] constexpr decltype(auto) get_error(this Self&& self) noexcept {
-            if constexpr (meta::Union<Error>) {
-                return std::forward<Self>(self).error.m_storage.template get<I>();
-            } else {
-                return std::forward<Self>(self).error;
-            }
+        // check to see whether a specific error is present, assuming there are
+        // multiple possible error states
+        template <size_t I> requires (meta::Union<Error> && I < errors::size())
+        [[nodiscard]] constexpr bool has_error() const noexcept {
+            return error.index() == I;
         }
 
-        template <size_t I> requires (I < errors::size())
-        [[nodiscard]] constexpr bool has_error() const noexcept {
-            if constexpr (meta::Union<Error>) {
-                return error.index() == I;
-            } else {
-                return true;
-            }
+        // get the specific error at index I, assuming there are multiple possible
+        // error states
+        template <size_t I, typename Self>
+            requires (meta::Union<Error> && I < errors::size())
+        [[nodiscard]] constexpr decltype(auto) get_error(this Self&& self) noexcept {
+            return std::forward<Self>(self).error.m_storage.template get<I>();
         }
     } m_storage;
     bool m_ok;
@@ -2754,6 +2809,12 @@ private:
 
     template <typename Self>
     using access = decltype((std::declval<Self>().m_storage.get_result()));
+
+    template <typename Self>
+    using access_error = decltype((std::declval<Self>().m_storage.error));
+
+    template <size_t I, typename Self>
+    using access_at = decltype((std::declval<Self>().m_storage.template get_error<I>())); 
 
     template <typename R>
     struct _and_then_t { using type = Expected<R, E, Es...>; };
@@ -3036,8 +3097,8 @@ public:
         this Self&& self,
         V&& fallback
     ) noexcept(
-        meta::nothrow::convertible_to<meta::common_type<access<Self>, V>, access<Self>> &&
-        meta::nothrow::convertible_to<meta::common_type<access<Self>, V>, V>
+        meta::nothrow::convertible_to<access<Self>, meta::common_type<access<Self>, V>> &&
+        meta::nothrow::convertible_to<V, meta::common_type<access<Self>, V>>
     ) {
         if (self.has_result()) {
             return std::forward<Self>(self).m_storage.get_result();
@@ -3058,7 +3119,7 @@ public:
     any template parameters. */
     template <size_t I> requires (I < errors::size())
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        return !m_ok && m_storage.template has_error<I>();
+        return has_error() && m_storage.template has_error<I>();
     }
 
     /* True if the `Expected` is in a specific error state indicated by type.  False
@@ -3067,108 +3128,193 @@ public:
     any template parameters. */
     template <typename Err> requires (errors::template contains<Err>())
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        /// TODO: convert Err to a proper index
-
-        return !m_ok && m_storage.template has_error</* TODO */>();
+        return
+            has_error() &&
+            m_storage.template has_error<errors::template index<Err>()>();
     }
-
-
-    /// TODO: perhaps error() can be called as error<I>() or error<T>() to access a
-    /// specific error by index or type?  That's probably the way to go about it, and
-    /// it can just be a portmanteau of `.error().get<I>().result()` and
-    /// `.error().get<T>().result()`.
 
     /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
     currently in the valid state and the program is compiled in debug mode.  The result
     is either a single error or `bertrand::Union<>` of errors if there are more than
     one. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr access_error<Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_result()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
         }
-        return (std::forward<Self>(self).m_storage.error);
+        return std::forward<Self>(self).m_storage.error;
     }
 
-    // /* Access a particular error by index.  This is equivalent to the non-templated
-    // `error()` accessor in the single error case, and is a shorthand for
-    // `error().get<I>().result()` in the union case.  A `BadUnionAccess` exception will
-    // be thrown in debug mode if the expected is currently in the valid state, or if the
-    // indexed error is not the active member of the union. */
-    // template <size_t I, typename Self> requires (I < errors::size())
-    // [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept(!DEBUG) {
-    //     if constexpr (DEBUG) {
-    //         if (self.has_result()) {
-    //             throw BadUnionAccess("Expected in valid state has no error");
-    //         }
-    //     }
-    //     if constexpr (errors::size() == 1) {
-    //         return (std::forward<Self>(self).m_storage.error);
-    //     } else {
-    //         /// TODO: maybe this returns an optional instead?
+    /* Access a particular error by index.  This is equivalent to the non-templated
+    `error()` accessor in the single error case, and is a shorthand for
+    `error().get<I>().result()` in the union case.  A `BadUnionAccess` exception will
+    be thrown in debug mode if the expected is currently in the valid state, or if the
+    indexed error is not the active member of the union. */
+    template <size_t I, typename Self> requires (I < errors::size())
+    [[nodiscard]] constexpr access_at<I, Self> error(this Self&& self) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (self.has_result()) {
+                throw BadUnionAccess("Expected in valid state has no error");
+            }
+        }
+        if constexpr (errors::size() == 1) {
+            return (std::forward<Self>(self).m_storage.error);
+        } else {
+            if constexpr (DEBUG) {
+                if (self.m_storage.error.index() != I) {
+                    throw self.m_storage.error.template get_index_error<I>[
+                        self.m_storage.error.index()
+                    ]();
+                }
+            }
+            return std::forward<Self>(self).m_storage.error.m_storage.template get<I>();
+        }
+    }
 
-    //         if constexpr (DEBUG) {
-    //             if (self.m_storage.error.index() != I) {
-    //                 throw self.m_storage.error.template get_index_error<I>[
-    //                     self.m_storage.error.index()
-    //                 ]();
-    //             }
-    //         }
-    //         return (std::forward<Self>(self).m_storage.error.template get<I>());
-    //     }
-    // }
+    /* Access a particular error by type.  This is equivalent to the non-templated
+    `error()` accessor in the single error case, and is a shorthand for
+    `error().get<T>().result()` in the union case.  A `BadUnionAccess` exception will
+    be thrown in debug mode if the expected is currently in the valid state, or if the
+    specified error is not the active member of the union. */
+    template <typename Err, typename Self> requires (errors::template contains<Err>())
+    [[nodiscard]] constexpr access_at<errors::template index<Err>(), Self> error(
+        this Self&& self
+    ) noexcept(!DEBUG) {
+        if constexpr (DEBUG) {
+            if (self.has_result()) {
+                throw BadUnionAccess("Expected in valid state has no error");
+            }
+        }
+        if constexpr (errors::size() == 1) {
+            return std::forward<Self>(self).m_storage.error;
+        } else {
+            constexpr size_t I = errors::template index<Err>();
+            if constexpr (DEBUG) {
+                if (self.m_storage.error.index() != I /* get proper index of Err */) {
+                    throw self.m_storage.error.template get_type_error<Err>[
+                        self.m_storage.error.index()
+                    ]();
+                }
+            }
+            return std::forward<Self>(self).m_storage.error.m_storage.template get<I>();
+        }
+    }
 
-    // /* Access a particular error by type.  This is equivalent to the non-templated
-    // `error()` accessor in the single error case, and is a shorthand for
-    // `error().get<T>().result()` in the union case.  A `BadUnionAccess` exception will
-    // be thrown in debug mode if the expected is currently in the valid state, or if the
-    // specified error is not the active member of the union. */
-    // template <typename Err, typename Self>
-    //     requires (std::same_as<Err, E> || ... || std::same_as<Err, Es>)
-    // [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept(!DEBUG) {
-    //     if constexpr (DEBUG) {
-    //         if (self.has_result()) {
-    //             throw BadUnionAccess("Expected in valid state has no error");
-    //         }
-    //     }
-    //     if constexpr (errors::size() == 1) {
-    //         return (std::forward<Self>(self).m_storage.error);
-    //     } else {
-    //         /// TODO: maybe this returns an optional instead?
+    /* Access the error state or return the default value if the expected stores a
+    valid result, converting to the common type between the error type and the default
+    value. */
+    template <typename Self, typename V>
+        requires (meta::has_common_type<access_error<Self>, V>)
+    [[nodiscard]] constexpr meta::common_type<access_error<Self>, V> error_or(
+        this Self&& self,
+        V&& fallback
+    ) noexcept(
+        meta::nothrow::convertible_to<
+            access_error<Self>,
+            meta::common_type<access_error<Self>, V>
+        > &&
+        meta::nothrow::convertible_to<
+            V,
+            meta::common_type<access_error<Self>, V>
+        >
+    ) {
+        if (self.has_error()) {
+            return std::forward<Self>(self).m_storage.error;
+        } else {
+            return std::forward<V>(fallback);
+        }
+    }
 
-    //         if constexpr (DEBUG) {
-    //             if (self.m_storage.error.index() != I /* get proper index of Err */) {
-    //                 throw self.m_storage.error.template get_type_error<Err>[
-    //                     self.m_storage.error.index()
-    //                 ]();
-    //             }
-    //         }
-    //         return (std::forward<Self>(self).m_storage.error.template get<Err /* get proper index of Err */>());
-    //     }
-    // }
+    /* Access a particular error by index or return the default value if the expected
+    stores a valid result, converting to the common type between the error and the
+    default value.  This is equivalent to the non-templated `error_or()` accessor in
+    the single error case, and is a shorthand for `error().get<I>().result_or(fallback)`
+    in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
+    the indexed error is not the active member of the union. */
+    template <size_t I, typename Self, typename V>
+        requires (I < errors::size() && meta::has_common_type<access_at<I, Self>, V>)
+    [[nodiscard]] constexpr meta::common_type<access_at<I, Self>, V> error_or(
+        this Self&& self,
+        V&& fallback
+    ) noexcept(
+        meta::nothrow::convertible_to<
+            access_at<I, Self>,
+            meta::common_type<access_at<I, Self>, V>
+        > &&
+        meta::nothrow::convertible_to<
+            V,
+            meta::common_type<access_at<I, Self>, V>
+        >
+    ) {
+        if (self.has_error()) {
+            if constexpr (DEBUG && errors::size() > 1) {
+                if (self.m_storage.error.index() != I) {
+                    throw self.m_storage.error.template get_index_error<I>[
+                        self.m_storage.error.index()
+                    ]();
+                }
+            }
+            return std::forward<Self>(self).m_storage.template get_error<I>();
+        } else {
+            return std::forward<V>(fallback);
+        }
+    }
 
-    /// TODO: error_or().  Maybe `error_or<TypeError>(fallback)`
+    /* Access a particular error by index or return the default value if the expected
+    stores a valid result, converting to the common type between the error and the
+    default value.  This is equivalent to the non-templated `error_or()` accessor in
+    the single error case, and is a shorthand for `error().get<I>().result_or(fallback)`
+    in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
+    the indexed error is not the active member of the union. */
+    template <typename U, typename Self, typename V>
+        requires (
+            errors::template contains<U> &&
+            meta::has_common_type<access_at<errors::template index<U>(), Self>, V>
+        )
+    [[nodiscard]] constexpr auto error_or(this Self&& self, V&& fallback) noexcept(
+        meta::nothrow::convertible_to<
+            access_at<errors::template index<U>(), Self>,
+            meta::common_type<access_at<errors::template index<U>(), Self>, V>
+        > &&
+        meta::nothrow::convertible_to<
+            V,
+            meta::common_type<access_at<errors::template index<U>(), Self>, V>
+        >
+    ) -> meta::common_type<access_at<errors::template index<U>(), Self>, V>
+    {
+        if (self.has_error()) {
+            constexpr size_t I = errors::template index<U>();
+            if constexpr (DEBUG && errors::size() > 1) {
+                if (self.m_storage.error.index() != I) {
+                    throw self.m_storage.error.template get_type_error<U>[
+                        self.m_storage.error.index()
+                    ]();
+                }
+            }
+            return std::forward<Self>(self).m_storage.template get_error<I>();
+        } else {
+            return std::forward<V>(fallback);
+        }
+    }
 
     /* A member equivalent for `bertrand::visit()`, which always inserts this expected
     as the first argument, for chaining purposes.  See `bertrand::visit()` for more
     details. */
     template <typename F, typename Self, typename... Args>
         requires (meta::visitor<F, Self, Args...>)
-    constexpr meta::visit_type<F, Self, Args...> visit(
-        this Self&& self,
-        F&& f,
-        Args&&... args
-    ) noexcept(
+    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visitor<F, Self, Args...>
     ) {
-        return bertrand::visit(
+        return (bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
-        );
+        ));
     }
+
+
 
     /// TODO: implement result and error accessors, then finalize visit() wrt expected,
     /// and then implement and_then() and or_else().
@@ -3254,14 +3400,14 @@ public:
     in another expected.  Otherwise, it will propagate the error state. */
     template <typename Self, typename... Args>
         requires (meta::visitor<impl::Call, Self, Args...>)
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
-        noexcept(meta::nothrow::visitor<impl::Call, Self, Args...>)
-    {
-        return bertrand::visit(
+    constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
+        meta::nothrow::visitor<impl::Call, Self, Args...>
+    ) {
+        return (bertrand::visit(
             impl::Call{},
             std::forward<Self>(self),
             std::forward<Args>(args)...
-        );
+        ));
     }
 
     /* Monadic subscript operator.  If the expected type is a container that supports
@@ -3269,14 +3415,14 @@ public:
     in another optional.  Otherwise, it will propagate the error state. */
     template <typename Self, typename... Key>
         requires (meta::visitor<impl::Subscript, Self, Key...>)
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
-        noexcept(meta::nothrow::visitor<impl::Subscript, Self, Key...>)
-    {
-        return bertrand::visit(
+    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
+        meta::nothrow::visitor<impl::Subscript, Self, Key...>
+    ) {
+        return (bertrand::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
-        );
+        ));
     }
 };
 
@@ -3317,11 +3463,11 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
 /* Monadic logical NOT operator.  Delegates to `bertrand::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports logical NOT. */
-template <meta::monad T>
-constexpr decltype(auto) operator!(T&& val)
-    noexcept(meta::nothrow::visitor<impl::LogicalNot, T>)
-{
-    return visit(impl::LogicalNot{}, std::forward<T>(val));
+template <meta::monad T> requires (meta::visitor<impl::LogicalNot, T>)
+constexpr decltype(auto) operator!(T&& val) noexcept(
+    meta::nothrow::visitor<impl::LogicalNot, T>
+) {
+    return (visit(impl::LogicalNot{}, std::forward<T>(val)));
 }
 
 
@@ -3334,14 +3480,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::LogicalAnd, L, R>
     )
-constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::LogicalAnd, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator&&(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::LogicalAnd, L, R>
+) {
+    return (visit(
         impl::LogicalAnd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3354,14 +3500,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::LogicalOr, L, R>
     )
-constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::LogicalOr, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator||(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::LogicalOr, L, R>
+) {
+    return (visit(
         impl::LogicalOr{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3374,14 +3520,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Less, L, R>
     )
-constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Less, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator<(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Less, L, R>
+) {
+    return (visit(
         impl::Less{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3394,14 +3540,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::LessEqual, L, R>
     )
-constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::LessEqual, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator<=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::LessEqual, L, R>
+) {
+    return (visit(
         impl::LessEqual{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3414,14 +3560,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Equal, L, R>
     )
-constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Equal, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator==(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Equal, L, R>
+) {
+    return (visit(
         impl::Equal{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3434,14 +3580,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::NotEqual, L, R>
     )
-constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::NotEqual, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator!=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::NotEqual, L, R>
+) {
+    return (visit(
         impl::NotEqual{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3454,14 +3600,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::GreaterEqual, L, R>
     )
-constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::GreaterEqual, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator>=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::GreaterEqual, L, R>
+) {
+    return (visit(
         impl::GreaterEqual{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3474,14 +3620,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Greater, L, R>
     )
-constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Greater, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator>(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Greater, L, R>
+) {
+    return (visit(
         impl::Greater{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3494,14 +3640,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Spaceship, L, R>
     )
-constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Spaceship, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Spaceship, L, R>
+) {
+    return (visit(
         impl::Spaceship{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3509,10 +3655,10 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports unary plus. */
 template <meta::monad T> requires (meta::visitor<impl::Pos, T>)
-constexpr decltype(auto) operator+(T&& val)
-    noexcept(meta::nothrow::visitor<impl::Pos, T>)
-{
-    return visit(impl::Pos{}, std::forward<T>(val));
+constexpr decltype(auto) operator+(T&& val) noexcept(
+    meta::nothrow::visitor<impl::Pos, T>
+) {
+    return (visit(impl::Pos{}, std::forward<T>(val)));
 }
 
 
@@ -3520,10 +3666,10 @@ constexpr decltype(auto) operator+(T&& val)
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports unary minus. */
 template <meta::monad T> requires (meta::visitor<impl::Neg, T>)
-constexpr decltype(auto) operator-(T&& val)
-    noexcept(meta::nothrow::visitor<impl::Neg, T>)
-{
-    return visit(impl::Neg{}, std::forward<T>(val));
+constexpr decltype(auto) operator-(T&& val) noexcept(
+    meta::nothrow::visitor<impl::Neg, T>
+) {
+    return (visit(impl::Neg{}, std::forward<T>(val)));
 }
 
 
@@ -3531,10 +3677,10 @@ constexpr decltype(auto) operator-(T&& val)
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one tyoe within the monad supports prefix increments. */
 template <meta::monad T> requires (meta::visitor<impl::PreIncrement, T>)
-constexpr decltype(auto) operator++(T&& val)
-    noexcept(meta::nothrow::visitor<impl::PreIncrement, T>)
-{
-    return visit(impl::PreIncrement{}, std::forward<T>(val));
+constexpr decltype(auto) operator++(T&& val) noexcept(
+    meta::nothrow::visitor<impl::PreIncrement, T>
+) {
+    return (visit(impl::PreIncrement{}, std::forward<T>(val)));
 }
 
 
@@ -3542,10 +3688,10 @@ constexpr decltype(auto) operator++(T&& val)
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports postfix increments. */
 template <meta::monad T> requires (meta::visitor<impl::PostIncrement, T>)
-constexpr decltype(auto) operator++(T&& val, int)
-    noexcept(meta::nothrow::visitor<impl::PostIncrement, T>)
-{
-    return visit(impl::PostIncrement{}, std::forward<T>(val));
+constexpr decltype(auto) operator++(T&& val, int) noexcept(
+    meta::nothrow::visitor<impl::PostIncrement, T>
+) {
+    return (visit(impl::PostIncrement{}, std::forward<T>(val)));
 }
 
 
@@ -3553,20 +3699,20 @@ constexpr decltype(auto) operator++(T&& val, int)
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports prefix decrements. */
 template <meta::monad T> requires (meta::visitor<impl::PreDecrement, T>)
-constexpr decltype(auto) operator--(T&& val)
-    noexcept(meta::nothrow::visitor<impl::PreDecrement, T>)
-{
-    return visit(impl::PreDecrement{}, std::forward<T>(val));
+constexpr decltype(auto) operator--(T&& val) noexcept(
+    meta::nothrow::visitor<impl::PreDecrement, T>
+) {
+    return (visit(impl::PreDecrement{}, std::forward<T>(val)));
 }
 
 /* Monadic postfix decrement operator.  Delegates to `bertrand::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports postfix decrements. */
 template <meta::monad T> requires (meta::visitor<impl::PostDecrement, T>)
-constexpr decltype(auto) operator--(T&& val, int)
-    noexcept(meta::nothrow::visitor<impl::PostDecrement, T>)
-{
-    return visit(impl::PostDecrement{}, std::forward<T>(val));
+constexpr decltype(auto) operator--(T&& val, int) noexcept(
+    meta::nothrow::visitor<impl::PostDecrement, T>
+) {
+    return (visit(impl::PostDecrement{}, std::forward<T>(val)));
 }
 
 
@@ -3579,14 +3725,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Add, L, R>
     )
-constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Add, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator+(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Add, L, R>
+) {
+    return (visit(
         impl::Add{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3599,14 +3745,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceAdd, L, R>
     )
-constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceAdd, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator+=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceAdd, L, R>
+) {
+    return (visit(
         impl::InplaceAdd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3619,14 +3765,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Subtract, L, R>
     )
-constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Subtract, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator-(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Subtract, L, R>
+) {
+    return (visit(
         impl::Subtract{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3639,14 +3785,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceSubtract, L, R>
     )
-constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceSubtract, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator-=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceSubtract, L, R>
+) {
+    return (visit(
         impl::InplaceSubtract{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3659,14 +3805,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Multiply, L, R>
     )
-constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Multiply, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator*(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Multiply, L, R>
+) {
+    return (visit(
         impl::Multiply{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3679,14 +3825,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceMultiply, L, R>
     )
-constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceMultiply, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator*=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceMultiply, L, R>
+) {
+    return (visit(
         impl::InplaceMultiply{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3699,14 +3845,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Divide, L, R>
     )
-constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Divide, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator/(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Divide, L, R>
+) {
+    return (visit(
         impl::Divide{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3719,14 +3865,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceDivide, L, R>
     )
-constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceDivide, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator/=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceDivide, L, R>
+) {
+    return (visit(
         impl::InplaceDivide{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3739,14 +3885,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::Modulus, L, R>
     )
-constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::Modulus, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator%(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::Modulus, L, R>
+) {
+    return (visit(
         impl::Modulus{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3759,25 +3905,105 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceModulus, L, R>
     )
-constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceModulus, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator%=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceModulus, L, R>
+) {
+    return (visit(
         impl::InplaceModulus{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
+}
+
+
+/* Monadic left shift operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports left shifts with the other operand (which may be
+another monad). */
+template <typename L, typename R>
+    requires (
+        (meta::monad<L> || meta::monad<R>) &&
+        meta::visitor<impl::LeftShift, L, R>
+    )
+constexpr decltype(auto) operator<<(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::LeftShift, L, R>
+) {
+    return (visit(
+        impl::LeftShift{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    ));
+}
+
+
+/* Monadic in-place left shift operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports left shifts with the other operand
+(which may be another monad). */
+template <typename L, typename R>
+    requires (
+        (meta::monad<L> || meta::monad<R>) &&
+        meta::visitor<impl::InplaceLeftShift, L, R>
+    )
+constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceLeftShift, L, R>
+) {
+    return (visit(
+        impl::InplaceLeftShift{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    ));
+}
+
+
+/* Monadic right shift operator.  Delegates to `bertrand::visit()`, and is automatically
+defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
+one type within the monad supports right shifts with the other operand (which may be
+another monad). */
+template <typename L, typename R>
+    requires (
+        (meta::monad<L> || meta::monad<R>) &&
+        meta::visitor<impl::RightShift, L, R>
+    )
+constexpr decltype(auto) operator>>(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::RightShift, L, R>
+) {
+    return (visit(
+        impl::RightShift{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    ));
+}
+
+
+/* Monadic in-place right shift operator.  Delegates to `bertrand::visit()`, and is
+automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
+and at least one type within the monad supports right shifts with the other operand
+(which may be another monad). */
+template <typename L, typename R>
+    requires (
+        (meta::monad<L> || meta::monad<R>) &&
+        meta::visitor<impl::InplaceRightShift, L, R>
+    )
+constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceRightShift, L, R>
+) {
+    return (visit(
+        impl::InplaceRightShift{},
+        std::forward<L>(lhs),
+        std::forward<R>(rhs)
+    ));
 }
 
 
 /* Monadic bitwise NOT operator.  Delegates to `bertrand::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports bitwise NOT. */
-template <meta::monad T> requires (meta::visitor<impl::Invert, T>)
-constexpr decltype(auto) operator~(T&& val)
-    noexcept(meta::nothrow::visitor<impl::Invert, T>)
-{
-    return visit(impl::Invert{}, std::forward<T>(val));
+template <meta::monad T> requires (meta::visitor<impl::BitwiseNot, T>)
+constexpr decltype(auto) operator~(T&& val) noexcept(
+    meta::nothrow::visitor<impl::BitwiseNot, T>
+) {
+    return (visit(impl::BitwiseNot{}, std::forward<T>(val)));
 }
 
 
@@ -3790,14 +4016,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::BitwiseAnd, L, R>
     )
-constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::BitwiseAnd, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator&(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::BitwiseAnd, L, R>
+) {
+    return (visit(
         impl::BitwiseAnd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3810,14 +4036,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceBitwiseAnd, L, R>
     )
-constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceBitwiseAnd, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator&=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceBitwiseAnd, L, R>
+) {
+    return (visit(
         impl::InplaceBitwiseAnd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3830,14 +4056,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::BitwiseOr, L, R>
     )
-constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::BitwiseOr, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator|(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::BitwiseOr, L, R>
+) {
+    return (visit(
         impl::BitwiseOr{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3850,14 +4076,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceBitwiseOr, L, R>
     )
-constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceBitwiseOr, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator|=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceBitwiseOr, L, R>
+) {
+    return (visit(
         impl::InplaceBitwiseOr{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3870,14 +4096,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::BitwiseXor, L, R>
     )
-constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::BitwiseXor, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator^(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::BitwiseXor, L, R>
+) {
+    return (visit(
         impl::BitwiseXor{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -3890,14 +4116,14 @@ template <typename L, typename R>
         (meta::monad<L> || meta::monad<R>) &&
         meta::visitor<impl::InplaceBitwiseXor, L, R>
     )
-constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
-    noexcept(meta::nothrow::visitor<impl::InplaceBitwiseXor, L, R>)
-{
-    return visit(
+constexpr decltype(auto) operator^=(L&& lhs, R&& rhs) noexcept(
+    meta::nothrow::visitor<impl::InplaceBitwiseXor, L, R>
+) {
+    return (visit(
         impl::InplaceBitwiseXor{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
-    );
+    ));
 }
 
 
@@ -4116,9 +4342,12 @@ namespace bertrand {
 
         static constexpr Expected<int, TypeError> e = 42;
         static_assert(e.result() == 42);
-        static constexpr Expected<int, TypeError> e2 = TypeError("test");
+        static constexpr Expected<int, TypeError, ValueError> e2 = TypeError("test");
+        static_assert(e2.result_or(0) == 0);
         static_assert(e2.has_error());
-        static_assert(e2.error().message() == "test");
+        static_assert(e2.has_error<TypeError>());
+        static_assert(e2.error().get<0>().result().message() == "test");
+        static_assert(e2.error<TypeError>().message() == "test");
 
         static constexpr Union<int, TypeError> u;
     }
