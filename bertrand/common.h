@@ -3401,6 +3401,13 @@ private:
     template <typename... Us> requires (meta::has_common_type<Us...>)
     struct get_common_type<Us...> { using type = meta::common_type<Us...>; };
 
+    template <typename out, typename...>
+    struct _reverse { using type = out; };
+    template <typename... out, typename U, typename... Us>
+    struct _reverse<args<out...>, U, Us...> {
+        using type = _reverse<args<U, out...>, Us...>::type;
+    };
+
     template <typename>
     struct _concat;
     template <typename... Us>
@@ -3463,16 +3470,48 @@ private:
         using type = permute<args<args<Ts>...>, packs...>::type;
     };
 
-    template <template <typename> class cnd, typename out, typename...>
+    template <template <typename> class F, typename out, typename...>
     struct _filter { using type = out; };
-    template <template <typename> class cnd, typename... out, typename U, typename... Us>
-    struct _filter<cnd, args<out...>, U, Us...> {
-        using type = _filter<cnd, args<out...>, Us...>::type;
+    template <template <typename> class F, typename... out, typename U, typename... Us>
+    struct _filter<F, args<out...>, U, Us...> {
+        using type = _filter<F, args<out...>, Us...>::type;
     };
-    template <template <typename> class cnd, typename... out, typename U, typename... Us>
-        requires (cnd<U>::value)
-    struct _filter<cnd, args<out...>, U, Us...> {
-        using type = _filter<cnd, args<out..., U>, Us...>::type;
+    template <template <typename> class F, typename... out, typename U, typename... Us>
+        requires (F<U>::value)
+    struct _filter<F, args<out...>, U, Us...> {
+        using type = _filter<F, args<out..., U>, Us...>::type;
+    };
+
+    template <typename...>
+    struct _fold_left {
+        template <template <typename, typename> class F>
+        using type = void;
+    };
+    template <typename out, typename... next>
+    struct _fold_left<out, next...> {
+        template <template <typename, typename> class F>
+        using type = out;
+    };
+    template <typename out, typename curr, typename... next>
+    struct _fold_left<out, curr, next...> {
+        template <template <typename, typename> class F>
+        using type = _fold_left<F<out, curr>, next...>::template type<F>;
+    };
+
+    template <typename...>
+    struct _fold_right {
+        template <template <typename, typename> class F>
+        using type = void;
+    };
+    template <typename out, typename... next>
+    struct _fold_right<out, next...> {
+        template <template <typename, typename> class F>
+        using type = out;
+    };
+    template <typename out, typename curr, typename... next>
+    struct _fold_right<out, curr, next...> {
+        template <template <typename, typename> class F>
+        using type = _fold_right<F<out, curr>, next...>::template type<F>;
     };
 
     template <typename out, typename...>
@@ -3525,9 +3564,35 @@ public:
     template <size_t I> requires (I < size())
     using at = meta::unpack_type<I, Ts...>;
 
+    /* Return a new pack with the same contents in reverse order. */
+    using reverse = _reverse<args<>, Ts...>::type;
+
     /* Evaluate a template template parameter over the given arguments. */
-    template <template <typename...> class T> requires(requires{typename T<Ts...>;})
-    using eval = T<Ts...>;
+    template <template <typename...> class F>
+        requires (requires{typename F<Ts...>;})
+    using eval = F<Ts...>;
+
+    /* Map a template template parameter over the given arguments, returning a new
+    pack containing the transformed result */
+    template <template <typename> class F>
+        requires (requires{typename args<F<Ts>...>;})
+    using map = args<F<Ts>...>;
+
+    /* Get a new pack containing only those types in `Ts...` for which `cnd<T>::value`
+    evaluates to true. */
+    template <template <typename> class F>
+        requires (broadcast_value<F, Ts...>)
+    using filter = _filter<F, args<>, Ts...>::type;
+
+    /* Apply a pairwise template template parameter over the contents of a non-empty
+    pack, accumulating results from left to right into a single collapsed value. */
+    template <template <typename, typename> class F> requires (size() > 0)
+    using fold_left = _fold_left<Ts...>::template type<F>;
+
+    /* Apply a pairwise template template parameter over the contents of a non-empty
+    pack, accumulating results from right to left into a single collapsed value. */
+    template <template <typename, typename> class F> requires (size() > 0)
+    using fold_right = reverse::template eval<_fold_right>::template type<F>;
 
     /* Get a new pack with one or more types appended after the current contents. */
     template <typename... Us>
@@ -3546,11 +3611,6 @@ public:
     argument pack and all others, returning the Cartesian product.  */
     template <meta::args... packs> requires ((size() > 0) && ... && (packs::size() > 0))
     using product = _product<packs...>::type;
-
-    /* Get a new pack containing only those types in `Ts...` for which `cnd<T>::value`
-    evaluates to true. */
-    template <template <typename> class cnd> requires (broadcast_value<cnd, Ts...>)
-    using filter = _filter<cnd, args<>, Ts...>::type; 
 
     /* Get a new pack with exact duplicates filtered out, accounting for cvref
     qualifications. */
