@@ -554,7 +554,10 @@ namespace meta {
                     (meta::nothrow::convertible_to<Rs, T> && ...);
             };
             template <typename... Rs>
-                requires (permutations::template eval<filter>::has_void)
+                requires (
+                    sizeof...(Rs) > 0 &&
+                    permutations::template eval<filter>::has_void
+                )
             struct _returns<Rs...> {  // some void, some non-void
                 template <typename T>
                 static constexpr bool value = (
@@ -569,19 +572,21 @@ namespace meta {
                     meta::nothrow::convertible_to<::std::nullopt_t, T>
                 );
             };
-            template <>
-            struct _returns<> {  // all void
+            template <typename... Rs> requires (sizeof...(Rs) == 0)
+            struct _returns<Rs...> {  // all void
                 template <typename T>
-                static constexpr bool value =
-                    /// TODO: for this to be correct, I probably have to use
-                    /// impl::visitable<T>::unwrap before checking convertible_to<void, U>.
-                    /// Just checking default constructibility is not sufficient
-                    meta::convertible_to<void, T> ||
-                    meta::default_constructible<T>;
+                static constexpr bool value = meta::convertible_to<void, T>;
                 template <typename T>
-                static constexpr bool nothrow =
-                    meta::nothrow::convertible_to<void, T> ||
-                    meta::nothrow::default_constructible<T>;
+                    requires (requires{typename impl::visitable<T>::wrapped;})
+                static constexpr bool value<T> =
+                    value<typename impl::visitable<T>::wrapped>;
+
+                template <typename T>
+                static constexpr bool nothrow = meta::nothrow::convertible_to<void, T>;
+                template <typename T>
+                    requires (requires{typename impl::visitable<T>::wrapped;})
+                static constexpr bool nothrow<T> =
+                    nothrow<typename impl::visitable<T>::wrapped>;
             };
 
         public:
@@ -1052,10 +1057,8 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
-        using pack = bertrand::args<
-            decltype((std::declval<T>().m_storage.value())),
-            std::nullopt_t
-        >;
+        using wrapped = decltype((std::declval<T>().m_storage.value()));
+        using pack = bertrand::args<wrapped, std::nullopt_t>;
         using empty = std::nullopt_t;
         using errors = bertrand::args<>;
         template <typename U = T>
@@ -1182,10 +1185,8 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
-        using pack = bertrand::args<
-            decltype((std::declval<T>().value())),
-            std::nullopt_t
-        >;
+        using wrapped = decltype((std::declval<T>().value()));
+        using pack = bertrand::args<wrapped, std::nullopt_t>;
         using empty = std::nullopt_t;
         using errors = bertrand::args<>;
         template <typename U = T>
@@ -1312,29 +1313,36 @@ namespace impl {
     struct visitable<T> {
     private:
 
+        template <typename V>
+        struct _wrapped { using type = void; };
+        template <meta::not_void V>
+        struct _wrapped<V> {
+            using type = decltype((std::declval<T>().get_result()));
+        };
+
         template <size_t I, typename... Errs>
         struct _pack {
             using type = _pack<
                 I + 1,
                 Errs...,
-                decltype((std::declval<T>().m_storage.template get_error<I>()))
+                decltype((std::declval<T>().template get_error<I>()))
             >::type;
         };
         template <size_t I, typename... Errs>
             requires (
                 meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I >= meta::unqualify<T>::errors::size()
+                I == meta::unqualify<T>::errors::size()
             )
         struct _pack<I, Errs...> {
             using type = bertrand::args<
-                decltype((std::declval<T>().m_storage.get_result())),
+                decltype((std::declval<T>().get_result())),
                 Errs...
             >;
         };
         template <size_t I, typename... Errs>
             requires (
                 meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I >= meta::unqualify<T>::errors::size()
+                I == meta::unqualify<T>::errors::size()
             )
         struct _pack<I, Errs...> {
             using type = bertrand::args<std::nullopt_t, Errs...>;
@@ -1344,6 +1352,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
+        using wrapped = _wrapped<typename meta::unqualify<T>::value_type>::type;
         using pack = _pack<0>::type;  // rename these to alternatives
         using empty = void;
         using errors = meta::unqualify<T>::errors;
@@ -1357,30 +1366,22 @@ namespace impl {
         template <meta::is<T> U>
         [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
             if constexpr (errors::size() > 1) {
-                return u.has_result() ? 0 : u.error().index() + 1;
+                return u.has_result() ? 0 : u.get_error().index() + 1;
             } else {
                 return u.has_error();
             }
         }
 
         /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U>
-            requires (
-                meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < pack::size()
-            )
+        template <size_t I, meta::is<T> U> requires (I == 0 && meta::not_void<wrapped>)
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).m_storage.get_result())
+            noexcept(std::forward<U>(u).get_result())
         ) {
-            return (std::forward<U>(u).m_storage.get_result());
+            return (std::forward<U>(u).get_result());
         }
 
         /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U>
-            requires (
-                meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < pack::size()
-            )
+        template <size_t I, meta::is<T> U> requires (I == 0 && meta::is_void<wrapped>)
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
             return (std::nullopt);
         }
@@ -1388,9 +1389,9 @@ namespace impl {
         /* Perfectly forward the member at index I for an expected of this type. */
         template <size_t I, meta::is<T> U> requires (I > 0 && I < pack::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).m_storage.template get_error<I - 1>())
+            noexcept(std::forward<U>(u).template get_error<I - 1>())
         ) {
-            return (std::forward<U>(u).m_storage.template get_error<I - 1>());
+            return (std::forward<U>(u).template get_error<I - 1>());
         }
 
         /* Dispatch to the proper state of this expected, then recur for the next
@@ -1488,6 +1489,13 @@ namespace impl {
     struct visitable<T> {
     private:
 
+        template <typename V>
+        struct _wrapped { using type = void; };
+        template <meta::not_void V>
+        struct _wrapped<V> {
+            using type = decltype((std::declval<T>().value()));
+        };
+
         template <typename U>
         struct _pack { using type = args<decltype((std::declval<T>().value()))>; };
         template <meta::is_void U>
@@ -1508,6 +1516,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
+        using wrapped = _wrapped<typename meta::unqualify<T>::value_type>::type;
         using pack =
             _pack<typename meta::unqualify<T>::value_type>::type::template concat<
                 visitable<decltype((std::declval<T>().error()))>::pack
@@ -2379,8 +2388,8 @@ public:
     /* Move constructor.  The resulting union will have the same index as the input
     union, and will be initialized by move constructing the other stored type. */
     constexpr Union(Union&& other)
-        noexcept((meta::nothrow::movable<Ts> && ...))
-        requires((meta::movable<Ts> && ...))
+        noexcept((meta::nothrow::movable<meta::remove_rvalue<Ts>> && ...))
+        requires((meta::movable<meta::remove_rvalue<Ts>> && ...))
     :
         m_storage(bertrand::visit(
             [](auto&& value) -> storage<Ts...> {
@@ -2394,12 +2403,21 @@ public:
     /* Copy assignment operator.  Destroys the current value and then copy constructs
     the other stored type into the active index. */
     constexpr Union& operator=(const Union& other)
-        noexcept((meta::nothrow::copyable<Ts> && ...) && (nothrow_swappable<Ts> && ...))
-        requires((meta::copyable<Ts> && ...) && (swappable<Ts> && ...))
+        noexcept(
+            (meta::nothrow::copyable<meta::remove_rvalue<Ts>> && ...) &&
+            (nothrow_swappable<meta::remove_rvalue<Ts>> && ...)
+        )
+        requires(
+            (meta::copyable<meta::remove_rvalue<Ts>> && ...) &&
+            (swappable<meta::remove_rvalue<Ts>> && ...)
+        )
     {
         if (this != &other) {
             Union temp(other);
-            swap_operators<Ts...>[index()][temp.index()](*this, temp);
+            swap_operators<meta::remove_rvalue<Ts>...>[index()][temp.index()](
+                *this,
+                temp
+            );
         }
         return *this;
     }
@@ -2407,28 +2425,42 @@ public:
     /* Move assignment operator.  Destroys the current value and then move constructs
     the other stored type into the active index. */
     constexpr Union& operator=(Union&& other)
-        noexcept((meta::nothrow::movable<Ts> && ...) && (nothrow_swappable<Ts> && ...))
-        requires((meta::movable<Ts> && ...) && (swappable<Ts> && ...))
+        noexcept(
+            (meta::nothrow::movable<meta::remove_rvalue<Ts>> && ...) &&
+            (nothrow_swappable<meta::remove_rvalue<Ts>> && ...)
+        )
+        requires(
+            (meta::movable<meta::remove_rvalue<Ts>> && ...) &&
+            (swappable<meta::remove_rvalue<Ts>> && ...)
+        )
     {
         if (this != &other) {
             Union temp(std::move(other));
-            swap_operators<Ts...>[index()][temp.index()](*this, temp);
+            swap_operators<meta::remove_rvalue<Ts>...>[index()][temp.index()](
+                *this,
+                temp
+            );
         }
         return *this;
     }
 
     /* Destructor destroys the currently-active type. */
     constexpr ~Union()
-        noexcept((meta::nothrow::destructible<Ts> && ...))
-        requires((meta::destructible<Ts> && ...))
+        noexcept((meta::nothrow::destructible<meta::remove_rvalue<Ts>> && ...))
+        requires((meta::destructible<meta::remove_rvalue<Ts>> && ...))
     {
-        bertrand::visit([]<typename V>(V& value) noexcept(
-            meta::nothrow::destructible<V>
-        ) {
-            if constexpr (!meta::trivially_destructible<V>) {
-                std::destroy_at(&value);
-            }
-        }, *this);
+        static constexpr std::array destructors {
+            +[](Union& self) noexcept(
+                meta::nothrow::destructible<meta::remove_rvalue<Ts>>
+            ) {
+                if constexpr (!meta::trivially_destructible<meta::remove_rvalue<Ts>>) {
+                    std::destroy_at(
+                        &self.m_storage.template get<types::template index<Ts>()>()
+                    );
+                }
+            }...
+        };
+        destructors[index()](*this);
     }
 
     /* Implicit conversion from `Union<Ts...>` to `std::variant<Us...>` and any other
@@ -2919,6 +2951,11 @@ public:
 };
 
 
+/// TODO: All exception types should have a .swap() method, so that I can generically
+/// call swap() on the error type and it will handle both the union and scalar cases.
+/// Then I just need to focus on swapping the result types, which is simpler.
+
+
 template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
 struct Expected : impl::expected_tag {
@@ -2956,17 +2993,10 @@ private:
 
     /* Convert void results into an empty type that can be stored in a union. */
     template <typename U>
-    struct _Value { using type = U; };
+    struct _Result { using type = U; };
     template <meta::is_void U>
-    struct _Value<U> { struct type {}; };
-    using Value = _Value<value_type>::type;
-
-    /* Strip rvalue references and convert lvalues into pointers for storage. */
-    template <typename V>
-    struct _Result { using type = meta::remove_rvalue<V>; };
-    template <meta::lvalue V>
-    struct _Result<V> { using type = meta::as_pointer<V>; };
-    using Result = _Result<Value>::type;
+    struct _Result<U> { struct type {}; };
+    using Result = _Result<value_type>::type;
 
     /* If only one exception state is given, store that directly.  Otherwise, store a
     union of all exception states. */
@@ -2992,98 +3022,46 @@ private:
     };
     using Error = _Error<E, Es...>::type;
 
-    union storage {
-        Result result;
-        Error error;
-
-        constexpr ~storage() noexcept {}
-
-        // forwarding constructor for rvalue or prvalue results
-        template <typename... As>
-            requires (
-                meta::constructible_from<Value, As...> &&
-                !meta::lvalue<value_type>
-            )
-        constexpr storage(As&&... args)
-            noexcept(meta::nothrow::constructible_from<Value, As...>)
-        :
-            result(std::forward<As>(args)...)
-        {}
-
-        // forwarding constructor for lvalue results that converts to a pointer
-        template <meta::convertible_to<value_type> V>
-            requires (meta::lvalue<value_type>)
-        constexpr storage(V& v)
-            noexcept(meta::nothrow::convertible_to<V, value_type>)
-        :
-            result(&static_cast<value_type>(v))
-        {}
-
-        // error constructor
-        template <typename V> requires (meta::not_void<err_type<V>>)
-        constexpr storage(V&& e)
-            noexcept(noexcept(_Error<E, Es...>{}(std::forward<V>(e))))
-        :
-            error(_Error<E, Es...>{}(std::forward<V>(e)))
-        {}
-
-        // perfectly forward the result, dereferencing if necessary
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) get_result(this Self&& self) noexcept {
-            if constexpr (meta::lvalue<value_type>) {
-                return *std::forward<Self>(self).result;
-            } else {
-                return (std::forward<Self>(self).result);
-            }
-        }
-
-        // check to see whether a specific error is present, assuming there are
-        // multiple possible error states
-        template <size_t I> requires (I < errors::size())
-        [[nodiscard]] constexpr bool has_error() const noexcept {
-            if constexpr (meta::Union<Error>) {
-                return error.index() == I;
-            } else {
-                return true;
-            }
-        }
-
-        // get the specific error at index I, assuming there are multiple possible
-        // error states
-        template <size_t I, typename Self>
-            requires (I < errors::size())
-        [[nodiscard]] constexpr decltype(auto) get_error(this Self&& self) noexcept {
-            if constexpr (meta::Union<Error>) {
-                return (std::forward<Self>(self).error.m_storage.template get<I>());
-            } else {
-                return (std::forward<Self>(self).error);
-            }
-        }
-    } m_storage;
-    bool m_ok;
-
-    template <typename U>
-    static constexpr bool nothrow_copy_assignable =
-        meta::nothrow::copyable<U>;
-    template <meta::copy_assignable U>
-    static constexpr bool nothrow_copy_assignable<U> =
-        meta::nothrow::copy_assignable<U> && meta::nothrow::copyable<U>;
-
-    template <typename U>
-    static constexpr bool nothrow_move_assignable =
-        meta::nothrow::movable<U>;
-    template <meta::move_assignable U>
-    static constexpr bool nothrow_move_assignable<U> =
-        meta::nothrow::move_assignable<U> && meta::nothrow::movable<U>;
+    using storage = Union<Result, Error>;
+    storage m_storage;
 
     template <typename Self>
-    using access = decltype((std::declval<Self>().m_storage.get_result()));
+    constexpr decltype(auto) get_result(this Self&& self) noexcept {
+        return (std::forward<Self>(self).m_storage.m_storage.template get<0>());
+    }
 
     template <typename Self>
-    using access_error = decltype((std::declval<Self>().m_storage.error));
+    constexpr decltype(auto) get_error(this Self&& self) noexcept {
+        return (std::forward<Self>(self).m_storage.m_storage.template get<1>());
+    }
+
+    template <size_t I, typename Self> requires (I < errors::size())
+    constexpr decltype(auto) get_error(this Self&& self) noexcept {
+        if constexpr (sizeof...(Es)) {
+            return (std::forward<Self>(self).get_error().m_storage.template get<I>());
+        } else {
+            return (std::forward<Self>(self).get_error());
+        }
+    }
+
+    template <typename U, typename Self> requires (errors::template contains<U>())
+    constexpr decltype(auto) get_error(this Self&& self) noexcept {
+        return (
+            std::forward<Self>(self).template get_error<errors::template index<U>()>()
+        );
+    }
+
+    template <typename Self>
+    using access = decltype((std::declval<Self>().get_result()));
+
+    template <typename Self>
+    using access_error = decltype((std::declval<Self>().get_error()));
 
     template <size_t I, typename Self>
-    using access_at = decltype((std::declval<Self>().m_storage.template get_error<I>())); 
+    using access_at = decltype((std::declval<Self>().template get_error<I>())); 
+
+    template <typename U, typename Self>
+    using access_type = decltype((std::declval<Self>().template get_error<U>()));
 
     template <typename U>
     struct monadic {
@@ -3192,182 +3170,51 @@ private:
     using or_else_fn = monadic<value_type>::template or_else_fn<F, Self, Args...>;
 
 public:
-    /* Forwarding constructor for `value_type`. */
-    template <typename... Args> requires (meta::constructible_from<Value, Args...>)
-    [[nodiscard]] constexpr Expected(Args&&... args) noexcept(
-        noexcept(storage(std::forward<Args>(args)...))
+    /* Converting constructor for `value_type`. */
+    template <meta::convertible_to<Result> V>
+    [[nodiscard]] constexpr Expected(V&& v) noexcept(
+        meta::nothrow::convertible_to<V, Result>
     ) :
-        m_storage(std::forward<Args>(args)...),
-        m_ok(true)
+        m_storage(std::forward<V>(v))
     {}
 
-    /* Error state constructor.  This constructor only participates in overload
-    resolution if the input inherits from one of the errors in the template signature
-    and is not a valid initializer for `value_type`. */
+    /* Forwarding constructor for `value_type`. */
+    template <typename... Args> requires (meta::constructible_from<Result, Args...>)
+    [[nodiscard]] constexpr Expected(Args&&... args) noexcept(
+        meta::nothrow::constructible_from<Result, Args...> &&
+        meta::nothrow::convertible_to<Result, storage>
+    ) :
+        m_storage(Result(std::forward<Args>(args)...))
+    {}
+
+    /* Error constructor.  This constructor only participates in overload resolution if
+    the input inherits from one of the errors in the template signature and is not a
+    valid initializer for `value_type`. */
     template <typename V>
         requires (
-            !meta::constructible_from<Value, V> &&
+            !meta::constructible_from<Result, V> &&
             (meta::inherits<V, E> || ... || meta::inherits<V, Es>)
         )
     [[nodiscard]] constexpr Expected(V&& e) noexcept(
-        noexcept(storage(std::forward<V>(e)))
+        meta::nothrow::convertible_to<V, storage>
     ) :
-        m_storage(std::forward<V>(e)),
-        m_ok(false)
+        m_storage(std::forward<V>(e))
     {}
 
-    /* Copy constructor. */
-    [[nodiscard]] constexpr Expected(const Expected& other)
-        noexcept(meta::nothrow::copyable<Result> && meta::nothrow::copyable<Error>)
-        requires(meta::copyable<Result> && meta::copyable<Error>)
-    :
-        m_storage([](const Expected& other) noexcept(
-            meta::nothrow::copyable<Result> && meta::nothrow::copyable<Error>
-        ) -> storage {
-            if (other.has_result()) {
-                return {.result = other.m_storage.result};
-            } else {
-                return {.error = other.m_storage.error};
-            }
-        }(other)),
-        m_ok(other.has_result())
-    {}
-
-    /* Move constructor. */
-    [[nodiscard]] constexpr Expected(Expected&& other)
-        noexcept(meta::nothrow::movable<Result> && meta::nothrow::movable<Error>)
-        requires(meta::movable<Result> && meta::movable<Error>)
-    :
-        m_storage([](Expected&& other) noexcept(
-            meta::nothrow::movable<Result> && meta::nothrow::movable<Error>
-        ) -> storage {
-            if (other.has_result()) {
-                return {.result = std::move(other.m_storage.result)};
-            } else {
-                return {.error = std::move(other.m_storage.error)};
-            }
-        }(std::move(other))),
-        m_ok(other.has_result())
-    {}
-
-    /* Copy assignment operator. */
-    constexpr Expected& operator=(const Expected& other)
-        noexcept(nothrow_copy_assignable<Result> && nothrow_copy_assignable<Error>)
-        requires(meta::copyable<Result> && meta::copyable<Error>)
+    /* Swap the contents of two expecteds as efficiently as possible. */
+    constexpr void swap(Expected& other)
+        noexcept(noexcept(m_storage.swap(other.m_storage)))
+        requires(requires{m_storage.swap(other.m_storage);})
     {
         if (this != &other) {
-            if (has_result()) {
-                if (other.has_result()) {
-                    if constexpr (meta::copy_assignable<Result>) {
-                        m_storage.result = other.m_storage.result;
-                    } else {
-                        std::destroy_at(&m_storage.result);
-                        std::construct_at(
-                            &m_storage.result,
-                            other.m_storage.result
-                        );
-                    }
-                } else {
-                    std::destroy_at(&m_storage.result);
-                    std::construct_at(
-                        &m_storage.error,
-                        other.m_storage.error
-                    );
-                }
-            } else {
-                if (other.has_result()) {
-                    std::destroy_at(&m_storage.error);
-                    std::construct_at(
-                        &m_storage.result,
-                        other.m_storage.result
-                    );
-                } else {
-                    if constexpr (meta::copy_assignable<Error>) {
-                        m_storage.error = other.m_storage.error;
-                    } else {
-                        std::destroy_at(&m_storage.error);
-                        std::construct_at(
-                            &m_storage.error,
-                            other.m_storage.error
-                        );
-                    }
-                }
-            }
-            m_ok = other.has_result();
-        }
-        return *this;
-    }
-
-    /* Move assignment operator. */
-    constexpr Expected& operator=(Expected&& other)
-        noexcept(nothrow_move_assignable<Result> && nothrow_move_assignable<Error>)
-        requires(meta::movable<Result> && meta::movable<Error>)
-    {
-        if (this != &other) {
-            if (has_result()) {
-                if (other.has_result()) {
-                    if constexpr (meta::move_assignable<Result>) {
-                        m_storage.result = std::move(other.m_storage.result);
-                    } else {
-                        std::destroy_at(&m_storage.result);
-                        std::construct_at(
-                            &m_storage.result,
-                            std::move(other.m_storage.result)
-                        );
-                    }
-                } else {
-                    std::destroy_at(&m_storage.result);
-                    std::construct_at(
-                        &m_storage.error,
-                        std::move(other.m_storage.error)
-                    );
-                }
-            } else {
-                if (other.has_result()) {
-                    std::destroy_at(&m_storage.error);
-                    std::construct_at(
-                        &m_storage.result,
-                        std::move(other.m_storage.result)
-                    );
-                } else {
-                    if constexpr (meta::move_assignable<Error>) {
-                        m_storage.error = std::move(other.m_storage.error);
-                    } else {
-                        std::destroy_at(&m_storage.error);
-                        std::construct_at(
-                            &m_storage.error,
-                            std::move(other.m_storage.error)
-                        );
-                    }
-                }
-            }
-            m_ok = other.has_result();
-        }
-        return *this;
-    }
-
-    /* Destructor. */
-    constexpr ~Expected() noexcept(
-        meta::nothrow::destructible<Result> &&
-        meta::nothrow::destructible<Error>
-    ) {
-        if (has_result()) {
-            std::destroy_at(&m_storage.result);
-        } else {
-            std::destroy_at(&m_storage.error);
+            m_storage.swap(other.m_storage);
         }
     }
-
-    /// TODO: create<>() and swap()
-    /// -> All exception types should have a .swap() method, so that I can generically
-    /// call swap() on the error type and it will handle both the union and scalar
-    /// cases.  Then I just need to focus on swapping the result types, which is
-    /// simpler.
 
     /* True if the `Expected` stores a valid result.  `False` if it is in an error
     state. */
     [[nodiscard]] constexpr bool has_result() const noexcept {
-        return m_ok;
+        return m_storage.index() == 0;
     }
 
     /* Access the valid state.  Throws a `BadUnionAccess` assertion if the expected is
@@ -3380,7 +3227,7 @@ public:
                 throw BadUnionAccess("Expected in error state has no result");
             }
         }
-        return std::forward<Self>(self).m_storage.get_result();
+        return std::forward<Self>(self).get_result();
     }
 
     /* Access the stored value or return the default value if the expected is in an
@@ -3396,7 +3243,7 @@ public:
         meta::nothrow::convertible_to<V, meta::common_type<access<Self>, V>>
     ) {
         if (self.has_result()) {
-            return std::forward<Self>(self).m_storage.get_result();
+            return std::forward<Self>(self).get_result();
         } else {
             return std::forward<V>(fallback);
         }
@@ -3405,7 +3252,7 @@ public:
     /* True if the `Expected` is in an error state.  False if it stores a valid
     result. */
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        return !m_ok;
+        return m_storage.index() == 1;
     }
 
     /* True if the `Expected` is in a specific error state identified by index.  False
@@ -3414,7 +3261,11 @@ public:
     any template parameters. */
     template <size_t I> requires (I < errors::size())
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        return has_error() && m_storage.template has_error<I>();
+        if constexpr (sizeof...(Es)) {
+            return has_error() && get_error().index() == I;
+        } else {
+            return has_error();
+        }
     }
 
     /* True if the `Expected` is in a specific error state indicated by type.  False
@@ -3423,9 +3274,11 @@ public:
     any template parameters. */
     template <typename Err> requires (errors::template contains<Err>())
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        return
-            has_error() &&
-            m_storage.template has_error<errors::template index<Err>()>();
+        if constexpr (sizeof...(Es)) {
+            return has_error() && get_error().index() == errors::template index<Err>();
+        } else {
+            return has_error();
+        }
     }
 
     /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
@@ -3439,7 +3292,7 @@ public:
                 throw BadUnionAccess("Expected in valid state has no error");
             }
         }
-        return std::forward<Self>(self).m_storage.error;
+        return std::forward<Self>(self).get_error();
     }
 
     /* Access a particular error by index.  This is equivalent to the non-templated
@@ -3453,19 +3306,15 @@ public:
             if (self.has_result()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
-        }
-        if constexpr (errors::size() == 1) {
-            return (std::forward<Self>(self).m_storage.error);
-        } else {
-            if constexpr (DEBUG) {
-                if (self.m_storage.error.index() != I) {
-                    throw self.m_storage.error.template get_index_error<I>[
-                        self.m_storage.error.index()
+            if constexpr (sizeof...(Es)) {
+                if (self.get_error().index() != I) {
+                    throw self.get_error().template get_index_error<I>[
+                        self.get_error().index()
                     ]();
                 }
             }
-            return std::forward<Self>(self).m_storage.error.m_storage.template get<I>();
         }
+        return (std::forward<Self>(self).template get_error<I>());
     }
 
     /* Access a particular error by type.  This is equivalent to the non-templated
@@ -3474,27 +3323,20 @@ public:
     be thrown in debug mode if the expected is currently in the valid state, or if the
     specified error is not the active member of the union. */
     template <typename Err, typename Self> requires (errors::template contains<Err>())
-    [[nodiscard]] constexpr access_at<errors::template index<Err>(), Self> error(
-        this Self&& self
-    ) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr access_type<Err, Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_result()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
-        }
-        if constexpr (errors::size() == 1) {
-            return std::forward<Self>(self).m_storage.error;
-        } else {
-            constexpr size_t I = errors::template index<Err>();
-            if constexpr (DEBUG) {
-                if (self.m_storage.error.index() != I /* get proper index of Err */) {
-                    throw self.m_storage.error.template get_type_error<Err>[
-                        self.m_storage.error.index()
+            if constexpr (sizeof...(Es)) {
+                if (self.get_error().index() != errors::template index<Err>()) {
+                    throw self.get_error().template get_type_error<Err>[
+                        self.get_error().index()
                     ]();
                 }
             }
-            return std::forward<Self>(self).m_storage.error.m_storage.template get<I>();
         }
+        return (std::forward<Self>(self).template get_error<Err>());
     }
 
     /* Access the error state or return the default value if the expected stores a
@@ -3516,7 +3358,7 @@ public:
         >
     ) {
         if (self.has_error()) {
-            return std::forward<Self>(self).m_storage.error;
+            return std::forward<Self>(self).get_error();
         } else {
             return std::forward<V>(fallback);
         }
@@ -3544,14 +3386,14 @@ public:
         >
     ) {
         if (self.has_error()) {
-            if constexpr (DEBUG && errors::size() > 1) {
-                if (self.m_storage.error.index() != I) {
-                    throw self.m_storage.error.template get_index_error<I>[
-                        self.m_storage.error.index()
+            if constexpr (DEBUG && sizeof...(Es)) {
+                if (self.get_error().index() != I) {
+                    throw self.get_error().template get_index_error<I>[
+                        self.get_error().index()
                     ]();
                 }
             }
-            return std::forward<Self>(self).m_storage.template get_error<I>();
+            return std::forward<Self>(self).template get_error<I>();
         } else {
             return std::forward<V>(fallback);
         }
@@ -3563,32 +3405,31 @@ public:
     the single error case, and is a shorthand for `error().get<I>().result_or(fallback)`
     in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
     the indexed error is not the active member of the union. */
-    template <typename U, typename Self, typename V>
+    template <typename Err, typename Self, typename V>
         requires (
-            errors::template contains<U> &&
-            meta::has_common_type<access_at<errors::template index<U>(), Self>, V>
+            errors::template contains<Err> &&
+            meta::has_common_type<access_type<Err, Self>, V>
         )
     [[nodiscard]] constexpr auto error_or(this Self&& self, V&& fallback) noexcept(
         meta::nothrow::convertible_to<
-            access_at<errors::template index<U>(), Self>,
-            meta::common_type<access_at<errors::template index<U>(), Self>, V>
+            access_type<Err, Self>,
+            meta::common_type<access_type<Err, Self>, V>
         > &&
         meta::nothrow::convertible_to<
             V,
-            meta::common_type<access_at<errors::template index<U>(), Self>, V>
+            meta::common_type<access_type<Err, Self>, V>
         >
-    ) -> meta::common_type<access_at<errors::template index<U>(), Self>, V>
+    ) -> meta::common_type<access_type<Err, Self>, V>
     {
         if (self.has_error()) {
-            constexpr size_t I = errors::template index<U>();
-            if constexpr (DEBUG && errors::size() > 1) {
-                if (self.m_storage.error.index() != I) {
-                    throw self.m_storage.error.template get_type_error<U>[
-                        self.m_storage.error.index()
+            if constexpr (DEBUG && sizeof...(Es)) {
+                if (self.get_error().index() != errors::template index<Err>()) {
+                    throw self.get_error().template get_type_error<Err>[
+                        self.get_error().index()
                     ]();
                 }
             }
-            return std::forward<Self>(self).m_storage.template get_error<I>();
+            return std::forward<Self>(self).m_storage.template get_error<Err>();
         } else {
             return std::forward<V>(fallback);
         }
