@@ -339,6 +339,29 @@ public:
         }
     }
 
+    /* Swap the contents of two exception instances as efficiently as possible. */
+    constexpr void swap(Exception& other) noexcept {
+        if (this != &other) {
+            if (compiled()) {
+                const char* tmp = m_storage.compile_time;
+                if (other.compiled()) {
+                    m_storage.compile_time = other.m_storage.compile_time;
+                } else {
+                    m_storage.run_time = other.m_storage.run_time;
+                }
+                other.m_storage.compile_time = tmp;
+            } else {
+                info* tmp = m_storage.run_time;
+                if (other.compiled()) {
+                    m_storage.compile_time = other.m_storage.compile_time;
+                } else {
+                    m_storage.run_time = other.m_storage.run_time;
+                }
+                other.m_storage.run_time = tmp;
+            }
+        }
+    }
+
     /* `True` if the Exception was created at compile time.  `False` if it was created
     at runtime.  Compile-time exceptions will not store a stack trace, and will store
     the string as a `string_view`. */
@@ -550,6 +573,12 @@ public:
     /* Catch an exception from Python, re-throwing it as an equivalent C++ error. */
     [[noreturn]] static void from_python();
 };
+
+
+/* Non-member ADL swap algorithm for Bertrand exceptions. */
+constexpr void swap(Exception& a, Exception& b) noexcept {
+    a.swap(b);
+}
 
 
 #define BERTRAND_EXCEPTION(CLS, BASE)                                                   \
