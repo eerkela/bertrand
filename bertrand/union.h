@@ -397,11 +397,13 @@ namespace meta {
                     template <typename...>
                     struct scan {
                         template <bool opt, typename... errs>
-                        using type = get_type<
+                        using result = get_type<
                             opt,  // accumulated empty state
                             bertrand::args<errs...>,  // accumulated errors
                             As...
-                        >::type;
+                        >;
+                        template <bool opt, typename... errs>
+                        using type = result<opt, errs...>::type;
                     };
 
                     // 3d. If the alternative is explicitly handled by the visitor, then we
@@ -540,47 +542,46 @@ namespace meta {
                 >::type;
             };
 
-            // 4. Return type conversions are applied for each valid permutation rather
-            //    than for the final return type, so as to bypass any
-            //    union/optional/expected wrappers.
+            // 4. Return type conversions are applied at the permutation level to
+            //    bypass any wrappers appended by `deduce<>`.
             template <typename... Rs>
-            struct _returns {
-                template <typename R>
-                static constexpr bool value = (meta::convertible_to<Rs, R> && ...);
-                template <typename R>
+            struct _returns {  // no void
+                template <typename T>
+                static constexpr bool value =
+                    (meta::convertible_to<Rs, T> && ...);
+                template <typename T>
                 static constexpr bool nothrow =
-                    (meta::nothrow::convertible_to<Rs, R> && ...);
+                    (meta::nothrow::convertible_to<Rs, T> && ...);
             };
             template <typename... Rs>
-                requires (
-                    sizeof...(Rs) > 0 &&
-                    permutations::template eval<filter>::has_void
-                )
-            struct _returns<Rs...> {
-                template <typename R>
+                requires (permutations::template eval<filter>::has_void)
+            struct _returns<Rs...> {  // some void, some non-void
+                template <typename T>
                 static constexpr bool value = (
-                    meta::convertible_to<Rs, R> &&
+                    meta::convertible_to<Rs, T> &&
                     ... &&
-                    meta::convertible_to<::std::nullopt_t, R>
+                    meta::convertible_to<::std::nullopt_t, T>
                 );
-
-                template <typename R>
+                template <typename T>
                 static constexpr bool nothrow = (
-                    meta::nothrow::convertible_to<Rs, R> &&
+                    meta::nothrow::convertible_to<Rs, T> &&
                     ... &&
-                    meta::nothrow::convertible_to<::std::nullopt_t, R>
+                    meta::nothrow::convertible_to<::std::nullopt_t, T>
                 );
             };
-            template <typename... Rs>
-                requires (
-                    sizeof...(Rs) == 0 &&
-                    permutations::template eval<filter>::has_void
-                )
-            struct _returns<Rs...> {
-                template <typename R>
-                static constexpr bool value = meta::convertible_to<void, R>;
-                template <typename R>
-                static constexpr bool nothrow = meta::nothrow::convertible_to<void, R>;
+            template <>
+            struct _returns<> {  // all void
+                template <typename T>
+                static constexpr bool value =
+                    /// TODO: for this to be correct, I probably have to use
+                    /// impl::visitable<T>::unwrap before checking convertible_to<void, U>.
+                    /// Just checking default constructibility is not sufficient
+                    meta::convertible_to<void, T> ||
+                    meta::default_constructible<T>;
+                template <typename T>
+                static constexpr bool nothrow =
+                    meta::nothrow::convertible_to<void, T> ||
+                    meta::nothrow::default_constructible<T>;
             };
 
         public:
@@ -752,12 +753,12 @@ namespace impl {
                 F,
                 meta::unpack_type<Prev, A...>...,
                 T
-            >> && meta::convertible_to<std::nullopt_t, R>) {
+            >> && meta::default_constructible<R>) {
                 std::forward<F>(func)(
                     meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
                     std::forward<T>(curr)
                 );
-                return std::nullopt;
+                return {};
             } else {
                 return std::forward<F>(func)(
                     meta::unpack_arg<Prev>(std::forward<A>(args)...)...,
@@ -1161,6 +1162,8 @@ namespace impl {
                     );
                 } else if constexpr (meta::convertible_to<type, R>) {
                     return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
+                } else if constexpr (meta::is_void<R>) {
+                    return;
                 } else {
                     static_assert(
                         meta::convertible_to<type, R>,
@@ -1289,6 +1292,8 @@ namespace impl {
                     );
                 } else if constexpr (meta::convertible_to<type, R>) {
                     return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
+                } else if constexpr (meta::is_void<R>) {
+                    return;
                 } else {
                     static_assert(
                         meta::convertible_to<type, R>,
@@ -2033,6 +2038,17 @@ private:
         );
     }...};
 
+    struct Flatten {
+        using type = get_common_type<Ts...>::type;
+        template <typename T>
+        static constexpr type operator()(T&& value)
+            noexcept(meta::nothrow::convertible_to<T, type>)
+            requires(meta::convertible_to<T, type>)
+        {
+            return std::forward<T>(value);
+        }
+    };
+
 public:
     /* The common type to which all alternatives can be converted, if such a type
     exists.  Void otherwise. */
@@ -2120,19 +2136,14 @@ public:
         ));
     }
 
-    /// TODO: Don't directly convert Ts... to the common type in the noexcept
-    /// specifier.  Only do that for access<I, Self>
-
     /* Flatten the union into a single type, implicitly converting the active member to
     the common type, assuming one exists.  If no common type exists, then this will
     fail to compile.  Users can check the `can_flatten` flag to guard against this. */
     template <typename Self> requires (can_flatten)
-    [[nodiscard]] constexpr common_type flatten(this Self&& self) noexcept(
-        (meta::nothrow::convertible_to<Ts, common_type> && ...)
-    ) {
-        return bertrand::visit([](auto&& value) -> common_type {
-            return std::forward<decltype(value)>(value);
-        }, std::forward<Self>(self));
+    [[nodiscard]] constexpr common_type flatten(this Self&& self)
+        noexcept(meta::nothrow::visit_returns<common_type, Flatten, Self>)
+    {
+        return bertrand::visit(Flatten{}, std::forward<Self>(self));
     }
 
 private:
@@ -2736,35 +2747,45 @@ public:
         ));
     }
 
-    /* Invoke a function on the wrapped value if the optional is not empty, returning
-    another optional containing the transformed result.  If the original optional was
-    in the empty state, then the function will not be invoked, and the result will be
-    empty as well.  If the function returns an optional (of any kind), then it will be
-    flattened into the result, merging the empty states.
+    /* If the optional is not empty, invoke a given function on the wrapped value,
+    otherwise propagate the empty state.  This is identical to `visit()`, except that
+    the visitor is forced to cover the non-empty state, and will not be invoked in the
+    empty case.  All other rules (including flattening or handling of void return
+    types) remain the same.
+
+    For most visitors:
 
                 self                    invoke                      result
         -------------------------------------------------------------------------
         1.  Optional<T>(empty)      (no call)                   Optional<U>(empty)
-        2.  Optional<T>(x)          f(x, args...) -> empty      Optional<U>(empty)
-        3.  Optional<T>(x)          f(x, args...) -> y          Optional<U>(y)
+        2.  Optional<T>(t)          f(t, args...) -> empty      Optional<U>(empty)
+        3.  Optional<T>(t)          f(t, args...) -> u          Optional<U>(u)
+
+    If the visitor returns void:
+
+                self                    invoke                      result
+        -------------------------------------------------------------------------
+        1.  Optional<T>(empty)      (no call)                   void
+        2.  Optional<T>(t)          f(t, args...) -> void       void
 
     Some functional languages call this operation "flatMap" or "bind".
 
-    NOTE: this method's flattening behavior differs from `std::optional::and_then()`
-    and `std::optional::transform()`.  For those methods, the former requires the
-    function to always return another `std::optional`, whereas the latter implicitly
-    promotes the return type to `std::optional`, even if it was one already (possibly
-    resulting in a nested optional).  Bertrand's `and_then()` method splits the
-    difference by allowing the function to return either an `Optional<U>` or `U`
-    directly, producing a flattened `Optional<U>` in both cases.  This is done to guard
-    against nested optionals, which Bertrand considers to be an anti-pattern, as
-    accessing the result is necessarily more verbose and can easily cause confusion.
-    This is especially true if the nesting is dependent on the order of operations,
-    which can lead to subtle bugs.  If the empty states must remain distinct, then it
-    is preferable to explicitly handle the original empty state before chaining, or by
-    converting the optional into a `Union<Ts...>` or `Expected<T, Union<Es...>>`
-    beforehand, both of which can represent multiple distinct empty states without
-    nesting. */
+    NOTE: the extra flattening and void handling by this method differs from many
+    functional languages, as well as `std::optional::and_then()` and
+    `std::optional::transform()`.  For those methods, the former requires the visitor
+    to always return another `std::optional`, whereas the latter implicitly promotes
+    the return type to `std::optional`, even if it was one already (possibly resulting
+    in a nested optional).  Thanks to the use of `visit()` under the hood, Bertrand's
+    `and_then()` method unifies both models by allowing the function to return either
+    an optional (of any kind, possibly nested), which will be used directly (merging
+    with the original empty state), or a non-optional, which will be promoted to an
+    optional unless it is void.  This guards against accidental nested optionals, which
+    Bertrand considers to be an anti-pattern.  This is especially true if the nesting
+    is dependent on the order of operations, which can lead to brittle code and subtle
+    bugs.  If the empty states must remain distinct, then it is always preferable to
+    explicitly handle the original empty state before chaining, or by converting the
+    optional into a `Union<Ts...>` or `Expected<T, Es...>` beforehand, both of which
+    can represent multiple distinct empty states without nesting. */
     template <typename Self, typename F, typename... Args>
         requires (
             meta::invocable<F, access<Self>, Args...> &&
@@ -2781,32 +2802,36 @@ public:
         ));
     }
 
-    /// TODO: or_else() does not return an optional, but can return a union.
+    /* If the optional is empty, invoke a given function, otherwise propagate the
+    non-empty state.  This is identical to `visit()`, except that the visitor does not
+    need to accept `std::nullopt_t` explicitly, and will not be invoked if the optional
+    holds a value.  All other rules (including promotion to union or handling of void
+    return types) remain the same.
 
-    /* Invoke a function if the optional is empty, returning another optional
-    containing either the original value or the transformed result.  If the original
-    optional was not empty, then the function will not be invoked, and the value will
-    be converted to the common type between the original value and the result of the
-    function.  If the function returns an optional (of any kind), then it will be
-    flattened into the result.
+    For most visitors:
 
                 self                    invoke                      result
         -------------------------------------------------------------------------
-        1.  Optional<T>(empty)      f(args...) -> empty         Optional<C>(empty)
-        2.  Optional<T>(empty)      f(args...) -> y             Optional<C>(y)
-        3.  Optional<T>(x)          (no call)                   Optional<C>(x)
+        1.  Optional<T>(empty)      f(args...) -> u             Union<T, U>(u)
+        2.  Optional<T>(t)          (no call)                   Union<T, U>(t)
 
-    Where `C` is the common type between the original value type `T` and the return
-    type of the function `f(args...) -> U`.  If `U` is an optional (of any kind) with
-    value type `V`, then `C` will be the common type between `T` and `V`.  Otherwise,
-    it is the common type between `T` and `U`.
+    If the visitor returns void:
 
-    NOTE: this method's flattening behavior differs from `std::optional::or_else()`,
-    which forces the function to always return another `std::optional`.  In Bertrand's
-    `or_else()` method, the function can return either an optional or non-optional,
-    producing a flattened optional in both cases.  This is done for consistency
-    with `and_then()` and the rest of the visitor interface, which avoids nested
-    optionals by default. */
+                self                    invoke                      result
+        -------------------------------------------------------------------------
+        1.  Optional<T>(empty)      f(args...) -> void          Optional<T>(empty)
+        2.  Optional<T>(t)          (no call)                   Optional<T>(t)
+
+    NOTE: the extra union promotion and void handling by this method differs from many
+    functional languages, as well as from `std::optional::or_else()`, which forces the
+    function to always return another `std::optional` of the same type as the input.
+    Thanks to the use of `visit()` under the hood, Bertrand's `or_else()` method is not
+    as restrictive, and allows the function to possibly return a different type, in
+    which case the result will be promoted to a union of the original optional type and
+    the function's return type.  Functions that return void will map to optionals,
+    where the original empty state will be preserved.  This is done for consistency
+    with `visit()` as well as `and_then()`, all of which use the same underlying
+    infrastructure. */
     template <typename Self, typename F, typename... Args>
         requires (
             meta::invocable<F, Args...> &&
@@ -2824,17 +2849,17 @@ public:
     }
 
     /* If the optional is not empty, invoke a boolean predicate on the value, returning
-    a new optional with an identical value where the result is `true`, or an empty
-    optional where it is `false`.  Any additional arguments in `Args...` will be
+    a new optional with an identical value if the result is `true`, or an empty
+    optional if it is `false`.  Any additional arguments in `Args...` will be
     perfectly forwarded to the predicate function in the order they are provided.
     If the original optional was empty to begin with, the predicate will not be
     invoked, and the optional will remain in the empty state.
 
                 self                    invoke                      result
         -------------------------------------------------------------------------
-        1.  Optional<T>(empty)  => (no call)                => Optional<T>(empty)
-        2.  Optional<T>(x)      => f(x, args...) -> false   => Optional<T>(empty)
-        3.  Optional<T>(x)      => f(x, args...) -> true    => Optional<T>(x)
+        1.  Optional<T>(empty)      (no call)                   Optional<T>(empty)
+        2.  Optional<T>(t)          f(t, args...) -> false      Optional<T>(empty)
+        3.  Optional<T>(t)          f(t, args...) -> true       Optional<T>(t)
     */
     template <typename Self, typename F, typename... Args>
         requires (
@@ -3571,7 +3596,12 @@ public:
 
     /* A member equivalent for `bertrand::visit()`, which always inserts this expected
     as the first argument, for chaining purposes.  See `bertrand::visit()` for more
-    details. */
+    details.
+
+    For expecteds, the visitor function can consider any combination of the result type
+    and/or enumerated error types.  If the result type is `void`, then the visitor will
+    be invoked with an argument of type `std::nullopt_t` instead.  Otherwise, it will be
+    invoked with the normal output from `.result()`. */
     template <typename F, typename Self, typename... Args>
         requires (meta::visitor<F, Self, Args...>)
     constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
@@ -3584,13 +3614,13 @@ public:
         ));
     }
 
-    /* Invoke a function on the value of the expected if it is not in the error state,
-    returning another expected containing the transformed result.  If the original
-    expected was in an error state, then the function will not be invoked, and the
-    result will propagate those same error states.  If the function returns an expected
-    (of any kind), then it will be flattened into the result, merging the error states.
-    If the original expected has a void result type, then the function will be invoked
-    without that argument.
+    /* If the optional stores a valid result, invoke a given function on the wrapped
+    value, otherwise propagate the error state(s).  This is identical to `visit()`,
+    except that the visitor is forced to cover the result state, and will not be
+    invoked in the error case.  All other rules (including flattening or handling of
+    void return types) remain the same.
+
+    For most visitors:
 
                 self                    invoke                      result
         -------------------------------------------------------------------------------
@@ -3600,19 +3630,29 @@ public:
         4.  Expected<void, Es...>()     f(args...) -> err       Expected<U, Es...>(err)
         5.  Expected<void, Es...>()     f(args...) -> y         Expected<U, Es...>(y)
 
+    If the visitor returns void:
+
+                self                    invoke                      result
+        -------------------------------------------------------------------------------
+        1.  Expected<T, Es...>(err)     (no call)               Expected<void, Es...>(err)
+        2.  Expected<T, Es...>(x)       f(x, args...) -> void   Expected<void, Es...>()
+        4.  Expected<void, Es...>()     f(args...) -> void      Expected<void, Es...>()
+
     Some functional languages call this operation "flatMap" or "bind".
 
-    NOTE: this method's flattening behavior differs from `std::expected::and_then()`
-    and `std::expected::transform()`.  For those methods, the former requires the
-    function to always return another `std::expected`, whereas the latter implicitly
-    promotes the return type to `std::expected`, even if it was one already (possibly
-    resulting in a nested expected).  Bertrand's `and_then()` method splits the
-    difference by allowing the function to return either an expected or non-expected,
-    producing a flattened expected in both cases.  This is done to guard against nested
-    monads, which Bertrand considers to be an anti-pattern, as accessing the result is
-    necessarily more verbose and can easily cause confusion.  This is especially true
-    if the nesting is dependent on the order of operations, which can lead to subtle
-    bugs.  If the error states must remain distinct, then it is preferable to
+    NOTE: the extra flattening and void handling by this method differs from many
+    functional languages, as well as `std::expected::and_then()` and
+    `std::expected::transform()`.  For those methods, the former requires the visitor
+    to always return another `std::expected`, whereas the latter implicitly promotes
+    the return type to `std::expected`, even if it was one already (possibly resulting
+    in a nested expected).  Thanks to the use of `visit()` under the hood, Bertrand's
+    `and_then()` method unifies both models by allowing the function to return either
+    an expected (of any kind, possibly nested), which will be used directly (merging
+    with the original error states), or a non-expected, which will be promoted to an
+    expected.  This guards against accidental nested expecteds, which Bertrand
+    considers to be an anti-pattern.  This is especially true if the nesting is
+    dependent on the order of operations, which can lead to brittle code and subtle
+    bugs.  If the error states must remain distinct, then it is always preferable to
     explicitly handle them before chaining. */
     template <typename Self, typename F, typename... Args>
         requires (
@@ -3631,13 +3671,13 @@ public:
         ));
     }
 
-    /* Invoke a function on the value of the expected if it is not in the error state,
-    returning another expected containing the transformed result.  If the original
-    expected was in an error state, then the function will not be invoked, and the
-    result will propagate those same error states.  If the function returns an expected
-    (of any kind), then it will be flattened into the result, merging the error states.
-    If the original expected has a void result type, then the function will be invoked
-    without that argument.
+    /* If the optional stores a valid result, invoke a given function on the wrapped
+    value, otherwise propagate the error state(s).  This is identical to `visit()`,
+    except that the visitor is forced to cover the result state, and will not be
+    invoked in the error case.  All other rules (including flattening or handling of
+    void return types) remain the same.
+
+    For most visitors:
 
                 self                    invoke                      result
         -------------------------------------------------------------------------------
@@ -3647,19 +3687,29 @@ public:
         4.  Expected<void, Es...>()     f(args...) -> err       Expected<U, Es...>(err)
         5.  Expected<void, Es...>()     f(args...) -> y         Expected<U, Es...>(y)
 
+    If the visitor returns void:
+
+                self                    invoke                      result
+        -------------------------------------------------------------------------------
+        1.  Expected<T, Es...>(err)     (no call)               Expected<void, Es...>(err)
+        2.  Expected<T, Es...>(x)       f(x, args...) -> void   Expected<void, Es...>()
+        4.  Expected<void, Es...>()     f(args...) -> void      Expected<void, Es...>()
+
     Some functional languages call this operation "flatMap" or "bind".
 
-    NOTE: this method's flattening behavior differs from `std::expected::and_then()`
-    and `std::expected::transform()`.  For those methods, the former requires the
-    function to always return another `std::expected`, whereas the latter implicitly
-    promotes the return type to `std::expected`, even if it was one already (possibly
-    resulting in a nested expected).  Bertrand's `and_then()` method splits the
-    difference by allowing the function to return either an expected or non-expected,
-    producing a flattened expected in both cases.  This is done to guard against nested
-    monads, which Bertrand considers to be an anti-pattern, as accessing the result is
-    necessarily more verbose and can easily cause confusion.  This is especially true
-    if the nesting is dependent on the order of operations, which can lead to subtle
-    bugs.  If the error states must remain distinct, then it is preferable to
+    NOTE: the extra flattening and void handling by this method differs from many
+    functional languages, as well as `std::expected::and_then()` and
+    `std::expected::transform()`.  For those methods, the former requires the visitor
+    to always return another `std::expected`, whereas the latter implicitly promotes
+    the return type to `std::expected`, even if it was one already (possibly resulting
+    in a nested expected).  Thanks to the use of `visit()` under the hood, Bertrand's
+    `and_then()` method unifies both models by allowing the function to return either
+    an expected (of any kind, possibly nested), which will be used directly (merging
+    with the original error states), or a non-expected, which will be promoted to an
+    expected.  This guards against accidental nested expecteds, which Bertrand
+    considers to be an anti-pattern.  This is especially true if the nesting is
+    dependent on the order of operations, which can lead to brittle code and subtle
+    bugs.  If the error states must remain distinct, then it is always preferable to
     explicitly handle them before chaining. */
     template <typename Self, typename F, typename... Args>
         requires (
@@ -3678,36 +3728,64 @@ public:
         ));
     }
 
-    /// TODO: as for optionals, expected.or_else() may return a union or optional
-    /// for void results
+    /* If the expected is in an error state, invoke a given function, otherwise
+    propagate the result state.  This is identical to `visit()`, except that the
+    visitor will not be invoked if the expected holds a valid result.  All other rules
+    (including promotion to union, handling of void return types, and implicit
+    propagation of unhandled errors) remain the same.
 
-    /* Invoke a visitor function if the expected holds an error, returning another
-    expected containing either the original value or the transformed result.  If the
-    original `Expected` held a valid result, then the function will not be invoked, and
-    the value will be converted to the common type between it and the result of the
-    visitor.  The same implicit propagation rules apply for the visitor as for
-    `bertrand::visit()`, meaning that the function may only handle a subset of the
-    possible errors.  Any unhandled errors will be propagated as-is.  If the visitor
-    returns an expected (of any kind), then they will be flattened into the result.
+    For most visitors:
 
                 self                    invoke                      result
         -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(err)     f(err, args...) -> err  Expected<C, Es...>(err)
-        2.  Expected<T, Es...>(x)       f(err, args...) -> y    Expected<C, Es...>(y)
-        3.  Expected<T, Es...>(x)       (no call)               Expected<C, Es...>(x)
+        1.  Expected<T, Es...>(e)       f(e, args...) -> u      Union<T, U>(u)
+        2.  Expected<T, Es...>(t)       (no call)               Union<T, U>(t)
+        3.  Expected<void, Es...>(e)    f(e, args...) -> u      Optional<U>(u)
+        4.  Expected<void, Es...>()     (no call)               Optional<U>(empty)
 
-    Where `C` is the common type between the original value type `T` and the return
-    type of the function `f(err, args...) -> U`.  If `U` is an expected (of any kind)
-    with value type `V`, then `C` will be the common type between `T` and `V`.
-    Otherwise, it is the common type between `T` and `U`.
+    If the visitor returns void:
 
-    /// TODO: explain filtering for `Es...`
+                self                    invoke                      result
+        -------------------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e, args...) -> void   Optional<T>(empty)
+        2.  Expected<T, Es...>(t)       (no call)               Optional<T>(t)
+        3.  Expected<void, Es...>(e)    f(e, args...) -> void   void
+        4.  Expected<void, Es...>()     (no call)               void
 
-    NOTE: this method's flattening behavior differs from `std::expected::or_else()`,
-    which forces the function to always return another `std::optional`.  In Bertrand's
-    `or_else()` method, the function can return either an `Optional<U>` or `U` directly,
-    producing a flattened `Optional<U>` in both cases.  This is done for consistency
-    with `and_then()`, which avoids nested optionals. */
+    If the visitor leaves some error states unhandled:
+
+                self                    invoke                      result
+        -------------------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e, args...) -> u      Expected<Union<T, U>, Rs...>(u)
+        2.  Expected<T, Es...>(t)       (no call)               Expected<Union<T, U>, Rs...>(t)
+        3.  Expected<void, Es...>(e)    f(e, args...) -> u      Expected<Optional<U>, Rs...>(u)
+        4.  Expected<void, Es...>()     (no call)               Expected<Optional<U>, Rs...>(empty)
+
+    And if it also returns void:
+
+                self                    invoke                      result
+        -------------------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e, args...) -> void   Expected<Optional<T>, Rs...>(empty)
+        2.  Expected<T, Es...>(t)       (no call)               Expected<Optional<T>, Rs...>(t)
+        3.  Expected<void, Es...>(e)    f(e, args...) -> void   Expected<void, Rs...>()
+        4.  Expected<void, Es...>()     (no call)               Expected<void, Rs...>()
+
+    ... where `Rs...` represent the remaining error states that were not handled by
+    the visitor.
+
+    NOTE: the extra union promotion and void handling by this method differs from many
+    functional languages, as well as from `std::expected::or_else()`, which forces the
+    function to always return another `std::expected` of the same type as the input.
+    Thanks to the use of `visit()` under the hood, Bertrand's `or_else()` method is not
+    as restrictive, and allows the function to possibly return a different type, in
+    which case the result will be promoted to a union of the original expected type and
+    the function's return type.  Functions that return void will map to optionals,
+    where the void state is converted into an empty optional.  If the original expected
+    was specialized to void, then the final return type will be either void (if the
+    function returns void) or an optional of the function's return type, where
+    propagating the result initializes the optional in the empty state.  This is done
+    for consistency with `visit()` as well as `and_then()`, all of which use the same
+    underlying infrastructure. */
     template <typename Self, typename F, typename... Args>
         requires (
             meta::visitor<F, access_error<Self>, Args...> &&
@@ -4725,11 +4803,25 @@ namespace bertrand {
         }
 
         {
+            static constexpr auto f = [](int x) { return; };
             static constexpr Union<int, std::string_view> u = 42;
+            static_assert(meta::visitor<decltype(f), decltype(u)>);
             auto x = u.visit(visitor{
                 [](int) { return 1; },
                 [](std::string_view) { return; }
             });
+            // auto y = u.visit([](int) { return; });
+
+            static constexpr Optional<int> o = 42;
+            static_assert(meta::visitor<decltype(f), decltype(o)>);
+            o.and_then(f);
+
+            static constexpr Expected<int, TypeError> e = 42;
+            auto y2 = e.and_then(f);
+            auto y3 = e.visit(f);
+
+            static constexpr Expected<void, TypeError, ValueError> e2;
+            static_assert(e2.or_else([](TypeError) { return 2; }).has_result());
         }
     }
 
