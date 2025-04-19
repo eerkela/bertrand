@@ -4389,6 +4389,26 @@ namespace impl {
         return first;
     }
 
+    template <meta::not_void T>
+    struct ConvertTo {
+        template <meta::convertible_to<T> U>
+        static constexpr T operator()(U&& value)
+            noexcept(meta::nothrow::convertible_to<U, T>)
+        {
+            return std::forward<U>(value);
+        }
+    };
+
+    template <meta::not_void T>
+    struct ExplicitConvertTo {
+        template <meta::explicitly_convertible_to<T> U>
+        static constexpr decltype(auto) operator()(U&& value)
+            noexcept(meta::nothrow::explicitly_convertible_to<U, T>)
+        {
+            return (static_cast<T>(std::forward<U>(value)));
+        }
+    };
+
     struct Hash {
         template <meta::hashable T>
         static constexpr decltype(auto) operator()(T&& value)
