@@ -96,12 +96,7 @@ static_assert(
 
 namespace impl {
     struct wrapper_tag {};
-    struct args_tag {};
 }
-
-
-template <typename... Ts>
-struct args;
 
 
 namespace meta {
@@ -113,88 +108,6 @@ namespace meta {
     constexpr T implicit_cast(auto&& value) {
         return std::forward<decltype(value)>(value);
     }
-
-    namespace detail {
-
-        template <typename Search, size_t I, typename... Ts>
-        constexpr size_t index_of = 0;
-        template <typename Search, size_t I, typename T, typename... Ts>
-        constexpr size_t index_of<Search, I, T, Ts...> =
-            std::same_as<Search, T> ? 0 : index_of<Search, I + 1, Ts...> + 1;
-
-        template <typename...>
-        constexpr bool types_are_unique = true;
-        template <typename T, typename... Ts>
-        constexpr bool types_are_unique<T, Ts...> =
-            !(std::same_as<T, Ts> || ...) && types_are_unique<Ts...>;
-
-        template <typename out, typename...>
-        struct unique_types { using type = out; };
-        template <typename... out, typename T, typename... Ts>
-        struct unique_types<bertrand::args<out...>, T, Ts...> {
-            using type = unique_types<bertrand::args<out..., T>, Ts...>::type;
-        };
-        template <typename... out, typename T, typename... Ts>
-            requires (std::same_as<T, out> || ...)
-        struct unique_types<bertrand::args<out...>, T, Ts...> {
-            using type = unique_types<bertrand::args<out...>, Ts...>::type;
-        };
-
-        template <size_t I, typename... Ts>
-        struct unpack_type;
-        template <size_t I, typename T, typename... Ts>
-        struct unpack_type<I, T, Ts...> { using type = unpack_type<I - 1, Ts...>::type; };
-        template <typename T, typename... Ts>
-        struct unpack_type<0, T, Ts...> { using type = T; };
-
-        template <size_t I, auto V, auto... Vs>
-        constexpr auto unpack_value = unpack_value<I - 1, Vs...>;
-        template <auto V, auto... Vs>
-        constexpr auto unpack_value<0, V, Vs...> = V;
-
-    }
-
-    /* Get the count of a particular type within a parameter pack.  Returns zero if
-    the type is not present. */
-    template <typename Search, typename... Ts>
-    static constexpr size_t count_of = (std::same_as<Search, Ts> + ...);
-
-    /* Get the index of a particular type within a parameter pack.  Returns the pack's
-    size if the type is not present. */
-    template <typename Search, typename... Ts>
-    static constexpr size_t index_of = detail::index_of<Search, 0, Ts...>;
-
-    /* Get the type at a particular index of a parameter pack.  This is superceded by
-    the C++26 pack indexing language feature. */
-    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
-    using unpack_type = detail::unpack_type<I, Ts...>::type;
-
-    /* Unpack the non-type template parameter at a particular index of a parameter
-    pack.  This is superceded by the C++26 pack indexing language feature. */
-    template <size_t I, auto... Vs> requires (I < sizeof...(Vs))
-    constexpr auto unpack_value = detail::unpack_value<I, Vs...>;
-
-    /* Index into a parameter pack and perfectly forward a single item.  This is
-    superceded by the C++26 pack indexing language feature. */
-    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
-    constexpr void unpack_arg(Ts&&...) noexcept {}
-    template <size_t I, typename T, typename... Ts> requires (I < (sizeof...(Ts) + 1))
-    constexpr decltype(auto) unpack_arg(T&& curr, Ts&&... next) noexcept {
-        if constexpr (I == 0) {
-            return std::forward<T>(curr);
-        } else {
-            return unpack_arg<I - 1>(std::forward<Ts>(next)...);
-        }
-    }
-
-    /* Concept that is satisfied only if every `T` occurs exactly once in `Ts...`. */
-    template <typename... Ts>
-    concept types_are_unique = detail::types_are_unique<Ts...>;
-
-    /* Filter out any duplicate types from `Ts...`, returning a `bertrand::args<Us...>`
-    placeholder where `Us...` contains only the unique types. */
-    template <typename... Ts>
-    using unique_types = detail::unique_types<bertrand::args<>, Ts...>::type;
 
     /////////////////////////////
     ////    QUALIFICATION    ////
@@ -411,6 +324,371 @@ namespace meta {
 
     template <typename... Ts> requires (has_common_type<Ts...>)
     using common_type = std::common_reference<Ts...>::type;
+
+    /////////////////////
+    ////    PACKS    ////
+    /////////////////////
+
+    template <typename... Ts>
+    struct pack;
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool is_pack = false;
+        template <typename... Ts>
+        constexpr bool is_pack<pack<Ts...>> = true;
+
+        template <typename Search, size_t I, typename... Ts>
+        constexpr size_t index_of = 0;
+        template <typename Search, size_t I, typename T, typename... Ts>
+        constexpr size_t index_of<Search, I, T, Ts...> =
+            std::same_as<Search, T> ? 0 : index_of<Search, I + 1, Ts...> + 1;
+
+        template <size_t I, typename... Ts>
+        struct unpack_type;
+        template <size_t I, typename T, typename... Ts>
+        struct unpack_type<I, T, Ts...> { using type = unpack_type<I - 1, Ts...>::type; };
+        template <typename T, typename... Ts>
+        struct unpack_type<0, T, Ts...> { using type = T; };
+
+        template <size_t I, auto V, auto... Vs>
+        constexpr auto unpack_value = unpack_value<I - 1, Vs...>;
+        template <auto V, auto... Vs>
+        constexpr auto unpack_value<0, V, Vs...> = V;
+
+        template <typename out, typename...>
+        struct concat { using type = out; };
+        template <typename... out, typename... curr, typename... next>
+        struct concat<pack<out...>, pack<curr...>, next...> {
+            using type = concat<pack<out..., curr...>, next...>::type;
+        };
+
+        template <typename out, typename...>
+        struct reverse { using type = out; };
+        template <typename... out, typename T, typename... Ts>
+        struct reverse<pack<out...>, T, Ts...> {
+            using type = reverse<pack<T, out...>, Ts...>::type;
+        };
+
+        template <size_t N, typename... Ts>
+        struct repeat {
+            template <typename out, size_t I, typename... Us>
+            struct expand { using type = out; };
+            template <typename... out, size_t I, typename U, typename... Us>
+            struct expand<pack<out...>, I, U, Us...> {
+                using type = expand<pack<out..., U>, I - 1, U, Us...>::type;
+            };
+            template <typename... out, typename U, typename... Us>
+            struct expand<pack<out...>, 0, U, Us...> {
+                using type = expand<pack<out...>, N, Us...>::type;
+            };
+            using type = expand<pack<>, N, Ts...>::type;
+        };
+
+        template <typename... packs>
+        struct product { using type = pack<>; };
+        template <typename... first, typename... rest>
+        struct product<pack<first...>, rest...> {
+            /* permute<> iterates from left to right along the packs. */
+            template <typename out, typename...>
+            struct permute { using type = out; };
+            template <typename... out, typename... curr, typename... next>
+            struct permute<pack<out...>, pack<curr...>, next...> {
+    
+                /* accumulate<> iterates over the prior permutations and updates them
+                with the types at this index. */
+                template <typename result, typename...>
+                struct accumulate { using type = result; };
+                template <typename... result, typename P, typename... Ps>
+                struct accumulate<pack<result...>, P, Ps...> {
+
+                    /* extend<> iterates over the alternatives for the current pack,
+                    appending them to the accumulated output. */
+                    template <typename prev, typename...>
+                    struct extend { using type = prev; };
+                    template <typename... prev, typename U, typename... Us>
+                    struct extend<pack<prev...>, U, Us...> {
+                        using type = extend<
+                            pack<prev..., typename P::template append<U>>,
+                            Us...
+                        >::type;
+                    };
+
+                    using type = accumulate<
+                        typename extend<pack<result...>, curr...>::type,
+                        Ps...
+                    >::type;
+                };
+
+                /* accumulate<> has to rebuild the output pack at each iteration. */
+                using type = permute<
+                    typename accumulate<pack<>, out...>::type,
+                    next...
+                >::type;
+            };
+
+            /* The first pack is converted to a 2D pack to initialize the recursion. */
+            using type = permute<pack<pack<first>...>, rest...>::type;
+        };
+
+        template <template <typename> class F, typename...>
+        static constexpr bool boolean_value = true;
+        template <template <typename> class F, typename U, typename... Us>
+        static constexpr bool boolean_value<F, U, Us...> =
+            requires{ static_cast<bool>(F<U>::value); } && boolean_value<F, Us...>;
+
+        template <template <typename> class F, typename out, typename...>
+        struct filter { using type = out; };
+        template <template <typename> class F, typename... out, typename U, typename... Us>
+        struct filter<F, pack<out...>, U, Us...> {
+            using type = filter<F, pack<out...>, Us...>::type;
+        };
+        template <template <typename> class F, typename... out, typename U, typename... Us>
+            requires (F<U>::value)
+        struct filter<F, pack<out...>, U, Us...> {
+            using type = filter<F, pack<out..., U>, Us...>::type;
+        };
+
+        template <template <typename, typename> class F, typename...>
+        constexpr bool left_foldable = false;
+        template <template <typename, typename> class F, typename T>
+        constexpr bool left_foldable<F, T> = true;
+        template <
+            template <typename, typename> class F,
+            typename L,
+            typename R,
+            typename... Ts
+        >
+        constexpr bool left_foldable<F, L, R, Ts...> =
+            requires{typename F<L, R>;} && left_foldable<F, F<L, R>, Ts...>;
+
+        template <template <typename, typename> class F, typename P>
+        constexpr bool right_foldable = false;
+        template <template <typename, typename> class F, typename... Ts>
+        constexpr bool right_foldable<F, pack<Ts...>> = left_foldable<F, Ts...>;
+
+        template <typename...>
+        struct fold {
+            template <template <typename, typename> class F>
+            using type = void;
+        };
+        template <typename out, typename... next>
+        struct fold<out, next...> {
+            template <template <typename, typename> class F>
+            using type = out;
+        };
+        template <typename out, typename curr, typename... next>
+        struct fold<out, curr, next...> {
+            template <template <typename, typename> class F>
+            using type = fold<F<out, curr>, next...>::template type<F>;
+        };
+
+        template <typename...>
+        constexpr bool unique = true;
+        template <typename T, typename... Ts>
+        constexpr bool unique<T, Ts...> =
+            (!std::same_as<T, Ts> && ...) && unique<Ts...>;
+
+        template <typename out, typename...>
+        struct to_unique { using type = out; };
+        template <typename... out, typename T, typename... Ts>
+        struct to_unique<pack<out...>, T, Ts...> {
+            using type = to_unique<pack<out..., T>, Ts...>::type;
+        };
+        template <typename... out, typename T, typename... Ts>
+            requires (std::same_as<T, out> || ...)
+        struct to_unique<pack<out...>, T, Ts...> {
+            using type = to_unique<pack<out...>, Ts...>::type;
+        };
+
+        template <typename...>
+        constexpr bool consolidated = true;
+        template <typename T, typename... Ts>
+        constexpr bool consolidated<T, Ts...> =
+            (!is<T, Ts> && ...) && consolidated<Ts...>;
+
+        template <typename out, typename...>
+        struct consolidate { using type = out; };
+        template <typename... out, typename U, typename... Us>
+        struct consolidate<pack<out...>, U, Us...> {
+            using type = consolidate<pack<out...>, Us...>::type;
+        };
+        template <typename... out, typename U, typename... Us>
+            requires ((!is<U, out> && ...) && (!is<U, Us> && ...))
+        struct consolidate<pack<out...>, U, Us...> {
+            using type = consolidate<pack<out..., U>, Us...>::type;
+        };
+        template <typename... out, typename U, typename... Us>
+        requires ((!is<U, out> && ...) && (is<U, Us> || ...))
+        struct consolidate<pack<out...>, U, Us...> {
+            using type = consolidate<pack<out..., unqualify<U>>, Us...>::type;
+        };
+
+    }
+
+    /* Concept is satisfied only when `T` is an arbitrarily qualified */
+    template <typename T>
+    concept is_pack = detail::is_pack<unqualify<T>>;
+
+    /* Get the count of a particular type within a parameter pack.  Returns zero if
+    the type is not present. */
+    template <typename Search, typename... Ts>
+    static constexpr size_t count_of = (std::same_as<Search, Ts> + ...);
+
+    /* Get the index of a particular type within a parameter pack.  Returns the pack's
+    size if the type is not present. */
+    template <typename Search, typename... Ts>
+    static constexpr size_t index_of = detail::index_of<Search, 0, Ts...>;
+
+    /* Get the type at a particular index of a parameter pack.  This is superceded by
+    the C++26 pack indexing language feature. */
+    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
+    using unpack_type = detail::unpack_type<I, Ts...>::type;
+
+    /* Unpack the non-type template parameter at a particular index of a parameter
+    pack.  This is superceded by the C++26 pack indexing language feature. */
+    template <size_t I, auto... Vs> requires (I < sizeof...(Vs))
+    constexpr auto unpack_value = detail::unpack_value<I, Vs...>;
+
+    /* Index into a parameter pack and perfectly forward a single item.  This is
+    superceded by the C++26 pack indexing language feature. */
+    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
+    constexpr void unpack_arg(Ts&&...) noexcept {}
+    template <size_t I, typename T, typename... Ts> requires (I < (sizeof...(Ts) + 1))
+    constexpr decltype(auto) unpack_arg(T&& curr, Ts&&... next) noexcept {
+        if constexpr (I == 0) {
+            return std::forward<T>(curr);
+        } else {
+            return unpack_arg<I - 1>(std::forward<Ts>(next)...);
+        }
+    }
+
+    /* Return a pack with the merged contents of all constituent packs. */
+    template <is_pack... packs>
+    using concat = detail::concat<pack<>, unqualify<packs>...>::type;
+
+    /* Return a pack containing the types in `Ts...`, but in the opposite order. */
+    template <typename... Ts>
+    using reverse = detail::reverse<pack<>, Ts...>::type;
+
+    /* Return a pack containing `N` consecutive repetitions for each type in
+    `Ts...`. */
+    template <size_t N, typename... Ts>
+    using repeat = detail::repeat<N, Ts...>::type;
+
+    /* Get a pack of packs containing all unique permutations of the component packs,
+    returning their Cartesian product.  */
+    template <is_pack... packs>
+    using product = detail::product<unqualify<packs>...>::type;
+
+    /* Return a pack containing only those types from `Ts...` that satisfy the
+    `F<T>::value` condition. */
+    template <template <typename> class F, typename... Ts>
+        requires (detail::boolean_value<F, Ts...>)
+    using filter = detail::filter<F, pack<>, Ts...>::type;
+
+    /* Apply a pairwise template template reduction parameter over the contents of a
+    non-empty pack, accumulating results from left to right into a collapsed value. */
+    template <template <typename, typename> class F, typename... Ts>
+        requires (detail::left_foldable<F, Ts...>)
+    using fold_left = detail::fold<Ts...>::template type<F>;
+
+    /* Apply a pairwise template template reduction parameter over the contents of a
+    non-empty pack, accumulating results from right to left into a collapsed value. */
+    template <template <typename, typename> class F, typename... Ts>
+        requires (detail::right_foldable<F, reverse<Ts...>>)
+    using fold_right = reverse<Ts...>::template eval<detail::fold>::template type<F>;
+
+    /* Concept that is satisfied iff every `T` occurs exactly once in `Ts...`. */
+    template <typename... Ts>
+    concept unique = detail::unique<Ts...>;
+
+    /* Filter out any exact duplicates from `Ts...`, returning a `meta::pack<Us...>`
+    where `Us...` contain only the unique types. */
+    template <typename... Ts>
+    using to_unique = detail::to_unique<pack<>, Ts...>::type;
+
+    /* Concept that is satisfied iff every `T` has no other cvref-qualified equivalents
+    in `Ts...`. */
+    template <typename... Ts>
+    concept consolidated = detail::consolidated<Ts...>;
+
+    /* Filter out duplicates and replace any types from `Ts...` that differ only in
+    cvref qualifications with an unqualified equivalent.  Returns `meta::pack<Us...>`,
+    where `Us...` describe the consolidated types. */
+    template <typename... Ts>
+    using consolidate = detail::consolidate<pack<>, Ts...>::type;
+
+    /* A generic list of types for use in template metaprogramming.  Provides a simple
+    set of higher-order metafunctions to make operating on sequences of types slightly
+    easier. */
+    template <typename... Ts>
+    struct pack {
+        /* The total number of arguments being stored. */
+        static constexpr size_t size = sizeof...(Ts);
+
+        /* Check to see whether a particular type is present within the pack. */
+        template <typename T>
+        static constexpr bool contains = meta::index_of<T, Ts...> < size;
+
+        /* Member equivalent for `meta::count_of<T, Ts...>`. */
+        template <typename T>
+        static constexpr size_t count = meta::count_of<T, Ts...>;
+
+        /* Member equivalent for `meta::index_of<T, Ts...>`. */
+        template <typename T>
+        static constexpr size_t index = meta::index_of<T, Ts...>;
+
+        /* Member equivalent for `meta::unpack_type<I, Ts...>` (pack indexing). */
+        template <size_t I> requires (I < size)
+        using at = meta::unpack_type<I, Ts...>;
+
+        /* Expand the pack, instantiating a template template parameter with its
+        contents. */
+        template <template <typename...> class F>
+            requires (requires{typename F<Ts...>;})
+        using eval = F<Ts...>;
+
+        /* Map a template template parameter over the given arguments, returning a new
+        pack containing the transformed result */
+        template <template <typename> class F>
+            requires (requires{typename pack<F<Ts>...>;})
+        using map = pack<F<Ts>...>;
+
+        /* Get a new pack with one or more types appended after the current contents. */
+        template <typename... Us>
+        using append = pack<Ts..., Us...>;
+
+        /* Member equivalent for `meta::concat<pack, packs...>`. */
+        template <typename... packs>
+            requires (requires{typename meta::concat<pack, packs...>;})
+        using concat = meta::concat<pack, packs...>;
+
+        /* Member equivalent for `meta::repeat<N, Ts...>`. */
+        template <size_t N>
+        using repeat = meta::repeat<N, Ts...>;
+
+        /* Member equivalent for `meta::product<pack<Ts...>, Ps...>` */
+        template <typename... Ps>
+            requires (requires{typename meta::product<pack, Ps...>;})
+        using product = meta::product<pack, Ps...>;
+
+        /* Member equivalent for `meta::filter<F, Ts...>`. */
+        template <template <typename> class F>
+            requires (requires{typename meta::filter<F, Ts...>;})
+        using filter = meta::filter<F, Ts...>;
+
+        /* Member equivalent for `meta::fold_left<F, Ts...>`. */
+        template <template <typename, typename> class F>
+            requires (requires{typename meta::fold_left<F, Ts...>;})
+        using fold_left = meta::fold_left<F, Ts...>;
+
+        /* Member equivalent for `meta::fold_right<F, Ts...>`. */
+        template <template <typename, typename> class F>
+            requires (requires{typename meta::fold_right<F, Ts...>;})
+        using fold_right = meta::fold_right<F, Ts...>;
+    };
 
     //////////////////////////
     ////    PRIMITIVES    ////
@@ -3090,7 +3368,7 @@ namespace meta {
             template <typename... Ts>
             struct variant<::std::variant<Ts...>> {
                 static constexpr bool value = true;
-                using types = bertrand::args<Ts...>;
+                using types = pack<Ts...>;
             };
     
         }
@@ -3206,100 +3484,6 @@ namespace meta {
 
 namespace impl {
 
-    /* Recursive base class backing the `bertrand::args` utility.  This is the base
-    case, which does not store a value. */
-    template <typename... Ts>
-    struct args_base : args_tag {
-        template <typename Self, typename F, typename... A>
-            requires (meta::invocable<F, A...>)
-        static constexpr decltype(auto) operator()(
-            Self&& self,
-            F&& f,
-            A&&... args
-        ) noexcept(
-            meta::nothrow::invocable<F, A...>
-        ) {
-            return (std::forward<F>(f)(std::forward<A>(args)...));
-        }
-    };
-
-    /* If any of the argument types are void, then none of the base classes will store
-    values, and the constructor will be disabled. */
-    template <typename T, typename... Ts>
-        requires (meta::is_void<T> || (meta::is_void<Ts> || ...))
-    struct args_base<T, Ts...> : args_tag {};
-
-    /* Otherwise, each base will store one type as a `.value` member, and recursively
-    inherit from the remaining bases until all types are exhausted. */
-    template <typename T, typename... Ts>
-    struct args_base<T, Ts...> : args_base<Ts...> {
-        using type = meta::remove_rvalue<T>;
-        type value;
-
-        template <meta::convertible_to<type> V, typename... Vs>
-        constexpr args_base(V&& curr, Vs&&... rest) noexcept(
-            meta::nothrow::convertible_to<V, type> &&
-            meta::nothrow::constructible_from<args_base<Ts...>, Vs...>
-        ) :
-            args_base<Ts...>(std::forward<Vs>(rest)...),
-            value(std::forward<V>(curr))
-        {}
-
-        constexpr args_base(args_base&& other)
-            noexcept(
-                meta::nothrow::convertible_to<T, type> &&
-                meta::nothrow::movable<args_base<Ts...>>
-            )
-            requires(
-                meta::convertible_to<T, type> &&
-                meta::movable<args_base<Ts...>>
-            )
-        :
-            args_base<Ts...>(std::move(other)),
-            value(std::forward<T>(other.value))
-        {}
-
-        constexpr args_base(const args_base&) = delete;
-        constexpr args_base& operator=(const args_base&) = delete;
-        constexpr args_base& operator=(args_base&&) = delete;
-
-        template <size_t I, typename Self>
-        static constexpr decltype(auto) get(Self&& self) noexcept {
-            if constexpr (I == 0) {
-                return std::forward<meta::qualify<args_base, Self>>(self).value;
-            } else {
-                return args_base<Ts...>::template get<I - 1>(std::forward<Self>(self));
-            }
-        }
-
-        template <typename Self, typename F, typename... A>
-        static constexpr decltype(auto) operator()(
-            Self&& self,
-            F&& f,
-            A&&... args
-        )
-            noexcept(noexcept(args_base<Ts...>::operator()(
-                std::forward<Self>(self),
-                std::forward<F>(f),
-                std::forward<A>(args)...,
-                std::forward<meta::qualify<args_base, Self>>(self).value
-            )))
-            requires (requires{args_base<Ts...>::operator()(
-                std::forward<Self>(self),
-                std::forward<F>(f),
-                std::forward<A>(args)...,
-                std::forward<meta::qualify<args_base, Self>>(self).value
-            ); })
-        {
-            return (args_base<Ts...>::operator()(
-                std::forward<Self>(self),
-                std::forward<F>(f),
-                std::forward<A>(args)...,
-                std::forward<meta::qualify<args_base, Self>>(self).value
-            ));
-        }
-    };
-
     /* A generic sentinel type to simplify iterator implementations. */
     struct sentinel {
         constexpr bool operator==(sentinel) const noexcept { return true; }
@@ -3342,9 +3526,6 @@ namespace impl {
 
 namespace meta {
 
-    template <typename T>
-    concept args = inherits<T, impl::args_tag>;
-
     /* Transparently unwrap wrapped types, triggering a getter call if the
     `meta::wrapper` concept is modeled, or returning the result as-is otherwise. */
     template <typename T>
@@ -3366,580 +3547,6 @@ namespace meta {
     using unwrap_type = decltype(unwrap(::std::declval<T>()));
 
 }
-
-
-/// TODO: maybe the only way to do the necessary metaprogramming for args(), etc.
-/// is to separate it out into a pack<> type for cases where you only need a
-/// compile-time container for a list of types.  That should hopefully not cause
-/// problems with implicitly instantiating problematic idioms related to constructors.
-/// TODO: This is a good idea, but it's not a simple refactor.  What I should also
-/// do is place the pack<> type in `meta::pack<Ts...>` and factor out as many members
-/// as possible to reduce compile times.
-
-
-template <typename... Ts>
-struct pack {
-    private:
-
-    template <template <typename> class T, typename...>
-    static constexpr bool broadcast_value = true;
-    template <template <typename> class T, typename U, typename... Us>
-    static constexpr bool broadcast_value<T, U, Us...> =
-        requires{ T<U>::value; } && broadcast_value<T, Us...>;
-
-    template <typename...>
-    struct get_common_type { using type = void; };
-    template <typename... Us> requires (meta::has_common_type<Us...>)
-    struct get_common_type<Us...> { using type = meta::common_type<Us...>; };
-
-    template <typename out, typename...>
-    struct _reverse { using type = out; };
-    template <typename... out, typename U, typename... Us>
-    struct _reverse<pack<out...>, U, Us...> {
-        using type = _reverse<pack<U, out...>, Us...>::type;
-    };
-
-    template <typename>
-    struct _concat;
-    template <typename... Us>
-    struct _concat<pack<Us...>> { using type = pack<Ts..., Us...>; };
-
-    template <size_t, typename out, typename...>
-    struct _repeat { using type = out; };
-    template <size_t N, typename... out, typename U, typename... Us>
-    struct _repeat<N, pack<out...>, U, Us...> {
-        template <size_t I, typename... Vs>
-        struct expand { using type = expand<I - 1, Vs..., U>::type; };
-        template <typename... Vs>
-        struct expand<0, Vs...> {
-            using type = _repeat<N, args<out..., Vs...>, Us...>::type;
-        };
-        using type = expand<N>::type;
-    };
-
-    template <typename... packs>
-    struct _product {
-        /* permute<> iterates from left to right along the packs. */
-        template <typename permuted, typename...>
-        struct permute { using type = permuted; };
-        template <typename... permuted, typename... types, typename... rest>
-        struct permute<args<permuted...>, args<types...>, rest...> {
-
-            /* accumulate<> iterates over the prior permutations and updates them
-            with the types at this index. */
-            template <typename accumulated, typename...>
-            struct accumulate { using type = accumulated; };
-            template <typename... accumulated, typename permutation, typename... others>
-            struct accumulate<args<accumulated...>, permutation, others...> {
-
-                /* append<> iterates from top to bottom for each type. */
-                template <typename appended, typename...>
-                struct append { using type = appended; };
-                template <typename... appended, typename U, typename... Us>
-                struct append<args<appended...>, U, Us...> {
-                    using type = append<
-                        args<appended..., typename permutation::template append<U>>,
-                        Us...
-                    >::type;
-                };
-
-                /* append<> extends the accumulated output at this index. */
-                using type = accumulate<
-                    typename append<args<accumulated...>, types...>::type,
-                    others...
-                >::type;
-            };
-
-            /* accumulate<> has to rebuild the output pack at each iteration. */
-            using type = permute<
-                typename accumulate<args<>, permuted...>::type,
-                rest...
-            >::type;
-        };
-
-        /* This pack is converted to a 2D pack to initialize the recursion. */
-        using type = permute<args<args<Ts>...>, packs...>::type;
-    };
-
-    template <template <typename> class F, typename out, typename...>
-    struct _filter { using type = out; };
-    template <template <typename> class F, typename... out, typename U, typename... Us>
-    struct _filter<F, pack<out...>, U, Us...> {
-        using type = _filter<F, pack<out...>, Us...>::type;
-    };
-    template <template <typename> class F, typename... out, typename U, typename... Us>
-        requires (F<U>::value)
-    struct _filter<F, pack<out...>, U, Us...> {
-        using type = _filter<F, pack<out..., U>, Us...>::type;
-    };
-
-    template <typename...>
-    struct _fold_left {
-        template <template <typename, typename> class F>
-        using type = void;
-    };
-    template <typename out, typename... next>
-    struct _fold_left<out, next...> {
-        template <template <typename, typename> class F>
-        using type = out;
-    };
-    template <typename out, typename curr, typename... next>
-    struct _fold_left<out, curr, next...> {
-        template <template <typename, typename> class F>
-        using type = _fold_left<F<out, curr>, next...>::template type<F>;
-    };
-
-    template <typename...>
-    struct _fold_right {
-        template <template <typename, typename> class F>
-        using type = void;
-    };
-    template <typename out, typename... next>
-    struct _fold_right<out, next...> {
-        template <template <typename, typename> class F>
-        using type = out;
-    };
-    template <typename out, typename curr, typename... next>
-    struct _fold_right<out, curr, next...> {
-        template <template <typename, typename> class F>
-        using type = _fold_right<F<out, curr>, next...>::template type<F>;
-    };
-
-    template <typename out, typename...>
-    struct _consolidate { using type = out; };
-    template <typename... out, typename U, typename... Us>
-    struct _consolidate<pack<out...>, U, Us...> {
-        using type = _consolidate<pack<out...>, Us...>::type;
-    };
-    template <typename... out, typename U, typename... Us>
-        requires ((!meta::is<U, out> && ...) && (!meta::is<U, Us> && ...))
-    struct _consolidate<pack<out...>, U, Us...> {
-        using type = _consolidate<pack<out..., U>, Us...>::type;
-    };
-    template <typename... out, typename U, typename... Us>
-    requires ((!meta::is<U, out> && ...) && (meta::is<U, Us> || ...))
-    struct _consolidate<pack<out...>, U, Us...> {
-        using type = _consolidate<pack<out..., meta::unqualify<U>>, Us...>::type;
-    };
-
-public:
-    /* The total number of arguments being stored. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts); }
-    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
-    [[nodiscard]] static constexpr bool empty() noexcept { return !sizeof...(Ts); }
-
-    /* Check to see whether a particular type is present within the pack. */
-    template <typename T>
-    static constexpr bool contains() noexcept { return index<T>() < size(); }
-
-    /* Get the count of a particular type within the pack. */
-    template <typename T>
-    static constexpr size_t count() noexcept { return meta::count_of<T, Ts...>; }
-
-    /* Get the index of the first occurrence of a particular type within the pack. */
-    template <typename T>
-    static constexpr size_t index() noexcept { return meta::index_of<T, Ts...>; }
-
-    /// TODO: eliminate `unique`, `has_common_type`, and `common_type`
-
-    /* True if the argument types are all unique.  False otherwise. */
-    static constexpr bool unique = meta::types_are_unique<Ts...>;
-
-    /* True if the argument types all share a common type to which they can be
-    converted. */
-    static constexpr bool has_common_type = meta::has_common_type<Ts...>;
-
-    /* The common type to which all arguments can be convertd, or `void` if no such
-    type exists. */
-    using common_type = get_common_type<Ts...>::type;
-
-    /* Get the type at index I. */
-    template <size_t I> requires (I < size())
-    using at = meta::unpack_type<I, Ts...>;
-
-    /// TODO: eliminate reverse
-
-    /* Return a new pack with the same contents in reverse order. */
-    using reverse = _reverse<pack<>, Ts...>::type;
-
-    /* Evaluate a template template parameter over the given arguments. */
-    template <template <typename...> class F> requires (requires{typename F<Ts...>;})
-    using eval = F<Ts...>;
-
-    /* Map a template template parameter over the given arguments, returning a new
-    pack containing the transformed result */
-    template <template <typename> class F> requires (requires{typename pack<F<Ts>...>;})
-    using map = pack<F<Ts>...>;
-
-    /// TODO: eliminate filter<>, fold_left<>, and fold_right<>
-
-    /* Get a new pack containing only those types in `Ts...` for which `cnd<T>::value`
-    evaluates to true. */
-    template <template <typename> class F> requires (broadcast_value<F, Ts...>)
-    using filter = _filter<F, pack<>, Ts...>::type;
-
-    /* Apply a pairwise template template parameter over the contents of a non-empty
-    pack, accumulating results from left to right into a single collapsed value. */
-    template <template <typename, typename> class F> requires (size() > 0)
-    using fold_left = _fold_left<Ts...>::template type<F>;
-
-    /* Apply a pairwise template template parameter over the contents of a non-empty
-    pack, accumulating results from right to left into a single collapsed value. */
-    template <template <typename, typename> class F> requires (size() > 0)
-    using fold_right = reverse::template eval<_fold_right>::template type<F>;
-
-    /* Get a new pack with one or more types appended after the current contents. */
-    template <typename... Us>
-    using append = pack<Ts..., Us...>;
-
-    /// TODO: eliminate concat<> in favor of `R::eval<L::append>`
-
-    /* Get a new pack that combines the contents of this pack with another. */
-    template <meta::args T>
-    using concat = _concat<meta::unqualify<T>>::type;
-
-    /* Get a new pack containing `N` consecutive repetitions for each type in this
-    pack. */
-    template <size_t N>
-    using repeat = _repeat<N, pack<>, Ts...>::type;
-
-    /* Get a pack of packs containing all unique permutations of the types in this
-    argument pack and all others, returning the Cartesian product.  */
-    template <meta::args... packs> requires ((size() > 0) && ... && (packs::size() > 0))
-    using product = _product<packs...>::type;
-
-    /// TODO: eliminate to_unique and consolidate in favor of `pack::eval<meta::unique_types>`
-
-    /* Get a new pack with exact duplicates filtered out, accounting for cvref
-    qualifications. */
-    using to_unique = meta::unique_types<Ts...>;
-
-    /* Get a new pack with duplicates filtered out and replacing any types that differ
-    only in cvref qualifications with an unqualified equivalent, thereby forcing a
-    copy/move upon construction. */
-    using consolidate = _consolidate<pack<>, Ts...>::type;
-};
-
-
-/* Save a set of input arguments for later use.  Returns an args<> container, which
-stores the arguments similar to a `std::tuple`, except that it is move-only and capable
-of storing references.  Calling the args pack will perfectly forward its values to an
-input function, preserving any value categories from the original objects or the args
-pack itself.
-
-Also provides utilities for higher-order template metaprogramming wherever manipulation
-of arbitrary type lists may be necessary.
-
-NOTE: in most implementations, the C++ standard does not strictly define the order of
-evaluation for function arguments, which can lead to surprising behavior if the
-arguments have side effects, or depend on each other.  However, this restriction is
-limited in the case of class constructors and initializer lists, which are guaranteed
-to evaluate from left to right.  This class can be used to trivially exploit that
-loophole by storing the arguments in a pack and immediately consuming them, without
-any additional overhead besides a possible move in and out of the argument pack.
-
-WARNING: undefined behavior can occur if an lvalue is bound that falls out of scope
-before the pack is consumed.  Such values will not have their lifetimes extended by
-this class in any way, and it is the user's responsibility to ensure that proper
-reference semantics are observed at all times.  Generally speaking, ensuring that no
-packs are returned out of a local context is enough to satisfy this guarantee.
-Typically, this class will be consumed within the same context in which it was created,
-or in a downstream one where all of the objects are still in scope, as a way of
-enforcing a certain order of operations.  Note that this guidance does not apply to
-rvalues, which are stored directly within the pack, extending their lifetimes. */
-template <typename... Ts>
-struct args : impl::args_base<Ts...> {
-private:
-
-    template <template <typename> class T, typename...>
-    static constexpr bool broadcast_value = true;
-    template <template <typename> class T, typename U, typename... Us>
-    static constexpr bool broadcast_value<T, U, Us...> =
-        requires{ T<U>::value; } && broadcast_value<T, Us...>;
-
-    template <typename...>
-    struct get_common_type { using type = void; };
-    template <typename... Us> requires (meta::has_common_type<Us...>)
-    struct get_common_type<Us...> { using type = meta::common_type<Us...>; };
-
-    template <typename out, typename...>
-    struct _reverse { using type = out; };
-    template <typename... out, typename U, typename... Us>
-    struct _reverse<args<out...>, U, Us...> {
-        using type = _reverse<args<U, out...>, Us...>::type;
-    };
-
-    template <typename>
-    struct _concat;
-    template <typename... Us>
-    struct _concat<args<Us...>> { using type = args<Ts..., Us...>; };
-
-    template <size_t, typename out, typename...>
-    struct _repeat { using type = out; };
-    template <size_t N, typename... out, typename U, typename... Us>
-    struct _repeat<N, args<out...>, U, Us...> {
-        template <size_t I, typename... Vs>
-        struct expand { using type = expand<I - 1, Vs..., U>::type; };
-        template <typename... Vs>
-        struct expand<0, Vs...> {
-            using type = _repeat<N, args<out..., Vs...>, Us...>::type;
-        };
-        using type = expand<N>::type;
-    };
-
-    template <typename... packs>
-    struct _product {
-        /* permute<> iterates from left to right along the packs. */
-        template <typename permuted, typename...>
-        struct permute { using type = permuted; };
-        template <typename... permuted, typename... types, typename... rest>
-        struct permute<args<permuted...>, args<types...>, rest...> {
-
-            /* accumulate<> iterates over the prior permutations and updates them
-            with the types at this index. */
-            template <typename accumulated, typename...>
-            struct accumulate { using type = accumulated; };
-            template <typename... accumulated, typename permutation, typename... others>
-            struct accumulate<args<accumulated...>, permutation, others...> {
-
-                /* append<> iterates from top to bottom for each type. */
-                template <typename appended, typename...>
-                struct append { using type = appended; };
-                template <typename... appended, typename U, typename... Us>
-                struct append<args<appended...>, U, Us...> {
-                    using type = append<
-                        args<appended..., typename permutation::template append<U>>,
-                        Us...
-                    >::type;
-                };
-
-                /* append<> extends the accumulated output at this index. */
-                using type = accumulate<
-                    typename append<args<accumulated...>, types...>::type,
-                    others...
-                >::type;
-            };
-
-            /* accumulate<> has to rebuild the output pack at each iteration. */
-            using type = permute<
-                typename accumulate<args<>, permuted...>::type,
-                rest...
-            >::type;
-        };
-
-        /* This pack is converted to a 2D pack to initialize the recursion. */
-        using type = permute<args<args<Ts>...>, packs...>::type;
-    };
-
-    template <template <typename> class F, typename out, typename...>
-    struct _filter { using type = out; };
-    template <template <typename> class F, typename... out, typename U, typename... Us>
-    struct _filter<F, args<out...>, U, Us...> {
-        using type = _filter<F, args<out...>, Us...>::type;
-    };
-    template <template <typename> class F, typename... out, typename U, typename... Us>
-        requires (F<U>::value)
-    struct _filter<F, args<out...>, U, Us...> {
-        using type = _filter<F, args<out..., U>, Us...>::type;
-    };
-
-    template <typename...>
-    struct _fold_left {
-        template <template <typename, typename> class F>
-        using type = void;
-    };
-    template <typename out, typename... next>
-    struct _fold_left<out, next...> {
-        template <template <typename, typename> class F>
-        using type = out;
-    };
-    template <typename out, typename curr, typename... next>
-    struct _fold_left<out, curr, next...> {
-        template <template <typename, typename> class F>
-        using type = _fold_left<F<out, curr>, next...>::template type<F>;
-    };
-
-    template <typename...>
-    struct _fold_right {
-        template <template <typename, typename> class F>
-        using type = void;
-    };
-    template <typename out, typename... next>
-    struct _fold_right<out, next...> {
-        template <template <typename, typename> class F>
-        using type = out;
-    };
-    template <typename out, typename curr, typename... next>
-    struct _fold_right<out, curr, next...> {
-        template <template <typename, typename> class F>
-        using type = _fold_right<F<out, curr>, next...>::template type<F>;
-    };
-
-    template <typename out, typename...>
-    struct _consolidate { using type = out; };
-    template <typename... out, typename U, typename... Us>
-    struct _consolidate<args<out...>, U, Us...> {
-        using type = _consolidate<args<out...>, Us...>::type;
-    };
-    template <typename... out, typename U, typename... Us>
-        requires ((!meta::is<U, out> && ...) && (!meta::is<U, Us> && ...))
-    struct _consolidate<args<out...>, U, Us...> {
-        using type = _consolidate<args<out..., U>, Us...>::type;
-    };
-    template <typename... out, typename U, typename... Us>
-    requires ((!meta::is<U, out> && ...) && (meta::is<U, Us> || ...))
-    struct _consolidate<args<out...>, U, Us...> {
-        using type = _consolidate<args<out..., meta::unqualify<U>>, Us...>::type;
-    };
-
-public:
-    /* The total number of arguments being stored. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts); }
-    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
-    [[nodiscard]] static constexpr bool empty() noexcept { return !sizeof...(Ts); }
-
-    /* Check to see whether a particular type is present within the pack. */
-    template <typename T>
-    static constexpr bool contains() noexcept { return index<T>() < size(); }
-
-    /* Get the count of a particular type within the pack. */
-    template <typename T>
-    static constexpr size_t count() noexcept { return meta::count_of<T, Ts...>; }
-
-    /* Get the index of the first occurrence of a particular type within the pack. */
-    template <typename T>
-    static constexpr size_t index() noexcept { return meta::index_of<T, Ts...>; }
-
-    /* True if the argument types are all unique.  False otherwise. */
-    static constexpr bool unique = meta::types_are_unique<Ts...>;
-
-    /* True if the argument types all share a common type to which they can be
-    converted. */
-    static constexpr bool has_common_type = meta::has_common_type<Ts...>;
-
-    /* The common type to which all arguments can be convertd, or `void` if no such
-    type exists. */
-    using common_type = get_common_type<Ts...>::type;
-
-    /* Get the type at index I. */
-    template <size_t I> requires (I < size())
-    using at = meta::unpack_type<I, Ts...>;
-
-    /* Return a new pack with the same contents in reverse order. */
-    using reverse = _reverse<args<>, Ts...>::type;
-
-    /* Evaluate a template template parameter over the given arguments. */
-    template <template <typename...> class F>
-        requires (requires{typename F<Ts...>;})
-    using eval = F<Ts...>;
-
-    /* Map a template template parameter over the given arguments, returning a new
-    pack containing the transformed result */
-    template <template <typename> class F>
-        requires (requires{typename args<F<Ts>...>;})
-    using map = args<F<Ts>...>;
-
-    /* Get a new pack containing only those types in `Ts...` for which `cnd<T>::value`
-    evaluates to true. */
-    template <template <typename> class F>
-        requires (broadcast_value<F, Ts...>)
-    using filter = _filter<F, args<>, Ts...>::type;
-
-    /* Apply a pairwise template template parameter over the contents of a non-empty
-    pack, accumulating results from left to right into a single collapsed value. */
-    template <template <typename, typename> class F> requires (size() > 0)
-    using fold_left = _fold_left<Ts...>::template type<F>;
-
-    /* Apply a pairwise template template parameter over the contents of a non-empty
-    pack, accumulating results from right to left into a single collapsed value. */
-    template <template <typename, typename> class F> requires (size() > 0)
-    using fold_right = reverse::template eval<_fold_right>::template type<F>;
-
-    /* Get a new pack with one or more types appended after the current contents. */
-    template <typename... Us>
-    using append = args<Ts..., Us...>;
-
-    /* Get a new pack that combines the contents of this pack with another. */
-    template <meta::args T>
-    using concat = _concat<meta::unqualify<T>>::type;
-
-    /* Get a new pack containing `N` consecutive repetitions for each type in this
-    pack. */
-    template <size_t N>
-    using repeat = _repeat<N, args<>, Ts...>::type;
-
-    /* Get a pack of packs containing all unique permutations of the types in this
-    argument pack and all others, returning the Cartesian product.  */
-    template <meta::args... packs> requires ((size() > 0) && ... && (packs::size() > 0))
-    using product = _product<packs...>::type;
-
-    /* Get a new pack with exact duplicates filtered out, accounting for cvref
-    qualifications. */
-    using to_unique = meta::unique_types<Ts...>;
-
-    /* Get a new pack with duplicates filtered out and replacing any types that differ
-    only in cvref qualifications with an unqualified equivalent, thereby forcing a
-    copy/move upon construction. */
-    using consolidate = _consolidate<args<>, Ts...>::type;
-
-    /* Constructor.  Saves a pack of arguments for later use, retaining proper
-    lvalue/rvalue categories and cv qualifiers. */
-    template <std::convertible_to<meta::remove_rvalue<Ts>>... Us>
-    constexpr args(Us&&... args)
-        noexcept(noexcept(impl::args_base<Ts...>(std::forward<Us>(args)...)))
-    :
-        impl::args_base<Ts...>(std::forward<Us>(args)...)
-    {}
-
-    // args are move constructible, but not copyable or assignable
-    constexpr args(args&& other)
-        noexcept(meta::nothrow::movable<impl::args_base<Ts...>>)
-        requires(meta::convertible_to<Ts, meta::remove_rvalue<Ts>> && ...)
-    {}
-    constexpr args(const args&) = delete;
-    constexpr args& operator=(const args&) = delete;
-    constexpr args& operator=(args&&) = delete;
-
-    /* Get the argument at index I, perfectly forwarding it according to the pack's
-    current cvref qualifications.  This means that if the pack is supplied as an
-    lvalue, then all arguments will be forwarded as lvalues, regardless of their
-    status in the template signature.  If the pack is an rvalue, then the arguments
-    will be perfectly forwarded according to their original categories.  If the pack
-    is cv qualified, then the result will be forwarded with those same qualifiers. */
-    template <size_t I, typename Self>
-        requires (meta::not_void<Ts> && ... && (I < size()))
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        return impl::args_base<Ts...>::template get<I>(std::forward<Self>(self));
-    }
-
-    /* Calling a pack will perfectly forward the saved arguments according to the
-    pack's current cvref qualifications.  This means that if the pack is supplied as an
-    lvalue, then all arguments will be forwarded as lvalues, regardless of their status
-    in the template signature.  If the pack is an rvalue, then the arguments will be
-    perfectly forwarded according to their original categories.  If the pack is cv
-    qualified, then the arguments will be forwarded with those same qualifiers. */
-    template <typename Self, typename F>
-    constexpr decltype(auto) operator()(this Self&& self, F&& f)
-        noexcept(meta::nothrow::invocable<F, Ts...>)
-        requires(meta::not_void<Ts> && ... && requires{
-            impl::args_base<Ts...>::operator()(
-                std::forward<Self>(self),
-                std::forward<F>(f)
-            );
-        })
-    {
-        return (impl::args_base<Ts...>::operator()(
-            std::forward<Self>(self),
-            std::forward<F>(f)
-        ));
-    }
-};
-
-
-/* CTAD guide allows argument types to be implicitly captured just from an initializer
-list. */
-template <typename... Ts>
-args(Ts&&...) -> args<Ts...>;
 
 
 namespace impl {
