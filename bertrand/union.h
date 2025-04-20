@@ -657,11 +657,7 @@ namespace meta {
     /* A visitor function can only be applied to a set of arguments if at least one
     permutation of the union types are valid. */
     template <typename F, typename... Args>
-    concept visitor =
-        detail::visit<F, Args...>::enable &&
-        detail::visit<F, Args...>::template returns<
-            typename detail::visit<F, Args...>::type
-        >;
+    concept visitor = detail::visit<F, Args...>::enable;
 
     /* Specifies that all permutations of the union types must be valid for the visitor
     function. */
@@ -692,9 +688,7 @@ namespace meta {
         template <typename F, typename... Args>
         concept visitor =
             meta::visitor<F, Args...> &&
-            detail::visit<F, Args...>::template nothrow_returns<
-                meta::visit_type<F, Args...>
-            >;
+            detail::visit<F, Args...>::nothrow;
 
         template <typename F, typename... Args>
         concept exhaustive =
@@ -755,7 +749,7 @@ namespace impl {
         std::index_sequence<Next...>,
         F&& func,
         A&&... args
-    ) noexcept(meta::nothrow::visit_returns<R, F, A...>) {
+    ) noexcept(meta::nothrow::visitor<F, A...>) {
         static constexpr size_t I = sizeof...(Prev);
         if constexpr (I + 1 == sizeof...(A)) {
             if constexpr (meta::is_void<meta::invoke_type<
@@ -809,6 +803,12 @@ namespace impl {
             return 0;
         }
 
+        /* Getting the value for a non-visitable type will trivially forward it. */
+        template <size_t I, meta::is<T> U> requires (I < pack::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
+            return (std::forward<U>(u));
+        }
+
         /* Dispatching to a non-visitable type trivially forwards to the next arg. */
         template <
             typename R,  // deduced return type
@@ -825,12 +825,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             /// NOTE: this case is manually optimized to minimize compile-time overhead
@@ -913,12 +913,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             static constexpr size_t I = sizeof...(Prev);
@@ -1014,12 +1014,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             static constexpr size_t I = sizeof...(Prev);
@@ -1109,12 +1109,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             static constexpr size_t I = sizeof...(Prev);
@@ -1237,12 +1237,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             static constexpr size_t I = sizeof...(Prev);
@@ -1416,12 +1416,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             static constexpr size_t I = sizeof...(Prev);
@@ -1597,12 +1597,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit_returns<R, F, A...>)
+            noexcept(meta::nothrow::visitor<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
                 visit_index<idx, A...>(prev, next) < pack::size() &&
-                meta::visit_returns<R, F, A...>
+                meta::visitor<F, A...>
             )
         {
             static constexpr size_t I = sizeof...(Prev);
@@ -1677,6 +1677,47 @@ namespace impl {
     constexpr size_t vtable_index(size_t i, const A& a, const As&... as) noexcept {
         return vtable_index(i + (visitable<A>::index(a) * vtable_size<As...>), as...);
     }
+
+    template <typename T>
+    struct _union_member_type { using type = meta::remove_rvalue<T>; };
+    template <meta::lvalue T>
+    struct _union_member_type<T> { using type = meta::as_pointer<T>; };
+
+    /* Union alternatives either have their lifetime extended, or are converted to
+    pointers if they are lvalues. */
+    template <typename T>
+    using union_member_type = _union_member_type<T>::type;
+
+    template <size_t N>
+    struct _union_index_type { using type = size_t; };
+    template <size_t N> requires (N <= std::numeric_limits<uint8_t>::max())
+    struct _union_index_type<N> { using type = uint8_t; };
+    template <size_t N>
+        requires (
+            N > std::numeric_limits<uint8_t>::max() &&
+            N <= std::numeric_limits<uint16_t>::max()
+        )
+    struct _union_index_type<N> { using type = uint16_t; };
+    template <size_t N>
+        requires (
+            N > std::numeric_limits<uint16_t>::max() &&
+            N <= std::numeric_limits<uint32_t>::max()
+        )
+    struct _union_index_type<N> { using type = uint32_t; };
+
+    /* The tracking index stored within a `Union` is defined as the smallest unsigned
+    integer type big enough to hold all alternatives, in order to exploit favorable
+    packing dynamics with respect to the aligned alternatives. */
+    template <size_t N> requires (N <= std::numeric_limits<size_t>::max())
+    using union_index_type = _union_index_type<N>::type;
+
+    template <typename... Ts>
+    struct _union_common_type { using type = void; };
+    template <typename... Ts> requires (meta::has_common_type<Ts...>)
+    struct _union_common_type<Ts...> { using type = meta::common_type<Ts...>; };
+
+    template <typename... Ts>
+    using union_common_type = _union_common_type<Ts...>::type;
 
 }
 
@@ -1775,9 +1816,9 @@ constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
 }
 
 
-/// TODO: conversions *from* equivalent STL types
-/// -> These are handled by visitors that include the right special cases internally,
-/// and use impl::visitable as a customization point for the conversion.
+/// TODO: there's still something funky about nested unions, which causes everything
+/// to explode.  Once that is resolved, then this should be a very clean
+/// implementation, with minimal compiler overhead.
 
 
 template <typename... Ts>
@@ -1805,7 +1846,7 @@ private:
     template <typename... Us> requires (meta::has_common_type<Us...>)
     struct get_common_type<Us...> { using type = meta::common_type<Us...>; };
 
-    // Find the first type in Ts... that is default constructible.
+    // Find the first type in Ts... that is default constructible, or void
     template <typename... Us>
     struct _default_type { using type = void; };
     template <typename U, typename... Us>
@@ -1818,253 +1859,185 @@ private:
     };
     using default_type = _default_type<Ts...>::type;
 
-    // implicit conversion to the union type will make a best effort to find the
-    // narrowest possible match from the available options
-    template <typename T, typename result, typename... Us>
-    struct _proximal_type { using type = result; };
-    template <typename T, typename result, typename U, typename... Us>
-    struct _proximal_type<T, result, U, Us...> {
-        // no match at this index: advance U
-        template <typename V>
-        struct filter { using type = _proximal_type<T, result, Us...>::type; };
+    template <typename T, typename U>
+    static constexpr bool match_proximal =
+        meta::inherits<T, U> &&
+        meta::convertible_to<T, U> &&
+        (meta::lvalue<T> ? !meta::rvalue<U> : !meta::lvalue<U>);
 
-        // prefer the most derived and least qualified matching alternative, with
-        // lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
-        // prvalues
-        template <meta::inherits<U> V>
-            requires (
-                meta::convertible_to<V, U> &&
-                meta::lvalue<V> ? !meta::rvalue<U> : !meta::lvalue<U>
-            )
-        struct filter<V> {
-            template <typename R>
-            struct replace { using type = R; };
+    template <typename T, typename U, typename convert>
+    static constexpr bool match_convertible =
+        meta::is_void<convert> &&
+        !meta::lvalue<U> &&
+        meta::convertible_to<T, U>;
 
-            // if the result type is void, or if the candidate is more derived than it,
-            // or if the candidate is less qualified, replace the intermediate result
-            template <typename R>
-                requires (
-                    meta::is_void<R> ||
-                    (meta::inherits<U, R> && !meta::is<U, R>) || (
-                        meta::is<U, R> && (
-                            (meta::lvalue<U> && !meta::lvalue<R>) ||
-                            meta::more_qualified_than<R, U>
-                        )
+    // result 1: convert to proximal type
+    template <typename T, typename proximal, typename convert, typename... Us>
+    struct _convert_type { using type = proximal; };
+
+    // result 2: convert to first implicitly convertible type (void if none)
+    template <typename T, meta::is_void proximal, typename convert>
+    struct _convert_type<T, proximal, convert> { using type = convert; };
+
+    // recursive 1: prefer the most derived and least qualified matching alternative,
+    // with lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
+    // prvalues
+    template <typename T, typename proximal, typename convert, typename U, typename... Us>
+        requires (match_proximal<T, U>)
+    struct _convert_type<T, proximal, convert, U, Us...> {
+        // if the result type is void, or if the candidate is more derived than it,
+        // or if the candidate is less qualified, replace the intermediate result
+        using type = _convert_type<
+            T,
+            std::conditional_t<
+                meta::is_void<proximal> ||
+                (meta::inherits<U, proximal> && !meta::is<U, proximal>) || (
+                    meta::is<U, proximal> && (
+                        (meta::lvalue<U> && !meta::lvalue<proximal>) ||
+                        meta::more_qualified_than<proximal, U>
                     )
-                )
-            struct replace<R> { using type = U; };
-
-            // recur with updated result
-            using type = _proximal_type<T, typename replace<result>::type, Us...>::type;
-        };
-
-        // execute the metafunction
-        using type = filter<T>::type;
+                ),
+                U,
+                proximal
+            >,
+            convert,
+            Us...
+        >::type;
     };
-    template <typename T>
-    using proximal_type = _proximal_type<T, void, Ts...>::type;
 
-    // implicit conversion operators will only be called if no proximal type is found
-    template <typename S, typename T>
-    struct _conversion_type { using type = S; };
-    template <meta::is_void S, typename T>
-    struct _conversion_type<S, T> {
-        template <typename... Us>
-        struct convert { using type = void; };
-        template <typename U, typename... Us>
-        struct convert<U, Us...> { using type = convert<Us...>::type; };
-        template <typename U, typename... Us>
-            requires (!meta::lvalue<U> && meta::convertible_to<T, U>)
-        struct convert<U, Us...> { using type = U; };
-        using type = convert<Ts...>::type;
+    // recursive 2: if no proximal match is found, prefer the leftmost implicitly
+    // convertible type.
+    template <typename T, typename proximal, typename convert, typename U, typename... Us>
+        requires (!match_proximal<T, U> && match_convertible<T, U, convert>)
+    struct _convert_type<T, proximal, convert, U, Us...> {
+        using type = _convert_type<T, proximal, U, Us...>::type;
     };
+
+    // recursive 3: no match at this index, advance U
+    template <typename T, typename proximal, typename convert, typename U, typename... Us>
+        requires (!match_proximal<T, U> && !match_convertible<T, U, convert>)
+    struct _convert_type<T, proximal, convert, U, Us...> {
+        using type = _convert_type<T, proximal, convert, Us...>::type;
+    };
+
+    // Find the alternative to which a type T can be converted, or void
     template <typename T>
-    using conversion_type = _conversion_type<proximal_type<T>, T>::type;
+    using convert_type = _convert_type<T, void, void, Ts...>::type;
 
     // explicit constructors can be used if no conversion type is found
-    template <typename... Us>
+    template <typename... A>
     struct _construct_type {
-        template <typename... A>
-        using type = void;
+        template <typename... Us>
+        struct infer { using type = void; };
+        template <typename U, typename... Us>
+        struct infer<U, Us...> { using type = infer<Us...>::type; };
+        template <meta::constructible_from<A...> U, typename... Us>
+        struct infer<U, Us...> { using type = U; };
     };
-    template <typename U, typename... Us>
-    struct _construct_type<U, Us...> {
-        template <typename... A>
-        struct construct { using type = _construct_type<Us...>::template type<A...>; };
-        template <typename... A> requires (meta::constructible_from<U, A...>)
-        struct construct<A...> { using type = U; };
-        template <typename... A>
-        using type = construct<A...>::type;
-    };
-    template <typename... Args>
-    using construct_type = _construct_type<Ts...>::template type<Args...>;
+    template <typename... A>
+    using construct_type = _construct_type<A...>::template infer<Ts...>::type;
 
     template <size_t I>
-    struct create_t {};
-    struct construct_t {};
+    static constexpr std::array get_index_error {+[] {
+        return BadUnionAccess(
+            impl::int_to_static_string<I> + " is not the active type in the union "
+            "(active is " + impl::int_to_static_string<types::template index<Ts>()> +
+            ")"
+        );
+    }...};
 
-    // recursive C unions are the only way to make Union<Ts...> provably safe at
-    // compile time without tripping the compiler's UB filters
-    template <typename... Us>
-    union storage {
-        constexpr storage(auto&&...) noexcept {};
-        constexpr ~storage() noexcept {};
-    };
-    template <typename U, typename... Us>
-    union storage<U, Us...> {
-        // C unions are unable to store reference types, so lvalues are converted to
-        // pointers and rvalues are stripped
-        template <typename V>
-        struct _type { using type = meta::remove_rvalue<V>; };
-        template <meta::lvalue V>
-        struct _type<V> { using type = meta::as_pointer<V>; };
-        using type = _type<U>::type;
+    template <typename T>
+    static constexpr std::array get_type_error {+[] {
+        return BadUnionAccess(
+            "'" + type_name<T> + "' is not the active type in the union "
+            "(active is '" + type_name<Ts> + "')"
+        );
+    }...};
 
-        [[no_unique_address]] type curr;
-        [[no_unique_address]] storage<Us...> rest;
+    template <size_t I>
+    struct tag {};
 
-        // base default constructor
-        constexpr storage()
-            noexcept(meta::nothrow::default_constructible<default_type>)
-            requires(std::same_as<U, default_type>)
-        :
-            curr()  // not a reference type by definition
-        {}
+    struct storage {
+        // recursive C unions are the only way to make Union<Ts...> provably safe at
+        // compile time without tripping the compiler's UB filters
+        template <typename... Us>
+        union store { constexpr ~store() noexcept {}; };
+        template <typename U, typename... Us>
+        union store<U, Us...> {
+            [[no_unique_address]] impl::union_member_type<U> curr;
+            [[no_unique_address]] store<Us...> rest;
+            constexpr ~store() noexcept {}
 
-        // recursive default constructor
-        constexpr storage()
-            noexcept(meta::nothrow::default_constructible<default_type>)
-            requires(!std::same_as<U, default_type>)
-        :
-            rest()
-        {}
+            template <typename... Args> requires (!meta::lvalue<U>)
+            constexpr store(tag<0>, Args&&... args)
+                noexcept(meta::nothrow::constructible_from<
+                    impl::union_member_type<U>,
+                    Args...
+                >)
+                requires(meta::constructible_from<
+                    impl::union_member_type<U>,
+                    Args...
+                >)
+            :
+                curr(std::forward<Args>(args)...)  // not an lvalue by definition
+            {}
 
-        // base proximal constructor
-        template <typename T> requires (std::same_as<U, proximal_type<T>>)
-        constexpr storage(T&& value) noexcept(
-            meta::nothrow::constructible_from<type, T>
-        ) :
-            curr(std::forward<T>(value))
-        {}
+            template <typename T> requires (meta::lvalue<U>)
+            constexpr store(tag<0>, T&& value)
+                noexcept(meta::nothrow::convertible_to<
+                    meta::address_type<meta::as_lvalue<T>>,
+                    impl::union_member_type<U>
+                >)
+                requires(meta::convertible_to<
+                    meta::address_type<meta::as_lvalue<T>>,
+                    impl::union_member_type<U>
+                >)
+            :
+                curr(&value)  // lvalues are converted to pointers
+            {}
 
-        // base proximal constructor for lvalue references
-        template <typename T>
-            requires (std::same_as<U, proximal_type<T>> && meta::lvalue<U>)
-        constexpr storage(T&& value) noexcept(meta::nothrow::constructible_from<
-            type,
-            meta::address_type<meta::as_lvalue<T>>
-        >) :
-            curr(&value)
-        {}
+            template <size_t I, typename... Args> requires (I > 0)
+            constexpr store(tag<I>, Args&&... args)
+                noexcept(meta::nothrow::constructible_from<
+                    store<Us...>,
+                    tag<I - 1>,
+                    Args...
+                >)
+                requires(meta::constructible_from<
+                    store<Us...>,
+                    tag<I - 1>,
+                    Args...
+                >)
+            :
+                rest(tag<I - 1>{}, std::forward<Args>(args)...)  // recur
+            {}
 
-        // recursive proximal constructor
-        template <typename T>
-            requires (
-                meta::not_void<proximal_type<T>> &&
-                !std::same_as<U, proximal_type<T>>
-            )
-        constexpr storage(T&& value) noexcept(
-            meta::nothrow::constructible_from<storage<Us...>, T>
-        ) :
-            rest(std::forward<T>(value))
-        {}
-
-        // base converting constructor
-        template <typename T>
-            requires (
-                meta::is_void<proximal_type<T>> &&
-                std::same_as<U, conversion_type<T>>
-            )
-        constexpr storage(T&& value) noexcept(
-            meta::nothrow::constructible_from<type, T>
-        ) :
-            curr(std::forward<T>(value))
-        {}
-
-        // recursive converting constructor
-        template <typename T>
-            requires (
-                meta::is_void<proximal_type<T>> &&
-                !std::same_as<U, conversion_type<T>>
-            )
-        constexpr storage(T&& value) noexcept(
-            meta::nothrow::constructible_from<storage<Us...>, T>
-        ) :
-            rest(std::forward<T>(value))
-        {}
-
-        // base explicit constructor
-        template <typename... Args> requires (std::same_as<U, construct_type<Args...>>)
-        constexpr storage(construct_t, Args&&... args) noexcept(
-            meta::nothrow::constructible_from<type, Args...>
-        ) :
-            curr(std::forward<Args>(args)...)
-        {}
-
-        // recursive explicit constructor
-        template <typename... Args> requires (!std::same_as<U, construct_type<Args...>>)
-        constexpr storage(construct_t, Args&&... args) noexcept(
-            meta::nothrow::constructible_from<storage<Us...>, construct_t, Args...>
-        ) :
-            rest(construct_t{}, std::forward<Args>(args)...)
-        {}
-
-        // base create() constructor
-        template <typename... Args>
-        constexpr storage(create_t<0>, Args&&... args) noexcept(
-            meta::nothrow::constructible_from<type, Args...>
-        ) :
-            curr(std::forward<Args>(args)...)
-        {}
-
-        // recursive create() constructor
-        template <size_t J, typename... Args> requires (J > 0)
-        constexpr storage(create_t<J>, Args&&... args) noexcept(
-            meta::nothrow::constructible_from<storage<Us...>, create_t<J - 1>, Args...>
-        ) :
-            rest(create_t<J - 1>{}, std::forward<Args>(args)...)
-        {}
-
-        // destructor
-        constexpr ~storage() noexcept {}
-
-        // get() implementation, accounting for lvalues and recursion
-        template <size_t I>
-        constexpr decltype(auto) get(this auto&& self) noexcept {
-            if constexpr (I == 0) {
+            template <size_t I> requires (I == 0)
+            constexpr decltype(auto) get(this auto&& self) noexcept {
                 if constexpr (meta::lvalue<U>) {
                     return (*std::forward<decltype(self)>(self).curr);
                 } else {
                     return (std::forward<decltype(self)>(self).curr);
                 }
-            } else {
+            }
+
+            template <size_t I>
+            constexpr decltype(auto) get(this auto&& self) noexcept {
                 return (std::forward<decltype(self)>(self).rest.template get<I - 1>());
             }
+        };
+
+        [[no_unique_address]] store<Ts...> data;
+        [[no_unique_address]] impl::union_index_type<sizeof...(Ts)> index;
+
+        // get() implementation, accounting for lvalues and recursion
+        template <size_t I> requires (I < types::size())
+        constexpr decltype(auto) get(this auto&& self) noexcept {
+            return (std::forward<decltype(self)>(self).data.template get<I>());
         }
     };
 
-    // index type is chosen to take advantage of alignment in Ts...
-    template <size_t N>
-    struct _index_type { using type = size_t; };
-    template <size_t N>
-        requires (N <= std::numeric_limits<uint8_t>::max())
-    struct _index_type<N> { using type = uint8_t; };
-    template <size_t N>
-        requires (
-            N > std::numeric_limits<uint8_t>::max() &&
-            N <= std::numeric_limits<uint16_t>::max()
-        )
-    struct _index_type<N> { using type = uint16_t; };
-    template <size_t N>
-        requires (
-            N > std::numeric_limits<uint16_t>::max() &&
-            N <= std::numeric_limits<uint32_t>::max()
-        )
-    struct _index_type<N> { using type = uint32_t; };
-    using index_type = _index_type<sizeof...(Ts)>::type;
-
-    [[no_unique_address]] storage<Ts...> m_storage;
-    [[no_unique_address]] index_type m_index;
+    [[no_unique_address]] storage m_storage;
 
     template <size_t I, typename Self> requires (I < types::size())
     using access = decltype((std::declval<Self>().m_storage.template get<I>()));
@@ -2086,13 +2059,31 @@ private:
     template <typename T, typename Self> requires (types::template contains<T>())
     using opt_t = Optional<access_t<T, Self>>;
 
-    static constexpr bool default_constructible = meta::not_void<default_type>;
+    template <typename... Us>
+        requires (meta::copyable<meta::remove_rvalue<Us>> && ...)
+    static constexpr std::array copy_constructors {
+        +[](const Union& other) noexcept(
+            (meta::nothrow::copyable<meta::remove_rvalue<Us>> && ...)
+        ) -> storage::template store<Us...> {
+            return {
+                tag<types::template index<Us>()>{},
+                other.m_storage.template get<types::template index<Us>()>()
+            };
+        }...
+    };
 
-    template <typename T>
-    static constexpr bool convert_from = meta::not_void<conversion_type<T>>;
-
-    template <typename... A>
-    static constexpr bool construct_from = meta::not_void<construct_type<A...>>;
+    template <typename... Us>
+        requires (meta::movable<meta::remove_rvalue<Us>> && ...)
+    static constexpr std::array move_constructors {
+        +[](Union&& other) noexcept(
+            (meta::nothrow::movable<meta::remove_rvalue<Us>> && ...)
+        ) -> storage::template store<Us...> {
+            return {
+                tag<types::template index<Us>()>{},
+                std::move(other).m_storage.template get<types::template index<Us>()>()
+            };
+        }...
+    };
 
     template <typename L, typename R>
     static constexpr bool _swappable =
@@ -2219,25 +2210,63 @@ private:
         pairwise_swap<meta::remove_rvalue<Us>>()...
     };
 
-    template <size_t I>
-    static constexpr std::array get_index_error {+[] {
-        return BadUnionAccess(
-            impl::int_to_static_string<I> + " is not the active type in the union "
-            "(active is " + impl::int_to_static_string<types::template index<Ts>()> +
-            ")"
-        );
-    }...};
+    template <typename...>
+    struct ConvertFrom {};
+    template <typename From>
+    struct ConvertFrom<From> {
+        template <typename T>
+            requires (!meta::monad<From> && meta::not_void<convert_type<T>>)
+        static constexpr storage operator()(T&& value)
+            noexcept(meta::nothrow::convertible_to<T, convert_type<T>>)
+        {
+            return {
+                .data = {
+                    tag<types::template index<convert_type<T>>()>{},
+                    std::forward<T>(value)
+                },
+                .index = types::template index<convert_type<T>>()
+            };
+        }
+    };
+
+    struct ConstructFrom {
+        template <typename... A> requires (meta::not_void<construct_type<A...>>)
+        static constexpr storage operator()(A&&... args)
+            noexcept(meta::nothrow::constructible_from<construct_type<A...>, A...>)
+        {
+            return {
+                .data = {
+                    tag<types::template index<construct_type<A...>>()>{},
+                    std::forward<A>(args)...
+                },
+                .index = types::template index<construct_type<A...>>()
+            };
+        }
+    };
 
     template <typename T>
-    static constexpr std::array get_type_error {+[] {
-        return BadUnionAccess(
-            "'" + type_name<T> + "' is not the active type in the union "
-            "(active is '" + type_name<Ts> + "')"
-        );
-    }...};
+    struct CastTo {
+        template <typename U>
+        static constexpr T operator()(U&& value)
+            noexcept(meta::nothrow::explicitly_convertible_to<U, T>)
+            requires(meta::explicitly_convertible_to<U, T>)
+        {
+            return static_cast<T>(std::forward<U>(value));
+        }
+        template <typename U>
+        static constexpr T operator()(U&& value)
+            requires(!meta::explicitly_convertible_to<U, T>)
+        {
+            throw TypeError(
+                "Cannot convert union with active type '" + type_name<U> +
+                "' to type '" + type_name<T> + "'"
+            );
+        }
+    };
 
+    template <typename Self>
     struct Flatten {
-        using type = get_common_type<Ts...>::type;
+        using type = get_common_type<access_t<Ts, Self>...>::type;
         template <typename T>
         static constexpr type operator()(T&& value)
             noexcept(meta::nothrow::convertible_to<T, type>)
@@ -2247,126 +2276,125 @@ private:
         }
     };
 
-    template <size_t I, typename... Args>
-        requires (
-            I < types::size() &&
-            meta::constructible_from<meta::unpack_type<I, Ts...>, Args...>
-        )
-    constexpr Union(create_t<I>, Args&&... args) noexcept(
-        meta::nothrow::constructible_from<storage<Ts...>, create_t<I>, Args...>
-    ) :
-        m_storage(create_t<I>{}, std::forward<Args>(args)...),
-        m_index(I)
+    template <size_t I, typename... Args> requires (I < types::size())
+    constexpr Union(tag<I>, Args&&... args)
+        noexcept(meta::nothrow::constructible_from<
+            meta::remove_rvalue<meta::unpack_type<I, Ts...>>,
+            Args...
+        >)
+        requires(meta::constructible_from<
+            meta::remove_rvalue<meta::unpack_type<I, Ts...>>,
+            Args...
+        >)
+    :
+        m_storage{
+            .data = {tag<I>{}, std::forward<Args>(args)...},
+            .index = I
+        }
     {}
 
 public:
-    /* Construct a union with an explicit type, rather than using the implicit
-    constructors, which can introduce ambiguity. */
-    template <size_t I, typename... Args>
-        requires (
-            I < types::size() &&
-            meta::constructible_from<meta::unpack_type<I, Ts...>, Args...>
-        )
-    static constexpr Union create(Args&&... args) noexcept(
-        meta::nothrow::constructible_from<Union, create_t<I>, Args...>
-    ) {
-        return {create_t<I>{}, std::forward<Args>(args)...};
+    /* Construct a union with an explicit type, rather than using the converting
+    constructor, which can introduce ambiguity. */
+    template <size_t I, typename... Args> requires (I < types::size())
+    static constexpr Union create(Args&&... args)
+        noexcept(meta::nothrow::constructible_from<
+            meta::remove_rvalue<meta::unpack_type<I, Ts...>>,
+            Args...
+        >)
+        requires(meta::constructible_from<
+            meta::remove_rvalue<meta::unpack_type<I, Ts...>>,
+            Args...
+        >)
+    {
+        return {tag<I>{}, std::forward<Args>(args)...};
     }
 
-    /* Construct a union with an explicit type, rather than using the implicit
-    constructors, which can introduce ambiguity. */
-    template <typename T, typename... Args>
-        requires (types::template contains<T>() && meta::constructible_from<T, Args...>)
-    static constexpr Union create(Args&&... args) noexcept(
-        meta::nothrow::constructible_from<
-            Union,
-            create_t<types::template index<T>()>,
-            Args...
-        >
-    ) {
-        return {create_t<types::template index<T>()>{}, std::forward<Args>(args)...};
+    /* Construct a union with an explicit type, rather than using the converting
+    constructor, which can introduce ambiguity. */
+    template <typename T, typename... Args> requires (types::template contains<T>())
+    static constexpr Union create(Args&&... args)
+        noexcept(meta::nothrow::constructible_from<meta::remove_rvalue<T>, Args...>)
+        requires(meta::constructible_from<meta::remove_rvalue<T>, Args...>)
+    {
+        return {tag<types::template index<T>()>{}, std::forward<Args>(args)...};
     }
 
     /* Default constructor finds the first type in `Ts...` that can be default
     constructed.  If no such type exists, the default constructor is disabled. */
     constexpr Union()
-        noexcept(meta::nothrow::default_constructible<storage<Ts...>>)
-        requires(default_constructible)
+        noexcept(meta::nothrow::default_constructible<default_type>)
+        requires(meta::not_void<default_type>)
     :
-        m_storage(),
-        m_index(types::template index<default_type>())
+        m_storage{
+            .data = {tag<types::template index<default_type>()>{}},
+            .index = types::template index<default_type>()
+        }
     {}
 
-    /* Conversion constructor finds the most proximal type in `Ts...` that can be
+    /* Converting constructor finds the most proximal type in `Ts...` that can be
     implicitly converted from the input type.  This will prefer exact matches or
-    differences in qualifications (preferring the least qualified) first, then
+    differences in qualifications (preferring the least qualified) first, followed by
     inheritance relationships (preferring the most derived and least qualified), and
     finally implicit conversions (preferring the first match and ignoring lvalues).  If
-    no such type exists, the conversion constructor is disabled. */
-    template <typename T> requires (convert_from<T>)
+    no such type exists, the conversion constructor is disabled.  If a visitable type
+    is provided, then the conversion must be exhaustive over all alternatives, enabling
+    implicit conversions from other union types, regardless of source. */
+    template <typename T>
+        requires (
+            meta::exhaustive<ConvertFrom<T>, T> &&
+            meta::consistent<ConvertFrom<T>, T>
+        )
     constexpr Union(T&& v)
-        noexcept(meta::nothrow::convertible_to<T, storage<Ts...>>)
+        noexcept(meta::nothrow::exhaustive<ConvertFrom<T>, T>)
     :
-        m_storage(std::forward<T>(v)),
-        m_index(types::template index<conversion_type<T>>())
+        m_storage(bertrand::visit(ConvertFrom<T>{}, std::forward<T>(v)))
     {}
 
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
     with the given arguments.  If no such type exists, the explicit constructor is
-    disabled. */
-    template <typename T> requires (!convert_from<T> && construct_from<T>)
-    constexpr explicit Union(T&& v)
-        noexcept(meta::nothrow::constructible_from<storage<Ts...>, construct_t, T>)
-    :
-        m_storage(construct_t{}, std::forward<T>(v)),
-        m_index(types::template index<construct_type<T>>())
-    {}
-
-    /* Explicit constructor finds the first type in `Ts...` that can be constructed
-    with the given arguments.  If no such type exists, the explicit constructor is
-    disabled. */
-    template <typename... Args> requires (sizeof...(Args) > 1 && construct_from<Args...>)
+    disabled.  If one or more visitables are provided, then the constructor must be
+    exhaustive over all alternatives, enabling explicit conversions from other
+    union types, regardless of source. */
+    template <typename... Args>
+        requires (
+            sizeof...(Args) > 0 &&
+            !meta::exhaustive<ConvertFrom<Args...>, Args...> &&
+            meta::exhaustive<ConstructFrom, Args...> &&
+            meta::consistent<ConstructFrom, Args...>
+        )
     constexpr explicit Union(Args&&... args)
-        noexcept(meta::nothrow::constructible_from<storage<Ts...>, construct_t, Args...>)
+        noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
-        m_storage(construct_t{}, std::forward<Args>(args)...),
-        m_index(types::template index<construct_type<Args...>>())
+        m_storage(bertrand::visit(ConstructFrom{}, std::forward<Args>(args)...))
     {}
 
     /* Copy constructor.  The resulting union will have the same index as the input
-    union, and will be initialized by copy constructing the other stored type. */
+    union, and will be initialized by copy constructing the stored type. */
     constexpr Union(const Union& other)
         noexcept((meta::nothrow::copyable<meta::remove_rvalue<Ts>> && ...))
         requires((meta::copyable<meta::remove_rvalue<Ts>> && ...))
     :
-        m_storage(bertrand::visit(
-            [](const auto& value) noexcept(
-                (meta::nothrow::copyable<meta::remove_rvalue<Ts>> && ...)
-            ) -> storage<Ts...> { return {value}; },
-            other
-        )),
-        m_index(other.index())
+        m_storage{
+            .data = copy_constructors<Ts...>[other.index()](other),
+            .index = other.m_storage.index
+        }
     {}
 
     /* Move constructor.  The resulting union will have the same index as the input
-    union, and will be initialized by move constructing the other stored type. */
+    union, and will be initialized by move constructing the stored type. */
     constexpr Union(Union&& other)
         noexcept((meta::nothrow::movable<meta::remove_rvalue<Ts>> && ...))
         requires((meta::movable<meta::remove_rvalue<Ts>> && ...))
     :
-        m_storage(bertrand::visit(
-            [](auto&& value) noexcept(
-                (meta::nothrow::movable<meta::remove_rvalue<Ts>> && ...)
-            ) -> storage<Ts...> {
-                return {std::forward<decltype(value)>(value)};
-            },
-            std::move(other)
-        )),
-        m_index(other.index())
+        m_storage{
+            .data = move_constructors<Ts...>[other.index()](std::move(other)),
+            .index = other.m_storage.index
+        }
     {}
 
-    /* Copy assignment operator.  Destroys the current value and then copy constructs
-    the other stored type into the active index. */
+    /* Copy assignment operator.  Uses copy and swap (CAS) for strong exception
+    safety. */
     constexpr Union& operator=(const Union& other)
         noexcept(
             (meta::nothrow::copyable<meta::remove_rvalue<Ts>> && ...) &&
@@ -2384,8 +2412,8 @@ public:
         return *this;
     }
 
-    /* Move assignment operator.  Destroys the current value and then move constructs
-    the other stored type into the active index. */
+    /* Move assignment operator.  Uses move and swap (move-optimized CAS) for strong
+    exception safety. */
     constexpr Union& operator=(Union&& other)
         noexcept(
             (meta::nothrow::movable<meta::remove_rvalue<Ts>> && ...) &&
@@ -2403,7 +2431,8 @@ public:
         return *this;
     }
 
-    /* Destructor destroys the currently-active type. */
+    /* Destructor cleans up the currently-active type, respecting lvalue semantics and
+    constexpr contexts. */
     constexpr ~Union()
         noexcept((meta::nothrow::destructible<meta::remove_rvalue<Ts>> && ...))
         requires((meta::destructible<meta::remove_rvalue<Ts>> && ...))
@@ -2422,76 +2451,61 @@ public:
         destructors[index()](*this);
     }
 
-    /* Implicit conversion from `Union<Ts...>` to `std::variant<Us...>` and any other
-    similar type to which all alternatives can be implicitly converted. */
+    /* Implicit conversion operator allows conversions toward any type to which all
+    alternatives can be exhaustively converted.  This allows conversion to scalar types
+    as well as union types (regardless of source) that satisfy the conversion
+    criteria. */
     template <typename Self, typename T>
-        requires (meta::convertible_to<access_t<Ts, Self>, T> && ...)
-    [[nodiscard]] constexpr operator T(this Self&& self) noexcept(
-        (meta::nothrow::convertible_to<access_t<Ts, Self>, T> && ...)
-    ) {
+    [[nodiscard]] constexpr operator T(this Self&& self)
+        noexcept(meta::nothrow::exhaustive<impl::ConvertTo<T>, Self>)
+        requires(meta::exhaustive<impl::ConvertTo<T>, Self>)
+    {
         return bertrand::visit(impl::ConvertTo<T>{}, std::forward<Self>(self));
     }
 
-    /* Explicit conversion from `Union<Ts...>` to any type that at least one member is
-    explicitly convertible to.  If the active member does not support the conversion,
-    then a `TypeError` will be thrown instead.  This equates to a functional-style cast
-    from the union to type `T`. */
+    /* Explicit conversion operator allows functional-style casts from `Union<Ts...>`
+    to any type that at least one member is explicitly convertible to.  If the active
+    member does not support the conversion, then a `TypeError` will be thrown
+    instead. */
     template <typename Self, typename T>
-        requires (
-            (!meta::convertible_to<access_t<Ts, Self>, T> || ...) &&
+    [[nodiscard]] constexpr explicit operator T(this Self&& self)
+        noexcept((meta::nothrow::explicitly_convertible_to<access_t<Ts, Self>, T> && ...))
+        requires(
+            !meta::exhaustive<impl::ConvertTo<T>, Self> &&
             (meta::explicitly_convertible_to<access_t<Ts, Self>, T> || ...)
         )
-    [[nodiscard]] constexpr explicit operator T(this Self&& self) noexcept(
-        (meta::nothrow::explicitly_convertible_to<access_t<Ts, Self>, T> && ...)
-    ) {
-        return bertrand::visit([]<typename V>(V&& value) noexcept(
-            (meta::nothrow::explicitly_convertible_to<access_t<Ts, Self>, T> && ...)
-        ) -> T {
-            if constexpr (meta::explicitly_convertible_to<V, T>) {
-                return static_cast<T>(value);
-            } else {
-                throw TypeError(
-                    "Cannot convert union with active type '" + type_name<V> +
-                    "' to type '" + type_name<T> + "'"
-                );
-            }
-        }, std::forward<Self>(self));
+    {
+        return bertrand::visit(CastTo<T>{}, std::forward<Self>(self));
     }
 
-    /* Swap the contents of two unions as efficiently as possible. */
+    /* Swap the contents of two unions as efficiently as possible.  This will use
+    swap operators for the wrapped alternatives if possible, otherwise falling back to
+    a 3-way move using a temporary of the same type. */
     constexpr void swap(Union& other)
         noexcept((nothrow_swappable<Ts> && ...))
         requires((swappable<Ts> && ...))
     {
         if (this != &other) {
             swap_operators<Ts...>[index()][other.index()](*this, other);
-            std::swap(m_index, other.m_index);
+            std::swap(m_storage.index, other.m_storage.index);
         }
     }
-
-    /* The common type to which all alternatives can be converted, if such a type
-    exists.  Void otherwise. */
-    using common_type = get_common_type<Ts...>::type;
-
-    /* True if all alternatives share a common type to which they can be converted.
-    If this is false, then the `flatten()` method will be disabled. */
-    static constexpr bool can_flatten = meta::not_void<common_type>;
     
     /* Get the index of the currently-active type in the union. */
     [[nodiscard]] constexpr size_t index() const noexcept {
-        return m_index;
+        return m_storage.index;
     }
 
     /* Check whether the variant holds a specific type. */
     template <size_t I> requires (I < types::size())
     [[nodiscard]] constexpr bool holds_alternative() const noexcept {
-        return m_index == I;
+        return index() == I;
     }
 
     /* Check whether the variant holds a specific type. */
     template <typename T> requires (types::template contains<T>())
     [[nodiscard]] constexpr bool holds_alternative() const noexcept {
-        return m_index == types::template index<T>();
+        return index() == types::template index<T>();
     }
 
     /* Get the value of the type at index `I`.  Fails to compile if the index is out of
@@ -2558,10 +2572,10 @@ public:
     the first argument, for chaining purposes.  See `bertrand::visit()` for more
     details. */
     template <typename F, typename Self, typename... Args>
-        requires (meta::visitor<F, Self, Args...>)
-    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visitor<F, Self, Args...>
-    ) {
+    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args)
+        noexcept(meta::nothrow::visitor<F, Self, Args...>)
+        requires(meta::visitor<F, Self, Args...>)
+    {
         return (bertrand::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
@@ -2571,12 +2585,17 @@ public:
 
     /* Flatten the union into a single type, implicitly converting the active member to
     the common type, assuming one exists.  If no common type exists, then this will
-    fail to compile.  Users can check the `can_flatten` flag to guard against this. */
-    template <typename Self> requires (can_flatten)
-    [[nodiscard]] constexpr common_type flatten(this Self&& self) noexcept(
-        meta::nothrow::visit_returns<common_type, Flatten, Self>
-    ) {
-        return bertrand::visit(Flatten{}, std::forward<Self>(self));
+    fail to compile.  Note that this takes cvref qualifiers for both the union and its
+    alternatives into account at the point it is called. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) flatten(this Self&& self)
+        noexcept(meta::nothrow::exhaustive<Flatten<Self>, Self>)
+        requires(
+            meta::exhaustive<Flatten<Self>, Self> &&
+            meta::consistent<Flatten<Self>, Self>
+        )
+    {
+        return (bertrand::visit(Flatten<Self>{}, std::forward<Self>(self)));
     }
 
     /* Monadic call operator.  If any of the union types are function-like objects that
@@ -2588,10 +2607,10 @@ public:
     then the result will be further wrapped in an `Expected<R, BadUnionAccess>`, just
     as for `bertrand::visit()`. */
     template <typename Self, typename... Args>
-        requires (meta::visitor<impl::Call, Self, Args...>)
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
-        meta::nothrow::visitor<impl::Call, Self, Args...>
-    ) {
+    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
+        noexcept(meta::nothrow::visitor<impl::Call, Self, Args...>)
+        requires(meta::visitor<impl::Call, Self, Args...>)
+    {
         return (bertrand::visit(
             impl::Call{},
             std::forward<Self>(self),
@@ -2607,10 +2626,10 @@ public:
     are indexable with the given arguments, then the result will be further wrapped in
     an `Expected<R, BadUnionAccess>`, just as for `bertrand::visit()`. */
     template <typename Self, typename... Key>
-        requires (meta::visitor<impl::Subscript, Self, Key...>)
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
-        meta::nothrow::visitor<impl::Subscript, Self, Key...>
-    ) {
+    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
+        noexcept(meta::nothrow::visitor<impl::Subscript, Self, Key...>)
+        requires(meta::visitor<impl::Subscript, Self, Key...>)
+    {
         return (bertrand::visit(
             impl::Subscript{},
             std::forward<Self>(self),
@@ -2670,6 +2689,11 @@ private:
         :
             data(std::forward<A>(args)...)
         {}
+
+        /// TODO: if I can solve the infinite recursion issue with nested unions and
+        /// constructors that use visitors, then I can lift the requirement for the
+        /// empty type, which would mean allowing conversions of the form:
+        /// Union<int, std::nullopt_t> <-> Optional<int>, etc.
 
         template <typename V>
             requires (
@@ -2810,7 +2834,7 @@ public:
     any type `T` where `bertrand::impl::visitable<T>::empty` is not void and all
     non-empty alternatives can be converted to the value type (e.g. `std::optional<U>`,
     where `U` is convertible to `value_type`). */
-    template <meta::convertible_to<storage<T>> V>
+    template <meta::convertible_to<storage<T>> V> requires (!meta::monad<V>)
     [[nodiscard]] constexpr Optional(V&& v) noexcept(
         meta::nothrow::convertible_to<V, storage<T>>
     ) : 
@@ -2821,6 +2845,7 @@ public:
     constructor, calls it, and then initializes the optional with the result. */
     template <typename V>
         requires (
+            !meta::monad<V> &&
             !meta::convertible_to<V, value_type> &&
             meta::constructible_from<value_type, V>
         )
@@ -3123,6 +3148,10 @@ public:
 };
 
 
+/// TODO: conversions from std::expected and other types would just be a simple visit
+/// for all alternatives?
+
+
 template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
 struct Expected : impl::expected_tag {
@@ -3361,6 +3390,9 @@ private:
     };
 
 public:
+    /// TODO: converting constructor needs to be explicitly defined to allow
+    /// conversions to/from Union, etc.
+
     /* Forwarding constructor for `value_type`. */
     template <typename... Args> requires (meta::constructible_from<Result, Args...>)
     [[nodiscard]] constexpr Expected(Args&&... args) noexcept(
@@ -4758,6 +4790,33 @@ namespace bertrand {
             }, u2, u3) == 2);
         }
 
+        static constexpr Union<int, std::string_view> defaulted;
+        static_assert(defaulted.index() == 0);
+        static_assert(defaulted.get<0>().result() == 0);
+
+
+        Union<int, std::string_view> u = std::variant<int, std::string_view>{"abc"};
+        static constexpr Union<int, std::nullopt_t> u2 = Optional<int>(2);
+        static_assert(u2.index() == 0);
+        static constexpr Optional<int> o = u2;
+        static constexpr Union<int, std::string_view> u5{"abc", 3};
+        static_assert(u5.index() == 1);
+
+        /// TODO: nested unions are super broken in new and unique ways.  Uncommenting
+        /// this line causes clangd to hang
+        // static constexpr Union<int, Union<int, std::string_view>> u3 = 42;
+        static constexpr Union<int, std::variant<int, std::string_view>> u3 = "abc";
+        static_assert(u3.index() == 1);
+        // static_assert(std::get<1>(u3.get<1>().result()) == "abc");
+
+        static constexpr Union<const char*, std::string_view> u4 = "abc";
+        static constexpr std::string_view sv = u4;
+        static constexpr std::string s(u4);
+        static_assert(u4.index() == 0);
+        static_assert(sv == "abc");
+        static_assert(s == "abc");
+
+
         {
             static_assert(sizeof(TypeError) == 24);
             static_assert(sizeof(Union<int, float>) == 8);
@@ -4862,11 +4921,9 @@ namespace bertrand {
 
             static constexpr Union<int, std::string_view> u2{"abc", 3};
             static_assert(u2.index() == 1);
+
+            Union<int, std::string_view> u4 = std::variant<int, std::string_view>("abc");
         }
-
-
-        static constexpr std::optional<int> o = 42;
-        static constexpr Optional<const int&> o2 = o;
     }
 
 }
