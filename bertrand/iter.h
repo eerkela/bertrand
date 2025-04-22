@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include "bertrand/union.h"
 
 
 namespace bertrand {
@@ -670,16 +671,24 @@ namespace impl {
 
     /* Check whether the tuple type at index `I` are truth-testable as part of an
     `any()` or `all()` operation. */
-    template <size_t I, typename T>
+    template <size_t I, typename T, typename F>
     concept broadcast_truthy = I >= meta::tuple_size<T> || (
         meta::has_get<T, I> &&
-        meta::explicitly_convertible_to<meta::get_type<T, I>, bool>
+        meta::invocable<F, meta::get_type<T, I>> &&
+        meta::explicitly_convertible_to<
+            meta::invoke_type<F, meta::get_type<T, I>>,
+            bool
+        >
     );
 
-    template <size_t I, typename T>
+    template <size_t I, typename T, typename F>
     concept nothrow_broadcast_truthy = I >= meta::tuple_size<T> || (
         meta::nothrow::has_get<T, I> &&
-        meta::nothrow::explicitly_convertible_to<meta::nothrow::get_type<T, I>, bool>
+        meta::nothrow::invocable<F, meta::nothrow::get_type<T, I>> &&
+        meta::nothrow::explicitly_convertible_to<
+            meta::nothrow::invoke_type<F, meta::nothrow::get_type<T, I>>,
+            bool
+        >
     );
 
     /* Check whether the tuple type at index `I` is less-than comparable to the given
@@ -716,46 +725,54 @@ namespace impl {
     );
 
     /* Implement `any()` for tuples. */
-    template <size_t I = 0, meta::tuple_like T> requires (broadcast_truthy<I, T>)
-    constexpr bool broadcast_any(T&& t) noexcept(nothrow_broadcast_truthy<I, T>) {
+    template <size_t I = 0, meta::tuple_like T, typename F>
+    constexpr bool broadcast_any(T&& t, F&& func)
+        noexcept(nothrow_broadcast_truthy<I, T, F>)
+        requires(broadcast_truthy<I, T, F>)
+    {
         if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
             if constexpr (meta::has_member_get<T, I>) {
-                if (std::forward<T>(t).template get<I>(t)) {
+                if (std::forward<F>(func)(std::forward<T>(t).template get<I>(t))) {
                     return true;
                 }
             } else if constexpr (meta::has_adl_get<T, I>) {
-                if (get<I>(std::forward<T>(t))) {
+                using std::get;
+                if (std::forward<F>(func)(get<I>(std::forward<T>(t)))) {
                     return true;
                 }
             } else {
-                if (std::get<I>(std::forward<T>(t))) {
+                if (std::forward<F>(func)(std::get<I>(std::forward<T>(t)))) {
                     return true;
                 }
             }
-            return broadcast_any<I + 1>(std::forward<T>(t));
+            return broadcast_any<I + 1>(std::forward<T>(t), std::forward<F>(func));
         } else {
             return false;
         }
     }
 
     /* Implement `all()` for tuples. */
-    template <size_t I = 0, meta::tuple_like T> requires (broadcast_truthy<I, T>)
-    constexpr bool broadcast_all(T&& t) noexcept(nothrow_broadcast_truthy<I, T>) {
+    template <size_t I = 0, meta::tuple_like T, typename F>
+    constexpr bool broadcast_all(T&& t, F&& func)
+        noexcept(nothrow_broadcast_truthy<I, T, F>)
+        requires (broadcast_truthy<I, T, F>)
+    {
         if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
             if constexpr (meta::has_member_get<T, I>) {
-                if (!std::forward<T>(t).template get<I>(t)) {
+                if (!std::forward<F>(func)(std::forward<T>(t).template get<I>(t))) {
                     return false;
                 }
             } else if constexpr (meta::has_adl_get<T, I>) {
-                if (!get<I>(std::forward<T>(t))) {
+                using std::get;
+                if (!std::forward<F>(func)(get<I>(std::forward<T>(t)))) {
                     return false;
                 }
             } else {
-                if (!std::get<I>(std::forward<T>(t))) {
+                if (!std::forward<F>(func)(std::get<I>(std::forward<T>(t)))) {
                     return false;
                 }
             }
-            return broadcast_all<I + 1>(std::forward<T>(t));
+            return broadcast_all<I + 1>(std::forward<T>(t), std::forward<F>(func));
         } else {
             return true;
         }
@@ -1055,10 +1072,10 @@ namespace impl {
 /* Get the length of an arbitrary sequence in constant time as a signed integer.
 Equivalent to calling `std::ranges::ssize(range)`. */
 template <meta::has_size Range>
-[[nodiscard]] constexpr auto len(Range&& r) noexcept(
-    noexcept(std::ranges::ssize(r))
-) {
-    return std::ranges::ssize(r);
+[[nodiscard]] constexpr decltype(auto) len(Range&& r)
+    noexcept(noexcept(std::ranges::ssize(r)))
+{
+    return (std::ranges::ssize(r));
 }
 
 
@@ -1066,10 +1083,10 @@ template <meta::has_size Range>
 `std::ranges::distance(begin, end)`.  This may run in O(n) time if the iterators do
 not support constant-time distance measurements. */
 template <meta::iterator Begin, meta::sentinel_for<Begin> End>
-[[nodiscard]] constexpr auto len(Begin&& begin, End&& end) noexcept(
-    noexcept(std::ranges::distance(begin, end))
-) {
-    return std::ranges::distance(begin, end);
+[[nodiscard]] constexpr decltype(auto) len(Begin&& begin, End&& end)
+    noexcept(noexcept(std::ranges::distance(begin, end)))
+{
+    return (std::ranges::distance(begin, end));
 }
 
 
@@ -1077,13 +1094,11 @@ template <meta::iterator Begin, meta::sentinel_for<Begin> End>
 `End` is an integer type), similar to Python's built-in `range()` operator.  This is
 equivalent to a  `std::views::iota()` call under the hood. */
 template <typename End>
-    requires (requires(End stop) {
-        std::views::iota(End{}, std::forward<End>(stop));
-    })
-[[nodiscard]] constexpr auto range(End&& stop) noexcept(
-    noexcept(std::views::iota(End{}, std::forward<End>(stop)))
-) {
-    return std::views::iota(End{}, std::forward<End>(stop));
+[[nodiscard]] constexpr decltype(auto) range(End&& stop)
+    noexcept(noexcept(std::views::iota(End{}, std::forward<End>(stop))))
+    requires(requires{std::views::iota(End{}, std::forward<End>(stop));})
+{
+    return (std::views::iota(End{}, std::forward<End>(stop)));
 }
 
 
@@ -1091,155 +1106,209 @@ template <typename End>
 `range()` operator.  This is equivalent to a `std::views::iota()` call under the
 hood. */
 template <typename Begin, typename End>
-    requires (
-        !(meta::iterator<Begin> && meta::sentinel_for<End, Begin>) &&
-        requires(Begin start, End stop) {
-            std::views::iota(std::forward<Begin>(start), std::forward<End>(stop));
-        }
-    )
-[[nodiscard]] constexpr auto range(Begin&& start, End&& stop) noexcept(
-    noexcept(std::views::iota(std::forward<Begin>(start), std::forward<End>(stop)))
-) {
-    return std::views::iota(std::forward<Begin>(start), std::forward<End>(stop));
+    requires (!(meta::iterator<Begin> && meta::sentinel_for<End, Begin>))
+[[nodiscard]] constexpr decltype(auto) range(Begin&& start, End&& stop)
+    noexcept(noexcept(
+        std::views::iota(std::forward<Begin>(start), std::forward<End>(stop))
+    ))
+    requires(requires{
+        std::views::iota(std::forward<Begin>(start), std::forward<End>(stop));
+    })
+{
+    return (std::views::iota(std::forward<Begin>(start), std::forward<End>(stop)));
 }
 
 
-/// TODO: views::stride() is not available, so this is commented out for now.  I may
-/// be able to implement it myself, but that would require a lot of unnecessary work.
+#ifdef __cpp_lib_ranges_stride
 
+    /// TODO: a stride view range() accepting begin/end iterators would be very nice.
 
-// /* Produce a simple integer range, similar to Python's built-in `range()` operator.
-// This is equivalent to a  `std::views::iota()` call under the hood. */
-// template <typename T = ssize_t>
-// inline constexpr auto range(T start, T stop, T step) {
-//     return std::views::iota(start, stop) | std::views::stride(step);
-// }
+    /* Produce a simple integer range, similar to Python's built-in `range()` operator.
+    This is equivalent to a  `std::views::iota()` call under the hood. */
+    template <typename T = ssize_t>
+    inline constexpr decltype(auto) range(T start, T stop, T step) {
+        return (std::views::iota(start, stop) | std::views::stride(step));
+    }
+
+#endif
 
 
 /* Produce a simple range object that encapsulates a `start` and `stop` iterator as a
 range adaptor.  This is equivalent to a `std::ranges::subrange()` call under the
 hood. */
 template <meta::iterator Begin, meta::sentinel_for<Begin> End>
-    requires (requires(Begin start, End stop) {
+[[nodiscard]] constexpr decltype(auto) range(Begin&& start, End&& stop)
+    noexcept(noexcept(
+        std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop))
+    ))
+    requires(requires{
         std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop));
     })
-[[nodiscard]] constexpr auto range(Begin&& start, End&& stop) noexcept(
-    noexcept(std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop)))
-) {
-    return std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop));
+{
+    return (std::ranges::subrange(std::forward<Begin>(start), std::forward<End>(stop)));
 }
-
-
-/// TODO: a stride view range() accepting begin/end iterators would be very nice.
 
 
 /* Produce a view over a reverse iterable range that can be used in range-based for
 loops.  This is equivalent to a `std::views::reverse()` call under the hood. */
 template <meta::reverse_iterable T>
-[[nodiscard]] constexpr auto reversed(T&& obj) noexcept(
-    noexcept(std::views::reverse(std::forward<T>(obj)))
-) {
-    return std::views::reverse(std::forward<T>(obj));
+[[nodiscard]] constexpr decltype(auto) reversed(T&& obj)
+    noexcept(noexcept(std::views::reverse(std::forward<T>(obj))))
+{
+    return (std::views::reverse(std::forward<T>(obj)));
 }
 
 
-/// TODO: there's no std::views::enumerate() yet, so this is commented out for now.
-/// I may be able to implement it myself, but that would require a lot of unnecessary
-/// work
+#ifdef __cpp_lib_ranges_enumerate
 
+    /* Produce a view over a given range that yields tuples consisting of each item's
+    index and ordinary value_type.  This is equivalent to a `std::views::enumerate()` call
+    under the hood, but is easier to remember, and closer to Python syntax. */
+    template <meta::iterable T>
+    [[nodiscard]] constexpr decltype(auto) enumerate(T&& r)
+        noexcept(noexcept(std::views::enumerate(std::forward<T>(r))))
+        requires(requires{std::views::enumerate(std::forward<T>(r));})
+    {
+        return (std::views::enumerate(std::forward<T>(r)));
+    }
 
-// /* Produce a view over a given range that yields tuples consisting of each item's
-// index and ordinary value_type.  This is equivalent to a `std::views::enumerate()` call
-// under the hood, but is easier to remember, and closer to Python syntax. */
-// template <meta::iterable T>
-//     requires (requires(T r) { std::views::enumerate(std::forward<T>(r)); })
-// [[nodiscard]] constexpr decltype(auto) enumerate(T&& r) noexcept(
-//     noexcept(std::views::enumerate(std::forward<T>(r)))
-// ) {
-//     return std::views::enumerate(std::forward<T>(r));
-// }
+#endif
 
 
 /* Combine several ranges into a view that yields tuple-like values consisting of the
 `i` th element of each range.  This is equivalent to a `std::views::zip()` call under
 the hood. */
 template <meta::iterable... Ts>
-    requires (requires(Ts... rs) { std::views::zip(std::forward<Ts>(rs)...); })
-[[nodiscard]] constexpr decltype(auto) zip(Ts&&... rs) noexcept(
-    noexcept(std::views::zip(std::forward<Ts>(rs)...))
-) {
-    return std::views::zip(std::forward<Ts>(rs)...);
+[[nodiscard]] constexpr decltype(auto) zip(Ts&&... rs)
+    noexcept(noexcept(std::views::zip(std::forward<Ts>(rs)...)))
+    requires(requires{std::views::zip(std::forward<Ts>(rs)...);})
+{
+    return (std::views::zip(std::forward<Ts>(rs)...));
 }
 
 
-/* Returns true if and only if one or more of the arguments evaluate to true under
-boolean logic. */
-template <meta::explicitly_convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
-[[nodiscard]] constexpr bool any(Args&&... args) noexcept(
-    noexcept((static_cast<bool>(std::forward<Args>(args)) || ...))
-) {
-    return (static_cast<bool>(std::forward<Args>(args)) || ...);
-}
-
-
-/* Returns true if and only if one or more elements of a tuple-like container evaluate
-to true under boolean logic. */
-template <meta::tuple_like T>
+/* Returns true if and only if the predicate function returns true for one or more of
+the arguments.  The predicate must be default-constructible and invocable with
+the argument types.  It defaults to a contextual boolean conversion, according to
+the conversion semantics of the argument types. */
+template <
+    meta::default_constructible F = impl::ExplicitConvertTo<bool>,
+    typename... Args
+>
     requires (
-        !meta::iterable<T> &&
-        requires(T t) { impl::broadcast_any(std::forward<T>(t)); }
+        sizeof...(Args) > 1 &&
+        (meta::invocable<F, Args> && ...) &&
+        (meta::explicitly_convertible_to<meta::invoke_type<F, Args>, bool> && ...)
     )
-[[nodiscard]] constexpr bool any(T&& t) noexcept(
-    noexcept(impl::broadcast_any(std::forward<T>(t)))
-) {
-    return impl::broadcast_any(std::forward<T>(t));
+[[nodiscard]] constexpr bool any(Args&&... args)
+    noexcept(noexcept((F{}(std::forward<Args>(args)) || ...)))
+{
+    F func;
+    return (func(std::forward<Args>(args)) || ...);
 }
 
 
-/* Returns true if and only if one ore more elements of a range evaluate to true under
-boolean logic.  This is equivalent to a `std::ranges::any_of()` call under the hood. */
-template <meta::iterable T>
-    requires (requires(T r) { std::ranges::any_of(std::forward<T>(r)); })
-[[nodiscard]] constexpr bool any(T&& r) noexcept(
-    noexcept(std::ranges::any_of(std::forward<T>(r)))
-) {
-    return std::ranges::any_of(std::forward<T>(r));
+/* Returns true if and only if the predicate function returns true for one or more
+elements of a tuple-like container.  The predicate must be default-constructible and
+invocable with the tuple's element types.  It defaults to a contextual boolean
+conversion, according to the conversion semantics of the element types. */
+template <
+    meta::default_constructible F = impl::ExplicitConvertTo<bool>,
+    meta::tuple_like T
+>
+    requires (!meta::iterable<T>)
+[[nodiscard]] constexpr bool any(T&& t)
+    noexcept(noexcept(impl::broadcast_any(std::forward<T>(t), F{})))
+    requires(requires{impl::broadcast_any(std::forward<T>(t), F{});})
+{
+    return impl::broadcast_any(std::forward<T>(t), F{});
 }
 
 
-/* Returns true if and only if all of the arguments evaluate to true under boolean
-logic. */
-template <meta::explicitly_convertible_to<bool>... Args> requires (sizeof...(Args) > 1)
-[[nodiscard]] constexpr bool all(Args&&... args) noexcept(
-    noexcept((static_cast<bool>(std::forward<Args>(args)) || ...))
-) {
-    return (static_cast<bool>(std::forward<Args>(args)) && ...);
-}
-
-
-/* Returns true if and only if any elements of a tuple-like container evaluate to true
-under boolean logic. */
-template <meta::tuple_like T>
+/* Returns true if and only if the predicate function returns true for one ore more
+elements of a range.  The predicate must be default-constructible and invocable with
+the range's yield type.  It defaults to a contextual boolean conversion, according to
+the conversion semantics of the yield type.  This is equivalent to a
+`std::ranges::any_of()` call under the hood. */
+template <
+    meta::default_constructible F = impl::ExplicitConvertTo<bool>,
+    meta::iterable T
+>
     requires (
-        !meta::iterable<T> &&
-        requires(T t) { impl::broadcast_all(std::forward<T>(t)); }
+        meta::invocable<F, meta::yield_type<T>> &&
+        meta::explicitly_convertible_to<meta::invoke_type<F, meta::yield_type<T>>, bool>
     )
-[[nodiscard]] constexpr bool all(T&& t) noexcept(
-    noexcept(impl::broadcast_all(std::forward<T>(t)))
-) {
-    return impl::broadcast_all(std::forward<T>(t));
+[[nodiscard]] constexpr bool any(T&& r)
+    noexcept(noexcept(std::ranges::any_of(std::forward<T>(r), F{})))
+    requires(requires{std::ranges::any_of(std::forward<T>(r), F{});})
+{
+    return std::ranges::any_of(std::forward<T>(r), F{});
 }
 
 
-/* Returns true if and only if all elements of a range evaluate to true under boolean
-logic.  This is equivalent to a `std::ranges::all_of()` call under the hood. */
-template <meta::iterable T>
-    requires (requires(T r) { std::ranges::all_of(std::forward<T>(r)); })
-[[nodiscard]] constexpr bool all(T&& r) noexcept(
-    noexcept(std::ranges::all_of(std::forward<T>(r)))
-) {
-    return std::ranges::all_of(std::forward<T>(r));
+/* Returns true if and only if the predicate function returns true for all of the
+arguments.  The predicate must be default-constructible and invocable with the argument
+types.  It defaults to a contextual boolean conversion, according to the conversion
+semantics of the argument types. */
+template <
+    meta::default_constructible F = impl::ExplicitConvertTo<bool>,
+    typename... Args
+>
+    requires (
+        sizeof...(Args) > 1 &&
+        (meta::invocable<F, Args> && ...) &&
+        (meta::explicitly_convertible_to<meta::invoke_type<F, Args>, bool> && ...)
+    )
+[[nodiscard]] constexpr bool all(Args&&... args)
+    noexcept(noexcept((F{}(std::forward<Args>(args)) || ...)))
+{
+    F func;
+    return (func(std::forward<Args>(args)) && ...);
 }
+
+
+/* Returns true if and only if the predicate function returns true for all elements of
+a tuple-like container.  The predicate must be default-constructible and invocable with
+the tuple's element types.  It defaults to a contextual boolean conversion, according
+to the conversion semantics of the element types. */
+template <
+    meta::default_constructible F = impl::ExplicitConvertTo<bool>,
+    meta::tuple_like T
+>
+    requires (!meta::iterable<T>)
+[[nodiscard]] constexpr bool all(T&& t)
+    noexcept(noexcept(impl::broadcast_all(std::forward<T>(t), F{})))
+    requires(requires{impl::broadcast_all(std::forward<T>(t), F{});})
+{
+    return impl::broadcast_all(std::forward<T>(t), F{});
+}
+
+
+/* Returns true if and only if the predicate function returns true for all elements of
+a range.  The predicate must be default-constructible and invocable with the range's
+yield type.  It defaults to a contextual boolean conversion, according to the
+conversion semantics of the yield type.  This is equivalent to a
+`std::ranges::all_of()` call under the hood. */
+template <
+    meta::default_constructible F = impl::ExplicitConvertTo<bool>,
+    meta::iterable T
+>
+    requires (
+        meta::invocable<F, meta::yield_type<T>> &&
+        meta::explicitly_convertible_to<meta::invoke_type<F, meta::yield_type<T>>, bool>
+    )
+[[nodiscard]] constexpr bool all(T&& r)
+    noexcept(noexcept(std::ranges::all_of(std::forward<T>(r), F{})))
+    requires(requires{std::ranges::all_of(std::forward<T>(r), F{});})
+{
+    return std::ranges::all_of(std::forward<T>(r), F{});
+}
+
+
+
+
+
+
 
 
 /* Get the minimum of an arbitrary list of values that share a common type.  This
@@ -1251,10 +1320,12 @@ template <typename... Ts>
         meta::has_common_type<Ts...> &&
         impl::broadcast_lt<Ts...>
     )
-[[nodiscard]] constexpr meta::common_type<Ts...> min(Ts&&... args) noexcept(
-    impl::nothrow_broadcast_lt<Ts...> &&
-    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
-) {
+[[nodiscard]] constexpr meta::common_type<Ts...> min(Ts&&... args)
+    noexcept(
+        impl::nothrow_broadcast_lt<Ts...> &&
+        (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
+    )
+{
     return []<size_t I = 0>(
         this auto&& self,
         auto&& out,
@@ -1290,28 +1361,39 @@ template <meta::tuple_like T>
         !meta::iterable<T> &&
         meta::tuple_size<T> > 0 &&
         meta::has_common_tuple_type<T> &&
-        impl::tuple_broadcast_lt<T> &&
-        requires(T t) { impl::broadcast_min(std::forward<T>(t)); }
+        impl::tuple_broadcast_lt<T>
     )
-[[nodiscard]] constexpr meta::common_tuple_type<T> min(T&& t) noexcept(
-    noexcept(impl::broadcast_min(std::forward<T>(t)))
-) {
+[[nodiscard]] constexpr meta::common_tuple_type<T> min(T&& t)
+    noexcept(noexcept(impl::broadcast_min(std::forward<T>(t))))
+    requires(requires{impl::broadcast_min(std::forward<T>(t));})
+{
     return impl::broadcast_min(std::forward<T>(t));
 }
 
 
 /* Get the minimum of a sequence of values as an input range.  This is equivalent
 to a `std::ranges::min()` call under the hood, but explicitly checks for an empty
-range and throws a `ValueError`, rather than invoking undefined behavior. */
+range and returns an empty optional, rather than invoking undefined behavior. */
 template <meta::iterable T>
-    requires (requires(T r) { std::ranges::min(std::forward<T>(r)); })
-[[nodiscard]] constexpr decltype(auto) min(T&& r) noexcept(
-    !DEBUG && noexcept(std::ranges::min(std::forward<T>(r)))
-) {
-    if constexpr (DEBUG) {
-        if (std::ranges::empty(r)) {
-            throw ValueError("empty range has no max()");
-        }
+[[nodiscard]] constexpr auto min(T&& r)
+    noexcept(
+        noexcept(std::ranges::empty(r)) &&
+        noexcept(std::ranges::min(std::forward<T>(r))) &&
+        meta::nothrow::convertible_to<
+            decltype(std::ranges::min(std::forward<T>(r))),
+            Optional<decltype(std::ranges::min(std::forward<T>(r)))>
+        >
+    )
+    -> Optional<decltype(std::ranges::min(std::declval<T>()))>
+    requires(requires{
+        { std::ranges::empty(r) } -> meta::explicitly_convertible_to<bool>;
+        { std::ranges::min(std::forward<T>(r)) } -> meta::convertible_to<
+            Optional<decltype(std::ranges::min(std::forward<T>(r)))>
+        >;
+    })
+{
+    if (std::ranges::empty(r)) {
+        return std::nullopt;
     }
     return std::ranges::min(std::forward<T>(r));
 }
@@ -1326,10 +1408,12 @@ template <typename... Ts>
         meta::has_common_type<Ts...> &&
         impl::broadcast_lt<Ts...>
     )
-[[nodiscard]] constexpr meta::common_type<Ts...> max(Ts&&... args) noexcept(
-    impl::nothrow_broadcast_lt<Ts...> &&
-    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
-) {
+[[nodiscard]] constexpr meta::common_type<Ts...> max(Ts&&... args)
+    noexcept(
+        impl::nothrow_broadcast_lt<Ts...> &&
+        (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
+    )
+{
     return []<size_t I = 0>(
         this auto&& self,
         auto&& out,
@@ -1365,28 +1449,39 @@ template <meta::tuple_like T>
         !meta::iterable<T> &&
         meta::tuple_size<T> > 0 &&
         meta::has_common_tuple_type<T> &&
-        impl::tuple_broadcast_lt<T> &&
-        requires(T t) { impl::broadcast_max(std::forward<T>(t)); }
+        impl::tuple_broadcast_lt<T>
     )
-[[nodiscard]] constexpr meta::common_tuple_type<T> max(T&& t) noexcept(
-    noexcept(impl::broadcast_max(std::forward<T>(t)))
-) {
+[[nodiscard]] constexpr meta::common_tuple_type<T> max(T&& t)
+    noexcept(noexcept(impl::broadcast_max(std::forward<T>(t))))
+    requires(requires{impl::broadcast_max(std::forward<T>(t));})
+{
     return impl::broadcast_max(std::forward<T>(t));
 }
 
 
 /* Get the maximum of a sequence of values as an input range.  This is equivalent
 to a `std::ranges::max()` call under the hood, but explicitly checks for an empty
-range and throws a `ValueError`, rather than invoking undefined behavior. */
+range and returns an empty optional, rather than invoking undefined behavior. */
 template <meta::iterable T>
-    requires (requires(T r) { std::ranges::max(std::forward<T>(r)); })
-[[nodiscard]] constexpr decltype(auto) max(T&& r) noexcept(
-    !DEBUG && noexcept(std::ranges::max(std::forward<T>(r)))
-) {
-    if constexpr (DEBUG) {
-        if (std::ranges::empty(r)) {
-            throw ValueError("empty range has no max()");
-        }
+[[nodiscard]] constexpr auto max(T&& r)
+    noexcept(
+        noexcept(std::ranges::empty(r)) &&
+        noexcept(std::ranges::max(std::forward<T>(r))) &&
+        meta::nothrow::convertible_to<
+            decltype(std::ranges::max(std::forward<T>(r))),
+            Optional<decltype(std::ranges::max(std::forward<T>(r)))>
+        >
+    )
+    -> Optional<decltype(std::ranges::max(std::declval<T>()))>
+    requires(requires{
+        { std::ranges::empty(r) } -> meta::explicitly_convertible_to<bool>;
+        { std::ranges::max(std::forward<T>(r)) } -> meta::convertible_to<
+            Optional<decltype(std::ranges::max(std::forward<T>(r)))>
+        >;
+    })
+{
+    if (std::ranges::empty(r)) {
+        return std::nullopt;
     }
     return std::ranges::max(std::forward<T>(r));
 }
@@ -1401,10 +1496,13 @@ template <typename... Ts>
         meta::has_common_type<Ts...> &&
         impl::broadcast_lt<Ts...>
     )
-[[nodiscard]] constexpr auto minmax(Ts&&... args) noexcept(
-    impl::nothrow_broadcast_lt<Ts...> &&
-    (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
-) -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>> {
+[[nodiscard]] constexpr auto minmax(Ts&&... args)
+    noexcept(
+        impl::nothrow_broadcast_lt<Ts...> &&
+        (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
+    )
+    -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>>
+{
     return []<size_t I = 0>(
         this auto&& self,
         auto&& min,
@@ -1452,44 +1550,63 @@ template <meta::tuple_like T>
         !meta::iterable<T> &&
         meta::tuple_size<T> > 0 &&
         meta::has_common_tuple_type<T> &&
-        impl::tuple_broadcast_lt<T> &&
-        requires(T t) { impl::broadcast_minmax(std::forward<T>(t)); }
+        impl::tuple_broadcast_lt<T>
     )
-[[nodiscard]] constexpr auto minmax(T&& t) noexcept(
-    noexcept(impl::broadcast_minmax(std::forward<T>(t)))
-) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
+[[nodiscard]] constexpr auto minmax(T&& t)
+    noexcept(noexcept(impl::broadcast_minmax(std::forward<T>(t))))
+    -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>>
+    requires(requires{impl::broadcast_minmax(std::forward<T>(t));})
+{
     return impl::broadcast_minmax(std::forward<T>(t));
 }
 
 
 /* Get the minimum and maximum of a sequence of values as an input range.  This is
 equivalent to a `std::ranges::minmax()` call under the hood, but explicitly checks for
-an empty range and throws a `ValueError`, rather than invoking undefined behavior. */
+an empty range and returns an empty optional, rather than invoking undefined
+behavior. */
 template <meta::iterable T>
-    requires (requires(T r) { std::ranges::minmax(std::forward<T>(r)); })
-[[nodiscard]] constexpr decltype(auto) minmax(T&& r) noexcept(
-    !DEBUG && noexcept(std::ranges::minmax(std::forward<T>(r)))
-) {
-    if constexpr (DEBUG) {
-        if (std::ranges::empty(r)) {
-            throw ValueError("empty range has no min() or max()");
-        }
+[[nodiscard]] constexpr auto minmax(T&& r)
+    noexcept(
+        noexcept(std::ranges::empty(r)) &&
+        noexcept(std::ranges::minmax(std::forward<T>(r))) &&
+        meta::nothrow::convertible_to<
+            decltype(std::ranges::minmax(std::forward<T>(r))),
+            Optional<decltype(std::ranges::minmax(std::forward<T>(r)))>
+        >
+    )
+    -> Optional<decltype(std::ranges::minmax(std::declval<T>()))>
+    requires(requires{
+        { std::ranges::empty(r) } -> meta::explicitly_convertible_to<bool>;
+        { std::ranges::minmax(std::forward<T>(r)) } -> meta::convertible_to<
+            Optional<decltype(std::ranges::minmax(std::forward<T>(r)))>
+        >;
+    })
+{
+    if (std::ranges::empty(r)) {
+        return std::nullopt;
     }
     return std::ranges::minmax(std::forward<T>(r));
 }
+
+
+
+
+
+
+
+
 
 
 /* Calculate the sum of an arbitrary list of values that can be added from left to
 right.  This effectively generates an O(n) sequence of `+` operators between each
 argument, equivalent to a fold expression. */
 template <typename... Ts>
-    requires (
-        sizeof...(Ts) > 1 &&
-        requires(Ts... args) { (std::forward<Ts>(args) + ...); }
-    )
-[[nodiscard]] constexpr decltype(auto) sum(Ts&&... args) noexcept(
-    noexcept((std::forward<Ts>(args) + ...))
-) {
+    requires (sizeof...(Ts) > 1)
+[[nodiscard]] constexpr decltype(auto) sum(Ts&&... args)
+    noexcept(noexcept((std::forward<Ts>(args) + ...)))
+    requires(requires{(std::forward<Ts>(args) + ...);})
+{
     return (std::forward<Ts>(args) + ...);
 }
 
@@ -1497,47 +1614,48 @@ template <typename... Ts>
 /* Calculate the sum of the values stored within a tuple-like container.  This
 effectively generates an O(n) sequence of `+` operators between each value at compile
 time, equivalent to a fold expression over the tuple's contents. */
-template <meta::tuple_like T>
-    requires (
-        !meta::iterable<T> &&
-        meta::tuple_size<T> > 0 &&
-        requires(T t) {impl::broadcast_sum(std::forward<T>(t)); }
-    )
-[[nodiscard]] constexpr auto sum(T&& t) noexcept(
-    noexcept(impl::broadcast_sum(std::forward<T>(t)))
-) {
+template <meta::tuple_like T> requires (!meta::iterable<T> && meta::tuple_size<T> > 0)
+[[nodiscard]] constexpr auto sum(T&& t)
+    noexcept(noexcept(impl::broadcast_sum(std::forward<T>(t))))
+    requires(requires{impl::broadcast_sum(std::forward<T>(t));})
+{
     return impl::broadcast_sum(std::forward<T>(t));
 }
 
 
 /* Calculate the sum of a sequence of values as an input range.  This is equivalent
 to a `std::ranges::fold_left()` call under the hood, but uses the first value in the
-range as an initializer, and throws a `ValueError` if it is empty.  Use the full
-ranges algorithm if you need to set an explicit start value. */
+range as an initializer, and returns an empty optional if the range is empty.  Use the
+full ranges algorithm if you need to set an explicit start value. */
 template <meta::iterable T>
-    requires (requires(T r) {
+[[nodiscard]] constexpr auto sum(T&& r)
+    noexcept(noexcept(std::ranges::fold_left(
+        std::ranges::begin(r),
+        std::ranges::end(r),
+        *std::ranges::begin(r),
+        impl::Add{}
+    )))
+    -> Optional<decltype((
         std::ranges::fold_left(
             std::ranges::begin(r),
             std::ranges::end(r),
             *std::ranges::begin(r),
-            std::plus<>{}
+            impl::Add{}
+        )
+    ))>
+    requires(requires{
+        std::ranges::fold_left(
+            std::ranges::begin(r),
+            std::ranges::end(r),
+            *std::ranges::begin(r),
+            impl::Add{}
         );
     })
-[[nodiscard]] constexpr decltype(auto) sum(T&& r) noexcept(
-    !DEBUG &&
-    noexcept(std::ranges::fold_left(
-        std::ranges::begin(r),
-        std::ranges::end(r),
-        *std::ranges::begin(r),
-        std::plus<>{}
-    ))
-) {
+{
     auto it = std::ranges::begin(r);
     auto end = std::ranges::end(r);
-    if constexpr (DEBUG) {
-        if (it == end) {
-            throw ValueError("cannot sum an empty range");
-        }
+    if (it == end) {
+        return std::nullopt;
     }
     auto init = *it;
     ++it;
@@ -1547,6 +1665,24 @@ template <meta::iterable T>
         std::move(init),
         std::plus<>{}
     );
+}
+
+
+
+
+
+
+
+inline void test() {
+    struct Cmp {
+        static constexpr bool operator()(int x) noexcept { return x > 1; }
+    };
+
+    static constexpr std::tuple<int, int, int> tup {0, 0, 2};
+    static constexpr std::array<int, 3> arr = {0, 0, 2};
+    static_assert(any<Cmp>(0, 0, 2));
+    static_assert(any<Cmp>(tup));
+    static_assert(any<Cmp>(arr));
 }
 
 

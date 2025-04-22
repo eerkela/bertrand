@@ -39,8 +39,16 @@ namespace impl {
 */
 
 
-/// TODO: in C++26 with constexpr exceptions, `Exception` can inherit from
-/// std::exception, but not before, since its constructors are not marked as constexpr
+// C++26 adds constexpr constructors to `std::exception`, which allow them to be used
+// at compile time.  Prior standards do not allow this, so we cannot inherit from
+// `std::exception` in those cases.  This doesn't affect the functionality of the
+// exceptions themselves, but it may affect downstream libraries that detect exceptions
+// by checking for `std::exception` as a base class.
+#ifdef __cpp_lib_constexpr_exceptions
+    #define INHERIT_STD_EXCEPTION : std::exception
+#else
+    #define INHERIT_STD_EXCEPTION
+#endif
 
 
 /* The root of the bertrand exception hierarchy.  This and all its subclasses are
@@ -49,7 +57,7 @@ across both languages.  If an exception is constructed at compile time, then the
 C++ stack trace will be omitted.  If Python is not loaded, then the same exception
 types can still be used in a pure C++ context, but the `from_python()` and
 `to_python()` methods will be disabled. */
-struct Exception {
+struct Exception INHERIT_STD_EXCEPTION {
 private:
 
     /* At runtime, we also store a full traceback to the error location, as well
@@ -573,6 +581,9 @@ public:
     /* Catch an exception from Python, re-throwing it as an equivalent C++ error. */
     [[noreturn]] static void from_python();
 };
+
+
+#undef INHERIT_STD_EXCEPTION
 
 
 /* Non-member ADL swap algorithm for Bertrand exceptions. */

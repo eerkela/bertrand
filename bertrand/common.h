@@ -74,6 +74,13 @@ namespace bertrand {
 #endif
 
 
+#ifdef _MSVC_LANG
+    #define CXXSTD _MSVC_LANG
+#else
+    #define CXXSTD __cplusplus
+#endif
+
+
 #ifdef BERTRAND_DEBUG
     constexpr bool DEBUG = true;
 #else

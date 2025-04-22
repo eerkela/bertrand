@@ -369,13 +369,14 @@ namespace meta {
                     typename errors,  // tracks unhandled exception states 
                     typename...
                 >
-                struct get_type;
+                struct infer;
 
                 // 3a. Iterate over all arguments to discover the precise alternatives
                 //     that are left unhandled by the visitor, and apply custom
-                //     forwarding behavior on that basis.
+                //     forwarding behavior on that basis.  If any states cannot be
+                //     trivially forwarded, then `enable` will evaluate to false.
                 template <bool option, typename... errors, typename A, typename... As>
-                struct get_type<option, meta::pack<errors...>, A, As...> {
+                struct infer<option, meta::pack<errors...>, A, As...> {
                     static constexpr size_t I = sizeof...(Args) - (sizeof...(As) + 1);
 
                     // 3b. `state<alt>` deduces whether the alternative is handled by the
@@ -402,11 +403,16 @@ namespace meta {
                     template <typename...>
                     struct scan {
                         template <bool opt, typename... errs>
-                        using type = get_type<
+                        using type = infer<
                             opt,  // accumulated empty state
                             meta::pack<errs...>,  // accumulated errors
                             As...
                         >::type;
+                        static constexpr bool enable = infer<
+                            false,  // irrelevant for `enable` status
+                            meta::pack<>,  // irrelevant for `enable` status
+                            As...
+                        >::enable;
                     };
 
                     // 3d. If the alternative is explicitly handled by the visitor, then we
@@ -415,6 +421,7 @@ namespace meta {
                     struct scan<alt, alts...> {
                         template <bool opt, typename... errs>
                         using type = scan<alts...>::template type<opt, errs...>;
+                        static constexpr bool enable = scan<alts...>::enable;
                     };
 
                     // 3e. Otherwise, if an unhandled alternative represents the empty
@@ -425,6 +432,7 @@ namespace meta {
                     struct scan<alt, alts...> {
                         template <bool opt, typename... errs>
                         using type = scan<alts...>::template type<true, errs...>;
+                        static constexpr bool enable = scan<alts...>::enable;
                     };
 
                     // 3f. Otherwise, if an unhandled alternative represents an error state
@@ -449,6 +457,7 @@ namespace meta {
                         };
                         template <bool opt, typename... errs>
                         using type = helper<opt, errs...>::type;
+                        static constexpr bool enable = scan<alts...>::enable;
                     };
 
                     // 3g. Otherwise, we must insert a `BadUnionAccess` error state into
@@ -461,31 +470,20 @@ namespace meta {
                         )
                     struct scan<alt, alts...> {
                         template <bool opt, typename... errs>
-                        struct helper {
-                            using type = scan<alts...>::template type<opt, errs...>;
-                        };
-                        template <bool opt, typename... errs>
-                            requires (!::std::same_as<errs, BadUnionAccess> && ...)
-                        struct helper<opt, errs...> {
-                            using type = scan<alts...>::template type<
-                                opt,
-                                errs...,
-                                BadUnionAccess
-                            >;
-                        };
-                        template <bool opt, typename... errs>
-                        using type = helper<opt, errs...>::type;
+                        using type = void;  // terminate recursion
+                        static constexpr bool enable = false;  // terminate recursion
                     };
 
                     // 3h. Execute the `scan<>` metafunction.
                     using result = impl::visitable<A>::alternatives::template eval<scan>;
                     using type = result::template type<option, errors...>;
+                    static constexpr bool enable = result::enable;
                 };
 
                 // 3i. Once all alternatives have been scanned, deduce the final return
                 //     type using the accumulated `option` and `errors...` states.
                 template <bool option, typename... errors>
-                struct get_type<option, meta::pack<errors...>> {
+                struct infer<option, meta::pack<errors...>> {
                     // 3j. If there are multiple non-void return types, then we need to
                     //     return a `Union` of those types.
                     template <typename... Rs>
@@ -535,14 +533,17 @@ namespace meta {
                         >::type,
                         errors...
                     >::type;
+                    static constexpr bool enable = true;
                 };
 
-                // 3p. evaluate the get_type<> metafunction
-                using type = get_type<
+                // 3p. evaluate the infer<> metafunction'
+                using result = infer<
                     permutations::template eval<filter>::has_void,
                     meta::pack<>,
                     Args...
-                >::type;
+                >;
+                using type = result::type;
+                static constexpr bool enable = result::enable;
             };
 
             // 4. Return type conversions are applied at the permutation level to
@@ -598,10 +599,10 @@ namespace meta {
             implicitly propagated. */
             using type = valid_permutations::template eval<deduce>::type;
 
-            /* `meta::visitor<F, Args...>` evaluates to true iff at least one valid
-            argument permutation exists. */
+            /* `meta::visitor<F, Args...>` evaluates to true iff all non-empty and
+            non-error states are handled by the visitor function `F`. */
             static constexpr bool enable =
-                valid_permutations::size > 0;
+                valid_permutations::template eval<deduce>::enable;
 
             /* `meta::exhaustive<F, Args...>` evaluates to true iff all argument
             permutations are valid. */
@@ -923,33 +924,13 @@ namespace impl {
         {
             static constexpr size_t I = sizeof...(Prev);
             static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            if constexpr (meta::visitor<
-                F,
-                meta::unpack_type<Prev, A...>...,
-                decltype((get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)))),
-                meta::unpack_type<I + 1 + Next, A...>...
-            >) {
-                return visit_recursive<R, idx>(
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                    prev,
-                    next,
-                    std::forward<F>(func),
-                    std::forward<A>(args)...
-                );
-            } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                return BadUnionAccess(
-                    "failed to invoke visitor for union argument " +
-                    impl::int_to_static_string<I> + " with active type '" +
-                    type_name<typename meta::unqualify<T>::types::template at<J>> + "'"
-                );
-            } else {
-                static_assert(
-                    meta::convertible_to<BadUnionAccess, R>,
-                    "unreachable: a non-exhaustive iterator must always return an "
-                    "`Expected` result"
-                );
-                std::unreachable();
-            }
+            return visit_recursive<R, idx>(
+                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                prev,
+                next,
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
         }
     };
 
@@ -1023,33 +1004,13 @@ namespace impl {
         {
             static constexpr size_t I = sizeof...(Prev);
             static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            if constexpr (meta::visitor<
-                F,
-                meta::unpack_type<Prev, A...>...,
-                decltype((get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)))),
-                meta::unpack_type<I + 1 + Next, A...>...
-            >) {
-                return visit_recursive<R, idx>(
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                    prev,
-                    next,
-                    std::forward<F>(func),
-                    std::forward<A>(args)...
-                );
-            } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                return BadUnionAccess(
-                    "failed to invoke visitor for union argument " +
-                    impl::int_to_static_string<I> + " with active type '" +
-                    type_name<typename meta::unqualify<T>::types::template at<J>> + "'"
-                );
-            } else {
-                static_assert(
-                    meta::convertible_to<BadUnionAccess, R>,
-                    "unreachable: a non-exhaustive iterator must always return an "
-                    "`Expected` result"
-                );
-                std::unreachable();
-            }
+            return visit_recursive<R, idx>(
+                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                prev,
+                next,
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
         }
     };
 
@@ -1117,41 +1078,22 @@ namespace impl {
         {
             static constexpr size_t I = sizeof...(Prev);
             static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            using type = decltype((
-                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-            ));
 
-            // valid state returns an error if unhandled
+            // valid state is always handled by definition
             if constexpr (J == 0) {
-                if constexpr (meta::visitor<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                    return BadUnionAccess(
-                        "failed to invoke visitor for empty optional argument " +
-                        impl::int_to_static_string<I>
-                    );
-                } else {
-                    static_assert(
-                        meta::convertible_to<BadUnionAccess, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
 
             // empty state is implicitly propagated if left unhandled
             } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
                 if constexpr (meta::visitor<
                     F,
                     meta::unpack_type<Prev, A...>...,
@@ -1245,41 +1187,22 @@ namespace impl {
         {
             static constexpr size_t I = sizeof...(Prev);
             static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            using type = decltype((
-                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-            ));
 
-            // valid state returns an error if unhandled
+            // valid state is always handled by definition
             if constexpr (J == 0) {
-                if constexpr (meta::visitor<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                    return BadUnionAccess(
-                        "failed to invoke visitor for empty optional argument " +
-                        impl::int_to_static_string<I>
-                    );
-                } else {
-                    static_assert(
-                        meta::convertible_to<BadUnionAccess, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
 
             // empty state is implicitly propagated if left unhandled
             } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
                 if constexpr (meta::visitor<
                     F,
                     meta::unpack_type<Prev, A...>...,
@@ -1424,41 +1347,22 @@ namespace impl {
         {
             static constexpr size_t I = sizeof...(Prev);
             static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            using type = decltype((
-                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-            ));
 
-            // valid state returns an error if unhandled
+            // valid state is always handled by definition
             if constexpr (J == 0) {
-                if constexpr (meta::visitor<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                    return BadUnionAccess(
-                        "failed to invoke visitor for empty expected argument" +
-                        impl::int_to_static_string<I>
-                    );
-                } else {
-                    static_assert(
-                        meta::convertible_to<BadUnionAccess, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
 
             // error states are implicitly propagated if left unhandled
             } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
                 if constexpr (meta::visitor<
                     F,
                     meta::unpack_type<Prev, A...>...,
@@ -1605,41 +1509,22 @@ namespace impl {
         {
             static constexpr size_t I = sizeof...(Prev);
             static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            using type = decltype((
-                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-            ));
 
-            // valid state returns an error if unhandled
+            // valid state is always handled by definition
             if constexpr (J == 0) {
-                if constexpr (meta::visitor<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<BadUnionAccess, R>) {
-                    return BadUnionAccess(
-                        "failed to invoke visitor for empty expected argument" +
-                        impl::int_to_static_string<I>
-                    );
-                } else {
-                    static_assert(
-                        meta::convertible_to<BadUnionAccess, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
 
             // error states are implicitly propagated if left unhandled
             } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
                 if constexpr (meta::visitor<
                     F,
                     meta::unpack_type<Prev, A...>...,
@@ -1713,36 +1598,31 @@ namespace impl {
 
 
 /* Non-member `visit(f, args...)` operator, similar to `std::visit()`, but with greatly
-extended metaprogramming capabilities.  A member version of this operator is provided
+expanded metaprogramming capabilities.  A member version of this operator is provided
 for `Union`, `Optional`, and `Expected` objects, which allows for chaining.
 
 The visitor is constructed from either a single function or a set of functions defined
 using `bertrand::visitor` or a similar overload set.  The subsequent arguments will be
 passed to the visitor in the order they are defined, with each union being unwrapped to
 its actual type within the visitor context.  A compilation error will occur if the
-visitor is not callable with at least one permutation of the unwrapped values.
+visitor is not callable with all nontrivial permutations of the unwrapped values.
 
-Note that the visitor does not need to be exhaustive over all permutations of the
-unwrapped values, unlike `std::visit()`.  In that case, the function will return an
-`Expected<R, BadUnionAccess>`, where `R` is the deduced return type for the valid
-permutations, and `BadUnionAccess` indicates that an invalid permutation was
-encountered at runtime.  If `R` is itself an expected type, then the `BadUnionAccess`
-state will be flattened into its list of errors automatically.  Alternatively, if the
-unhandled case(s) represent the empty state of an optional or error state of an
-expected input, then those states will be implicitly propagated to the return type,
-potentially converting it into an `Optional` or `Expected` if it was not one already.
-This effectively adds implicit overloads to the visitor that trivially forward these
-states without any modifications.  This allows visitors to treat optional and expected
-types as if they were always in the valid state, with invalid states being propagated
-in monadic fashion unless otherwise handled.  The
-`bertrand::meta::exhaustive<F, Args...>` concept can be used to selectively forbid the
-these cases at compile time, which returns the semantics to those of `std::visit()`
-with respect to visitor exhaustiveness.
+Note that the visitor does not need to be exhaustive over all possible permutations;
+only the valid ones.  Practically speaking, this means that the visitor is free to
+ignore the empty states of optionals and error states of expected inputs, which will be
+implicitly propagated to the return type if left unhandled.  On the other hand, union
+states and non-empty/result states of optionals and expecteds must be explicitly
+handled, else a compilation error will occur.  This equates to adding implicit
+overloads to the visitor that trivially forward these states without any modifications,
+allowing visitors to treat optional and expected types as if they were always in the
+valid state.  The `bertrand::meta::exhaustive<F, Args...>` concept can be used to
+selectively forbid these cases at compile time, which returns the semantics to those of
+`std::visit()` with respect to visitor exhaustiveness.
 
 Similarly, unlike `std::visit()`, the visitor is not constrained to return a single
-consistent type for all permutations.  If it does not, then `R` will deduce to
-`bertrand::Union<Rs...>`, where `Rs...` are the unique return types for all valid
-permutations.  Otherwise, if all permutations return the same type, then `R` will
+consistent type for all permutations.  If it does not, then the return type `R` will
+deduce to `bertrand::Union<Rs...>`, where `Rs...` are the unique return types for all
+valid permutations.  Otherwise, if all permutations return the same type, then `R` will
 simply be that type.  If some permutations return `void` and others return non-`void`,
 then `R` will be wrapped in an `Optional`, where the empty state indicates a void
 return type at runtime.  If `R` is itself an optional type, then the empty states will
@@ -1750,25 +1630,28 @@ be merged so as to avoid nested optionals.  Similar to above, the
 `bertrand::meta::consistent<F, Args...>` concept can be used to selectively forbid
 these cases at compile time.  Applying that concept in combination with
 `bertrand::meta::exhaustive<F, Args...>` will yield the same visitor semantics as
-`std::visit()` in these regards.
+`std::visit()`.
 
 If both of the above features are enabled (the default), then a worst-case,
-non-exhaustive and inconsistent visitor, where some permutations return void and others
-do not, can potentially yield a return type of the form
-`bertrand::Expected<Optional<Union<Rs...>>, BadUnionAccess>`.  For an exhaustive
-visitor, this may be reduced to `Optional<Union<Rs...>>`, and for visitors that never
-return void, it will reduce further to `Union<Rs...>`.  If the visitor returns a
-single consistent type, then `R` will collapse to just that type, without requiring a
-union, in which case the semantics are identical to `std::visit()`.
+inconsistent visitor applied to an `Expected<Union<Ts...>, Es...>` input, where some
+permutations of `Ts...` return void and others do not, can potentially yield a return
+type of the form `Expected<Optional<Union<Rs...>>, Es...>`, where `Rs...` are the
+non-void return types for the valid permutations, `Optional` signifies that the return
+type may be void, and `Es...` are the original error types that were implicitly
+propagated from the input.  If the visitor exhaustively handles the error states, then
+the return type will reduce to `Optional<Union<Rs...>>`.  If the visitor never returns
+void, then the return type will further reduce to `Union<Rs...>`, and if it returns a
+single consistent type, then `R` will collapse to just that type, in which case the
+semantics are identical to `std::visit()`.
 
-Finally, note that arguments are fully generic, and not strictly limited to union
-types, in contrast to `std::visit()`.  If no unions are present, then this function
+Finally, note that the arguments are fully generic, and not strictly limited to union
+types, in contrast to `std::visit()`.  If no unions are present, then `visit()`
 devolves to invoking the visitor normally, without any special handling.  Otherwise,
-component unions are expanded according to the rules laid out in
+the component unions are expanded according to the rules laid out in
 `bertrand::impl::visitable`, which describes how to register custom visitable types
 for use with this function.  Built-in specializations exist for `Union`, `Optional`,
-and `Expected`, as well as `std::variant`, `std::optional`, and `std::expected`, all of
-which can be passed to `visit()` according to the described semantics. */
+and `Expected`, as well as `std::variant`, `std::optional`, and `std::expected`, each
+of which can be passed to `visit()` according to the described semantics. */
 template <typename F, typename... Args> requires (meta::visitor<F, Args...>)
 constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
     noexcept(meta::nothrow::visitor<F, Args...>)
@@ -2224,26 +2107,6 @@ private:
         }
     };
 
-    template <typename T>
-    struct CastTo {
-        template <typename U>
-        static constexpr T operator()(U&& value)
-            noexcept(meta::nothrow::explicitly_convertible_to<U, T>)
-            requires(meta::explicitly_convertible_to<U, T>)
-        {
-            return static_cast<T>(std::forward<U>(value));
-        }
-        template <typename U>
-        static constexpr T operator()(U&& value)
-            requires(!meta::explicitly_convertible_to<U, T>)
-        {
-            throw BadUnionAccess(
-                "Cannot convert union with active type '" + type_name<U> +
-                "' to type '" + type_name<T> + "'"
-            );
-        }
-    };
-
     template <typename Self>
     struct Flatten {
         using type = get_common_type<access_t<Ts, Self>...>::type;
@@ -2440,22 +2303,28 @@ public:
         noexcept(meta::nothrow::exhaustive<impl::ConvertTo<T>, Self>)
         requires(meta::exhaustive<impl::ConvertTo<T>, Self>)
     {
-        return bertrand::visit(impl::ConvertTo<T>{}, std::forward<Self>(self));
+        return bertrand::visit(
+            impl::ConvertTo<T>{},
+            std::forward<Self>(self)
+        );
     }
 
-    /* Explicit conversion operator allows functional-style casts from `Union<Ts...>`
-    to any type that at least one member is explicitly convertible to.  If the active
-    member does not support the conversion, then a `BadUnionAccess` error will be
-    thrown instead. */
+    /* Explicit conversion operator allows functional-style conversions toward any type
+    to which all alternatives can be exhaustively converted.  This allows conversion to
+    scalar types as well as union types (regardless of source) that satisfy the
+    conversion criteria. */
     template <typename Self, typename T>
     [[nodiscard]] constexpr explicit operator T(this Self&& self)
-        noexcept((meta::nothrow::explicitly_convertible_to<access_t<Ts, Self>, T> && ...))
+        noexcept(meta::nothrow::exhaustive<impl::ExplicitConvertTo<T>, T>)
         requires(
             !meta::exhaustive<impl::ConvertTo<T>, Self> &&
-            (meta::explicitly_convertible_to<access_t<Ts, Self>, T> || ...)
+            meta::exhaustive<impl::ExplicitConvertTo<T>, Self>
         )
     {
-        return bertrand::visit(CastTo<T>{}, std::forward<Self>(self));
+        return bertrand::visit(
+            impl::ExplicitConvertTo<T>{},
+            std::forward<Self>(self)
+        );
     }
 
     /* Swap the contents of two unions as efficiently as possible.  This will use
@@ -3253,7 +3122,11 @@ private:
 
         template <typename F, typename Self, typename... Args>
             requires (
-                meta::visitor<F, access_error<Self>, Args...> &&
+                (
+                    meta::invocable<F, access_type<E, Self>, Args...> ||
+                    ... ||
+                    meta::invocable<F, access_type<Es, Self>, Args...>
+                ) &&
                 meta::has_common_type<
                     access<Self>,
                     meta::visit_type<F, access_error<Self>, Args...>
@@ -3303,7 +3176,11 @@ private:
         };
 
         template <typename F, typename Self, typename... Args>
-            requires (meta::visitor<F, access_error<Self>, Args...>)
+            requires ((
+                meta::invocable<F, access_type<E, Self>, Args...> ||
+                ... ||
+                meta::invocable<F, access_type<Es, Self>, Args...>
+            ))
         struct or_else_fn {
             template <meta::is<std::nullopt_t> V>
             static constexpr void operator()(auto&& func, V&&, auto&&... args) noexcept {}
@@ -3877,7 +3754,11 @@ public:
     underlying infrastructure. */
     template <typename Self, typename F, typename... Args>
         requires (
-            meta::visitor<F, access_error<Self>, Args...> &&
+            (
+                meta::invocable<F, access_type<E, Self>, Args...> ||
+                ... ||
+                meta::invocable<F, access_type<Es, Self>, Args...>
+            ) &&
             meta::visitor<or_else_fn<F, Self, Args...>, F, Self, Args...>
         )
     constexpr decltype(auto) or_else(this Self&& self, F&& f, Args&&... args) noexcept(

@@ -942,11 +942,7 @@ namespace meta {
     concept arena = inherits<Alloc, impl::arena_tag>;
 
     template <typename Alloc, typename T>
-    concept arena_for = arena<Alloc> && std::same_as<typename unqualify<Alloc>::type, T>;
-
-    template <typename Alloc, typename T>
-    concept allocator_or_space_for =
-        allocator_for<Alloc, T> || arena_for<Alloc, T>;
+    concept arena_for = arena<Alloc> && ::std::same_as<typename unqualify<Alloc>::type, T>;
 
 }
 
