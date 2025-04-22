@@ -325,13 +325,6 @@ namespace meta {
         !std::same_as<remove_reference<T>, remove_reference<U>> &&
         detail::more_qualified_than<remove_reference<T>, remove_reference<U>>;
 
-    template <typename... Ts>
-    concept has_common_type =
-        (sizeof...(Ts) > 0) && requires { typename std::common_reference<Ts...>::type; };
-
-    template <typename... Ts> requires (has_common_type<Ts...>)
-    using common_type = std::common_reference<Ts...>::type;
-
     /////////////////////
     ////    PACKS    ////
     /////////////////////
@@ -1083,6 +1076,28 @@ namespace meta {
 
     }
 
+    template <typename... Ts>
+    concept has_common_type = (sizeof...(Ts) > 0) && requires {
+        typename ::std::common_reference<Ts...>::type;
+    };
+
+    template <typename... Ts> requires (has_common_type<Ts...>)
+    using common_type = ::std::common_reference<Ts...>::type;
+
+    namespace nothrow {
+
+        template <typename... Ts>
+        concept has_common_type = (
+            meta::has_common_type<Ts...> &&
+            ... &&
+            convertible_to<Ts, meta::common_type<Ts...>>
+        );
+
+        template <typename... Ts> requires (has_common_type<Ts...>)
+        using common_type = meta::common_type<Ts...>;
+
+    }
+
     //////////////////////////
     ////    INVOCATION    ////
     //////////////////////////
@@ -1560,6 +1575,31 @@ namespace meta {
 
     template <typename T, typename First, typename Second>
     concept pair_with = structured_with<T, First, Second>;
+
+    template <size_t I, tuple_like T>
+    constexpr decltype(auto) tuple_get(T&& t)
+        noexcept(nothrow::has_member_get<T, I>)
+        requires(has_member_get<T, I>)
+    {
+        return (std::forward<T>(t).template get<I>());
+    }
+
+    template <size_t I, tuple_like T>
+    constexpr decltype(auto) tuple_get(T&& t)
+        noexcept(nothrow::has_adl_get<T, I>)
+        requires(!has_member_get<T, I> && has_adl_get<T, I>)
+    {
+        using std::get;
+        return (get<I>(std::forward<T>(t)));
+    }
+
+    template <size_t I, tuple_like T>
+    constexpr decltype(auto) tuple_get(T&& t)
+        noexcept(nothrow::has_get<T, I>)
+        requires(!has_member_get<T, I> && !has_adl_get<T, I> && has_std_get<T, I>)
+    {
+        return (std::get<I>(std::forward<T>(t)));
+    }
 
     /////////////////////////
     ////    ITERATION    ////
