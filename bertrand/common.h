@@ -1513,37 +1513,12 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T>
-        struct common_tuple_type;
-        template <meta::tuple_like T>
-        struct common_tuple_type<T> {
-            static constexpr size_t size = meta::tuple_size<T>;
-
-            template <size_t I, typename... Ts>
-            struct filter {
-                static constexpr bool value =
-                    filter<I + 1, Ts..., meta::get_type<T, I>>::value;
-                using type = filter<I + 1, Ts..., meta::get_type<T, I>>::type;
-            };
-
-            template <size_t I, typename... Ts> requires (I >= size)
-            struct filter<I, Ts...> {
-                template <typename... Us>
-                struct do_filter {
-                    static constexpr bool value = false;
-                    using type = void;
-                };
-                template <typename... Us> requires (meta::has_common_type<Us...>)
-                struct do_filter<Us...> {
-                    static constexpr bool value = true;
-                    using type = meta::common_type<Us...>;
-                };
-                static constexpr bool value = do_filter<Ts...>::value;
-                using type = do_filter<Ts...>::type;
-            };
-
-            static constexpr bool value = filter<0>::value;
-            using type = filter<0>::type;
+        template <size_t I, meta::tuple_like T, typename... Ts>
+        struct tuple_types { using type = pack<Ts...>; };
+        template <size_t I, meta::tuple_like T, typename... Ts>
+            requires (I < meta::tuple_size<T>)
+        struct tuple_types<I, T, Ts...> {
+            using type = tuple_types<I + 1, T, Ts..., meta::get_type<T, I>>::type;
         };
 
         template <typename T, typename... Ts>
@@ -1562,12 +1537,8 @@ namespace meta {
 
     }
 
-    template <typename T>
-    concept has_common_tuple_type =
-        tuple_like<T> && detail::common_tuple_type<T>::value;
-
-    template <has_common_tuple_type T>
-    using common_tuple_type = detail::common_tuple_type<T>::type;
+    template <tuple_like T>
+    using tuple_types = detail::tuple_types<0, T>::type;
 
     template <typename T, typename... Ts>
     concept structured_with =
@@ -1576,6 +1547,8 @@ namespace meta {
     template <typename T, typename First, typename Second>
     concept pair_with = structured_with<T, First, Second>;
 
+    /* Do an integer-based `get<I>()` access on a tuple-like type by first checking for
+    a `t.get<I>()` member method. */
     template <size_t I, tuple_like T>
     constexpr decltype(auto) tuple_get(T&& t)
         noexcept(nothrow::has_member_get<T, I>)
@@ -1584,6 +1557,8 @@ namespace meta {
         return (std::forward<T>(t).template get<I>());
     }
 
+    /* If no `t.get<I>()` member method is found, attempt an ADL-enabled `get<I>(t)`
+    instead. */
     template <size_t I, tuple_like T>
     constexpr decltype(auto) tuple_get(T&& t)
         noexcept(nothrow::has_adl_get<T, I>)
@@ -1593,12 +1568,231 @@ namespace meta {
         return (get<I>(std::forward<T>(t)));
     }
 
+    /* If no `get<I>(t)` ADL method is found, attempt `std::get<I>(t)`. */
     template <size_t I, tuple_like T>
     constexpr decltype(auto) tuple_get(T&& t)
         noexcept(nothrow::has_get<T, I>)
         requires(!has_member_get<T, I> && !has_adl_get<T, I> && has_std_get<T, I>)
     {
         return (std::get<I>(std::forward<T>(t)));
+    }
+
+    namespace detail {
+
+        template <typename...>
+        struct apply_func {
+            static constexpr bool enable = false;
+            static constexpr bool nothrow = false;
+            using type = void;
+        };
+        template <typename F, typename... out> requires (meta::invocable<F, out...>)
+        struct apply_func<F, meta::pack<out...>> {
+            static constexpr bool enable = true;
+            static constexpr bool nothrow = meta::nothrow::invocable<F, out...>;
+            using type = meta::invoke_type<F, out...>;
+        };
+        template <typename F, typename... out, typename T, typename... Ts>
+            requires (!meta::tuple_like<T>)
+        struct apply_func<F, meta::pack<out...>, T, Ts...> {
+            using result = apply_func<F, meta::pack<out..., T>, Ts...>;
+            static constexpr bool enable = result::enable;
+            static constexpr bool nothrow = result::nothrow;
+            using type = result::type;
+        };
+        template <typename F, typename... out, meta::tuple_like T, typename... Ts>
+        struct apply_func<F, meta::pack<out...>, T, Ts...> {
+            using result = apply_func<
+                F,
+                meta::concat<meta::pack<out...>, meta::tuple_types<T>>,
+                Ts...
+            >;
+            static constexpr bool enable = result::enable;
+            static constexpr bool nothrow = result::nothrow;
+            using type = result::type;
+        };
+
+        // base case: all tuples have been exhausted
+        template <size_t count, typename F, typename... Ts>
+        struct apply {
+            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            static constexpr decltype(auto) operator()(
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>,
+                G&& func,
+                A&&... args
+            )
+                noexcept(nothrow::invocable<G, A...>)
+                requires(invocable<G, A...>)
+            {
+                static_assert(count == sizeof...(A));
+                static_assert(sizeof...(prev) == sizeof...(A));
+                static_assert(sizeof...(next) == 0);
+                return (std::forward<G>(func)(std::forward<A>(args)...));
+            }
+        };
+
+        // recursive case: unpack all elements of current tuple
+        template <size_t count, typename F, tuple_like T, typename... Ts>
+        struct apply<count, F, T, Ts...> {
+            // If the current tuple is empty, skip it without unpacking any arguments
+            template <size_t... prev, size_t... next, is<F> G, typename... A>
+                requires (tuple_size<T> == 0)
+            static constexpr decltype(auto) operator()(
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>,
+                G&& func,
+                A&&... args
+            )
+                noexcept(noexcept(apply<count, F, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev)>{},
+                    std::make_index_sequence<
+                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
+                    >{},
+                    std::forward<G>(func),
+                    unpack_arg<prev>(std::forward<A>(args)...)...,
+                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
+                )))
+            {
+                return (apply<count, F, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev)>{},
+                    std::make_index_sequence<
+                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
+                    >{},
+                    std::forward<G>(func),
+                    unpack_arg<prev>(std::forward<A>(args)...)...,
+                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
+                ));
+            }
+
+            // Otherwise, if there are remaining tuple elements after this one, then
+            // unpack the current element and carry the tuple forward
+            template <size_t... prev, size_t... next, is<F> G, typename... A>
+                requires ((sizeof...(prev) - count + 1) < tuple_size<T>)
+            static constexpr decltype(auto) operator()(
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>,
+                G&& func,
+                A&&... args
+            )
+                noexcept(noexcept(apply<count, F, T, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev) + 1>{},
+                    std::make_index_sequence<sizeof...(A) - (sizeof...(prev) + 1)>{},
+                    std::forward<G>(func),
+                    unpack_arg<prev>(std::forward<A>(args)...)...,
+                    tuple_get<sizeof...(prev) - count>(
+                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
+                    ),
+                    unpack_arg<sizeof...(prev)>(std::forward<A>(args)...),  // carry
+                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
+                )))
+            {
+                return (apply<count, F, T, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev) + 1>{},
+                    std::make_index_sequence<sizeof...(A) - (sizeof...(prev) + 1)>{},
+                    std::forward<G>(func),
+                    unpack_arg<prev>(std::forward<A>(args)...)...,
+                    tuple_get<sizeof...(prev) - count>(
+                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
+                    ),
+                    unpack_arg<sizeof...(prev)>(std::forward<A>(args)...),  // carry
+                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
+                ));
+            }
+
+            // Otherwise, if the current tuple is exhausted, unpack the last element
+            // and discard it
+            template <size_t... prev, size_t... next, is<F> G, typename... A>
+                requires ((sizeof...(prev) - count + 1) == tuple_size<T>)
+            static constexpr decltype(auto) operator()(
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>,
+                G&& func,
+                A&&... args
+            )
+                noexcept(noexcept(apply<count + tuple_size<T>, F, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev) + 1>{},
+                    std::make_index_sequence<
+                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
+                    >{},
+                    std::forward<G>(func),
+                    unpack_arg<prev>(std::forward<A>(args)...)...,
+                    tuple_get<sizeof...(prev) - count>(
+                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
+                    ),
+                    // discard tuple
+                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
+                )))
+            {
+                return (apply<count + tuple_size<T>, F, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev) + 1>{},
+                    std::make_index_sequence<
+                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
+                    >{},
+                    std::forward<G>(func),
+                    unpack_arg<prev>(std::forward<A>(args)...)...,
+                    tuple_get<sizeof...(prev) - count>(
+                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
+                    ),
+                    // discard tuple
+                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
+                ));
+            }
+        };
+
+        // recursive case: ignore non-tuple arguments and continue unpacking
+        template <size_t count, typename F, typename T, typename... Ts>
+        struct apply<count, F, T, Ts...> {
+            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            static constexpr decltype(auto) operator()(
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>,
+                G&& func,
+                A&&... args
+            )
+                noexcept(noexcept(apply<count + 1, F, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev) + 1>{},
+                    std::make_index_sequence<
+                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
+                    >{},
+                    std::forward<G>(func),
+                    std::forward<A>(args)...
+                )))
+            {
+                return (apply<count + 1, F, Ts...>{}(
+                    std::make_index_sequence<sizeof...(prev) + 1>{},
+                    std::make_index_sequence<
+                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
+                    >{},
+                    std::forward<G>(func),
+                    std::forward<A>(args)...
+                ));
+            }
+        };
+
+    }
+
+    template <typename F, typename... Ts>
+    concept apply_func = detail::apply_func<F, meta::pack<>, Ts...>::enable;
+
+    template <typename F, typename... Ts> requires (apply_func<F, Ts...>)
+    using apply_type = detail::apply_func<F, meta::pack<>, Ts...>::type;
+
+    template <typename Ret, typename F, typename... Ts>
+    concept apply_returns =
+        apply_func<F, Ts...> && convertible_to<apply_type<F, Ts...>, Ret>;
+
+    namespace nothrow {
+
+        template <typename F, typename... Ts>
+        concept apply_func = detail::apply_func<F, meta::pack<>, Ts...>::nothrow;
+
+        template <typename F, typename... Ts> requires (apply_func<F, Ts...>)
+        using apply_type = detail::apply_func<F, meta::pack<>, Ts...>::type;
+
+        template <typename Ret, typename F, typename... Ts>
+        concept apply_returns =
+            apply_func<F, Ts...> && convertible_to<apply_type<F, Ts...>, Ret>;
+
     }
 
     /////////////////////////
@@ -3526,6 +3720,45 @@ namespace meta {
 
     }
 
+}
+
+
+
+
+
+
+/// TODO: elaborate docs for apply(), since it is now a standard library feature.
+
+
+
+
+
+/* Invoke a function with the given arguments, unpacking tuple-like types into
+their individual elements and interleaving with non-tuple types.  For example:
+
+```
+    std::pair<int, std::string> p{2, "hello"};
+    assert(apply(
+        [](int i, const std::string& s, double d) { return i + s.size() + d; },
+        p,
+        3.25
+    ) == 10.25);
+```
+
+This is essentially equivalent to unpacking the tuples using structured bindings,
+and then perfectly forwarding them as arguments to the function.  Non-tuple types
+are perfectly forwarded as-is. */
+template <typename F, typename... Ts>
+constexpr decltype(auto) apply(F&& func, Ts&&... args)
+    noexcept(meta::nothrow::apply_func<F, Ts...>)
+    requires(meta::apply_func<F, Ts...>)
+{
+    return (meta::detail::apply<0, F, Ts...>{}(
+        std::make_index_sequence<0>{},
+        std::make_index_sequence<sizeof...(Ts) - (sizeof...(Ts) > 0)>{},
+        std::forward<F>(func),
+        std::forward<Ts>(args)...
+    ));
 }
 
 

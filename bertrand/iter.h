@@ -626,131 +626,154 @@ namespace impl {
         bertrand::slice::normalized m_indices;
     };
 
-    /* Check whether the tuple type at index `I` are truth-testable as part of an
-    `any()` or `all()` operation. */
-    template <size_t I, typename T, typename F>
-    concept broadcast_truthy = I >= meta::tuple_size<T> || (
-        meta::has_get<T, I> &&
-        meta::invocable<F, meta::get_type<T, I>> &&
-        meta::explicitly_convertible_to<
-            meta::invoke_type<F, meta::get_type<T, I>>,
-            bool
-        >
-    );
+    /* Enable/disable and optimize the `any()`/`all()` operators such that they fail
+    fast where possible, unlike other reductions. */
+    template <typename... Ts>
+    struct truthy {
+        template <typename F>
+        static constexpr bool enable = ((
+            meta::invocable<F, Ts> &&
+            meta::explicitly_convertible_to<
+                meta::invoke_type<F, Ts>,
+                bool
+            >
+        ) && ...);
+        template <typename F>
+        static constexpr bool nothrow = ((
+            meta::nothrow::invocable<F, Ts> &&
+            meta::nothrow::explicitly_convertible_to<
+                meta::nothrow::invoke_type<F, Ts>,
+                bool
+            >
+        ) && ...);
 
-    template <size_t I, typename T, typename F>
-    concept nothrow_broadcast_truthy = I >= meta::tuple_size<T> || (
-        meta::nothrow::has_get<T, I> &&
-        meta::nothrow::invocable<F, meta::nothrow::get_type<T, I>> &&
-        meta::nothrow::explicitly_convertible_to<
-            meta::nothrow::invoke_type<F, meta::nothrow::get_type<T, I>>,
-            bool
-        >
-    );
-
-    /* Implement `any()` for tuples. */
-    template <size_t I = 0, meta::tuple_like T, typename F>
-    constexpr bool broadcast_any(T&& t, F&& func)
-        noexcept(nothrow_broadcast_truthy<I, T, F>)
-        requires(broadcast_truthy<I, T, F>)
-    {
-        if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
-            if constexpr (meta::has_member_get<T, I>) {
-                if (std::forward<F>(func)(std::forward<T>(t).template get<I>(t))) {
-                    return true;
-                }
-            } else if constexpr (meta::has_adl_get<T, I>) {
-                using std::get;
-                if (std::forward<F>(func)(get<I>(std::forward<T>(t)))) {
-                    return true;
-                }
-            } else {
-                if (std::forward<F>(func)(std::get<I>(std::forward<T>(t)))) {
-                    return true;
-                }
-            }
-            return broadcast_any<I + 1>(std::forward<T>(t), std::forward<F>(func));
-        } else {
-            return false;
+        template <typename F, typename... A> requires (sizeof...(A) > 1 && enable<F>)
+        static constexpr bool all(F&& func, A&&... args) noexcept(nothrow<F>) {
+            return (std::forward<F>(func)(std::forward<A>(args)) && ...);
         }
-    }
 
-    /* Implement `all()` for tuples. */
-    template <size_t I = 0, meta::tuple_like T, typename F>
-    constexpr bool broadcast_all(T&& t, F&& func)
-        noexcept(nothrow_broadcast_truthy<I, T, F>)
-        requires (broadcast_truthy<I, T, F>)
-    {
-        if constexpr (I < std::tuple_size_v<meta::unqualify<T>>) {
-            if constexpr (meta::has_member_get<T, I>) {
-                if (!std::forward<F>(func)(std::forward<T>(t).template get<I>(t))) {
-                    return false;
-                }
-            } else if constexpr (meta::has_adl_get<T, I>) {
-                using std::get;
-                if (!std::forward<F>(func)(get<I>(std::forward<T>(t)))) {
-                    return false;
-                }
-            } else {
-                if (!std::forward<F>(func)(std::get<I>(std::forward<T>(t)))) {
-                    return false;
-                }
+        template <size_t I = 0, typename F, meta::tuple_like T>
+            requires (I < meta::tuple_size<T> && meta::has_get<T, I> && enable<F>)
+        static constexpr bool all(F&& func, T&& t) noexcept(
+            nothrow<F> &&
+            meta::nothrow::has_get<T, I> &&
+            noexcept(all<I + 1>(std::forward<F>(func), std::forward<T>(t)))
+        ) {
+            if (!std::forward<F>(func)(meta::tuple_get<I>(std::forward<T>(t)))) {
+                return false;
             }
-            return broadcast_all<I + 1>(std::forward<T>(t), std::forward<F>(func));
-        } else {
+            return all<I + 1>(std::forward<F>(func), std::forward<T>(t));;
+        }
+
+        template <size_t I = 0, typename F, meta::tuple_like T>
+            requires (I >= meta::tuple_size<T> && enable<F>)
+        static constexpr bool all(F&&, T&&) noexcept {
             return true;
         }
-    }
 
-    /* Apply a pairwise function over the arguments to determine the return type and
-    enabled/noexcept status of a `fold_left()` function call. */
-    template <typename F, typename out, typename...>
-    struct fold_left {
-        using type = out;
-        static constexpr bool enable = true;
-        static constexpr bool nothrow = true;
-    };
-    template <typename F, typename out, typename curr, typename... next>
-        requires (
-            meta::invocable<F, out, curr> &&
-            meta::has_common_type<out, meta::invoke_type<F, out, curr>>
-        )
-    struct fold_left<F, out, curr, next...> {
-        using result = fold_left<
-            F,
-            meta::common_type<out, meta::invoke_type<F, out, curr>>,
-            next...
-        >;
-        using type = result::type;
-        static constexpr bool enable = result::enable;
-        template <typename G>
-        static constexpr bool _nothrow = false;
-        template <meta::nothrow::invocable<out, curr> G>
-        static constexpr bool _nothrow<G> =
-            meta::nothrow::convertible_to<
-                meta::nothrow::invoke_type<G, out, curr>,
-                type
-            > && result::nothrow;
-        static constexpr bool nothrow = _nothrow<F>;
-    };
-    template <typename F, typename out, typename curr, typename... next>
-        requires (
-            !meta::invocable<F, out, curr> ||
-            !meta::has_common_type<out, meta::invoke_type<F, out, curr>>
-        )
-    struct fold_left<F, out, curr, next...> {
-        using type = void;
-        static constexpr bool enable = false;
-        static constexpr bool nothrow = false;
+        template <typename F, typename... A> requires (sizeof...(A) > 1 && enable<F>)
+        static constexpr bool any(F&& func, A&&... args) noexcept(nothrow<F>) {
+            return (std::forward<F>(func)(std::forward<A>(args)) || ...);
+        }
+
+        template <size_t I = 0, typename F, meta::tuple_like T>
+            requires (I < meta::tuple_size<T> && meta::has_get<T, I> && enable<F>)
+        static constexpr bool any(F&& func, T&& t) noexcept(
+            meta::tuple_types<T>::template eval<truthy>::template nothrow<F> &&
+            meta::nothrow::has_get<T, I> &&
+            noexcept(any<I + 1>(std::forward<F>(func), std::forward<T>(t)))
+        ) {
+            if (std::forward<F>(func)(meta::tuple_get<I>(std::forward<T>(t)))) {
+                return true;
+            }
+            return any<I + 1>(std::forward<F>(func), std::forward<T>(t));;
+        }
+
+        template <size_t I = 0, typename F, meta::tuple_like T>
+            requires (I >= meta::tuple_size<T> && enable<F>)
+        static constexpr bool any(F&&, T&&) noexcept {
+            return false;
+        }
     };
 
-    /* Apply a pairwise function over the arguments to determine the return type and
-    enabled/noexcept status of a `fold_right()` function call. */
-    template <typename F, typename out, typename...>
+    /* Apply a pairwise function over the arguments to implement a `fold_left()`
+    function call. */
+    template <typename out, typename...>
+    struct _fold_left {
+        template <typename F>
+        struct traits {
+            using type = out;
+            static constexpr bool enable = true;
+            static constexpr bool nothrow = true;
+        };
+        template <typename F, typename T>
+        static constexpr out operator()(F&&, T&& arg) noexcept {
+            return std::forward<T>(arg);
+        }
+    };
+    template <typename out, typename curr, typename... next>
+    struct _fold_left<out, curr, next...> {
+        template <typename F>
+        struct traits {
+            using type = void;
+            static constexpr bool enable = false;
+            static constexpr bool nothrow = false;
+        };
+        template <meta::invocable<out, curr> F>
+            requires (meta::has_common_type<out, meta::invoke_type<F, out, curr>>)
+        struct traits<F> {
+            using result = _fold_left<
+                meta::common_type<out, meta::invoke_type<F, out, curr>>,
+                next...
+            >::template traits<F>;
+            using type = result::type;
+            static constexpr bool enable = result::enable;
+            static constexpr bool nothrow =
+                meta::nothrow::invocable<F, out, curr> &&
+                meta::nothrow::convertible_to<meta::invoke_type<F, out, curr>, type> &&
+                result::nothrow;
+        };
+        template <typename F, meta::is<out> L, meta::is<curr> R, meta::is<next>... Ts>
+        static constexpr decltype(auto) operator()(
+            F&& func,
+            L&& lhs,
+            R&& rhs,
+            Ts&&... rest
+        ) noexcept(traits<F>::nothrow) {
+            return (_fold_left<
+                meta::common_type<out, meta::invoke_type<F, out, curr>>,
+                next...
+            >{}(
+                std::forward<F>(func),
+                std::forward<F>(func)(std::forward<L>(lhs), std::forward<R>(rhs)),
+                std::forward<Ts>(rest)...
+            ));
+        }
+    };
+    template <typename F, typename... Ts>
+    using fold_left = _fold_left<Ts...>::template traits<F>;
+
+
+
+    /// TODO: the tricky thing here is maintaining the correct order of operations
+    /// during the fold, and that will require some thought.  After that, it's just
+    /// modernizing min(), max(), and minmax() and then this bit will be done and
+    /// robustly implemented, without any cheap hacks.
+
+    /* Apply a pairwise function over the arguments to implement a `fold_right()`
+    function call. */
+    template <typename out, typename...>
     struct fold_right {
-        using type = out;
-        static constexpr bool enable = true;
-        static constexpr bool nothrow = true;
+        template <typename F>
+        struct traits {
+            using type = out;
+            static constexpr bool enable = true;
+            static constexpr bool nothrow = true;
+        };
+        template <typename F, typename T>
+        static constexpr out operator()(F&&, T&& arg) noexcept {
+            return std::forward<T>(arg);
+        }
     };
     template <typename F, typename out, typename curr, typename... next>
         requires (
@@ -761,6 +784,54 @@ namespace impl {
             >
         )
     struct fold_right<F, out, curr, next...> {
+        // template <typename F>
+        // struct traits {
+        //     using type = void;
+        //     static constexpr bool enable = false;
+        //     static constexpr bool nothrow = false;
+        // };
+        // template <typename F>
+        //     requires (
+        //         meta::invocable<F, typename fold_right<F,curr, next...>::type, out> &&
+        //         meta::has_common_type<
+        //             out,
+        //             meta::invoke_type<F, typename fold_right<F, curr, next...>::type, out>
+        //         >
+        //     )
+        //         meta::has_common_type<out, meta::invoke_type<F, out, curr>>
+        //     )
+        // struct traits<F> {
+        //     using result = _fold_left<
+        //         meta::common_type<out, meta::invoke_type<F, out, curr>>,
+        //         next...
+        //     >::template traits<F>;
+        //     using type = result::type;
+        //     static constexpr bool enable = result::enable;
+        //     static constexpr bool nothrow =
+        //         meta::nothrow::invocable<F, out, curr> &&
+        //         meta::nothrow::convertible_to<meta::invoke_type<F, out, curr>, type> &&
+        //         result::nothrow;
+        // };
+        // template <typename F, meta::is<out> L, meta::is<curr> R, meta::is<next>... Ts>
+        // static constexpr decltype(auto) operator()(
+        //     F&& func,
+        //     L&& lhs,
+        //     R&& rhs,
+        //     Ts&&... rest
+        // ) noexcept(traits<F>::nothrow) {
+        //     return (_fold_left<
+        //         meta::common_type<out, meta::invoke_type<F, out, curr>>,
+        //         next...
+        //     >{}(
+        //         std::forward<F>(func),
+        //         std::forward<F>(func)(std::forward<L>(lhs), std::forward<R>(rhs)),
+        //         std::forward<Ts>(rest)...
+        //     ));
+        // }
+
+
+
+
         using result = fold_right<F, curr, next...>;
         using type =
             meta::common_type<out, meta::invoke_type<F, typename result::type, out>>;
@@ -788,6 +859,9 @@ namespace impl {
         static constexpr bool enable = false;
         static constexpr bool nothrow = false;
     };
+
+
+
 
     /* Convert a binary boolean predicate into an accumulator for use with `fold_left`
     and `fold_right`.  If the function returns true, the left operand will be
@@ -872,170 +946,6 @@ namespace impl {
         }
     };
 
-
-
-
-
-
-
-    /* Check whether a `<` operator can be broadcasted over a set of types as part
-    of a `min()`, `max()`, or `minmax()` operation. */
-    template <typename... Ts>
-    constexpr bool broadcast_lt = true;
-    template <typename T, typename... Ts>
-    constexpr bool broadcast_lt<T, Ts...> = false;
-    template <typename T, typename... Ts> requires (
-        (
-            meta::has_lt<T, Ts> &&
-            meta::explicitly_convertible_to<meta::lt_type<T, Ts>, bool>
-        ) && ...
-    )
-    constexpr bool broadcast_lt<T, Ts...> = broadcast_lt<Ts...>;
-
-    template <typename... Ts>
-    constexpr bool nothrow_broadcast_lt = true;
-    template <typename T, typename... Ts>
-    constexpr bool nothrow_broadcast_lt<T, Ts...> = false;
-    template <typename T, typename... Ts> requires (
-        (
-            meta::has_lt<T, Ts> &&
-            meta::explicitly_convertible_to<meta::lt_type<T, Ts>, bool>
-        ) && ...
-    )
-    constexpr bool nothrow_broadcast_lt<T, Ts...> = nothrow_broadcast_lt<Ts...>;
-
-    /* Do the same for the contents of a tuple-like container by first accumulating
-    the types yielded by series of `get<I>(T)` calls up to `std::tuple_size<T>`. */
-    template <meta::tuple_like T, size_t I = 0, typename... Ts>
-    constexpr bool tuple_broadcast_lt = broadcast_lt<Ts...>;
-    template <meta::tuple_like T, size_t I, typename... Ts>
-        requires (I < meta::tuple_size<T>)
-    constexpr bool tuple_broadcast_lt<T, I, Ts...> =
-        tuple_broadcast_lt<T, I + 1, Ts..., meta::get_type<T, I>>;
-
-    template <meta::tuple_like T, size_t I = 0, typename... Ts>
-    constexpr bool tuple_nothrow_broadcast_lt = nothrow_broadcast_lt<Ts...>;
-    template <meta::tuple_like T, size_t I, typename... Ts>
-        requires (I < meta::tuple_size<T>)
-    constexpr bool tuple_nothrow_broadcast_lt<T, I, Ts...> =
-        tuple_nothrow_broadcast_lt<T, I + 1, Ts..., meta::get_type<T, I>>;
-
-    /* Check whether the tuple type at index `I` is less-than comparable to the given
-    intermediate result type as part of a `min()`, `max()`, or `minmax()` operation. */
-    template <size_t I, typename T, typename Result>
-    concept broadcast_min_max = I >= meta::tuple_size<T> || (
-        meta::has_get<T, I> &&
-        meta::has_lt<meta::get_type<T, I>, Result> &&
-        meta::explicitly_convertible_to<meta::lt_type<meta::get_type<T, I>, Result>, bool>
-    );
-
-    template <size_t I, typename T, typename Result>
-    concept nothrow_broadcast_min_max = I >= meta::tuple_size<T> || (
-        meta::nothrow::has_get<T, I> &&
-        meta::nothrow::has_lt<meta::nothrow::get_type<T, I>, Result> &&
-        meta::nothrow::explicitly_convertible_to<
-            meta::nothrow::lt_type<meta::nothrow::get_type<T, I>, Result>,
-            bool
-        >
-    );
-
-    /* Implement `minmax()` for tuples, using `min` and `max` as intermediate
-    results. */
-    template <size_t I = 1, meta::tuple_like T, typename Min, typename Max>
-        requires (broadcast_min_max<I, T, Min> && broadcast_min_max<I, T, Max>)
-    constexpr auto broadcast_minmax(T&& t, Min&& min, Max&& max) noexcept(
-        nothrow_broadcast_min_max<I, T, Min> &&
-        nothrow_broadcast_min_max<I, T, Max>
-    ) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
-        if constexpr (I < meta::tuple_size<T>) {
-            if constexpr (meta::has_member_get<T, I>) {
-                if (std::forward<T>(t).template get<I>(t) < std::forward<Min>(min)) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::forward<T>(t).template get<I>(t),
-                        std::forward<Max>(max)
-                    );
-                }
-                if (std::forward<Max>(max) < std::forward<T>(t).template get<I>(t)) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::forward<Min>(min),
-                        std::forward<T>(t).template get<I>(t)
-                    );
-                }
-            } else if constexpr (meta::has_adl_get<T, I>) {
-                if (get<I>(std::forward<T>(t)) < std::forward<Min>(min)) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        get<I>(std::forward<T>(t)),
-                        std::forward<Max>(max)
-                    );
-                }
-                if (std::forward<Max>(max) < get<I>(std::forward<T>(t))) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::forward<Min>(min),
-                        get<I>(std::forward<T>(t))
-                    );
-                }
-            } else {
-                if (std::get<I>(std::forward<T>(t)) < std::forward<Min>(min)) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::get<I>(std::forward<T>(t)),
-                        std::forward<Max>(max)
-                    );
-                }
-                if (std::forward<Max>(max) < std::get<I>(std::forward<T>(t))) {
-                    return broadcast_minmax<I + 1>(
-                        std::forward<T>(t),
-                        std::forward<Min>(min),
-                        std::get<I>(std::forward<T>(t))
-                    );
-                }
-            }
-            return broadcast_minmax<I + 1>(
-                std::forward<T>(t),
-                std::forward<Min>(min),
-                std::forward<Max>(max)
-            );
-        } else {
-            return {std::forward<Min>(min), std::forward<Max>(max)};
-        }
-    }
-
-    /* Implement `minmax()` for tuples, initializing the intermediate results to
-    the first value in the tuple. */
-    template <meta::tuple_like T> requires (meta::tuple_size<T> > 0)
-    constexpr auto broadcast_minmax(T&& t) noexcept(
-        meta::nothrow::has_get<T, 0> &&
-        noexcept(broadcast_minmax(
-            std::forward<T>(t),
-            std::declval<meta::get_type<T, 0>>(),
-            std::declval<meta::get_type<T, 0>>()
-        ))
-    ) -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>> {
-        if constexpr (meta::has_member_get<T, 0>) {
-            return broadcast_minmax(
-                std::forward<T>(t),
-                std::forward<T>(t).template get<0>(t),
-                std::forward<T>(t).template get<0>(t)
-            );
-        } else if constexpr (meta::has_adl_get<T, 0>) {
-            return broadcast_minmax(
-                std::forward<T>(t),
-                get<0>(std::forward<T>(t)),
-                get<0>(std::forward<T>(t))
-            );
-        } else {
-            return broadcast_minmax(
-                std::forward<T>(t),
-                std::get<0>(std::forward<T>(t)),
-                std::get<0>(std::forward<T>(t))
-            );
-        }
-    }
-
 }
 
 
@@ -1047,6 +957,9 @@ template <meta::has_size Range>
 {
     return (std::ranges::ssize(r));
 }
+
+
+/// TODO: len() for tuple types?
 
 
 /* Get the distance between two iterators as a signed integer.  Equivalent to calling
@@ -1165,16 +1078,24 @@ template <
     meta::default_constructible F = impl::ExplicitConvertTo<bool>,
     typename... Args
 >
-    requires (
-        sizeof...(Args) > 1 &&
-        (meta::invocable<F, Args> && ...) &&
-        (meta::explicitly_convertible_to<meta::invoke_type<F, Args>, bool> && ...)
-    )
+    requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool any(Args&&... args)
-    noexcept(noexcept((F{}(std::forward<Args>(args)) || ...)))
+    noexcept(((
+        meta::nothrow::invocable<F, Args> &&
+        meta::nothrow::explicitly_convertible_to<
+            meta::invoke_type<F, Args>,
+            bool
+        >
+    ) && ...))
+    requires(((
+        meta::invocable<F, Args> &&
+        meta::explicitly_convertible_to<
+            meta::invoke_type<F, Args>,
+            bool
+        >
+    ) && ...))
 {
-    F func;
-    return (func(std::forward<Args>(args)) || ...);
+    return impl::truthy<Args...>::any(F{}, std::forward<Args>(args)...);
 }
 
 
@@ -1188,10 +1109,19 @@ template <
 >
     requires (!meta::iterable<T>)
 [[nodiscard]] constexpr bool any(T&& t)
-    noexcept(noexcept(impl::broadcast_any(std::forward<T>(t), F{})))
-    requires(requires{impl::broadcast_any(std::forward<T>(t), F{});})
+    noexcept(noexcept(meta::tuple_types<T>::template eval<impl::truthy>::any(
+        F{},
+        std::forward<T>(t)
+    )))
+    requires(requires{meta::tuple_types<T>::template eval<impl::truthy>::any(
+        F{},
+        std::forward<T>(t)
+    );})
 {
-    return impl::broadcast_any(std::forward<T>(t), F{});
+    return meta::tuple_types<T>::template eval<impl::truthy>::any(
+        F{},
+        std::forward<T>(t)
+    );;
 }
 
 
@@ -1224,16 +1154,24 @@ template <
     meta::default_constructible F = impl::ExplicitConvertTo<bool>,
     typename... Args
 >
-    requires (
-        sizeof...(Args) > 1 &&
-        (meta::invocable<F, Args> && ...) &&
-        (meta::explicitly_convertible_to<meta::invoke_type<F, Args>, bool> && ...)
-    )
+    requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool all(Args&&... args)
-    noexcept(noexcept((F{}(std::forward<Args>(args)) || ...)))
+    noexcept(((
+        meta::nothrow::invocable<F, Args> &&
+        meta::nothrow::explicitly_convertible_to<
+            meta::invoke_type<F, Args>,
+            bool
+        >
+    ) && ...))
+    requires(((
+        meta::invocable<F, Args> &&
+        meta::explicitly_convertible_to<
+            meta::invoke_type<F, Args>,
+            bool
+        >
+    ) && ...))
 {
-    F func;
-    return (func(std::forward<Args>(args)) && ...);
+    return impl::truthy<Args...>::any(F{}, std::forward<Args>(args)...);
 }
 
 
@@ -1247,10 +1185,19 @@ template <
 >
     requires (!meta::iterable<T>)
 [[nodiscard]] constexpr bool all(T&& t)
-    noexcept(noexcept(impl::broadcast_all(std::forward<T>(t), F{})))
-    requires(requires{impl::broadcast_all(std::forward<T>(t), F{});})
+    noexcept(noexcept(meta::tuple_types<T>::template eval<impl::truthy>::any(
+        F{},
+        std::forward<T>(t)
+    )))
+    requires(requires{meta::tuple_types<T>::template eval<impl::truthy>::any(
+        F{},
+        std::forward<T>(t)
+    );})
 {
-    return impl::broadcast_all(std::forward<T>(t), F{});
+    return meta::tuple_types<T>::template eval<impl::truthy>::any(
+        F{},
+        std::forward<T>(t)
+    );
 }
 
 
@@ -1276,82 +1223,91 @@ template <
 
 
 /* Apply a pairwise reduction function over the arguments from left to right, returning
-the accumulated result.  This is a generalization of `min()`, `max()`, `sum()`, etc.,
-which simply alias to specializations of this method for the proper reduction.
-User-defined algorithms can be provided to inject custom behavior, as long as they are
-default constructible and invocable with each pair of arguments.  The return type is
-deduced as the common type between each invocation, assuming one exists.  The function
-will fail to compile if these requirements are not met. */
+the accumulated result.  Formally evaluates to a recursive call chain of the form
+`F(F(F(F(x_1, x_2), x_3), ...), x_n)`, where `F` is the reduction function and `x_i`
+are the individual arguments.  The return type is deduced as the common type
+between each invocation, assuming one exists.
+
+This is effectively a generalization of the Python standard library `min()`, `max()`,
+`sum()`, and similar functions, which describe specializations of this method for
+particular reduction functions.  User-defined reductions can be provided as a template
+parameter to inject custom behavior, as long as it is default constructible and
+invocable with each pair of arguments.  The algorithm will fail to compile if any of
+these requirements are not met. */
 template <meta::default_constructible F, typename... Ts>
     requires (sizeof...(Ts) > 1)
-[[nodiscard]] constexpr impl::fold_left<F, Ts...>::type fold_left(Ts&&... args)
+[[nodiscard]] constexpr decltype(auto) fold_left(Ts&&... args)
     noexcept(impl::fold_left<F, Ts...>::nothrow)
     requires(impl::fold_left<F, Ts...>::enable)
 {
-    return [](
-        this auto&& self,
-        auto&& func,
-        auto&& out,
-        auto&& curr,
-        auto&&... next
-    )
-        noexcept(impl::fold_left<F, Ts...>::nothrow) -> decltype(auto)
-    {
-        if constexpr (sizeof...(next) > 0) {
-            return (std::forward<decltype(self)>(self)(
-                std::forward<decltype(func)>(func),
-                std::forward<decltype(func)>(func)(
-                    std::forward<decltype(out)>(out),
-                    std::forward<decltype(curr)>(curr)
-                ),
-                std::forward<decltype(next)>(next)...
-            ));
-        } else {
-            return (std::forward<decltype(func)>(func)(
-                std::forward<decltype(out)>(out),
-                std::forward<decltype(curr)>(curr)
-            ));
-        }
-    }(F{}, std::forward<Ts>(args)...);
+    return (impl::_fold_left<Ts...>{}(F{}, std::forward<Ts>(args)...));
+}
+
+
+/* Apply a pairwise reduction function over a non-empty, tuple-like container that is
+indexable via `get<I>()` (as a member method, ADL function, or `std::get<I>()`) from
+left to right, returning the accumulated result.  Formally evaluates to a recursive
+call chain of the form `F(F(F(F(x_1, x_2), x_3), ...), x_n)`, where `F` is the
+reduction function and `x_i` are the tuple elements.  The return type deduces to the
+common type between each invocation, assuming one exists.
+
+This is effectively a generalization of the Python standard library `min()`, `max()`,
+`sum()`, and similar functions, which describe specializations of this method for
+particular reduction functions.  User-defined reductions can be provided as a template
+parameter to inject custom behavior, as long as it is default constructible and
+invocable with each pair of elements.  The algorithm will fail to compile if any of
+these requirements are not met. */
+template <meta::default_constructible F, meta::tuple_like T>
+    requires (meta::tuple_size<T> > 0)
+[[nodiscard]] constexpr decltype(auto) fold_left(T&& t)
+    noexcept(meta::nothrow::apply_func<
+        typename meta::tuple_types<T>::template eval<impl::_fold_left>,
+        F,
+        T
+    >)
+    requires(meta::apply_func<
+        typename meta::tuple_types<T>::template eval<impl::_fold_left>,
+        F,
+        T
+    >)
+{
+    return (apply(
+        typename meta::tuple_types<T>::template eval<impl::_fold_left>{},
+        F{},
+        std::forward<T>(t)
+    ));
 }
 
 
 /* Apply a pairwise reduction function over an iterable range from left to right,
-returning the accumulated result.  This is a generalization of `min()`, `max()`,
-`sum()`, etc., which simply alias to specializations of this method for the proper
-reduction.  User-defined algorithms can be provided to inject custom behavior, as
-long as they are default constructible and invocable with each pair of arguments.
-The return type is deduced as `Optional<T>`, where `T` is the common type between each
-invocation, assuming one exists.  If the input range is empty, then the result will
-be in the empty state.  Otherwise, it will contain the accumulated result.  This is
-equivalent to a `std::ranges::fold_left()` call under the hood, but explicitly checks
-for an empty range and encodes the result as an optional, rather than invoking
-undefined behavior. */
+returning the accumulated result.  Formally evaluates to a recursive call chain of the
+form `F(F(F(F(x_1, x_2), x_3), ...), x_n)`, where `F` is the reduction function and
+`x_i` are the elements of the range.  The return type deduces to `Optional<T>`, where
+`T` is the common type between each invocation, assuming one exists.  The empty state
+corresponds to an empty range, which cannot be reduced.
+
+This is effectively a generalization of the Python standard library `min()`, `max()`,
+`sum()`, and similar functions, which describe specializations of this method for
+particular reduction functions.  User-defined reductions can be provided as a template
+parameter to inject custom behavior, as long as it is default constructible and
+invocable with each pair of elements.  The algorithm will fail to compile if any of
+these requirements are not met. */
 template <meta::default_constructible F, meta::iterable T>
     requires (!meta::tuple_like<T>)
 [[nodiscard]] constexpr auto fold_left(T&& r)
     noexcept(
-        noexcept(std::ranges::begin(r) == std::ranges::end(r)) &&
-        noexcept(std::ranges::fold_left(
+        noexcept(bool(std::ranges::begin(r) == std::ranges::end(r))) &&
+        noexcept(Optional<decltype(std::ranges::fold_left(
             std::ranges::begin(r),
             std::ranges::end(r),
             *std::ranges::begin(r),
             F{}
-        )) &&
-        meta::nothrow::convertible_to<
-            decltype(std::ranges::fold_left(
-                std::ranges::begin(r),
-                std::ranges::end(r),
-                *std::ranges::begin(r),
-                F{}
-            )),
-            Optional<decltype(std::ranges::fold_left(
-                std::ranges::begin(r),
-                std::ranges::end(r),
-                *std::ranges::begin(r),
-                F{}
-            ))>
-        >
+        ))>(std::ranges::fold_left(
+            std::ranges::begin(r),
+            std::ranges::end(r),
+            *std::ranges::begin(r),
+            F{}
+        )))
     )
     -> Optional<decltype(std::ranges::fold_left(
         std::ranges::begin(r),
@@ -1394,81 +1350,23 @@ template <meta::default_constructible F, meta::iterable T>
 }
 
 
-namespace impl {
-
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-    constexpr bool enable_tuple_fold_left =
-        requires(Ts... ts) {bertrand::fold_left<F>(ts...);};
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-        requires (I < meta::tuple_size<tuple>)
-    constexpr bool enable_tuple_fold_left<F, I, tuple, Ts...> =
-        enable_tuple_fold_left<F, I + 1, tuple, Ts..., meta::get_type<tuple, I>>;
-
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-    constexpr bool nothrow_tuple_fold_left =
-        noexcept(noexcept(bertrand::fold_left<F>(std::declval<Ts>()...)));
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-        requires (I < meta::tuple_size<tuple>)
-    constexpr bool nothrow_tuple_fold_left<F, I, tuple, Ts...> =
-        nothrow_tuple_fold_left<F, I + 1, tuple, Ts..., meta::get_type<tuple, I>>;
-
-    template <meta::default_constructible F, meta::tuple_like T>
-    [[nodiscard]] constexpr decltype(auto) tuple_fold_left(T&& t)
-        noexcept(noexcept(meta::tuple_get<0>(std::forward<T>(t))))
-        requires(meta::tuple_size<T> == 1 && meta::has_get<T, 0>)
-    {
-        return (meta::tuple_get<0>(std::forward<T>(t)));
-    }
-
-    template <meta::default_constructible F, meta::tuple_like T>
-        requires (meta::tuple_size<T> > 1)
-    [[nodiscard]] constexpr decltype(auto) tuple_fold_left(T&& t)
-        noexcept(nothrow_tuple_fold_left<F, 0, T>)
-        requires(enable_tuple_fold_left<F, 0, T>)
-    {
-        return []<size_t... Is>(std::index_sequence<Is...>, auto&& t)
-            noexcept(nothrow_tuple_fold_left<F, 0, T>) -> decltype(auto)
-        {
-            return (bertrand::fold_left<F>(meta::tuple_get<Is>(std::forward<T>(t))...));
-        }(std::make_index_sequence<meta::tuple_size<T>>{}, std::forward<T>(t));
-    }
-
-}
 
 
-/* Apply a pairwise reduction function over a non-empty, tuple-like container that is
-indexable via `get<I>()` (as a member method, ADL function, or `std::get<I>()`) from
-left to right, returning the accumulated result.  This is a generalization of `min()`,
-`max()`, `sum()`, etc., which simply alias to specializations of this method for the
-proper reduction.  User-defined algorithms can be provided to inject custom behavior,
-as long as they are default constructible and invocable with each pair of arguments.
-The return type deduces to the common type between each invocation, assuming one
-exists.  The function will fail to compile if these requirements are not met. */
-template <meta::default_constructible F, meta::tuple_like T>
-    requires (meta::tuple_size<T> > 0)
-[[nodiscard]] constexpr decltype(auto) fold_left(T&& t)
-    noexcept(noexcept(impl::tuple_fold_left<F>(std::forward<T>(t))))
-    requires(requires{impl::tuple_fold_left<F>(std::forward<T>(t));})
-{
-    if constexpr (meta::tuple_size<T> == 1) {
-        return (meta::tuple_get<0>(std::forward<T>(t)));
-    } else {
-        return []<size_t... Is>(std::index_sequence<Is...>, auto&& t) noexcept(
-            impl::fold_left<F, meta::get_type<T, Is>...>::nothrow
-        ) -> decltype(auto) {
-            return (fold_left<F>(meta::tuple_get<Is>(std::forward<T>(t))...));
-        }(std::make_index_sequence<meta::tuple_size<T>>{}, std::forward<T>(t));
-    }
-}
 
 
-/* Apply a pairwise reduction function over the arguments from right to left, returning
-the accumulated result.  This is a generalization of `min()`, `max()`, `sum()`, etc.,
-which alias to specializations of `fold_left()`, the left-to-right analogue for this
-method.  User-defined algorithms can be provided to inject custom behavior, as long as
-they are default constructible and invocable with each pair of arguments.  The return
-type is deduced as the common type between each invocation, assuming one exists.  The
-function will fail to compile if these requirements are not met. */
+
+/* Apply a pairwise reduction function over the arguments from left to right, returning
+the accumulated result.  Formally evaluates to a recursive call chain of the form
+`F(x_1, F(x_2, F(..., F(x_n-1, x_n)))`, where `F` is the reduction function and `x_i`
+are the individual arguments.  The return type is deduced as the common type
+between each invocation, assuming one exists.
+
+This is effectively a generalization of the Python standard library `min()`, `max()`,
+`sum()`, and similar functions, which describe specializations of this method for
+particular reduction functions.  User-defined reductions can be provided as a template
+parameter to inject custom behavior, as long as it is default constructible and
+invocable with each pair of arguments.  The algorithm will fail to compile if any of
+these requirements are not met. */
 template <meta::default_constructible F, typename... Ts>
     requires (sizeof...(Ts) > 1)
 [[nodiscard]] constexpr impl::fold_right<F, Ts...>::type fold_right(Ts&&... args)
@@ -1503,44 +1401,80 @@ template <meta::default_constructible F, typename... Ts>
 }
 
 
+namespace impl {
+
+    template <typename F>
+    struct tuple_fold_right {
+        template <typename T>
+        static constexpr decltype(auto) operator()(T&& arg) noexcept {
+            return (std::forward<T>(arg));
+        }
+        template <typename... Ts> requires (sizeof...(Ts) > 1)
+        static constexpr decltype(auto) operator()(Ts&&... args)
+            noexcept(impl::fold_right<F, Ts...>::nothrow)
+            requires(impl::fold_right<F, Ts...>::enable)
+        {
+            return (bertrand::fold_right<F>(std::forward<Ts>(args)...));
+        }
+    };
+
+}
+
+
+/* Apply a pairwise reduction function over a non-empty, tuple-like container that is
+indexable via `get<I>()` (as a member method, ADL function, or `std::get<I>()`) from
+left to right, returning the accumulated result.  Formally evaluates to a recursive
+call chain of the form `F(x_1, F(x_2, F(..., F(x_n-1, x_n)))`, where `F` is the
+reduction function and `x_i` are the tuple elements.  The return type deduces to the
+common type between each invocation, assuming one exists.
+
+This is effectively a generalization of the Python standard library `min()`, `max()`,
+`sum()`, and similar functions, which describe specializations of this method for
+particular reduction functions.  User-defined reductions can be provided as a template
+parameter to inject custom behavior, as long as it is default constructible and
+invocable with each pair of elements.  The algorithm will fail to compile if any of
+these requirements are not met. */
+template <meta::default_constructible F, meta::tuple_like T>
+    requires (meta::tuple_size<T> > 0)
+[[nodiscard]] constexpr decltype(auto) fold_right(T&& t)
+    noexcept(meta::nothrow::apply_func<impl::tuple_fold_right<F>, T>)
+    requires(meta::apply_func<impl::tuple_fold_right<F>, T>)
+{
+    return (apply(impl::tuple_fold_right<F>{}, std::forward<T>(t)));
+}
+
+
 #ifdef __cpp_lib_ranges_fold
 
     /* Apply a pairwise reduction function over an iterable range from left to right,
-    returning the accumulated result.  This is a generalization of `min()`, `max()`,
-    `sum()`, etc., which simply alias to specializations of this method for the proper
-    reduction.  User-defined algorithms can be provided to inject custom behavior, as
-    long as they are default constructible and invocable with each pair of arguments.
-    The return type is deduced as `Optional<T>`, where `T` is the common type between each
-    invocation, assuming one exists.  If the input range is empty, then the result will
-    be in the empty state.  Otherwise, it will contain the accumulated result.  This is
-    equivalent to a `std::ranges::fold_right()` call under the hood, but explicitly checks
-    for an empty range and encodes the result as an optional, rather than invoking
-    undefined behavior. */
+    returning the accumulated result.  Formally evaluates to a recursive call chain of
+    the form `F(x_1, F(x_2, F(..., F(x_n-1, x_n)))`, where `F` is the reduction
+    function and `x_i` are the elements of the range.  The return type deduces to
+    `Optional<T>`, where `T` is the common type between each invocation, assuming one
+    exists.  The empty state corresponds to an empty range, which cannot be reduced.
+
+    This is effectively a generalization of the Python standard library `min()`,
+    `max()`, `sum()`, and similar functions, which describe specializations of this
+    method for particular reduction functions.  User-defined reductions can be provided
+    as a template parameter to inject custom behavior, as long as it is default
+    constructible and invocable with each pair of elements.  The algorithm will fail to
+    compile if any of these requirements are not met. */
     template <meta::default_constructible F, meta::iterable T>
         requires (!meta::tuple_like<T>)
     [[nodiscard]] constexpr auto fold_right(T&& r)
         noexcept(
-            noexcept(std::ranges::begin(r) == std::ranges::end(r)) &&
-            noexcept(std::ranges::fold_right(
+            noexcept(bool(std::ranges::begin(r) == std::ranges::end(r))) &&
+            noexcept(Optional<decltype(std::ranges::fold_right(
                 std::ranges::begin(r),
                 std::ranges::end(r),
                 *std::ranges::begin(r),
                 F{}
-            )) &&
-            meta::nothrow::convertible_to<
-                decltype(std::ranges::fold_right(
-                    std::ranges::begin(r),
-                    std::ranges::end(r),
-                    *std::ranges::begin(r),
-                    F{}
-                )),
-                Optional<decltype(std::ranges::fold_right(
-                    std::ranges::begin(r),
-                    std::ranges::end(r),
-                    *std::ranges::begin(r),
-                    F{}
-                ))>
-            >
+            ))>(std::ranges::fold_right(
+                std::ranges::begin(r),
+                std::ranges::end(r),
+                *std::ranges::begin(r),
+                F{}
+            )))
         )
         -> Optional<decltype(std::ranges::fold_right(
             std::ranges::begin(r),
@@ -1585,78 +1519,20 @@ template <meta::default_constructible F, typename... Ts>
 #endif
 
 
-namespace impl {
-
-    
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-    constexpr bool enable_tuple_fold_right =
-        requires(Ts... ts) {bertrand::fold_right<F>(ts...);};
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-        requires (I < meta::tuple_size<tuple>)
-    constexpr bool enable_tuple_fold_right<F, I, tuple, Ts...> =
-        enable_tuple_fold_right<F, I + 1, tuple, Ts..., meta::get_type<tuple, I>>;
-
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-    constexpr bool nothrow_tuple_fold_right =
-        noexcept(noexcept(bertrand::fold_right<F>(std::declval<Ts>()...)));
-    template <typename F, size_t I, meta::tuple_like tuple, typename... Ts>
-        requires (I < meta::tuple_size<tuple>)
-    constexpr bool nothrow_tuple_fold_right<F, I, tuple, Ts...> =
-        nothrow_tuple_fold_right<F, I + 1, tuple, Ts..., meta::get_type<tuple, I>>;
-
-    template <meta::default_constructible F, meta::tuple_like T>
-    [[nodiscard]] constexpr decltype(auto) tuple_fold_right(T&& t)
-        noexcept(noexcept(meta::tuple_get<0>(std::forward<T>(t))))
-        requires(meta::tuple_size<T> == 1 && meta::has_get<T, 0>)
-    {
-        return (meta::tuple_get<0>(std::forward<T>(t)));
-    }
-
-    template <meta::default_constructible F, meta::tuple_like T>
-        requires (meta::tuple_size<T> > 1)
-    [[nodiscard]] constexpr decltype(auto) tuple_fold_right(T&& t)
-        noexcept(nothrow_tuple_fold_right<F, 0, T>)
-        requires(enable_tuple_fold_right<F, 0, T>)
-    {
-        return []<size_t... Is>(std::index_sequence<Is...>, auto&& t)
-            noexcept(nothrow_tuple_fold_right<F, 0, T>) -> decltype(auto)
-        {
-            return (bertrand::fold_right<F>(meta::tuple_get<Is>(std::forward<T>(t))...));
-        }(std::make_index_sequence<meta::tuple_size<T>>{}, std::forward<T>(t));
-    }
-
-}
 
 
-/* Apply a pairwise reduction function over a non-empty, tuple-like container that is
-indexable via `get<I>()` (as a member method, ADL function, or `std::get<I>()`) from
-right to left, returning the accumulated result.  This is a generalization of `min()`,
-`max()`, `sum()`, etc., which simply alias to specializations of this method for the
-proper reduction.  User-defined algorithms can be provided to inject custom behavior,
-as long as they are default constructible and invocable with each pair of arguments.
-The return type deduces to the common type between each invocation, assuming one
-exists.  The function will fail to compile if these requirements are not met. */
-template <meta::default_constructible F, meta::tuple_like T>
-    requires (meta::tuple_size<T> > 0)
-[[nodiscard]] constexpr decltype(auto) fold_right(T&& t)
-    noexcept(noexcept(impl::tuple_fold_right<F>(std::forward<T>(t))))
-    requires(requires{impl::tuple_fold_right<F>(std::forward<T>(t));})
-{
-    if constexpr (meta::tuple_size<T> == 1) {
-        return (meta::tuple_get<0>(std::forward<T>(t)));
-    } else {
-        return []<size_t... Is>(std::index_sequence<Is...>, auto&& t) noexcept(
-            impl::fold_right<F, meta::get_type<T, Is>...>::nothrow
-        ) -> decltype(auto) {
-            return (fold_right<F>(meta::tuple_get<Is>(std::forward<T>(t))...));
-        }(std::make_index_sequence<meta::tuple_size<T>>{}, std::forward<T>(t));
-    }
-}
+
+
+
 
 
 /// TODO: it's possible that if I replicate the logic from `fold_left()` internally,
 /// then `min()` and `max()` can be slightly more efficient, since they won't need
 /// to convert to the common type until the very end of the template recursion.
+
+/// TODO: the return type in this case equates to the common type of all Ts...,
+/// which may simplify the logic somewhat.
+
 
 
 /* Left-fold to obtain the minimum value of a sequence of arguments, a tuple-like
@@ -1672,18 +1548,119 @@ type will be promoted to an `Optional<T>`, where an empty container correlates w
 empty optional.  The function will fail to compile if any of these requirements are not
 met. */
 template <meta::default_constructible F = impl::Less, typename... Ts>
+    requires (sizeof...(Ts) > 1)
 [[nodiscard]] constexpr decltype(auto) min(Ts&&... args)
-    noexcept(noexcept(fold_left<impl::reverse_arguments<impl::choose_left<F>>>(
-        std::forward<Ts>(args)...
-    )))
-    requires(requires{fold_left<impl::reverse_arguments<impl::choose_left<F>>>(
-        std::forward<Ts>(args)...
-    );})
+    noexcept(impl::fold_left<
+        impl::reverse_arguments<impl::choose_left<F>>,
+        Ts...
+    >::nothrow)
+    requires(impl::fold_left<
+        impl::reverse_arguments<impl::choose_left<F>>,
+        Ts...
+    >::enable)
 {
-    return (fold_left<impl::reverse_arguments<impl::choose_left<F>>>(
-        std::forward<Ts>(args)...
-    ));
+    return [](
+        this auto&& self,
+        auto&& func,
+        auto&& out,
+        auto&& curr,
+        auto&&... next
+    )
+        noexcept(impl::fold_left<
+            impl::reverse_arguments<impl::choose_left<F>>,
+            Ts...
+        >::nothrow) -> decltype(auto)
+    {
+        if constexpr (sizeof...(next) > 0) {
+            if (std::forward<decltype(func)>(func)(
+                std::forward<decltype(curr)>(curr),
+                std::forward<decltype(out)>(out)
+            )) {
+                return (std::forward<decltype(self)>(self)(
+                    std::forward<decltype(func)>(func),
+                    std::forward<decltype(curr)>(curr),
+                    std::forward<decltype(next)>(next)...
+                ));
+            }
+            return (std::forward<decltype(self)>(self)(
+                std::forward<decltype(func)>(func),
+                std::forward<decltype(out)>(out),
+                std::forward<decltype(next)>(next)...
+            ));
+        } else {
+            using type = impl::fold_left<
+                impl::reverse_arguments<impl::choose_left<F>>,
+                Ts...
+            >::type;
+            if (std::forward<decltype(func)>(func)(
+                std::forward<decltype(curr)>(curr),
+                std::forward<decltype(out)>(out)
+            )) {
+                return (static_cast<type>(std::forward<decltype(curr)>(curr)));
+            }
+            return (static_cast<type>(std::forward<decltype(out)>(out)));
+        }
+    }(F{}, std::forward<Ts>(args)...);
 }
+
+
+namespace impl {
+
+    template <typename F>
+    struct tuple_min {
+        template <typename T>
+        static constexpr decltype(auto) operator()(T&& arg) noexcept {
+            return (std::forward<T>(arg));
+        }
+        template <typename... Ts> requires (sizeof...(Ts) > 1)
+        static constexpr decltype(auto) operator()(Ts&&... args)
+            noexcept(noexcept(bertrand::min<F>(std::forward<Ts>(args)...)))
+            requires(requires{bertrand::min<F>(std::forward<Ts>(args)...);})
+        {
+            return (bertrand::min<F>(std::forward<Ts>(args)...));
+        }
+    };
+
+}
+
+
+template <meta::default_constructible F = impl::Less, meta::tuple_like T>
+    requires (meta::tuple_size<T> > 0)
+[[nodiscard]] constexpr decltype(auto) min(T&& t)
+    noexcept(meta::nothrow::apply_func<impl::tuple_min<F>, T>)
+    requires(meta::apply_func<impl::tuple_min<F>, T>)
+{
+    return (apply(impl::tuple_min<F>{}, std::forward<T>(t)));
+}
+
+
+template <meta::default_constructible F = impl::Less, meta::iterable T>
+    requires (!meta::tuple_like<T>)
+[[nodiscard]] constexpr auto min(T&& r)
+    noexcept(
+        noexcept(bool(std::ranges::empty(r))) &&
+        noexcept(Optional<decltype(std::ranges::min(std::forward<T>(r), F{}))>(
+            std::ranges::min(std::forward<T>(r), F{})
+        ))
+    )
+    -> Optional<decltype(std::ranges::min(std::forward<T>(r), F{}))>
+    requires(requires{
+        { std::ranges::empty(r) } -> meta::explicitly_convertible_to<bool>;
+        { std::ranges::min(std::forward<T>(r), F{}) } -> meta::convertible_to<
+            Optional<decltype(std::ranges::min(std::forward<T>(r), F{}))>
+        >;
+    })
+{
+    if (std::ranges::empty(r)) {
+        return std::nullopt;
+    }
+    return std::ranges::min(std::forward<T>(r), F{});
+}
+
+
+
+
+
 
 
 /* Left-fold to obtain the maximum value of a sequence of arguments, a tuple-like
@@ -1859,112 +1836,6 @@ inline void test() {
     static_assert(&minmax.first == &a);
     static_assert(minmax.second == "c");
     static_assert(&minmax.second == &c);
-}
-
-
-
-
-
-/* Get the minimum and maximum of an arbitrary list of values that share a common type.
-This effectively generates an O(n) sequence of `<` comparisons between each argument at
-compile time, converting the winning values to the common type at the end. */
-template <typename... Ts>
-    requires (
-        sizeof...(Ts) > 1 &&
-        meta::has_common_type<Ts...> &&
-        impl::broadcast_lt<Ts...>
-    )
-[[nodiscard]] constexpr auto minmax(Ts&&... args)
-    noexcept(
-        impl::nothrow_broadcast_lt<Ts...> &&
-        (meta::nothrow::convertible_to<Ts, meta::common_type<Ts...>> && ...)
-    )
-    -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>>
-{
-    return []<size_t I = 0>(
-        this auto&& self,
-        auto&& min,
-        auto&& max,
-        auto&&... rest
-    ) -> std::pair<meta::common_type<Ts...>, meta::common_type<Ts...>> {
-        if constexpr (I < sizeof...(rest)) {
-            if (
-                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...) <
-                std::forward<decltype(min)>(min)
-            ) {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    std::forward<decltype(max)>(max),
-                    std::forward<decltype(rest)>(rest)...
-                );
-            }
-            if (
-                std::forward<decltype(max)>(max) <
-                meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...)
-            ) {
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                    std::forward<decltype(min)>(min),
-                    meta::unpack_arg<I>(std::forward<decltype(rest)>(rest)...),
-                    std::forward<decltype(rest)>(rest)...
-                );
-            }
-            return std::forward<decltype(self)>(self).template operator()<I + 1>(
-                std::forward<decltype(min)>(min),
-                std::forward<decltype(max)>(max),
-                std::forward<decltype(rest)>(rest)...
-            );
-        } else {
-            return {std::forward<decltype(min)>(min), std::forward<decltype(max)>(max)};
-        }
-    }(meta::unpack_arg<0>(std::forward<Ts>(args)...), std::forward<Ts>(args)...);
-}
-
-
-/* Get the minimum and maximum of the values stored within a tuple-like container.
-This effectively generates an O(n) sequence of `<` comparisons between each argument
-at compile time, converting the winning values to the common type at the end. */
-template <meta::tuple_like T>
-    requires (
-        !meta::iterable<T> &&
-        meta::tuple_size<T> > 0 &&
-        meta::has_common_tuple_type<T> &&
-        impl::tuple_broadcast_lt<T>
-    )
-[[nodiscard]] constexpr auto minmax(T&& t)
-    noexcept(noexcept(impl::broadcast_minmax(std::forward<T>(t))))
-    -> std::pair<meta::common_tuple_type<T>, meta::common_tuple_type<T>>
-    requires(requires{impl::broadcast_minmax(std::forward<T>(t));})
-{
-    return impl::broadcast_minmax(std::forward<T>(t));
-}
-
-
-/* Get the minimum and maximum of a sequence of values as an input range.  This is
-equivalent to a `std::ranges::minmax()` call under the hood, but explicitly checks for
-an empty range and returns an empty optional, rather than invoking undefined
-behavior. */
-template <meta::iterable T>
-[[nodiscard]] constexpr auto minmax(T&& r)
-    noexcept(
-        noexcept(std::ranges::empty(r)) &&
-        noexcept(std::ranges::minmax(std::forward<T>(r))) &&
-        meta::nothrow::convertible_to<
-            decltype(std::ranges::minmax(std::forward<T>(r))),
-            Optional<decltype(std::ranges::minmax(std::forward<T>(r)))>
-        >
-    )
-    -> Optional<decltype(std::ranges::minmax(std::declval<T>()))>
-    requires(requires{
-        { std::ranges::empty(r) } -> meta::explicitly_convertible_to<bool>;
-        { std::ranges::minmax(std::forward<T>(r)) } -> meta::convertible_to<
-            Optional<decltype(std::ranges::minmax(std::forward<T>(r)))>
-        >;
-    })
-{
-    if (std::ranges::empty(r)) {
-        return std::nullopt;
-    }
-    return std::ranges::minmax(std::forward<T>(r));
 }
 
 
