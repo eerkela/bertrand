@@ -3764,14 +3764,6 @@ constexpr decltype(auto) apply(F&& func, Ts&&... args)
 
 namespace impl {
 
-    /* A generic sentinel type to simplify iterator implementations. */
-    struct sentinel {
-        constexpr bool operator==(sentinel) const noexcept { return true; }
-        constexpr auto operator<=>(sentinel) const noexcept {
-            return std::strong_ordering::equal;
-        }
-    };
-
     /* A helper type that simplifies friend declarations for wrapper types.  Every
     subclass of `wrapper` should declare this as a friend and provide its own
     `getter()` private method to implement its behavior. */
