@@ -722,16 +722,16 @@ namespace impl {
         template <meta::invocable<out, curr> F>
             requires (meta::has_common_type<out, meta::invoke_type<F, out, curr>>)
         struct traits<F> {
-            using result = _fold_left<
+            using recur = _fold_left<
                 meta::common_type<out, meta::invoke_type<F, out, curr>>,
                 next...
             >::template traits<F>;
-            using type = result::type;
-            static constexpr bool enable = result::enable;
+            using type = recur::type;
+            static constexpr bool enable = recur::enable;
             static constexpr bool nothrow =
                 meta::nothrow::invocable<F, out, curr> &&
                 meta::nothrow::convertible_to<meta::invoke_type<F, out, curr>, type> &&
-                result::nothrow;
+                recur::nothrow;
         };
         template <typename F, meta::is<out> L, meta::is<curr> R, meta::is<next>... Ts>
         static constexpr decltype(auto) operator()(
@@ -753,17 +753,10 @@ namespace impl {
     template <typename F, typename... Ts>
     using fold_left = _fold_left<Ts...>::template traits<F>;
 
-
-
-    /// TODO: the tricky thing here is maintaining the correct order of operations
-    /// during the fold, and that will require some thought.  After that, it's just
-    /// modernizing min(), max(), and minmax() and then this bit will be done and
-    /// robustly implemented, without any cheap hacks.
-
     /* Apply a pairwise function over the arguments to implement a `fold_right()`
     function call. */
     template <typename out, typename...>
-    struct fold_right {
+    struct _fold_right {
         template <typename F>
         struct traits {
             using type = out;
@@ -775,93 +768,58 @@ namespace impl {
             return std::forward<T>(arg);
         }
     };
-    template <typename F, typename out, typename curr, typename... next>
-        requires (
-            meta::invocable<F, typename fold_right<F, curr, next...>::type, out> &&
-            meta::has_common_type<
+    template <typename out, typename curr, typename... next>
+    struct _fold_right<out, curr, next...> {
+        template <typename F>
+        using recur = _fold_right<curr, next...>::template traits<F>;
+
+        template <typename F>
+        struct traits {
+            using type = void;
+            static constexpr bool enable = false;
+            static constexpr bool nothrow = false;
+        };
+        template <typename F>
+            requires (
+                meta::invocable<F, out, typename recur<F>::type> &&
+                meta::has_common_type<
+                    out,
+                    meta::invoke_type<F, out, typename recur<F>::type>
+                >
+            )
+        struct traits<F> {
+            using type = meta::common_type<
                 out,
-                meta::invoke_type<F, typename fold_right<F, curr, next...>::type, out>
-            >
-        )
-    struct fold_right<F, out, curr, next...> {
-        // template <typename F>
-        // struct traits {
-        //     using type = void;
-        //     static constexpr bool enable = false;
-        //     static constexpr bool nothrow = false;
-        // };
-        // template <typename F>
-        //     requires (
-        //         meta::invocable<F, typename fold_right<F,curr, next...>::type, out> &&
-        //         meta::has_common_type<
-        //             out,
-        //             meta::invoke_type<F, typename fold_right<F, curr, next...>::type, out>
-        //         >
-        //     )
-        //         meta::has_common_type<out, meta::invoke_type<F, out, curr>>
-        //     )
-        // struct traits<F> {
-        //     using result = _fold_left<
-        //         meta::common_type<out, meta::invoke_type<F, out, curr>>,
-        //         next...
-        //     >::template traits<F>;
-        //     using type = result::type;
-        //     static constexpr bool enable = result::enable;
-        //     static constexpr bool nothrow =
-        //         meta::nothrow::invocable<F, out, curr> &&
-        //         meta::nothrow::convertible_to<meta::invoke_type<F, out, curr>, type> &&
-        //         result::nothrow;
-        // };
-        // template <typename F, meta::is<out> L, meta::is<curr> R, meta::is<next>... Ts>
-        // static constexpr decltype(auto) operator()(
-        //     F&& func,
-        //     L&& lhs,
-        //     R&& rhs,
-        //     Ts&&... rest
-        // ) noexcept(traits<F>::nothrow) {
-        //     return (_fold_left<
-        //         meta::common_type<out, meta::invoke_type<F, out, curr>>,
-        //         next...
-        //     >{}(
-        //         std::forward<F>(func),
-        //         std::forward<F>(func)(std::forward<L>(lhs), std::forward<R>(rhs)),
-        //         std::forward<Ts>(rest)...
-        //     ));
-        // }
-
-
-
-
-        using result = fold_right<F, curr, next...>;
-        using type =
-            meta::common_type<out, meta::invoke_type<F, typename result::type, out>>;
-        static constexpr bool enable = result::enable;
-        template <typename G>
-        static constexpr bool _nothrow = false;
-        template <meta::nothrow::invocable<typename result::type, out> G>
-        static constexpr bool _nothrow<G> =
-            meta::nothrow::convertible_to<
-                meta::nothrow::invoke_type<G, typename result::type, out>,
-                type
-            > && result::nothrow;
-        static constexpr bool nothrow = _nothrow<F>;
+                meta::invoke_type<F, out, typename recur<F>::type>
+            >;
+            static constexpr bool enable = recur<F>::enable;
+            static constexpr bool nothrow =
+                recur<F>::nothrow &&
+                meta::nothrow::invocable<F, out, typename recur<F>::type> &&
+                meta::nothrow::convertible_to<
+                    meta::invoke_type<F, out, typename recur<F>::type>,
+                    type
+                >;
+        };
+        template <typename F, meta::is<out> L, meta::is<curr> R, meta::is<next>... Ts>
+        static constexpr decltype(auto) operator()(
+            F&& func,
+            L&& lhs,
+            R&& rhs,
+            Ts&&... rest
+        ) noexcept(traits<F>::nothrow) {
+            return (std::forward<F>(func)(
+                std::forward<L>(lhs),
+                _fold_right<curr, next...>{}(
+                    std::forward<F>(func),
+                    std::forward<R>(rhs),
+                    std::forward<Ts>(rest)...
+                )
+            ));
+        }
     };
-    template <typename F, typename out, typename curr, typename... next>
-        requires (
-            !meta::invocable<F, typename fold_right<F, curr, next...>::type, out> ||
-            !meta::has_common_type<
-                out,
-                meta::invoke_type<F, typename fold_right<F, curr, next...>::type, out>
-            >
-        )
-    struct fold_right<F, out, curr, next...> {
-        using type = void;
-        static constexpr bool enable = false;
-        static constexpr bool nothrow = false;
-    };
-
-
-
+    template <typename F, typename... Ts>
+    using fold_right = _fold_right<Ts...>::template traits<F>;
 
     /* Convert a binary boolean predicate into an accumulator for use with `fold_left`
     and `fold_right`.  If the function returns true, the left operand will be
@@ -1350,11 +1308,6 @@ template <meta::default_constructible F, meta::iterable T>
 }
 
 
-
-
-
-
-
 /* Apply a pairwise reduction function over the arguments from left to right, returning
 the accumulated result.  Formally evaluates to a recursive call chain of the form
 `F(x_1, F(x_2, F(..., F(x_n-1, x_n)))`, where `F` is the reduction function and `x_i`
@@ -1369,55 +1322,11 @@ invocable with each pair of arguments.  The algorithm will fail to compile if an
 these requirements are not met. */
 template <meta::default_constructible F, typename... Ts>
     requires (sizeof...(Ts) > 1)
-[[nodiscard]] constexpr impl::fold_right<F, Ts...>::type fold_right(Ts&&... args)
+[[nodiscard]] constexpr decltype(auto) fold_right(Ts&&... args)
     noexcept(impl::fold_right<F, Ts...>::nothrow)
     requires(impl::fold_right<F, Ts...>::enable)
 {
-    return [](
-        this auto&& self,
-        auto&& func,
-        auto&& out,
-        auto&& curr,
-        auto&&... next
-    )
-        noexcept(impl::fold_right<F, Ts...>::nothrow) -> decltype(auto)
-    {
-        if constexpr (sizeof...(next) > 0) {
-            return (std::forward<decltype(func)>(func)(
-                std::forward<decltype(self)>(self)(
-                    std::forward<decltype(func)>(func),
-                    std::forward<decltype(curr)>(curr),
-                    std::forward<decltype(next)>(next)...
-                ),
-                std::forward<decltype(out)>(out)
-            ));
-        } else {
-            return (std::forward<decltype(func)>(func)(
-                std::forward<decltype(curr)>(curr),
-                std::forward<decltype(out)>(out)
-            ));
-        }
-    }(F{}, std::forward<Ts>(args)...);
-}
-
-
-namespace impl {
-
-    template <typename F>
-    struct tuple_fold_right {
-        template <typename T>
-        static constexpr decltype(auto) operator()(T&& arg) noexcept {
-            return (std::forward<T>(arg));
-        }
-        template <typename... Ts> requires (sizeof...(Ts) > 1)
-        static constexpr decltype(auto) operator()(Ts&&... args)
-            noexcept(impl::fold_right<F, Ts...>::nothrow)
-            requires(impl::fold_right<F, Ts...>::enable)
-        {
-            return (bertrand::fold_right<F>(std::forward<Ts>(args)...));
-        }
-    };
-
+    return (impl::_fold_right<Ts...>{}(F{}, std::forward<Ts>(args)...));
 }
 
 
@@ -1437,10 +1346,22 @@ these requirements are not met. */
 template <meta::default_constructible F, meta::tuple_like T>
     requires (meta::tuple_size<T> > 0)
 [[nodiscard]] constexpr decltype(auto) fold_right(T&& t)
-    noexcept(meta::nothrow::apply_func<impl::tuple_fold_right<F>, T>)
-    requires(meta::apply_func<impl::tuple_fold_right<F>, T>)
+    noexcept(meta::nothrow::apply_func<
+        typename meta::tuple_types<T>::template eval<impl::_fold_right>,
+        F,
+        T
+    >)
+    requires(meta::apply_func<
+        typename meta::tuple_types<T>::template eval<impl::_fold_right>,
+        F,
+        T
+    >)
 {
-    return (apply(impl::tuple_fold_right<F>{}, std::forward<T>(t)));
+    return (apply(
+        typename meta::tuple_types<T>::template eval<impl::_fold_right>{},
+        F{},
+        std::forward<T>(t)
+    ));
 }
 
 
@@ -1517,6 +1438,10 @@ template <meta::default_constructible F, meta::tuple_like T>
     }
 
 #endif
+
+
+
+
 
 
 
@@ -1824,7 +1749,7 @@ inline void test() {
 
     static constexpr std::string a = "a", b = "b", c ="c", d = "a", e = "c";
     static_assert(fold_left<impl::Add>(a, b, c) == "abc");
-    static_assert(fold_right<impl::Add>(a, b, c) == "cba");
+    static_assert(fold_right<impl::Add>(a, b, c) == "abc");
     static_assert(fold_left<impl::choose_left<impl::Less>>(a, b, c) == "a");
     static_assert(bertrand::min(a, d, c) == "a");
     static_assert(&bertrand::min(a, d, c) == &a);
