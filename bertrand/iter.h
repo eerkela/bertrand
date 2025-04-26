@@ -1966,6 +1966,9 @@ namespace meta {
 
 namespace impl {
 
+    /// TODO: powersort should have proper noexcept specifiers, but this is hard to
+    /// standardize
+
     /* A stable, adaptive, k-way merge sort algorithm for contiguous arrays based on
     work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023), requiring
     O(n) scratch space for rotations.  A full description of the algorithm and its
@@ -2044,6 +2047,7 @@ namespace impl {
             using value_type = meta::remove_reference<meta::dereference_type<Begin>>;
             using pointer = meta::as_pointer<value_type>;
             using numeric = std::numeric_limits<meta::unqualify<value_type>>;
+            static constexpr size_t empty = std::numeric_limits<size_t>::max();
 
             /* Construction/destruction is done through `std::construct_at()` and
             `std::destroy_at()` so as to allow use in constexpr contexts compared to
@@ -2244,14 +2248,14 @@ namespace impl {
             into the output range in partially-sorted order via RAII. */
             template <size_t N, bool = numeric::has_infinity> requires (N >= 2)
             struct tournament_tree {
-                static constexpr size_t R = N + (N % 2);
+                static constexpr size_t M = N + (N % 2);
                 Less& less_than;
                 pointer scratch;
                 Begin output;
                 size_t size;
-                std::array<pointer, R> begin;  // begin iterators for each run
-                std::array<pointer, R> end;  // end iterators for each run
-                std::array<size_t, R - 1> internal;  // internal nodes of tree
+                std::array<pointer, M> begin;  // begin iterators for each run
+                std::array<pointer, M> end;  // end iterators for each run
+                std::array<size_t, M - 1> internal;  // internal nodes of tree
                 size_t winner;  // leaf index of overall winner
 
                 /// NOTE: the tree is represented as a loser tree, meaning the internal
@@ -2287,18 +2291,18 @@ namespace impl {
                     //      /       \             /       \     scratch iterators
                     //         ...                   ...
                     // begin[0]   begin[1]   begin[2]   begin[3]   ...
-                    for (size_t i = 0; i < R - 1; ++i) {
+                    for (size_t i = 0; i < M; ++i) {
                         winner = i;
-                        size_t node = i + (R - 1);
-                        while (node > 0) {
-                            size_t parent = (node - 1) / 2;
+                        size_t node = (M - 1) + winner;  // phantom leaf index
+                        do {
+                            size_t parent = (node - 1) / 2;  // direct parent
                             size_t loser = internal[parent];
 
                             // parent may be uninitialized, in which case the current
                             // node automatically loses
-                            if (loser == R) {
-                                internal[parent] = node;
-                                break;  // ancestors are guaranteed to be empty
+                            if (loser == empty) {
+                                internal[parent] = winner;
+                                break;  // no need to check ancestors
                             }
 
                             // otherwise, if the current winner loses against the
@@ -2307,29 +2311,30 @@ namespace impl {
                                 internal[parent] = winner;
                                 winner = loser;
                             }
-
                             node = parent;
-                        }
+                        } while (node > 0);
                     }
 
                     // merge runs according to tournament tree
                     for (size_t i = 0; i < size; ++i) {
                         // move the overall winner into the output range
                         *output++ = std::move(*begin[winner]);
-                        destroy(begin[winner]);
-                        ++begin[winner];
+                        destroy(begin[winner]++);
 
                         // bubble up next winner
-                        size_t node = winner + (R - 1);
-                        while (node > 0) {
-                            size_t parent = (node - 1) / 2;
+                        size_t node = (M - 1) + winner;  // phantom leaf index
+                        do {
+                            size_t parent = (node - 1) / 2;  // direct parent
                             size_t loser = internal[parent];
+
+                            // if next value in winner loses against the parent, then
+                            // we swap them and continue bubbling up
                             if (less_than(*begin[loser], *begin[winner])) {
                                 internal[parent] = winner;
                                 winner = loser;
                             }
                             node = parent;
-                        }
+                        } while (node > 0);
                     }
                 }
 
@@ -2355,11 +2360,11 @@ namespace impl {
                 internal node has precisely two children.  The sentinel branch will
                 just never be chosen. */
                 template <size_t... Is, typename... Runs>
-                constexpr std::array<pointer, R> get_begin(
+                constexpr std::array<pointer, M> get_begin(
                     std::index_sequence<Is...>,
-                    run& first,
                     Runs&... runs
-                ) {
+                ) const {
+                    run& first = meta::unpack_arg<0>(runs...);
                     if constexpr (N % 2) {
                         return {
                             (scratch + (runs.start - first.start) + Is)...,
@@ -2374,8 +2379,8 @@ namespace impl {
                 will point to the sentinel values for each run */
                 template <size_t I = 0, typename... Runs>
                 constexpr void construct(Runs&... runs) {
-                    if constexpr (I < R - 1) {
-                        internal[I] = R;  // nodes are initialized to empty value
+                    if constexpr (I < M - 1) {
+                        internal[I] = empty;  // nodes are initialized to empty value
                     }
 
                     if constexpr (I < N) {
@@ -2395,7 +2400,7 @@ namespace impl {
                     // if `N` is odd, then we have to insert an additional
                     // sentinel at the end of the scratch space to give each
                     // internal node exactly two children
-                    } else if constexpr (begin.size()) {
+                    } else if constexpr (I < M) {
                         std::construct_at(
                             end[I],
                             numeric::infinity()
@@ -2417,7 +2422,7 @@ namespace impl {
                 size_t size;
                 std::array<pointer, N> begin;  // begin iterators for each run
                 std::array<pointer, N> end;  // end iterators for each run
-                std::array<size_t, N - 1 - (N % 2)> internal;  // internal nodes of tree
+                std::array<size_t, N - 1> internal;  // internal nodes of tree
                 size_t winner;  // leaf index of overall winner
                 size_t smallest = std::numeric_limits<size_t>::max();  // length of smallest non-empty run
 
@@ -2449,14 +2454,15 @@ namespace impl {
                     construct(runs...);
                 }
 
-                /* Perform the merge. */
-                template <size_t I = N>
+                /* Perform the merge for stage `M`, where `M` indicates the current
+                size of the tournament tree. */
+                template <size_t M = N>
                 constexpr void operator()() {
-                    if constexpr (I > 2) {
-                        initialize<I>();  // build tournament tree for this stage
-                        merge<I>();  // continue until a run is exhausted
-                        advance<I>();  // pop empty run for next stage
-                        operator()<I - 1>();  // recur
+                    if constexpr (M > 2) {
+                        initialize<M>();  // build tournament tree for this stage
+                        merge<M>();  // continue until a run is exhausted
+                        advance<M>();  // pop empty run for next stage
+                        operator()<M - 1>();  // recur
 
                     // finish with a binary merge
                     } else {
@@ -2482,7 +2488,8 @@ namespace impl {
                 constexpr ~tournament_tree() {
                     for (size_t i = 0; i < begin.size(); ++i) {
                         while (begin[i] != end[i]) {
-                            *output++ = std::move(*begin[i]);
+                            *output = std::move(*begin[i]);
+                            ++output;
                             destroy(begin[i]);
                             ++begin[i];
                         }
@@ -2495,10 +2502,10 @@ namespace impl {
                 Record the minimum length of each run for the the first stage. */
                 template <size_t I = 0, typename... Runs>
                 constexpr void construct(Runs&... runs) {
-                    if constexpr (I < (N - 1 - (N % 2))) {
-                        internal[I] = N;  // internal nodes are initialized to sentinel
-                    }
                     if constexpr (I < N) {
+                        if constexpr (I < N - 1) {
+                            internal[I] = empty;  // internal nodes start empty
+                        }
                         run& r = meta::unpack_arg<I>(runs...);
                         for (size_t i = r.start; i < r.stop; ++i) {
                             std::construct_at(
@@ -2512,25 +2519,20 @@ namespace impl {
                 }
 
                 /* Regenerate the tournament tree for the next stage. */
-                template <size_t I>
+                template <size_t M>
                 constexpr void initialize() {
-                    for (size_t i = 0; i < I - 1; ++i) {
+                    for (size_t i = 0; i < M; ++i) {
                         winner = i;
-                        size_t node = i + (I - 1);
-                        while (node > 0) {
-                            size_t parent = (node - 1) / 2;
-                            if constexpr (I % 2) {
-                                if (parent == I - 2) {
-                                    parent = (parent - 1) / 2;  // skip unbalanced node
-                                }
-                            }
+                        size_t node = (M - 1) + winner;  // phantom leaf index
+                        do {
+                            size_t parent = (node - 1) / 2;  // direct parent
                             size_t loser = internal[parent];
 
-                            // parent may be uninitialized, in which case the current
-                            // node automatically loses
-                            if (loser == N) {
-                                internal[parent] = node;
-                                break;  // ancestors are guaranteed to be empty
+                            // parent may be empty, in which case the current winner
+                            // automatically loses
+                            if (loser == empty) {
+                                internal[parent] = winner;
+                                break;  // no need to check ancestors
                             }
 
                             // otherwise, if the current winner loses against the
@@ -2539,15 +2541,14 @@ namespace impl {
                                 internal[parent] = winner;
                                 winner = loser;
                             }
-
                             node = parent;
-                        }
+                        } while (node > 0);
                     }
                 }
 
                 /* Move the winner of the tournament tree into output and update the
                 tree. */
-                template <size_t I>
+                template <size_t M>
                 constexpr void merge() {
                     while (true) {
                         // move the overall winner into the output range
@@ -2559,8 +2560,8 @@ namespace impl {
                         if (--smallest == 0) {
                             // update `smallest` to the minimum length of all non-empty
                             // runs
-                            smallest = std::numeric_limits<size_t>::max();
-                            for (size_t i = 0; i < I; ++i) {
+                            smallest = empty;
+                            for (size_t i = 0; i < M; ++i) {
                                 smallest = bertrand::min(
                                     smallest,
                                     size_t(end[i] - begin[i])
@@ -2575,46 +2576,43 @@ namespace impl {
                         }
 
                         // bubble up next winner
-                        size_t node = winner + (I - 1);
-                        while (node > 0) {
-                            size_t parent = (node - 1) / 2;
-                            if constexpr (I % 2) {
-                                if (parent == I - 2) {
-                                    parent = (parent - 1) / 2;  // skip unbalanced node
-                                }
-                            }
+                        size_t node = (M - 1) + winner;  // phantom leaf index
+                        do {
+                            size_t parent = (node - 1) / 2;  // direct parent
                             size_t loser = internal[parent];
+
+                            // if next value in winner loses against the parent, then
+                            // we swap them and continue bubbling up
                             if (less_than(*begin[loser], *begin[winner])) {
                                 internal[parent] = winner;
                                 winner = loser;
                             }
                             node = parent;
-                        }
+                        } while (node > 0);
                     }
                 }
 
                 /* End a merge stage by pruning empty runs, resetting the tournament
                 tree, and recomputing the minimum length for the next stage.  */
-                template <size_t I>
+                template <size_t M>
                 constexpr void advance() {
-                    smallest = std::numeric_limits<size_t>::max();
-                    for (size_t i = 0; i < I - 1;) {
-                        // if empty, pop from the array and left shift subsequent runs
+                    smallest = empty;
+                    for (size_t i = 0; i < M - 1; ++i) {
                         size_t len = end[i] - begin[i];
-                        if (!len) {
-                            for (size_t j = i + 1; j < I; ++j) {
-                                begin[j - 1] = begin[j];
-                                end[j - 1] = end[j];
-                            }
 
-                        // otherwise, record the minimum length
-                        } else {
-                            smallest = bertrand::min(smallest, len);
-                            if (i < I - 2 - (I % 2)) {
-                                internal[i] = N;  // reset internal nodes to sentinel
+                        // if empty, pop from the array and left shift subsequent runs
+                        if (!len) {
+                            for (size_t j = i; j < M - 1; ++j) {
+                                begin[j] = begin[j + 1];
+                                end[j] = end[j + 1];
                             }
-                            ++i;
+                            begin[M - 1] = end[M - 1];
+                            len = end[i] - begin[i];
                         }
+
+                        // record the minimum length and reset internal nodes
+                        smallest = bertrand::min(smallest, len);
+                        internal[i] = empty;
                     }
                 }
             };
@@ -2812,6 +2810,10 @@ namespace impl {
             std::vector<run> stack;
 
         public:
+            /// TODO: it may be unnecessary to allocate the scratch and/or stack
+            /// space if no merges are required, as would be the case for any data
+            /// that is either already sorted or has a size less than the minimum
+            /// run length.
 
             /* Allocate stack and scratch space for a range of the given size. */
             constexpr merge_tree(size_t size) :
@@ -2829,7 +2831,7 @@ namespace impl {
             /* Execute the sorting algorithm. */
             constexpr void operator()(Begin& begin, Less& less_than) {
                 size_t size = scratch.get_deleter().size;
-                stack.emplace_back(begin, 0, size);  // power 0 as sentinel entry
+                size_t last_power = 0;
 
                 // identify the first weakly increasing or strictly decreasing run
                 // starting at `begin` and grow to minimum length using insertion sort
@@ -2850,7 +2852,7 @@ namespace impl {
                     // If violated, merge runs with equal power into `prev` until
                     // invariant is restored.  Only at most the top `k - 1` runs will
                     // ever meet this criteria due to the structure of the merge tree.
-                    while (stack.back().power > prev.power) {
+                    while (last_power > prev.power) {
                         run* top = &stack.back();
                         size_t same_power = 1;
                         while ((top - same_power)->power == top->power) {
@@ -2858,7 +2860,9 @@ namespace impl {
                         }
                         using F = void(*)(Less&, pointer, std::vector<run>&, run&);
                         using VTable = std::array<F, k - 1>;
-                        constexpr VTable vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                        static constexpr VTable vtable = []<size_t... Is>(
+                            std::index_sequence<Is...>
+                        ) {
                             // 0: 2-way
                             // 1: 3-way
                             // 2: 4-way
@@ -2892,6 +2896,7 @@ namespace impl {
                     }
 
                     // push next run onto stack
+                    last_power = prev.power;
                     stack.emplace_back(std::move(prev));
                     prev = std::move(next);
                 }
@@ -2903,7 +2908,9 @@ namespace impl {
                 // tournament tree and minimizes total comparisons.
                 using F = void(*)(Less&, pointer, std::vector<run>&, run&);
                 using VTable = std::array<F, k - 1>;
-                constexpr VTable vtable = []<size_t... Is>(std::index_sequence<Is...>) {
+                static constexpr VTable vtable = []<size_t... Is>(
+                    std::index_sequence<Is...>
+                ) {
                     return VTable{
                         // 0: do nothing
                         +[](
@@ -2942,9 +2949,13 @@ namespace impl {
 
                 // vtable is only consulted for the first merge, after which we
                 // devolve to k-way merges
-                vtable[(stack.size() - 1) % (k - 1)](less_than, scratch.get(), stack, prev);
-                while (stack.size() > 1) {  // ignore sentinel run at start of stack
-                    [&]<size_t... Is>(std::index_sequence<Is...>) {
+                vtable[stack.size() % (k - 1)](less_than, scratch.get(), stack, prev);
+                [&]<size_t... Is>(std::index_sequence<Is...>) {
+                    while (stack.size()) {
+                        /// TODO: the (seemingly) last bug is somewhere here.  The
+                        /// stack size is 2 for some reason, but idk exactly why.
+                        /// I probably need to trace out the state at this point
+                        // if (stack.size() == 2) throw ValueError();
                         tournament_tree<k>{
                             less_than,
                             scratch.get(),
@@ -2953,8 +2964,8 @@ namespace impl {
                         }();
                         prev.iter = stack[stack.size() - (k - 1)].iter;
                         stack.erase(stack.end() - (k - 1), stack.end());  // pop merged runs
-                    }(std::make_index_sequence<k - 1>{});
-                }
+                    }
+                }(std::make_index_sequence<k - 1>{});
             }
         };
 
@@ -2972,7 +2983,6 @@ namespace impl {
         };
 
     public:
-
         /* Execute the sort algorithm using unsorted values in the range [begin, end)
         and placing the result back into the same range.
 
@@ -3038,7 +3048,6 @@ namespace impl {
             }
         }
     };
-
 
 }
 
@@ -3309,6 +3318,16 @@ template <
 
 namespace bertrand {
 
+    template <typename T, size_t N>
+    struct Forward {
+        std::array<T, N> data;
+        constexpr auto begin() noexcept { return data.begin(); }
+        constexpr auto end() noexcept { return data.end(); }
+    };
+
+    template <typename... Ts>
+    Forward(Ts...) -> Forward<std::common_type_t<Ts...>, sizeof...(Ts)>;
+
     inline void test() {
         {
             struct Cmp {
@@ -3358,7 +3377,11 @@ namespace bertrand {
             }
         }
 
-        {   
+        {
+            /// TODO: what I ought to do is generate a bunch of random data and
+            /// sort it, then verify that the sorted data is actually sorted.
+
+
             constexpr auto sort_array = []<typename T, size_t N>(
                 const std::array<T, N>& in
             ) {
@@ -3367,33 +3390,86 @@ namespace bertrand {
                 /// length.  The reason is because a run length of 3 or more reduces
                 /// everything to binary merges, which is trivially correctly
                 /// implemented.
-                impl::powersort<4, 5>{}(out);
+                impl::powersort<3, 1>{}(out);
                 return out;
             };
             constexpr std::string_view a = "a", b = "b", c = "c", d = "d", e = "e", f = "f";
             constexpr std::string_view a2 = "a", b2 = "b", c2 = "c", d2 = "d", e2 = "e", f2 = "f";
             // constexpr std::array s0 = sort_array(std::array<int, 0>{});
-            // constexpr std::array s1 = sort_array(std::array{1});
-            // constexpr std::array s2 = sort_array(std::array{1, 2, 3, 4, 5});
-            // constexpr std::array s3 = sort_array(std::array{5, 4, 3, 2, 1});
-            // constexpr std::array s4 = sort_array(std::array{1, 3, 5, 4, 2});
-            constexpr std::array s5 = sort_array(std::array{5, 3, 4, 1, 2});
-            // constexpr std::array s6 = sort_array(std::array{a2, b2, c2, c, b, a});
-            constexpr std::array s7 = sort_array(std::array{5, 3, 4, 2, 1});
-
             // static_assert(s0 == std::array<int, 0>{});
+            // constexpr std::array s1 = sort_array(std::array{1});
             // static_assert(s1 == std::array{1});
+            // constexpr std::array s2 = sort_array(std::array{1, 2, 3, 4, 5});
             // static_assert(s2 == std::array{1, 2, 3, 4, 5});
+            // constexpr std::array s3 = sort_array(std::array{5, 4, 3, 2, 1});
             // static_assert(s3 == std::array{1, 2, 3, 4, 5});
+            // constexpr std::array s4 = sort_array(std::array{1, 3, 5, 4, 2});
             // static_assert(s4 == std::array{1, 2, 3, 4, 5});
-            static_assert(s5 == std::array{1, 2, 3, 4, 5});
+            // constexpr std::array s5 = sort_array(std::array{5, 3, 4, 1, 2});
+            // static_assert(s5 == std::array{1, 2, 3, 4, 5});
+            constexpr std::array s52 = sort_array(std::array{1, 3, 2, 5, 4, 7, 6});
+            static_assert(s52 == std::array{1, 2, 3, 4, 5, 6, 7});
+            static_assert(s52[0] == 1);
+            static_assert(s52[1] == 2);
+            static_assert(s52[2] == 3);
+            static_assert(s52[3] == 4);
+            static_assert(s52[4] == 5);
+            static_assert(s52[5] == 6);
+            static_assert(s52[6] == 7);
+            // constexpr std::array s6 = sort_array(std::array{a2, b2, c2, c, b, a});
             // static_assert(s6 == std::array{a, a, b, b, c, c});
             // static_assert(s6[0].data() == a2.data());
-            static_assert(s7 == std::array{1, 2, 3, 4, 5});
+            // constexpr std::array s7 = sort_array(std::array{5, 3, 4, 2, 1});
+            // static_assert(s7 == std::array{1, 2, 3, 4, 5});
 
 
+
+            // constexpr std::array u0 = sort_array(std::array<double, 0>{});
+            // constexpr std::array u1 = sort_array(std::array{1.});
+            // constexpr std::array u2 = sort_array(std::array{1., 2., 3., 4., 5.});
+            // constexpr std::array u3 = sort_array(std::array{5., 4., 3., 2., 1.});
+            // constexpr std::array u4 = sort_array(std::array{1., 3., 5., 4., 2.});
+            // constexpr std::array u5 = sort_array(std::array{5., 3., 4., 1., 2.});
+            // constexpr std::array u6 = sort_array(std::array{a, b, c, c, b, a});
+            // constexpr std::array u7 = sort_array(std::array{5., 3., 4., 2., 1.});
+            // static_assert(u0 == std::array<double, 0>{});
+            // static_assert(u1 == std::array{1.});
+            // static_assert(u2 == std::array{1., 2., 3., 4., 5.});
+            // static_assert(u3 == std::array{1., 2., 3., 4., 5.});
+            // static_assert(u4 == std::array{1., 2., 3., 4., 5.});
+            // static_assert(u5 == std::array{1., 2., 3., 4., 5.});
+            // static_assert(u6 == std::array{a, a, b, b, c, c});
+            // static_assert(u6[0].data() == a.data());
+            // static_assert(u7 == std::array{1., 2., 3., 4., 5.});
             /// TODO: I'll have to test this over forward-iterable-only arrays as well.
             /// Also for data with sentinels, like floats.
+
+
+            // constexpr auto sort_forward = []<typename T, size_t N>(
+            //     Forward<T, N> in
+            // ) {
+            //     Forward<T, N> out = in;
+            //     impl::powersort<2, 1>{}(out);
+            //     return out;
+            // };
+
+            // constexpr Forward t0 = sort_forward(Forward<int, 0>{});
+            // constexpr Forward t1 = sort_forward(Forward{1});
+            // constexpr Forward t2 = sort_forward(Forward{1, 2, 3, 4, 5});
+            // constexpr Forward t3 = sort_forward(Forward{5, 4, 3, 2, 1});
+            // constexpr Forward t4 = sort_forward(Forward{1, 3, 5, 4, 2});
+            // constexpr Forward t5 = sort_forward(Forward{5, 3, 4, 1, 2});
+            // constexpr Forward t6 = sort_forward(Forward{a, b, c, c, b, a});
+            // constexpr Forward t7 = sort_forward(Forward{5, 3, 4, 2, 1});
+            // static_assert(t0.data == std::array<int, 0>{});
+            // static_assert(t1.data == std::array{1});
+            // static_assert(t2.data == std::array{1, 2, 3, 4, 5});
+            // static_assert(t3.data == std::array{1, 2, 3, 4, 5});
+            // static_assert(t4.data == std::array{1, 2, 3, 4, 5});
+            // static_assert(t5.data == std::array{1, 2, 3, 4, 5});
+            // static_assert(t6.data == std::array{a, a, b, b, c, c});
+            // static_assert(t6.data[0].data() == a.data());
+            // static_assert(t7.data == std::array{1, 2, 3, 4, 5});
         }
     }
 
