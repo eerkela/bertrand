@@ -190,55 +190,33 @@ namespace impl {
         return result % mod;
     }
 
-    /* A fast modulo operator that works for any b power of two. */
+    /* Returns true if `n` is a power of two or zero.  False otherwise. */
     template <meta::unsigned_integer T>
-    constexpr T mod2(T a, T b) noexcept {
-        return a & (b - 1);
-    }
-
-    /* Get the floored log base 2 of an unsigned integer.  Uses an optimized compiler
-    intrinsic if available, falling back to a generic implementation otherwise.  Inputs
-    equal to zero result in undefined behavior. */
-    template <meta::unsigned_integer T>
-    constexpr size_t log2(T n) noexcept {
-        constexpr size_t max = sizeof(T) * 8 - 1;
-
-        #if defined(__GNUC__) || defined(__clang__)
-            if constexpr (sizeof(T) <= sizeof(unsigned int)) {
-                return max - __builtin_clz(n);
-            } else if constexpr (sizeof(T) <= sizeof(unsigned long)) {
-                return max - __builtin_clzl(n);
-            } else if constexpr (sizeof(T) <= sizeof(unsigned long long)) {
-                return max - __builtin_clzll(n);
-            }
-
-        #elif defined(_MSC_VER)
-            if constexpr (sizeof(T) <= sizeof(unsigned long)) {
-                unsigned long index;
-                _BitScanReverse(&index, n);
-                return index;
-            } else if constexpr (sizeof(T) <= sizeof(uint64_t)) {
-                unsigned long index;
-                _BitScanReverse64(&index, n);
-                return index;
-            }
-        #endif
-
-        size_t count = 0;
-        while (n >>= 1) {
-            ++count;
-        }
-        return count;
+    constexpr bool is_power2(T n) noexcept {
+        return (n & (n - 1)) == 0;
     }
 
     /* Compute the next power of two greater than or equal to a given value. */
     template <meta::unsigned_integer T>
-    constexpr T next_power_of_two(T n) noexcept {
+    constexpr T next_power2(T n) noexcept {
         --n;
         for (size_t i = 1, bits = sizeof(T) * 8; i < bits; i <<= 1) {
             n |= (n >> i);
         }
         return ++n;
+    }
+
+    /* Get the floored log base 2 of an unsigned integer.  Inputs equal to zero result
+    in undefined behavior. */
+    template <meta::unsigned_integer T>
+    constexpr size_t log2(T n) noexcept {
+        return sizeof(T) * 8 - 1 - std::countl_zero(n);
+    }
+
+    /* A fast modulo operator that works for any b power of two. */
+    template <meta::unsigned_integer T>
+    constexpr T mod2(T a, T b) noexcept {
+        return a & (b - 1);
     }
 
     /* Deterministic Miller-Rabin primality test with a fixed set of bases valid for

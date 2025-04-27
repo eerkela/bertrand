@@ -1947,6 +1947,7 @@ namespace meta {
                 >
             ) || (
                 !meta::member<Less> &&
+                /// TODO: explicitly convertible to bool, not implicitly
                 meta::invoke_returns<
                     bool,
                     meta::as_lvalue<Less>,
@@ -1961,18 +1962,57 @@ namespace meta {
         meta::iterable<Range> &&
         iter_sortable<Less, meta::begin_type<Range>, meta::end_type<Range>>;
 
+    /// TODO: nothrow equivalants so I can define proper noexcept specifiers
+    /// for powersort implementation
+
 }
 
 
 namespace impl {
 
-    /// TODO: powersort should have proper noexcept specifiers, but this is hard to
-    /// standardize
+    /* A simple pseudo-random number generator that works at compile time.  Useful for
+    fuzz testing sorting algorithms in constexpr contexts. */
+    struct prng {
+    private:
 
-    /* A stable, adaptive, k-way merge sort algorithm for contiguous arrays based on
-    work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023), requiring
-    O(n) scratch space for rotations.  A full description of the algorithm and its
-    benefits can be found at:
+        [[nodiscard]] static constexpr uint64_t splitmix(uint64_t x) noexcept {
+            x += 0x9e3779b97f4a7c15ull;
+            x  = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
+            x  = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+            return x ^ (x >> 31);
+        }
+
+    public:
+        mutable uint64_t seed;
+
+        /* Return a random number in the given range at compile time. */
+        [[nodiscard]] constexpr uint64_t operator()(
+            uint64_t start = 0,
+            uint64_t stop = std::numeric_limits<uint64_t>::max()
+        ) const noexcept {
+            uint64_t x = seed;
+            seed = seed + 0x9e3779b97f4a7c15ull;   // same constant as splitmix
+            return (splitmix(x) % (stop - start)) + start;
+        }
+
+        /// fill a std::array<T,N> with random numbers
+        template <typename T, size_t N>
+        [[nodiscard]] constexpr std::array<T, N> array(
+            uint64_t start = 0,
+            uint64_t stop = std::numeric_limits<uint64_t>::max()
+        ) const {
+            std::array<T, N> out{};
+            for (std::size_t i = 0; i < N; ++i) {
+                out[i] = static_cast<T>((*this)(start, stop));
+            }
+            return out;
+        }
+    };
+
+    /* A stable, adaptive, k-way merge sort algorithm for arbitrary input/output ranges
+    based on work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023),
+    requiring O(n) scratch space for rotations.  A full description of the algorithm
+    and its benefits can be found at:
 
         [1] https://www.wild-inter.net/publications/html/cawley-gelling-nebel-smith-wild-2023.pdf.html
 
@@ -2745,65 +2785,41 @@ namespace impl {
                 }
             };
 
-            static constexpr size_t ceil_log4(size_t n) noexcept {
-                return (impl::log2(n - 1) >> 1) + 1;
+            static constexpr size_t ceil_logk(size_t n) noexcept {
+                // fast path where `k` is a power of two
+                if constexpr (impl::is_power2(k)) {
+                    return (impl::log2(n - 1) / std::countr_zero(k)) + 1;
+
+                // otherwise, we repeatedly multiply until we reach or exceed `n`,
+                // which is O(log(n)), but negligible compared to the sort.
+                } else {
+                    size_t m = 0;
+                    size_t product = 1;
+                    while (product < n) {
+                        ++m;
+                        if (product > std::numeric_limits<size_t>::max() / k) {
+                            break;  // k^m > any representable n
+                        }
+                        product *= k;
+                    }
+                    return m;
+                }
             }
 
             static constexpr size_t get_power(
-                size_t n,
-                size_t prev_start,
-                size_t next_start,
-                size_t next_stop
+                size_t size,
+                const run& curr,
+                const run& next
             ) noexcept {
-                /// NOTE: these implementations are taken straight from the reference,
-                /// and have only been lightly edited for readability.
-
-                // if a built-in compiler intrinsic is available, use it
-                #if defined(__GNUC__) || defined(__clang__)
-                    size_t l = prev_start + next_start;
-                    size_t r = next_start + next_stop;
-                    size_t a = (l << 30) / n;
-                    size_t b = (r << 30) / n;
-                    if constexpr (sizeof(size_t) <= sizeof(unsigned int)) {
-                        return ((__builtin_clz(a ^ b) - 1) >> 1) + 1;
-                    } else if constexpr (sizeof(size_t) <= sizeof(unsigned long)) {
-                        return ((__builtin_clzl(a ^ b) - 1) >> 1) + 1;
-                    } else if constexpr (sizeof(size_t) <= sizeof(unsigned long long)) {
-                        return ((__builtin_clzll(a ^ b) - 1) >> 1) + 1;
-                    }
-
-                #elif defined(_MSC_VER)
-                    size_t l = prev_start + next_start;
-                    size_t r = next_start + next_stop;
-                    size_t a = (l << 30) / n;
-                    size_t b = (r << 30) / n;
-                    unsigned long index;
-                    if constexpr (sizeof(size_t) <= sizeof(unsigned long)) {
-                        _BitScanReverse(&index, a ^ b);
-                    } else if constexpr (sizeof(size_t) <= sizeof(uint64_t)) {
-                        _BitScanReverse64(&index, a ^ b);
-                    }
-                    return ((index - 1) >> 1) + 1;
-
-                #else
-                    size_t l = prev_start + next_start;
-                    size_t r = next_start + next_stop;
-                    size_t n_common_bits = 0;
-                    bool digit_a = l >= n;
-                    bool digit_b = r >= n;
-                    while (digit_a == digit_b) {
-                        ++n_common_bits;
-                        if (digit_a) {
-                            l -= n;
-                            r -= n;
-                        }
-                        l *= 2;
-                        r *= 2;
-                        digit_a = l >= n;
-                        digit_b = r >= n;
-                    }
-                    return (n_common_bits >> 1) + 1;
-                #endif
+                /// NOTE: this implementation is taken straight from the reference.
+                /// The only generalization is the use of `std::countl_zero` instead
+                /// of compiler intrinsics, and converting to guaranteed 64-bit
+                /// arithmetic for the shift.
+                size_t l = curr.start + curr.stop;
+                size_t r = next.start + next.stop;
+                size_t a = (uint64_t(l) << 30) / size;
+                size_t b = (uint64_t(r) << 30) / size;
+                return ((std::countl_zero(a ^ b) - 1) >> 1) + 1;
             }
 
             std::unique_ptr<value_type, deleter> scratch;
@@ -2814,6 +2830,18 @@ namespace impl {
             /// space if no merges are required, as would be the case for any data
             /// that is either already sorted or has a size less than the minimum
             /// run length.
+            /// -> The only real way to do this is to instantiate the pointers
+            /// outside the merge tree and then pass them in, or do away with the
+            /// merge tree abstraction entirely and operate on the pointers directly.
+            /// That last one is probably the way to go, it just requires complicating
+            /// the internal template signatures somewhat.  Maybe a better thing is
+            /// to just get rid of the constructor and make this a purely static class.
+            /// Then, I instantiate the pointers outside the class and pass them to
+            /// the call operator manually.
+            /// -> I would also need to take the first few lines of the call operator
+            /// and lift them into separate functions, so that I can dictate whether
+            /// to proceed, and with what resources after the first run has been
+            /// discovered.
 
             /* Allocate stack and scratch space for a range of the given size. */
             constexpr merge_tree(size_t size) :
@@ -2825,38 +2853,56 @@ namespace impl {
                 if (!scratch) {
                     throw MemoryError("failed to allocate scratch space");
                 }
-                stack.reserve((k - 1) * (ceil_log4(size) + 1));
+                stack.reserve((k - 1) * (ceil_logk(size) + 1));
             }
 
             /* Execute the sorting algorithm. */
             constexpr void operator()(Begin& begin, Less& less_than) {
-                size_t size = scratch.get_deleter().size;
-                size_t last_power = 0;
-
                 // identify the first weakly increasing or strictly decreasing run
                 // starting at `begin` and grow to minimum length using insertion sort
-                Begin temp = begin;
-                run prev {less_than, scratch.get(), begin, 0, size};
-                while (prev.stop < size) {
-                    run next {less_than, scratch.get(), begin, prev.stop, size};
+                size_t size = scratch.get_deleter().size;
+                run curr {less_than, scratch.get(), begin, 0, size};
+                /// TODO: this is where I could early break if curr.stop == size,
+                /// although the scratch allocation might need to occur before this,
+                /// or immediately after the run has been identified, but before it
+                /// is reversed.
+
+                // build run stack according to powersort policy
+                stack.emplace_back(begin, 0, size);  // power zero as sentinel
+                while (curr.stop < size) {
+                    run next {less_than, scratch.get(), begin, curr.stop, size};
 
                     // compute previous run's power with respect to next run
-                    prev.power = get_power(
-                        size,
-                        prev.start,
-                        next.start,
-                        next.stop
-                    );
+                    curr.power = get_power(size, curr, next);
 
                     // invariant: powers on stack weakly increase from bottom to top.
-                    // If violated, merge runs with equal power into `prev` until
+                    // If violated, merge runs with equal power into `curr` until
                     // invariant is restored.  Only at most the top `k - 1` runs will
-                    // ever meet this criteria due to the structure of the merge tree.
-                    while (last_power > prev.power) {
+                    // meet this criteria due to the structure of the merge tree and
+                    // the definition of the power function.
+                    while (stack.back().power > curr.power) {
+                        /// NOTE: there is a small discrepancy from the description in
+                        /// [1](3.2), where it states that there are at most `k - 1`
+                        /// equal powers on the stack at any time.  This is technically
+                        /// incorrect, as a pathological case can occur where `k - 1`
+                        /// equal-power runs are followed by a run with greater power,
+                        /// which does not trigger a merge, only for the next run after
+                        /// that to have the same power as the prior `k - 1` runs.
+                        /// This would trigger a 2-way merge with the larger power, and
+                        /// then we would end up with `k` runs of equal power at the
+                        /// top of the stack, against the paper's assurances.  This bug
+                        /// does not occur in the provided reference implementation,
+                        /// however, seemingly due to a fluke in the if ladder for the
+                        /// merges, with the `else` clause converting the pathological
+                        /// case into a single `k`-way merge, ignoring the oldest of
+                        /// the `k` topmost runs.  This is replicated here by
+                        /// terminating the detection loop early when it reaches
+                        /// `k - 1`.  None of the other logic is affected, and the
+                        /// merge tree remains optimal despite this minor caveat.
                         run* top = &stack.back();
-                        size_t same_power = 1;
-                        while ((top - same_power)->power == top->power) {
-                            ++same_power;
+                        size_t i = 1;
+                        while (((top - i)->power == top->power) && (i < k - 1)) {
+                            ++i;
                         }
                         using F = void(*)(Less&, pointer, std::vector<run>&, run&);
                         using VTable = std::array<F, k - 1>;
@@ -2875,7 +2921,7 @@ namespace impl {
                                     Less& less_than,
                                     pointer scratch,
                                     std::vector<run>& stack,
-                                    run& prev
+                                    run& curr
                                 ) {
                                     constexpr size_t I = Is;
                                     Begin temp = stack[stack.size() - I - 1].iter;
@@ -2883,22 +2929,22 @@ namespace impl {
                                         less_than,
                                         scratch,
                                         stack[stack.size() - I + Js - 1]...,
-                                        prev
+                                        curr
                                     }();
-                                    prev.iter = temp;
+                                    curr.iter = std::move(temp);
+                                    curr.start = stack[stack.size() - I - 1].start;
                                 };
                             }(std::make_index_sequence<Is + 1>{})...};
                         }(std::make_index_sequence<k - 1>{});
 
                         // merge runs with equal power by dispatching to vtable
-                        vtable[same_power - 1](less_than, scratch.get(), stack, prev);
-                        stack.erase(stack.end() - same_power, stack.end());  // pop merged runs
+                        vtable[i - 1](less_than, scratch.get(), stack, curr);
+                        stack.erase(stack.end() - i, stack.end());  // pop merged runs
                     }
 
                     // push next run onto stack
-                    last_power = prev.power;
-                    stack.emplace_back(std::move(prev));
-                    prev = std::move(next);
+                    stack.emplace_back(std::move(curr));
+                    curr = std::move(next);
                 }
 
                 // Because runs typically increase in size exponentially as the stack
@@ -2917,7 +2963,7 @@ namespace impl {
                             Less& less_than,
                             pointer scratch,
                             std::vector<run>& stack,
-                            run& prev
+                            run& curr
                         ) {},
                         // 1: 2-way
                         // 2: 3-way,
@@ -2931,16 +2977,18 @@ namespace impl {
                                 Less& less_than,
                                 pointer scratch,
                                 std::vector<run>& stack,
-                                run& prev
+                                run& curr
                             ) {
                                 constexpr size_t I = Is;
+                                Begin temp = stack[stack.size() - I - 1].iter;
                                 tournament_tree<I + 2>{
                                     less_than,
                                     scratch,
                                     stack[stack.size() - I + Js - 1]...,
-                                    prev
+                                    curr
                                 }();
-                                prev.iter = stack[stack.size() - I - 1].iter;
+                                curr.iter = std::move(temp);
+                                curr.start = stack[stack.size() - I - 1].start;
                                 stack.erase(stack.end() - I - 1, stack.end());  // pop merged runs
                             };
                         }(std::make_index_sequence<Is + 1>{})...
@@ -2948,21 +2996,19 @@ namespace impl {
                 }(std::make_index_sequence<k - 2>{});
 
                 // vtable is only consulted for the first merge, after which we
-                // devolve to k-way merges
-                vtable[stack.size() % (k - 1)](less_than, scratch.get(), stack, prev);
+                // devolve to purely k-way merges
+                vtable[(stack.size() - 1) % (k - 1)](less_than, scratch.get(), stack, curr);
                 [&]<size_t... Is>(std::index_sequence<Is...>) {
-                    while (stack.size()) {
-                        /// TODO: the (seemingly) last bug is somewhere here.  The
-                        /// stack size is 2 for some reason, but idk exactly why.
-                        /// I probably need to trace out the state at this point
-                        // if (stack.size() == 2) throw ValueError();
+                    while (stack.size() > 1) {
+                        Begin temp = stack[stack.size() - (k - 1)].iter;
                         tournament_tree<k>{
                             less_than,
                             scratch.get(),
                             stack[stack.size() - (k - 1) + Is]...,
-                            prev
+                            curr
                         }();
-                        prev.iter = stack[stack.size() - (k - 1)].iter;
+                        curr.iter = std::move(temp);
+                        curr.start = stack[stack.size() - (k - 1)].start;
                         stack.erase(stack.end() - (k - 1), stack.end());  // pop merged runs
                     }
                 }(std::make_index_sequence<k - 1>{});
@@ -3325,8 +3371,33 @@ namespace bertrand {
         constexpr auto end() noexcept { return data.end(); }
     };
 
-    template <typename... Ts>
-    Forward(Ts...) -> Forward<std::common_type_t<Ts...>, sizeof...(Ts)>;
+    template <typename T, size_t N>
+    constexpr bool fuzz_contiguous(
+        uint64_t seed,
+        uint64_t min = 0,
+        uint64_t max = std::numeric_limits<uint64_t>::max()
+    ) {
+        auto array = impl::prng{seed}.array<T, N>(min, max);
+        auto copy = array;
+        impl::powersort<3, 1>{}(copy);
+        return
+            std::is_sorted(copy.begin(), copy.end()) &&
+            std::is_permutation(array.begin(), array.end(), copy.begin());
+    }
+
+    template <typename T, size_t N>
+    constexpr bool fuzz_forward(
+        uint64_t seed,
+        uint64_t min = 0,
+        uint64_t max = std::numeric_limits<uint64_t>::max()
+    ) {
+        auto array = Forward<T, N>{impl::prng{seed}.array<T, N>(min, max)};
+        auto copy = array;
+        impl::powersort{}(copy);
+        return
+            std::is_sorted(copy.begin(), copy.end()) &&
+            std::is_permutation(array.begin(), array.end(), copy.begin());
+    }
 
     inline void test() {
         {
@@ -3378,69 +3449,38 @@ namespace bertrand {
         }
 
         {
-            /// TODO: what I ought to do is generate a bunch of random data and
-            /// sort it, then verify that the sorted data is actually sorted.
+            // constexpr auto sort_array = []<typename T, size_t N>(
+            //     const std::array<T, N>& in
+            // ) {
+            //     std::array<T, N> out = in;
+            //     impl::powersort<4, 1>{}(out);
+            //     return out;
+            // };
+            // constexpr auto is_sorted = []<typename T, size_t N>(
+            //     const std::array<T, N>& in
+            // ) {
+            //     for (size_t i = 1; i < N; ++i) {
+            //         if (in[i - 1] > in[i]) {
+            //             return false;
+            //         }
+            //     }
+            //     return true;
+            // };
 
 
-            constexpr auto sort_array = []<typename T, size_t N>(
-                const std::array<T, N>& in
-            ) {
-                std::array<T, N> out = in;
-                /// TODO: I get radically different results if I tune the maximum run
-                /// length.  The reason is because a run length of 3 or more reduces
-                /// everything to binary merges, which is trivially correctly
-                /// implemented.
-                impl::powersort<3, 1>{}(out);
-                return out;
-            };
+
             constexpr std::string_view a = "a", b = "b", c = "c", d = "d", e = "e", f = "f";
             constexpr std::string_view a2 = "a", b2 = "b", c2 = "c", d2 = "d", e2 = "e", f2 = "f";
             // constexpr std::array s0 = sort_array(std::array<int, 0>{});
-            // static_assert(s0 == std::array<int, 0>{});
-            // constexpr std::array s1 = sort_array(std::array{1});
-            // static_assert(s1 == std::array{1});
-            // constexpr std::array s2 = sort_array(std::array{1, 2, 3, 4, 5});
-            // static_assert(s2 == std::array{1, 2, 3, 4, 5});
-            // constexpr std::array s3 = sort_array(std::array{5, 4, 3, 2, 1});
-            // static_assert(s3 == std::array{1, 2, 3, 4, 5});
-            // constexpr std::array s4 = sort_array(std::array{1, 3, 5, 4, 2});
-            // static_assert(s4 == std::array{1, 2, 3, 4, 5});
-            // constexpr std::array s5 = sort_array(std::array{5, 3, 4, 1, 2});
-            // static_assert(s5 == std::array{1, 2, 3, 4, 5});
-            constexpr std::array s52 = sort_array(std::array{1, 3, 2, 5, 4, 7, 6});
-            static_assert(s52 == std::array{1, 2, 3, 4, 5, 6, 7});
-            static_assert(s52[0] == 1);
-            static_assert(s52[1] == 2);
-            static_assert(s52[2] == 3);
-            static_assert(s52[3] == 4);
-            static_assert(s52[4] == 5);
-            static_assert(s52[5] == 6);
-            static_assert(s52[6] == 7);
             // constexpr std::array s6 = sort_array(std::array{a2, b2, c2, c, b, a});
             // static_assert(s6 == std::array{a, a, b, b, c, c});
             // static_assert(s6[0].data() == a2.data());
-            // constexpr std::array s7 = sort_array(std::array{5, 3, 4, 2, 1});
-            // static_assert(s7 == std::array{1, 2, 3, 4, 5});
+            static_assert(fuzz_contiguous<int, 100>(103, 0, 10));
+            static_assert(fuzz_contiguous<int, 50>(86, 0, 10));
+            // static_assert(fuzz_forward<double, 50>(14, 0, 10));
 
 
 
-            // constexpr std::array u0 = sort_array(std::array<double, 0>{});
-            // constexpr std::array u1 = sort_array(std::array{1.});
-            // constexpr std::array u2 = sort_array(std::array{1., 2., 3., 4., 5.});
-            // constexpr std::array u3 = sort_array(std::array{5., 4., 3., 2., 1.});
-            // constexpr std::array u4 = sort_array(std::array{1., 3., 5., 4., 2.});
-            // constexpr std::array u5 = sort_array(std::array{5., 3., 4., 1., 2.});
-            // constexpr std::array u6 = sort_array(std::array{a, b, c, c, b, a});
-            // constexpr std::array u7 = sort_array(std::array{5., 3., 4., 2., 1.});
-            // static_assert(u0 == std::array<double, 0>{});
-            // static_assert(u1 == std::array{1.});
-            // static_assert(u2 == std::array{1., 2., 3., 4., 5.});
-            // static_assert(u3 == std::array{1., 2., 3., 4., 5.});
-            // static_assert(u4 == std::array{1., 2., 3., 4., 5.});
-            // static_assert(u5 == std::array{1., 2., 3., 4., 5.});
-            // static_assert(u6 == std::array{a, a, b, b, c, c});
-            // static_assert(u6[0].data() == a.data());
-            // static_assert(u7 == std::array{1., 2., 3., 4., 5.});
             /// TODO: I'll have to test this over forward-iterable-only arrays as well.
             /// Also for data with sentinels, like floats.
 
