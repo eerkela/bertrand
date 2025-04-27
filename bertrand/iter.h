@@ -2009,6 +2009,10 @@ namespace impl {
         }
     };
 
+    /// TODO: the comparison function should be passed as an rvalue if that's allowed?
+    /// TODO: the template parameter in general should be looked over for correctness.
+
+
     /* A stable, adaptive, k-way merge sort algorithm for arbitrary input/output ranges
     based on work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023),
     requiring O(n) scratch space for rotations.  A full description of the algorithm
@@ -2065,117 +2069,164 @@ namespace impl {
 
         1.  The data is already partially sorted, or is naturally ordered in
             ascending/descending runs.
-        2.  Comparisons are expensive, such as for strings or complex objects.
+        2.  Data movement and/or comparisons are expensive, such as for strings or
+            user-defined types.
         3.  The data has a sentinel value, expressed as
             `std::numeric_limits<T>::infinity()`.
 
     NOTE: the `min_run` template parameter dictates the minimum run length under
     which insertion sort will be used to grow the run.  [2] sets this to a default of
-    24, which is replicated here.  Like `k`, it can be tuned based on the data. */
+    24, which is replicated here.  Like `k`, it can be tuned at compile time. */
     template <size_t k = 4, size_t min_run = 24> requires (k >= 2 && min_run > 0)
     struct powersort {
     private:
+        template <typename Begin>
+        using value_type = meta::remove_reference<meta::dereference_type<Begin>>;
+        template <typename Begin>
+        using pointer = meta::as_pointer<value_type<Begin>>;
 
-        template <typename Begin, typename End, typename Less>
-            requires (
-                !meta::reference<Begin> &&
-                !meta::reference<End> &&
-                !meta::reference<Less>
-            )
-        struct merge_tree {
-        private:
-            using value_type = meta::remove_reference<meta::dereference_type<Begin>>;
-            using pointer = meta::as_pointer<value_type>;
-            using numeric = std::numeric_limits<meta::unqualify<value_type>>;
-            static constexpr size_t empty = std::numeric_limits<size_t>::max();
+        /// TODO: what would probably be best is encapsulating the `deleter` and
+        /// `scratch` types into a single `scratch` class with a default constructor
+        /// that initializes the pointer to null, and a size_t constructor that
+        /// initializes it directly.  The former would be used with forward-only
+        /// ranges, combined with lazy initialization in `run.detect()` the first
+        /// time it is needed.  The latter would be used to further optimize the
+        /// bidirectional case, where the scratch space is only allocated after the
+        /// initial run is detected.
 
-            /* Construction/destruction is done through `std::construct_at()` and
-            `std::destroy_at()` so as to allow use in constexpr contexts compared to
-            placement new and inplace destructor calls. */
-            static constexpr void destroy(pointer p)
-                noexcept(meta::nothrow::destructible<value_type>)
-                requires(meta::destructible<value_type>)
+        /* Scratch space is allocated as an uninitialized buffer using
+        `std::allocator<T>::allocate()` and `std::allocator<T>::deallocate()  so as
+        not to impose default constructibility on `value_type`, in a way that
+        allows the sort to be done at compile time using transient allocation. */
+        template <typename Begin>
+        struct deleter {
+            size_t size;
+            constexpr void operator()(pointer<Begin> p) noexcept {
+                std::allocator<value_type<Begin>>{}.deallocate(p, size);
+            }
+        };
+
+        template <typename Begin>
+        using scratch = std::unique_ptr<value_type<Begin>, deleter<Begin>>;
+
+        template <typename Begin, typename Less>
+            requires (!meta::reference<Begin> && !meta::reference<Less>)
+        struct run {
+            using value_type = powersort::value_type<Begin>;
+            using pointer = powersort::pointer<Begin>;
+
+            Begin iter;  // iterator to start of run
+            size_t start;  // first index of the run
+            size_t stop = start;  // one past last index of the run
+            size_t power = 0;
+
+            /* Detect the next run beginning at `start` and not exceeding `size`.
+            `iter` is an iterator to the start index, which will be advanced to
+            the end of the detected run as an out parameter.
+
+            If the run is strictly decreasing, then it will also be reversed in-place.
+            If it is less than the minimum run length, then it will be grown to that
+            length or to the end of the range using insertion sort.  After this method
+            is called, `stop` will be an index one past the last element of the run. */
+            constexpr void detect(Less& less_than, Begin& iter, size_t size)
+                requires (meta::bidirectional_iterator<Begin>)
             {
-                if constexpr (!meta::trivially_destructible<value_type>) {
-                    std::destroy_at(p);
+                if (stop < size && ++stop < size) {
+                    Begin next = iter;
+                    ++next;
+                    if (less_than(*next, *iter)) {  // strictly decreasing
+                        do {
+                            ++iter;
+                            ++next;
+                        } while (++stop < size && less_than(*next, *iter));
+                        ++iter;
+
+                        // if the iterator is bidirectional, then we can do an O(n / 2)
+                        // pairwise swap
+                        std::ranges::reverse(this->iter, iter);
+
+                    } else {  // weakly increasing
+                        do {
+                            ++iter;
+                            ++next;
+                        } while (++stop < size && !less_than(*next, *iter));
+                        ++iter;
+                    }
+                }
+
+                // Grow the run to the minimum length using insertion sort.  If the
+                // iterator is bidirectional, then we can rotate in-place from right to
+                // left to avoid any extra allocations.
+                size_t limit = bertrand::min(start + min_run, size);
+                while (stop < limit) {
+                    // if the unsorted element is less than the previous
+                    // element, we need to rotate it into the correct position
+                    Begin prev = iter;
+                    --prev;
+                    if (less_than(*iter, *prev)) {
+                        size_t idx = stop;
+                        Begin curr = iter;
+                        value_type temp = std::move(*curr);
+
+                        // rotate hole to the left until we find a proper
+                        // insertion point.
+                        while (true) {
+                            *curr = std::move(*prev);
+                            --curr;
+                            try {
+                                if (--idx == start) {
+                                    break;
+                                }
+                                --prev;
+                                if (!less_than(temp, *prev)) {
+                                    break;  // found insertion point
+                                }
+                            } catch (...) {
+                                *curr = std::move(temp);  // fill hole
+                                throw;
+                            }
+                        };
+
+                        // fill hole at insertion point
+                        *curr = std::move(temp);
+                    }
+                    ++iter;
+                    ++stop;
                 }
             }
 
-            /* Scratch space is allocated as an uninitialized buffer using
-            `std::allocator<T>::allocate()` and `std::allocator<T>::deallocate()  so as
-            not to impose default constructibility on `value_type`, in a way that
-            allows the sort to be done at compile time using transient allocation. */
-            struct deleter {
-                size_t size;
-                constexpr void operator()(pointer p) noexcept {
-                    std::allocator<value_type>{}.deallocate(p, size + k + 1);
-                }
-            };
+            /* Detect the next run beginning at `start` and not exceeding `size`.
+            `iter` is an iterator to the start index, which will be advanced to
+            the end of the detected run as an out parameter.
 
-            struct run {
-                Begin iter;  // iterator to start of run
-                size_t start;  // first index of the run
-                size_t stop;  // one past last index of the run
-                size_t power = 0;
-
-                /* Initialize sentinel run. */
-                constexpr run(Begin& iter, size_t start, size_t stop) :
-                    iter(iter),
-                    start(start),
-                    stop(stop)
-                {}
-
-                /* Detect the next run beginning at `start` and not exceeding `stop`.
-                `iter` is an iterator to the start index, which will be advanced to
-                the end of the detected run as an out parameter.  If the run is shorter
-                than the minimum length, it will be grown to the minimum length using
-                insertion sort. */
-                constexpr run(
-                    Less& less_than,
-                    pointer scratch,
-                    Begin& iter,
-                    size_t start,
-                    size_t size
-                ) :
-                    iter(iter),
-                    start(start),
-                    stop(start)
-                {
-                    if (stop < size && ++stop < size) {
-                        Begin next = iter;
-                        ++next;
-                        if (less_than(*next, *iter)) {  // strictly decreasing
-                            do {
-                                ++iter;
-                                ++next;
-                            } while (++stop < size && less_than(*next, *iter));
+            If the run is strictly decreasing, then it will also be reversed in-place.
+            If it is less than the minimum run length, then it will be grown to that
+            length or to the end of the range using insertion sort.  After this method
+            is called, `stop` will be an index one past the last element of the run.
+            
+            Forward-only iterators require the scratch space to be allocated early,
+            so that it can be used for reversal and insertion sort rotations.  This can
+            be avoided in the bidirectional case as an optimization. */
+            constexpr void detect(
+                Less& less_than,
+                Begin& iter,
+                size_t size,
+                pointer scratch
+            )
+                requires (!meta::bidirectional_iterator<Begin>)
+            {
+                if (stop < size && ++stop < size) {
+                    Begin next = iter;
+                    ++next;
+                    if (less_than(*next, *iter)) {  // strictly decreasing
+                        do {
                             ++iter;
-                            reverse(scratch, iter);
+                            ++next;
+                        } while (++stop < size && less_than(*next, *iter));
+                        ++iter;
 
-                        } else {  // weakly increasing
-                            do {
-                                ++iter;
-                                ++next;
-                            } while (++stop < size && !less_than(*next, *iter));
-                            ++iter;
-                        }
-                    }
-
-                    /// grow the run to minimum length
-                    grow(less_than, scratch, iter, size);
-                }
-
-            private:
-
-                constexpr void reverse(pointer scratch, Begin& iter) {
-                    // if the iterator is bidirectional, then we can do an O(n / 2)
-                    // pairwise swap
-                    if constexpr (meta::bidirectional_iterator<Begin>) {
-                        std::ranges::reverse(this->iter, iter);
-
-                    // otherwise, if the iterator is forward-only, we have to do an
-                    // O(2 * n) move into scratch space and then move back.
-                    } else {
+                        // otherwise, if the iterator is forward-only, we have to do an
+                        // O(2 * n) move into scratch space and then move back.
                         pointer begin = scratch;
                         pointer end = scratch + (stop - start);
                         Begin i = this->iter;
@@ -2188,100 +2239,120 @@ namespace impl {
                             destroy(end);
                             ++j;
                         }
+
+                    } else {  // weakly increasing
+                        do {
+                            ++iter;
+                            ++next;
+                        } while (++stop < size && !less_than(*next, *iter));
+                        ++iter;
                     }
                 }
 
-                constexpr void grow(
-                    Less& less_than,
-                    pointer scratch,
-                    Begin& unsorted,
-                    size_t size
-                ) {
-                    size_t limit = bertrand::min(start + min_run, size);
-
-                    // if the iterator is bidirectional, then we can rotate in-place
-                    // from right to left
-                    if constexpr (meta::bidirectional_iterator<Begin>) {
-                        while (stop < limit) {
-                            // if the unsorted element is less than the previous
-                            // element, we need to rotate it into the correct position
-                            Begin prev = unsorted;
-                            --prev;
-                            if (less_than(*unsorted, *prev)) {
-                                size_t idx = stop;
-                                Begin curr = unsorted;
-                                value_type temp = std::move(*curr);
-
-                                // rotate hole to the left until we find a proper
-                                // insertion point.
-                                while (true) {
-                                    *curr = std::move(*prev);
-                                    --curr;
-                                    try {
-                                        if (--idx == start) {
-                                            break;
-                                        }
-                                        --prev;
-                                        if (!less_than(temp, *prev)) {
-                                            break;  // found insertion point
-                                        }
-                                    } catch (...) {
-                                        *curr = std::move(temp);  // fill hole
-                                        throw;
-                                    }
-                                };
-
-                                // fill hole at insertion point
-                                *curr = std::move(temp);
+                // Grow the run to the minimum length using insertion sort.  If the
+                // iterator is forward-only, then we have to scan the sorted portion
+                // from left to right and move it into scratch space to do a proper
+                // rotation.
+                size_t limit = bertrand::min(start + min_run, size);
+                while (stop < limit) {
+                    // scan sorted portion for insertion point
+                    Begin curr = this->iter;
+                    size_t idx = start;
+                    while (idx < stop) {
+                        // stop at the first element that is strictly greater
+                        // than the unsorted element
+                        if (less_than(*iter, *curr)) {
+                            // move subsequent elements into scratch space
+                            Begin temp = curr;
+                            pointer p = scratch;
+                            pointer p2 = scratch + stop - idx;
+                            while (p < p2) {
+                                std::construct_at(
+                                    p++,
+                                    std::move(*temp++)
+                                );
                             }
-                            ++unsorted;
-                            ++stop;
-                        }
 
-                    // otherwise, we have to scan the sorted portion from left to right
-                    // and move into scratch space to do a rotation
-                    } else {
-                        while (stop < limit) {
-                            // scan sorted portion for insertion point
-                            Begin curr = this->iter;
-                            size_t idx = start;
-                            while (idx < stop) {
-                                // stop at the first element that is strictly greater
-                                // than the unsorted element
-                                if (less_than(*unsorted, *curr)) {
-                                    // move subsequent elements into scratch space
-                                    Begin temp = curr;
-                                    pointer p = scratch;
-                                    pointer p2 = scratch + stop - idx;
-                                    while (p < p2) {
-                                        std::construct_at(
-                                            p++,
-                                            std::move(*temp++)
-                                        );
-                                    }
+                            // move unsorted element to insertion point
+                            *curr++ = std::move(*iter);
 
-                                    // move unsorted element to insertion point
-                                    *curr++ = std::move(*unsorted);
-
-                                    // move intervening elements back
-                                    p = scratch;
-                                    p2 = scratch + stop - idx;
-                                    while (p < p2) {
-                                        *curr++ = std::move(*p);
-                                        destroy(p);
-                                        ++p;
-                                    }
-                                    break;
-                                }
-                                ++curr;
-                                ++idx;
+                            // move intervening elements back
+                            p = scratch;
+                            p2 = scratch + stop - idx;
+                            while (p < p2) {
+                                *curr++ = std::move(*p);
+                                destroy(p);
+                                ++p;
                             }
-                            ++unsorted;
-                            ++stop;
+                            break;
                         }
+                        ++curr;
+                        ++idx;
                     }
+                    ++iter;
+                    ++stop;
                 }
-            };
+            }
+        };
+
+        template <typename Begin, typename Less>
+            requires (!meta::reference<Begin> && !meta::reference<Less>)
+        struct merge_tree {
+        private:
+            using value_type = powersort::value_type<Begin>;
+            using pointer = powersort::pointer<Begin>;
+            using run = powersort::run<Begin, Less>;
+            using numeric = std::numeric_limits<meta::unqualify<value_type>>;
+            static constexpr size_t empty = std::numeric_limits<size_t>::max();
+
+            static constexpr size_t ceil_logk(size_t n) noexcept {
+                // fast path where `k` is a power of two
+                if constexpr (impl::is_power2(k)) {
+                    return (impl::log2(n - 1) / std::countr_zero(k)) + 1;
+    
+                // otherwise, we repeatedly multiply until we reach or exceed `n`,
+                // which is O(log(n)), but negligible compared to the sort.
+                } else {
+                    size_t m = 0;
+                    size_t product = 1;
+                    while (product < n) {
+                        ++m;
+                        if (product > std::numeric_limits<size_t>::max() / k) {
+                            break;  // k^m > any representable n
+                        }
+                        product *= k;
+                    }
+                    return m;
+                }
+            }
+
+            static constexpr size_t get_power(
+                size_t size,
+                const run& curr,
+                const run& next
+            ) noexcept {
+                /// NOTE: this implementation is taken straight from the reference.
+                /// The only generalization is the use of `std::countl_zero` instead
+                /// of compiler intrinsics, and converting to guaranteed 64-bit
+                /// arithmetic for the shift.
+                size_t l = curr.start + curr.stop;
+                size_t r = next.start + next.stop;
+                size_t a = (uint64_t(l) << 30) / size;
+                size_t b = (uint64_t(r) << 30) / size;
+                return ((std::countl_zero(a ^ b) - 1) >> 1) + 1;
+            }
+
+            /* Construction/destruction is done through `std::construct_at()` and
+            `std::destroy_at()` so as to allow use in constexpr contexts compared to
+            placement new and inplace destructor calls. */
+            static constexpr void destroy(pointer p)
+                noexcept(meta::nothrow::destructible<value_type>)
+                requires(meta::destructible<value_type>)
+            {
+                if constexpr (!meta::trivially_destructible<value_type>) {
+                    std::destroy_at(p);
+                }
+            }
 
             /* An exception-safe tournament tree generalized to arbitrary `N >= 2`.  If
             an error occurs during a comparison, then all runs will be transferred back
@@ -2785,92 +2856,31 @@ namespace impl {
                 }
             };
 
-            static constexpr size_t ceil_logk(size_t n) noexcept {
-                // fast path where `k` is a power of two
-                if constexpr (impl::is_power2(k)) {
-                    return (impl::log2(n - 1) / std::countr_zero(k)) + 1;
-
-                // otherwise, we repeatedly multiply until we reach or exceed `n`,
-                // which is O(log(n)), but negligible compared to the sort.
-                } else {
-                    size_t m = 0;
-                    size_t product = 1;
-                    while (product < n) {
-                        ++m;
-                        if (product > std::numeric_limits<size_t>::max() / k) {
-                            break;  // k^m > any representable n
-                        }
-                        product *= k;
-                    }
-                    return m;
-                }
-            }
-
-            static constexpr size_t get_power(
-                size_t size,
-                const run& curr,
-                const run& next
-            ) noexcept {
-                /// NOTE: this implementation is taken straight from the reference.
-                /// The only generalization is the use of `std::countl_zero` instead
-                /// of compiler intrinsics, and converting to guaranteed 64-bit
-                /// arithmetic for the shift.
-                size_t l = curr.start + curr.stop;
-                size_t r = next.start + next.stop;
-                size_t a = (uint64_t(l) << 30) / size;
-                size_t b = (uint64_t(r) << 30) / size;
-                return ((std::countl_zero(a ^ b) - 1) >> 1) + 1;
-            }
-
-            std::unique_ptr<value_type, deleter> scratch;
             std::vector<run> stack;
 
         public:
-            /// TODO: it may be unnecessary to allocate the scratch and/or stack
-            /// space if no merges are required, as would be the case for any data
-            /// that is either already sorted or has a size less than the minimum
-            /// run length.
-            /// -> The only real way to do this is to instantiate the pointers
-            /// outside the merge tree and then pass them in, or do away with the
-            /// merge tree abstraction entirely and operate on the pointers directly.
-            /// That last one is probably the way to go, it just requires complicating
-            /// the internal template signatures somewhat.  Maybe a better thing is
-            /// to just get rid of the constructor and make this a purely static class.
-            /// Then, I instantiate the pointers outside the class and pass them to
-            /// the call operator manually.
-            /// -> I would also need to take the first few lines of the call operator
-            /// and lift them into separate functions, so that I can dictate whether
-            /// to proceed, and with what resources after the first run has been
-            /// discovered.
-
-            /* Allocate stack and scratch space for a range of the given size. */
-            constexpr merge_tree(size_t size) :
-                scratch(
-                    std::allocator<value_type>{}.allocate(size + k + 1),
-                    deleter{size}
-                )
-            {
-                if (!scratch) {
-                    throw MemoryError("failed to allocate scratch space");
-                }
+            /* Allocate stack space for a range of the given size. */
+            constexpr merge_tree(size_t size) {
                 stack.reserve((k - 1) * (ceil_logk(size) + 1));
             }
 
             /* Execute the sorting algorithm. */
-            constexpr void operator()(Begin& begin, Less& less_than) {
-                // identify the first weakly increasing or strictly decreasing run
-                // starting at `begin` and grow to minimum length using insertion sort
-                size_t size = scratch.get_deleter().size;
-                run curr {less_than, scratch.get(), begin, 0, size};
-                /// TODO: this is where I could early break if curr.stop == size,
-                /// although the scratch allocation might need to occur before this,
-                /// or immediately after the run has been identified, but before it
-                /// is reversed.
-
+            constexpr void operator()(
+                Less& less_than,
+                Begin& begin,
+                size_t size,
+                run& curr,
+                pointer scratch
+            ) {
                 // build run stack according to powersort policy
                 stack.emplace_back(begin, 0, size);  // power zero as sentinel
-                while (curr.stop < size) {
-                    run next {less_than, scratch.get(), begin, curr.stop, size};
+                do {
+                    run next {begin, curr.stop};
+                    if constexpr (meta::bidirectional_iterator<Begin>) {
+                        next.detect(less_than, begin, size);
+                    } else {
+                        next.detect(less_than, begin, size, scratch);
+                    }
 
                     // compute previous run's power with respect to next run
                     curr.power = get_power(size, curr, next);
@@ -2938,20 +2948,20 @@ namespace impl {
                         }(std::make_index_sequence<k - 1>{});
 
                         // merge runs with equal power by dispatching to vtable
-                        vtable[i - 1](less_than, scratch.get(), stack, curr);
+                        vtable[i - 1](less_than, scratch, stack, curr);
                         stack.erase(stack.end() - i, stack.end());  // pop merged runs
                     }
 
                     // push next run onto stack
                     stack.emplace_back(std::move(curr));
                     curr = std::move(next);
-                }
+                } while (curr.stop < size);
 
                 // Because runs typically increase in size exponentially as the stack
                 // is emptied, we can manually merge the first few such that the stack
                 // size is reduced to a multiple of `k - 1`, so that we can do `k`-way
                 // merges the rest of the way.  This maximizes the benefit of the
-                // tournament tree and minimizes total comparisons.
+                // tournament tree and minimizes total data movement/comparisons.
                 using F = void(*)(Less&, pointer, std::vector<run>&, run&);
                 using VTable = std::array<F, k - 1>;
                 static constexpr VTable vtable = []<size_t... Is>(
@@ -2997,13 +3007,13 @@ namespace impl {
 
                 // vtable is only consulted for the first merge, after which we
                 // devolve to purely k-way merges
-                vtable[(stack.size() - 1) % (k - 1)](less_than, scratch.get(), stack, curr);
+                vtable[(stack.size() - 1) % (k - 1)](less_than, scratch, stack, curr);
                 [&]<size_t... Is>(std::index_sequence<Is...>) {
                     while (stack.size() > 1) {
                         Begin temp = stack[stack.size() - (k - 1)].iter;
                         tournament_tree<k>{
                             less_than,
-                            scratch.get(),
+                            scratch,
                             stack[stack.size() - (k - 1) + Is]...,
                             curr
                         }();
@@ -3015,18 +3025,27 @@ namespace impl {
             }
         };
 
-        template <typename Begin, meta::member T>
-            requires (!meta::reference<Begin> && !meta::reference<T>)
+        template <meta::member Less>
         struct sort_by_member {
-            T member;
+            meta::remove_rvalue<Less> member;
             constexpr bool operator()(auto&& l, auto&& r) const noexcept {
-                if constexpr (meta::member_function<T>) {
+                if constexpr (meta::member_function<Less>) {
                     return ((l.*member)()) < ((r.*member)());
                 } else {
                     return (l.*member) < (r.*member);
                 }
             }
         };
+
+        template <typename Less>
+        static constexpr decltype(auto) comparison_fn(Less&& less_than) {
+            return (std::forward<Less>(less_than));
+        }
+
+        template <meta::member Less>
+        static constexpr sort_by_member<Less> comparison_fn(Less&& member) {
+            return {{std::forward<Less>(member)}};
+        }
 
     public:
         /* Execute the sort algorithm using unsorted values in the range [begin, end)
@@ -3046,24 +3065,42 @@ namespace impl {
         template <typename Begin, typename End, typename Less = impl::Less>
             requires (meta::iter_sortable<Less, Begin, End>)
         static constexpr void operator()(Begin begin, End end, Less&& less_than = {}) {
-            using B = meta::remove_reference<Begin>;
-            using E = meta::remove_reference<End>;
-            using L = meta::remove_reference<Less>;
-
             // get overall length of range (possibly O(n) if iterators do not support
             // O(1) distance)
             auto length = std::ranges::distance(begin, end);
             if (length < 2) {
                 return;  // trivially sorted
             }
+            size_t size = size_t(length);
+            size_t scratch_size = size + k + 1;
+            decltype(auto) compare = comparison_fn(std::forward<Less>(less_than));
 
-            // convert member pointers into proper comparisons
-            if constexpr (meta::member<Less>) {
-                using C = sort_by_member<B, L>;
-                C cmp {std::forward<Less>(less_than)};
-                merge_tree<B, E, C>{size_t(length)}(begin, cmp);
+            using B = meta::remove_reference<Begin>;
+            using L = meta::remove_reference<decltype(compare)>;
+
+            // identify first run and early return if trivially sorted.  Delay the
+            // scratch allocation as long as possible.
+            run<B, L> curr {begin, 0};
+            if constexpr (meta::bidirectional_iterator<B>) {
+                curr.detect(compare, begin, size);
+                if (curr.stop == size) {
+                    return;
+                }
+                scratch<B> buffer(
+                    std::allocator<value_type<B>>{}.allocate(scratch_size),
+                    deleter<B>{scratch_size}
+                );
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
             } else {
-                merge_tree<B, E, L>{size_t(length)}(begin, less_than);
+                scratch<B> buffer(
+                    std::allocator<value_type<B>>{}.allocate(scratch_size),
+                    deleter<B>{scratch_size}
+                );
+                curr.detect(compare, begin, size, buffer.get());
+                if (curr.stop == size) {
+                    return;
+                }
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
             }
         }
 
@@ -3072,9 +3109,6 @@ namespace impl {
         template <typename Range, typename Less = impl::Less>
             requires (meta::sortable<Less, Range>)
         static constexpr void operator()(Range& range, Less&& less_than = {}) {
-            using B = meta::remove_reference<meta::begin_type<Range>>;
-            using E = meta::remove_reference<meta::end_type<Range>>;
-            using L = meta::remove_reference<Less>;
 
             // get overall length of range (possibly O(n) if the range is not
             // explicitly sized and iterators do not support O(1) distance)
@@ -3083,14 +3117,41 @@ namespace impl {
                 return;  // trivially sorted
             }
             auto begin = std::ranges::begin(range);
+            size_t size = size_t(length);
+            size_t scratch_size = size + k + 1;
+            decltype(auto) compare = comparison_fn(std::forward<Less>(less_than));
 
-            // convert member pointers into proper comparisons
-            if constexpr (meta::member<Less>) {
-                using C = sort_by_member<B, L>;
-                C cmp {std::forward<Less>(less_than)};
-                merge_tree<B, E, C>{size_t(length)}(begin, cmp);
+            using B = meta::remove_reference<meta::begin_type<Range>>;
+            using L = meta::remove_reference<decltype(compare)>;
+
+            /// TODO: if I allocate the unique pointer up here in the null state,
+            /// I could pass it to both branches and only initialize it if I actually
+            /// need it, which trades a handful of conditionals for a possible
+            /// allocation.
+
+            // identify first run and early return if trivially sorted.  Delay the
+            // scratch allocation as long as possible.
+            run<B, L> curr {begin, 0};
+            if constexpr (meta::bidirectional_iterator<B>) {
+                curr.detect(compare, begin, size);
+                if (curr.stop == size) {
+                    return;
+                }
+                scratch<B> buffer(
+                    std::allocator<value_type<B>>{}.allocate(scratch_size),
+                    deleter<B>{scratch_size}
+                );
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
             } else {
-                merge_tree<B, E, L>{size_t(length)}(begin, less_than);
+                scratch<B> buffer(
+                    std::allocator<value_type<B>>{}.allocate(scratch_size),
+                    deleter<B>{scratch_size}
+                );
+                curr.detect(compare, begin, size, buffer.get());
+                if (curr.stop == size) {
+                    return;
+                }
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
             }
         }
     };
