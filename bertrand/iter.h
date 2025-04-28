@@ -123,10 +123,20 @@ namespace impl {
     template <ssize_t size, ssize_t I> requires (valid_index<size, I>)
     constexpr ssize_t normalize_index() noexcept { return I + size * (I < 0); }
 
-    /* Apply python-style wraparound to a runtime index, potentially truncating it to
-    the nearest valid index.  The second return value is set 0 if the index was valid,
-    or +/- 1 to indicate overflow to the right or left, respectively. */
-    inline constexpr std::pair<ssize_t, ssize_t> normalize_index(
+    /* Apply Python_style wraparound to a runtime index.  Throws an `IndexError` if the
+    index would be out of bounds after normalizing. */
+    inline constexpr ssize_t normalize_index(ssize_t size, ssize_t i) {
+        ssize_t j = i + size * (i < 0);
+        if (j < 0 || j >= size) {
+            throw IndexError(std::to_string(i));
+        }
+        return j;
+    }
+
+    /* Apply python-style wraparound to a runtime index, truncating it to the nearest
+    valid index.  The second return value is set 0 if the index was valid, or +/- 1 to
+    indicate overflow to the right or left, respectively. */
+    inline constexpr std::pair<ssize_t, ssize_t> truncate_index(
         ssize_t size,
         ssize_t i
     ) noexcept {
@@ -1947,12 +1957,18 @@ namespace meta {
                 >
             ) || (
                 !meta::member<Less> &&
-                /// TODO: explicitly convertible to bool, not implicitly
-                meta::invoke_returns<
-                    bool,
+                meta::invocable<
                     meta::as_lvalue<Less>,
                     meta::dereference_type<Begin>,
                     meta::dereference_type<Begin>
+                > &&
+                meta::explicitly_convertible_to<
+                    meta::invoke_type<
+                        meta::as_lvalue<Less>,
+                        meta::dereference_type<Begin>,
+                        meta::dereference_type<Begin>
+                    >,
+                    bool
                 >
             )
         );
@@ -1962,56 +1978,10 @@ namespace meta {
         meta::iterable<Range> &&
         iter_sortable<Less, meta::begin_type<Range>, meta::end_type<Range>>;
 
-    /// TODO: nothrow equivalants so I can define proper noexcept specifiers
-    /// for powersort implementation
-
 }
 
 
 namespace impl {
-
-    /* A simple pseudo-random number generator that works at compile time.  Useful for
-    fuzz testing sorting algorithms in constexpr contexts. */
-    struct prng {
-    private:
-
-        [[nodiscard]] static constexpr uint64_t splitmix(uint64_t x) noexcept {
-            x += 0x9e3779b97f4a7c15ull;
-            x  = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull;
-            x  = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
-            return x ^ (x >> 31);
-        }
-
-    public:
-        mutable uint64_t seed;
-
-        /* Return a random number in the given range at compile time. */
-        [[nodiscard]] constexpr uint64_t operator()(
-            uint64_t start = 0,
-            uint64_t stop = std::numeric_limits<uint64_t>::max()
-        ) const noexcept {
-            uint64_t x = seed;
-            seed = seed + 0x9e3779b97f4a7c15ull;   // same constant as splitmix
-            return (splitmix(x) % (stop - start)) + start;
-        }
-
-        /// fill a std::array<T,N> with random numbers
-        template <typename T, size_t N>
-        [[nodiscard]] constexpr std::array<T, N> array(
-            uint64_t start = 0,
-            uint64_t stop = std::numeric_limits<uint64_t>::max()
-        ) const {
-            std::array<T, N> out{};
-            for (std::size_t i = 0; i < N; ++i) {
-                out[i] = static_cast<T>((*this)(start, stop));
-            }
-            return out;
-        }
-    };
-
-    /// TODO: the comparison function should be passed as an rvalue if that's allowed?
-    /// TODO: the template parameter in general should be looked over for correctness.
-
 
     /* A stable, adaptive, k-way merge sort algorithm for arbitrary input/output ranges
     based on work by Gelling, Nebel, Smith, and Wild ("Multiway Powersort", 2023),
@@ -2085,36 +2055,185 @@ namespace impl {
         template <typename Begin>
         using pointer = meta::as_pointer<value_type<Begin>>;
 
-        /// TODO: what would probably be best is encapsulating the `deleter` and
-        /// `scratch` types into a single `scratch` class with a default constructor
-        /// that initializes the pointer to null, and a size_t constructor that
-        /// initializes it directly.  The former would be used with forward-only
-        /// ranges, combined with lazy initialization in `run.detect()` the first
-        /// time it is needed.  The latter would be used to further optimize the
-        /// bidirectional case, where the scratch space is only allocated after the
-        /// initial run is detected.
+        /* The less-than comparator may be given as either a boolean predicate function
+        or a simple pointer to member, which will be wrapped in a boolean predicate. */
+        template <typename Less> requires (!meta::rvalue<Less>)
+        struct sort_by {
+            Less member;
 
-        /* Scratch space is allocated as an uninitialized buffer using
-        `std::allocator<T>::allocate()` and `std::allocator<T>::deallocate()  so as
-        not to impose default constructibility on `value_type`, in a way that
-        allows the sort to be done at compile time using transient allocation. */
-        template <typename Begin>
-        struct deleter {
-            size_t size;
-            constexpr void operator()(pointer<Begin> p) noexcept {
-                std::allocator<value_type<Begin>>{}.deallocate(p, size);
+            constexpr bool operator()(auto&& l, auto&& r) const noexcept {
+                if constexpr (meta::member_function<Less>) {
+                    return ((l.*member)()) < ((r.*member)());
+                } else {
+                    return (l.*member) < (r.*member);
+                }
+            }
+
+            template <meta::is<Less> L>
+            static constexpr decltype(auto) fn(L&& less_than) noexcept {
+                return (std::forward<L>(less_than));
+            }
+
+            template <meta::is<Less> L> requires (meta::member<Less>)
+            static constexpr sort_by fn(L&& less_than)
+                noexcept(meta::nothrow::convertible_to<L, Less>)
+            {
+                return {std::forward<L>(less_than)};
             }
         };
 
-        template <typename Begin>
-        using scratch = std::unique_ptr<value_type<Begin>, deleter<Begin>>;
+        /* Scratch space is allocated as a raw buffer using
+        `std::allocator<T>::allocate()` and `std::allocator<T>::deallocate()  so as
+        not to impose default constructibility on `value_type`, while still allowing
+        the sort to be done at compile time via transient allocation. */
+        template <typename Begin> requires (!meta::reference<Begin>)
+        struct scratch {
+            using value_type = powersort::value_type<Begin>;
+            using pointer = powersort::pointer<Begin>;
+            struct deleter {
+                size_t size;
+                constexpr void operator()(pointer p) noexcept {
+                    std::allocator<value_type>{}.deallocate(p, size);
+                }
+            };
+            using buffer = std::unique_ptr<value_type, deleter>;
+            buffer data;
+
+            constexpr scratch() noexcept = default;
+            constexpr scratch(size_t size) : data(
+                std::allocator<value_type>{}.allocate(size + k + 1),
+                deleter{size + k + 1}
+            ) {}
+
+            constexpr void allocate(size_t size) {
+                data = buffer{
+                    std::allocator<value_type>{}.allocate(size + k + 1),
+                    deleter{size + k + 1}
+                };
+            }
+        };
 
         template <typename Begin, typename Less>
-            requires (!meta::reference<Begin> && !meta::reference<Less>)
         struct run {
             using value_type = powersort::value_type<Begin>;
             using pointer = powersort::pointer<Begin>;
+            Begin iter;  // iterator to start of run
+            size_t start;  // first index of the run
+            size_t stop = start;  // one past last index of the run
+            size_t power = 0;
 
+            /* Detect the next run beginning at `start` and not exceeding `size`.
+            `iter` is an iterator to the start index, which will be advanced to
+            the end of the detected run as an out parameter.
+
+            If the run is strictly decreasing, then it will also be reversed in-place.
+            If it is less than the minimum run length, then it will be grown to that
+            length or to the end of the range using insertion sort.  After this method
+            is called, `stop` will be an index one past the last element of the run.
+            
+            Forward-only iterators require the scratch space to be allocated early,
+            so that it can be used for reversal and insertion sort rotations.  This can
+            be avoided in the bidirectional case as an optimization. */
+            constexpr void detect(
+                Less& less_than,
+                Begin& iter,
+                size_t size,
+                powersort::scratch<Begin>& scratch  // initialized to null
+            )
+                requires (!meta::bidirectional_iterator<Begin>)
+            {
+                if (stop < size && ++stop < size) {
+                    Begin next = iter;
+                    ++next;
+                    if (less_than(*next, *iter)) {  // strictly decreasing
+                        do {
+                            ++iter;
+                            ++next;
+                        } while (++stop < size && less_than(*next, *iter));
+                        ++iter;
+
+                        // otherwise, if the iterator is forward-only, we have to do an
+                        // O(2 * n) move into scratch space and then move back.
+                        scratch.allocate(size);  // lazy initialization
+                        pointer begin = scratch;
+                        pointer end = scratch + (stop - start);
+                        Begin i = this->iter;
+                        while (begin < end) {
+                            std::construct_at(begin++, std::move(*i++));
+                        }
+                        Begin j = this->iter;
+                        while (end-- > scratch) {
+                            *j = std::move(*(end));
+                            destroy(end);
+                            ++j;
+                        }
+
+                    } else {  // weakly increasing
+                        do {
+                            ++iter;
+                            ++next;
+                        } while (++stop < size && !less_than(*next, *iter));
+                        ++iter;
+                    }
+                }
+
+                if (stop == size) {
+                    return;
+                }
+                if (scratch.data == nullptr) {
+                    scratch.allocate(size);  // lazy initialization
+                }
+
+                // Grow the run to the minimum length using insertion sort.  If the
+                // iterator is forward-only, then we have to scan the sorted portion
+                // from left to right and move it into scratch space to do a proper
+                // rotation.
+                size_t limit = bertrand::min(start + min_run, size);
+                while (stop < limit) {
+                    // scan sorted portion for insertion point
+                    Begin curr = this->iter;
+                    size_t idx = start;
+                    while (idx < stop) {
+                        // stop at the first element that is strictly greater
+                        // than the unsorted element
+                        if (less_than(*iter, *curr)) {
+                            // move subsequent elements into scratch space
+                            Begin temp = curr;
+                            pointer p = scratch;
+                            pointer p2 = scratch + stop - idx;
+                            while (p < p2) {
+                                std::construct_at(
+                                    p++,
+                                    std::move(*temp++)
+                                );
+                            }
+
+                            // move unsorted element to insertion point
+                            *curr++ = std::move(*iter);
+
+                            // move intervening elements back
+                            p = scratch;
+                            p2 = scratch + stop - idx;
+                            while (p < p2) {
+                                *curr++ = std::move(*p);
+                                destroy(p);
+                                ++p;
+                            }
+                            break;
+                        }
+                        ++curr;
+                        ++idx;
+                    }
+                    ++iter;
+                    ++stop;
+                }
+            }
+        };
+
+        template <meta::bidirectional_iterator Begin, typename Less>
+        struct run<Begin, Less> {
+            using value_type = powersort::value_type<Begin>;
+            using pointer = powersort::pointer<Begin>;
             Begin iter;  // iterator to start of run
             size_t start;  // first index of the run
             size_t stop = start;  // one past last index of the run
@@ -2128,9 +2247,7 @@ namespace impl {
             If it is less than the minimum run length, then it will be grown to that
             length or to the end of the range using insertion sort.  After this method
             is called, `stop` will be an index one past the last element of the run. */
-            constexpr void detect(Less& less_than, Begin& iter, size_t size)
-                requires (meta::bidirectional_iterator<Begin>)
-            {
+            constexpr void detect(Less& less_than, Begin& iter, size_t size) {
                 if (stop < size && ++stop < size) {
                     Begin next = iter;
                     ++next;
@@ -2189,105 +2306,6 @@ namespace impl {
 
                         // fill hole at insertion point
                         *curr = std::move(temp);
-                    }
-                    ++iter;
-                    ++stop;
-                }
-            }
-
-            /* Detect the next run beginning at `start` and not exceeding `size`.
-            `iter` is an iterator to the start index, which will be advanced to
-            the end of the detected run as an out parameter.
-
-            If the run is strictly decreasing, then it will also be reversed in-place.
-            If it is less than the minimum run length, then it will be grown to that
-            length or to the end of the range using insertion sort.  After this method
-            is called, `stop` will be an index one past the last element of the run.
-            
-            Forward-only iterators require the scratch space to be allocated early,
-            so that it can be used for reversal and insertion sort rotations.  This can
-            be avoided in the bidirectional case as an optimization. */
-            constexpr void detect(
-                Less& less_than,
-                Begin& iter,
-                size_t size,
-                pointer scratch
-            )
-                requires (!meta::bidirectional_iterator<Begin>)
-            {
-                if (stop < size && ++stop < size) {
-                    Begin next = iter;
-                    ++next;
-                    if (less_than(*next, *iter)) {  // strictly decreasing
-                        do {
-                            ++iter;
-                            ++next;
-                        } while (++stop < size && less_than(*next, *iter));
-                        ++iter;
-
-                        // otherwise, if the iterator is forward-only, we have to do an
-                        // O(2 * n) move into scratch space and then move back.
-                        pointer begin = scratch;
-                        pointer end = scratch + (stop - start);
-                        Begin i = this->iter;
-                        while (begin < end) {
-                            std::construct_at(begin++, std::move(*i++));
-                        }
-                        Begin j = this->iter;
-                        while (end-- > scratch) {
-                            *j = std::move(*(end));
-                            destroy(end);
-                            ++j;
-                        }
-
-                    } else {  // weakly increasing
-                        do {
-                            ++iter;
-                            ++next;
-                        } while (++stop < size && !less_than(*next, *iter));
-                        ++iter;
-                    }
-                }
-
-                // Grow the run to the minimum length using insertion sort.  If the
-                // iterator is forward-only, then we have to scan the sorted portion
-                // from left to right and move it into scratch space to do a proper
-                // rotation.
-                size_t limit = bertrand::min(start + min_run, size);
-                while (stop < limit) {
-                    // scan sorted portion for insertion point
-                    Begin curr = this->iter;
-                    size_t idx = start;
-                    while (idx < stop) {
-                        // stop at the first element that is strictly greater
-                        // than the unsorted element
-                        if (less_than(*iter, *curr)) {
-                            // move subsequent elements into scratch space
-                            Begin temp = curr;
-                            pointer p = scratch;
-                            pointer p2 = scratch + stop - idx;
-                            while (p < p2) {
-                                std::construct_at(
-                                    p++,
-                                    std::move(*temp++)
-                                );
-                            }
-
-                            // move unsorted element to insertion point
-                            *curr++ = std::move(*iter);
-
-                            // move intervening elements back
-                            p = scratch;
-                            p2 = scratch + stop - idx;
-                            while (p < p2) {
-                                *curr++ = std::move(*p);
-                                destroy(p);
-                                ++p;
-                            }
-                            break;
-                        }
-                        ++curr;
-                        ++idx;
                     }
                     ++iter;
                     ++stop;
@@ -2578,7 +2596,7 @@ namespace impl {
                     // finish with a binary merge
                     } else {
                         while (begin[0] != end[0] && begin[1] != end[1]) {
-                            bool less = less_than(*begin[1], *begin[0]);
+                            bool less = static_cast<bool>(less_than(*begin[1], *begin[0]));
                             *output++ = std::move(*begin[less]);
                             destroy(begin[less]);
                             ++begin[less];
@@ -2770,7 +2788,7 @@ namespace impl {
 
                 constexpr void operator()() {
                     for (size_t i = 0; i < size; ++i) {
-                        bool less = less_than(*begin[1], *begin[0]);
+                        bool less = static_cast<bool>(less_than(*begin[1], *begin[0]));
                         *output++ = std::move(*begin[less]);
                         destroy(begin[less]);
                         ++begin[less];
@@ -2828,7 +2846,7 @@ namespace impl {
 
                 constexpr void operator()() {
                     while (begin[0] < end[0] && begin[1] < end[1]) {
-                        bool less = less_than(*begin[1], *begin[0]);
+                        bool less = static_cast<bool>(less_than(*begin[1], *begin[0]));
                         *output++ = std::move(*begin[less]);
                         destroy(begin[less]++);
                     }
@@ -2870,7 +2888,7 @@ namespace impl {
                 Begin& begin,
                 size_t size,
                 run& curr,
-                pointer scratch
+                powersort::scratch<Begin>& scratch
             ) {
                 // build run stack according to powersort policy
                 stack.emplace_back(begin, 0, size);  // power zero as sentinel
@@ -2948,7 +2966,7 @@ namespace impl {
                         }(std::make_index_sequence<k - 1>{});
 
                         // merge runs with equal power by dispatching to vtable
-                        vtable[i - 1](less_than, scratch, stack, curr);
+                        vtable[i - 1](less_than, scratch.data.get(), stack, curr);
                         stack.erase(stack.end() - i, stack.end());  // pop merged runs
                     }
 
@@ -3007,13 +3025,18 @@ namespace impl {
 
                 // vtable is only consulted for the first merge, after which we
                 // devolve to purely k-way merges
-                vtable[(stack.size() - 1) % (k - 1)](less_than, scratch, stack, curr);
+                vtable[(stack.size() - 1) % (k - 1)](
+                    less_than,
+                    scratch.data.get(),
+                    stack,
+                    curr
+                );
                 [&]<size_t... Is>(std::index_sequence<Is...>) {
                     while (stack.size() > 1) {
                         Begin temp = stack[stack.size() - (k - 1)].iter;
                         tournament_tree<k>{
                             less_than,
-                            scratch,
+                            scratch.data.get(),
                             stack[stack.size() - (k - 1) + Is]...,
                             curr
                         }();
@@ -3024,28 +3047,6 @@ namespace impl {
                 }(std::make_index_sequence<k - 1>{});
             }
         };
-
-        template <meta::member Less>
-        struct sort_by_member {
-            meta::remove_rvalue<Less> member;
-            constexpr bool operator()(auto&& l, auto&& r) const noexcept {
-                if constexpr (meta::member_function<Less>) {
-                    return ((l.*member)()) < ((r.*member)());
-                } else {
-                    return (l.*member) < (r.*member);
-                }
-            }
-        };
-
-        template <typename Less>
-        static constexpr decltype(auto) comparison_fn(Less&& less_than) {
-            return (std::forward<Less>(less_than));
-        }
-
-        template <meta::member Less>
-        static constexpr sort_by_member<Less> comparison_fn(Less&& member) {
-            return {{std::forward<Less>(member)}};
-        }
 
     public:
         /* Execute the sort algorithm using unsorted values in the range [begin, end)
@@ -3072,8 +3073,9 @@ namespace impl {
                 return;  // trivially sorted
             }
             size_t size = size_t(length);
-            size_t scratch_size = size + k + 1;
-            decltype(auto) compare = comparison_fn(std::forward<Less>(less_than));
+            decltype(auto) compare = sort_by<meta::remove_rvalue<Less>>::fn(
+                std::forward<Less>(less_than)
+            );
 
             using B = meta::remove_reference<Begin>;
             using L = meta::remove_reference<decltype(compare)>;
@@ -3086,21 +3088,20 @@ namespace impl {
                 if (curr.stop == size) {
                     return;
                 }
-                scratch<B> buffer(
-                    std::allocator<value_type<B>>{}.allocate(scratch_size),
-                    deleter<B>{scratch_size}
-                );
-                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
+                scratch<B> buffer(size);
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer);
             } else {
-                scratch<B> buffer(
-                    std::allocator<value_type<B>>{}.allocate(scratch_size),
-                    deleter<B>{scratch_size}
-                );
-                curr.detect(compare, begin, size, buffer.get());
+                scratch<B> buffer;
+                curr.detect(compare, begin, size, buffer);
                 if (curr.stop == size) {
                     return;
                 }
-                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
+                if (buffer.data == nullptr) {
+                    // if no scratch space was needed for run detection, allocate it
+                    // here before proceeding to build the merge tree.
+                    buffer.allocate(size);
+                }
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer);
             }
         }
 
@@ -3109,7 +3110,6 @@ namespace impl {
         template <typename Range, typename Less = impl::Less>
             requires (meta::sortable<Less, Range>)
         static constexpr void operator()(Range& range, Less&& less_than = {}) {
-
             // get overall length of range (possibly O(n) if the range is not
             // explicitly sized and iterators do not support O(1) distance)
             auto length = std::ranges::distance(range);
@@ -3118,16 +3118,12 @@ namespace impl {
             }
             auto begin = std::ranges::begin(range);
             size_t size = size_t(length);
-            size_t scratch_size = size + k + 1;
-            decltype(auto) compare = comparison_fn(std::forward<Less>(less_than));
+            decltype(auto) compare = sort_by<meta::remove_rvalue<Less>>::fn(
+                std::forward<Less>(less_than)
+            );
 
             using B = meta::remove_reference<meta::begin_type<Range>>;
             using L = meta::remove_reference<decltype(compare)>;
-
-            /// TODO: if I allocate the unique pointer up here in the null state,
-            /// I could pass it to both branches and only initialize it if I actually
-            /// need it, which trades a handful of conditionals for a possible
-            /// allocation.
 
             // identify first run and early return if trivially sorted.  Delay the
             // scratch allocation as long as possible.
@@ -3137,21 +3133,20 @@ namespace impl {
                 if (curr.stop == size) {
                     return;
                 }
-                scratch<B> buffer(
-                    std::allocator<value_type<B>>{}.allocate(scratch_size),
-                    deleter<B>{scratch_size}
-                );
-                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
+                scratch<B> buffer(size);
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer);
             } else {
-                scratch<B> buffer(
-                    std::allocator<value_type<B>>{}.allocate(scratch_size),
-                    deleter<B>{scratch_size}
-                );
-                curr.detect(compare, begin, size, buffer.get());
+                scratch<B> buffer;
+                curr.detect(compare, begin, size, buffer);
                 if (curr.stop == size) {
                     return;
                 }
-                merge_tree<B, L>{size}(compare, begin, size, curr, buffer.get());
+                if (buffer.data == nullptr) {
+                    // if no scratch space was needed for run detection, allocate it
+                    // here before proceeding to build the merge tree.
+                    buffer.allocate(size);
+                }
+                merge_tree<B, L>{size}(compare, begin, size, curr, buffer);
             }
         }
     };
@@ -3198,44 +3193,66 @@ The `meta::sortable<Less, MyType>` concept encapsulates all of the requirements 
 sorting based on any of the predicates described above, and enforces them at compile
 time, while `impl::Less` (equivalent to `std::less<void>`) defaults to a transparent
 comparison. */
-template <typename Range, meta::sortable<Range> Less = impl::Less>
-    requires (!meta::has_member_sort<Range, Less>)
-constexpr void sort(Range&& range, Less&& less_than = {}) noexcept(
-    noexcept(impl::powersort{}(std::forward<Range>(range), std::forward<Less>(less_than)))
-) {
-    impl::powersort{}(std::forward<Range>(range), std::forward<Less>(less_than));
+template <meta::default_constructible Less = impl::Less, typename Range>
+    requires (meta::sortable<Less, Range>)
+constexpr void sort(Range&& range)
+    noexcept(noexcept(impl::powersort{}(std::forward<Range>(range), Less{})))
+    requires(
+        !requires{std::forward<Range>(range).sort();} &&
+        !requires{std::forward<Range>(range).template sort<Less>();}
+    )
+{
+    impl::powersort{}(std::forward<Range>(range), Less{});
 }
 
 
-/* ADL version of `sort()`, which delegates to the implementation-specific
-`range.sort()`.  All arguments as well as the return type (if any) will be perfectly
-forwarded to that method.  */
+/* ADL version of `sort()`, which delegates to an implementation-specific
+`range.sort<Less>(args...)` method.  All other arguments as well as the return type
+(if any) will be perfectly forwarded to that method.  This version accepts an explicit
+`Less` function type as a template parameter which will also be forwarded to the ADL
+method */
+template <meta::default_constructible Less = impl::Less, typename Range, typename... Args>
+constexpr decltype(auto) sort(Range&& range, Args&&... args)
+    noexcept(noexcept(
+        std::forward<Range>(range).template sort<Less>(std::forward<Args>(args)...)
+    ))
+    requires(
+        !requires{std::forward<Range>(range).sort(std::forward<Args>(args)...);} &&
+        requires{
+            std::forward<Range>(range).template sort<Less>(std::forward<Args>(args)...);
+        }
+    )
+{
+    return (std::forward<Range>(range).template sort<Less>(std::forward<Args>(args)...));
+}
+
+
+/* ADL version of `sort()`, which delegates to an implementation-specific
+`range.sort<Less>(args...)` method.  All other arguments as well as the return type
+(if any) will be perfectly forwarded to that method.  This version does not accept
+any template parameters, and only forwards the arguments. */
 template <typename Range, typename... Args>
-    requires (meta::has_member_sort<Range, Args...>)
-constexpr decltype(auto) sort(Range&& range, Args&&... args) noexcept(
-    noexcept(std::forward<Range>(range).sort(std::forward<Args>(args)...))
-) {
-    return std::forward<Range>(range).sort(std::forward<Args>(args)...);
+constexpr decltype(auto) sort(Range&& range, Args&&... args)
+    noexcept(noexcept(std::forward<Range>(range).sort(std::forward<Args>(args)...)))
+    requires(requires{std::forward<Range>(range).sort(std::forward<Args>(args)...);})
+{
+    return (std::forward<Range>(range).sort(std::forward<Args>(args)...));
 }
 
 
 /* Iterator-based `sort()`, which always uses the fallback powersort implementation.
 If the iterators do not support O(1) distance, the length of the range will be
 computed in O(n) time before starting the sort algorithm. */
-template <typename Begin, typename End, typename Less = impl::Less>
+template <meta::default_constructible Less = impl::Less, typename Begin, typename End>
     requires (meta::iter_sortable<Less, Begin, End>)
-constexpr void sort(Begin&& begin, End&& end, Less&& less_than = {}) noexcept(
-    noexcept(impl::powersort{}(
+constexpr void sort(Begin&& begin, End&& end)
+    noexcept(noexcept(impl::powersort{}(
         std::forward<Begin>(begin),
         std::forward<End>(end),
-        std::forward<Less>(less_than)
-    ))
-) {
-    impl::powersort{}(
-        std::forward<Begin>(begin),
-        std::forward<End>(end),
-        std::forward<Less>(less_than)
-    );
+        Less{}
+    )))
+{
+    impl::powersort{}(std::forward<Begin>(begin), std::forward<End>(end), Less{});
 }
 
 
@@ -3250,7 +3267,14 @@ This overload directly copies or moves the contents of a previous, unsorted cont
 and returns a new container of a corresponding type.  It returns the input as-is if the
 container is already equivalent to its sorted type. */
 template <meta::unqualified Less = impl::Less, typename T>
-    requires (
+[[nodiscard]] decltype(auto) sorted(T&& container)
+    noexcept(
+        meta::is<typename meta::detail::sorted<Less, meta::unqualify<T>>::type, T> ||
+        noexcept(typename meta::detail::sorted<Less, meta::unqualify<T>>::type(
+            std::forward<T>(container)
+        ))
+    )
+    requires(
         meta::is<
             T,
             typename meta::detail::sorted<Less, meta::unqualify<T>>::type
@@ -3260,12 +3284,7 @@ template <meta::unqualified Less = impl::Less, typename T>
             T
         >
     )
-[[nodiscard]] decltype(auto) sorted(T&& container) noexcept(
-    meta::is<typename meta::detail::sorted<Less, meta::unqualify<T>>::type, T> ||
-    noexcept(typename meta::detail::sorted<Less, meta::unqualify<T>>::type(
-        std::forward<T>(container)
-    ))
-) {
+{
     using sorted_type = meta::detail::sorted<Less, meta::unqualify<T>>::type;
     if constexpr (meta::is<sorted_type, T>) {
         return std::forward<T>(container);
@@ -3286,13 +3305,15 @@ This overload expects the user to provide the container type as an explicit temp
 parameter, possibly along with a custom comparison function.  All arguments will be
 passed to the constructor for the container's sorted type. */
 template <meta::unqualified T, meta::unqualified Less = impl::Less, typename... Args>
-    requires (meta::constructible_from<
+[[nodiscard]] meta::detail::sorted<Less, T>::type sorted(Args&&... args)
+    noexcept(noexcept(
+        typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...)
+    ))
+    requires(meta::constructible_from<
         typename meta::detail::sorted<Less, T>::type,
         Args...
     >)
-[[nodiscard]] meta::detail::sorted<Less, T>::type sorted(Args&&... args) noexcept(
-    noexcept(typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...))
-) {
+{
     using sorted_type = meta::detail::sorted<Less, T>::type;
     return sorted_type(std::forward<Args>(args)...);
 }
@@ -3314,7 +3335,12 @@ template <
     meta::unqualified Less = impl::Less,
     typename... Args
 >
-    requires (requires(Args... args) {
+[[nodiscard]] auto sorted(Args&&... args)
+    noexcept(noexcept(typename meta::detail::sorted<
+        Less,
+        decltype(Container(std::forward<Args>(args)...))
+    >::type(std::forward<Args>(args)...)))
+    requires(requires{
         Container(std::forward<Args>(args)...);
         typename meta::detail::sorted<
             Less,
@@ -3325,12 +3351,7 @@ template <
             decltype(Container(std::forward<Args>(args)...))
         >::type(std::forward<Args>(args)...);
     })
-[[nodiscard]] auto sorted(Args&&... args) noexcept(
-    noexcept(typename meta::detail::sorted<
-        Less,
-        decltype(Container(std::forward<Args>(args)...))
-    >::type(std::forward<Args>(args)...))
-) {
+{
     using deduced_type = decltype(Container(std::forward<Args>(args)...));
     using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
     return sorted_type(std::forward<Args>(args)...);
@@ -3353,7 +3374,12 @@ template <
     meta::unqualified Less = impl::Less,
     typename... Args
 >
-    requires (requires(Args... args) {
+[[nodiscard]] auto sorted(Args&&... args)
+    noexcept(noexcept(typename meta::detail::sorted<
+        Less,
+        decltype(Container(std::forward<Args>(args)...))
+    >::type(std::forward<Args>(args)...)))
+    requires(requires{
         Container(std::forward<Args>(args)...);
         typename meta::detail::sorted<
             Less,
@@ -3364,12 +3390,7 @@ template <
             decltype(Container(std::forward<Args>(args)...))
         >::type(std::forward<Args>(args)...);
     })
-[[nodiscard]] auto sorted(Args&&... args) noexcept(
-    noexcept(typename meta::detail::sorted<
-        Less,
-        decltype(Container(std::forward<Args>(args)...))
-    >::type(std::forward<Args>(args)...))
-) {
+{
     using deduced_type = decltype(Container(std::forward<Args>(args)...));
     using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
     return sorted_type(std::forward<Args>(args)...);
@@ -3397,7 +3418,12 @@ template <
     meta::unqualified Less = impl::Less,
     typename... Args
 >
-    requires (requires(Args... args) {
+[[nodiscard]] auto sorted(Args&&... args)
+    noexcept(noexcept(typename meta::detail::sorted<
+        Less,
+        decltype(Container(std::forward<Args>(args)...))
+    >::type(std::forward<Args>(args)...)))
+    requires(requires{
         Container(std::forward<Args>(args)...);
         typename meta::detail::sorted<
             Less,
@@ -3408,171 +3434,12 @@ template <
             decltype(Container(std::forward<Args>(args)...))
         >::type(std::forward<Args>(args)...);
     })
-[[nodiscard]] auto sorted(Args&&... args) noexcept(
-    noexcept(typename meta::detail::sorted<
-        Less,
-        decltype(Container(std::forward<Args>(args)...))
-    >::type(std::forward<Args>(args)...))
-) {
+{
     using deduced_type = decltype(Container(std::forward<Args>(args)...));
     using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
     return sorted_type(std::forward<Args>(args)...);
 }
 
-
-}
-
-
-namespace bertrand {
-
-    template <typename T, size_t N>
-    struct Forward {
-        std::array<T, N> data;
-        constexpr auto begin() noexcept { return data.begin(); }
-        constexpr auto end() noexcept { return data.end(); }
-    };
-
-    template <typename T, size_t N>
-    constexpr bool fuzz_contiguous(
-        uint64_t seed,
-        uint64_t min = 0,
-        uint64_t max = std::numeric_limits<uint64_t>::max()
-    ) {
-        auto array = impl::prng{seed}.array<T, N>(min, max);
-        auto copy = array;
-        impl::powersort<3, 1>{}(copy);
-        return
-            std::is_sorted(copy.begin(), copy.end()) &&
-            std::is_permutation(array.begin(), array.end(), copy.begin());
-    }
-
-    template <typename T, size_t N>
-    constexpr bool fuzz_forward(
-        uint64_t seed,
-        uint64_t min = 0,
-        uint64_t max = std::numeric_limits<uint64_t>::max()
-    ) {
-        auto array = Forward<T, N>{impl::prng{seed}.array<T, N>(min, max)};
-        auto copy = array;
-        impl::powersort{}(copy);
-        return
-            std::is_sorted(copy.begin(), copy.end()) &&
-            std::is_permutation(array.begin(), array.end(), copy.begin());
-    }
-
-    inline void test() {
-        {
-            struct Cmp {
-                static constexpr bool operator()(int x) noexcept { return x > 1; }
-            };
-    
-            static constexpr std::tuple<int, int, int> tup {0, 0, 2};
-            static constexpr std::array<int, 3> arr = {1, 2, 3};
-            static_assert(any<Cmp>(0, 0, 2));
-            static_assert(any<Cmp>(tup));
-            static_assert(any<Cmp>(arr));
-            static_assert(fold_left<impl::Add>(arr) == 6);
-            static_assert(bertrand::min(std::pair<int, int>{1, 2}) == 1);
-            static_assert(bertrand::min(arr) == 1);
-            static_assert(bertrand::max(std::pair<int, int>{1, 2}) == 2);
-            static_assert(bertrand::max(arr) == 3);
-            static_assert(bertrand::minmax(arr).first == 1);
-            static_assert(bertrand::minmax(arr).second == 3);
-            static_assert(len(arr) == 3);
-            static_assert(len(tup) == 3);
-    
-            static constexpr auto sum = fold_left<impl::Add>(1, 2, 3.25);
-            static_assert(sum == 6.25);
-    
-            static constexpr auto min = bertrand::min(1, 2, 3.25);
-            static_assert(min == 1);
-    
-            static constexpr auto max = bertrand::max(1, 2, 3.25);
-            static_assert(max == 3.25);
-    
-            static constexpr std::string a = "a", b = "b", c ="c", d = "a", e = "c";
-            static_assert(fold_left<impl::Add>(a, b, c) == "abc");
-            static_assert(fold_right<impl::Add>(a, b, c) == "abc");
-            static_assert(bertrand::min(a, d, c) == "a");
-            static_assert(&bertrand::min(a, d, c) == &a);
-            static_assert(bertrand::max(a, c, e) == "c");
-            static_assert(&bertrand::max(a, c, e) == &c);
-    
-            static constexpr auto minmax = bertrand::minmax(a, d, b, c, e);
-            static_assert(minmax.first == "a");
-            static_assert(&minmax.first == &a);
-            static_assert(minmax.second == "c");
-            static_assert(&minmax.second == &c);
-    
-            for (auto x : range(10)) {
-    
-            }
-        }
-
-        {
-            // constexpr auto sort_array = []<typename T, size_t N>(
-            //     const std::array<T, N>& in
-            // ) {
-            //     std::array<T, N> out = in;
-            //     impl::powersort<4, 1>{}(out);
-            //     return out;
-            // };
-            // constexpr auto is_sorted = []<typename T, size_t N>(
-            //     const std::array<T, N>& in
-            // ) {
-            //     for (size_t i = 1; i < N; ++i) {
-            //         if (in[i - 1] > in[i]) {
-            //             return false;
-            //         }
-            //     }
-            //     return true;
-            // };
-
-
-
-            constexpr std::string_view a = "a", b = "b", c = "c", d = "d", e = "e", f = "f";
-            constexpr std::string_view a2 = "a", b2 = "b", c2 = "c", d2 = "d", e2 = "e", f2 = "f";
-            // constexpr std::array s0 = sort_array(std::array<int, 0>{});
-            // constexpr std::array s6 = sort_array(std::array{a2, b2, c2, c, b, a});
-            // static_assert(s6 == std::array{a, a, b, b, c, c});
-            // static_assert(s6[0].data() == a2.data());
-            static_assert(fuzz_contiguous<int, 100>(103, 0, 10));
-            static_assert(fuzz_contiguous<int, 50>(86, 0, 10));
-            // static_assert(fuzz_forward<double, 50>(14, 0, 10));
-
-
-
-            /// TODO: I'll have to test this over forward-iterable-only arrays as well.
-            /// Also for data with sentinels, like floats.
-
-
-            // constexpr auto sort_forward = []<typename T, size_t N>(
-            //     Forward<T, N> in
-            // ) {
-            //     Forward<T, N> out = in;
-            //     impl::powersort<2, 1>{}(out);
-            //     return out;
-            // };
-
-            // constexpr Forward t0 = sort_forward(Forward<int, 0>{});
-            // constexpr Forward t1 = sort_forward(Forward{1});
-            // constexpr Forward t2 = sort_forward(Forward{1, 2, 3, 4, 5});
-            // constexpr Forward t3 = sort_forward(Forward{5, 4, 3, 2, 1});
-            // constexpr Forward t4 = sort_forward(Forward{1, 3, 5, 4, 2});
-            // constexpr Forward t5 = sort_forward(Forward{5, 3, 4, 1, 2});
-            // constexpr Forward t6 = sort_forward(Forward{a, b, c, c, b, a});
-            // constexpr Forward t7 = sort_forward(Forward{5, 3, 4, 2, 1});
-            // static_assert(t0.data == std::array<int, 0>{});
-            // static_assert(t1.data == std::array{1});
-            // static_assert(t2.data == std::array{1, 2, 3, 4, 5});
-            // static_assert(t3.data == std::array{1, 2, 3, 4, 5});
-            // static_assert(t4.data == std::array{1, 2, 3, 4, 5});
-            // static_assert(t5.data == std::array{1, 2, 3, 4, 5});
-            // static_assert(t6.data == std::array{a, a, b, b, c, c});
-            // static_assert(t6.data[0].data() == a.data());
-            // static_assert(t7.data == std::array{1, 2, 3, 4, 5});
-        }
-    }
 
 }
 

@@ -1771,6 +1771,10 @@ namespace meta {
 
     }
 
+    /// TODO: apply_func -> apply<F, Ts...>, and also maybe it's only defined after
+    /// visit(), and includes that logic internally, such that `apply(t)` will act as a
+    /// union visitor for all alternatives of `t`, unpacking any tuples it finds.
+
     template <typename F, typename... Ts>
     concept apply_func = detail::apply_func<F, meta::pack<>, Ts...>::enable;
 
@@ -3388,20 +3392,6 @@ namespace meta {
 
         template <typename Ret, typename T>
         concept hash_returns = hashable<T> && convertible_to<hash_type<T>, Ret>;
-
-    }
-
-    template <typename T, typename... A>
-    concept has_member_sort = requires(T t, A... a) {
-        std::forward<T>(t).sort(std::forward<A>(a)...);
-    };
-
-    namespace nothrow {
-
-        template <typename T, typename... A>
-        concept has_member_sort =
-            meta::has_member_sort<T, A...> &&
-            noexcept(std::declval<T>().sort(std::declval<A>()...));
 
     }
 

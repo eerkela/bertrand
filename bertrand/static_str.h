@@ -3,7 +3,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/iter.h"
-#include "bertrand/sort.h"
 
 
 // avoid conflict with deprecated isascii() from <ctype.h>
@@ -186,13 +185,17 @@ namespace meta {
 }
 
 
+/// TODO: swap() methods for static_str and other containers.  For most, it will do
+/// nothing at all.
+
+
 template <size_t N>
 struct static_str : impl::static_str_tag {
     using value_type = const char;
     using reference = value_type&;
     using const_reference = reference;
-    using pointer = value_type*;
-    using const_pointer = pointer;
+    using pointer = char*;
+    using const_pointer = const char*;
     using size_type = size_t;
     using index_type = ssize_t;
     using difference_type = std::ptrdiff_t;
@@ -245,7 +248,11 @@ public:
             meta::convertible_to<std::string, T> ||
             meta::convertible_to<const char(&)[N + 1], T>
         ))
-    [[nodiscard]] constexpr operator T() const noexcept {
+    [[nodiscard]] constexpr operator T() const noexcept(
+        meta::nothrow::convertible_to<std::string_view, T> ||
+        meta::nothrow::convertible_to<std::string, T> ||
+        meta::nothrow::convertible_to<const char(&)[N + 1], T>
+    ) {
         if constexpr (meta::convertible_to<std::string_view, T>) {
             return std::string_view{buffer, size()};
         } else if constexpr (meta::convertible_to<std::string, T>) {
@@ -255,7 +262,8 @@ public:
         }
     }
 
-    [[nodiscard]] constexpr pointer data() const noexcept { return buffer; }
+    [[nodiscard]] constexpr pointer data() noexcept { return buffer; }
+    [[nodiscard]] constexpr const_pointer data() const noexcept { return buffer; }
     [[nodiscard]] static constexpr size_type size() noexcept { return N; }
     [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
     [[nodiscard]] static constexpr bool empty() noexcept { return !size(); }
@@ -272,9 +280,9 @@ public:
     /* Get the character at index `I`, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index is
     out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] constexpr char get() const noexcept {
-        return buffer[impl::normalize_index<size(), I>()];
+        return buffer[impl::normalize_index<ssize(), I>()];
     }
 
     /* Get a slice from the string at compile time.  Takes an explicitly-initialized
@@ -297,9 +305,9 @@ public:
     wraparound for negative indices, and throws an `IndexError` if the index is out of
     bounds after normalization. */
     [[nodiscard]] constexpr reference operator[](index_type i) const noexcept(
-        noexcept(data()[impl::normalize_index(size(), i)])
+        noexcept(data()[impl::normalize_index(ssize(), i)])
     ) {
-        return data()[impl::normalize_index(size(), i)];
+        return data()[impl::normalize_index(ssize(), i)];
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -664,8 +672,8 @@ private:
         index_type stop = self.size()
     >
     [[nodiscard]] static consteval size_type count() noexcept {
-        index_type nstart = impl::truncate_index(self.size(), start);
-        index_type nstop = impl::truncate_index(self.size(), stop);
+        index_type nstart = impl::truncate_index(self.size(), start).first;
+        index_type nstop = impl::truncate_index(self.size(), stop).first;
         size_type count = 0;
         for (index_type i = nstart; i < nstop; ++i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
@@ -704,23 +712,25 @@ private:
         return result;
     }
 
-    /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns -1 if the
-    substring is not found. */
+    /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns an empty
+    optional if the substring is not found. */
     template <
         bertrand::static_str self,
         bertrand::static_str sub,
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static consteval index_type find() noexcept {
-        constexpr index_type nstart = impl::truncate_index(self.size(), start);
-        constexpr index_type nstop = impl::truncate_index(self.size(), stop);
+    [[nodiscard]] static consteval Optional<index_type> find() noexcept {
+        constexpr index_type nstart =
+            impl::truncate_index(self.size(), start).first;
+        constexpr index_type nstop =
+            impl::truncate_index(self.size(), stop).first;
         for (index_type i = nstart; i < nstop; ++i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 return i;
             }
         }
-        return -1;
+        return std::nullopt;
     }
 
     /* Equivalent to Python `str.isalpha()`. */
@@ -972,23 +982,25 @@ private:
         return result;
     }
 
-    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns -1 if the
-    substring is not found. */
+    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns an empty
+    optional if the substring is not found. */
     template <
         bertrand::static_str self,
         bertrand::static_str sub,
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static consteval index_type rfind() noexcept {
-        constexpr index_type nstart = impl::truncate_index(self.size(), stop) - 1;
-        constexpr index_type nstop = impl::truncate_index(self.size(), start) - 1;
+    [[nodiscard]] static consteval Optional<index_type> rfind() noexcept {
+        constexpr index_type nstart =
+            impl::truncate_index(self.size(), stop).first - 1;
+        constexpr index_type nstop =
+            impl::truncate_index(self.size(), start).first - 1;
         for (index_type i = nstart; i > nstop; --i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
                 return i;
             }
         }
-        return -1;
+        return std::nullopt;
     }
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
@@ -1084,6 +1096,17 @@ private:
             result.buffer[delta] = '\0';
             return result;
         }
+    }
+
+    /* Return a new string containing a sorted permutation of these contents. */
+    template <bertrand::static_str self, meta::default_constructible Less>
+        requires (meta::iter_sortable<Less, char*, char*>)
+    [[nodiscard]] static consteval auto sort() noexcept {
+        static_str<self.size()> result;
+        std::copy_n(self.buffer, self.size(), result.buffer);
+        result.buffer[self.size()] = '\0';
+        bertrand::sort<Less>(result.data(), result.data() + self.size());
+        return result;
     }
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`.  The result is returned as a
@@ -1345,7 +1368,9 @@ public:
     using const_slice = string_type::const_slice;
 
     template <typename V> requires (meta::convertible_to<static_str<self.size()>, V>)
-    [[nodiscard]] constexpr operator V() const noexcept { return self; }
+    [[nodiscard]] constexpr operator V() const
+        noexcept(meta::nothrow::convertible_to<static_str<self.size()>, V>)
+    { return self; }
     [[nodiscard]] static constexpr auto data() noexcept { return self.data(); }
     [[nodiscard]] static constexpr auto size() noexcept { return self.size(); }
     [[nodiscard]] static constexpr auto ssize() noexcept { return self.ssize(); }
@@ -1363,13 +1388,13 @@ public:
     /* Check whether a given substring is present within the string. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
     [[nodiscard]] static constexpr bool contains() noexcept {
-        return find<sub, start, stop>() >= 0;
+        return find<sub, start, stop>().has_value();
     }
 
     /* Get the character at index `I`, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index is
     out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] static constexpr decltype(auto) get() noexcept {
         return self.template get<I>();
     }
@@ -1744,6 +1769,13 @@ public:
     template <static_str chars = " \t\n\r\f\v">
     [[nodiscard]] static consteval auto rstrip() noexcept {
         return string_wrapper<self.template rstrip<self, chars>()>{};
+    }
+
+    /* Return a new string containing a sorted permutation of these contents. */
+    template <meta::default_constructible Less = impl::Less>
+        requires (meta::iter_sortable<Less, char*, char*>)
+    [[nodiscard]] static consteval auto sort() noexcept {
+        return string_wrapper<self.template sort<self, Less>()>{};
     }
 
     /* Equivalent to Python `str.split(sep[, maxsplit])`.  The result is returned as a
@@ -2709,9 +2741,9 @@ struct string_list : impl::string_list_tag {
     /* Get the string at index I, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index
     is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] static constexpr const auto& get() noexcept {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return meta::unpack_string<idx, Strings...>;
     }
 
@@ -2734,9 +2766,9 @@ struct string_list : impl::string_list_tag {
     wraparound for negative indices, and throws an `IndexError` if the index is out of
     bounds after normalization. */
     [[nodiscard]] static constexpr reference operator[](index_type i) noexcept(
-        noexcept(data()[impl::normalize_index(size(), i)])
+        noexcept(data()[impl::normalize_index(ssize(), i)])
     ) {
-        return data()[impl::normalize_index(size(), i)];
+        return data()[impl::normalize_index(ssize(), i)];
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -2753,8 +2785,8 @@ struct string_list : impl::string_list_tag {
     iterator if the index is out of bounds after normalization. */
     template <index_type I>
     [[nodiscard]] static constexpr iterator at() noexcept {
-        if constexpr (impl::valid_index<size(), I>()) {
-            return {data() + impl::normalize_index<size(), I>()};
+        if constexpr (impl::valid_index<ssize(), I>) {
+            return {data() + impl::normalize_index<ssize(), I>()};
         } else {
             return end();
         }
@@ -2863,6 +2895,34 @@ private:
     template <auto indices, index_type I, static_str... Strs> requires (I == -1)
     struct backward_remove<indices, I, Strs...> { using type = string_list<Strs...>; };
 
+    template <typename Less>
+    struct sort_helper {
+        using type = std::pair<std::string_view, size_t>;
+        using array = std::array<type, size()>;
+        Less less;
+        constexpr bool operator()(const type& a, const type& b) const noexcept {
+            return less(a.first, b.first);
+        }
+        template <size_t... Is>
+        static constexpr std::array<type, size()> init(
+            std::index_sequence<Is...>
+        ) noexcept {
+            std::array<type, size()> arr {type{Strings, Is}...};
+            bertrand::sort<sort_helper>(arr);
+            return arr;
+        }
+        template <size_t I, const std::array<type, size()>& arr, typename out>
+        struct call { using type = out; };
+        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
+            requires (I < size())
+        struct call<I, arr, string_list<Strs...>> {
+            using type = call<I + 1, arr, string_list<
+                Strs...,
+                meta::unpack_string<arr[I].second, Strings...>
+            >>::type;
+        };
+    };
+
 public:
 
     /* Remove the first occurrence of a string from the list, returning a new list
@@ -2887,9 +2947,9 @@ public:
     /* Remove the string at index I, returning a new list without that element.
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] static consteval auto remove() noexcept {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return []<size_t... Prev, size_t... Next>(
             std::index_sequence<Prev...>,
             std::index_sequence<Next...>
@@ -2929,6 +2989,19 @@ public:
 
     /* True if the list contains only unique strings.  False otherwise. */
     static constexpr bool unique = meta::strings_are_unique<Strings...>;
+
+    /* Return a new string list containing a sorted permutation of the current list,
+    according to a less-than comparison function type accepting two
+    `std::string_view`s. */
+    template <meta::default_constructible Less = impl::Less>
+        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
+    [[nodiscard]] static constexpr auto sort() {
+        using array = sort_helper<Less>::array;
+        static constexpr array arr = sort_helper<Less>::init(
+            std::make_index_sequence<size()>{}
+        );
+        return typename sort_helper<Less>::template call<0, arr, string_list<>>::type{};
+    }
 
 private:
 
@@ -3240,9 +3313,9 @@ public:
     /* Get the string at index I, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index
     is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] static constexpr const auto& get() noexcept {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return meta::unpack_string<idx, Keys...>;
     }
 
@@ -3265,9 +3338,9 @@ public:
     wraparound for negative indices, and throws an `IndexError` if the index is out of
     bounds after normalization. */
     [[nodiscard]] static constexpr reference operator[](index_type i) noexcept(
-        noexcept(impl::normalize_index(size(), i))
+        noexcept(impl::normalize_index(ssize(), i))
     ) {
-        return table[hash_index[impl::normalize_index(size(), i)]];
+        return table[hash_index[impl::normalize_index(ssize(), i)]];
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -3405,6 +3478,36 @@ private:
     template <auto indices, index_type I, static_str... Strs> requires (I == -1)
     struct backward_remove<indices, I, Strs...> { using type = string_set<Strs...>; };
 
+    template <typename Less>
+    struct sort_helper {
+        using type = std::pair<std::string_view, size_t>;
+        using array = std::array<type, size()>;
+        Less less;
+        constexpr bool operator()(const type& a, const type& b) const noexcept {
+            return less(a.first, b.first);
+        }
+        template <size_t... Is>
+        static constexpr std::array<type, size()> init(
+            std::index_sequence<Is...>
+        ) noexcept {
+            std::array<type, size()> arr {type{Keys, Is}...};
+            bertrand::sort<sort_helper>(arr);
+            return arr;
+        }
+        template <size_t I, const std::array<type, size()>& arr, typename out>
+        struct call;
+        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
+        struct call<I, arr, string_list<Strs...>> { using type = string_set<Strs...>; };
+        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
+            requires (I < size())
+        struct call<I, arr, string_list<Strs...>> {
+            using type = call<I + 1, arr, string_list<
+                Strs...,
+                meta::unpack_string<arr[I].second, Keys...>
+            >>::type;
+        };
+    };
+
 public:
 
     /* Remove a string from the set, returning a new set without that element.  Fails
@@ -3429,9 +3532,9 @@ public:
     /* Remove the string at index I, returning a new set without that element.
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] static consteval auto remove() noexcept {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return []<size_t... Prev, size_t... Next>(
             std::index_sequence<Prev...>,
             std::index_sequence<Next...>
@@ -3467,6 +3570,19 @@ public:
     template <static_str sep>
     [[nodiscard]] static consteval auto join() noexcept {
         return string_wrapper<sep>::template join<Keys...>();
+    }
+
+    /* Return a new string set containing a sorted permutation of the current set,
+    according to a less-than comparison function type accepting two
+    `std::string_view`s. */
+    template <meta::default_constructible Less = impl::Less>
+        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
+    [[nodiscard]] static constexpr auto sort() {
+        using array = sort_helper<Less>::array;
+        static constexpr array arr = sort_helper<Less>::init(
+            std::make_index_sequence<size()>{}
+        );
+        return typename sort_helper<Less>::template call<0, arr, string_list<>>::type{};
     }
 
     /* Convert this string set into a string list. */
@@ -3623,6 +3739,8 @@ private:
 
 
 /// TODO: provide a swap() operator for string_map
+/// TODO: provide a sort() operator for string_map that calls the less-than function
+/// with a pair of `std::string_view` and `T` values.
 
 
 template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
@@ -3867,31 +3985,31 @@ public:
     /* Get the value for the key at index I, where `I` is known at compile time.
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] constexpr mapped_ref get() & noexcept {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return table[hash_index[idx]].second;
     }
 
     /* Get the value for the key at index I, where `I` is known at compile time.
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] constexpr mapped_type get() && noexcept(
         noexcept(mapped_type(std::forward<mapped_type>(
-            table[hash_index[impl::normalize_index<size(), I>()]].second
+            table[hash_index[impl::normalize_index<ssize(), I>()]].second
         )))
     ) {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return std::forward<mapped_type>(table[hash_index[idx]].second);
     }
 
     /* Get the value for the key at index I, where `I` is known at compile time.
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
-    template <index_type I> requires (impl::valid_index<size(), I>())
+    template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] constexpr const_mapped_ref get() const noexcept {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return table[hash_index[idx]].second;
     }
 
@@ -3964,9 +4082,9 @@ public:
     Python-style wraparound for negative indices, and throws an `IndexError` if the
     index is out of bounds after normalization. */
     [[nodiscard]] constexpr mapped_ref operator[](index_type i) & noexcept(
-        noexcept(impl::normalize_index(size(), i))
+        noexcept(impl::normalize_index(ssize(), i))
     ) {
-        return table[hash_index[impl::normalize_index(size(), i)]].second;
+        return table[hash_index[impl::normalize_index(ssize(), i)]].second;
     }
 
     /* Get the value for the key at index i, where `i` is known at runtime.  Applies
@@ -3974,11 +4092,11 @@ public:
     index is out of bounds after normalization. */
     [[nodiscard]] constexpr mapped_type operator[](index_type i) && noexcept(
         noexcept(mapped_type(std::forward<mapped_type>(
-            table[hash_index[impl::normalize_index(size(), i)]].second
+            table[hash_index[impl::normalize_index(ssize(), i)]].second
         )))
     ) {
         return std::forward<mapped_type>(
-            table[hash_index[impl::normalize_index(size(), i)]].second
+            table[hash_index[impl::normalize_index(ssize(), i)]].second
         );
     }
 
@@ -3986,9 +4104,9 @@ public:
     Python-style wraparound for negative indices, and throws an `IndexError` if the
     index is out of bounds after normalization. */
     [[nodiscard]] constexpr const_mapped_ref operator[](index_type i) const noexcept(
-        noexcept(impl::normalize_index(size(), i))
+        noexcept(impl::normalize_index(ssize(), i))
     ) {
-        return table[hash_index[impl::normalize_index(size(), i)]].second;
+        return table[hash_index[impl::normalize_index(ssize(), i)]].second;
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -4396,6 +4514,43 @@ private:
         };
     }
 
+    /// TODO: sort_helper<Less>::init() should also take the string_map as an argument
+    /// and initializes the array on that basis.  Maybe the array should only store
+    /// references?
+
+    template <typename Less>
+    struct sort_helper {
+        using type = std::pair<std::pair<std::string_view, mapped_type>, size_t>;
+        using array = std::array<type, size()>;
+        Less less;
+        constexpr bool operator()(const type& a, const type& b) const noexcept {
+            return less(a.first, b.first);
+        }
+        template <size_t... Is>
+        static constexpr std::array<type, size()> init(
+            std::index_sequence<Is...>
+        ) noexcept {
+            /// TODO: construct the array correctly
+            std::array<type, size()> arr {type{Keys, Is}...};
+            bertrand::sort<sort_helper>(arr);
+            return arr;
+        }
+        template <size_t I, const std::array<type, size()>& arr, typename out>
+        struct call;
+        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
+        struct call<I, arr, string_list<Strs...>> {
+            using type = string_map<mapped_type, Strs...>;
+        };
+        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
+            requires (I < size())
+        struct call<I, arr, string_list<Strs...>> {
+            using type = call<I + 1, arr, string_list<
+                Strs...,
+                meta::unpack_string<arr[I].second, Keys...>
+            >>::type;
+        };
+    };
+
 public:
 
     /* Remove a string from the set, returning a new set without that element.  Fails
@@ -4421,22 +4576,26 @@ public:
     /* Remove the string at index I, returning a new set without that element.
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
-    template <index_type I, typename Self> requires (impl::valid_index<size(), I>())
+    template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] consteval auto remove(this Self&& self)
         noexcept(noexcept(std::forward<Self>(self).template do_remove<
-            size_type(impl::normalize_index<size(), I>())
+            size_type(impl::normalize_index<ssize(), I>())
         >(
-            std::make_index_sequence<size_type(impl::normalize_index<size(), I>())>{},
-            std::make_index_sequence<size() - size_type(impl::normalize_index<size(), I>()) - 1>{}
+            std::make_index_sequence<size_type(impl::normalize_index<ssize(), I>())>{},
+            std::make_index_sequence<
+                size() - size_type(impl::normalize_index<ssize(), I>()) - 1
+            >{}
         )))
         requires(requires{std::forward<Self>(self).template do_remove<
-            size_type(impl::normalize_index<size(), I>())
+            size_type(impl::normalize_index<ssize(), I>())
         >(
-            std::make_index_sequence<size_type(impl::normalize_index<size(), I>())>{},
-            std::make_index_sequence<size() - size_type(impl::normalize_index<size(), I>()) - 1>{}
+            std::make_index_sequence<size_type(impl::normalize_index<ssize(), I>())>{},
+            std::make_index_sequence<
+                size() - size_type(impl::normalize_index<ssize(), I>()) - 1
+            >{}
         );})
     {
-        constexpr size_type idx = size_type(impl::normalize_index<size(), I>());
+        constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return std::forward<Self>(self).template do_remove<idx>(
             std::make_index_sequence<idx>{},
             std::make_index_sequence<size() - idx - 1>{}
@@ -5338,6 +5497,33 @@ namespace std {
     {
         return map.template get<Key>();
     }
+
+}
+
+
+namespace bertrand {
+
+    inline void test() {
+        struct Compare {
+            static constexpr bool operator()(const char a, const char b) noexcept {
+                return a < b;
+            }
+        };
+
+        constexpr string_wrapper<"cba"> hello;
+        constexpr string_wrapper sorted = hello.sort<Compare>();
+        constexpr auto x = hello.find<"b">();
+        static_assert(sorted == "abc");
+
+        constexpr string_list<"c", "b", "a"> list;
+        constexpr string_list sorted_list = list.sort();
+        static_assert(sorted_list == string_list<"a", "b", "c">{});
+
+        constexpr string_set<"c", "b", "a"> set;
+        constexpr string_set sorted_set = set.sort();
+        static_assert(sorted_set == string_set<"a", "b", "c">{});
+    }
+
 
 }
 
