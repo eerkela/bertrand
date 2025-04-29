@@ -2931,11 +2931,10 @@ private:
     template <typename Less>
     struct sort_helper {
         using type = std::pair<std::string_view, size_t>;
-        using array = std::array<type, size()>;
-        static constexpr array arr = []<size_t... Is>(std::index_sequence<Is...>) {
-            array arr {type{Strings, Is}...};
-            bertrand::sort<sort_helper>(arr);
-            return arr;
+        static constexpr auto array = []<size_t... Is>(std::index_sequence<Is...>) {
+            std::array<type, size()> out {type{Strings, Is}...};
+            bertrand::sort<sort_helper>(out);
+            return out;
         }(std::make_index_sequence<size()>{});
         template <size_t I, typename out>
         struct call { using type = out; };
@@ -2943,7 +2942,7 @@ private:
         struct call<I, string_list<Strs...>> {
             using type = call<I + 1, string_list<
                 Strs...,
-                meta::unpack_string<arr[I].second, Strings...>
+                meta::unpack_string<array[I].second, Strings...>
             >>::type;
         };
         Less less;
@@ -3519,11 +3518,10 @@ private:
     template <typename Less>
     struct sort_helper {
         using type = std::pair<std::string_view, size_t>;
-        using array = std::array<type, size()>;
-        static constexpr array arr = []<size_t... Is>(std::index_sequence<Is...>) {
-            array arr {type{Keys, Is}...};
-            bertrand::sort<sort_helper>(arr);
-            return arr;
+        static constexpr auto array = []<size_t... Is>(std::index_sequence<Is...>) {
+            std::array<type, size()> out {type{Keys, Is}...};
+            bertrand::sort<sort_helper>(out);
+            return out;
         }(std::make_index_sequence<size()>{});
         template <size_t I, typename out>
         struct call;
@@ -3533,7 +3531,7 @@ private:
         struct call<I, string_list<Strs...>> {
             using type = call<I + 1, string_list<
                 Strs...,
-                meta::unpack_string<arr[I].second, Keys...>
+                meta::unpack_string<array[I].second, Keys...>
             >>::type;
         };
         Less less;
@@ -4616,11 +4614,10 @@ private:
     template <typename Less>
     struct sort_helper {
         using type = std::pair<std::string_view, size_t>;
-        using array = std::array<type, size()>;
-        static constexpr array arr = []<size_t... Is>(std::index_sequence<Is...>) {
-            array arr {type{Keys, Is}...};
-            bertrand::sort<sort_helper>(arr);
-            return arr;
+        static constexpr auto array = []<size_t... Is>(std::index_sequence<Is...>) {
+            std::array<type, size()> out {type{Keys, Is}...};
+            bertrand::sort<sort_helper>(out);
+            return out;
         }(std::make_index_sequence<size()>{});
         template <size_t I, typename out>
         struct call;
@@ -4629,6 +4626,7 @@ private:
             using type = string_map<mapped_type, Strs...>;
             static constexpr type operator()(auto&& self, auto&&... args)
                 noexcept(meta::nothrow::constructible_from<type, decltype(args)...>)
+                requires(meta::constructible_from<type, decltype(args)...>)
             {
                 return {std::forward<decltype(args)>(args)...};
             }
@@ -4637,25 +4635,33 @@ private:
         struct call<I, string_list<Strs...>> {
             using type = call<I + 1, string_list<
                 Strs...,
-                meta::unpack_string<arr[I].second, Keys...>
+                meta::unpack_string<array[I].second, Keys...>
             >>::type;
             static constexpr decltype(auto) operator()(auto&& self, auto&&... args)
                 noexcept(noexcept(call<I + 1, string_list<
                     Strs...,
-                    meta::unpack_string<arr[I].second, Keys...>
+                    meta::unpack_string<array[I].second, Keys...>
                 >>{}(
                     std::forward<decltype(self)>(self),
                     std::forward<decltype(args)>(args)...,
-                    std::forward<decltype(self)>(self).template get<arr[I].second>()
+                    std::forward<decltype(self)>(self).template get<array[I].second>()
                 )))
+                requires(requires{call<I + 1, string_list<
+                    Strs...,
+                    meta::unpack_string<array[I].second, Keys...>
+                >>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<array[I].second>()
+                );})
             {
                 return (call<I + 1, string_list<
                     Strs...,
-                    meta::unpack_string<arr[I].second, Keys...>
+                    meta::unpack_string<array[I].second, Keys...>
                 >>{}(
                     std::forward<decltype(self)>(self),
                     std::forward<decltype(args)>(args)...,
-                    std::forward<decltype(self)>(self).template get<arr[I].second>()
+                    std::forward<decltype(self)>(self).template get<array[I].second>()
                 ));
             }
         };
