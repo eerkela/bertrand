@@ -185,10 +185,6 @@ namespace meta {
 }
 
 
-/// TODO: swap() methods for static_str and other containers.  For most, it will do
-/// nothing at all.
-
-
 template <size_t N>
 struct static_str : impl::static_str_tag {
     using value_type = const char;
@@ -211,6 +207,13 @@ struct static_str : impl::static_str_tag {
     consteval static_str(const char* arr) noexcept {
         std::copy_n(arr, N, buffer);
         buffer[N] = '\0';
+    }
+
+    /* Swap the contents of two static strings. */
+    constexpr void swap(static_str& other) noexcept {
+        if (this != &other) {
+            std::swap_ranges(buffer, buffer + N + 1, other.buffer);
+        }
     }
 
 private:
@@ -1346,6 +1349,15 @@ private:
 };
 
 
+/* ADL `swap()` method for `bertrand::static_str` instances. */
+template <size_t N>
+constexpr void swap(static_str<N>& a, static_str<N>& b)
+    noexcept(noexcept(a.swap(b)))
+{
+    a.swap(b);
+}
+
+
 template <static_str self>
 struct string_wrapper : impl::static_str_tag {
 private:
@@ -1366,6 +1378,10 @@ public:
     using const_reverse_iterator = string_type::const_reverse_iterator;
     using slice = string_type::slice;
     using const_slice = string_type::const_slice;
+
+    /* Swap two static string wrappers.  Does nothing, since the strings are encoded
+    entirely at compile time. */
+    constexpr void swap(string_wrapper&) noexcept {}
 
     template <typename V> requires (meta::convertible_to<static_str<self.size()>, V>)
     [[nodiscard]] constexpr operator V() const
@@ -1833,6 +1849,15 @@ public:
 };
 
 
+/* ADL `swap()` method for `bertrand::string_wrapper` instances. */
+template <static_str self>
+constexpr void swap(string_wrapper<self>& a, string_wrapper<self>& b)
+    noexcept(noexcept(a.swap(b)))
+{
+    a.swap(b);
+}
+
+
 namespace impl {
 
     /* A helper struct that computes a gperf-style minimal perfect hash function over
@@ -2239,7 +2264,9 @@ namespace impl {
             return &**this;
         }
 
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept(!DEBUG) {
+        [[nodiscard]] constexpr reference operator[](difference_type n) const
+            noexcept(!DEBUG)
+        {
             difference_type index = m_idx + n;
             if constexpr (DEBUG) {
                 if (index < 0 || index >= m_length) {
@@ -2531,6 +2558,10 @@ struct string_list : impl::string_list_tag {
     using slice = impl::contiguous_slice<value_type>;
     using const_slice = slice;
 
+    /* Swap the contents of two string lists.  Does nothing, since the strings are
+    encoded entirely at compile time. */
+    constexpr void swap(string_list&) noexcept {}
+
     [[nodiscard]] static constexpr pointer data() noexcept { return m_data.data(); }
     [[nodiscard]] static constexpr size_type size() noexcept { return sizeof...(Strings); }
     [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
@@ -2776,7 +2807,9 @@ struct string_list : impl::string_list_tag {
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept {
+    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept(
+        noexcept(slice{data(), s.normalize(ssize())})
+    ) {
         return {data(), s.normalize(ssize())};
     }
 
@@ -2899,31 +2932,36 @@ private:
     struct sort_helper {
         using type = std::pair<std::string_view, size_t>;
         using array = std::array<type, size()>;
-        Less less;
-        constexpr bool operator()(const type& a, const type& b) const noexcept {
-            return less(a.first, b.first);
-        }
-        template <size_t... Is>
-        static constexpr std::array<type, size()> init(
-            std::index_sequence<Is...>
-        ) noexcept {
-            std::array<type, size()> arr {type{Strings, Is}...};
+        static constexpr array arr = []<size_t... Is>(std::index_sequence<Is...>) {
+            array arr {type{Strings, Is}...};
             bertrand::sort<sort_helper>(arr);
             return arr;
-        }
-        template <size_t I, const std::array<type, size()>& arr, typename out>
+        }(std::make_index_sequence<size()>{});
+        template <size_t I, typename out>
         struct call { using type = out; };
-        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
-            requires (I < size())
-        struct call<I, arr, string_list<Strs...>> {
-            using type = call<I + 1, arr, string_list<
+        template <size_t I, static_str... Strs> requires (I < size())
+        struct call<I, string_list<Strs...>> {
+            using type = call<I + 1, string_list<
                 Strs...,
                 meta::unpack_string<arr[I].second, Strings...>
             >>::type;
         };
+        Less less;
+        constexpr bool operator()(const type& a, const type& b) const noexcept {
+            return less(a.first, b.first);
+        }
     };
 
 public:
+
+    /* Return a new string list containing a sorted permutation of the current list,
+    according to a less-than comparison function type accepting two
+    `std::string_view`s. */
+    template <meta::default_constructible Less = impl::Less>
+        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
+    [[nodiscard]] static constexpr auto sort() noexcept {
+        return typename sort_helper<Less>::template call<0, string_list<>>::type{};
+    }
 
     /* Remove the first occurrence of a string from the list, returning a new list
     without that element.  Fails to compile if the string is not present. */
@@ -2989,19 +3027,6 @@ public:
 
     /* True if the list contains only unique strings.  False otherwise. */
     static constexpr bool unique = meta::strings_are_unique<Strings...>;
-
-    /* Return a new string list containing a sorted permutation of the current list,
-    according to a less-than comparison function type accepting two
-    `std::string_view`s. */
-    template <meta::default_constructible Less = impl::Less>
-        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
-    [[nodiscard]] static constexpr auto sort() {
-        using array = sort_helper<Less>::array;
-        static constexpr array arr = sort_helper<Less>::init(
-            std::make_index_sequence<size()>{}
-        );
-        return typename sort_helper<Less>::template call<0, arr, string_list<>>::type{};
-    }
 
 private:
 
@@ -3116,6 +3141,13 @@ private:
 };
 
 
+/* ADL `swap()` method for `bertrand::string_list` instances. */
+template <static_str... Strings>
+inline constexpr void swap(string_list<Strings...>& a, string_list<Strings...>& b)
+    noexcept(noexcept(a.swap(b)))
+{}
+
+
 template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_set : impl::string_set_tag {
     using value_type = const std::string_view;
@@ -3137,6 +3169,10 @@ struct string_set : impl::string_set_tag {
 
     template <typename T>
     static constexpr bool hashable = hasher::template hashable<T>;
+
+    /* Swap the contents of two string sets.  Does nothing, since the strings are
+    encoded entirely at compile time. */
+    constexpr void swap(string_set&) noexcept {}
 
 private:
 
@@ -3348,7 +3384,9 @@ public:
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept {
+    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept(
+        noexcept(slice{data(), hash_index.data(), s.normalize(ssize())})
+    ) {
         return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
@@ -3482,33 +3520,38 @@ private:
     struct sort_helper {
         using type = std::pair<std::string_view, size_t>;
         using array = std::array<type, size()>;
-        Less less;
-        constexpr bool operator()(const type& a, const type& b) const noexcept {
-            return less(a.first, b.first);
-        }
-        template <size_t... Is>
-        static constexpr std::array<type, size()> init(
-            std::index_sequence<Is...>
-        ) noexcept {
-            std::array<type, size()> arr {type{Keys, Is}...};
+        static constexpr array arr = []<size_t... Is>(std::index_sequence<Is...>) {
+            array arr {type{Keys, Is}...};
             bertrand::sort<sort_helper>(arr);
             return arr;
-        }
-        template <size_t I, const std::array<type, size()>& arr, typename out>
+        }(std::make_index_sequence<size()>{});
+        template <size_t I, typename out>
         struct call;
-        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
-        struct call<I, arr, string_list<Strs...>> { using type = string_set<Strs...>; };
-        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
-            requires (I < size())
-        struct call<I, arr, string_list<Strs...>> {
-            using type = call<I + 1, arr, string_list<
+        template <size_t I, static_str... Strs>
+        struct call<I, string_list<Strs...>> { using type = string_set<Strs...>; };
+        template <size_t I, static_str... Strs> requires (I < size())
+        struct call<I, string_list<Strs...>> {
+            using type = call<I + 1, string_list<
                 Strs...,
                 meta::unpack_string<arr[I].second, Keys...>
             >>::type;
         };
+        Less less;
+        constexpr bool operator()(const type& a, const type& b) const noexcept {
+            return less(a.first, b.first);
+        }
     };
 
 public:
+
+    /* Return a new string set containing a sorted permutation of the current set,
+    according to a less-than comparison function type accepting two
+    `std::string_view`s. */
+    template <meta::default_constructible Less = impl::Less>
+        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
+    [[nodiscard]] static constexpr auto sort() noexcept {
+        return typename sort_helper<Less>::template call<0, string_list<>>::type{};
+    }
 
     /* Remove a string from the set, returning a new set without that element.  Fails
     to compile if the string is not present. */
@@ -3570,19 +3613,6 @@ public:
     template <static_str sep>
     [[nodiscard]] static consteval auto join() noexcept {
         return string_wrapper<sep>::template join<Keys...>();
-    }
-
-    /* Return a new string set containing a sorted permutation of the current set,
-    according to a less-than comparison function type accepting two
-    `std::string_view`s. */
-    template <meta::default_constructible Less = impl::Less>
-        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
-    [[nodiscard]] static constexpr auto sort() {
-        using array = sort_helper<Less>::array;
-        static constexpr array arr = sort_helper<Less>::init(
-            std::make_index_sequence<size()>{}
-        );
-        return typename sort_helper<Less>::template call<0, arr, string_list<>>::type{};
     }
 
     /* Convert this string set into a string list. */
@@ -3738,41 +3768,114 @@ private:
 };
 
 
-/// TODO: provide a swap() operator for string_map
-/// TODO: provide a sort() operator for string_map that calls the less-than function
-/// with a pair of `std::string_view` and `T` values.
+/* ADL `swap()` method for `bertrand::string_set` instances. */
+template <static_str... Keys>
+constexpr void swap(string_set<Keys...>& a, string_set<Keys...>& b)
+    noexcept(noexcept(a.swap(b)))
+{}
 
 
 template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
 struct string_map : impl::string_map_tag {
     using key_type = const std::string_view;
-    using mapped_type = T;
+    using mapped_type = meta::remove_rvalue<T>;
     using value_type = std::pair<key_type, mapped_type>;
-    using reference = value_type&;
-    using const_reference = const value_type&;
-    using pointer = value_type*;
-    using const_pointer = const value_type*;
+    using reference = meta::as_lvalue<value_type>;
+    using const_reference = meta::as_const<reference>;
+    using pointer = meta::as_pointer<reference>;
+    using const_pointer = meta::as_pointer<const_reference>;
     using size_type = size_t;
     using index_type = ssize_t;
     using difference_type = std::ptrdiff_t;
     using hasher = impl::minimal_perfect_hash<Keys...>;
     using key_equal = std::equal_to<key_type>;
     using iterator = impl::hashed_string_iterator<value_type>;
-    using const_iterator = impl::hashed_string_iterator<const value_type>;
+    using const_iterator = impl::hashed_string_iterator<meta::as_const<value_type>>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
     using slice = impl::hashed_string_slice<value_type>;
-    using const_slice = impl::hashed_string_slice<const value_type>;
+    using const_slice = impl::hashed_string_slice<meta::as_const<value_type>>;
 
     template <typename U>
     static constexpr bool hashable = hasher::template hashable<U>;
+
+    /* Swap the contents of two string maps.  Effectively swaps all the values without
+    changing any keys. */
+    constexpr void swap(string_map& other)
+        noexcept((
+            !meta::lvalue<mapped_type> &&
+            meta::nothrow::swappable<mapped_type>
+        ) || (
+            !meta::lvalue<mapped_type> &&
+            !meta::swappable<mapped_type> &&
+            meta::nothrow::move_assignable<mapped_type>
+        ) || (
+            (
+                meta::lvalue<mapped_type> ||
+                !meta::swappable<mapped_type> ||
+                !meta::move_assignable<mapped_type>
+            ) &&
+            meta::nothrow::movable<value_type> &&
+            meta::nothrow::destructible<value_type>
+        ))
+        requires(
+            (!meta::lvalue<mapped_type> && meta::swappable<mapped_type>) ||
+            (!meta::lvalue<mapped_type> && meta::move_assignable<mapped_type>) ||
+            (meta::movable<value_type> && meta::destructible<value_type>)
+        )
+    {
+        if (this != &other) {
+            for (size_t i = 0; i < size(); ++i) {
+                if constexpr (
+                    !meta::lvalue<mapped_type> &&
+                    meta::swappable<mapped_type>
+                ) {
+                    std::ranges::swap(table[i].second, other.table[i].second);
+
+                } else if constexpr (
+                    !meta::lvalue<mapped_type> &&
+                    meta::move_assignable<mapped_type>
+                ) {
+                    mapped_type temp = std::move(table[i].second);
+                    try {
+                        table[i].second = std::move(other.table[i].second);
+                        try {
+                            other.table[i].second = std::move(temp);
+                        } catch (...) {
+                            other.table[i].second = std::move(table[i].second);
+                            throw;
+                        }
+                    } catch (...) {
+                        table[i].second = std::move(temp);
+                        throw;
+                    }
+
+                } else {
+                    value_type temp = std::move(table[i]);
+                    try {
+                        std::destroy_at(&table[i]);
+                        std::construct_at(&table[i], std::move(other.table[i]));
+                        try {
+                            std::destroy_at(&other.table[i]);
+                            std::construct_at(&other.table[i], std::move(temp));
+                        } catch (...) {
+                            std::construct_at(&other.table[i], std::move(table[i]));
+                            std::destroy_at(&table[i]);
+                            throw;
+                        }
+                    } catch (...) {
+                        std::construct_at(&table[i], std::move(temp));
+                        throw;
+                    }
+                }
+            }
+        }
+    }
 
 private:
     using mapped_ref = meta::as_lvalue<mapped_type>;
     using const_mapped_ref = meta::as_const<mapped_ref>;
 
-    /* Get the value for a specific key within the table, where the key is known at
-    runtime.  Throws a `KeyError` if the key is not present in the map. */
     template <size_t N>
     constexpr index_type lookup(const char(&key)[N]) const noexcept {
         constexpr size_t M = N - 1;
@@ -3793,8 +3896,6 @@ private:
         }
     }
 
-    /* Get the value for a specific key within the table, where the key is known at
-    runtime.  Throws a `KeyError` if the key is not present in the map. */
     template <meta::static_str K>
     constexpr index_type lookup(const K& key) const noexcept {
         constexpr size_t len = K::size();
@@ -3806,8 +3907,6 @@ private:
         }
     }
 
-    /* Get the value for a specific key within the table, where the key is known at
-    runtime.  Throws a `KeyError` if the key is not present in the map. */
     template <meta::convertible_to<const char*> K>
         requires (!meta::string_literal<K> && !meta::static_str<K>)
     constexpr index_type lookup(K&& key) const noexcept(
@@ -3828,8 +3927,6 @@ private:
         return idx;
     }
 
-    /* Get the value for a specific key within the table, where the key is known at
-    runtime.  Throws a `KeyError` if the key is not present in the map. */
     template <meta::convertible_to<std::string_view> K>
         requires (
             !meta::string_literal<K> &&
@@ -3847,8 +3944,6 @@ private:
         return str == table[idx].first ? idx : -1;
     }
 
-    /* Get the value for a specific key within the table, where the key is known at
-    runtime.  Throws a `KeyError` if the key is not present in the map. */
     template <meta::convertible_to<std::string> K>
         requires (
             !meta::string_literal<K> &&
@@ -4114,7 +4209,9 @@ public:
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] constexpr slice operator[](bertrand::slice s) noexcept {
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) noexcept(
+        noexcept(slice{data(), hash_index.data(), s.normalize(ssize())})
+    ) {
         return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
@@ -4123,7 +4220,9 @@ public:
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const noexcept {
+    [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const noexcept(
+        noexcept(const_slice{data(), hash_index.data(), s.normalize(ssize())})
+    ) {
         return {data(), hash_index.data(), s.normalize(ssize())};
     }
 
@@ -4514,44 +4613,79 @@ private:
         };
     }
 
-    /// TODO: sort_helper<Less>::init() should also take the string_map as an argument
-    /// and initializes the array on that basis.  Maybe the array should only store
-    /// references?
-
     template <typename Less>
     struct sort_helper {
-        using type = std::pair<std::pair<std::string_view, mapped_type>, size_t>;
+        using type = std::pair<std::string_view, size_t>;
         using array = std::array<type, size()>;
+        static constexpr array arr = []<size_t... Is>(std::index_sequence<Is...>) {
+            array arr {type{Keys, Is}...};
+            bertrand::sort<sort_helper>(arr);
+            return arr;
+        }(std::make_index_sequence<size()>{});
+        template <size_t I, typename out>
+        struct call;
+        template <size_t I, static_str... Strs>
+        struct call<I, string_list<Strs...>> {
+            using type = string_map<mapped_type, Strs...>;
+            static constexpr type operator()(auto&& self, auto&&... args)
+                noexcept(meta::nothrow::constructible_from<type, decltype(args)...>)
+            {
+                return {std::forward<decltype(args)>(args)...};
+            }
+        };
+        template <size_t I, static_str... Strs> requires (I < size())
+        struct call<I, string_list<Strs...>> {
+            using type = call<I + 1, string_list<
+                Strs...,
+                meta::unpack_string<arr[I].second, Keys...>
+            >>::type;
+            static constexpr decltype(auto) operator()(auto&& self, auto&&... args)
+                noexcept(noexcept(call<I + 1, string_list<
+                    Strs...,
+                    meta::unpack_string<arr[I].second, Keys...>
+                >>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<arr[I].second>()
+                )))
+            {
+                return (call<I + 1, string_list<
+                    Strs...,
+                    meta::unpack_string<arr[I].second, Keys...>
+                >>{}(
+                    std::forward<decltype(self)>(self),
+                    std::forward<decltype(args)>(args)...,
+                    std::forward<decltype(self)>(self).template get<arr[I].second>()
+                ));
+            }
+        };
         Less less;
         constexpr bool operator()(const type& a, const type& b) const noexcept {
             return less(a.first, b.first);
         }
-        template <size_t... Is>
-        static constexpr std::array<type, size()> init(
-            std::index_sequence<Is...>
-        ) noexcept {
-            /// TODO: construct the array correctly
-            std::array<type, size()> arr {type{Keys, Is}...};
-            bertrand::sort<sort_helper>(arr);
-            return arr;
-        }
-        template <size_t I, const std::array<type, size()>& arr, typename out>
-        struct call;
-        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
-        struct call<I, arr, string_list<Strs...>> {
-            using type = string_map<mapped_type, Strs...>;
-        };
-        template <size_t I, const std::array<type, size()>& arr, static_str... Strs>
-            requires (I < size())
-        struct call<I, arr, string_list<Strs...>> {
-            using type = call<I + 1, arr, string_list<
-                Strs...,
-                meta::unpack_string<arr[I].second, Keys...>
-            >>::type;
-        };
     };
 
 public:
+
+    /* Return a new string map containing a sorted permutation of the current map,
+    according to a less-than comparison function type accepting two
+    `std::string_view`s. */
+    template <meta::default_constructible Less = impl::Less, typename Self>
+        requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
+    [[nodiscard]] constexpr auto sort(this Self&& self)
+        noexcept(meta::nothrow::invocable<
+            typename sort_helper<Less>::template call<0, string_list<>>,
+            Self    
+        >)
+        requires(meta::invocable<
+            typename sort_helper<Less>::template call<0, string_list<>>,
+            Self
+        >)
+    {
+        return typename sort_helper<Less>::template call<0, string_list<>>{}(
+            std::forward<Self>(self)
+        );
+    }
 
     /* Remove a string from the set, returning a new set without that element.  Fails
     to compile if the string is not present. */
@@ -5194,6 +5328,14 @@ public:
 };
 
 
+/* ADL `swap()` method for `bertrand::string_map` instances. */
+template <typename T, static_str... Keys>
+constexpr void swap(string_map<T, Keys...>& a, string_map<T, Keys...>& b)
+    noexcept(noexcept(a.swap(b)))
+    requires(requires{a.swap(b);})
+{}
+
+
 /* Get a simple string representation of an arbitrary object.  This is functionally
 equivalent to Python's `repr()` function, but extended to work for arbitrary C++ types.
 It is guaranteed not to fail, and will attempt the following, in order of precedence:
@@ -5497,33 +5639,6 @@ namespace std {
     {
         return map.template get<Key>();
     }
-
-}
-
-
-namespace bertrand {
-
-    inline void test() {
-        struct Compare {
-            static constexpr bool operator()(const char a, const char b) noexcept {
-                return a < b;
-            }
-        };
-
-        constexpr string_wrapper<"cba"> hello;
-        constexpr string_wrapper sorted = hello.sort<Compare>();
-        constexpr auto x = hello.find<"b">();
-        static_assert(sorted == "abc");
-
-        constexpr string_list<"c", "b", "a"> list;
-        constexpr string_list sorted_list = list.sort();
-        static_assert(sorted_list == string_list<"a", "b", "c">{});
-
-        constexpr string_set<"c", "b", "a"> set;
-        constexpr string_set sorted_set = set.sort();
-        static_assert(sorted_set == string_set<"a", "b", "c">{});
-    }
-
 
 }
 
