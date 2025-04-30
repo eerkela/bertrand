@@ -27,6 +27,10 @@
 #include <utility>
 #include <variant>
 
+#if __has_include(<stdfloat>)
+    #include <stdfloat>
+#endif
+
 
 #ifdef _WIN32
     #include <windows.h>
@@ -695,10 +699,10 @@ namespace meta {
     //////////////////////////
 
     template <typename T>
-    concept boolean = std::same_as<unqualify<T>, bool>;
+    concept integer = std::integral<unqualify<T>>;
 
     template <typename T>
-    concept integer = std::integral<unqualify<T>>;
+    concept boolean = integer<T> && std::same_as<unqualify<T>, bool>;
 
     template <typename T>
     concept signed_integer = integer<T> && std::signed_integral<unqualify<T>>;
@@ -780,6 +784,9 @@ namespace meta {
 
     template <typename T>
     concept scoped_enum = std::is_scoped_enum_v<unqualify<T>>;
+
+    template <typename T>
+    concept is_enum = raw_enum<T> || scoped_enum<T>;
 
     template <typename T> requires (raw_enum<T> || scoped_enum<T>)
     using enum_type = std::underlying_type_t<unqualify<T>>;
