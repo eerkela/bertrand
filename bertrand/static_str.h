@@ -1870,14 +1870,14 @@ namespace impl {
 
     private:
         template <size_t>
-        static constexpr std::pair<size_t, size_t> minmax =
+        static constexpr std::pair<size_t, size_t> min_max =
             std::minmax({Keys.size()...});
-        template <>
-        static constexpr std::pair<size_t, size_t> minmax<0> = {0, 0};
+        template <size_t I> requires (I == 0)
+        static constexpr std::pair<size_t, size_t> min_max<I> = {0, 0};
 
     public:
-        static constexpr size_t min_length = minmax<table_size>.first;
-        static constexpr size_t max_length = minmax<table_size>.second;
+        static constexpr size_t min_length = min_max<table_size>.first;
+        static constexpr size_t max_length = min_max<table_size>.second;
 
     private:
         /* Count the occurrences of a particular character at a given offset across all
@@ -4766,6 +4766,12 @@ public:
         } else {
             return backward_remove<indices, ssize() - 1>{}(std::forward<Self>(self));
         }
+    }
+
+    /* Equivalent to Python `sep.join(keys...)` */
+    template <static_str sep>
+    [[nodiscard]] static consteval auto join() noexcept {
+        return string_wrapper<sep>::template join<Keys...>();
     }
 
     /* Convert this string set into a string list. */
