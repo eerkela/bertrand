@@ -323,6 +323,9 @@ namespace meta {
 /// to arbitrary bases and individual bit access.
 
 
+/// TODO: BitArray<N> -> Bits<N>
+
+
 /* A simple bitset type that stores flags in a fixed-size array of machine words.
 Allows a wider range of operations than `std::bitset<N>`, including full, bigint-style
 arithmetic, lexicographic comparisons, one-hot decomposition, and more, which allow
@@ -454,8 +457,9 @@ private:
                 word rhat = hat.lo();
 
                 // refine quotient if guess is too large
-                while (qhat >= b || (
-                    big_word::mul(qhat, v[n - 2]) > big_word{word(rhat * b), u[j + n - 2]}
+                while (qhat >= b || (big_word::mul(
+                    qhat,
+                    v[n - 2]) > big_word{word(rhat * b), u[j + n - 2]}
                 )) {
                     --qhat;
                     rhat += v[n - 1];
@@ -515,6 +519,12 @@ private:
         from_booleans<I + 1>(data, rest...);
     }
 
+    /// TODO: from_integers should mask off the least significant bits in the
+    /// event of overflow, which should be handled in the main recursive loop
+    /// rather than at the end.  That probably also allows me to lift the
+    /// capacity check for small-size optimized BitArrays, so that you can initialize
+    /// with normal integers and not worry about the size of the BitArray.
+
     template <size_type I>
     constexpr void from_integers(std::array<word, array_size>& data) noexcept {
         if constexpr (end_mask) {
@@ -527,10 +537,16 @@ private:
         T first,
         Ts... rest
     ) noexcept {
+        static constexpr size_type J = I + impl::bitcount<T>;
         static constexpr size_type start_bit = I % word_size;
         static constexpr size_type start_word = I / word_size;
-        static constexpr size_type stop_word = (I + impl::bitcount<T>) / word_size;
-        static constexpr size_type stop_bit = (I + impl::bitcount<T>) % word_size;
+        static constexpr size_type stop_word = J / word_size;
+        static constexpr size_type stop_bit = J % word_size;
+
+        /// TODO: the correct behavior here is to apply normal integer overflow.
+        /// TODO: this requires some carry handling, similar to the math operators
+        /// below.  I may need to pass in the shift amount as an out parameter to
+        /// the recursive function?
 
         if constexpr (stop_bit == 0 || start_word == stop_word) {
             data[start_word] |= word(word(first) << start_bit);
@@ -1134,7 +1150,24 @@ public:
     }
 
     /// TODO: maybe the integer constructor throws if any bits are discarded or
-    /// overflow.
+    /// overflow.  Alternatively, I can define this as overflowing by default,
+    /// although that might be slightly unexpected.  Although, if we're working with
+    /// two's complement, then an input of -1 would always be consistent for all
+    /// widths <= 32, and you could just chain them from there every 32 bits to
+    /// consistently get the minimum/maximum value for the given width.
+    /// -> Truncation is definitely the way to go, since it means negative integers
+    /// retain their exact value regardless of the bitset width.  I should probably
+    /// truncate the least significant bits instead of the most significant though,
+    /// so that the same is true of positive integers as well.  They'll effectively
+    /// be clamped to the min and max representable values of the bitset, which is
+    /// probably the sanest behavior overall.
+    /// -> It does come with the problem that the bit at index 0 might move, which
+    /// is probably undesirable.  So the alternative is to either overflow or
+    /// mask off the upper bits.  Masking the upper bits causes some inputs to map
+    /// to zero, which is undesirable
+
+
+
 
     /* Construct a BitArray from a sequence of integer values whose bit widths sum
     to an amount less than or equal to the BitArray's storage capacity.  If the
@@ -1190,11 +1223,15 @@ public:
     /// return it as a std::pair<BitArray, std::string_view>?  Maybe it's better if
     /// I do that as a mutable out parameter, and in that case, I can also break early
     /// if an unparsed substring is found, which means the only error case is if the
-    /// bitset is too small to represent the indicated value.
+    /// bitset is too small to represent the indicated value.  If the out parameter
+    /// isn't provided, and a continuation is found, then I return a `ValueError` state.
+    /// If the out parameter is provided, then the only error state is the
+    /// `OverflowError`.
 
 
     /// TODO: what I should do is just extract digit characters until I encounter a
-    /// non-digit or the bitset would overflow.
+    /// non-digit or the bitset overflows, whichever comes first.  That allows me to
+    /// ignore leading zeros and trailing, non-digit characters.
 
 
 
@@ -1719,6 +1756,140 @@ public:
         return count;
     }
 
+    /* Set all of the bits to the given value. */
+    constexpr BitArray& fill(bool value) noexcept {
+        word filled = std::numeric_limits<word>::max() * value;
+        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
+            buffer[i] = filled;
+        }
+        if constexpr (end_mask) {
+            buffer[array_size - 1] = filled & end_mask;
+        }
+        return *this;
+    }
+
+    /* Set all of the bits within a certain interval to the given value. */
+    constexpr BitArray& fill(
+        bool value,
+        index_type start,
+        index_type stop = ssize()
+    ) noexcept {
+        index_type norm_start = start + ssize() * (start < 0);
+        if (norm_start < 0) {
+            norm_start = 0;
+        }
+        if (norm_start >= ssize()) {
+            return *this;
+        }
+        index_type norm_stop = stop + ssize() * (stop < 0);
+        if (norm_stop < 0) {
+            return *this;
+        }
+        if (norm_stop >= ssize()) {
+            norm_stop = ssize();
+        }
+        BitArray temp;
+        temp.fill(1);
+        temp <<= N - size_type(norm_stop);
+        temp >>= N - size_type(norm_stop - norm_start);
+        temp <<= size_type(norm_start);  // [start, stop).
+        if (value) {
+            *this |= temp;
+        } else {
+            *this &= ~temp;
+        }
+        return *this;
+    }
+
+    /* Toggle all of the bits in the set. */
+    constexpr BitArray& flip() noexcept {
+        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
+            buffer[i] ^= std::numeric_limits<word>::max();
+        }
+        if constexpr (end_mask) {
+            buffer[array_size - 1] ^= end_mask;
+        }
+        return *this;
+    }
+
+    /* Toggle all of the bits within a certain interval. */
+    constexpr BitArray& flip(index_type start, index_type stop = ssize()) noexcept {
+        index_type norm_start = start + ssize() * (start < 0);
+        if (norm_start < 0) {
+            norm_start = 0;
+        }
+        if (norm_start >= ssize()) {
+            return *this;
+        }
+        index_type norm_stop = stop + ssize() * (stop < 0);
+        if (norm_stop < 0) {
+            return *this;
+        }
+        if (norm_stop >= ssize()) {
+            norm_stop = ssize();
+        }
+        BitArray temp;
+        temp.fill(1);
+        temp <<= N - size_type(norm_stop);
+        temp >>= N - size_type(norm_stop - norm_start);
+        temp <<= size_type(norm_start);  // [start, stop).
+        *this ^= temp;
+        return *this;
+    }
+
+    /* Reverse the order of all bits in the set.  This effectively converts from
+    big-endian to little-endian or vice versa. */
+    constexpr BitArray& reverse() noexcept {
+        // swap the words in the array, and then reverse the bits within each word
+        for (size_type i = 0; i < array_size / 2; ++i) {
+            word temp = buffer[i];
+            buffer[i] = impl::bit_reverse(buffer[array_size - 1 - i]);
+            buffer[array_size - 1 - i] = impl::bit_reverse(temp);
+        }
+
+        // account for the middle word in an odd-sized array
+        if constexpr (array_size % 2) {
+            buffer[array_size / 2] = impl::bit_reverse(buffer[array_size / 2]);
+        }
+
+        // if there are any upper bits that should be masked off, shift down to align
+        // the bits in the view window
+        if constexpr (N % word_size) {
+            *this >>= (word_size - N % word_size);
+        }
+        return *this;
+    }
+
+    /* Reverse the order of the bits within a certain interval. */
+    constexpr BitArray& reverse(index_type start, index_type stop = ssize()) noexcept {
+        index_type norm_start = start + ssize() * (start < 0);
+        if (norm_start < 0) {
+            norm_start = 0;
+        }
+        if (norm_start >= ssize()) {
+            return *this;
+        }
+        index_type norm_stop = stop + ssize() * (stop < 0);
+        if (norm_stop < 0) {
+            return *this;
+        }
+        if (norm_stop >= ssize()) {
+            norm_stop = ssize();
+        }
+        BitArray temp;
+        temp.fill(1);
+        temp <<= N - size_type(norm_stop);
+        temp >>= N - size_type(norm_stop - norm_start);
+        temp <<= size_type(norm_start);  // [start, stop).
+        BitArray reversed = *this & temp;
+        reversed.reverse();
+        *this &= ~temp;  // clear the bits in the original BitArray
+        *this |= reversed;  // set the reversed bits back into the original BitArray
+        return *this;
+    }
+
+    /// TODO: twos_complement() and ones_complement()
+
     /* Return the index of the first bit that is set, or an empty optional if no bits
     are set. */
     [[nodiscard]] constexpr Optional<index_type> first_one() const noexcept {
@@ -1928,322 +2099,231 @@ public:
         return std::nullopt;
     }
 
-    /* Set all of the bits to the given value. */
-    constexpr BitArray& fill(bool value) noexcept {
-        word filled = std::numeric_limits<word>::max() * value;
-        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            buffer[i] = filled;
-        }
-        if constexpr (end_mask) {
-            buffer[array_size - 1] = filled & end_mask;
-        }
-        return *this;
-    }
-
-    /* Set all of the bits within a certain interval to the given value. */
-    constexpr BitArray& fill(
-        bool value,
-        index_type start,
-        index_type stop = ssize()
-    ) noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
-            return *this;
-        }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return *this;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        BitArray temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
-        if (value) {
-            *this |= temp;
-        } else {
-            *this &= ~temp;
-        }
-        return *this;
-    }
-
-    /* Toggle all of the bits in the set. */
-    constexpr BitArray& flip() noexcept {
-        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            buffer[i] ^= std::numeric_limits<word>::max();
-        }
-        if constexpr (end_mask) {
-            buffer[array_size - 1] ^= end_mask;
-        }
-        return *this;
-    }
-
-    /* Toggle all of the bits within a certain interval. */
-    constexpr BitArray& flip(index_type start, index_type stop = ssize()) noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
-            return *this;
-        }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return *this;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        BitArray temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
-        *this ^= temp;
-        return *this;
-    }
-
-    /* Reverse the order of all bits in the set.  This effectively converts from
-    big-endian to little-endian or vice versa. */
-    constexpr BitArray& reverse() noexcept {
-        // swap the words in the array, and then reverse the bits within each word
-        for (size_type i = 0; i < array_size / 2; ++i) {
-            word temp = buffer[i];
-            buffer[i] = impl::bit_reverse(buffer[array_size - 1 - i]);
-            buffer[array_size - 1 - i] = impl::bit_reverse(temp);
-        }
-
-        // account for the middle word in an odd-sized array
-        if constexpr (array_size % 2) {
-            buffer[array_size / 2] = impl::bit_reverse(buffer[array_size / 2]);
-        }
-
-        // if there are any upper bits that should be masked off, shift down to align
-        // the bits in the view window
-        if constexpr (N % word_size) {
-            *this >>= (word_size - N % word_size);
-        }
-        return *this;
-    }
-
-    /* Reverse the order of the bits within a certain interval. */
-    constexpr BitArray& reverse(index_type start, index_type stop = ssize()) noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
-            return *this;
-        }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return *this;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        BitArray temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
-        BitArray reversed = *this & temp;
-        reversed.reverse();
-        *this &= ~temp;  // clear the bits in the original BitArray
-        *this |= reversed;  // set the reversed bits back into the original BitArray
-        return *this;
-    }
-
-    /* Add two BitArrays of equal size.  The `carry` parameter will be updated to hold
-    the overflow from the operation, if any.  Initial values other than zero can be
-    used to create arbitrary precision pipelines. */
+    /* Add two BitArrays of equal size.  If the result overflows, then the `overflow`
+    flag will be set to true, and the value will wrap around to the other end of the
+    number line (modulo `N`). */
     [[nodiscard]] constexpr BitArray add(
         const BitArray& other,
-        word& carry
+        bool& overflow
     ) const noexcept {
+        overflow = false;
+
         // promote to a larger word size if possible
         if constexpr (!big_word::composite) {
             using big = big_word::type;
-            big s = big(buffer[0]) + big(other.buffer[0]) + carry;
+            big s = big(buffer[0]) + big(other.buffer[0]);
             if constexpr (end_mask) {
-                carry = word(s >> (N % word_size));
-                return {word(s - (carry << (N % word_size)))};  // artificial overflow
+                overflow = s >> (N % word_size);
+                return {word(s & end_mask)};
             } else {
-                carry = word(s >> word_size);
-                return {word(s)};  // natural overflow
+                overflow = s >> word_size;
+                return {word(s)};
             }
 
         // revert to schoolbook addition
         } else {
             BitArray result;
             for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-                word a = buffer[i] + carry;
-                carry = a < buffer[i];
+                word a = buffer[i] + overflow;
+                overflow = a < buffer[i];
                 word b = a + other.buffer[i];
-                carry |= b < a;
+                overflow |= b < a;
                 result.buffer[i] = b;
             }
             if constexpr (end_mask) {
-                word s = buffer[array_size - 1] + carry + other.buffer[array_size - 1];
-                result.buffer[array_size - 1] = s;
-                carry = s >> (N % word_size);
+                word s = buffer[array_size - 1] + overflow + other.buffer[array_size - 1];
+                overflow = s >> (N % word_size);
+                result.buffer[array_size - 1] = s & end_mask;
             }
-            if (carry) {
-                /// TODO: this is incorrect, use some kind of subtraction to
-                /// account for this
-                return {word(carry - 1)};  // artificial overflow
-            }
+
             return result;
         }
     }
 
-    /* Add a BitArray of equal size to this one, updating it in-place.  The `carry`
-    parameter will be updated to hold the overflow from the operation, if any.  Initial
-    values other than zero can be used to create arbitrary precision pipelines. */
+    /* Add a BitArray of equal size to this one, updating it in-place.  If the result
+    overflows, then the `overflow` flag will be set to true, and the value will wrap
+    around to the other end of the number line (modulo `N`). */
     [[nodiscard]] constexpr BitArray& iadd(
         const BitArray& other,
-        word& carry
+        bool& overflow
     ) noexcept {
+        overflow = false;
+
         // promote to a larger word size if possible
         if constexpr (!big_word::composite) {
             using big = big_word::type;
-            big s = big(buffer[0]) + big(other.buffer[0]) + carry;
+            big s = big(buffer[0]) + big(other.buffer[0]);
             if constexpr (end_mask) {
-                carry = word(s >> (N % word_size));
-                buffer[0] = word(s - (carry << (N % word_size)));  // artificial overflow
+                overflow = s >> (N % word_size);
+                buffer[0] = word(s & end_mask);
             } else {
-                carry = word(s >> word_size);
-                buffer[0] = word(s);  // natural overflow
+                overflow = s >> word_size;
+                buffer[0] = word(s);
             }
 
         // revert to schoolbook addition
         } else {
             for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-                word a = buffer[i] + carry;
-                carry = a < buffer[i];
+                word a = buffer[i] + overflow;
+                overflow = a < buffer[i];
                 word b = a + other.buffer[i];
-                carry |= b < a;
+                overflow |= b < a;
                 buffer[i] = b;
             }
             if constexpr (end_mask) {
-                word s = buffer[array_size - 1] + carry + other.buffer[array_size - 1];
-                buffer[array_size - 1] = s;
-                carry = s >> (N % word_size);
-            }
-            if (carry) {
-                /// TODO: same problem as above
-                *this = word(carry - 1);  // artificial overflow
+                word s = buffer[array_size - 1] + overflow + other.buffer[array_size - 1];
+                overflow = s >> (N % word_size);
+                buffer[array_size - 1] = s & end_mask;
             }
         }
         return *this;
     }
 
-    /// TODO: repeat the carry and overflow logic for `add` and `iadd` in `sub` and `isub`
-    /// -> This may not require a larger word size, since subtraction will always
-    /// naturally overflow if the result is negative?
-
-    /* Subtract two BitArrays of equal size.  The `borrow` parameter will be updated to
-    hold the overflow from the operation, if any.  Initial values other than zero can
-    be used to create arbitrary precision pipelines. */
+    /* Subtract two BitArrays of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`). */
     [[nodiscard]] constexpr BitArray sub(
         const BitArray& other,
-        word& borrow
+        bool& overflow
     ) const noexcept {
+        overflow = false;
+
+        // schoolbook subtraction
         BitArray result;
         for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            word a = buffer[i] - borrow;
-            borrow = a > buffer[i];
+            word a = buffer[i] - overflow;
+            overflow = a > buffer[i];
             word b = a - other.buffer[i];
-            borrow |= b > a;
+            overflow |= b > a;
             result.buffer[i] = b;
         }
         if constexpr (end_mask) {
-            /// TODO: overflow here should cause wraparound, not truncation!
-            word d = buffer[array_size - 1] - borrow - other.buffer[array_size - 1];
-            result.buffer[array_size - 1] = d;
-            borrow = d > buffer[array_size - 1];
+            word d = buffer[array_size - 1] - overflow - other.buffer[array_size - 1];
+            overflow = d > buffer[array_size - 1];
+            result.buffer[array_size - 1] = d & end_mask;
         }
+
         return result;
     }
 
-    /* Subtract a BitArray of equal size from this one, updating it in-place.  The
-    `borrow` parameter will be updated to hold the overflow from the operation, if
-    any.  Initial values other than zero can be used to create arbitrary precision
-    pipelines. */
+    /* Subtract a BitArray of equal size from this one, updating it in-place.  If the
+    result overflows, then the `overflow` flag will be set to true, and the value will
+    wrap around to the other end of the number line (modulo `N`). */
     [[nodiscard]] constexpr BitArray& isub(
         const BitArray& other,
-        word& borrow
+        bool& overflow
     ) noexcept {
+        overflow = false;
+
+        // schoolbook subtraction
         for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            word a = buffer[i] - borrow;
-            borrow = a > buffer[i];
+            word a = buffer[i] - overflow;
+            overflow = a > buffer[i];
             word b = a - other.buffer[i];
-            borrow |= b > a;
+            overflow |= b > a;
             buffer[i] = b;
         }
         if constexpr (end_mask) {
-            /// TODO: overflow here should cause wraparound, not truncation!
-            word diff = buffer[array_size - 1] - borrow - other.buffer[array_size - 1];
-            buffer[array_size - 1] = diff & end_mask;
+            word d = buffer[array_size - 1] - overflow - other.buffer[array_size - 1];
+            overflow = d > buffer[array_size - 1];
+            buffer[array_size - 1] = d & end_mask;
         }
+
         return *this;
     }
 
-    /* Multiply two BitArrays of equal size.  The `carry` parameter will be updated to
-    hold the overflow from the operation, if any.  Initial values other than zero can
-    be used to create arbitrary precision pipelines. */
+    /* Multiply two BitArrays of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`).
+
+    Note that this uses simple schoolbook multiplication under the hood, which is
+    generally optimized for small bit counts (up to a few thousand bits).  For larger
+    bit counts, it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
     [[nodiscard]] constexpr BitArray mul(
         const BitArray& other,
-        word& carry
+        bool& overflow
     ) const noexcept {
-        if constexpr (!big_word::composite) {
-            big_word a = big_word(buffer[0]);
-            big_word b = big_word(other.buffer[0]);
-            return BitArray{word(a.value * b.value)};
+        overflow = false;
 
+        // promote to a larger word size if possible
+        if constexpr (!big_word::composite) {
+            using big = big_word::type;
+            static constexpr big mask = ~word(0);
+            big p = big(buffer[0]) * big(other.buffer[0]);
+            if constexpr (end_mask) {
+                overflow = p >> (N % word_size);
+                return {word(p & end_mask)};
+            } else {
+                overflow = p >> word_size;
+                return {word(p)};
+            }
+
+        // revert to schoolbook multiplication
         } else {
-            /// NOTE: this uses schoolbook multiplication, which is generally fastest for
-            /// small set sizes, up to a couple thousand bits.
-            constexpr size_type chunk = word_size / 2;
-            BitArray result;
-            word carry = 0;
+            static constexpr size_type chunk = word_size / 2;
+
+            // compute 2N-bit full product
+            std::array<word, array_size * 2> temp {};
             for (size_type i = 0; i < array_size; ++i) {
                 word carry = 0;
-                for (size_type j = 0; j + i < array_size; ++j) {
+                for (size_type j = 0; j < array_size; ++j) {
                     size_type k = j + i;
-                    big_word prod = big_word::mul(buffer[i], other.buffer[j]);
-                    prod.l += result.buffer[k];
-                    if (prod.l < result.buffer[k]) {
-                        ++prod.h;
-                    }
-                    prod.l += carry;
-                    if (prod.l < carry) {
-                        ++prod.h;
-                    }
-                    result.buffer[k] = prod.lo();
-                    carry = prod.hi();
+                    big_word p = big_word::mul(buffer[i], other.buffer[j]);
+
+                    word sum = p.lo() + temp[k];
+                    word new_carry = sum < temp[k];
+                    sum += carry;
+                    new_carry |= sum < carry;
+                    carry = p.hi() + new_carry;  // high half -> carry to next word
+                    temp[k] = sum;  // low half -> final digit in this column
+                }
+                temp[i + array_size] += carry;  // last carry of the row
+            }
+
+            // low N bits become the final result
+            BitArray result;
+            std::copy_n(temp.begin(), array_size, result.buffer.begin());
+            if constexpr (end_mask) {
+                overflow = temp[array_size - 1] & ~end_mask;
+                result.buffer[array_size - 1] &= end_mask;
+                if (overflow) {
+                    return result;  // skip following overflow check
                 }
             }
-            if constexpr (N % word_size) {
-                /// TODO: overflow here should cause wraparound, not truncation!
-                result.buffer[array_size - 1] &= end_mask;
+
+            // if any of the high bits are set, then overflow has occurred
+            for (size_type i = array_size; i < array_size * 2; ++i) {
+                if (temp[i]) {
+                    overflow = true;
+                    break;
+                }
             }
             return result;
         }
     }
 
-    /// TODO: imul()
+    /* Multiply two BitArrays of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`).
+
+    Note that this uses simple schoolbook multiplication under the hood, which is
+    generally optimized for small bit counts (up to a few thousand bits).  For larger
+    bit counts, it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    [[nodiscard]] constexpr BitArray& imul(
+        const BitArray& other,
+        bool& overflow
+    ) noexcept {
+        *this = mul(other, overflow);
+        return *this;
+    }
 
 
 
 
-    /// TODO: return an Expected<T, ZeroDivisionError>
+    /// TODO: return an Expected<T, ZeroDivisionError>, or just make that a debug
+    /// assertion
 
     /* Divide this BitArray by another and return both the quotient and remainder.  This
     is slightly more efficient than doing separate `/` and `%` operations if both are
@@ -2494,19 +2574,19 @@ public:
         return copy;
     }
 
-    /* Operator version of `BitArray.add()` that discards the output carry flag. */
+    /* Operator version of `BitArray.add()` that discards the overflow flag. */
     [[nodiscard]] friend constexpr BitArray operator+(
         const BitArray& lhs,
         const BitArray& rhs
     ) noexcept {
-        word carry = 0;
-        return lhs.add(rhs, carry);
+        bool overflow;
+        return lhs.add(rhs, overflow);
     }
 
-    /* Operator version of `BitArray.iadd()` that discards the output carry flag. */
+    /* Operator version of `BitArray.iadd()` that discards the overflow flag. */
     constexpr BitArray& operator+=(const BitArray& other) noexcept {
-        word carry = 0;
-        return iadd(other, carry);
+        bool overflow;
+        return iadd(other, overflow);
     }
 
     /* Decrement the BitArray by one and return a self-reference to the new value. */
@@ -2532,19 +2612,19 @@ public:
         return copy;
     }
 
-    /* Operator version of `BitArray.sub()` that discards the output borrow flag. */
+    /* Operator version of `BitArray.sub()` that discards the overflow flag. */
     [[nodiscard]] friend constexpr BitArray operator-(
         const BitArray& lhs,
         const BitArray& rhs
     ) noexcept {
-        word borrow = 0;
-        return lhs.sub(rhs, borrow);
+        bool overflow;
+        return lhs.sub(rhs, overflow);
     }
 
-    /* Operator version of `BitArray.isub()` that discards the output borrow flag. */
+    /* Operator version of `BitArray.isub()` that discards the overflow flag. */
     constexpr BitArray& operator-=(const BitArray& other) noexcept {
-        word borrow = 0;
-        return isub(other, borrow);
+        bool overflow;
+        return isub(other, overflow);
     }
 
     /// TODO: multiplication requires adjustment for big word arithmetic
@@ -2554,8 +2634,8 @@ public:
         const BitArray& lhs,
         const BitArray& rhs
     ) noexcept {
-        word carry = 0;
-        return lhs.mul(rhs, carry);
+        bool overflow;
+        return lhs.mul(rhs, overflow);
     }
 
     /* Operator version of `BitArray.imul()` that discards the output carry flag. */
@@ -2784,10 +2864,21 @@ namespace bertrand {
             // static_assert((BitArray<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
         }
 
-        static constexpr BitArray<5> a{uint8_t(0b11111)};
-        static constexpr BitArray<5> b = a + uint8_t(2);
-        static_assert(a == uint8_t(31));
-        static_assert(b.data()[0] == uint8_t(1));
+        {
+            static constexpr BitArray<5> a{int8_t(-1)};
+            static constexpr BitArray<5> b = a + uint8_t(2);
+            static_assert(a == uint8_t(31));
+            static_assert(b.data()[0] == uint8_t(1));
+
+            static constexpr BitArray<5> c;
+            static constexpr BitArray<5> d = c - uint8_t(1);
+            static_assert(c == uint8_t(0));
+            static_assert(d.data()[0] == uint8_t(31));
+
+            static constexpr BitArray<5> e = uint8_t(12);
+            static constexpr BitArray<5> f = e * uint8_t(3);
+            static_assert(f.data()[0] == uint8_t(6));
+        }
     }
 
 }
