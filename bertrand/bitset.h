@@ -16,7 +16,6 @@ namespace impl {
     struct UInt_tag {};
     struct Int_tag {};
     struct Float_tag {};
-
 }
 
 
@@ -320,34 +319,55 @@ namespace impl {
         5.977279923499917,
     };
 
-    template <size_t base, std::array<size_t, base> arr>
-    struct unique_digit_lengths {
+    template <typename word, const auto&... keys>
+    struct bits_from_string {
+        static constexpr size_t base = sizeof...(keys);
+        static constexpr size_t bits_per_digit = std::bit_width(base - 1);
+
+        template <size_t... Is>
+        static constexpr auto _digits(std::index_sequence<Is...>) {
+            return string_map<word, keys...>{word(Is)...};
+        }
+
+        static constexpr auto digits = _digits(std::make_index_sequence<base>{});
+
+        template <size_t... sizes>
+        static constexpr auto _digit_lengths() {
+            std::array<size_t, sizeof...(sizes)> out {sizes...};
+            bertrand::sort<impl::Greater>(out);
+            return out;
+        }
+
+        static constexpr auto digit_lengths = _digit_lengths<keys.size()...>();
+
         template <size_t I = 0, size_t... sizes>
-        static constexpr decltype(auto) operator()() noexcept {
+        static constexpr decltype(auto) _widths() noexcept {
             if constexpr (I == 0) {
-                return (operator()<I + 1, arr[I]>());
+                return (_widths<I + 1, digit_lengths[I]>());
             } else {
                 if constexpr (
-                    arr[I] < meta::unpack_value<sizeof...(sizes) - 1, sizes...>
+                    digit_lengths[I] < meta::unpack_value<sizeof...(sizes) - 1, sizes...>
                 ) {
-                    return (operator()<I + 1, sizes..., arr[I]>());
+                    return (_widths<I + 1, sizes..., digit_lengths[I]>());
                 } else {
-                    return (operator()<I + 1, sizes...>());
+                    return (_widths<I + 1, sizes...>());
                 }
             }
         }
         template <size_t I, size_t... sizes> requires (I == base)
-        static constexpr std::array<size_t, sizeof...(sizes)> operator()() noexcept {
+        static constexpr std::array<size_t, sizeof...(sizes)> _widths() noexcept {
             return {sizes...};
         }
+
+        static constexpr auto widths = _widths();
     };
 
     template <typename T>
-    concept exact_bits =
+    concept strict_bits =
         meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
 
     template <typename T>
-    concept round_bits =
+    concept loose_bits =
         meta::integer<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
 
 }
@@ -523,35 +543,41 @@ private:
         from_ints<I, T, Ts...>(data, v.value, rest...);
     }
 
-    template <const auto&... keys, size_type... Is>
-    static constexpr auto digit_map(std::index_sequence<Is...>) {
-        return string_map<word, keys...>{word(Is)...};
+    static constexpr Bits mask(index_type start, index_type stop) noexcept {
+        Bits result;
+        result.fill(1);
+        result <<= N - size_type(stop);
+        result >>= N - size_type(stop - start);
+        result <<= size_type(start);  // [start, stop).
+        return result;
     }
 
-    template <size_type... sizes>
-    static constexpr auto unique_digit_lengths() {
-        std::array<size_type, sizeof...(sizes)> out {sizes...};
-        bertrand::sort<impl::Greater>(out);
-        return out;
+    constexpr bool msb_set() const noexcept {
+        if constexpr (end_mask) {
+            return buffer[array_size - 1] >= word(word(1) << ((N % word_size) - 1));
+        } else {
+            return buffer[array_size - 1] >= word(word(1) << (word_size - 1));
+        }
     }
 
-    template <size_type I, const auto& digits, const auto& widths, size_type per_digit>
-    static constexpr Expected<void, ValueError, OverflowError> from_string_helper(
+    template <size_type I, typename ctx>
+    static constexpr Expected<void, OverflowError> from_string_helper(
         Bits& result,
         std::string_view str,
-        size_type& i
+        size_type& i,
+        std::string_view& continuation
     ) {
-        if constexpr (I < widths.size()) {
+        if constexpr (I < ctx::widths.size()) {
             // search the digit map for a matching digit
-            auto it = digits.find(str.substr(i, widths[I]));
+            auto it = ctx::digits.find(str.substr(i, ctx::widths[I]));
 
             // if a digit was found, then we can multiply the bitset by the base,
             // join the digit, and then advance the loop index
-            if (it != digits.end()) {
+            if (it != ctx::digits.end()) {
 
                 // if the base is a power of 2, then we can use a left shift and
                 // bitwise OR to avoid expensive multiplication and addition.
-                if constexpr (impl::is_power2(digits.size())) {
+                if constexpr (impl::is_power2(ctx::digits.size())) {
 
                     // if a left shift by `per_digit` would cause the most significant
                     // set bit to overflow, then we have an OverflowError
@@ -559,17 +585,17 @@ private:
                     size_type msb = size_type(std::countl_zero(result.buffer[j]));
                     if (msb < word_size) {  // msb is in last word
                         size_type distance = N - (word_size * j + word_size - 1 - msb);
-                        if (distance <= per_digit) {  // would overflow
+                        if (distance <= ctx::bits_per_digit) {  // would overflow
                             return OverflowError();
                         }
                     } else {  // msb is in a previous word
                         // stop early when distance exceeds shift amount
                         size_type distance = N % word_size;
-                        while (distance <= per_digit && j-- > 0) {
+                        while (distance <= ctx::bits_per_digit && j-- > 0) {
                             msb = size_type(std::countl_zero(result.buffer[j]));
                             if (msb < word_size) {
                                 distance = N - (word_size * j + word_size - 1 - msb);
-                                if (distance <= per_digit) {
+                                if (distance <= ctx::bits_per_digit) {
                                     return OverflowError();
                                 }
                             } else {
@@ -578,13 +604,13 @@ private:
                         }
                     }
 
-                    result <<= per_digit;
+                    result <<= ctx::bits_per_digit;
                     result |= it->second;
 
                 // otherwise, we use overflow-safe operators to detect errors
                 } else {
                     bool overflow;
-                    result.mul(word(digits.size()), overflow, result);
+                    result.mul(word(ctx::digits.size()), overflow, result);
                     if (overflow) {
                         return OverflowError();
                     }
@@ -595,29 +621,18 @@ private:
                 }
 
                 // terminate recursion normally and advance by width of digit 
-                i += widths[I];
+                i += ctx::widths[I];
                 return {};
             }
 
             // otherwise, try again with the next largest width
-            return from_string_helper<
-                I + 1,
-                digits,
-                widths,
-                per_digit
-            >(result, str, i);
+            return from_string_helper<I + 1, ctx>(result, str, i, continuation);
 
-        // if no digit was found, then the string is invalid
-        } else if consteval {
-            static constexpr static_str message =
-                "string must contain only '" + digits.template join<"', '">();
-            return ValueError(message);
+        // if no digit was found, then we stop parsing and set the continuation
+        // parameter
         } else {
-            return ValueError(
-                "string must contain only '" + digits.template join<"', '">() +
-                "', not '" + std::string(str.substr(i, widths[0])) +
-                "' at index " + std::to_string(i)
-            );
+            continuation = str.substr(i);
+            return {};
         }
     }
 
@@ -1087,22 +1102,15 @@ public:
         [[nodiscard]] constexpr impl::sentinel cend() const noexcept { return {}; }
     };
 
-    /// TODO: maybe the bool and int constructors need to accept values in big-endian
-    /// order, in order to conform to the string constructor and mathematical
-    /// intuition.  The only problem in that regard is that indexing and iteration are
-    /// still little-endian, so the first bit is the least-significant, and that could
-    /// cause confusion.  Perhaps the best thing to do is to also swap indexing over
-    /// to being big-endian at the same time, so that everything is consistent.
-
-    /* Construct a bitset from a variadic parameter pack of boolean initializers.  The
-    flag sequence is parsed left-to-right in little-endian order, meaning the first
-    boolean will correspond to the least significant bit of the first word in the
-    bitset, which is stored at index 0.  The last boolean will be the most significant
-    bit, which is stored at index `sizeof...(bits) - 1`.  The total number of arguments
-    cannot exceed `N`, and any remaining bits will be initialized to zero. */
+    /* Construct a bitset from a variadic parameter pack of bitset and/or boolean
+    initializers.  The sequence is parsed left-to-right in little-endian order, meaning
+    the first argument will correspond to the least significant bits in the bitset, and
+    each argument counts upward in significance by its respective bit width.  Any
+    remaining bits will be set to zero.  The total bit width of the arguments cannot
+    exceed `N`, otherwise the constructor will fail to compile. */
     template <typename... bits>
-        requires (impl::exact_bits<bits> && ... && (impl::bitcount<bits...> <= N))
-    constexpr Bits(const bits&... vals) noexcept : buffer{} {
+        requires (impl::strict_bits<bits> && ... && (impl::bitcount<bits...> <= N))
+    [[nodiscard]] constexpr Bits(const bits&... vals) noexcept : buffer{} {
         from_bits<0>(buffer, vals...);
     }
 
@@ -1123,12 +1131,12 @@ public:
     template <typename... words>
         requires (
             sizeof...(words) > 0 &&
-            !(impl::exact_bits<words> && ...) &&
-            (impl::round_bits<words> && ... && (
+            !(impl::strict_bits<words> && ...) &&
+            (impl::loose_bits<words> && ... && (
                 impl::bitcount<words...> <= max(capacity(), impl::bitcount<uint64_t>)
             ))
         )
-    constexpr Bits(const words&... vals) noexcept : buffer{} {
+    [[nodiscard]] constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_ints<0>(buffer, vals...);
     }
 
@@ -1136,7 +1144,7 @@ public:
     true and false characters.  Throws a `ValueError` if the string contains any
     characters other than the indicated ones.  A constructor of this form allows for
     CTAD-based width deduction from string literal initializers. */
-    constexpr Bits(
+    [[nodiscard]] explicit constexpr Bits(
         const char(&str)[N + 1],
         char zero = '0',
         char one = '1'
@@ -1158,35 +1166,14 @@ public:
         }
     }
 
-    /// TODO: maybe rather than erroring in the case of a leftover substring, I just
-    /// return it as a std::pair<Bits, std::string_view>?  Maybe it's better if
-    /// I do that as a mutable out parameter, and in that case, I can also break early
-    /// if an unparsed substring is found, which means the only error case is if the
-    /// bitset is too small to represent the indicated value.  If the out parameter
-    /// isn't provided, and a continuation is found, then I return a `ValueError` state.
-    /// If the out parameter is provided, then the only error state is the
-    /// `OverflowError`.
-
-
-    /// TODO: what I should do is just extract digit characters until I encounter a
-    /// non-digit or the bitset overflows, whichever comes first.  That allows me to
-    /// ignore leading zeros and trailing, non-digit characters.
-
-
-
-    /// TODO: from_string() and to_string() should potentially also be able to work
-    /// with signed integers?  Basically, I add some special handling for the
-    /// very first character, which may be a sign bit.  If it is, then I can just
-    /// parse the rest of the string as an unsigned integer, and then take the
-    /// two's complement at the end.
-
-
     /* Decode a bitset from a string representation.  Defaults to base 2 with the given
     zero and one digit strings, which are provided as template parameters.  The total
     number of digits dictates the base for the conversion, which must be at least 2 and
-    at most 64.  Returns an `Expected<Bits, ValueError>`, where a `ValueError` state
-    indicates that the string contains invalid characters that could not be parsed as
-    digits in the given base, or if extra digits exist that do not fit in the bitset.
+    at most 64.  Returns an `Expected<Bits, ValueError, OverflowError>`, where a
+    `ValueError` indicates that the string contains substrings that could not be parsed
+    as digits in the given base, and an `OverflowError` indicates that the resulting
+    value would not fit in the bitset's storage capacity.  If the string is empty, then
+    the bitset will be initialized to zero.
 
     Note that the string will be parsed as if it were big-endian, meaning the rightmost
     digit corresponds to the least significant bits, and digits to the left count
@@ -1200,112 +1187,165 @@ public:
     [[nodiscard]] static constexpr auto from_string(std::string_view str) noexcept
         -> Expected<Bits, ValueError, OverflowError>
     {
-        // if the final bitset is empty, decoding is trivial
-        if constexpr (N == 0) {
-            if (!str.empty()) {
-                if consteval {
-                    return ValueError("leftover substring");
-                } else {
-                    return ValueError(
-                        "leftover substring: '" + std::string(str) + "'"
-                    );
-                }
-            }
-            return Bits{};
+        Bits result;
+        size_type idx = 0;
 
-        } else {
-            static constexpr size_type base = sizeof...(rest) + 2;
-            Bits result;
-            size_type idx = 0;
-
-            // special case for base 2, which devolves to a simple bitscan
-            if constexpr (base == 2) {
-                while (idx < str.size()) {
+        // special case for base 2, which devolves to a simple bitscan
+        if constexpr (sizeof...(rest) == 0) {
+            while (idx < str.size()) {
+                if (str.substr(idx, zero.size()) == zero) {
                     // if the most significant bit is set, then we have an overflow
-                    if (
-                        result.buffer[array_size - 1] &
-                        (word(1) << ((N % word_size) - 1))
-                    ) {
+                    if (result.msb_set()) {
                         if consteval {
                             return OverflowError();
                         } else {
                             return OverflowError();
                         }
                     }
-                    if (str.substr(idx, zero.size()) == zero) {
-                        result <<= word(1);
-                        idx += zero.size();
-                    } else if (str.substr(idx, one.size()) == one) {
-                        result <<= word(1);
-                        result |= word(1);
-                        idx += one.size();
-                    } else {
+                    result <<= word(1);
+                    idx += zero.size();
+                } else if (str.substr(idx, one.size()) == one) {
+                    // if the most significant bit is set, then we have an overflow
+                    if (result.msb_set()) {
                         if consteval {
-                            static constexpr static_str message =
-                                "string must contain only '" + zero + "' and '" +
-                                one + "'";
-                            return ValueError(message);
+                            return OverflowError();
                         } else {
-                            return ValueError(
-                                "string must contain only '" + zero + "' and '" + one +
-                                "', not: '" + std::string(str.substr(
-                                    idx,
-                                    max(zero.size(), one.size())
-                                )) + "' at index " + std::to_string(idx)
-                            );
+                            return OverflowError();
                         }
                     }
-                }
-
-            // otherwise, we search against a minimal perfect hash table to get the
-            // corresponding digit
-            } else {
-                static constexpr size_type bits_per_digit = std::bit_width(base - 1);
-                static constexpr auto digits =
-                    digit_map<zero, one, rest...>(std::make_index_sequence<base>{});
-                static constexpr auto widths = impl::unique_digit_lengths<
-                    base,
-                    unique_digit_lengths<zero.size(), one.size(), rest.size()...>()
-                >{}();
-
-                // loop until the string is consumed or the bitset overflows
-                while (idx < str.size()) {
-                    // attempt to extract a digit from the string, testing string
-                    // segments beginning at index `i` in order of decreasing width
-                    Expected<void, ValueError, OverflowError> status = from_string_helper<
-                        0,
-                        digits,
-                        widths,
-                        bits_per_digit
-                    >(result, str, idx);
-                    if (status.has_error()) {
-                        return std::move(status.error());
-                    }
-                }
-            }
-
-            // if there are any leftover characters, return an error state
-            if (idx < str.size()) {
-                if consteval {
-                    return ValueError("leftover substring");
+                    result <<= word(1);
+                    result |= word(1);
+                    idx += one.size();
                 } else {
-                    if (str.size() - idx > 128) {
-                        return ValueError(
-                            "leftover substring: '" + std::string(
-                                str.substr(idx, idx + 128)
-                            ) + " (...)'"
-                        );
+                    if consteval {
+                        static constexpr static_str message =
+                            "string must contain only '" + zero + "' and '" +
+                            one + "'";
+                        return ValueError(message);
                     } else {
                         return ValueError(
-                            "leftover substring: '" + std::string(
-                                str.substr(idx)
-                            ) + "'"
+                            "string must contain only '" + zero + "' and '" + one +
+                            "', not: '" + std::string(str.substr(
+                                idx,
+                                max(zero.size(), one.size())
+                            )) + "' at index " + std::to_string(idx)
                         );
                     }
                 }
             }
-            return result;
+
+        // otherwise, we search against a minimal perfect hash table to get the
+        // corresponding digit
+        } else {
+            using ctx = impl::bits_from_string<word, zero, one, rest...>;
+
+            // loop until the string is consumed or the bitset overflows
+            std::string_view continuation;
+            while (idx < str.size()) {
+                // attempt to extract a digit from the string, testing string
+                // segments beginning at index `i` in order of decreasing width
+                Expected<void, OverflowError> status = from_string_helper<0, ctx>(
+                    result,
+                    str,
+                    idx,
+                    continuation
+                );
+                if (status.has_error()) {
+                    return std::move(status.error());
+                }
+                if (!continuation.empty()) {
+                    if consteval {
+                        static constexpr static_str message =
+                            "string must contain only '" +
+                            ctx::digits.template join<"', '">();
+                        return ValueError(message);
+                    } else {
+                        return ValueError(
+                            "string must contain only '" +
+                            ctx::digits.template join<"', '">() + "', not '" +
+                            std::string(str.substr(idx, ctx::widths[0])) +
+                            "' at index " + std::to_string(idx)
+                        );
+                    }
+                }
+            }
         }
+
+        return result;
+    }
+
+    /* Decode a bitset from a string representation, stopping at the first non-digit
+    character.  The remaining substring will be returned via the `continuation`
+    parameter, which will be empty if the entire string was consumed.  Otherwise
+    behaves like `from_string<"0", "1">()`, except that the `ValueError` state will
+    never occur. */
+    template <static_str zero = "0", static_str one = "1", static_str... rest>
+        requires (
+            sizeof...(rest) + 2 <= 64 &&
+            !zero.empty() && (!one.empty() && ... && !rest.empty()) &&
+            meta::perfectly_hashable<zero, one, rest...>
+        )
+    [[nodiscard]] static constexpr Expected<Bits, OverflowError> from_string(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        continuation = {};
+        Bits result;
+        size_type idx = 0;
+
+        // special case for base 2, which devolves to a simple bitscan
+        if constexpr (sizeof...(rest) == 0) {
+            while (idx < str.size()) {
+                if (str.substr(idx, zero.size()) == zero) {
+                    // if the most significant bit is set, then we have an overflow
+                    if (result.msb_set()) {
+                        if consteval {
+                            return OverflowError();
+                        } else {
+                            return OverflowError();
+                        }
+                    }
+                    result <<= word(1);
+                    idx += zero.size();
+                } else if (str.substr(idx, one.size()) == one) {
+                    // if the most significant bit is set, then we have an overflow
+                    if (result.msb_set()) {
+                        if consteval {
+                            return OverflowError();
+                        } else {
+                            return OverflowError();
+                        }
+                    }
+                    result <<= word(1);
+                    result |= word(1);
+                    idx += one.size();
+                } else {
+                    continuation = str.substr(idx);
+                }
+            }
+
+        // otherwise, we search against a minimal perfect hash table to get the
+        // corresponding digit
+        } else {
+            using ctx = impl::bits_from_string<word, zero, one, rest...>;
+
+            // loop until the string is consumed or the bitset overflows
+            while (idx < str.size()) {
+                // attempt to extract a digit from the string, testing string
+                // segments beginning at index `i` in order of decreasing width
+                Expected<void, OverflowError> status = from_string_helper<0, ctx>(
+                    result,
+                    str,
+                    idx,
+                    continuation
+                );
+                if (status.has_error()) {
+                    return std::move(status.error());
+                }
+            }
+        }
+
+        return result;
     }
 
     /* A shorthand for `from_string<"0", "1">(str)`, which decodes a string in the
@@ -1316,12 +1356,30 @@ public:
         return from_string<"0", "1">(str);
     }
 
+    /* A shorthand for `from_string<"0", "1">(str, continuation)`, which decodes a
+    string in the canonical binary representation. */
+    [[nodiscard]] static constexpr Expected<Bits, OverflowError> from_binary(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<"0", "1">(str, continuation);
+    }
+
     /* A shorthand for `from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str)`,
     which decodes a string in the canonical octal representation. */
     [[nodiscard]] static constexpr auto from_octal(std::string_view str) noexcept
         -> Expected<Bits, ValueError, OverflowError>
     {
         return from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str);
+    }
+
+    /* A shorthand for `from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str, continuation)`,
+    which decodes a string in the canonical octal representation. */
+    [[nodiscard]] static constexpr Expected<Bits, OverflowError> from_octal(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str, continuation);
     }
 
     /* A shorthand for
@@ -1331,6 +1389,19 @@ public:
         -> Expected<Bits, ValueError, OverflowError>
     {
         return from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str);
+    }
+
+    /* A shorthand for
+    `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str, continuation)`,
+    which decodes a string in the canonical decimal representation. */
+    [[nodiscard]] static constexpr Expected<Bits, OverflowError> from_decimal(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(
+            str,
+            continuation
+        );
     }
 
     /* A shorthand for
@@ -1345,8 +1416,18 @@ public:
         >(str);
     }
 
-    /// TODO: to_string should be able to produce signed integer representations by
-    /// using two's complement?
+    /* A shorthand for
+    `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">(str, continuation)`,
+    which decodes a string in the canonical hexadecimal representation. */
+    [[nodiscard]] static constexpr Expected<Bits, OverflowError> from_hex(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            "A", "B", "C", "D", "E", "F"
+        >(str, continuation);
+    }
 
     /* Encode the bitset into a string representation.  Defaults to base 2 with the
     given zero and one characters, which are given as template parameters.  The total
@@ -1377,10 +1458,8 @@ public:
 
         // if the base is larger than the representable range of the bitset, then we
         // can avoid division entirely.
-        /// TODO: the second condition here may not compile, since the compiler will
-        /// attempt to eagerly evaluate it and trip a UB filter.
-        if constexpr (N <= word_size && base >= (1ULL << N)) {
-            return std::string(digits[word(*this)]);
+        if constexpr (base >= (1ULL << min(N, word_size - 1))) {
+            return std::string(digits[buffer[0]]);
 
         // if the base is exactly 2, then we can use a simple bitscan to determine the
         // final return string, rather than doing multi-word division
@@ -1463,7 +1542,7 @@ public:
     meaning the first character corresponds to the most significant bit in the bitset,
     and the last character corresponds to the least significant bit.  The string will
     be zero-padded to the exact width of the bitset, and can be passed to
-    `Bits::from_string()` to recover the original state. */
+    `Bits::from_binary()` to recover the original state. */
     [[nodiscard]] explicit constexpr operator std::string() const noexcept {
         static constexpr size_type M = N - 1;
         static constexpr int diff = '1' - '0';
@@ -1481,20 +1560,10 @@ public:
         return any();
     }
 
-    /* Convert the bitset to an integer representation if it fits within a single
-    word. */
-    template <typename T>
-        requires (
-            array_size == 1 &&
-            !impl::exact_bits<T> &&
-            meta::explicitly_convertible_to<word, T>
-        )
-    [[nodiscard]] explicit constexpr operator T() const noexcept {
-        if constexpr (array_size == 0) {
-            return static_cast<T>(word(0));
-        } else {
-            return static_cast<T>(buffer[0]);
-        }
+    /* Implicitly convert the bitset to an integer representation if it fits within a
+    single word. */
+    [[nodiscard]] constexpr operator word() const noexcept requires(array_size == 1) {
+        return buffer[0];
     }
 
     /* Get the underlying array. */
@@ -1601,26 +1670,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return false;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return false;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
-        return bool(*this & temp);
+        return bool(*this & mask(norm_start, norm_stop));
     }
 
     /* Check if all of the bits are set. */
@@ -1642,25 +1697,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return false;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return false;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         return (*this & temp) == temp;
     }
 
@@ -1678,25 +1720,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return 0;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return 0;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         size_type count = 0;
         for (size_type i = 0; i < array_size; ++i) {
             count += size_type(std::popcount(word(buffer[i] & temp.buffer[i])));
@@ -1722,29 +1751,15 @@ public:
         index_type start,
         index_type stop = ssize()
     ) noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return *this;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return *this;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
         if (value) {
-            *this |= temp;
+            *this |= mask(norm_start, norm_stop);
         } else {
-            *this &= ~temp;
+            *this &= ~mask(norm_start, norm_stop);
         }
         return *this;
     }
@@ -1762,26 +1777,12 @@ public:
 
     /* Toggle all of the bits within a certain interval. */
     constexpr Bits& flip(index_type start, index_type stop = ssize()) noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return *this;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return *this;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
-        *this ^= temp;
+        *this ^= mask(norm_start, norm_stop);
         return *this;
     }
 
@@ -1810,25 +1811,12 @@ public:
 
     /* Reverse the order of the bits within a certain interval. */
     constexpr Bits& reverse(index_type start, index_type stop = ssize()) noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return *this;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return *this;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         Bits reversed = *this & temp;
         reversed.reverse();
         *this &= ~temp;  // clear the bits in the original bitset
@@ -1847,6 +1835,11 @@ public:
     /// signed/unsigned representation could work.  Alternatively, I could just not
     /// allow bitsets to be used as signed integers, although that would be very nice
     /// as a core abstraction for `N`-bit arithmetic.
+    /// -> ChatGPT seems to think I can derive the correct sign bit after the operation,
+    /// so that I don't have to do anything special in these cases.  The only odd ball
+    /// is division, where I have to strip the signs by taking the complement, and
+    /// then implementing the division algorithm, and then taking the complement again
+    /// if the result is negative.
 
     /* Convert the value to its two's complement equivalent.  This is equivalent to
     flipping the sign for a signed integral value. */
@@ -1877,25 +1870,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return std::nullopt;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         for (size_type i = 0; i < array_size; ++i) {
             size_type j = size_type(std::countr_zero(
                 word(buffer[i] & temp.buffer[i])
@@ -1925,25 +1905,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return std::nullopt;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         for (size_type i = array_size; i-- > 0;) {
             size_type j = size_type(std::countl_zero(
                 word(buffer[i] & temp.buffer[i])
@@ -1973,25 +1940,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return std::nullopt;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         for (size_type i = 0; i < array_size; ++i) {
             size_type j = size_type(std::countr_one(
                 word(buffer[i] & temp.buffer[i])
@@ -2029,25 +1983,12 @@ public:
         index_type start,
         index_type stop = ssize()
     ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        if (norm_start >= ssize()) {
+        index_type norm_start = max(start + ssize() * (start < 0), index_type(0));
+        index_type norm_stop = min(stop + ssize() * (stop < 0), ssize());
+        if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop < 0) {
-            return std::nullopt;
-        }
-        if (norm_stop >= ssize()) {
-            norm_stop = ssize();
-        }
-        Bits temp;
-        temp.fill(1);
-        temp <<= N - size_type(norm_stop);
-        temp >>= N - size_type(norm_stop - norm_start);
-        temp <<= size_type(norm_start);  // [start, stop).
+        Bits temp = mask(norm_start, norm_stop);
         for (size_type i = array_size; i-- > 0;) {
             size_type j = size_type(std::countl_one(
                 word(buffer[i] | ~temp.buffer[i])
@@ -2443,7 +2384,7 @@ public:
     [[nodiscard]] friend constexpr auto operator<=>(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         return std::lexicographical_compare_three_way(
             lhs.buffer.rbegin(),
             lhs.buffer.rend(),
@@ -2457,7 +2398,7 @@ public:
     [[nodiscard]] friend constexpr bool operator==(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         for (size_type i = 0; i < array_size; ++i) {
             if (lhs.buffer[i] != rhs.buffer[i]) {
                 return false;
@@ -2482,7 +2423,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator&(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         Bits result;
         for (size_type i = 0; i < array_size; ++i) {
             result.buffer[i] = lhs.buffer[i] & rhs.buffer[i];
@@ -2505,7 +2446,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator|(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         Bits result;
         for (size_type i = 0; i < array_size; ++i) {
             result.buffer[i] = lhs.buffer[i] | rhs.buffer[i];
@@ -2528,7 +2469,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator^(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         Bits result;
         for (size_type i = 0; i < array_size; ++i) {
             result.buffer[i] = lhs.buffer[i] ^ rhs.buffer[i];
@@ -2548,7 +2489,9 @@ public:
     }
 
     /* Apply a bitwise left shift to the contents of the bitset. */
-    [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept {
+    [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept
+        requires(array_size > 1)
+    {
         Bits result;
         size_type whole = rhs / word_size;  // whole words
 
@@ -2627,7 +2570,9 @@ public:
     }
 
     /* Apply a bitwise right shift to the contents of the bitset. */
-    [[nodiscard]] constexpr Bits operator>>(size_type rhs) const noexcept {
+    [[nodiscard]] constexpr Bits operator>>(size_type rhs) const noexcept
+        requires(array_size > 1)
+    {
         Bits result;
         size_type whole = rhs / word_size;
 
@@ -2702,6 +2647,10 @@ public:
         return *this;
     }
 
+    /* Return a positive copy of the bitset.  This devolves to a simple copy for
+    unsigned bitsets. */
+    [[nodiscard]] constexpr Bits operator+() const noexcept { return *this; }
+
     /* Increment a bitset by one and return a reference to the new value. */
     constexpr Bits& operator++() noexcept {
         if constexpr (N) {
@@ -2729,7 +2678,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator+(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         bool overflow;
         return lhs.add(rhs, overflow);
     }
@@ -2740,6 +2689,14 @@ public:
         bool overflow;
         add(*this, overflow, *this);
         return *this;
+    }
+
+    /* Return a negative copy of the bitset.  This equates to a copy followed by a
+    `complement()` modifier. */
+    [[nodiscard]] constexpr Bits operator-() const noexcept {
+        Bits result = *this;
+        result.complement();
+        return result;
     }
 
     /* Decrement the bitset by one and return a reference to the new value. */
@@ -2769,7 +2726,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator-(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         bool overflow;
         return lhs.sub(rhs, overflow);
     }
@@ -2786,7 +2743,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator*(
         const Bits& lhs,
         const Bits& rhs
-    ) noexcept {
+    ) noexcept requires(array_size > 1) {
         bool overflow;
         return lhs.mul(rhs, overflow);
     }
@@ -2803,7 +2760,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator/(
         const Bits& lhs,
         const Bits& rhs
-    ) {
+    ) requires(array_size > 1) {
         Bits quotient, remainder;
         lhs.divmod(rhs, quotient, remainder);
         return quotient;
@@ -2821,7 +2778,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator%(
         const Bits& lhs,
         const Bits& rhs
-    ) {
+    ) requires(array_size > 1) {
         Bits quotient, remainder;
         lhs.divmod(rhs, quotient, remainder);
         return remainder;
@@ -2844,6 +2801,7 @@ public:
     /* Print the bitset to an output stream. */
     constexpr friend std::ostream& operator<<(std::ostream& os, const Bits& set)
         noexcept(noexcept(os << std::string(set)))
+        requires(array_size > 1)
     {
         /// TODO: maybe print directly, rather than requiring an allocation and
         /// extra layer of indirection?
@@ -2897,7 +2855,9 @@ struct UInt : impl::UInt_tag {
     Bits<N> value;
 
     /// TODO: very thin wrapper around `Bits<N>` that mostly just forwards the
-    /// same interface, possibly without iteration/indexing support, etc.
+    /// same interface, possibly without iteration/indexing support, one-hot
+    /// decomposition, structured bindings, or any(), all(), count(), flip(),
+    ///
 
 };
 
@@ -2921,11 +2881,6 @@ template <meta::integer... Ts>
 Int(Ts...) -> Int<impl::bitcount<Ts...>>;
 
 
-
-/// TODO: CTAD guides for Int<N> and UInt<N> that allow the bit width to be inferred
-/// from the initializer.
-
-
 /// TODO: maybe in the future, I can add a `Float<E, M>` type that generalizes a float
 /// with `E` exponent bits and `M` mantissa bits, which would be useful especially for
 /// ML applications.
@@ -2935,6 +2890,9 @@ Int(Ts...) -> Int<impl::bitcount<Ts...>>;
 
 
 namespace std {
+
+    /// TODO: specialize `std::numeric_limits` and `std::hash` for `Bits<N>`, `Int<N>`,
+    /// `UInt<N>`, and `Float<E, M>`.
 
     /* Specializing `std::hash` allows bitsets to be stored in hash tables. */
     template <bertrand::meta::Bits T>
@@ -2971,9 +2929,6 @@ namespace std {
         return std::forward<T>(bits).template get<I>();
     }
 
-    /// TODO: specialize `std::numeric_limits` for `Bits<N>`, `Int<N>`, `UInt<N>`,
-    /// and `Float<E, M>`.
-
 }
 
 
@@ -3002,7 +2957,7 @@ namespace bertrand {
             static_assert(a3.size() == 64);
             static_assert(a == a2);
             auto [f1, f2] = a;
-            static constexpr Bits b = {"abab", 'b', 'a'};
+            static constexpr Bits b {"abab", 'b', 'a'};
             static constexpr std::string c = b.to_binary();
             static constexpr std::string d = b.to_decimal();
             static constexpr std::string d2 = b.to_string();
@@ -3033,7 +2988,7 @@ namespace bertrand {
         }
 
         {
-            static constexpr Bits b = "100";
+            static constexpr Bits b {"100"};
             static constexpr auto b2 = Bits<3>::from_string(
                 std::string_view("100")
             );
@@ -3061,8 +3016,8 @@ namespace bertrand {
 
         {
             static constexpr Foo<{true, false, true}> foo;
-            static constexpr Foo<{"bab", 'a', 'b'}> bar;
-            static_assert(foo.value == "101");
+            static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
+            static_assert(foo.value == Bits{"101"});
             static_assert(bar.value == 5);
             static_assert(bar.value == 5);
         }
@@ -3096,7 +3051,17 @@ namespace bertrand {
         {
             static constexpr Bits<4> b = {Bits{"110"}, true};
             static_assert(b.last_zero().value() == 0);
-            static_assert(b == "1110");
+            static_assert(b == Bits{"1110"});
+            static_assert(-b == Bits{"0010"});
+            static_assert(Bits<5>::from_string("10100").result() == 20);
+
+            static constexpr Bits<72> b2;
+            // int x = b2;
+
+            auto y = b + Bits{3};
+            if (b) {
+
+            }
         }
     }
 
