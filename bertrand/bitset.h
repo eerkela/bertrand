@@ -8,25 +8,55 @@
 #include "bertrand/static_str.h"
 
 
-/// TODO: BitArray<N> -> Bits<N>
-
-
 namespace bertrand {
 
 
 namespace impl {
-    struct BitArray_tag {};
+    struct Bits_tag {};
+    struct UInt_tag {};
+    struct Int_tag {};
+    struct Float_tag {};
 
-    template <meta::integer T>
-    constexpr size_t _bitcount = sizeof(T) * 8;
+}
+
+
+namespace meta {
+
+    template <typename T>
+    concept Bits = inherits<T, impl::Bits_tag>;
+
+    template <typename T>
+    concept UInt = inherits<T, impl::UInt_tag>;
+
+    template <typename T>
+    concept Int = inherits<T, impl::Int_tag>;
+
+    template <typename T>
+    concept Float = inherits<T, impl::Float_tag>;
+
+}
+
+
+namespace impl {
+    template <typename T>
+    constexpr size_t _bitcount = 0;
     template <meta::boolean T>
     constexpr size_t _bitcount<T> = 1;
-    template <meta::integer... Ts>
+    template <meta::integer T>
+    constexpr size_t _bitcount<T> = sizeof(T) * 8;
+    template <meta::Bits T>
+    constexpr size_t _bitcount<T> = T::size();
+    template <meta::UInt T>
+    constexpr size_t _bitcount<T> = T::size();
+    template <meta::Int T>
+    constexpr size_t _bitcount<T> = T::size();
+
+    template <typename... Ts> requires ((_bitcount<Ts> > 0) && ...)
     constexpr size_t bitcount = (_bitcount<Ts> + ... + 0);
 
     template <size_t M>
     struct word {
-        using type = size_t;
+        using type = uint64_t;
         static constexpr size_t size = sizeof(type) * 8;
         struct big {
             static constexpr bool composite = true;
@@ -291,7 +321,7 @@ namespace impl {
     };
 
     template <size_t base, std::array<size_t, base> arr>
-    struct unique_word_lengths {
+    struct unique_digit_lengths {
         template <size_t I = 0, size_t... sizes>
         static constexpr decltype(auto) operator()() noexcept {
             if constexpr (I == 0) {
@@ -312,29 +342,29 @@ namespace impl {
         }
     };
 
-}
-
-
-namespace meta {
     template <typename T>
-    concept BitArray = inherits<T, impl::BitArray_tag>;
+    concept exact_bits =
+        meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
+
+    template <typename T>
+    concept round_bits =
+        meta::integer<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
+
 }
 
 
-/* A simple bitset type that stores flags in a fixed-size array of machine words.
-Allows a wider range of operations than `std::bitset<N>`, including full, bigint-style
-arithmetic, lexicographic comparisons, fast string encoding/decoding, one-hot
-decomposition, structured bindings, and more.  `BitArray`s can also serve as portable,
-generalized integers of arbitrary width, both signed and unsigned through two's
-complement.
+/* A simple bitset type that stores up to `N` boolean flags in a fixed-size array of
+machine words.  Allows a wider range of operations than `std::bitset<N>`, including
+full, bigint-style unsigned arithmetic, lexicographic comparisons, fast string
+encoding/decoding, one-hot decomposition, structured bindings, and more.
 
-`BitArray`s are generally optimized for small to medium sizes (up to a few thousand
-bits), and do not replace arbitrary-precision libraries like GMP or
-`boost::multiprecision`, which may be preferable in some situations.  Instead, they
-are meant as a lightweight,general-purpose utility for low-level bit manipulation and
-efficient storage of boolean flags, as a building block for further abstractions. */
+`Bits` are generally optimized for small to medium sizes (up to a few thousand bits),
+and do not replace arbitrary-precision libraries like GMP or `boost::multiprecision`,
+which may be preferable in some situations.  Instead, they are meant as a lightweight,
+general-purpose utility for low-level bit manipulation and efficient storage of boolean
+flags, and as a building block for further abstractions. */
 template <size_t N>
-struct BitArray : impl::BitArray_tag {
+struct Bits : impl::Bits_tag {
     using word = impl::word<N>::type;
     using value_type = bool;
     using size_type = size_t;
@@ -356,189 +386,24 @@ private:
     static constexpr size_type array_size = (N + word_size - 1) / word_size;
     static constexpr word end_mask = word(word(1) << (N % word_size)) - word(1);
 
-    static constexpr void _divmod(
-        const BitArray& lhs,
-        const BitArray& rhs,
-        BitArray& quotient,
-        BitArray& remainder
-    ) {
-        if constexpr (array_size == 1) {
-            word l = lhs.buffer[0];
-            word r = rhs.buffer[0];
-            quotient.buffer[0] = l / r;
-            remainder.buffer[0] = l % r;
-            return;
-
-        } else {
-            using Signed = meta::as_signed<word>;
-            constexpr size_type chunk = word_size / 2;
-            constexpr word b = word(1) << chunk;
-
-            if (!rhs) {
-                throw ZeroDivisionError();
-            }
-            if (lhs < rhs) {
-                remainder = lhs;
-                quotient.fill(0);
-                return;
-            }
-
-            // 1. Compute effective lengths.  Above checks ensure that neither operand
-            // is zero.
-            size_type lhs_last = size();
-            for (size_type i = array_size; i-- > 0;) {
-                size_type j = size_type(std::countl_zero(lhs.buffer[i]));
-                if (j < word_size) {
-                    lhs_last = size_type(word_size * i + word_size - 1 - j);
-                    break;
-                }
-            }
-            size_type rhs_last = size();
-            for (size_type i = array_size; i-- > 0;) {
-                size_type j = size_type(std::countl_zero(rhs.buffer[i]));
-                if (j < word_size) {
-                    rhs_last = size_type(word_size * i + word_size - 1 - j);
-                    break;
-                }
-            }
-            size_type n = (rhs_last + (word_size - 1)) / word_size;
-            size_type m = ((lhs_last + (word_size - 1)) / word_size) - n;
-
-            // 2. If the divisor is a single word, then we can avoid multi-word division.
-            if (n == 1) {
-                word v = rhs.buffer[0];
-                word rem = 0;
-                for (size_type i = m + n; i-- > 0;) {
-                    auto wide = big_word{rem, lhs.buffer[i]} / v;
-                    quotient.buffer[i] = wide.hi();
-                    rem = wide.lo();
-                }
-                for (size_type i = m + n; i < array_size; ++i) {
-                    quotient.buffer[i] = 0;
-                }
-                remainder.buffer[0] = rem;
-                for (size_type i = 1; i < n; ++i) {
-                    remainder.buffer[i] = 0;
-                }
-                return;
-            }
-
-            /// NOTE: this is based on Knuth's Algorithm D, which is among the simplest for
-            /// bigint division.  Much of the implementation was taken from:
-            /// https://skanthak.hier-im-netz.de/division.html
-            /// Which references Hacker's Delight, with a helpful explanation of the
-            /// algorithm design.  See that or the Knuth reference for more details.
-            std::array<word, array_size> v = rhs.buffer;
-            std::array<word, array_size + 1> u;
-            for (size_type i = 0; i < array_size; ++i) {
-                u[i] = lhs.buffer[i];
-            }
-            u[array_size] = 0;
-
-            // 3. Left shift until the highest set bit in the divisor is at the top of its
-            // respective word.  The strange bitwise AND is meant to avoid undefined
-            // behavior when shifting by a full word size (i.e. shift == 0).  It is taken
-            // from https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
-            size_type shift = word_size - 1 - (rhs_last % word_size);
-            size_type shift_carry = -shift & (word_size - 1);
-            size_type shift_correct = -Signed(shift) >> (word_size - 1);
-            for (size_type i = array_size + 1; i-- > 1;) {
-                u[i] = (u[i] << shift) | ((u[i - 1] >> shift_carry) & shift_correct);
-            }
-            u[0] <<= shift;
-            for (size_type i = array_size; i-- > 1;) {
-                v[i] = (v[i] << shift) | ((v[i - 1] >> shift_carry) & shift_correct);
-            }
-            v[0] <<= shift;
-
-            // 4. Trial division
-            quotient.fill(0);
-            for (size_type j = m + 1; j-- > 0;) {
-                // take the top two words of the numerator for wide division
-                auto hat = big_word{u[j + n], u[j + n - 1]} / v[n - 1];
-                word qhat = hat.hi();
-                word rhat = hat.lo();
-
-                // refine quotient if guess is too large
-                while (qhat >= b || (big_word::mul(
-                    qhat,
-                    v[n - 2]) > big_word{word(rhat * b), u[j + n - 2]}
-                )) {
-                    --qhat;
-                    rhat += v[n - 1];
-                    if (rhat >= b) {
-                        break;
-                    }
-                }
-
-                // 5. Multiply and subtract
-                word borrow = 0;
-                for (size_type i = 0; i < n; ++i) {
-                    big_word prod = big_word::mul(qhat, v[i]);
-                    word temp = u[i + j] - borrow;
-                    borrow = temp > u[i + j];
-                    temp -= prod.lo();
-                    borrow += temp > prod.lo();
-                    u[i + j] = temp;
-                    borrow += prod.hi();
-                }
-
-                // 6. Correct for negative remainder
-                if (u[j + n] < borrow) {
-                    --qhat;
-                    borrow = 0;
-                    for (size_type i = 0; i < n; ++i) {
-                        word temp = u[i + j] + borrow;
-                        borrow = temp < u[i + j];
-                        temp += v[i];
-                        borrow += temp < v[i];
-                        u[i + j] = temp;
-                    }
-                    u[j + n] += borrow;
-                }
-                quotient.buffer[j] = qhat;
-            }
-
-            // 7. Unshift the remainder and quotient to get the final result
-            for (size_type i = 0; i < n - 1; ++i) {
-                remainder.buffer[i] = (u[i] >> shift) | (u[i + 1] << (word_size - shift));
-            }
-            remainder.buffer[n - 1] = u[n - 1] >> shift;
-            for (size_type i = n; i < array_size; ++i) {
-                remainder.buffer[i] = 0;
-            }
-        }
-    }
-
     template <size_type I>
-    constexpr void from_booleans(std::array<word, array_size>& data) noexcept {}
-    template <size_type I, meta::boolean T, meta::boolean... Ts>
-    constexpr void from_booleans(
+    static constexpr void from_bits(std::array<word, array_size>& data) noexcept {}
+
+    template <size_type I, meta::boolean T, typename... Ts>
+    static constexpr void from_bits(
         std::array<word, array_size>& data,
-        T first,
-        Ts... rest
+        T v,
+        const Ts&... rest
     ) noexcept {
-        data[I / word_size] |= word(word(first) << (I % word_size));
-        from_booleans<I + 1>(data, rest...);
+        data[I / word_size] |= word(word(v) << (I % word_size));
+        from_bits<I + 1>(data, rest...);
     }
 
-    /// TODO: from_integers should mask off the least significant bits in the
-    /// event of overflow, which should be handled in the main recursive loop
-    /// rather than at the end.  That probably also allows me to lift the
-    /// capacity check for small-size optimized BitArrays, so that you can initialize
-    /// with normal integers and not worry about the size of the BitArray.
-
-    template <size_type I>
-    constexpr void from_integers(std::array<word, array_size>& data) noexcept {
-        if constexpr (end_mask) {
-            data[array_size - 1] &= end_mask;
-        }
-    }
-    template <size_type I, meta::integer T, meta::integer... Ts>
-    constexpr void from_integers(
+    template <size_type I, meta::Bits T, typename... Ts>
+    static constexpr void from_bits(
         std::array<word, array_size>& data,
-        T first,
-        Ts... rest
+        const T& v,
+        const Ts&... rest
     ) noexcept {
         static constexpr size_type J = I + impl::bitcount<T>;
         static constexpr size_type start_bit = I % word_size;
@@ -546,50 +411,133 @@ private:
         static constexpr size_type stop_word = J / word_size;
         static constexpr size_type stop_bit = J % word_size;
 
-        /// TODO: the correct behavior here is to apply normal integer overflow.
-        /// TODO: this requires some carry handling, similar to the math operators
-        /// below.  I may need to pass in the shift amount as an out parameter to
-        /// the recursive function?
+        if constexpr (start_bit == 0) {
+            for (size_type i = 0; i < v.buffer.size(); ++i) {
+                data[start_word + i] |= v.buffer[i];
+            }
+
+        } else {
+            T temp = v;
+            data[start_word] |= word(temp.buffer[0] << start_bit);
+            size_type consumed = word_size - start_bit;
+            temp >>= consumed;
+            size_type i = start_word;
+            size_type j = 0;
+            while (consumed < temp.size()) {
+                data[++i] |= temp.buffer[j++];
+                consumed += word_size;
+            }
+        }
+
+        from_bits<I + T::size()>(data, rest...);
+    }
+
+    template <size_type I, typename T, typename... Ts>
+        requires (meta::UInt<T> || meta::Int<T>)
+    static constexpr void from_bits(
+        std::array<word, array_size>& data,
+        const T& v,
+        const Ts&... rest
+    ) noexcept {
+        from_bits<I, T, Ts...>(data, v.value, rest...);
+    }
+
+    template <size_type I>
+    static constexpr void from_ints(std::array<word, array_size>& data) noexcept {
+        if constexpr (end_mask) {
+            data[array_size - 1] &= end_mask;
+        }
+    }
+
+    template <size_type I, meta::integer T, typename... Ts>
+    static constexpr void from_ints(
+        std::array<word, array_size>& data,
+        T v,
+        const Ts&... rest
+    ) noexcept {
+        static constexpr size_type J = I + impl::bitcount<T>;
+        static constexpr size_type start_bit = I % word_size;
+        static constexpr size_type start_word = I / word_size;
+        static constexpr size_type stop_word = J / word_size;
+        static constexpr size_type stop_bit = J % word_size;
 
         if constexpr (stop_bit == 0 || start_word == stop_word) {
-            data[start_word] |= word(word(first) << start_bit);
+            data[start_word] |= word(word(v) << start_bit);
         } else {
-            data[start_word] |= word(word(first) << start_bit);
+            data[start_word] |= word(word(v) << start_bit);
             size_type consumed = word_size - start_bit;
-            first >>= consumed;
+            v >>= consumed;
             size_type i = start_word;
             while (consumed < impl::bitcount<T>) {
-                data[++i] |= word(first);
+                data[++i] |= word(v);
                 if constexpr (word_size < impl::bitcount<T>) {
-                    first >>= word_size;
+                    v >>= word_size;
                 }
                 consumed += word_size;
             }
         }
 
-        from_integers<I + impl::bitcount<T>>(data, rest...);
+        from_ints<I + impl::bitcount<T>>(data, rest...);
+    }
+
+    template <size_type I, meta::Bits T, typename... Ts>
+    static constexpr void from_ints(
+        std::array<word, array_size>& data,
+        const T& v,
+        const Ts&... rest
+    ) noexcept {
+        static constexpr size_type J = I + impl::bitcount<T>;
+        static constexpr size_type start_bit = I % word_size;
+        static constexpr size_type start_word = I / word_size;
+        static constexpr size_type stop_word = J / word_size;
+        static constexpr size_type stop_bit = J % word_size;
+
+        if constexpr (start_bit == 0) {
+            for (size_type i = 0; i < v.buffer.size(); ++i) {
+                data[start_word + i] |= v.buffer[i];
+            }
+
+        } else {
+            T temp = v;
+            data[start_word] |= word(temp.buffer[0] << start_bit);
+            size_type consumed = word_size - start_bit;
+            temp >>= consumed;
+            size_type i = start_word;
+            size_type j = 0;
+            while (consumed < temp.size()) {
+                data[++i] |= temp.buffer[j++];
+                consumed += word_size;
+            }
+        }
+
+        from_ints<I + T::size()>(data, rest...);
+    }
+
+    template <size_type I, typename T, typename... Ts>
+        requires (meta::UInt<T> || meta::Int<T>)
+    static constexpr void from_ints(
+        std::array<word, array_size>& data,
+        const T& v,
+        const Ts&... rest
+    ) noexcept {
+        from_ints<I, T, Ts...>(data, v.value, rest...);
     }
 
     template <const auto&... keys, size_type... Is>
-    static constexpr auto _digit_map(std::index_sequence<Is...>) {
+    static constexpr auto digit_map(std::index_sequence<Is...>) {
         return string_map<word, keys...>{word(Is)...};
     }
 
     template <size_type... sizes>
-    static constexpr auto _unique_word_lengths() {
+    static constexpr auto unique_digit_lengths() {
         std::array<size_type, sizeof...(sizes)> out {sizes...};
         bertrand::sort<impl::Greater>(out);
         return out;
     }
 
-    template <
-        size_type I,
-        const auto& digits,
-        const auto& widths,
-        size_type bits_per_digit
-    >
-    static constexpr Expected<void, ValueError, OverflowError> _from_string_helper(
-        BitArray& result,
+    template <size_type I, const auto& digits, const auto& widths, size_type per_digit>
+    static constexpr Expected<void, ValueError, OverflowError> from_string_helper(
+        Bits& result,
         std::string_view str,
         size_type& i
     ) {
@@ -597,7 +545,7 @@ private:
             // search the digit map for a matching digit
             auto it = digits.find(str.substr(i, widths[I]));
 
-            // if a digit was found, then we can multiply the BitArray by the base,
+            // if a digit was found, then we can multiply the bitset by the base,
             // join the digit, and then advance the loop index
             if (it != digits.end()) {
 
@@ -605,23 +553,23 @@ private:
                 // bitwise OR to avoid expensive multiplication and addition.
                 if constexpr (impl::is_power2(digits.size())) {
 
-                    // if a left shift by `bits_per_digit` would cause the most
-                    // significant set bit to overflow, then we have an OverflowError
+                    // if a left shift by `per_digit` would cause the most significant
+                    // set bit to overflow, then we have an OverflowError
                     size_type j = array_size - 1;
                     size_type msb = size_type(std::countl_zero(result.buffer[j]));
                     if (msb < word_size) {  // msb is in last word
                         size_type distance = N - (word_size * j + word_size - 1 - msb);
-                        if (distance <= bits_per_digit) {  // would overflow
+                        if (distance <= per_digit) {  // would overflow
                             return OverflowError();
                         }
                     } else {  // msb is in a previous word
                         // stop early when distance exceeds shift amount
                         size_type distance = N % word_size;
-                        while (distance <= bits_per_digit && j-- > 0) {
+                        while (distance <= per_digit && j-- > 0) {
                             msb = size_type(std::countl_zero(result.buffer[j]));
                             if (msb < word_size) {
                                 distance = N - (word_size * j + word_size - 1 - msb);
-                                if (distance <= bits_per_digit) {
+                                if (distance <= per_digit) {
                                     return OverflowError();
                                 }
                             } else {
@@ -630,17 +578,17 @@ private:
                         }
                     }
 
-                    result <<= bits_per_digit;
+                    result <<= per_digit;
                     result |= it->second;
 
                 // otherwise, we use overflow-safe operators to detect errors
                 } else {
                     bool overflow;
-                    result.imul(word(digits.size()), overflow);
+                    result.mul(word(digits.size()), overflow, result);
                     if (overflow) {
                         return OverflowError();
                     }
-                    result.iadd(it->second, overflow);
+                    result.add(it->second, overflow, result);
                     if (overflow) {
                         return OverflowError();
                     }
@@ -652,11 +600,11 @@ private:
             }
 
             // otherwise, try again with the next largest width
-            return _from_string_helper<
+            return from_string_helper<
                 I + 1,
                 digits,
                 widths,
-                bits_per_digit
+                per_digit
             >(result, str, i);
 
         // if no digit was found, then the string is invalid
@@ -673,21 +621,21 @@ private:
         }
     }
 
-    template <size_t J, const BitArray& divisor>
-    static constexpr std::string_view _to_string_helper(
+    template <size_t J, const Bits& divisor>
+    static constexpr std::string_view to_string_helper(
         const auto& digits,
-        BitArray& quotient,
-        BitArray& remainder,
+        Bits& quotient,
+        Bits& remainder,
         size_type& size
     ) {
-        _divmod(quotient, divisor, quotient, remainder);
+        quotient.divmod(divisor, quotient, remainder);
         std::string_view out = digits[remainder.data()[0]];
         size += out.size();
         return out;
     }
 
     template <size_t J>
-    constexpr std::string_view _to_string_helper(
+    constexpr std::string_view to_string_helper(
         const auto& digits,
         size_type& size
     ) const {
@@ -703,7 +651,7 @@ public:
     /* A mutable reference to a single bit in the set. */
     struct reference {
     private:
-        friend BitArray;
+        friend Bits;
         word* value = nullptr;
         word index = 0;
 
@@ -737,19 +685,19 @@ public:
     struct iterator {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = index_type;
-        using value_type = BitArray::reference;
+        using value_type = Bits::reference;
         using reference = value_type&;
         using const_reference = const value_type&;
         using pointer = value_type*;
         using const_pointer = const value_type*;
 
     private:
-        friend BitArray;
-        BitArray* self;
+        friend Bits;
+        Bits* self;
         difference_type index;
         mutable value_type cache;
 
-        constexpr iterator(BitArray* self, difference_type index) noexcept :
+        constexpr iterator(Bits* self, difference_type index) noexcept :
             self(self), index(index)
         {}
 
@@ -888,12 +836,12 @@ public:
         using const_pointer = pointer;
 
     private:
-        friend BitArray;
-        const BitArray* self;
+        friend Bits;
+        const Bits* self;
         difference_type index;
         mutable bool cache;
 
-        constexpr const_iterator(const BitArray* self, difference_type index) noexcept :
+        constexpr const_iterator(const Bits* self, difference_type index) noexcept :
             self(self), index(index)
         {}
 
@@ -1011,13 +959,13 @@ public:
     most significant. */
     struct one_hot {
     private:
-        friend BitArray;
-        const BitArray* self;
+        friend Bits;
+        const Bits* self;
         index_type start;
         index_type stop;
 
         constexpr one_hot(
-            const BitArray* self,
+            const Bits* self,
             index_type start,
             index_type stop
         ) noexcept :
@@ -1028,7 +976,7 @@ public:
         struct iterator {
             using iterator_category = std::input_iterator_tag;
             using difference_type = index_type;
-            using value_type = BitArray;
+            using value_type = Bits;
             using reference = const value_type&;
             using const_reference = reference;
             using pointer = const value_type*;
@@ -1036,17 +984,17 @@ public:
 
         private:
             friend one_hot;
-            const BitArray* self;
+            const Bits* self;
             difference_type index;
             difference_type stop;
             value_type curr;
 
             static constexpr difference_type next(
-                const BitArray* self,
+                const Bits* self,
                 difference_type start,
                 difference_type stop
             ) noexcept {
-                BitArray temp;
+                Bits temp;
                 temp.fill(1);
                 temp <<= N - size_type(stop);
                 temp >>= N - size_type(stop - start);
@@ -1063,7 +1011,7 @@ public:
             }
 
             constexpr iterator(
-                const BitArray* self,
+                const Bits* self,
                 difference_type start,
                 difference_type stop
             ) noexcept :
@@ -1139,79 +1087,56 @@ public:
         [[nodiscard]] constexpr impl::sentinel cend() const noexcept { return {}; }
     };
 
-    /* Construct a BitArray from a variadic parameter pack of boolean initializers.
-    The flag sequence is parsed left-to-right in little-endian order, meaning the
-    first boolean will correspond to the least significant bit of the first word in
-    the BitArray, which is stored at index 0.  The last boolean will be the most
-    significant bit, which is stored at index `sizeof...(bits) - 1`.  The total
-    number of arguments cannot exceed `N`, and any remaining bits will be initialized
-    to zero. */
-    template <meta::boolean... bits> requires (sizeof...(bits) <= N)
-    constexpr BitArray(bits... vals) noexcept : buffer{} {
-        from_booleans<0>(buffer, vals...);
+    /// TODO: maybe the bool and int constructors need to accept values in big-endian
+    /// order, in order to conform to the string constructor and mathematical
+    /// intuition.  The only problem in that regard is that indexing and iteration are
+    /// still little-endian, so the first bit is the least-significant, and that could
+    /// cause confusion.  Perhaps the best thing to do is to also swap indexing over
+    /// to being big-endian at the same time, so that everything is consistent.
+
+    /* Construct a bitset from a variadic parameter pack of boolean initializers.  The
+    flag sequence is parsed left-to-right in little-endian order, meaning the first
+    boolean will correspond to the least significant bit of the first word in the
+    bitset, which is stored at index 0.  The last boolean will be the most significant
+    bit, which is stored at index `sizeof...(bits) - 1`.  The total number of arguments
+    cannot exceed `N`, and any remaining bits will be initialized to zero. */
+    template <typename... bits>
+        requires (impl::exact_bits<bits> && ... && (impl::bitcount<bits...> <= N))
+    constexpr Bits(const bits&... vals) noexcept : buffer{} {
+        from_bits<0>(buffer, vals...);
     }
 
-    /// TODO: maybe the integer constructor throws if any bits are discarded or
-    /// overflow.  Alternatively, I can define this as overflowing by default,
-    /// although that might be slightly unexpected.  Although, if we're working with
-    /// two's complement, then an input of -1 would always be consistent for all
-    /// widths <= 32, and you could just chain them from there every 32 bits to
-    /// consistently get the minimum/maximum value for the given width.
-    /// -> Truncation is definitely the way to go, since it means negative integers
-    /// retain their exact value regardless of the bitset width.  I should probably
-    /// truncate the least significant bits instead of the most significant though,
-    /// so that the same is true of positive integers as well.  They'll effectively
-    /// be clamped to the min and max representable values of the bitset, which is
-    /// probably the sanest behavior overall.
-    /// -> It does come with the problem that the bit at index 0 might move, which
-    /// is probably undesirable.  So the alternative is to either overflow or
-    /// mask off the upper bits.  Masking the upper bits causes some inputs to map
-    /// to zero, which is undesirable
-
-
-
-    /// TODO: constructor from bit arrays of smaller sizes, possibly within the
-    /// integer constructor, so that you can compose bitsets from smaller bitsets,
-    /// possibly interspersed with boolean and integer initializers.
-
-    /// TODO: also, the integer initializer should be able to take any integer type
-    /// if the bitarray consists of only a single word, and will simply overflow
-    /// the bits that don't fit.  This allows you to initialize a BitArray with
-    /// simple integer literals, without any specific type annotations.  Larger
-    /// BitArrays will ensure that you don't exceed the capacity, but otherwise allow
-    /// the same behavior.
-
-
-
-    /* Construct a BitArray from a sequence of integer values whose bit widths sum
-    to an amount less than or equal to the BitArray's storage capacity.  If the
-    BitArray width is not an even multiple of the word size, then any upper bits above
-    `N` will be masked off and initialized to zero.
+    /* Construct a bitset from a sequence of integer values whose bit widths sum to an
+    amount less than or equal to the bitset's storage capacity.  If the bitset width is
+    not an even multiple of the word size, then any upper bits above `N` will be masked
+    off and initialized to zero.
 
     The values are parsed left-to-right in little-endian order, and are joined together
-    using bitwise OR to form the final BitArray.  The initializers do not need to have
-    the same type, as long as their combined widths do not exceed the BitArray's
+    using bitwise OR to form the final bitset.  The initializers do not need to have
+    the same type, as long as their combined widths do not exceed the bitset's
     capacity.  Any remaining bits will be initialized to zero.  Little-endianness in
     this context means that the first integer will correspond to the `M` least
     significant bits of the bitarray, where `M` is the bit width of the first
     integer.  The last integer will correspond to the most significant bits of the
     bitarray, which will be terminate at index `sum(M_i...)`, where `M_i` is the bit
     width of the `i`th integer. */
-    template <meta::integer... words>
+    template <typename... words>
         requires (
             sizeof...(words) > 0 &&
-            (!meta::boolean<words> || ...) &&
-            impl::bitcount<words...> <= capacity()
+            !(impl::exact_bits<words> && ...) &&
+            (impl::round_bits<words> && ... && (
+                impl::bitcount<words...> <= max(capacity(), impl::bitcount<uint64_t>)
+            ))
         )
-    constexpr BitArray(words... vals) noexcept : buffer{} {
-        from_integers<0>(buffer, vals...);
+    constexpr Bits(const words&... vals) noexcept : buffer{} {
+        from_ints<0>(buffer, vals...);
     }
 
-    /* Construct a BitArray from a string literal containing exactly `N` of the
-    indicated true and false characters.  Throws a `ValueError` if the string contains
-    any characters other than the indicated ones.  A constructor of this form allows
-    for CTAD-based width deduction from string literal initializers. */
-    constexpr BitArray(
+    /* Construct a bitset from a string literal containing exactly `N` of the indicated
+    true and false characters.  Throws a `ValueError` if the string contains any
+    characters other than the indicated ones.  A constructor of this form allows for
+    CTAD-based width deduction from string literal initializers. */
+    constexpr Bits(
         const char(&str)[N + 1],
         char zero = '0',
         char one = '1'
@@ -1234,7 +1159,7 @@ public:
     }
 
     /// TODO: maybe rather than erroring in the case of a leftover substring, I just
-    /// return it as a std::pair<BitArray, std::string_view>?  Maybe it's better if
+    /// return it as a std::pair<Bits, std::string_view>?  Maybe it's better if
     /// I do that as a mutable out parameter, and in that case, I can also break early
     /// if an unparsed substring is found, which means the only error case is if the
     /// bitset is too small to represent the indicated value.  If the out parameter
@@ -1256,13 +1181,12 @@ public:
     /// two's complement at the end.
 
 
-    /* Decode a BitArray from a string representation.  Defaults to base 2 with the
-    given zero and one digit strings, which are provided as template parameters.  The
-    total number of digits dictates the base for the conversion, which must be at least
-    2 and at most 64.  Returns an `Expected<BitArray, ValueError>`, where a
-    `ValueError` state indicates that the string contains invalid characters that
-    could not be parsed as digits in the given base, or if extra digits exist that do
-    not fit in the BitArray.
+    /* Decode a bitset from a string representation.  Defaults to base 2 with the given
+    zero and one digit strings, which are provided as template parameters.  The total
+    number of digits dictates the base for the conversion, which must be at least 2 and
+    at most 64.  Returns an `Expected<Bits, ValueError>`, where a `ValueError` state
+    indicates that the string contains invalid characters that could not be parsed as
+    digits in the given base, or if extra digits exist that do not fit in the bitset.
 
     Note that the string will be parsed as if it were big-endian, meaning the rightmost
     digit corresponds to the least significant bits, and digits to the left count
@@ -1274,7 +1198,7 @@ public:
             meta::perfectly_hashable<zero, one, rest...>
         )
     [[nodiscard]] static constexpr auto from_string(std::string_view str) noexcept
-        -> Expected<BitArray, ValueError, OverflowError>
+        -> Expected<Bits, ValueError, OverflowError>
     {
         // if the final bitset is empty, decoding is trivial
         if constexpr (N == 0) {
@@ -1287,11 +1211,11 @@ public:
                     );
                 }
             }
-            return BitArray{};
+            return Bits{};
 
         } else {
             static constexpr size_type base = sizeof...(rest) + 2;
-            BitArray result;
+            Bits result;
             size_type idx = 0;
 
             // special case for base 2, which devolves to a simple bitscan
@@ -1338,17 +1262,17 @@ public:
             } else {
                 static constexpr size_type bits_per_digit = std::bit_width(base - 1);
                 static constexpr auto digits =
-                    _digit_map<zero, one, rest...>(std::make_index_sequence<base>{});
-                static constexpr auto widths = impl::unique_word_lengths<
+                    digit_map<zero, one, rest...>(std::make_index_sequence<base>{});
+                static constexpr auto widths = impl::unique_digit_lengths<
                     base,
-                    _unique_word_lengths<zero.size(), one.size(), rest.size()...>()
+                    unique_digit_lengths<zero.size(), one.size(), rest.size()...>()
                 >{}();
 
-                // loop until the string is consumed or the BitArray overflows
+                // loop until the string is consumed or the bitset overflows
                 while (idx < str.size()) {
                     // attempt to extract a digit from the string, testing string
                     // segments beginning at index `i` in order of decreasing width
-                    Expected<void, ValueError, OverflowError> status = _from_string_helper<
+                    Expected<void, ValueError, OverflowError> status = from_string_helper<
                         0,
                         digits,
                         widths,
@@ -1387,7 +1311,7 @@ public:
     /* A shorthand for `from_string<"0", "1">(str)`, which decodes a string in the
     canonical binary representation. */
     [[nodiscard]] static constexpr auto from_binary(std::string_view str) noexcept
-        -> Expected<BitArray, ValueError, OverflowError>
+        -> Expected<Bits, ValueError, OverflowError>
     {
         return from_string<"0", "1">(str);
     }
@@ -1395,7 +1319,7 @@ public:
     /* A shorthand for `from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str)`,
     which decodes a string in the canonical octal representation. */
     [[nodiscard]] static constexpr auto from_octal(std::string_view str) noexcept
-        -> Expected<BitArray, ValueError, OverflowError>
+        -> Expected<Bits, ValueError, OverflowError>
     {
         return from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str);
     }
@@ -1404,7 +1328,7 @@ public:
     `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str)`, which decodes
     a string in the canonical decimal representation. */
     [[nodiscard]] static constexpr auto from_decimal(std::string_view str) noexcept
-        -> Expected<BitArray, ValueError, OverflowError>
+        -> Expected<Bits, ValueError, OverflowError>
     {
         return from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str);
     }
@@ -1413,7 +1337,7 @@ public:
     `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">(str)`,
     which decodes a string in the canonical hexadecimal representation. */
     [[nodiscard]] static constexpr auto from_hex(std::string_view str) noexcept
-        -> Expected<BitArray, ValueError, OverflowError>
+        -> Expected<Bits, ValueError, OverflowError>
     {
         return from_string<
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
@@ -1422,18 +1346,18 @@ public:
     }
 
     /// TODO: to_string should be able to produce signed integer representations by
-    /// using two's complement
+    /// using two's complement?
 
-    /* Encode the BitArray into a string representation.  Defaults to base 2 with the
+    /* Encode the bitset into a string representation.  Defaults to base 2 with the
     given zero and one characters, which are given as template parameters.  The total
     number of substrings dictates the base for the conversion, which must be at least
     2 and at most 64.  The result is always padded to the exact width needed to
-    represent the BitArray in the chosen base, including leading zeroes if needed.
-    Note that the resulting string is always big-endian, meaning the first substring
-    corresponds to the most significant digit in the BitArray, and the last substring
+    represent the bitset in the chosen base, including leading zeroes if needed.  Note
+    that the resulting string is always big-endian, meaning the first substring
+    corresponds to the most significant digit in the bitset, and the last substring
     corresponds to the least significant digit.  If the base is 2, then the result can
-    be passed back to the `BitArray` constructor to recover the original state.  Fails
-    to compile if any of the substrings are empty, or if there are duplicates. */
+    be passed back to the `Bits` constructor to recover the original state.  Fails to
+    compile if any of the substrings are empty, or if there are duplicates. */
     template <static_str zero = "0", static_str one = "1", static_str... rest>
         requires (
             sizeof...(rest) + 2 <= 64 &&
@@ -1449,7 +1373,7 @@ public:
 
         // generate a lookup table of substrings to use for each digit
         static constexpr std::array<std::string_view, base> digits {zero, one, rest...};
-        static constexpr BitArray divisor = word(base);
+        static constexpr Bits divisor = word(base);
 
         // if the base is larger than the representable range of the bitset, then we
         // can avoid division entirely.
@@ -1467,7 +1391,7 @@ public:
                 size_type& size
             ) {
                 return std::array<std::string_view, ceil>{
-                    _to_string_helper<Js>(digits, size)...
+                    to_string_helper<Js>(digits, size)...
                 };
             }(std::make_index_sequence<ceil>{}, size);
 
@@ -1482,17 +1406,17 @@ public:
         // otherwise, use modular division to calculate all the substrings needed to
         // represent the value, from the least significant digit to most significant.
         } else {
-            BitArray quotient = *this;
-            BitArray remainder;
+            Bits quotient = *this;
+            Bits remainder;
             size_type size = 0;
             auto contents = []<size_t... Js>(
                 std::index_sequence<Js...>,
-                BitArray& quotient,
-                BitArray& remainder,
+                Bits& quotient,
+                Bits& remainder,
                 size_type& size
             ) {
                 return std::array<std::string_view, ceil>{
-                    _to_string_helper<Js, divisor>(digits, quotient, remainder, size)...
+                    to_string_helper<Js, divisor>(digits, quotient, remainder, size)...
                 };
             }(std::make_index_sequence<ceil>{}, quotient, remainder, size);
 
@@ -1534,12 +1458,12 @@ public:
         >();
     }
 
-    /* Convert the BitArray to a string representation with '1' as the true character
-    and '0' as the false character.  Note that the string is returned in big-endian
-    order, meaning the first character corresponds to the most significant bit in the
-    BitArray, and the last character corresponds to the least significant bit.  The
-    string will be zero-padded to the exact width of the BitArray, and can be passed
-    to `BitArray::from_string()` to recover the original state. */
+    /* Convert the bitset to a string representation with '1' as the true character and
+    '0' as the false character.  Note that the string is returned in big-endian order,
+    meaning the first character corresponds to the most significant bit in the bitset,
+    and the last character corresponds to the least significant bit.  The string will
+    be zero-padded to the exact width of the bitset, and can be passed to
+    `Bits::from_string()` to recover the original state. */
     [[nodiscard]] explicit constexpr operator std::string() const noexcept {
         static constexpr size_type M = N - 1;
         static constexpr int diff = '1' - '0';
@@ -1557,10 +1481,14 @@ public:
         return any();
     }
 
-    /* Convert the BitArray to an integer representation if it fits within a single
+    /* Convert the bitset to an integer representation if it fits within a single
     word. */
     template <typename T>
-        requires (array_size == 1 && meta::explicitly_convertible_to<word, T>)
+        requires (
+            array_size == 1 &&
+            !impl::exact_bits<T> &&
+            meta::explicitly_convertible_to<word, T>
+        )
     [[nodiscard]] explicit constexpr operator T() const noexcept {
         if constexpr (array_size == 0) {
             return static_cast<T>(word(0));
@@ -1585,11 +1513,11 @@ public:
     [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept { return {begin()}; }
     [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept { return {cbegin()}; }
 
-    /* Return a range over the one-hot masks that make up the BitArray within a given
-    interval.  Iterating over the range yields BitArrays of the same size as the input
+    /* Return a range over the one-hot masks that make up the bitset within a given
+    interval.  Iterating over the range yields bitsets of the same size as the input
     with only one active bit and zero everywhere else.  Summing the masks yields an
-    exact copy of the input BitArray within the interval.  The range may be empty if
-    no bits are set within the interval. */
+    exact copy of the input bitset within the interval.  The range may be empty if no
+    bits are set within the interval. */
     [[nodiscard]] constexpr one_hot components(
         index_type start = 0,
         index_type stop = ssize()
@@ -1626,8 +1554,8 @@ public:
     /* Get the value of a specific bit in the set, where the bit index is known at
     compile time.  Does not apply Python-style wraparound, and fails to compile if the
     index is out of bounds.  This is a lower-level access than the `[]` operator, and
-    may be faster in hot loops.  It is also available as `std::get<I>(BitArray)`, which
-    allows the BitArray to be unpacked via structured bindings. */
+    may be faster in hot loops.  It is also available as `std::get<I>(Bits)`, which
+    allows the bitset to be unpacked via structured bindings. */
     template <index_type I> requires (impl::valid_index<ssize(), I>)
     [[nodiscard]] constexpr reference get() noexcept {
         static constexpr index_type J = impl::normalize_index<ssize(), I>();
@@ -1651,9 +1579,9 @@ public:
         return buffer[j / word_size] & (word(1) << (j % word_size));
     }
 
-    /// TODO: operator[slice{}] returning a range of the BitArray.
+    /// TODO: operator[slice{}] returning a range of the bitset.
     /// -> Is it possible to generalize the slice classes to account for the category
-    /// of the underlying iterator?  So `BitArray` could use a random access
+    /// of the underlying iterator?  So `Bits` could use a random access
     /// specialization that gets an iterator to the start using `begin() + slice.first`
     /// and an iterator to the end using `begin() + slice.last`, and then jump by
     /// `step` at every iteration.
@@ -1687,7 +1615,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -1728,7 +1656,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -1764,7 +1692,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -1777,7 +1705,7 @@ public:
     }
 
     /* Set all of the bits to the given value. */
-    constexpr BitArray& fill(bool value) noexcept {
+    constexpr Bits& fill(bool value) noexcept {
         word filled = std::numeric_limits<word>::max() * value;
         for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
             buffer[i] = filled;
@@ -1789,7 +1717,7 @@ public:
     }
 
     /* Set all of the bits within a certain interval to the given value. */
-    constexpr BitArray& fill(
+    constexpr Bits& fill(
         bool value,
         index_type start,
         index_type stop = ssize()
@@ -1808,7 +1736,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -1822,7 +1750,7 @@ public:
     }
 
     /* Toggle all of the bits in the set. */
-    constexpr BitArray& flip() noexcept {
+    constexpr Bits& flip() noexcept {
         for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
             buffer[i] ^= std::numeric_limits<word>::max();
         }
@@ -1833,7 +1761,7 @@ public:
     }
 
     /* Toggle all of the bits within a certain interval. */
-    constexpr BitArray& flip(index_type start, index_type stop = ssize()) noexcept {
+    constexpr Bits& flip(index_type start, index_type stop = ssize()) noexcept {
         index_type norm_start = start + ssize() * (start < 0);
         if (norm_start < 0) {
             norm_start = 0;
@@ -1848,7 +1776,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -1859,7 +1787,7 @@ public:
 
     /* Reverse the order of all bits in the set.  This effectively converts from
     big-endian to little-endian or vice versa. */
-    constexpr BitArray& reverse() noexcept {
+    constexpr Bits& reverse() noexcept {
         // swap the words in the array, and then reverse the bits within each word
         for (size_type i = 0; i < array_size / 2; ++i) {
             word temp = buffer[i];
@@ -1881,7 +1809,7 @@ public:
     }
 
     /* Reverse the order of the bits within a certain interval. */
-    constexpr BitArray& reverse(index_type start, index_type stop = ssize()) noexcept {
+    constexpr Bits& reverse(index_type start, index_type stop = ssize()) noexcept {
         index_type norm_start = start + ssize() * (start < 0);
         if (norm_start < 0) {
             norm_start = 0;
@@ -1896,25 +1824,40 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
         temp <<= size_type(norm_start);  // [start, stop).
-        BitArray reversed = *this & temp;
+        Bits reversed = *this & temp;
         reversed.reverse();
-        *this &= ~temp;  // clear the bits in the original BitArray
-        *this |= reversed;  // set the reversed bits back into the original BitArray
+        *this &= ~temp;  // clear the bits in the original bitset
+        *this |= reversed;  // set the reversed bits back into the original bitset
         return *this;
     }
 
+    /// TODO: Although two's complement ensures the actual arithmetic is correct, all
+    /// the overflow detection works differently for signed vs unsigned integers, since
+    /// the overflow point is at `0111111... + 1` or `100000... - 1`, rather than the
+    /// inverse, so that gets somewhat complicated  I would basically need some way of
+    /// knowing whether the operation is being done in signed vs unsigned mode, and
+    /// disregard the upper bit in signed mode.  The rest of the overflow detection
+    /// works correctly with respect to the lower N - 1 bits, but it's that extra bit
+    /// that causes problems.  If I could address that, then maybe the unified
+    /// signed/unsigned representation could work.  Alternatively, I could just not
+    /// allow bitsets to be used as signed integers, although that would be very nice
+    /// as a core abstraction for `N`-bit arithmetic.
+
     /* Convert the value to its two's complement equivalent.  This is equivalent to
     flipping the sign for a signed integral value. */
-    constexpr BitArray& complement() noexcept {
+    constexpr Bits& complement() noexcept {
         flip();
         ++*this;
         return *this;
     }
+
+    /// TODO: maybe `first_one()` and `last_one()` can be reduced to `msb()` and
+    /// `lsb()`, and I can delete the `first_zero()` and `last_zero()` methods?
 
     /* Return the index of the first bit that is set, or an empty optional if no bits
     are set. */
@@ -1948,7 +1891,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -1996,7 +1939,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -2044,7 +1987,7 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
@@ -2080,8 +2023,6 @@ public:
         return std::nullopt;
     }
 
-    /// TODO: make sure the masking logic works correctly here
-
     /* Return the index of the last bit that is not set within a given interval, or an
     empty optional if all bits are set. */
     [[nodiscard]] constexpr Optional<index_type> last_zero(
@@ -2102,132 +2043,97 @@ public:
         if (norm_stop >= ssize()) {
             norm_stop = ssize();
         }
-        BitArray temp;
+        Bits temp;
         temp.fill(1);
         temp <<= N - size_type(norm_stop);
         temp >>= N - size_type(norm_stop - norm_start);
         temp <<= size_type(norm_start);  // [start, stop).
         for (size_type i = array_size; i-- > 0;) {
-            word curr = buffer[i] & temp.buffer[i];
-            if (curr != temp.buffer[i]) {
-                return index_type(
-                    word_size * i +
-                    word_size - 1 -
-                    std::countl_one(curr | ~temp.buffer[i])
-                );
+            size_type j = size_type(std::countl_one(
+                word(buffer[i] | ~temp.buffer[i])
+            ));
+            if (j < word_size) {
+                return index_type(word_size * i + word_size - 1 - j);
             }
         }
         return std::nullopt;
     }
 
-    /* Add two BitArrays of equal size.  If the result overflows, then the `overflow`
+    /* Add two bitsets of equal size.  If the result overflows, then the `overflow`
     flag will be set to true, and the value will wrap around to the other end of the
     number line (modulo `N`). */
-    [[nodiscard]] constexpr BitArray add(
-        const BitArray& other,
+    [[nodiscard]] constexpr Bits add(
+        const Bits& other,
         bool& overflow
     ) const noexcept {
-        overflow = false;
-
-        // promote to a larger word size if possible
-        if constexpr (!big_word::composite) {
-            using big = big_word::type;
-            big s = big(buffer[0]) + big(other.buffer[0]);
-            if constexpr (end_mask) {
-                overflow = (s >> (N % word_size)) != 0;
-                return {word(s & end_mask)};
-            } else {
-                overflow = (s >> word_size) != 0;
-                return {word(s)};
-            }
-
-        // revert to schoolbook addition
-        } else {
-            BitArray result;
-            for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-                word a = buffer[i] + overflow;
-                overflow = a < buffer[i];
-                word b = a + other.buffer[i];
-                overflow |= b < a;
-                result.buffer[i] = b;
-            }
-            if constexpr (end_mask) {
-                word s = buffer[array_size - 1] + overflow + other.buffer[array_size - 1];
-                overflow = (s >> (N % word_size)) != 0;
-                result.buffer[array_size - 1] = s & end_mask;
-            }
-
-            return result;
-        }
-    }
-
-    /* Add a BitArray of equal size to this one, updating it in-place.  If the result
-    overflows, then the `overflow` flag will be set to true, and the value will wrap
-    around to the other end of the number line (modulo `N`). */
-    constexpr BitArray& iadd(const BitArray& other, bool& overflow) noexcept {
-        overflow = false;
-
-        // promote to a larger word size if possible
-        if constexpr (!big_word::composite) {
-            using big = big_word::type;
-            big s = big(buffer[0]) + big(other.buffer[0]);
-            if constexpr (end_mask) {
-                overflow = (s >> (N % word_size)) != 0;
-                buffer[0] = word(s & end_mask);
-            } else {
-                overflow = (s >> word_size) != 0;
-                buffer[0] = word(s);
-            }
-
-        // revert to schoolbook addition
-        } else {
-            for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-                word a = buffer[i] + overflow;
-                overflow = a < buffer[i];
-                word b = a + other.buffer[i];
-                overflow |= b < a;
-                buffer[i] = b;
-            }
-            if constexpr (end_mask) {
-                word s = buffer[array_size - 1] + overflow + other.buffer[array_size - 1];
-                overflow = (s >> (N % word_size)) != 0;
-                buffer[array_size - 1] = s & end_mask;
-            }
-        }
-        return *this;
-    }
-
-    /* Subtract two BitArrays of equal size.  If the result overflows, then the
-    `overflow` flag will be set to true, and the value will wrap around to the other
-    end of the number line (modulo `N`). */
-    [[nodiscard]] constexpr BitArray sub(
-        const BitArray& other,
-        bool& overflow
-    ) const noexcept {
-        overflow = false;
-
-        // schoolbook subtraction
-        BitArray result;
-        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            word a = buffer[i] - overflow;
-            overflow = a > buffer[i];
-            word b = a - other.buffer[i];
-            overflow |= b > a;
-            result.buffer[i] = b;
-        }
-        if constexpr (end_mask) {
-            word d = buffer[array_size - 1] - overflow - other.buffer[array_size - 1];
-            overflow = d > buffer[array_size - 1];
-            result.buffer[array_size - 1] = d & end_mask;
-        }
-
+        Bits result;
+        add(other, overflow, result);
         return result;
     }
 
-    /* Subtract a BitArray of equal size from this one, updating it in-place.  If the
-    result overflows, then the `overflow` flag will be set to true, and the value will
-    wrap around to the other end of the number line (modulo `N`). */
-    constexpr BitArray& isub(const BitArray& other, bool& overflow) noexcept {
+    /* Add two bitsets of equal size and store the sum as a mutable out parameter.  If
+    the result overflows, then the `overflow` flag will be set to true, and the value
+    will wrap around to the other end of the number line (modulo `N`).  The out
+    parameter may be a reference to either operand, without affecting the overall
+    calculation. */
+    constexpr void add(
+        const Bits& other,
+        bool& overflow,
+        Bits& out
+    ) const noexcept {
+        overflow = false;
+
+        // promote to a larger word size if possible
+        if constexpr (!big_word::composite) {
+            using big = big_word::type;
+            big s = big(buffer[0]) + big(other.buffer[0]);
+            if constexpr (end_mask) {
+                overflow = (s >> (N % word_size)) != 0;
+                out.buffer[0] = word(s & end_mask);
+            } else {
+                overflow = (s >> word_size) != 0;
+                out.buffer[0] = word(s);
+            }
+
+        // revert to schoolbook addition
+        } else {
+            for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
+                word a = buffer[i] + overflow;
+                overflow = a < buffer[i];
+                word b = a + other.buffer[i];
+                overflow |= b < a;
+                out.buffer[i] = b;
+            }
+            if constexpr (end_mask) {
+                word s = buffer[array_size - 1] + overflow + other.buffer[array_size - 1];
+                overflow = (s >> (N % word_size)) != 0;
+                out.buffer[array_size - 1] = s & end_mask;
+            }
+        }
+    }
+
+    /* Subtract two bitsets of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`). */
+    [[nodiscard]] constexpr Bits sub(
+        const Bits& other,
+        bool& overflow
+    ) const noexcept {
+        Bits result;
+        sub(other, overflow, result);
+        return result;
+    }
+
+    /* Subtract two bitsets of equal size and store the difference as a mutable out
+    parameter.  If the result overflows, then the `overflow` flag will be set to true,
+    and the value will wrap around to the other end of the number line (modulo `N`).
+    The out parameter may be a reference to either operand, without affecting the
+    overall calculation. */
+    constexpr void sub(
+        const Bits& other,
+        bool& overflow,
+        Bits& out
+    ) const noexcept {
         overflow = false;
 
         // schoolbook subtraction
@@ -2236,18 +2142,16 @@ public:
             overflow = a > buffer[i];
             word b = a - other.buffer[i];
             overflow |= b > a;
-            buffer[i] = b;
+            out.buffer[i] = b;
         }
         if constexpr (end_mask) {
             word d = buffer[array_size - 1] - overflow - other.buffer[array_size - 1];
             overflow = d > buffer[array_size - 1];
-            buffer[array_size - 1] = d & end_mask;
+            out.buffer[array_size - 1] = d & end_mask;
         }
-
-        return *this;
     }
 
-    /* Multiply two BitArrays of equal size.  If the result overflows, then the
+    /* Multiply two bitsets of equal size.  If the result overflows, then the
     `overflow` flag will be set to true, and the value will wrap around to the other
     end of the number line (modulo `N`).
 
@@ -2255,9 +2159,29 @@ public:
     generally optimized for small bit counts (up to a few thousand bits).  For larger
     bit counts, it may be more efficient to use a specialized library such as GMP or
     `boost::multiprecision`. */
-    [[nodiscard]] constexpr BitArray mul(
-        const BitArray& other,
+    [[nodiscard]] constexpr Bits mul(
+        const Bits& other,
         bool& overflow
+    ) const noexcept {
+        Bits result;
+        mul(other, overflow, result);
+        return result;
+    }
+
+    /* Multiply two bitsets of equal size and store the product as a mutable out
+    parameter.  If the result overflows, then the `overflow` flag will be set to true,
+    and the value will wrap around to the other end of the number line (modulo `N`).
+    The out parameter may be a reference to either operand, without affecting the
+    overall calculation.
+
+    Note that this uses simple schoolbook multiplication under the hood, which is
+    generally optimized for small bit counts (up to a few thousand bits).  For larger
+    bit counts, it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    constexpr void mul(
+        const Bits& other,
+        bool& overflow,
+        Bits& out
     ) const noexcept {
         overflow = false;
 
@@ -2268,16 +2192,14 @@ public:
             big p = big(buffer[0]) * big(other.buffer[0]);
             if constexpr (end_mask) {
                 overflow = (p >> (N % word_size)) != 0;
-                return {word(p & end_mask)};
+                out.buffer[0] = word(p & end_mask);
             } else {
                 overflow = (p >> word_size) != 0;
-                return {word(p)};
+                out.buffer[0] = word(p);
             }
 
         // revert to schoolbook multiplication
         } else {
-            static constexpr size_type chunk = word_size / 2;
-
             // compute 2N-bit full product
             std::array<word, array_size * 2> temp {};
             for (size_type i = 0; i < array_size; ++i) {
@@ -2297,13 +2219,12 @@ public:
             }
 
             // low N bits become the final result
-            BitArray result;
-            std::copy_n(temp.begin(), array_size, result.buffer.begin());
+            std::copy_n(temp.begin(), array_size, out.buffer.begin());
             if constexpr (end_mask) {
                 overflow = (temp[array_size - 1] & ~end_mask) != 0;
-                result.buffer[array_size - 1] &= end_mask;
+                out.buffer[array_size - 1] &= end_mask;
                 if (overflow) {
-                    return result;  // skip following overflow check
+                    return;  // skip following overflow check
                 }
             }
 
@@ -2314,67 +2235,214 @@ public:
                     break;
                 }
             }
-            return result;
         }
     }
 
-    /* Multiply two BitArrays of equal size.  If the result overflows, then the
-    `overflow` flag will be set to true, and the value will wrap around to the other
-    end of the number line (modulo `N`).
+    /* Divide two bitsets of equal size, returning both the quotient and remainder.  If
+    the divisor is zero and the program is compiled in debug mode, then a
+    `ZeroDivisionError` will be thrown.
 
-    Note that this uses simple schoolbook multiplication under the hood, which is
-    generally optimized for small bit counts (up to a few thousand bits).  For larger
-    bit counts, it may be more efficient to use a specialized library such as GMP or
+    Note that this uses Knuth's Algorithm D under the hood, which is generally
+    optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    it may be more efficient to use a specialized library such as GMP or
     `boost::multiprecision`. */
-    constexpr BitArray& imul(const BitArray& other, bool& overflow) noexcept {
-        *this = mul(other, overflow);
-        return *this;
-    }
-
-
-
-
-    /// TODO: return an Expected<T, ZeroDivisionError>, or just make that a debug
-    /// assertion.  
-
-    /* Divide this BitArray by another and return both the quotient and remainder.  This
-    is slightly more efficient than doing separate `/` and `%` operations if both are
-    needed. */
-    [[nodiscard]] constexpr std::pair<BitArray, BitArray> divmod(const BitArray& d) const {
-        BitArray quotient, remainder;
-        _divmod(*this, d, quotient, remainder);
+    [[nodiscard]] constexpr std::pair<Bits, Bits> divmod(
+        const Bits& other
+    ) const {
+        Bits quotient, remainder;
+        divmod(other, quotient, remainder);
         return {quotient, remainder};
     }
-    [[nodiscard]] constexpr BitArray divmod(const BitArray& d, BitArray& remainder) const {
-        BitArray quotient;
-        _divmod(*this, d, quotient, remainder);
+
+    /* Divide two bitsets of equal size, returning the quotient and storing the
+    remainder as a mutable out parameter.  If the divisor is zero and the program is
+    compiled in debug mode, then a `ZeroDivisionError` will be thrown.
+
+    Listing either the dividend or divisor as the out parameter for the remainder is
+    allowed (but not required), and will update the referenced bitset in-place, without
+    affecting the calculation.
+
+    Note that this uses Knuth's Algorithm D under the hood, which is generally
+    optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    [[nodiscard]] constexpr Bits divmod(
+        const Bits& other,
+        Bits& remainder
+    ) const {
+        Bits quotient;
+        divmod(other, quotient, remainder);
         return quotient;
     }
-    constexpr void divmod(const BitArray& d, BitArray& quotient, BitArray& remainder) const {
-        /// TODO: this overload is not needed?  Just use idivmod() instead.  No harm no
-        /// foul?
-        _divmod(*this, d, quotient, remainder);
+
+    /* Divide two bitsets of equal size, storing both the quotient and remainder as
+    mutable out parameters.  If the divisor is zero and the program is compiled in
+    debug mode, then a `ZeroDivisionError` will be thrown.
+
+    Listing either the dividend or divisor as the out parameter for the quotient or
+    remainder is allowed (but not required), and will update the referenced bitset
+    in-place, without affecting the calculation.
+
+    Note that this uses Knuth's Algorithm D under the hood, which is generally
+    optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    constexpr void divmod(
+        const Bits& other,
+        Bits& quotient,
+        Bits& remainder
+    ) const {
+        if constexpr (array_size == 1) {
+            word l = buffer[0];
+            word r = other.buffer[0];
+            quotient.buffer[0] = l / r;
+            remainder.buffer[0] = l % r;
+
+        } else {
+            using Signed = meta::as_signed<word>;
+            constexpr size_type chunk = word_size / 2;
+            constexpr word b = word(1) << chunk;
+
+            if (!other) {
+                throw ZeroDivisionError();
+            }
+            if (*this < other) {
+                remainder = other;
+                quotient.fill(0);
+                return;
+            }
+
+            // 1. Compute effective lengths.  Above checks ensure that neither operand
+            // is zero.
+            size_type lhs_last = size();
+            for (size_type i = array_size; i-- > 0;) {
+                size_type j = size_type(std::countl_zero(buffer[i]));
+                if (j < word_size) {
+                    lhs_last = size_type(word_size * i + word_size - 1 - j);
+                    break;
+                }
+            }
+            size_type rhs_last = size();
+            for (size_type i = array_size; i-- > 0;) {
+                size_type j = size_type(std::countl_zero(other.buffer[i]));
+                if (j < word_size) {
+                    rhs_last = size_type(word_size * i + word_size - 1 - j);
+                    break;
+                }
+            }
+            size_type n = (rhs_last + (word_size - 1)) / word_size;
+            size_type m = ((lhs_last + (word_size - 1)) / word_size) - n;
+
+            // 2. If the divisor is a single word, then we can avoid multi-word division.
+            if (n == 1) {
+                word v = other.buffer[0];
+                word rem = 0;
+                for (size_type i = m + n; i-- > 0;) {
+                    auto wide = big_word{rem, buffer[i]} / v;
+                    quotient.buffer[i] = wide.hi();
+                    rem = wide.lo();
+                }
+                for (size_type i = m + n; i < array_size; ++i) {
+                    quotient.buffer[i] = 0;
+                }
+                remainder.buffer[0] = rem;
+                for (size_type i = 1; i < n; ++i) {
+                    remainder.buffer[i] = 0;
+                }
+                return;
+            }
+
+            /// NOTE: this is based on Knuth's Algorithm D, which is among the simplest for
+            /// bigint division.  Much of the implementation was taken from:
+            /// https://skanthak.hier-im-netz.de/division.html
+            /// Which references Hacker's Delight, with a helpful explanation of the
+            /// algorithm design.  See that or the Knuth reference for more details.
+            std::array<word, array_size> v = other.buffer;
+            std::array<word, array_size + 1> u;
+            for (size_type i = 0; i < array_size; ++i) {
+                u[i] = buffer[i];
+            }
+            u[array_size] = 0;
+
+            // 3. Left shift until the highest set bit in the divisor is at the top of its
+            // respective word.  The strange bitwise AND is meant to avoid undefined
+            // behavior when shifting by a full word size (i.e. shift == 0).  It is taken
+            // from https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
+            size_type shift = word_size - 1 - (rhs_last % word_size);
+            size_type shift_carry = -shift & (word_size - 1);
+            size_type shift_correct = -Signed(shift) >> (word_size - 1);
+            for (size_type i = array_size + 1; i-- > 1;) {
+                u[i] = (u[i] << shift) | ((u[i - 1] >> shift_carry) & shift_correct);
+            }
+            u[0] <<= shift;
+            for (size_type i = array_size; i-- > 1;) {
+                v[i] = (v[i] << shift) | ((v[i - 1] >> shift_carry) & shift_correct);
+            }
+            v[0] <<= shift;
+
+            // 4. Trial division
+            quotient.fill(0);
+            for (size_type j = m + 1; j-- > 0;) {
+                // take the top two words of the numerator for wide division
+                auto hat = big_word{u[j + n], u[j + n - 1]} / v[n - 1];
+                word qhat = hat.hi();
+                word rhat = hat.lo();
+
+                // refine quotient if guess is too large
+                while (qhat >= b || (big_word::mul(
+                    qhat,
+                    v[n - 2]) > big_word{word(rhat * b), u[j + n - 2]}
+                )) {
+                    --qhat;
+                    rhat += v[n - 1];
+                    if (rhat >= b) {
+                        break;
+                    }
+                }
+
+                // 5. Multiply and subtract
+                word borrow = 0;
+                for (size_type i = 0; i < n; ++i) {
+                    big_word prod = big_word::mul(qhat, v[i]);
+                    word temp = u[i + j] - borrow;
+                    borrow = temp > u[i + j];
+                    temp -= prod.lo();
+                    borrow += temp > prod.lo();
+                    u[i + j] = temp;
+                    borrow += prod.hi();
+                }
+
+                // 6. Correct for negative remainder
+                if (u[j + n] < borrow) {
+                    --qhat;
+                    borrow = 0;
+                    for (size_type i = 0; i < n; ++i) {
+                        word temp = u[i + j] + borrow;
+                        borrow = temp < u[i + j];
+                        temp += v[i];
+                        borrow += temp < v[i];
+                        u[i + j] = temp;
+                    }
+                    u[j + n] += borrow;
+                }
+                quotient.buffer[j] = qhat;
+            }
+
+            // 7. Unshift the remainder and quotient to get the final result
+            for (size_type i = 0; i < n - 1; ++i) {
+                remainder.buffer[i] = (u[i] >> shift) | (u[i + 1] << (word_size - shift));
+            }
+            remainder.buffer[n - 1] = u[n - 1] >> shift;
+            for (size_type i = n; i < array_size; ++i) {
+                remainder.buffer[i] = 0;
+            }
+        }
     }
 
-    /* Divide this BitArray by another in-place, returning the remainder.  This is
-    slightly more efficient than doing separate `/=` and `%` operations */
-    [[nodiscard]] constexpr BitArray idivmod(const BitArray& d) {
-        BitArray remainder;
-        _divmod(*this, d, *this, remainder);
-        return remainder;
-    }
-    constexpr void idivmod(const BitArray& d, BitArray& remainder) {
-        _divmod(*this, d, *this, remainder);
-    }
-
-
-
-
-
-    /* Lexicographically compare two BitArrays of equal size. */
+    /* Lexicographically compare two bitsets of equal size. */
     [[nodiscard]] friend constexpr auto operator<=>(
-        const BitArray& lhs,
-        const BitArray& rhs
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
         return std::lexicographical_compare_three_way(
             lhs.buffer.rbegin(),
@@ -2384,11 +2452,11 @@ public:
         );
     }
 
-    /* Check whether one BitArray is lexicographically equal to another of the same
+    /* Check whether one bitset is lexicographically equal to another of the same
     size. */
     [[nodiscard]] friend constexpr bool operator==(
-        const BitArray& lhs,
-        const BitArray& rhs
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
         for (size_type i = 0; i < array_size; ++i) {
             if (lhs.buffer[i] != rhs.buffer[i]) {
@@ -2398,9 +2466,9 @@ public:
         return true;
     }
 
-    /* Apply a bitwise NOT to the contents of the BitArray. */
-    [[nodiscard]] friend constexpr BitArray operator~(const BitArray& set) noexcept {
-        BitArray result;
+    /* Apply a bitwise NOT to the contents of the bitset. */
+    [[nodiscard]] friend constexpr Bits operator~(const Bits& set) noexcept {
+        Bits result;
         for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
             result.buffer[i] = ~set.buffer[i];
         }
@@ -2410,22 +2478,22 @@ public:
         return result;
     }
 
-    /* Apply a bitwise AND between the contents of two BitArrays of equal size. */
-    [[nodiscard]] friend constexpr BitArray operator&(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Apply a bitwise AND between the contents of two bitsets of equal size. */
+    [[nodiscard]] friend constexpr Bits operator&(
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
-        BitArray result;
+        Bits result;
         for (size_type i = 0; i < array_size; ++i) {
             result.buffer[i] = lhs.buffer[i] & rhs.buffer[i];
         }
         return result;
     }
 
-    /* Apply a bitwise AND between the contents of this BitArray and another of equal
+    /* Apply a bitwise AND between the contents of this bitset and another of equal
     length, updating the former in-place. */
-    constexpr BitArray& operator&=(
-        const BitArray& other
+    constexpr Bits& operator&=(
+        const Bits& other
     ) noexcept {
         for (size_type i = 0; i < array_size; ++i) {
             buffer[i] &= other.buffer[i];
@@ -2433,22 +2501,22 @@ public:
         return *this;
     }
 
-    /* Apply a bitwise OR between the contents of two BitArrays of equal size. */
-    [[nodiscard]] friend constexpr BitArray operator|(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Apply a bitwise OR between the contents of two bitsets of equal size. */
+    [[nodiscard]] friend constexpr Bits operator|(
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
-        BitArray result;
+        Bits result;
         for (size_type i = 0; i < array_size; ++i) {
             result.buffer[i] = lhs.buffer[i] | rhs.buffer[i];
         }
         return result;
     }
 
-    /* Apply a bitwise OR between the contents of this BitArray and another of
-    equal length, updating the former in-place  */
-    constexpr BitArray& operator|=(
-        const BitArray& other
+    /* Apply a bitwise OR between the contents of this bitset and another of equal
+    length, updating the former in-place  */
+    constexpr Bits& operator|=(
+        const Bits& other
     ) noexcept {
         for (size_type i = 0; i < array_size; ++i) {
             buffer[i] |= other.buffer[i];
@@ -2456,22 +2524,22 @@ public:
         return *this;
     }
 
-    /* Apply a bitwise XOR between the contents of two BitArrays of equal size. */
-    [[nodiscard]] friend constexpr BitArray operator^(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Apply a bitwise XOR between the contents of two bitsets of equal size. */
+    [[nodiscard]] friend constexpr Bits operator^(
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
-        BitArray result;
+        Bits result;
         for (size_type i = 0; i < array_size; ++i) {
             result.buffer[i] = lhs.buffer[i] ^ rhs.buffer[i];
         }
         return result;
     }
 
-    /* Apply a bitwise XOR between the contents of this BitArray and another of equal
+    /* Apply a bitwise XOR between the contents of this bitset and another of equal
     length, updating the former in-place. */
-    constexpr BitArray& operator^=(
-        const BitArray& other
+    constexpr Bits& operator^=(
+        const Bits& other
     ) noexcept {
         for (size_type i = 0; i < array_size; ++i) {
             buffer[i] ^= other.buffer[i];
@@ -2479,9 +2547,9 @@ public:
         return *this;
     }
 
-    /* Apply a bitwise left shift to the contents of the BitArray. */
-    [[nodiscard]] constexpr BitArray operator<<(size_type rhs) const noexcept {
-        BitArray result;
+    /* Apply a bitwise left shift to the contents of the bitset. */
+    [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept {
+        Bits result;
         size_type whole = rhs / word_size;  // whole words
 
         // if the shift is larger than the array size, then we can return empty
@@ -2513,9 +2581,9 @@ public:
         return result;
     }
 
-    /* Apply a bitwise left shift to the contents of this BitArray, updating it
+    /* Apply a bitwise left shift to the contents of this bitset, updating it
     in-place. */
-    constexpr BitArray& operator<<=(size_type rhs) noexcept {
+    constexpr Bits& operator<<=(size_type rhs) noexcept {
         size_type whole = rhs / word_size;
 
         // if the shift is smaller than the array size, then we have to shift without
@@ -2558,9 +2626,9 @@ public:
         return *this;
     }
 
-    /* Apply a bitwise right shift to the contents of the BitArray. */
-    [[nodiscard]] constexpr BitArray operator>>(size_type rhs) const noexcept {
-        BitArray result;
+    /* Apply a bitwise right shift to the contents of the bitset. */
+    [[nodiscard]] constexpr Bits operator>>(size_type rhs) const noexcept {
+        Bits result;
         size_type whole = rhs / word_size;
 
         // if the shift is larger than the array size, then we can return empty
@@ -2590,9 +2658,9 @@ public:
         return result;
     }
 
-    /* Apply a bitwise right shift to the contents of this BitArray, updating it
+    /* Apply a bitwise right shift to the contents of this bitset, updating it
     in-place. */
-    constexpr BitArray& operator>>=(size_type rhs) noexcept {
+    constexpr Bits& operator>>=(size_type rhs) noexcept {
         size_type whole = rhs / word_size;
 
         // if the shift is smaller than the array size, then we have to shift without
@@ -2634,10 +2702,8 @@ public:
         return *this;
     }
 
-    /// TODO: document and update the increment and decrement operators
-
-    /* Increment the BitArray by one and return a self-reference to the new value. */
-    constexpr BitArray& operator++() noexcept {
+    /* Increment a bitset by one and return a reference to the new value. */
+    constexpr Bits& operator++() noexcept {
         if constexpr (N) {
             word carry = buffer[0] == std::numeric_limits<word>::max();
             ++buffer[0];
@@ -2652,30 +2718,32 @@ public:
         return *this;
     }
 
-    /* Increment the BitArray by one and return a copy of the old value. */
-    [[nodiscard]] constexpr BitArray operator++(int) noexcept {
-        BitArray copy = *this;
+    /* Increment the bitset by one and return a copy of the old value. */
+    [[nodiscard]] constexpr Bits operator++(int) noexcept {
+        Bits copy = *this;
         ++*this;
         return copy;
     }
 
-    /* Operator version of `BitArray.add()` that discards the overflow flag. */
-    [[nodiscard]] friend constexpr BitArray operator+(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Operator version of `Bits.add()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr Bits operator+(
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
         bool overflow;
         return lhs.add(rhs, overflow);
     }
 
-    /* Operator version of `BitArray.iadd()` that discards the overflow flag. */
-    constexpr BitArray& operator+=(const BitArray& other) noexcept {
+    /* Operator version of `Bits.add()` that discards the overflow flag and
+    writes the sum back to this bitset. */
+    constexpr Bits& operator+=(const Bits& other) noexcept {
         bool overflow;
-        return iadd(other, overflow);
+        add(*this, overflow, *this);
+        return *this;
     }
 
-    /* Decrement the BitArray by one and return a self-reference to the new value. */
-    constexpr BitArray& operator--() noexcept {
+    /* Decrement the bitset by one and return a reference to the new value. */
+    constexpr Bits& operator--() noexcept {
         if constexpr (N) {
             word borrow = buffer[0] == 0;
             --buffer[0];
@@ -2690,82 +2758,91 @@ public:
         return *this;
     }
 
-    /* Decrement the BitArray by one and return a copy of the old value. */
-    [[nodiscard]] constexpr BitArray operator--(int) noexcept {
-        BitArray copy = *this;
+    /* Decrement the bitset by one and return a copy of the old value. */
+    [[nodiscard]] constexpr Bits operator--(int) noexcept {
+        Bits copy = *this;
         --*this;
         return copy;
     }
 
-    /* Operator version of `BitArray.sub()` that discards the overflow flag. */
-    [[nodiscard]] friend constexpr BitArray operator-(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Operator version of `Bits.sub()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr Bits operator-(
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
         bool overflow;
         return lhs.sub(rhs, overflow);
     }
 
-    /* Operator version of `BitArray.isub()` that discards the overflow flag. */
-    constexpr BitArray& operator-=(const BitArray& other) noexcept {
+    /* Operator version of `Bits.sub()` that discards the overflow flag and
+    writes the difference back to this bitset. */
+    constexpr Bits& operator-=(const Bits& other) noexcept {
         bool overflow;
-        return isub(other, overflow);
+        sub(other, overflow, *this);
+        return *this;
     }
 
-    /// TODO: multiplication requires adjustment for big word arithmetic
-
-    /* Operator version of `BitArray.mul()` that discards the output carry flag. */
-    [[nodiscard]] friend constexpr BitArray operator*(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Operator version of `Bits.mul()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr Bits operator*(
+        const Bits& lhs,
+        const Bits& rhs
     ) noexcept {
         bool overflow;
         return lhs.mul(rhs, overflow);
     }
 
-    /* Operator version of `BitArray.imul()` that discards the output carry flag. */
-    constexpr BitArray& operator*=(const BitArray& other) noexcept {
-        *this = *this * other;
+    /* Operator version of `Bits.mul()` that discards the overflow flag and writes
+    the product back to this bitset. */
+    constexpr Bits& operator*=(const Bits& other) noexcept {
+        bool overflow;
+        mul(other, overflow, *this);
         return *this;
     }
 
-    /* Operator version of `BitArray.divmod()` that discards the remainder. */
-    [[nodiscard]] friend constexpr BitArray operator/(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Operator version of `Bits.divmod()` that discards the remainder. */
+    [[nodiscard]] friend constexpr Bits operator/(
+        const Bits& lhs,
+        const Bits& rhs
     ) {
-        BitArray quotient, remainder;
-        _divmod(lhs, rhs, quotient, remainder);
+        Bits quotient, remainder;
+        lhs.divmod(rhs, quotient, remainder);
         return quotient;
     }
 
-    /* Operator version of `BitArray.idivmod()` that discards the remainder. */
-    constexpr BitArray& operator/=(const BitArray& other) {
-        BitArray remainder;
-        _divmod(*this, other, *this, remainder);
+    /* Operator version of `Bits.divmod()` that discards the remainder and
+    writes the quotient back to this bitset. */
+    constexpr Bits& operator/=(const Bits& other) {
+        Bits remainder;
+        divmod(other, *this, remainder);
         return *this;
     }
 
-    /* Operator version of `BitArray.divmod()` that discards the quotient. */
-    [[nodiscard]] friend constexpr BitArray operator%(
-        const BitArray& lhs,
-        const BitArray& rhs
+    /* Operator version of `Bits.divmod()` that discards the quotient. */
+    [[nodiscard]] friend constexpr Bits operator%(
+        const Bits& lhs,
+        const Bits& rhs
     ) {
-        BitArray quotient, remainder;
-        _divmod(lhs, rhs, quotient, remainder);
+        Bits quotient, remainder;
+        lhs.divmod(rhs, quotient, remainder);
         return remainder;
     }
 
-    /* Operator version of `BitArray.idivmod()` that discards the quotient and
+    /* Operator version of `Bits.divmod()` that discards the quotient and
     writes the remainder back to this bitset. */
-    constexpr BitArray& operator%=(const BitArray& other) {
-        BitArray quotient;
-        _divmod(*this, other, quotient, *this);
+    constexpr Bits& operator%=(const Bits& other) {
+        Bits quotient;
+        divmod(other, quotient, *this);
         return *this;
     }
 
-    /* Print the BitArray to an output stream. */
-    constexpr friend std::ostream& operator<<(std::ostream& os, const BitArray& set)
+
+
+
+
+
+
+    /* Print the bitset to an output stream. */
+    constexpr friend std::ostream& operator<<(std::ostream& os, const Bits& set)
         noexcept(noexcept(os << std::string(set)))
     {
         /// TODO: maybe print directly, rather than requiring an allocation and
@@ -2774,16 +2851,13 @@ public:
         return os;
     }
 
-
-    /// TODO: input streams should read the BitArray in big-endian order.  Maybe it
+    /// TODO: input streams should read the bitset in big-endian order.  Maybe it
     /// can detect any of the recognized prefixes, such as `0b`, `0x`, or `0o`, and
     /// then read the rest of the string in that base, defaulting to base 10 if no
     /// prefix is found.
 
-
-
-    /* Read the BitArray from an input stream. */
-    constexpr friend std::istream& operator>>(std::istream& is, BitArray& set) {
+    /* Read the bitset from an input stream. */
+    constexpr friend std::istream& operator>>(std::istream& is, Bits& set) {
         char c;
         is.get(c);
         while (std::isspace(c)) {
@@ -2809,13 +2883,52 @@ public:
 
 
 template <meta::integer... Ts>
-BitArray(Ts...) -> BitArray<impl::bitcount<Ts...>>;
+Bits(Ts...) -> Bits<impl::bitcount<Ts...>>;
 template <size_t N>
-BitArray(const char(&)[N]) -> BitArray<N - 1>;
+Bits(const char(&)[N]) -> Bits<N - 1>;
 template <size_t N>
-BitArray(const char(&)[N], char) -> BitArray<N - 1>;
+Bits(const char(&)[N], char) -> Bits<N - 1>;
 template <size_t N>
-BitArray(const char(&)[N], char, char) -> BitArray<N - 1>;
+Bits(const char(&)[N], char, char) -> Bits<N - 1>;
+
+
+template <size_t N>
+struct UInt : impl::UInt_tag {
+    Bits<N> value;
+
+    /// TODO: very thin wrapper around `Bits<N>` that mostly just forwards the
+    /// same interface, possibly without iteration/indexing support, etc.
+
+};
+
+
+template <meta::integer... Ts>
+UInt(Ts...) -> UInt<impl::bitcount<Ts...>>;
+
+
+template <size_t N>
+struct Int : impl::Int_tag {
+    Bits<N> value;
+
+    /// TODO: a very thin wrapper around `Bits<N>` that applies two's complement
+    /// and modifies the arithmetic operators very slightly, so that I can use it as
+    /// a generalized integer type.
+
+};
+
+
+template <meta::integer... Ts>
+Int(Ts...) -> Int<impl::bitcount<Ts...>>;
+
+
+
+/// TODO: CTAD guides for Int<N> and UInt<N> that allow the bit width to be inferred
+/// from the initializer.
+
+
+/// TODO: maybe in the future, I can add a `Float<E, M>` type that generalizes a float
+/// with `E` exponent bits and `M` mantissa bits, which would be useful especially for
+/// ML applications.
 
 
 }  // namespace bertrand
@@ -2823,41 +2936,43 @@ BitArray(const char(&)[N], char, char) -> BitArray<N - 1>;
 
 namespace std {
 
-    /* Specializing `std::hash` allows BitArrays to be stored in hash tables. */
-    template <bertrand::meta::BitArray T>
+    /* Specializing `std::hash` allows bitsets to be stored in hash tables. */
+    template <bertrand::meta::Bits T>
     struct hash<T> {
-        [[nodiscard]] static size_t operator()(const T& BitArray) noexcept {
+        [[nodiscard]] static size_t operator()(const T& bits) noexcept {
             size_t result = 0;
-            /// TODO: this iterates over bits when it should iterate over words.
-            for (size_t i = 0; i < std::remove_cvref_t<T>::size(); ++i) {
-                result ^= bertrand::impl::hash_combine(
+            for (size_t i = 0; i < bits.data().size(); ++i) {
+                result = bertrand::impl::hash_combine(
                     result,
-                    BitArray.data()[i]
+                    bits.data()[i]
                 );
             }
             return result;
         }
     };
 
-    /* Specializing `std::tuple_size` allows BitArrays to be decomposed using
+    /* Specializing `std::tuple_size` allows bitsets to be decomposed using
     structured bindings. */
-    template <bertrand::meta::BitArray T>
+    template <bertrand::meta::Bits T>
     struct tuple_size<T> :
         std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
     {};
 
-    /* Specializing `std::tuple_element` allows BitArrays to be decomposed using
+    /* Specializing `std::tuple_element` allows bitsets to be decomposed using
     structured bindings. */
-    template <size_t I, bertrand::meta::BitArray T>
+    template <size_t I, bertrand::meta::Bits T>
         requires (I < std::remove_cvref_t<T>::size())
     struct tuple_element<I, T> { using type = bool; };
 
-    /* `std::get<I>(chain)` extracts the I-th flag from the BitArray. */
-    template <size_t I, bertrand::meta::BitArray T>
+    /* `std::get<I>(chain)` extracts the I-th flag from the bitset. */
+    template <size_t I, bertrand::meta::Bits T>
         requires (I < std::remove_cvref_t<T>::size())
-    [[nodiscard]] constexpr bool get(T&& BitArray) noexcept {
-        return std::forward<T>(BitArray).template get<I>();
+    [[nodiscard]] constexpr bool get(T&& bits) noexcept {
+        return std::forward<T>(bits).template get<I>();
     }
+
+    /// TODO: specialize `std::numeric_limits` for `Bits<N>`, `Int<N>`, `UInt<N>`,
+    /// and `Float<E, M>`.
 
 }
 
@@ -2865,41 +2980,48 @@ namespace std {
 namespace bertrand {
 
 
-    template <BitArray b>
+    template <Bits b>
     struct Foo {
         static constexpr const auto& value = b;
     };
 
+    template <typename W>
+    concept int_like =
+        meta::integer<W> ||
+        meta::Bits<W> ||
+        meta::UInt<W> ||
+        meta::Int<W>;
+
     inline void test() {
         {
-            static constexpr BitArray<2> a{uint8_t(0b1010)};
-            static constexpr BitArray a2{false, true};
-            static constexpr BitArray a3{1, 2};
-            static constexpr BitArray a4{uint8_t(0), true};
+            static constexpr Bits<2> a{0b1010};
+            static constexpr Bits a2{false, true};
+            static constexpr Bits a3{1, 2};
+            static constexpr Bits a4{0, true};
             static_assert(a4.count() == 1);
             static_assert(a3.size() == 64);
             static_assert(a == a2);
             auto [f1, f2] = a;
-            static constexpr BitArray b = {"abab", 'b', 'a'};
+            static constexpr Bits b = {"abab", 'b', 'a'};
             static constexpr std::string c = b.to_binary();
             static constexpr std::string d = b.to_decimal();
             static constexpr std::string d2 = b.to_string();
             static constexpr std::string d3 = b.to_hex();
             static_assert(any(b.components()));
             static_assert(b.first_one(2).value() == 3);
-            static_assert(a == uint8_t(0b10));
-            static_assert(b == uint8_t(0b1010));
+            static_assert(a == 0b10);
+            static_assert(b == 0b1010);
             static_assert(b[1] == true);
             static_assert(c == "1010");
             static_assert(d == "10");
             static_assert(d2 == "1010");
             static_assert(d3 == "A");
 
-            static_assert(std::same_as<typename BitArray<2>::word, uint8_t>);
-            static_assert(sizeof(BitArray<2>) == 1);
+            static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
+            static_assert(sizeof(Bits<2>) == 1);
 
             constexpr auto x = []() {
-                BitArray<4> out;
+                Bits<4> out;
                 out[-1] = true;
                 return out;
             }();
@@ -2911,29 +3033,29 @@ namespace bertrand {
         }
 
         {
-            static constexpr BitArray b = "100";
-            static constexpr auto b2 = BitArray<3>::from_string(
+            static constexpr Bits b = "100";
+            static constexpr auto b2 = Bits<3>::from_string(
                 std::string_view("100")
             );
-            static_assert(b.data()[0] == uint8_t(4));
-            static_assert(b2.result().data()[0] == uint8_t(4));
+            static_assert(b.data()[0] == 4);
+            static_assert(b2.result().data()[0] == 4);
 
-            static constexpr auto b3 = BitArray{"0100"}.reverse();
-            static_assert(b3.data()[0] == uint8_t(2));
+            static constexpr auto b3 = Bits{"0100"}.reverse();
+            static_assert(b3.data()[0] == 2);
 
-            static constexpr auto b4 = BitArray<3>::from_string<"ab", "c">("cabab");
-            static_assert(b4.result().data()[0] == uint8_t(4));
+            static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
+            static_assert(b4.result().data()[0] == 4);
 
-            static constexpr auto b5 = BitArray<3>::from_decimal("5");
-            static_assert(b5.result().data()[0] == uint8_t(5));
+            static constexpr auto b5 = Bits<3>::from_decimal("5");
+            static_assert(b5.result().data()[0] == 5);
 
-            static constexpr auto b6 = BitArray<8>::from_hex("FF");
+            static constexpr auto b6 = Bits<8>::from_hex("FF");
             static_assert(b6.result().data()[0] == 255);
 
-            static constexpr auto b7 = BitArray<8>::from_hex("ZZ");
+            static constexpr auto b7 = Bits<8>::from_hex("ZZ");
             static_assert(b7.has_error());
 
-            static constexpr auto b8 = BitArray<8>::from_hex("FFC");
+            static constexpr auto b8 = Bits<8>::from_hex("FFC");
             static_assert(b8.has_error());
         }
 
@@ -2941,39 +3063,40 @@ namespace bertrand {
             static constexpr Foo<{true, false, true}> foo;
             static constexpr Foo<{"bab", 'a', 'b'}> bar;
             static_assert(foo.value == "101");
-            static_assert(bar.value == uint8_t(5));
-            static_assert(bar.value == uint8_t(5));
+            static_assert(bar.value == 5);
+            static_assert(bar.value == 5);
         }
 
         {
-            static_assert(BitArray<5>::from_binary("10101").result().to_hex() == "15");
-            static_assert(BitArray<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
-            static_assert(BitArray<4>::from_octal("20").has_error());
-            static_assert(BitArray<4>::from_decimal("16").has_error<OverflowError>());
-            static_assert(BitArray<4>::from_decimal("15").result().data()[0] == uint8_t(15));
+            static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
+            static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+            static_assert(Bits<4>::from_octal("20").has_error());
+            static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
+            static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
 
-            // static_assert((BitArray<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
+            // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
         }
 
         {
-            static constexpr BitArray<5> a{int8_t(-1)};
-            static constexpr BitArray<5> b = a + uint8_t(2);
-            static_assert(a == uint8_t(31));
-            static_assert(b.data()[0] == uint8_t(1));
+            static constexpr Bits<5> a = -1;
+            static constexpr Bits<5> b = a + 2;
+            static_assert(a == 31);
+            static_assert(b.data()[0] == 1);
 
-            static constexpr BitArray<5> c;
-            static constexpr BitArray<5> d = c - uint8_t(1);
-            static_assert(c == uint8_t(0));
-            static_assert(d.data()[0] == uint8_t(31));
+            static constexpr Bits<5> c;
+            static constexpr Bits<5> d = c - 1;
+            static_assert(c == 0);
+            static_assert(d.data()[0] == 31);
 
-            static constexpr BitArray<5> e = uint8_t(12);
-            static constexpr BitArray<5> f = e * uint8_t(3);
-            static_assert(f.data()[0] == uint8_t(4));
+            static constexpr Bits<5> e = 12;
+            static constexpr Bits<5> f = e * 3;
+            static_assert(f.data()[0] == 4);
         }
 
         {
-            static constexpr BitArray b = "110";
+            static constexpr Bits<4> b = {Bits{"110"}, true};
             static_assert(b.last_zero().value() == 0);
+            static_assert(b == "1110");
         }
     }
 
