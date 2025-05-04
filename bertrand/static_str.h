@@ -47,6 +47,8 @@ struct string_list;
 `static_str`, and therefore also as template parameters. */
 template <size_t N>
 static_str(const char(&)[N]) -> static_str<N - 1>;
+template <meta::is<char> T>
+static_str(T) -> static_str<1>;
 
 
 /* CTAD guide allows string wrappers to be implicitly converted to `static_str` without
@@ -203,6 +205,11 @@ struct static_str : impl::static_str_tag {
     using const_slice = slice;
 
     char buffer[N + 1];  // +1 for null terminator
+
+    explicit consteval static_str(char c) noexcept requires (N == 1) {
+        buffer[0] = c;
+        buffer[1] = '\0';
+    }
 
     consteval static_str(const char* arr) noexcept {
         std::copy_n(arr, N, buffer);

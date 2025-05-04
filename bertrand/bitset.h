@@ -390,6 +390,17 @@ struct Bits : impl::Bits_tag {
     using size_type = size_t;
     using index_type = ssize_t;
 
+    /* The number of bits in each machine word. */
+    static constexpr size_type word_size = impl::word<N>::size;
+
+    /* The total number of words that back the bitset. */
+    static constexpr size_type array_size = (N + word_size - 1) / word_size;
+
+    /* A bitmask that identifies the valid bits for the last word, assuming
+    `N % word_size` is nonzero.  Otherwise, if `N` is a clean multiple of `word_size`,
+    then this mask will be set to zero. */
+    static constexpr word end_mask = word(word(1) << (N % word_size)) - word(1);
+
     /* The number of bits that are held in the set. */
     [[nodiscard]] static constexpr size_type size() noexcept { return N; }
     [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(N); }
@@ -402,9 +413,6 @@ struct Bits : impl::Bits_tag {
 
 private:
     using big_word = impl::word<N>::big;
-    static constexpr size_type word_size = impl::word<N>::size;
-    static constexpr size_type array_size = (N + word_size - 1) / word_size;
-    static constexpr word end_mask = word(word(1) << (N % word_size)) - word(1);
 
     template <size_type I>
     static constexpr void from_bits(std::array<word, array_size>& data) noexcept {}
@@ -649,6 +657,13 @@ private:
         return out;
     }
 
+    /// TODO: ideally, this second `to_string_helper` would be generalized for any
+    /// power of two base, so that I can just bitscan using simple shifts, rather
+    /// than full division.  Note that some powers of 2, like 8, consume an odd number
+    /// of bits, and might straddle multiple words, which makes this substantially
+    /// more annoying.  Still, it's more efficient than shifting the entire bitset
+    /// every time, so I should be okay, as long as I can handle the straddling
+    /// words correctly.
     template <size_t J>
     constexpr std::string_view to_string_helper(
         const auto& digits,
@@ -658,6 +673,168 @@ private:
         std::string_view out = digits[bit];
         size += out.size();
         return out;
+    }
+
+    constexpr std::string stream_format(word base, bool upper) const {
+        static constexpr static_str lower_alpha = "0123456789abcdefghijklmnopqrstuvwxyz";
+        static constexpr static_str upper_alpha = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+        std::string result;
+        if (auto last = last_one(); last.has_value()) {
+            // size holds the number of digits in the given base that are needed to
+            // represent the most significant nonzero bit
+            size_type size = size_type(std::ceil(
+                double(last.value() + 1) / std::log2(base)
+            ));
+            result.reserve(size);
+
+            Bits quotient = *this;
+            if (impl::is_power2(base)) {  // prefer simple shifts if possible
+                word mask = base - 1;
+                word width = std::bit_width(mask);
+                if (upper) {
+                    for (size_type i = 0; i < size; ++i) {
+                        result.push_back(upper_alpha[quotient.buffer[0] & mask]);
+                        quotient >>= width;
+                    }
+                } else {
+                    for (size_type i = 0; i < size; ++i) {
+                        result.push_back(lower_alpha[quotient.buffer[0] & mask]);
+                        quotient >>= width;
+                    }
+                }
+            } else {  // division-based fallback
+                Bits divisor = base;
+                Bits remainder;
+                if (upper) {
+                    for (size_type i = 0; i < size; ++i) {
+                        quotient.divmod(divisor, quotient, remainder);
+                        result.push_back(upper_alpha[remainder.buffer[0]]);
+                    }
+                } else {
+                    for (size_type i = 0; i < size; ++i) {
+                        quotient.divmod(divisor, quotient, remainder);
+                        result.push_back(lower_alpha[remainder.buffer[0]]);
+                    }
+                }
+            }
+            std::reverse(result.begin(), result.end());  // big-endian
+        } else {
+            result = "0";  // empty bitset is zero
+        }
+        return result;
+    }
+
+    static constexpr void stream_group(std::ostream& os, std::string& str) {
+        std::locale loc = os.getloc();
+        const auto& facet = std::use_facet<std::numpunct<char>>(loc);
+
+        /// NOTE: because iostreams are insane, the grouping "string" isn't really
+        /// a string at all, but actually a numeric array of grouping sizes, where
+        /// the sizes count from least significant digit to most significant digit,
+        /// and the last size is repeated for all remaining groups.  If this sounds
+        /// ridiculous to you, welcome to the club.
+        std::string grouping = facet.grouping();  // e.g. "\1\2\3"
+        if (!grouping.empty()) {
+            char sep = facet.thousands_sep();  // e.g. ',' or '\''
+            std::string out;
+            size_type last_size = 0;
+            for (size_type i = grouping.size(); i-- > 0;) {
+                if (size_type s = grouping[i]) {
+                    last_size = s;
+                    break;
+                }
+            }
+            if (last_size == 0) {
+                os.setstate(std::ios_base::failbit);  // all groups are empty
+            }
+            out.reserve(  // estimate grouped size
+                str.size() + str.size() / last_size
+            );
+            std::reverse(str.begin(), str.end());  // start from LSB
+            size_type group_idx = 0;
+            char group_len = grouping[0];
+            while (group_len == 0) {  // consume leading empty groups
+                out.push_back(sep);
+                group_len = grouping[++group_idx];
+            }
+
+            // if the group length is negative or CHAR_MAX, then the group is
+            // infinitely-sized, and we just append the rest of the string.
+            if (group_len < 0 || group_len == std::numeric_limits<char>::max()) {
+                out += str;
+                if (group_idx + 1 < grouping.size()) {  // update group size
+                    group_len = grouping[++group_idx];
+                    while (group_len == 0) {  // consume trailing empty groups
+                        out.push_back(sep);
+                        group_len = grouping[++group_idx];
+                    }
+                }
+                std::reverse(out.begin(), out.end());
+                str = std::move(out);
+                return;
+            }
+
+            // main loop
+            out.push_back(str[0]);  // push first digit
+            for (size_type i = 1; i < str.size(); ++i) {
+                if (
+                    group_len > 0 &&
+                    group_len < std::numeric_limits<char>::max() &&
+                    i % group_len == 0
+                ) {
+                    out.push_back(sep);
+                    if (group_idx + 1 < grouping.size()) {  // update group size
+                        group_len = grouping[++group_idx];
+                        while (group_len == 0) {  // consume empty groups
+                            out.push_back(sep);
+                            group_len = grouping[++group_idx];
+                        }
+                    }
+                }
+                out.push_back(str[i]);  // push next digit
+            }
+
+            // if the main loop ended and the next group(s) are empty, then push
+            // the separator for those groups as well.
+            if (group_idx + 1 < grouping.size()) {
+                group_len = grouping[++group_idx];
+                while (group_len == 0) {  // consume trailing empty groups
+                    out.push_back(sep);
+                    group_len = grouping[++group_idx];
+                }
+            }
+
+            std::reverse(out.begin(), out.end());
+            str = std::move(out);  // replace original string with grouped one
+        }
+    }
+
+    static constexpr void stream_aligned_write(
+        std::ostream& os,
+        std::string& str,
+        size_type prefix_len
+    ) {
+        std::streamsize w = os.width();
+        if (w > std::streamsize(str.size())) {
+            std::streamsize pad = w - str.size();
+            char fill = os.fill();
+            std::ios_base::fmtflags adj = os.flags() & std::ios_base::adjustfield;
+
+            if (adj == std::ios_base::left) {  // left justify
+                os.write(str.data(), str.size());
+                while (pad--) os.put(fill);
+            } else if (adj == std::ios_base::internal) {  // prefix, then right justify
+                os.write(str.data(), prefix_len);
+                while (pad--) os.put(fill);
+                os.write(str.data() + prefix_len, str.size() - prefix_len);
+            } else {  // right justify (default)
+                while (pad--) os.put(fill);
+                os.write(str.data(), str.size());
+            }
+        } else {
+            os.write(str.data(), str.size());
+        }
     }
 
 public:
@@ -1166,6 +1343,13 @@ public:
         }
     }
 
+    /* Trivially swap the values of two bitsets. */
+    constexpr void swap(Bits& other) noexcept {
+        if (this != &other) {
+            buffer.swap(other.buffer);
+        }
+    }
+
     /* Decode a bitset from a string representation.  Defaults to base 2 with the given
     zero and one digit strings, which are provided as template parameters.  The total
     number of digits dictates the base for the conversion, which must be at least 2 and
@@ -1196,22 +1380,14 @@ public:
                 if (str.substr(idx, zero.size()) == zero) {
                     // if the most significant bit is set, then we have an overflow
                     if (result.msb_set()) {
-                        if consteval {
-                            return OverflowError();
-                        } else {
-                            return OverflowError();
-                        }
+                        return OverflowError();
                     }
                     result <<= word(1);
                     idx += zero.size();
                 } else if (str.substr(idx, one.size()) == one) {
                     // if the most significant bit is set, then we have an overflow
                     if (result.msb_set()) {
-                        if consteval {
-                            return OverflowError();
-                        } else {
-                            return OverflowError();
-                        }
+                        return OverflowError();
                     }
                     result <<= word(1);
                     result |= word(1);
@@ -1257,8 +1433,8 @@ public:
                     if consteval {
                         static constexpr static_str message =
                             "string must contain only '" +
-                            ctx::digits.template join<"', '">();
-                        return ValueError(message);
+                            ctx::digits.template join<"', '">() + "'";
+                        return ValueError();
                     } else {
                         return ValueError(
                             "string must contain only '" +
@@ -1299,22 +1475,14 @@ public:
                 if (str.substr(idx, zero.size()) == zero) {
                     // if the most significant bit is set, then we have an overflow
                     if (result.msb_set()) {
-                        if consteval {
-                            return OverflowError();
-                        } else {
-                            return OverflowError();
-                        }
+                        return OverflowError();
                     }
                     result <<= word(1);
                     idx += zero.size();
                 } else if (str.substr(idx, one.size()) == one) {
                     // if the most significant bit is set, then we have an overflow
                     if (result.msb_set()) {
-                        if consteval {
-                            return OverflowError();
-                        } else {
-                            return OverflowError();
-                        }
+                        return OverflowError();
                     }
                     result <<= word(1);
                     result |= word(1);
@@ -1464,6 +1632,10 @@ public:
         // if the base is exactly 2, then we can use a simple bitscan to determine the
         // final return string, rather than doing multi-word division
         } else if (base == 2) {
+            /// TODO: this branch should be generalized to any base that is a power of
+            /// 2, and uses shifts and masks to extract the digits rather than
+            /// divmod
+
             size_type size = 0;
             auto contents = [this]<size_t... Js>(
                 std::index_sequence<Js...>,
@@ -1848,9 +2020,6 @@ public:
         ++*this;
         return *this;
     }
-
-    /// TODO: maybe `first_one()` and `last_one()` can be reduced to `msb()` and
-    /// `lsb()`, and I can delete the `first_zero()` and `last_zero()` methods?
 
     /* Return the index of the first bit that is set, or an empty optional if no bits
     are set. */
@@ -2792,22 +2961,58 @@ public:
         return *this;
     }
 
-
-
-
-
-
-
     /* Print the bitset to an output stream. */
     constexpr friend std::ostream& operator<<(std::ostream& os, const Bits& set)
-        noexcept(noexcept(os << std::string(set)))
         requires(array_size > 1)
     {
-        /// TODO: maybe print directly, rather than requiring an allocation and
-        /// extra layer of indirection?
-        os << std::string(set);
+        std::ostream::sentry s(os);
+        if (!s) {
+            return os;  // stream is not ready for output
+        }
+
+        // 1) determine base, uppercase, showbase
+        word base = 10;
+        switch (os.flags() & std::ios_base::basefield) {
+            case std::ios_base::oct: base = 8; break;
+            case std::ios_base::dec: base = 10; break;
+            case std::ios_base::hex: base = 16; break;
+            default:
+                os.setstate(std::ios_base::failbit);  // unsupported base
+                return os;
+        }
+        bool upper = os.flags() & std::ios_base::uppercase;
+        bool showbase = os.flags() & std::ios_base::showbase;
+
+        // 2) convert to string in that base
+        std::string str = set.stream_format(base, upper);
+
+        // 3) apply locale-based grouping (if any)
+        if (base == 10 && !str.empty()) {  // standard only groups decimal digits
+            stream_group(os, str);
+        }
+
+        // 4) prepend base prefix if directed
+        size_type prefix_len = 0;
+        if (showbase) {
+            if (base == 8) {
+                prefix_len = 1;
+                str.insert(0, "0");
+            } else if (base == 16) {
+                prefix_len = 2;
+                str.insert(0, upper ? "0X" : "0x");
+            }
+        }
+
+        // 5) write to the output stream, honoring width / fill / adjustfield
+        stream_aligned_write(os, str, prefix_len);
+        os.width(0);  // reset width for next output (mandatory)
         return os;
     }
+
+
+
+
+
 
     /// TODO: input streams should read the bitset in big-endian order.  Maybe it
     /// can detect any of the recognized prefixes, such as `0b`, `0x`, or `0o`, and
@@ -2837,10 +3042,16 @@ public:
         }
         return is;
     }
+
+
+
+    /// TODO: I eventually need std::formatter specializations for these types as well,
+    /// along the same lines as for built-in integer types.
+
 };
 
 
-template <meta::integer... Ts>
+template <impl::loose_bits... Ts>
 Bits(Ts...) -> Bits<impl::bitcount<Ts...>>;
 template <size_t N>
 Bits(const char(&)[N]) -> Bits<N - 1>;
@@ -2848,6 +3059,13 @@ template <size_t N>
 Bits(const char(&)[N], char) -> Bits<N - 1>;
 template <size_t N>
 Bits(const char(&)[N], char, char) -> Bits<N - 1>;
+
+
+/* ADL `swap()` method for `bertrand::Bits` instances.  */
+template <size_t N>
+constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept {
+    lhs.swap(rhs);
+}
 
 
 template <size_t N>
@@ -2881,28 +3099,114 @@ template <meta::integer... Ts>
 Int(Ts...) -> Int<impl::bitcount<Ts...>>;
 
 
-/// TODO: maybe in the future, I can add a `Float<E, M>` type that generalizes a float
-/// with `E` exponent bits and `M` mantissa bits, which would be useful especially for
-/// ML applications.
-
-
 }  // namespace bertrand
 
 
 namespace std {
 
-    /// TODO: specialize `std::numeric_limits` and `std::hash` for `Bits<N>`, `Int<N>`,
-    /// `UInt<N>`, and `Float<E, M>`.
+    /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
+    other integer types. */
+    template <bertrand::meta::Bits T>
+    struct numeric_limits<T> {
+    private:
+        using type = std::remove_cvref_t<T>;
+        using word = type::word;
 
-    /* Specializing `std::hash` allows bitsets to be stored in hash tables. */
+    public:
+        static constexpr bool is_specialized = true;
+        static constexpr bool is_signed = false;
+        static constexpr bool is_integer = true;
+        static constexpr bool is_exact = true;
+        static constexpr bool has_infinity = false;
+        static constexpr bool has_quiet_NaN = false;
+        static constexpr bool has_signaling_NaN = false;
+        static constexpr bool has_denorm = false;
+        static constexpr bool has_denorm_loss = false;
+        static constexpr std::float_round_style round_style =
+            std::float_round_style::round_toward_zero;
+        static constexpr bool is_iec559 = false;
+        static constexpr bool is_bounded = true;
+        static constexpr bool is_modulo = true;
+        static constexpr int digits = type::size();
+        static constexpr int digits10 = digits * 0.3010299956639812;  // log10(2)
+        static constexpr int max_digits10 = 0;
+        static constexpr int radix = 2;
+        static constexpr int min_exponent = 0;
+        static constexpr int min_exponent10 = 0;
+        static constexpr int max_exponent = 0;
+        static constexpr int max_exponent10 = 0;
+        static constexpr bool traps = true;  // division by zero should trap
+        static constexpr bool tinyness_before = false;
+        static constexpr type min() noexcept { return {}; }
+        static constexpr type lowest() noexcept { return {}; }
+        static constexpr type max() noexcept {
+            type result;
+            for (size_t i = 0; i < type::array_size - (type::end_mask > 0); ++i) {
+                result.buffer[i] = std::numeric_limits<word>::max();
+            }
+            if constexpr (type::end_mask) {
+                result.buffer[type::array_size - 1] = type::end_mask;
+            }
+            return result;
+        }
+        static constexpr type epsilon() noexcept { return {}; }
+        static constexpr type round_error() noexcept { return {}; }
+        static constexpr type infinity() noexcept { return {}; }
+        static constexpr type quiet_NaN() noexcept { return {}; }
+        static constexpr type signaling_NaN() noexcept { return {}; }
+        static constexpr type denorm_min() noexcept { return {}; }
+    };
+
+    /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
+    other integer types. */
+    template <bertrand::meta::UInt T>
+    struct numeric_limits<T> {
+        /// TODO: fill this in similar to `Bits`, but with unsigned semantics.
+    };
+
+    /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
+    other integer types. */
+    template <bertrand::meta::Int T>
+    struct numeric_limits<T> {
+        /// TODO: fill this in similar to `Bits`, but with signed semantics.
+    };
+
+    /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
     template <bertrand::meta::Bits T>
     struct hash<T> {
-        [[nodiscard]] static size_t operator()(const T& bits) noexcept {
+        [[nodiscard]] static size_t operator()(const T& x) noexcept {
             size_t result = 0;
-            for (size_t i = 0; i < bits.data().size(); ++i) {
+            for (size_t i = 0; i < x.data().size(); ++i) {
+                result = bertrand::impl::hash_combine(result, x.data()[i]);
+            }
+            return result;
+        }
+    };
+
+    /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
+    template <bertrand::meta::UInt T>
+    struct hash<T> {
+        [[nodiscard]] static size_t operator()(const T& x) noexcept {
+            size_t result = 0;
+            for (size_t i = 0; i < x.value.data().size(); ++i) {
                 result = bertrand::impl::hash_combine(
                     result,
-                    bits.data()[i]
+                    x.value.data()[i]
+                );
+            }
+            return result;
+        }
+    };
+
+    /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
+    template <bertrand::meta::Int T>
+    struct hash<T> {
+        [[nodiscard]] static size_t operator()(const T& x) noexcept {
+            size_t result = 0;
+            for (size_t i = 0; i < x.value.data().size(); ++i) {
+                result = bertrand::impl::hash_combine(
+                    result,
+                    x.value.data()[i]
                 );
             }
             return result;
@@ -2939,13 +3243,6 @@ namespace bertrand {
     struct Foo {
         static constexpr const auto& value = b;
     };
-
-    template <typename W>
-    concept int_like =
-        meta::integer<W> ||
-        meta::Bits<W> ||
-        meta::UInt<W> ||
-        meta::Int<W>;
 
     inline void test() {
         {
@@ -3062,6 +3359,11 @@ namespace bertrand {
             if (b) {
 
             }
+            std::cout << b;
+
+            static constexpr static_str s = "1";
+            static constexpr static_str s2 {s[0]};
+            static_assert(s2 == "1");
         }
     }
 
