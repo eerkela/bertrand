@@ -726,8 +726,8 @@ private:
     }
 
     static constexpr void stream_group(std::ostream& os, std::string& str) {
-        std::locale loc = os.getloc();
-        const auto& facet = std::use_facet<std::numpunct<char>>(loc);
+        const auto& facet =
+            std::use_facet<std::numpunct<char>>(os.getloc());
 
         /// NOTE: because iostreams are insane, the grouping "string" isn't really
         /// a string at all, but actually a numeric array of grouping sizes, where
@@ -835,6 +835,18 @@ private:
         } else {
             os.write(str.data(), str.size());
         }
+    }
+
+    static constexpr std::istream& stream_fail(std::istream& is) {
+        is.setstate(std::ios_base::failbit);
+        return is;
+    }
+
+    static constexpr word stream_decode_value(char c) noexcept {
+        if ('0' <= c && c <= '9') return c - '0';
+        if ('a' <= c && c <= 'z') return 10 + c - 'a';
+        if ('A' <= c && c <= 'Z') return 10 + c - 'A';
+        return std::numeric_limits<word>::max();  // invalid character
     }
 
 public:
@@ -2978,6 +2990,7 @@ public:
             case std::ios_base::hex: base = 16; break;
             default:
                 os.setstate(std::ios_base::failbit);  // unsupported base
+                os.width(0);
                 return os;
         }
         bool upper = os.flags() & std::ios_base::uppercase;
@@ -3009,41 +3022,127 @@ public:
         return os;
     }
 
-
-
-
-
-
-    /// TODO: input streams should read the bitset in big-endian order.  Maybe it
-    /// can detect any of the recognized prefixes, such as `0b`, `0x`, or `0o`, and
-    /// then read the rest of the string in that base, defaulting to base 10 if no
-    /// prefix is found.
-
     /* Read the bitset from an input stream. */
     constexpr friend std::istream& operator>>(std::istream& is, Bits& set) {
-        char c;
-        is.get(c);
-        while (std::isspace(c)) {
-            is.get(c);
+        std::istream::sentry s(is);  // automatically skips leading whitespace
+        if (!s) {
+            return is;  // stream is not ready for input
         }
-        size_type i = 0;
-        if (c == '0') {
-            is.get(c);
-            if (c == 'b') {
+        std::streamsize limit = is.width();  // 0 means no limit
+        if (limit == 0) {
+            limit = std::numeric_limits<std::streamsize>::max();  // simplifies math
+        }
+        is.width(0);  // reset now, per standard
+        auto ok = [&limit, &is]() { return --limit && is.good(); };
+        bool overflow;
+        char c;
+
+        // 1) check for optional sign
+        if (is.peek() == '+') {
+            is.get(c);  // consume the '+' sign
+            if (!ok()) return stream_fail(is);  // no digits after sign
+        } else if (is.peek() == '-') {
+            return stream_fail(is);  // negative values not supported
+        }
+
+        // 2) detect and consume base prefix
+        word base = 0;
+        switch (is.flags() & std::ios_base::basefield) {
+            case std::ios_base::oct: base = 8; break;
+            case std::ios_base::dec: base = 10; break;
+            case std::ios_base::hex: base = 16; break;
+        }
+        is.get(c);  // extract first character
+        if (!ok()) {  // no digits after first character
+            word value = stream_decode_value(c);  // first character must be a digit
+            if (value >= base) return stream_fail(is);
+            set = value;
+            return is;
+        }
+        switch (base) {
+            case 0:
+                if (c == '0') {
+                    if (is.peek() == 'b' || is.peek() == 'B') {
+                        is.get(c);  // consume the 'b' or 'B'
+                        if (!ok()) return stream_fail(is);  // no digits after prefix
+                        is.get(c);  // c now points to first real character of number
+                        base = 2;
+                    } else if (is.peek() == 'o' || is.peek() == 'O') {
+                        is.get(c);
+                        if (!ok()) return stream_fail(is);
+                        is.get(c);
+                        base = 8;
+                    } else if (is.peek() == 'x' || is.peek() == 'X') {
+                        is.get(c);
+                        if (!ok()) return stream_fail(is);
+                        is.get(c);
+                        base = 16;
+                    } else {
+                        base = 10;
+                    }
+                } else {
+                    base = 10;
+                }
+                break;
+            case 8:
+                if (c == '0' && (is.peek() == 'o' || is.peek() == 'O')) {
+                    is.get(c);
+                    if (!ok()) return stream_fail(is);
+                    is.get(c);
+                }
+                break;
+            case 16:
+                if (c == '0' && (is.peek() == 'x' || is.peek() == 'X')) {
+                    is.get(c);
+                    if (!ok()) return stream_fail(is);
+                    is.get(c);
+                }
+                break;
+        }
+        Bits multiplier = base;
+        Bits result;
+
+        /// 4) decode each character, respecting the locale's grouping
+        char sep = std::use_facet<std::numpunct<char>>(is.getloc()).thousands_sep();
+        while (base == 10 && c == sep) {
+            is.get(c);  // skip grouping separator
+            if (!ok()) return stream_fail(is);  // no digits after grouping separator
+        }
+        word value = stream_decode_value(c);  // decode first real digit
+        if (value >= base) return stream_fail(is);  // invalid digit
+        result.add(value, overflow, result.buffer);  // add first digit
+        if (overflow) {
+            while (ok()) {  // consume any remaining characters in this base/limit
                 is.get(c);
-            } else {
-                ++i;
+                if (base == 10 && c == sep) continue;  // skip grouping separator
+                value = stream_decode_value(c);
+                if (value >= base) break;  // digit sequence finished
+            }
+            is.setstate(std::ios_base::failbit | std::ios_base::badbit);
+            return is;  // overflow on first digit
+        }
+        while (ok()) {
+            is.get(c);  // read the next character
+            if (base == 10 && c == sep) continue;  // skip grouping separator
+            value = stream_decode_value(c);
+            if (value >= base) break;  // digit sequence finished
+            result.mul(multiplier, overflow, result);  // shift left by base
+            result.add(value, overflow, result);  // add digit
+            if (overflow) {
+                while (ok()) {  // consume any remaining characters in this base/limit
+                    is.get(c);
+                    if (base == 10 && c == sep) continue;  // skip grouping separator
+                    value = stream_decode_value(c);
+                    if (value >= base) break;  // digit sequence finished
+                }
+                is.setstate(std::ios_base::failbit | std::ios_base::badbit);
+                return is;
             }
         }
-        bool one;
-        while (is.good() && i < N && (c == '0' || (one = (c == '1')))) {
-            set[i++] = one;
-            is.get(c);
-        }
+
+        set = std::move(result);  // move the result to the output bitset
         return is;
     }
-
-
 
     /// TODO: I eventually need std::formatter specializations for these types as well,
     /// along the same lines as for built-in integer types.
