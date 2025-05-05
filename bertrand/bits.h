@@ -406,7 +406,7 @@ struct Bits : impl::Bits_tag {
     [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(N); }
 
     /* The total number of bits needed to represent the array.  This will always be a
-    multiple of the machine's word size, or a power of two less than that. */
+    equal to the product of `word_size` and `array_size`. */
     [[nodiscard]] static constexpr size_type capacity() noexcept {
         return array_size * word_size;
     }
@@ -551,23 +551,6 @@ private:
         from_ints<I, T, Ts...>(data, v.value, rest...);
     }
 
-    static constexpr Bits mask(index_type start, index_type stop) noexcept {
-        Bits result;
-        result.fill(1);
-        result <<= N - size_type(stop);
-        result >>= N - size_type(stop - start);
-        result <<= size_type(start);  // [start, stop).
-        return result;
-    }
-
-    constexpr bool msb_set() const noexcept {
-        if constexpr (end_mask) {
-            return buffer[array_size - 1] >= word(word(1) << ((N % word_size) - 1));
-        } else {
-            return buffer[array_size - 1] >= word(word(1) << (word_size - 1));
-        }
-    }
-
     template <size_type I, typename ctx>
     static constexpr Expected<void, OverflowError> from_string_helper(
         Bits& result,
@@ -645,7 +628,7 @@ private:
     }
 
     template <size_t J, const Bits& divisor>
-    static constexpr std::string_view to_string_helper(
+    static constexpr std::string_view extract_digit(
         const auto& digits,
         Bits& quotient,
         Bits& remainder,
@@ -657,22 +640,46 @@ private:
         return out;
     }
 
-    /// TODO: ideally, this second `to_string_helper` would be generalized for any
-    /// power of two base, so that I can just bitscan using simple shifts, rather
-    /// than full division.  Note that some powers of 2, like 8, consume an odd number
-    /// of bits, and might straddle multiple words, which makes this substantially
-    /// more annoying.  Still, it's more efficient than shifting the entire bitset
-    /// every time, so I should be okay, as long as I can handle the straddling
-    /// words correctly.
-    template <size_t J>
-    constexpr std::string_view to_string_helper(
+    template <size_t J, word mask, size_type nbits>
+    constexpr std::string_view extract_digit_power2(
         const auto& digits,
         size_type& size
     ) const {
-        bool bit = buffer[J / word_size] & (word(1) << (J % word_size));
-        std::string_view out = digits[bit];
+        constexpr size_type idx = (J * nbits) / word_size;
+        constexpr size_type bit = (J * nbits) % word_size;
+
+        // right shift starting word and get lower bits of value
+        word val = word(word(buffer[idx] >> bit) & mask);
+
+        // if the mask straddles a word boundary, then we need to get the high bits
+        // from the next word, assuming there is one.
+        if constexpr (((bit + nbits) > word_size) && idx + 1 <= array_size) {
+            constexpr size_type consumed = word_size - bit;
+            word next = word(buffer[idx + 1] & word(mask >> consumed));
+            val += word(next << consumed);
+        }
+
+        // look up completed value in digit map
+        std::string_view out = digits[val];
         size += out.size();
         return out;
+    }
+
+    constexpr bool msb_is_set() const noexcept {
+        if constexpr (end_mask) {
+            return buffer[array_size - 1] >= word(word(1) << ((N % word_size) - 1));
+        } else {
+            return buffer[array_size - 1] >= word(word(1) << (word_size - 1));
+        }
+    }
+
+    static constexpr Bits interval_mask(index_type start, index_type stop) noexcept {
+        Bits result;
+        result.fill(1);
+        result <<= N - size_type(stop);
+        result >>= N - size_type(stop - start);
+        result <<= size_type(start);  // [start, stop).
+        return result;
     }
 
     constexpr std::string stream_format(word base, bool upper) const {
@@ -1391,14 +1398,14 @@ public:
             while (idx < str.size()) {
                 if (str.substr(idx, zero.size()) == zero) {
                     // if the most significant bit is set, then we have an overflow
-                    if (result.msb_set()) {
+                    if (result.msb_is_set()) {
                         return OverflowError();
                     }
                     result <<= word(1);
                     idx += zero.size();
                 } else if (str.substr(idx, one.size()) == one) {
                     // if the most significant bit is set, then we have an overflow
-                    if (result.msb_set()) {
+                    if (result.msb_is_set()) {
                         return OverflowError();
                     }
                     result <<= word(1);
@@ -1486,14 +1493,14 @@ public:
             while (idx < str.size()) {
                 if (str.substr(idx, zero.size()) == zero) {
                     // if the most significant bit is set, then we have an overflow
-                    if (result.msb_set()) {
+                    if (result.msb_is_set()) {
                         return OverflowError();
                     }
                     result <<= word(1);
                     idx += zero.size();
                 } else if (str.substr(idx, one.size()) == one) {
                     // if the most significant bit is set, then we have an overflow
-                    if (result.msb_set()) {
+                    if (result.msb_is_set()) {
                         return OverflowError();
                     }
                     result <<= word(1);
@@ -1641,20 +1648,19 @@ public:
         if constexpr (base >= (1ULL << min(N, word_size - 1))) {
             return std::string(digits[buffer[0]]);
 
-        // if the base is exactly 2, then we can use a simple bitscan to determine the
-        // final return string, rather than doing multi-word division
-        } else if (base == 2) {
-            /// TODO: this branch should be generalized to any base that is a power of
-            /// 2, and uses shifts and masks to extract the digits rather than
-            /// divmod
+        // if the base is a power of 2, then we can use a simple bitscan to determine
+        // the final string, rather than doing multi-word division
+        } else if constexpr (impl::is_power2(base)) {
+            static constexpr word mask = word(base - 1);
+            static constexpr size_type nbits = std::bit_width(mask);
 
             size_type size = 0;
-            auto contents = [this]<size_t... Js>(
+            auto parts = [this]<size_t... Js>(
                 std::index_sequence<Js...>,
                 size_type& size
             ) {
                 return std::array<std::string_view, ceil>{
-                    to_string_helper<Js>(digits, size)...
+                    extract_digit_power2<Js, mask, nbits>(digits, size)...
                 };
             }(std::make_index_sequence<ceil>{}, size);
 
@@ -1662,7 +1668,7 @@ public:
             std::string result;
             result.reserve(size);
             for (size_type i = ceil; i-- > 0;) {
-                result.append(contents[i]);
+                result.append(parts[i]);
             }
             return result;
 
@@ -1672,14 +1678,14 @@ public:
             Bits quotient = *this;
             Bits remainder;
             size_type size = 0;
-            auto contents = []<size_t... Js>(
+            auto parts = []<size_t... Js>(
                 std::index_sequence<Js...>,
                 Bits& quotient,
                 Bits& remainder,
                 size_type& size
             ) {
                 return std::array<std::string_view, ceil>{
-                    to_string_helper<Js, divisor>(digits, quotient, remainder, size)...
+                    extract_digit<Js, divisor>(digits, quotient, remainder, size)...
                 };
             }(std::make_index_sequence<ceil>{}, quotient, remainder, size);
 
@@ -1687,7 +1693,7 @@ public:
             std::string result;
             result.reserve(size);
             for (size_type i = ceil; i-- > 0;) {
-                result.append(contents[i]);
+                result.append(parts[i]);
             }
             return result;
         }
@@ -1859,7 +1865,7 @@ public:
         if (norm_stop <= norm_start) {
             return false;
         }
-        return bool(*this & mask(norm_start, norm_stop));
+        return bool(*this & interval_mask(norm_start, norm_stop));
     }
 
     /* Check if all of the bits are set. */
@@ -1886,7 +1892,7 @@ public:
         if (norm_stop <= norm_start) {
             return false;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         return (*this & temp) == temp;
     }
 
@@ -1909,7 +1915,7 @@ public:
         if (norm_stop <= norm_start) {
             return 0;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         size_type count = 0;
         for (size_type i = 0; i < array_size; ++i) {
             count += size_type(std::popcount(word(buffer[i] & temp.buffer[i])));
@@ -1941,9 +1947,9 @@ public:
             return *this;
         }
         if (value) {
-            *this |= mask(norm_start, norm_stop);
+            *this |= interval_mask(norm_start, norm_stop);
         } else {
-            *this &= ~mask(norm_start, norm_stop);
+            *this &= ~interval_mask(norm_start, norm_stop);
         }
         return *this;
     }
@@ -1966,7 +1972,7 @@ public:
         if (norm_stop <= norm_start) {
             return *this;
         }
-        *this ^= mask(norm_start, norm_stop);
+        *this ^= interval_mask(norm_start, norm_stop);
         return *this;
     }
 
@@ -2000,7 +2006,7 @@ public:
         if (norm_stop <= norm_start) {
             return *this;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         Bits reversed = *this & temp;
         reversed.reverse();
         *this &= ~temp;  // clear the bits in the original bitset
@@ -2056,7 +2062,7 @@ public:
         if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         for (size_type i = 0; i < array_size; ++i) {
             size_type j = size_type(std::countr_zero(
                 word(buffer[i] & temp.buffer[i])
@@ -2091,7 +2097,7 @@ public:
         if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         for (size_type i = array_size; i-- > 0;) {
             size_type j = size_type(std::countl_zero(
                 word(buffer[i] & temp.buffer[i])
@@ -2126,7 +2132,7 @@ public:
         if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         for (size_type i = 0; i < array_size; ++i) {
             size_type j = size_type(std::countr_one(
                 word(buffer[i] & temp.buffer[i])
@@ -2169,7 +2175,7 @@ public:
         if (norm_stop <= norm_start) {
             return std::nullopt;
         }
-        Bits temp = mask(norm_start, norm_stop);
+        Bits temp = interval_mask(norm_start, norm_stop);
         for (size_type i = array_size; i-- > 0;) {
             size_type j = size_type(std::countl_one(
                 word(buffer[i] | ~temp.buffer[i])

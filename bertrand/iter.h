@@ -404,6 +404,14 @@ namespace impl {
         boundscheck check;
     };
 
+    /// TODO: contiguous_slice can probably be generalized to just slice<Iter>, where
+    /// `Iter` is at minimum a bidirectional iterator, and may be a random access
+    /// iterator as well.  The assignment operator would be enabled iff the iterator
+    /// is also an output iterator, and the begin() and end() methods would generate
+    /// normal container iterators that can be used to iterate over the slice, using
+    /// whatever the most efficient algorithm for that is (O(1) for random access,
+    /// O(n) for bidirectional).
+
     template <meta::not_void T> requires (!meta::reference<T>)
     struct contiguous_slice {
     private:
