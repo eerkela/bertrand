@@ -11,6 +11,111 @@
 namespace bertrand {
 
 
+/* A simple bitset that stores up to `N` boolean flags as a compressed array of machine
+words.  Allows a wider range of operations than `std::bitset<N>`, including full,
+bigint-style unsigned arithmetic, lexicographic comparisons, one-hot decomposition,
+structured bindings, fast string encoding/decoding, and more.
+
+`Bits` are generally optimized for small to medium sizes (up to a few thousand bits),
+and do not replace arbitrary-precision libraries like GMP or `boost::multiprecision`,
+which may be preferable in some situations.  Instead, they are meant as a lightweight,
+general-purpose utility for low-level bit manipulation and efficient storage of boolean
+flags, and as a building block for further abstractions. */
+template <size_t N>
+struct Bits;
+
+
+/* A generalized, arbitrary-width, unsigned integer type backed by a bitset of `N`
+bits.
+
+If `N` is less than or equal to 64, then the integer will be represented as a single
+machine word whose size is the nearest power of 2 greater than or equal to `N`, with
+`uint8_t` being the smallest possible type.  If `N` is not an exact power of 2, then
+the upper bits will be masked out to give true `N`-bit behavior.  Such single-word
+integers are implicitly convertible both to and from their underlying hardware types,
+and can be used interchangeably with them in most contexts without degrading
+performance or consuming any excess memory.  They can be freely mixed in arithmetic
+operations, used as array indices or keys in associative containers, and so on.  They
+also exhibit the same overflow semantics as their underlying types, modulo `2^N`.
+
+If `N` is greater than 64, then the integer will instead be represented as an array of
+64-bit words, with the least significant word first.  As with single-word integers, any
+upper bits of the last word will be masked out to give true `N`-bit behavior.  Such
+integers support all of the same arithmetic operations as their single-word
+counterparts, but may involve extra overhead due to the need for multi-word arithmetic.
+They also cannot be implicitly converted to any underlying hardware type, as their
+values may fall outside the representable range of any such type.  Explicit conversions
+are available, but risk possible truncation unless the integer is known to be within
+range of the target type.  In all other respects, they behave like normal integers,
+and can be used wherever large integers above the 64-bit limit may be needed.
+
+This class is mostly meant to bridge the gap between bigint-style Python integers
+(which can dynamically grow to accommodate any size) and C++ integers, which are
+fixed-width and usually capped at 64 bits.  By generalizing to arbitrary `N`,
+Python-style integer pipelines can be lowered directly into C++ without needing a
+full multiprecision library like GMP or `boost::multiprecision`, which may be overkill
+for many applications.  This class is thus not a full replacement for those libraries,
+but rather a lightweight alternative that is optimized for small to medium sizes (up to
+a few thousand bits), as a convenience for users accustomed to higher-level
+languages.
+
+An equivalent wrapper type is exposed in Python itself as `bertrand.UInt[N]`, which
+works in the opposite direction, allowing Python users to work with true `N`-bit
+hardware integers in their native format, without requiring multiple distinct types or
+complex conversions.  This also erases the semantic differences between C++ and Python
+integers, particularly around integer division (defined as floor division in Python vs
+truncated division in C++) and possible overflow, which brings Python code into
+alignment with extensions written in C-family languages. */
+template <size_t N>
+struct UInt;
+
+
+/* A generalized, arbitrary-width, signed integer type backed by a bitset of `N` bits.
+
+If `N` is less than or equal to 64, then the integer will be represented as a single
+machine word whose size is the nearest power of 2 greater than or equal to `N`, with
+`int8_t` being the smallest possible type.  Negative values are represented using
+two's complement, and if `N` is not an exact power of 2, then the upper bits will be
+masked out to give true `N`-bit behavior.  Such single-word integers are implicitly
+convertible both to and from their underlying hardware types, and can be used
+interchangeably with them in most contexts without degrading performance or consuming
+any excess memory.  They can be freely mixed in arithmetic operations, used as array
+indices or keys in associative containers, and so on.  They also exhibit the same
+overflow semantics as their underlying types, modulo `2^N`, with `-2^(N - 1)` as the
+minimum value and `2^(N - 1) - 1` as the maximum value.
+
+If `N` is greater than 64, then the integer will instead be represented as an array of
+64-bit words, with the least significant word first.  As with single-word integers, any
+upper bits of the last word will be masked out to give true `N`-bit behavior.  Such
+integers support all of the same arithmetic operations as their single-word
+counterparts, but may involve extra overhead due to the need for multi-word arithmetic.
+They also cannot be implicitly converted to any underlying hardware type, as their
+values may fall outside the representable range of any such type.  Explicit conversions
+are available, but risk possible truncation unless the integer is known to be within
+range of the target type.  In all other respects, they behave like normal integers,
+and can be used wherever large integers above the 64-bit limit may be needed.
+
+This class is mostly meant to bridge the gap between bigint-style Python integers
+(which can dynamically grow to accommodate any size) and C++ integers, which are
+fixed-width and usually capped at 64 bits.  By generalizing to arbitrary `N`,
+Python-style integer pipelines can be lowered directly into C++ without needing a
+full multiprecision library like GMP or `boost::multiprecision`, which may be overkill
+for many applications.  This class is thus not a full replacement for those libraries,
+but rather a lightweight alternative that is optimized for small to medium sizes (up to
+a few thousand bits), as a convenience for users accustomed to higher-level
+languages.
+
+An equivalent wrapper type is exposed in Python itself as `bertrand.Int[N]`, which
+works in the opposite direction, allowing Python users to work with true `N`-bit
+hardware integers in their native format, without requiring multiple distinct types or
+complex conversions.  This also erases the semantic differences between C++ and Python
+integers, particularly around integer division (defined as floor division in Python vs
+truncated division in C++) and possible overflow, which brings Python code into
+alignment with extensions written in C-family languages. */
+template <size_t N>
+struct Int;
+
+
 namespace impl {
     struct Bits_tag {};
     struct UInt_tag {};
@@ -37,18 +142,19 @@ namespace meta {
 
 
 namespace impl {
+
     template <typename T>
     constexpr size_t _bitcount = 0;
     template <meta::boolean T>
     constexpr size_t _bitcount<T> = 1;
     template <meta::integer T>
-    constexpr size_t _bitcount<T> = sizeof(T) * 8;
+    constexpr size_t _bitcount<T> = sizeof(meta::unqualify<T>) * 8;
     template <meta::Bits T>
-    constexpr size_t _bitcount<T> = T::size();
+    constexpr size_t _bitcount<T> = meta::unqualify<T>::size();
     template <meta::UInt T>
-    constexpr size_t _bitcount<T> = T::size();
+    constexpr size_t _bitcount<T> = meta::unqualify<T>::width;
     template <meta::Int T>
-    constexpr size_t _bitcount<T> = T::size();
+    constexpr size_t _bitcount<T> = meta::unqualify<T>::width;
 
     template <typename... Ts> requires ((_bitcount<Ts> > 0) && ...)
     constexpr size_t bitcount = (_bitcount<Ts> + ... + 0);
@@ -373,16 +479,6 @@ namespace impl {
 }
 
 
-/* A simple bitset type that stores up to `N` boolean flags in a fixed-size array of
-machine words.  Allows a wider range of operations than `std::bitset<N>`, including
-full, bigint-style unsigned arithmetic, lexicographic comparisons, fast string
-encoding/decoding, one-hot decomposition, structured bindings, and more.
-
-`Bits` are generally optimized for small to medium sizes (up to a few thousand bits),
-and do not replace arbitrary-precision libraries like GMP or `boost::multiprecision`,
-which may be preferable in some situations.  Instead, they are meant as a lightweight,
-general-purpose utility for low-level bit manipulation and efficient storage of boolean
-flags, and as a building block for further abstractions. */
 template <size_t N>
 struct Bits : impl::Bits_tag {
     using word = impl::word<N>::type;
@@ -681,6 +777,11 @@ private:
         result <<= size_type(start);  // [start, stop).
         return result;
     }
+
+    /// TODO: these helpers should also be used for `std::formatter` support to reduce
+    /// code duplication, as well as possibly being reused for signed integers as well.
+    /// That will be somewhat hard to structure, but it's the simplest way to
+    /// implement the `std::formatter` interface for Bits and co.
 
     constexpr std::string stream_format(word base, bool upper) const {
         static constexpr static_str lower_alpha = "0123456789abcdefghijklmnopqrstuvwxyz";
@@ -1617,8 +1718,8 @@ public:
     }
 
     /* Encode the bitset into a string representation.  Defaults to base 2 with the
-    given zero and one characters, which are given as template parameters.  The total
-    number of substrings dictates the base for the conversion, which must be at least
+    given zero and one digit strings, which are given as template parameters.  The
+    total number of digits dictates the base for the conversion, which must be at least
     2 and at most 64.  The result is always padded to the exact width needed to
     represent the bitset in the chosen base, including leading zeroes if needed.  Note
     that the resulting string is always big-endian, meaning the first substring
@@ -1702,7 +1803,7 @@ public:
     /* A shorthand for `to_string<"0", "1">()`, which yields a string in the canonical
     binary representation. */
     [[nodiscard]] constexpr std::string to_binary() const noexcept {
-        return operator std::string();
+        return to_string<"0", "1">();
     }
 
     /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7">()`, which
@@ -1734,26 +1835,27 @@ public:
     be zero-padded to the exact width of the bitset, and can be passed to
     `Bits::from_binary()` to recover the original state. */
     [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        static constexpr size_type M = N - 1;
-        static constexpr int diff = '1' - '0';
-        std::string result;
-        result.reserve(N);
-        for (size_type i = 0; i < N; ++i) {
-            bool bit = buffer[(M - i) / word_size] & (word(1) << ((M - i) % word_size));
-            result.push_back('0' + diff * bit);
-        }
-        return result;
+        return to_binary();
     }
 
-    /* Bitsets evalute true if any of their bits are set. */
+    /* Bitsets evalute to true if any of their bits are set. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
         return any();
     }
 
-    /* Implicitly convert the bitset to an integer representation if it fits within a
-    single word. */
+    /* Implicitly convert a single-word bitset to its underlying integer
+    representation. */
     [[nodiscard]] constexpr operator word() const noexcept requires(array_size == 1) {
         return buffer[0];
+    }
+
+    /* Explicitly convert a multi-word bitset into an integer type, possibly truncating
+    any upper bits. */
+    template <meta::integer T>
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(array_size > 1)
+    {
+        return static_cast<T>(buffer[0]);
     }
 
     /* Get the underlying array. */
@@ -3151,7 +3253,9 @@ public:
     }
 
     /// TODO: I eventually need std::formatter specializations for these types as well,
-    /// along the same lines as for built-in integer types.
+    /// along the same lines as for built-in integer types.  This probably involves
+    /// generalizing the stream operator utilities and reusing them as much as
+    /// possible.
 
 };
 
@@ -3175,18 +3279,592 @@ constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept {
 
 template <size_t N>
 struct UInt : impl::UInt_tag {
-    Bits<N> value;
+    /* The underlying word type for the integer. */
+    using word = Bits<N>::word;
 
-    /// TODO: very thin wrapper around `Bits<N>` that mostly just forwards the
-    /// same interface, possibly without iteration/indexing support, one-hot
-    /// decomposition, structured bindings, or any(), all(), count(), flip(),
-    ///
+    /* The number of bits needed to represent the integer.  Equivalent to `N`. */
+    static constexpr size_t width = N;
+
+    /* A bitset holding the bitwise representation of the integer. */
+    Bits<N> bits;
+
+    /* Construct an integer from a variadic parameter pack of component words of exact
+    width.  See `Bits<N>` for more details. */
+    template <typename... bits>
+        requires (impl::strict_bits<bits> && ... && (impl::bitcount<bits...> <= N))
+    [[nodiscard]] constexpr UInt(const bits&... vals) noexcept : bits(vals...) {}
+
+    /* Construct an integer from a sequence of integer values whose bit widths sum to
+    an amount less than or equal to the integer's storage capacity.  See `Bits<N>` for
+    more details. */
+    template <typename... words>
+        requires (
+            sizeof...(words) > 0 &&
+            !(impl::strict_bits<words> && ...) &&
+            (impl::loose_bits<words> && ... && (
+                impl::bitcount<words...> <= max(Bits<N>::capacity(), impl::bitcount<uint64_t>)
+            ))
+        )
+    [[nodiscard]] constexpr UInt(const words&... vals) noexcept : bits(vals...) {}
+
+
+    /* Trivially swap the values of two integers. */
+    constexpr void swap(UInt& other) noexcept {
+        bits.swap(other.bits);
+    }
+
+    /* Decode an integer from a string representation.  Defaults to base 2 with the
+    given zero and one digit strings, which are provided as template parameters, and
+    whose number dictates the base for the conversion.  See `Bits<N>::from_string()`
+    for more details. */
+    template <static_str zero = "0", static_str one = "1", static_str... rest>
+        requires (
+            sizeof...(rest) + 2 <= 64 &&
+            !zero.empty() && (!one.empty() && ... && !rest.empty()) &&
+            meta::perfectly_hashable<zero, one, rest...>
+        )
+    [[nodiscard]] static constexpr auto from_string(std::string_view str) noexcept
+        -> Expected<UInt, ValueError, OverflowError>
+    {
+        return Bits<N>::template from_string<zero, one, rest...>(str);
+    }
+
+    /* Decode an integer from a string representation.  Defaults to base 2 with the
+    given zero and one digit strings, which are provided as template parameters, and
+    whose number dictates the base for the conversion.  See `Bits<N>::from_string()`
+    for more details. */
+    template <static_str zero = "0", static_str one = "1", static_str... rest>
+        requires (
+            sizeof...(rest) + 2 <= 64 &&
+            !zero.empty() && (!one.empty() && ... && !rest.empty()) &&
+            meta::perfectly_hashable<zero, one, rest...>
+        )
+    [[nodiscard]] static constexpr Expected<UInt, OverflowError> from_string(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return Bits<N>::template from_string<zero, one, rest...>(str, continuation);
+    }
+
+    /* A shorthand for `from_string<"0", "1">(str)`, which decodes a string in the
+    canonical binary representation. */
+    [[nodiscard]] static constexpr auto from_binary(std::string_view str) noexcept
+        -> Expected<UInt, ValueError, OverflowError>
+    {
+        return Bits<N>::from_binary(str);
+    }
+
+    /* A shorthand for `from_string<"0", "1">(str, continuation)`, which decodes a
+    string in the canonical binary representation. */
+    [[nodiscard]] static constexpr Expected<UInt, OverflowError> from_binary(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return Bits<N>::from_binary(str, continuation);
+    }
+
+    /* A shorthand for `from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str)`,
+    which decodes a string in the canonical octal representation. */
+    [[nodiscard]] static constexpr auto from_octal(std::string_view str) noexcept
+        -> Expected<UInt, ValueError, OverflowError>
+    {
+        return Bits<N>::from_octal(str);
+    }
+
+    /* A shorthand for `from_string<"0", "1", "2", "3", "4", "5", "6", "7">(str, continuation)`,
+    which decodes a string in the canonical octal representation. */
+    [[nodiscard]] static constexpr Expected<UInt, OverflowError> from_octal(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return Bits<N>::from_octal(str, continuation);
+    }
+
+    /* A shorthand for
+    `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str)`, which decodes
+    a string in the canonical decimal representation. */
+    [[nodiscard]] static constexpr auto from_decimal(std::string_view str) noexcept
+        -> Expected<UInt, ValueError, OverflowError>
+    {
+        return Bits<N>::from_decimal(str);
+    }
+
+    /* A shorthand for
+    `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str, continuation)`,
+    which decodes a string in the canonical decimal representation. */
+    [[nodiscard]] static constexpr Expected<UInt, OverflowError> from_decimal(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return Bits<N>::from_decimal(str, continuation);
+    }
+
+    /* A shorthand for
+    `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">(str)`,
+    which decodes a string in the canonical hexadecimal representation. */
+    [[nodiscard]] static constexpr auto from_hex(std::string_view str) noexcept
+        -> Expected<UInt, ValueError, OverflowError>
+    {
+        return Bits<N>::from_hex(str);
+    }
+
+    /* A shorthand for
+    `from_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">(str, continuation)`,
+    which decodes a string in the canonical hexadecimal representation. */
+    [[nodiscard]] static constexpr Expected<UInt, OverflowError> from_hex(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return Bits<N>::from_hex(str, continuation);
+    }
+
+    /* Encode an integer into a string representation.  Defaults to base 2 with the
+    given zero and one digit strings, which are provided as template parameters, and
+    whose number dictates the base for the conversion.  See `Bits<N>::to_string()` for
+    more details. */
+    template <static_str zero = "0", static_str one = "1", static_str... rest>
+        requires (
+            sizeof...(rest) + 2 <= 64 &&
+            !zero.empty() && !one.empty() && (... && !rest.empty()) &&
+            meta::strings_are_unique<zero, one, rest...>
+        )
+    [[nodiscard]] constexpr std::string to_string() const noexcept {
+        return bits.template to_string<zero, one, rest...>();
+    }
+
+    /* A shorthand for `to_string<"0", "1">()`, which yields a string in the canonical
+    binary representation. */
+    [[nodiscard]] constexpr std::string to_binary() const noexcept {
+        return bits.to_binary();
+    }
+
+    /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7">()`, which
+    yields a string in the canonical octal representation. */
+    [[nodiscard]] constexpr std::string to_octal() const noexcept {
+        return bits.to_octal();
+    }
+
+    /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">()`,
+    which yields a string in the canonical decimal representation. */
+    [[nodiscard]] constexpr std::string to_decimal() const noexcept {
+        return bits.to_decimal();
+    }
+
+    /* A shorthand for
+    `to_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">()`,
+    which yields a string in the canonical hexadecimal representation. */
+    [[nodiscard]] constexpr std::string to_hex() const noexcept {
+        return bits.to_hex();
+    }
+
+    /* Convert the bitset to a string representation with '1' as the true character and
+    '0' as the false character.  Note that the string is returned in big-endian order,
+    meaning the first character corresponds to the most significant bit in the bitset,
+    and the last character corresponds to the least significant bit.  The string will
+    be zero-padded to the exact width of the bitset, and can be passed to
+    `Bits::from_binary()` to recover the original state. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_decimal();
+    }
+
+    /* Non-zero integers evaluate to true under boolean logic. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return bool(bits);
+    }
+
+    /* Implicitly convert a single-word integer to its underlying integer
+    representation. */
+    [[nodiscard]] constexpr operator word() const noexcept
+        requires(Bits<N>::array_size == 1)
+    {
+        return word(bits);
+    }
+
+    /* Explicitly convert a multi-word integer into a hardware integer type, possibly
+    truncating any upper bits. */
+    template <meta::integer T>
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits<N>::array_size > 1 && sizeof(T) <= sizeof(word))
+    {
+        return static_cast<T>(bits);
+    }
+
+    /* Add two integers of equal size.  If the result overflows, then the `overflow`
+    flag will be set to true, and the value will wrap around to the other end of the
+    number line (module `N`). */
+    [[nodiscard]] constexpr UInt add(
+        const UInt& other,
+        bool& overflow
+    ) const noexcept {
+        return bits.add(other.bits, overflow);
+    }
+
+    /* Add two integers of equal size and store the sum as a mutable out parameter.  If
+    the result overflows, then the `overflow` flag will be set to true, and the value
+    will wrap around to the other end of the number line (modulo `N`).  The out
+    parameter may be a reference to either operand, without affecting the overall
+    calculation. */
+    constexpr void add(
+        const UInt& other,
+        bool& overflow,
+        UInt& result
+    ) const noexcept {
+        bits.add(other.bits, overflow, result.bits);
+    }
+
+    /* Subtract two integers of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`). */
+    [[nodiscard]] constexpr UInt sub(
+        const UInt& other,
+        bool& overflow
+    ) const noexcept {
+        return bits.sub(other.bits, overflow);
+    }
+
+    /* Subtract two bitsets of equal size and store the difference as a mutable out
+    parameter.  If the result overflows, then the `overflow` flag will be set to true,
+    and the value will wrap around to the other end of the number line (modulo `N`).
+    The out parameter may be a reference to either operand, without affecting the
+    overall calculation. */
+    constexpr void sub(
+        const UInt& other,
+        bool& overflow,
+        UInt& result
+    ) const noexcept {
+        bits.sub(other.bits, overflow, result.bits);
+    }
+
+    /* Multiply two integers of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`).
+
+    Note that this uses simple schoolbook multiplication under the hood, which is
+    generally optimized for small bit counts (up to a few thousand bits).  For larger
+    bit counts, it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    [[nodiscard]] constexpr UInt mul(
+        const UInt& other,
+        bool& overflow
+    ) const noexcept {
+        return bits.mul(other.bits, overflow);
+    }
+
+    /* Multiply two integers of equal size and store the product as a mutable out
+    parameter.  If the result overflows, then the `overflow` flag will be set to true,
+    and the value will wrap around to the other end of the number line (modulo `N`).
+    The out parameter may be a reference to either operand, without affecting the
+    overall calculation.
+
+    Note that this uses simple schoolbook multiplication under the hood, which is
+    generally optimized for small bit counts (up to a few thousand bits).  For larger
+    bit counts, it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    constexpr void mul(
+        const UInt& other,
+        bool& overflow,
+        UInt& result
+    ) const noexcept {
+        bits.mul(other.bits, overflow, result.bits);
+    }
+
+    /* Divide two integers of equal size, returning both the quotient and remainder.
+    If the divisor is zero and the program is compiled in debug mode, then a
+    `ZeroDivisionError` will be thrown.
+
+    Note that this uses Knuth's Algorithm D under the hood, which is generally
+    optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    [[nodiscard]] constexpr std::pair<UInt, UInt> divmod(
+        const UInt& other
+    ) const noexcept {
+        auto [quotient, remainder] = bits.divmod(other.bits);
+        return {quotient, remainder};
+    }
+
+    /* Divide two integers of equal size, returning the quotient and storing the
+    remainder as a mutable out parameter.  If the divisor is zero and the program is
+    compiled in debug mode, then a `ZeroDivisionError` will be thrown.
+
+    Listing either the dividend or divisor as the out parameter for the remainder is
+    allowed (but not required), and will update the referenced integer in-place, without
+    affecting the calculation.
+
+    Note that this uses Knuth's Algorithm D under the hood, which is generally
+    optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    [[nodiscard]] constexpr UInt divmod(
+        const UInt& other,
+        UInt& remainder
+    ) const noexcept {
+        return bits.divmod(other.bits, remainder.bits);
+    }
+
+    /* Divide two integers of equal size, storing both the quotient and remainder as
+    mutable out parameters.  If the divisor is zero and the program is compiled in
+    debug mode, then a `ZeroDivisionError` will be thrown.
+
+    Listing either the dividend or divisor as the out parameter for the quotient or
+    remainder is allowed (but not required), and will update the referenced integer
+    in-place, without affecting the calculation.
+
+    Note that this uses Knuth's Algorithm D under the hood, which is generally
+    optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    it may be more efficient to use a specialized library such as GMP or
+    `boost::multiprecision`. */
+    constexpr void divmod(
+        const UInt& other,
+        UInt& quotient,
+        UInt& remainder
+    ) const noexcept {
+        bits.divmod(other.bits, quotient.bits, remainder.bits);
+    }
+
+    /* Compare two integers of equal size. */
+    [[nodiscard]] friend constexpr auto operator<=>(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits <=> rhs.bits;
+    }
+
+    /* Compare two integers of equal size. */
+    [[nodiscard]] friend constexpr bool operator==(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits == rhs.bits;
+    }
+
+    /* Apply a bitwise NOT to the integer. */
+    [[nodiscard]] friend constexpr UInt operator~(const UInt& set) noexcept {
+        return ~set.bits;
+    }
+
+    /* Apply a bitwise AND between the contents of two integers of equal size. */
+    [[nodiscard]] friend constexpr UInt operator&(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits & rhs.bits;
+    }
+
+    /* Apply a bitwise AND between the contents of this integer and another of equal
+    length, updating the former in-place. */
+    constexpr UInt& operator&=(
+        const UInt& other
+    ) noexcept {
+        bits &= other.bits;
+        return *this;
+    }
+
+    /* Apply a bitwise OR between the contents of two integers of equal size. */
+    [[nodiscard]] friend constexpr UInt operator|(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits | rhs.bits;
+    }
+
+    /* Apply a bitwise OR between the contents of this integer and another of equal
+    length, updating the former in-place  */
+    constexpr UInt& operator|=(
+        const UInt& other
+    ) noexcept {
+        bits |= other.bits;
+        return *this;
+    }
+
+    /* Apply a bitwise XOR between the contents of two integers of equal size. */
+    [[nodiscard]] friend constexpr UInt operator^(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits ^ rhs.bits;
+    }
+
+    /* Apply a bitwise XOR between the contents of this integer and another of equal
+    length, updating the former in-place. */
+    constexpr UInt& operator^=(
+        const UInt& other
+    ) noexcept {
+        bits ^= other.bits;
+        return *this;
+    }
+
+    /* Apply a bitwise left shift to the contents of the integer. */
+    [[nodiscard]] constexpr UInt operator<<(size_t rhs) const noexcept
+        requires(Bits<N>::array_size > 1)
+    {
+        return bits << rhs;
+    }
+
+    /* Apply a bitwise left shift to the contents of this integer, updating it
+    in-place. */
+    constexpr UInt& operator<<=(size_t rhs) noexcept {
+        bits <<= rhs;
+        return *this;
+    }
+
+    /* Apply a bitwise right shift to the contents of the integer. */
+    [[nodiscard]] constexpr UInt operator>>(size_t rhs) const noexcept
+        requires(Bits<N>::array_size > 1)
+    {
+        return bits >> rhs;
+    }
+
+    /* Apply a bitwise right shift to the contents of this integer, updating it
+    in-place. */
+    constexpr UInt& operator>>=(size_t rhs) noexcept {
+        bits >>= rhs;
+        return *this;
+    }
+
+    /* Return a positive copy of the integer.  This devolves to a simple copy for
+    unsigned integers. */
+    [[nodiscard]] constexpr UInt operator+() const noexcept { return *this; }
+
+    /* Increment a integer by one and return a reference to the new value. */
+    constexpr UInt& operator++() noexcept {
+        ++bits;
+        return *this;
+    }
+
+    /* Increment the integer by one and return a copy of the old value. */
+    [[nodiscard]] constexpr UInt operator++(int) noexcept {
+        UInt copy = *this;
+        ++bits;
+        return copy;
+    }
+
+    /* Operator version of `UInt.add()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr UInt operator+(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits + rhs.bits;
+    }
+
+    /* Operator version of `UInt.add()` that discards the overflow flag and
+    writes the sum back to this integer. */
+    constexpr UInt& operator+=(const UInt& other) noexcept {
+        bits += other.bits;
+        return *this;
+    }
+
+    /* Return a negative copy of the integer.  This equates to a copy followed by a
+    `complement()` modifier. */
+    [[nodiscard]] constexpr UInt operator-() const noexcept {
+        return -bits;
+    }
+
+    /* Decrement the integer by one and return a reference to the new value. */
+    constexpr UInt& operator--() noexcept {
+        --bits;
+        return *this;
+    }
+
+    /* Decrement the integer by one and return a copy of the old value. */
+    [[nodiscard]] constexpr UInt operator--(int) noexcept {
+        UInt copy = *this;
+        --bits;
+        return copy;
+    }
+
+    /* Operator version of `UInt.sub()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr UInt operator-(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits - rhs.bits;
+    }
+
+    /* Operator version of `UInt.sub()` that discards the overflow flag and
+    writes the difference back to this integer. */
+    constexpr UInt& operator-=(const UInt& other) noexcept {
+        bits -= other.bits;
+        return *this;
+    }
+
+    /* Operator version of `UInt.mul()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr UInt operator*(
+        const UInt& lhs,
+        const UInt& rhs
+    ) noexcept requires(Bits<N>::array_size > 1) {
+        return lhs.bits * rhs.bits;
+    }
+
+    /* Operator version of `UInt.mul()` that discards the overflow flag and writes
+    the product back to this integer. */
+    constexpr UInt& operator*=(const UInt& other) noexcept {
+        bits *= other.bits;
+        return *this;
+    }
+
+    /* Operator version of `UInt.divmod()` that discards the remainder. */
+    [[nodiscard]] friend constexpr UInt operator/(
+        const UInt& lhs,
+        const UInt& rhs
+    ) requires(Bits<N>::array_size > 1) {
+        return lhs.bits / rhs.bits;
+    }
+
+    /* Operator version of `UInt.divmod()` that discards the remainder and
+    writes the quotient back to this integer. */
+    constexpr UInt& operator/=(const UInt& other) {
+        bits /= other.bits;
+        return *this;
+    }
+
+    /* Operator version of `UInt.divmod()` that discards the quotient. */
+    [[nodiscard]] friend constexpr UInt operator%(
+        const UInt& lhs,
+        const UInt& rhs
+    ) requires(Bits<N>::array_size > 1) {
+        return lhs.bits % rhs.bits;
+    }
+
+    /* Operator version of `UInt.divmod()` that discards the quotient and
+    writes the remainder back to this integer. */
+    constexpr UInt& operator%=(const UInt& other) {
+        bits %= other.bits;
+        return *this;
+    }
+
+    /* Print the integer to an output stream. */
+    constexpr friend std::ostream& operator<<(
+        std::ostream& os,
+        const UInt& set
+    ) {
+        return os << set.bits;  // defaults to decimal
+    }
+
+    /* Read the integer from an input stream. */
+    constexpr friend std::istream& operator>>(
+        std::istream& is,
+        UInt& set
+    ) {
+        return is >> set.bits;  // defaults to decimal
+    }
 
 };
 
 
-template <meta::integer... Ts>
+template <impl::loose_bits... Ts>
 UInt(Ts...) -> UInt<impl::bitcount<Ts...>>;
+
+
+/* ADL `swap()` method for `bertrand::UInt` instances. */
+template <size_t N>
+constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept {
+    lhs.value.swap(rhs.value);
+}
+
+
+
+
 
 
 template <size_t N>
@@ -3204,10 +3882,24 @@ template <meta::integer... Ts>
 Int(Ts...) -> Int<impl::bitcount<Ts...>>;
 
 
+/* ADL `swap()` method for `bertrand::Int<N>` instances. */
+template <size_t N>
+constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
+    lhs.value.swap(rhs.value);
+}
+
+
 }  // namespace bertrand
 
 
 namespace std {
+
+    template <bertrand::meta::Bits T>
+    struct formatter {
+        /// TODO: implement according to the same rules as built-in unsigned integer
+        /// types.
+
+    };
 
     /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
     other integer types. */
@@ -3458,6 +4150,7 @@ namespace bertrand {
             static_assert(Bits<5>::from_string("10100").result() == 20);
 
             static constexpr Bits<72> b2;
+            static_assert(size_t(b2) == 0);
             // int x = b2;
 
             auto y = b + Bits{3};
@@ -3469,6 +4162,13 @@ namespace bertrand {
             static constexpr static_str s = "1";
             static constexpr static_str s2 {s[0]};
             static_assert(s2 == "1");
+        }
+
+        {
+            static constexpr UInt<64> x = 42;
+            static_assert(x == 42);
+            static constexpr auto x2 = UInt<32>::from_decimal("42");
+            static_assert(x2.result() == 42);
         }
     }
 
