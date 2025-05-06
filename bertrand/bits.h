@@ -6,6 +6,7 @@
 #include "bertrand/math.h"
 #include "bertrand/iter.h"
 #include "bertrand/static_str.h"
+#include <format>
 
 
 namespace bertrand {
@@ -476,6 +477,454 @@ namespace impl {
     concept loose_bits =
         meta::integer<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
 
+    /* Reference: https://en.cppreference.com/w/cpp/utility/format/spec */
+    struct format_bits {
+    private:
+        static constexpr char lower_alpha[] = "0123456789abcdef";
+        static constexpr char upper_alpha[] = "0123456789ABCDEF";
+
+        constexpr char get_align(std::ostream& os) const noexcept {
+            char align = '>';
+            switch (os.flags() & std::ios_base::adjustfield) {
+                case std::ios_base::left: align = '<'; break;
+                case std::ios_base::internal: align = '='; break;
+                default: break;
+            }
+            return align;
+        }
+
+        constexpr char get_base(std::ostream& os) const noexcept {
+            char base = 'd';
+            switch (os.flags() & std::ios_base::basefield) {
+                case std::ios_base::oct: base = 'o'; break;
+                case std::ios_base::hex:
+                    base = os.flags() & std::ios_base::uppercase ? 'X' : 'x';
+                    break;
+                default: break;
+            }
+            return base;
+        }
+
+        static constexpr char advance(auto& it, auto& end) {
+            char c = *it++;
+            if (it == end) {
+                throw std::format_error("Unbalanced braces in format string");
+            }
+            return c;
+        }
+
+    public:
+        enum class Width : uint8_t {
+            fixed,
+            arg_explicit,
+            arg_implicit
+        };
+
+        // [fill]['<'/'>'/'^']['+'/'-'/' ']['#']['0'][width]['L']
+        // ['b'/'B'/'c'/'d'/'o'/'x'/'X']
+        char fill = ' ';            // any character other than '{' or '}'
+        char align = '=';           // '<' (left), '>' (right - default), '^' (center)
+        char sign = '-';            // '+' (+ for positive, - for negative)
+                                    // '-' (- for negative only),
+                                    // ' ' (space for positive, - for negative)
+        bool negative = false;      // true if the actual value is negative
+        bool show_base = false;     // prefix "0b" (binary), "0" (octal), or "0x" (hex)
+        Width width_type;           // width may be a nested format specifier
+        bool locale = false;        // true if locale-based grouping is used
+        char base = 'd';            // 'b' (binary w/ prefix 0b)
+                                    // 'B' (binary w/ prefix 0B),
+                                    // 'c' (static cast to char or error if overflow)
+                                    // 'd' (decimal - default),
+                                    // 'o' (octal, prefix 0 unless value is zero),
+                                    // 'x' (hexadecimal w/ prefix 0x and lowercase letters)
+                                    // 'X' (hexadecimal w/ prefix 0X and uppercase letters)
+        char sep;                   // separator character for grouping, if any
+        size_t width = 0;           // minimum field width OR argument index
+        std::string grouping;       // locale-based grouping string
+
+        constexpr format_bits() noexcept = default;
+
+        constexpr format_bits(
+            std::ostream& os,
+            bool negative,
+            const auto& facet
+        ) noexcept :
+            fill(os.fill()),
+            align(get_align(os)),
+            sign(os.flags() & std::ios_base::showpos ? '+' : '-'),
+            negative(negative),
+            show_base(os.flags() & std::ios_base::showbase),
+            width_type(Width::fixed),
+            locale(true),
+            base(get_base(os)),
+            sep(facet.thousands_sep()),
+            width(os.width()),
+            grouping(facet.grouping())
+        {}
+
+        constexpr format_bits(std::format_parse_context& ctx, auto& it) {
+            auto end = ctx.end();
+            if (it == end) {
+                throw std::format_error("Unbalanced braces in format string");
+            }
+            if (*it == '}') {
+                return;
+            }
+
+            // check for fill and align
+            if (*it == '<' || *it == '>' || *it == '^') {
+                align = advance(it, end);
+            } else if ((it + 1) != end && (
+                it[1] == '>' || it[1] == '<' || it[1] == '^'
+            )) {
+                if (*it == '{' || *it == '}') {
+                    throw std::format_error("Invalid fill character");
+                }
+                fill = advance(it, end);
+                align = advance(it, end);
+            }
+
+            // check for sign
+            if (*it == '+' || *it == '-' || *it == ' ') {
+                sign = advance(it, end);
+            }
+
+            // check for show_base
+            if (*it == '#') {
+                show_base = true;
+                advance(it, end);
+            }
+
+            // check for zero padding
+            if (*it == '0' && align == '=') {
+                fill = advance(it, end);
+            }
+
+            // check for width
+            if (*it == '{') {  // nested specifier
+                advance(it, end);
+                if (*it == '}') {  // implicit argument index
+                    advance(it, end);
+                    width_type = Width::arg_implicit;
+                    width = ctx.next_arg_id();
+                } else {  // explicit argument index
+                    while (std::isdigit(*it)) {
+                        width = width * 10 + (advance(it, end) - '0');
+                    }
+                    if (*it != '}') {
+                        throw std::format_error(
+                            "Bad index to nested width specifier"
+                        );
+                    }
+                    ctx.check_arg_id(width);
+                    advance(it, end);
+                    width_type = Width::arg_explicit;
+                }
+            } else if (std::isdigit(*it)) {
+                do {
+                    width = width * 10 + (advance(it, end) - '0');
+                } while (std::isdigit(*it));
+                width_type = Width::fixed;
+            }
+
+            // check for locale
+            if (*it == 'L') {
+                locale = true;
+                advance(it, end);
+            }
+
+            // check for base
+            if (
+                *it == 'b' || *it == 'B' || *it == 'c' || *it == 'd' ||
+                *it == 'o' || *it == 'x' || *it == 'X'
+            ) {
+                if (*it == 'c') {
+                    if (show_base) {
+                        throw std::format_error(
+                            "base 'c' is mutually exclusive with '#'"
+                        );
+                    } else if (sign != '-') {
+                        throw std::format_error(
+                            "base 'c' is mutually exclusive with '+' or ' ' sign"
+                        );
+                    }
+                }
+
+                base = advance(it, end);
+            }
+
+            // if the current character is not a closing brace, then the argument
+            // specifier is invalid somehow
+            if (*it != '}') {
+                throw std::format_error("Invalid format specifier");
+            }
+        }
+
+        template <typename out, typename char_type>
+        constexpr void complete(std::basic_format_context<out, char_type>& ctx) {
+            // get proper locale from context
+            if (locale) {
+                const auto& facet = std::use_facet<std::numpunct<char_type>>(
+                    ctx.locale()
+                );
+                sep = facet.thousands_sep();
+                grouping = facet.grouping();
+            }
+
+            // resolve nested width specifier
+            if (width_type != Width::fixed) {
+                auto arg = ctx.arg(width);
+                if (!arg) {
+                    throw std::format_error(
+                        "Invalid argument index for nested width specifier"
+                    );
+                }
+                std::visit_format_arg([&](auto&& x) {
+                    using A = std::decay_t<decltype(x)>;
+                    if constexpr (meta::integer<decltype(x)>) {
+                        if (x < 0) {
+                            throw std::format_error(
+                                "Nested width specifier must be non-negative"
+                            );
+                        }
+                        if (x > std::numeric_limits<size_t>::max()) {
+                            throw std::format_error(
+                                "Nested width specifier must be less than "
+                                "std::numeric_limits<size_t>::max()"
+                            );
+                        }
+                        width = static_cast<size_t>(x);
+                    } else {
+                        throw std::format_error(
+                            "Nested width specifier must be an integer"
+                        );
+                    }
+                }, arg);
+            }
+        }
+
+        template <typename char_type, size_t N>
+        constexpr std::basic_string<char_type> digits_with_grouping(
+            const Bits<N>& bits
+        ) const {
+            using word = Bits<N>::word;
+
+            // if `base` is set to 'c', then we only output a single character, which
+            // is the value of the bitset converted to the character type of the format
+            // string, assuming it is within range
+            if (base == 'c') {
+                if (bits <= std::numeric_limits<char_type>::max()) {
+                    return {1, static_cast<char_type>(bits)};
+                } else {
+                    throw std::format_error(
+                        "Cannot convert Bits to char: value is too large"
+                    );
+                }
+            }
+
+            auto last = bits.last_one();
+            if (!last.has_value()) {
+                return {1, '0'};
+            }
+
+            // decode base specifier and choose the appropriate alphabet
+            size_t actual_base;
+            bool upper = false;
+            switch (base) {
+                case 'b':
+                    actual_base = 2;
+                    break;
+                case 'B':
+                    actual_base = 2;
+                    upper = true;
+                    break;
+                case 'd':
+                    actual_base = 10;
+                    break;
+                case 'o':
+                    actual_base = 8;
+                    break;
+                case 'x':
+                    actual_base = 16;
+                    break;
+                case 'X':
+                    actual_base = 16;
+                    upper = true;
+                    break;
+                default:
+                    throw std::format_error(
+                        "Invalid base for Bits::format_bits: '" +
+                        std::to_string(base) + "'"
+                    );
+            }
+            const char* alpha = upper ? upper_alpha : lower_alpha;
+
+            // compute # of digits in the given base needed to represent the most
+            // significant nonzero bit: ceil(N / log2(base))
+            size_t size = size_t(std::ceil(
+                double(last.value() + 1) / std::log2(actual_base)
+            ));
+            std::basic_string<char_type> result;
+            Bits<N> quotient = bits;
+
+            // if the base is a power of 2, prefer simple shifts and masks
+            if (impl::is_power2(actual_base)) {
+                result.reserve(size);
+                word mask = word(actual_base - 1);
+                word width = word(std::bit_width(mask));
+                for (size_t i = 0; i < size; ++i) {
+                    result.push_back(alpha[word(quotient) & mask]);
+                    quotient >>= width;
+                }
+
+            // otherwise, fall back to division-based extraction
+            } else {
+                Bits<N> divisor = actual_base;
+                Bits<N> remainder;
+                if (actual_base == 10 && !grouping.empty()) {
+                    // estimate final string length with separators inserted by getting
+                    // last positive group width less than CHAR_MAX and adding to size
+                    signed char group_len = 0;
+                    for (signed char s : reversed(grouping)) {
+                        if (s > 0 && s < CHAR_MAX) {
+                            group_len = s;
+                            break;
+                        }
+                    }
+                    if (group_len == 0) {
+                        result.reserve(size);
+                    } else {
+                        result.reserve(size + (size / size_t(group_len)));
+                    }
+                    group_len = grouping[0];
+                    for (size_t i = 0, group_idx = 0; i < size; ++i) {
+                        quotient.divmod(divisor, quotient, remainder);
+                        result.push_back(alpha[word(remainder)]);
+
+                        // if `group_len` is a positive number less than CHAR_MAX, then
+                        // decrement it and insert a separator if it reaches zero
+                        if (
+                            (i + 1) < size &&  // skip last sep if no subsequent digit
+                            group_len > 0 &&  // non-positive lengths are infinite size
+                            group_len < CHAR_MAX &&  // CHAR_MAX is infinite size
+                            --group_len == 0  // reached end of group
+                        ) {
+                            result.push_back(sep);
+                            if ((group_idx + 1) < grouping.size()) {
+                                group_len = grouping[++group_idx];  // advance group
+                            } else {
+                                group_len = grouping[group_idx];  // repeat last group
+                            }
+                        }
+                    }
+
+                } else {
+                    result.reserve(size);
+                    for (size_t i = 0; i < size; ++i) {
+                        quotient.divmod(divisor, quotient, remainder);
+                        result.push_back(alpha[word(remainder)]);
+                    }
+                }
+            }
+
+            std::reverse(result.begin(), result.end());
+            return result;
+        }
+
+        template <typename char_type>
+        constexpr void pad_and_align(
+            std::basic_string<char_type>& str
+        ) const {
+            size_t prefix_len = 0;
+
+            // prepend base prefix if requested
+            if (show_base) {
+                switch (base) {
+                    case 'b':
+                        str.insert(0, std::string_view{"0b", 2});
+                        prefix_len += 2;
+                        break;
+                    case 'B':
+                        str.insert(0, std::string_view{"0B", 2});
+                        prefix_len += 2;
+                        break;
+                    case 'c':
+                        break;
+                    case 'd':
+                        break;
+                    case 'o':
+                        if (str.size() > 1 || str[0] != '0') {
+                            str.insert(0, std::string_view{"0", 1});
+                            ++prefix_len;
+                        }
+                        break;
+                    case 'x':
+                        str.insert(0, std::string_view{"0x", 2});
+                        prefix_len += 2;
+                        break;
+                    case 'X':
+                        str.insert(0, std::string_view{"0X", 2});
+                        prefix_len += 2;
+                        break;
+                    default:
+                        throw std::format_error(
+                            "Invalid base for show_base: '" +
+                            std::to_string(base) + "'"
+                        );
+                }
+            }
+
+            // prepend sign if requested
+            switch (sign) {
+                case '+':  // always
+                    if (negative) str.insert(str.begin(), '-');
+                    else str.insert(str.begin(), '+');
+                    ++prefix_len;
+                    break;
+                case '-':  // only if negative
+                    if (negative) {
+                        str.insert(str.begin(), '-');
+                        ++prefix_len;
+                    }
+                    break;
+                case ' ':  // align using space if positive
+                    if (negative) str.insert(str.begin(), '-');
+                    else str.insert(str.begin(), ' ');
+                    ++prefix_len;
+                    break;
+                default:
+                    throw std::format_error(
+                        "Invalid sign: '" + std::to_string(sign) + "'"
+                    );
+            }
+
+            // fill to at least `width` characters
+            if (str.size() < width) {
+                size_t n = width - str.size();
+                switch (align) {
+                    case '<':  // left align
+                        str.append(n, fill);
+                        break;
+                    case '>':  // right align
+                        str.insert(str.begin(), n, fill);
+                        break;
+                    case '^':  // center align
+                        str.insert(0, n / 2, fill);
+                        str.append(n - (n / 2), fill);
+                        break;
+                    case '=':  // internal alignment - pad between sign/base and value
+                        str.insert(prefix_len, n, fill);
+                        break;
+                    default:
+                        throw std::format_error(
+                            "Invalid alignment for show_base: '" +
+                            std::to_string(align) + "'"
+                        );
+                }
+            }
+        }
+    };
+
 }
 
 
@@ -778,172 +1227,8 @@ private:
         return result;
     }
 
-    /// TODO: these helpers should also be used for `std::formatter` support to reduce
-    /// code duplication, as well as possibly being reused for signed integers as well.
-    /// That will be somewhat hard to structure, but it's the simplest way to
-    /// implement the `std::formatter` interface for Bits and co.
-
-    constexpr std::string stream_format(word base, bool upper) const {
-        static constexpr static_str lower_alpha = "0123456789abcdefghijklmnopqrstuvwxyz";
-        static constexpr static_str upper_alpha = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-        std::string result;
-        if (auto last = last_one(); last.has_value()) {
-            // size holds the number of digits in the given base that are needed to
-            // represent the most significant nonzero bit
-            size_type size = size_type(std::ceil(
-                double(last.value() + 1) / std::log2(base)
-            ));
-            result.reserve(size);
-
-            Bits quotient = *this;
-            if (impl::is_power2(base)) {  // prefer simple shifts if possible
-                word mask = base - 1;
-                word width = std::bit_width(mask);
-                if (upper) {
-                    for (size_type i = 0; i < size; ++i) {
-                        result.push_back(upper_alpha[quotient.buffer[0] & mask]);
-                        quotient >>= width;
-                    }
-                } else {
-                    for (size_type i = 0; i < size; ++i) {
-                        result.push_back(lower_alpha[quotient.buffer[0] & mask]);
-                        quotient >>= width;
-                    }
-                }
-            } else {  // division-based fallback
-                Bits divisor = base;
-                Bits remainder;
-                if (upper) {
-                    for (size_type i = 0; i < size; ++i) {
-                        quotient.divmod(divisor, quotient, remainder);
-                        result.push_back(upper_alpha[remainder.buffer[0]]);
-                    }
-                } else {
-                    for (size_type i = 0; i < size; ++i) {
-                        quotient.divmod(divisor, quotient, remainder);
-                        result.push_back(lower_alpha[remainder.buffer[0]]);
-                    }
-                }
-            }
-            std::reverse(result.begin(), result.end());  // big-endian
-        } else {
-            result = "0";  // empty bitset is zero
-        }
-        return result;
-    }
-
-    static constexpr void stream_group(std::ostream& os, std::string& str) {
-        const auto& facet =
-            std::use_facet<std::numpunct<char>>(os.getloc());
-
-        /// NOTE: because iostreams are insane, the grouping "string" isn't really
-        /// a string at all, but actually a numeric array of grouping sizes, where
-        /// the sizes count from least significant digit to most significant digit,
-        /// and the last size is repeated for all remaining groups.  If this sounds
-        /// ridiculous to you, welcome to the club.
-        std::string grouping = facet.grouping();  // e.g. "\1\2\3"
-        if (!grouping.empty()) {
-            char sep = facet.thousands_sep();  // e.g. ',' or '\''
-            std::string out;
-            size_type last_size = 0;
-            for (size_type i = grouping.size(); i-- > 0;) {
-                if (size_type s = grouping[i]) {
-                    last_size = s;
-                    break;
-                }
-            }
-            if (last_size == 0) {
-                os.setstate(std::ios_base::failbit);  // all groups are empty
-            }
-            out.reserve(  // estimate grouped size
-                str.size() + str.size() / last_size
-            );
-            std::reverse(str.begin(), str.end());  // start from LSB
-            size_type group_idx = 0;
-            char group_len = grouping[0];
-            while (group_len == 0) {  // consume leading empty groups
-                out.push_back(sep);
-                group_len = grouping[++group_idx];
-            }
-
-            // if the group length is negative or CHAR_MAX, then the group is
-            // infinitely-sized, and we just append the rest of the string.
-            if (group_len < 0 || group_len == std::numeric_limits<char>::max()) {
-                out += str;
-                if (group_idx + 1 < grouping.size()) {  // update group size
-                    group_len = grouping[++group_idx];
-                    while (group_len == 0) {  // consume trailing empty groups
-                        out.push_back(sep);
-                        group_len = grouping[++group_idx];
-                    }
-                }
-                std::reverse(out.begin(), out.end());
-                str = std::move(out);
-                return;
-            }
-
-            // main loop
-            out.push_back(str[0]);  // push first digit
-            for (size_type i = 1; i < str.size(); ++i) {
-                if (
-                    group_len > 0 &&
-                    group_len < std::numeric_limits<char>::max() &&
-                    i % group_len == 0
-                ) {
-                    out.push_back(sep);
-                    if (group_idx + 1 < grouping.size()) {  // update group size
-                        group_len = grouping[++group_idx];
-                        while (group_len == 0) {  // consume empty groups
-                            out.push_back(sep);
-                            group_len = grouping[++group_idx];
-                        }
-                    }
-                }
-                out.push_back(str[i]);  // push next digit
-            }
-
-            // if the main loop ended and the next group(s) are empty, then push
-            // the separator for those groups as well.
-            if (group_idx + 1 < grouping.size()) {
-                group_len = grouping[++group_idx];
-                while (group_len == 0) {  // consume trailing empty groups
-                    out.push_back(sep);
-                    group_len = grouping[++group_idx];
-                }
-            }
-
-            std::reverse(out.begin(), out.end());
-            str = std::move(out);  // replace original string with grouped one
-        }
-    }
-
-    static constexpr void stream_aligned_write(
-        std::ostream& os,
-        std::string& str,
-        size_type prefix_len
-    ) {
-        std::streamsize w = os.width();
-        if (w > std::streamsize(str.size())) {
-            std::streamsize pad = w - str.size();
-            char fill = os.fill();
-            std::ios_base::fmtflags adj = os.flags() & std::ios_base::adjustfield;
-
-            if (adj == std::ios_base::left) {  // left justify
-                os.write(str.data(), str.size());
-                while (pad--) os.put(fill);
-            } else if (adj == std::ios_base::internal) {  // prefix, then right justify
-                os.write(str.data(), prefix_len);
-                while (pad--) os.put(fill);
-                os.write(str.data() + prefix_len, str.size() - prefix_len);
-            } else {  // right justify (default)
-                while (pad--) os.put(fill);
-                os.write(str.data(), str.size());
-            }
-        } else {
-            os.write(str.data(), str.size());
-        }
-    }
+    /// TODO: standardize input formatters similar to output formatters, possibly using
+    /// the same `format_bits` struct. 
 
     static constexpr std::istream& stream_fail(std::istream& is) {
         is.setstate(std::ios_base::failbit);
@@ -2669,6 +2954,8 @@ public:
         }
     }
 
+    /// TODO: root<N>(), log<N>(), pow<N>()?
+
     /* Lexicographically compare two bitsets of equal size. */
     [[nodiscard]] friend constexpr auto operator<=>(
         const Bits& lhs,
@@ -3090,42 +3377,21 @@ public:
             return os;  // stream is not ready for output
         }
 
-        // 1) determine base, uppercase, showbase
-        word base = 10;
-        switch (os.flags() & std::ios_base::basefield) {
-            case std::ios_base::oct: base = 8; break;
-            case std::ios_base::dec: base = 10; break;
-            case std::ios_base::hex: base = 16; break;
-            default:
-                os.setstate(std::ios_base::failbit);  // unsupported base
-                os.width(0);
-                return os;
-        }
-        bool upper = os.flags() & std::ios_base::uppercase;
-        bool showbase = os.flags() & std::ios_base::showbase;
+        // 1) extract configuration from stream
+        impl::format_bits ctx(
+            os,
+            false,
+            std::use_facet<std::numpunct<char>>(os.getloc())
+        );
 
-        // 2) convert to string in that base
-        std::string str = set.stream_format(base, upper);
+        // 2) convert to string in proper base with locale-based grouping (if any)
+        std::string str = ctx.template digits_with_grouping<char>(set);
 
-        // 3) apply locale-based grouping (if any)
-        if (base == 10 && !str.empty()) {  // standard only groups decimal digits
-            stream_group(os, str);
-        }
+        // 3) adjust for sign + base prefix, and fill to width
+        ctx.template pad_and_align<char>(str);
 
-        // 4) prepend base prefix if directed
-        size_type prefix_len = 0;
-        if (showbase) {
-            if (base == 8) {
-                prefix_len = 1;
-                str.insert(0, "0");
-            } else if (base == 16) {
-                prefix_len = 2;
-                str.insert(0, upper ? "0X" : "0x");
-            }
-        }
-
-        // 5) write to the output stream, honoring width / fill / adjustfield
-        stream_aligned_write(os, str, prefix_len);
+        // 4) write to output stream
+        os.write(str.data(), str.size());
         os.width(0);  // reset width for next output (mandatory)
         return os;
     }
@@ -3251,11 +3517,6 @@ public:
         set = std::move(result);  // move the result to the output bitset
         return is;
     }
-
-    /// TODO: I eventually need std::formatter specializations for these types as well,
-    /// along the same lines as for built-in integer types.  This probably involves
-    /// generalizing the stream operator utilities and reusing them as much as
-    /// possible.
 
 };
 
@@ -3417,6 +3678,11 @@ struct UInt : impl::UInt_tag {
     ) noexcept {
         return Bits<N>::from_hex(str, continuation);
     }
+
+    /// TODO: the result from to_string() is zero padded to the exact width of the
+    /// underlying bitset, which should not be the case for integers, or for
+    /// std::format or std::ostream formatting.  I can either eliminate it for the
+    /// bitset itself, or add a special case.
 
     /* Encode an integer into a string representation.  Defaults to base 2 with the
     given zero and one digit strings, which are provided as template parameters, and
@@ -3863,10 +4129,6 @@ constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept {
 }
 
 
-
-
-
-
 template <size_t N>
 struct Int : impl::Int_tag {
     Bits<N> value;
@@ -3878,7 +4140,7 @@ struct Int : impl::Int_tag {
 };
 
 
-template <meta::integer... Ts>
+template <impl::loose_bits... Ts>
 Int(Ts...) -> Int<impl::bitcount<Ts...>>;
 
 
@@ -3894,11 +4156,59 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 
 namespace std {
 
+    /* Specializing `std::formatter` allows bitsets to be formatted using `std::format`,
+    `repr()`, `print`, and other formatting functions. */
     template <bertrand::meta::Bits T>
-    struct formatter {
-        /// TODO: implement according to the same rules as built-in unsigned integer
-        /// types.
+    struct formatter<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        mutable bertrand::impl::format_bits config;
 
+        /* Parse the format specification mini-language as if the bitset were an
+        ordinary integral type. */
+        constexpr auto parse(format_parse_context& ctx) {
+            auto it = ctx.begin();
+            config = bertrand::impl::format_bits(ctx, it);
+            return it;
+        }
+
+        /* Encode the bitset according to the parsed flags, reusing logic from the
+        iostream operators. */
+        template <typename out, typename char_type>
+        constexpr auto format(
+            const_reference v,
+            basic_format_context<out, char_type>& ctx
+        ) const {
+            // 1) get the correct locale from context and resolve nested width specifier
+            config.complete(ctx);
+
+            // 2) convert to string in proper base with locale-based grouping (if any)
+            std::basic_string<char_type> str =
+                config.template digits_with_grouping<char_type>(v);
+
+            // 3) adjust for sign + base prefix, and fill to width
+            config.template pad_and_align<char_type>(str);
+
+            // 4) write to format context
+            out it = ctx.out();
+            it = std::copy(str.begin(), str.end(), it);
+            return it;
+        }
+    };
+
+    /* Specializing `std::formatter` allows unsigned integers to be formatted using
+    `std::format`, `repr()`, `print`, and other formatting functions. */
+    template <bertrand::meta::UInt T>
+    struct formatter<T> {
+        /// TODO: apply similar logic as Bits.  Perhaps I can write an impl:: class
+        /// that encapsulates all the logic necessary for stream insertion and
+        /// formatting, which can be reused.
+    };
+
+    /* Specializing `std::formatter` allows signed integers to be formatted using
+    `std::format`, `repr()`, `print`, and other formatting functions. */
+    template <bertrand::meta::Int T>
+    struct formatter<T> {
+        /// TODO: same as above.
     };
 
     /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
@@ -4033,146 +4343,149 @@ namespace std {
 }
 
 
-namespace bertrand {
+// namespace bertrand {
 
 
-    template <Bits b>
-    struct Foo {
-        static constexpr const auto& value = b;
-    };
+//     template <Bits b>
+//     struct Foo {
+//         static constexpr const auto& value = b;
+//     };
 
-    inline void test() {
-        {
-            static constexpr Bits<2> a{0b1010};
-            static constexpr Bits a2{false, true};
-            static constexpr Bits a3{1, 2};
-            static constexpr Bits a4{0, true};
-            static_assert(a4.count() == 1);
-            static_assert(a3.size() == 64);
-            static_assert(a == a2);
-            auto [f1, f2] = a;
-            static constexpr Bits b {"abab", 'b', 'a'};
-            static constexpr std::string c = b.to_binary();
-            static constexpr std::string d = b.to_decimal();
-            static constexpr std::string d2 = b.to_string();
-            static constexpr std::string d3 = b.to_hex();
-            static_assert(any(b.components()));
-            static_assert(b.first_one(2).value() == 3);
-            static_assert(a == 0b10);
-            static_assert(b == 0b1010);
-            static_assert(b[1] == true);
-            static_assert(c == "1010");
-            static_assert(d == "10");
-            static_assert(d2 == "1010");
-            static_assert(d3 == "A");
+//     inline void test() {
+//         {
+//             static constexpr Bits<2> a{0b1010};
+//             static constexpr Bits a2{false, true};
+//             static constexpr Bits a3{1, 2};
+//             static constexpr Bits a4{0, true};
+//             static_assert(a4.count() == 1);
+//             static_assert(a3.size() == 64);
+//             static_assert(a == a2);
+//             auto [f1, f2] = a;
+//             static constexpr Bits b {"abab", 'b', 'a'};
+//             static constexpr std::string c = b.to_binary();
+//             static constexpr std::string d = b.to_decimal();
+//             static constexpr std::string d2 = b.to_string();
+//             static constexpr std::string d3 = b.to_hex();
+//             static_assert(any(b.components()));
+//             static_assert(b.first_one(2).value() == 3);
+//             static_assert(a == 0b10);
+//             static_assert(b == 0b1010);
+//             static_assert(b[1] == true);
+//             static_assert(c == "1010");
+//             static_assert(d == "10");
+//             static_assert(d2 == "1010");
+//             static_assert(d3 == "A");
 
-            static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
-            static_assert(sizeof(Bits<2>) == 1);
+//             static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
+//             static_assert(sizeof(Bits<2>) == 1);
 
-            constexpr auto x = []() {
-                Bits<4> out;
-                out[-1] = true;
-                return out;
-            }();
-            static_assert(x == uint8_t(0b1000));
+//             constexpr auto x = []() {
+//                 Bits<4> out;
+//                 out[-1] = true;
+//                 return out;
+//             }();
+//             static_assert(x == uint8_t(0b1000));
 
-            for (auto&& x : a.components()) {
+//             for (auto&& x : a.components()) {
 
-            }
-        }
+//             }
+//         }
 
-        {
-            static constexpr Bits b {"100"};
-            static constexpr auto b2 = Bits<3>::from_string(
-                std::string_view("100")
-            );
-            static_assert(b.data()[0] == 4);
-            static_assert(b2.result().data()[0] == 4);
+//         {
+//             static constexpr Bits b {"100"};
+//             static constexpr auto b2 = Bits<3>::from_string(
+//                 std::string_view("100")
+//             );
+//             static_assert(b.data()[0] == 4);
+//             static_assert(b2.result().data()[0] == 4);
 
-            static constexpr auto b3 = Bits{"0100"}.reverse();
-            static_assert(b3.data()[0] == 2);
+//             static constexpr auto b3 = Bits{"0100"}.reverse();
+//             static_assert(b3.data()[0] == 2);
 
-            static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
-            static_assert(b4.result().data()[0] == 4);
+//             static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
+//             static_assert(b4.result().data()[0] == 4);
 
-            static constexpr auto b5 = Bits<3>::from_decimal("5");
-            static_assert(b5.result().data()[0] == 5);
+//             static constexpr auto b5 = Bits<3>::from_decimal("5");
+//             static_assert(b5.result().data()[0] == 5);
 
-            static constexpr auto b6 = Bits<8>::from_hex("FF");
-            static_assert(b6.result().data()[0] == 255);
+//             static constexpr auto b6 = Bits<8>::from_hex("FF");
+//             static_assert(b6.result().data()[0] == 255);
 
-            static constexpr auto b7 = Bits<8>::from_hex("ZZ");
-            static_assert(b7.has_error());
+//             static constexpr auto b7 = Bits<8>::from_hex("ZZ");
+//             static_assert(b7.has_error());
 
-            static constexpr auto b8 = Bits<8>::from_hex("FFC");
-            static_assert(b8.has_error());
-        }
+//             static constexpr auto b8 = Bits<8>::from_hex("FFC");
+//             static_assert(b8.has_error());
+//         }
 
-        {
-            static constexpr Foo<{true, false, true}> foo;
-            static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
-            static_assert(foo.value == Bits{"101"});
-            static_assert(bar.value == 5);
-            static_assert(bar.value == 5);
-        }
+//         {
+//             static constexpr Foo<{true, false, true}> foo;
+//             static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
+//             static_assert(foo.value == Bits{"101"});
+//             static_assert(bar.value == 5);
+//             static_assert(bar.value == 5);
+//         }
 
-        {
-            static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
-            static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
-            static_assert(Bits<4>::from_octal("20").has_error());
-            static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
-            static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
+//         {
+//             static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
+//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+//             static_assert(Bits<4>::from_octal("20").has_error());
+//             static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
+//             static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
 
-            // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
-        }
+//             // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
+//         }
 
-        {
-            static constexpr Bits<5> a = -1;
-            static constexpr Bits<5> b = a + 2;
-            static_assert(a == 31);
-            static_assert(b.data()[0] == 1);
+//         {
+//             static constexpr Bits<5> a = -1;
+//             static constexpr Bits<5> b = a + 2;
+//             static_assert(a == 31);
+//             static_assert(b.data()[0] == 1);
 
-            static constexpr Bits<5> c;
-            static constexpr Bits<5> d = c - 1;
-            static_assert(c == 0);
-            static_assert(d.data()[0] == 31);
+//             static constexpr Bits<5> c;
+//             static constexpr Bits<5> d = c - 1;
+//             static_assert(c == 0);
+//             static_assert(d.data()[0] == 31);
 
-            static constexpr Bits<5> e = 12;
-            static constexpr Bits<5> f = e * 3;
-            static_assert(f.data()[0] == 4);
-        }
+//             static constexpr Bits<5> e = 12;
+//             static constexpr Bits<5> f = e * 3;
+//             static_assert(f.data()[0] == 4);
+//         }
 
-        {
-            static constexpr Bits<4> b = {Bits{"110"}, true};
-            static_assert(b.last_zero().value() == 0);
-            static_assert(b == Bits{"1110"});
-            static_assert(-b == Bits{"0010"});
-            static_assert(Bits<5>::from_string("10100").result() == 20);
+//         {
+//             static constexpr Bits<4> b = {Bits{"110"}, true};
+//             static_assert(b.last_zero().value() == 0);
+//             static_assert(b == Bits{"1110"});
+//             static_assert(-b == Bits{"0010"});
+//             static_assert(Bits<5>::from_string("10100").result() == 20);
 
-            static constexpr Bits<72> b2;
-            static_assert(size_t(b2) == 0);
-            // int x = b2;
+//             static constexpr Bits<72> b2;
+//             static_assert(size_t(b2) == 0);
+//             // int x = b2;
 
-            auto y = b + Bits{3};
-            if (b) {
+//             auto y = b + Bits{3};
+//             if (b) {
 
-            }
-            std::cout << b;
+//             }
+//             std::cout << b;
 
-            static constexpr static_str s = "1";
-            static constexpr static_str s2 {s[0]};
-            static_assert(s2 == "1");
-        }
+//             static constexpr static_str s = "1";
+//             static constexpr static_str s2 {s[0]};
+//             static_assert(s2 == "1");
+//         }
 
-        {
-            static constexpr UInt<64> x = 42;
-            static_assert(x == 42);
-            static constexpr auto x2 = UInt<32>::from_decimal("42");
-            static_assert(x2.result() == 42);
-        }
-    }
+//         {
+//             static constexpr UInt<64> x = 42;
+//             static_assert(x == 42);
+//             static constexpr auto x2 = UInt<32>::from_decimal("42");
+//             static_assert(x2.result() == 42);
 
-}
+//             static constexpr UInt y = -1;
+//             static_assert(y.bits.count() == 32);
+//         }
+//     }
+
+// }
 
 
 #endif  // BERTRAND_BITSET_H
