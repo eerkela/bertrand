@@ -565,7 +565,10 @@ namespace impl {
             grouping(facet.grouping())
         {}
 
-        constexpr format_bits(std::format_parse_context& ctx, auto& it) {
+        constexpr format_bits(
+            std::format_parse_context& ctx,
+            auto& it
+        ) {
             auto end = ctx.end();
             if (it == end) {
                 throw std::format_error("Unbalanced braces in format string");
@@ -664,7 +667,12 @@ namespace impl {
         }
 
         template <typename out, typename char_type>
-        constexpr void complete(std::basic_format_context<out, char_type>& ctx) {
+        constexpr void complete(
+            std::basic_format_context<out, char_type>& ctx,
+            bool negative
+        ) {
+            this->negative = negative;
+
             // get proper locale from context
             if (locale) {
                 const auto& facet = std::use_facet<std::numpunct<char_type>>(
@@ -2142,11 +2150,24 @@ public:
 
     /* Explicitly convert a multi-word bitset into an integer type, possibly truncating
     any upper bits. */
-    template <meta::integer T>
+    template <std::integral T>
     [[nodiscard]] explicit constexpr operator T() const noexcept
         requires(array_size > 1 && meta::explicitly_convertible_to<word, T>)
     {
         return static_cast<T>(buffer[0]);
+    }
+
+    /* Explicitly convert a multi-word bitset into a floating point type, retaining as
+    much precision as possible. */
+    template <meta::floating T>
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(array_size > 1 && meta::explicitly_convertible_to<word, T>)
+    {
+        T value = 0;
+        for (size_type i = array_size; i-- > 0;) {
+            value = std::ldexp(value, word_size) + static_cast<T>(buffer[i]);
+        }
+        return value;
     }
 
     /* Get the underlying array. */
@@ -4188,7 +4209,7 @@ namespace std {
             basic_format_context<out, char_type>& ctx
         ) const {
             // 1) get the correct locale from context and resolve nested width specifier
-            config.complete(ctx);
+            config.complete(ctx, false);
 
             // 2) convert to string in proper base with locale-based grouping (if any)
             std::basic_string<char_type> str =
@@ -4205,19 +4226,55 @@ namespace std {
     };
 
     /* Specializing `std::formatter` allows unsigned integers to be formatted using
-    `std::format`, `repr()`, `print`, and other formatting functions. */
+    `std::format`, `repr()`, `print`, and other formatting functions.  This reuses the
+    same logic as `Bits<N>`. */
     template <bertrand::meta::UInt T>
     struct formatter<T> {
-        /// TODO: apply similar logic as Bits.  Perhaps I can write an impl:: class
-        /// that encapsulates all the logic necessary for stream insertion and
-        /// formatting, which can be reused.
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        formatter<bertrand::Bits<bertrand::meta::integer_width<T>>> config;
+        constexpr auto parse(format_parse_context& ctx) {
+            return config.parse(ctx);
+        }
+        template <typename out, typename char_type>
+        constexpr auto format(
+            const_reference v,
+            basic_format_context<out, char_type>& ctx
+        ) const {
+            return config.format(v.bits, ctx);
+        }
     };
 
     /* Specializing `std::formatter` allows signed integers to be formatted using
     `std::format`, `repr()`, `print`, and other formatting functions. */
     template <bertrand::meta::Int T>
     struct formatter<T> {
-        /// TODO: same as above.
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        formatter<bertrand::Bits<bertrand::meta::integer_width<T>>> config;
+        constexpr auto parse(format_parse_context& ctx) {
+            return config.parse(ctx);
+        }
+        template <typename out, typename char_type>
+        constexpr auto format(
+            const_reference v,
+            basic_format_context<out, char_type>& ctx
+        ) const {
+            /// TODO: make sure msb_is_set() is available
+
+            // 1) get the correct locale from context and resolve nested width specifier
+            config.complete(ctx, v.msb_is_set());
+
+            // 2) convert to string in proper base with locale-based grouping (if any)
+            std::basic_string<char_type> str =
+                config.template digits_with_grouping<char_type>(v);
+
+            // 3) adjust for sign + base prefix, and fill to width
+            config.template pad_and_align<char_type>(str);
+
+            // 4) write to format context
+            out it = ctx.out();
+            it = std::copy(str.begin(), str.end(), it);
+            return it;
+        }
     };
 
     /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
@@ -4243,7 +4300,7 @@ namespace std {
         static constexpr bool is_iec559 = false;
         static constexpr bool is_bounded = true;
         static constexpr bool is_modulo = true;
-        static constexpr int digits = type::size();
+        static constexpr int digits = bertrand::meta::integer_width<T>;
         static constexpr int digits10 = digits * 0.3010299956639812;  // log10(2)
         static constexpr int max_digits10 = 0;
         static constexpr int radix = 2;
@@ -4277,20 +4334,120 @@ namespace std {
     other integer types. */
     template <bertrand::meta::UInt T>
     struct numeric_limits<T> {
-        /// TODO: fill this in similar to `Bits`, but with unsigned semantics.
+    private:
+        using type = std::remove_cvref_t<T>;
+        using bits = bertrand::Bits<bertrand::meta::integer_width<T>>;
+        using traits = std::numeric_limits<bits>;
+
+    public:
+        static constexpr bool is_specialized = traits::is_specialized;
+        static constexpr bool is_signed = traits::is_signed;
+        static constexpr bool is_integer = traits::is_integer;
+        static constexpr bool is_exact = traits::is_exact;
+        static constexpr bool has_infinity = traits::has_infinity;
+        static constexpr bool has_quiet_NaN = traits::has_quiet_NaN;
+        static constexpr bool has_signaling_NaN = traits::has_signaling_NaN;
+        static constexpr bool has_denorm = traits::has_denorm;
+        static constexpr bool has_denorm_loss = traits::has_denorm_loss;
+        static constexpr std::float_round_style round_style = traits::round_style;
+        static constexpr bool is_iec559 = traits::is_iec559;
+        static constexpr bool is_bounded = traits::is_bounded;
+        static constexpr bool is_modulo = traits::is_modulo;
+        static constexpr int digits = traits::digits;
+        static constexpr int digits10 = traits::digits10;
+        static constexpr int max_digits10 = traits::max_digits10;
+        static constexpr int radix = traits::radix;
+        static constexpr int min_exponent = traits::min_exponent;
+        static constexpr int min_exponent10 = traits::min_exponent10;
+        static constexpr int max_exponent = traits::max_exponent;
+        static constexpr int max_exponent10 = traits::max_exponent10;
+        static constexpr bool traps = traits::traps;  // division by zero should trap
+        static constexpr bool tinyness_before = traits::tinyness_before;
+        static constexpr type min() noexcept { return {}; }
+        static constexpr type lowest() noexcept { return {}; }
+        static constexpr type max() noexcept { return {traits::max()}; }
+        static constexpr type epsilon() noexcept { return {}; }
+        static constexpr type round_error() noexcept { return {}; }
+        static constexpr type infinity() noexcept { return {}; }
+        static constexpr type quiet_NaN() noexcept { return {}; }
+        static constexpr type signaling_NaN() noexcept { return {}; }
+        static constexpr type denorm_min() noexcept { return {}; }
     };
 
     /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
     other integer types. */
     template <bertrand::meta::Int T>
     struct numeric_limits<T> {
-        /// TODO: fill this in similar to `Bits`, but with signed semantics.
+    private:
+        using type = std::remove_cvref_t<T>;
+        using bits = bertrand::Bits<bertrand::meta::integer_width<T>>;
+        using word = type::word;
+        using traits = std::numeric_limits<bits>;
+
+    public:
+        static constexpr bool is_specialized = traits::is_specialized;
+        static constexpr bool is_signed = true;
+        static constexpr bool is_integer = traits::is_integer;
+        static constexpr bool is_exact = traits::is_exact;
+        static constexpr bool has_infinity = traits::has_infinity;
+        static constexpr bool has_quiet_NaN = traits::has_quiet_NaN;
+        static constexpr bool has_signaling_NaN = traits::has_signaling_NaN;
+        static constexpr bool has_denorm = traits::has_denorm;
+        static constexpr bool has_denorm_loss = traits::has_denorm_loss;
+        static constexpr std::float_round_style round_style = traits::round_style;
+        static constexpr bool is_iec559 = traits::is_iec559;
+        static constexpr bool is_bounded = traits::is_bounded;
+        static constexpr bool is_modulo = traits::is_modulo;
+        static constexpr int digits = traits::digits;
+        static constexpr int digits10 = traits::digits;  // log10(2)
+        static constexpr int max_digits10 = traits::max_digits10;
+        static constexpr int radix = traits::radix;
+        static constexpr int min_exponent = traits::min_exponent;
+        static constexpr int min_exponent10 = traits::min_exponent10;
+        static constexpr int max_exponent = traits::max_exponent;
+        static constexpr int max_exponent10 = traits::max_exponent10;
+        static constexpr bool traps = traits::traps;  // division by zero should trap
+        static constexpr bool tinyness_before = traits::tinyness_before;
+        static constexpr type min() noexcept {
+            // only most significant bit is set -> two's complement
+            type result;
+            if constexpr (bits::end_mask) {
+                result.bits.data()[bits::array_size - 1] =
+                    word(word(1) << ((digits % bits::word_size) - 1));
+            } else {
+                result.bits.data()[bits::array_size - 1] =
+                    word(word(1) << (bits::word_size - 1));
+            }
+            return result;
+        }
+        static constexpr type lowest() noexcept { return min(); }
+        static constexpr type max() noexcept {
+            // all but the most significant bit are set -> two's complement
+            type result;
+            for (size_t i = 0; i < bits::array_size - 1; ++i) {
+                result.bits.data()[i] = std::numeric_limits<word>::max();
+            }
+            if constexpr (bits::end_mask) {
+                result.bits.data()[bits::array_size - 1] = word(bits::end_mask >> 1);
+            } else {
+                result.bits.data()[bits::array_size - 1] =
+                    word(std::numeric_limits<word>::max() >> 1);
+            }
+            return result;
+        }
+        static constexpr type epsilon() noexcept { return {}; }
+        static constexpr type round_error() noexcept { return {}; }
+        static constexpr type infinity() noexcept { return {}; }
+        static constexpr type quiet_NaN() noexcept { return {}; }
+        static constexpr type signaling_NaN() noexcept { return {}; }
+        static constexpr type denorm_min() noexcept { return {}; }
     };
 
     /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
     template <bertrand::meta::Bits T>
     struct hash<T> {
-        [[nodiscard]] static size_t operator()(const T& x) noexcept {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
             size_t result = 0;
             for (size_t i = 0; i < x.data().size(); ++i) {
                 result = bertrand::impl::hash_combine(result, x.data()[i]);
@@ -4302,30 +4459,18 @@ namespace std {
     /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
     template <bertrand::meta::UInt T>
     struct hash<T> {
-        [[nodiscard]] static size_t operator()(const T& x) noexcept {
-            size_t result = 0;
-            for (size_t i = 0; i < x.value.data().size(); ++i) {
-                result = bertrand::impl::hash_combine(
-                    result,
-                    x.value.data()[i]
-                );
-            }
-            return result;
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
+            return hash<bertrand::Bits<bertrand::meta::integer_width<T>>>{}(x.bits);
         }
     };
 
     /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
     template <bertrand::meta::Int T>
     struct hash<T> {
-        [[nodiscard]] static size_t operator()(const T& x) noexcept {
-            size_t result = 0;
-            for (size_t i = 0; i < x.value.data().size(); ++i) {
-                result = bertrand::impl::hash_combine(
-                    result,
-                    x.value.data()[i]
-                );
-            }
-            return result;
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
+            return hash<bertrand::Bits<bertrand::meta::integer_width<T>>>{}(x.bits);
         }
     };
 
