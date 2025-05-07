@@ -209,6 +209,9 @@ namespace meta {
     concept is_volatile = std::is_volatile_v<std::remove_reference_t<T>>;
 
     template <typename T>
+    concept not_volatile = !is_volatile<T>;
+
+    template <typename T>
     using as_volatile = std::conditional_t<
         meta::lvalue<T>,
         meta::as_lvalue<std::add_volatile_t<meta::remove_reference<T>>>,
@@ -247,7 +250,6 @@ namespace meta {
     concept not_void = !is_void<T>;
 
     namespace detail {
-
         template <typename L, typename R>
         struct qualify { using type = L; };
         template <typename L, typename R>
@@ -296,7 +298,6 @@ namespace meta {
         struct qualify<L, volatile R&&> { using type = L; };
         template <meta::is_void L, typename R>
         struct qualify<L, const volatile R&&> { using type = L; };
-
     }
 
     template <typename T>
@@ -312,7 +313,6 @@ namespace meta {
     using unqualify = std::remove_cvref_t<T>;
 
     namespace detail {
-
         template <typename T, typename U>
         constexpr bool more_qualified_than = true;
         template <typename T, typename U>
@@ -322,7 +322,6 @@ namespace meta {
         template <typename T, typename U>
         constexpr bool more_qualified_than<T, const volatile U> =
             meta::is_const<T> && meta::is_volatile<T>;
-
     }
 
     template <typename T, typename U>
@@ -699,77 +698,134 @@ namespace meta {
     ////    PRIMITIVES    ////
     //////////////////////////
 
-    template <typename T>
-    concept integer = std::integral<unqualify<T>>;
+    namespace detail {
+        template <typename T>
+        constexpr bool integer = std::integral<unqualify<T>>;
+        template <typename T>
+        constexpr bool signed_integer = std::signed_integral<unqualify<T>>;
+        template <typename T>
+        constexpr bool unsigned_integer = std::unsigned_integral<unqualify<T>>;
+        template <typename T>
+        constexpr bool boolean = meta::is<unqualify<T>, bool>;
+        template <typename T>
+        constexpr bool floating = std::floating_point<unqualify<T>>;
+    }
 
     template <typename T>
-    concept boolean = integer<T> && std::same_as<unqualify<T>, bool>;
+    concept integer = detail::integer<T>;
 
     template <typename T>
-    concept signed_integer = integer<T> && std::signed_integral<unqualify<T>>;
+    concept boolean = integer<T> && detail::boolean<T>;
+
+    template <typename T>
+    concept signed_integer = integer<T> && detail::signed_integer<T>;
+
+    namespace detail {
+        template <meta::integer T>
+        constexpr size_t integer_width = sizeof(unqualify<T>) * 8;
+        template <meta::boolean T>
+        constexpr size_t integer_width<T> = 1;
+
+        template <typename T>
+        struct as_signed { using type = std::make_signed_t<T>; };
+        template <meta::signed_integer T>
+        struct as_signed<T> { using type = T; };
+    }
 
     template <integer T>
-    using as_signed = qualify<std::make_signed_t<unqualify<T>>, T>;
+    constexpr size_t integer_width = detail::integer_width<T>;
 
     template <typename T>
-    concept int8 = signed_integer<T> && sizeof(unqualify<T>) == 1;
+    concept int8 = signed_integer<T> && integer_width<T> == 8;
 
     template <typename T>
-    concept int16 = signed_integer<T> && sizeof(unqualify<T>) == 2;
+    concept int16 = signed_integer<T> && integer_width<T> == 16;
 
     template <typename T>
-    concept int32 = signed_integer<T> && sizeof(unqualify<T>) == 4;
+    concept int32 = signed_integer<T> && integer_width<T> == 32;
 
     template <typename T>
-    concept int64 = signed_integer<T> && sizeof(unqualify<T>) == 8;
+    concept int64 = signed_integer<T> && integer_width<T> == 64;
 
     template <typename T>
-    concept int128 = signed_integer<T> && sizeof(unqualify<T>) == 16;
+    concept int128 = signed_integer<T> && integer_width<T> == 128;
 
     template <typename T>
-    concept unsigned_integer = integer<T> && std::unsigned_integral<unqualify<T>>;
+    concept unsigned_integer = integer<T> && detail::unsigned_integer<T>;
 
     template <integer T>
-    using as_unsigned = qualify<std::make_unsigned_t<unqualify<T>>, T>;
+    using as_signed = qualify<typename detail::as_signed<unqualify<T>>::type, T>;
+
+    namespace detail {
+        template <typename T>
+        struct as_unsigned { using type = std::make_unsigned_t<T>; };
+        template <meta::unsigned_integer T>
+        struct as_unsigned<T> { using type = T; };
+    }
+
+    template <integer T>
+    using as_unsigned = qualify<typename detail::as_unsigned<T>::type, T>;
 
     template <typename T>
-    concept uint8 = unsigned_integer<T> && sizeof(unqualify<T>) == 1;
+    concept uint8 = unsigned_integer<T> && integer_width<T> == 8;
 
     template <typename T>
-    concept uint16 = unsigned_integer<T> && sizeof(unqualify<T>) == 2;
+    concept uint16 = unsigned_integer<T> && integer_width<T> == 16;
 
     template <typename T>
-    concept uint32 = unsigned_integer<T> && sizeof(unqualify<T>) == 4;
+    concept uint32 = unsigned_integer<T> && integer_width<T> == 32;
 
     template <typename T>
-    concept uint64 = unsigned_integer<T> && sizeof(unqualify<T>) == 8;
+    concept uint64 = unsigned_integer<T> && integer_width<T> == 64;
 
     template <typename T>
-    concept uint128 = unsigned_integer<T> && sizeof(unqualify<T>) == 16;
+    concept uint128 = unsigned_integer<T> && integer_width<T> == 128;
 
     template <typename T>
-    concept floating = std::floating_point<unqualify<T>>;
+    concept floating = detail::floating<T>;
+
+    namespace detail {
+        template <meta::floating T>
+        constexpr size_t float_size = sizeof(unqualify<T>) * 8;
+        template <meta::floating T> requires (meta::is<T, long double>)
+        constexpr size_t float_size<T> = 80;  // x86 long double
+    }
+
+    template <floating T>
+    constexpr size_t float_size = detail::float_size<T>;
 
     template <typename T>
-    concept float8 = floating<T> && sizeof(unqualify<T>) == 1;
+    concept float8 = floating<T> && float_size<T> == 8;
 
     template <typename T>
-    concept float16 = floating<T> && sizeof(unqualify<T>) == 2;
+    concept float16 = floating<T> && float_size<T> == 16;
 
     template <typename T>
-    concept float32 = floating<T> && sizeof(unqualify<T>) == 4;
+    concept float32 = floating<T> && float_size<T> == 32;
 
     template <typename T>
-    concept float64 = floating<T> && sizeof(unqualify<T>) == 8;
+    concept float64 = floating<T> && float_size<T> == 64;
 
     template <typename T>
-    concept float128 = floating<T> && sizeof(unqualify<T>) == 16;
+    concept float80 = floating<T> && float_size<T> == 80;
 
     template <typename T>
-    concept string_literal = requires(T t) { []<size_t N>(const char(&)[N]){}(t); };
+    concept float128 = floating<T> && float_size<T> == 128;
+
+    namespace detail {
+        template <typename T>
+        constexpr bool string_literal = requires(T t) {
+            []<size_t N>(const char(&)[N]){}(t);
+        };
+        template <typename T>
+        constexpr size_t string_literal_size = sizeof(T) - 1;
+    }
+
+    template <typename T>
+    concept string_literal = detail::string_literal<T>;
 
     template <string_literal T>
-    constexpr size_t string_literal_size = sizeof(T) - 1;
+    constexpr size_t string_literal_size = detail::string_literal_size<T>;
 
     template <typename T>
     concept raw_array = std::is_array_v<remove_reference<T>>;
@@ -805,13 +861,25 @@ namespace meta {
     concept is_virtual = std::is_polymorphic_v<unqualify<T>>;
 
     template <typename T>
+    concept not_virtual = !is_virtual<T>;
+
+    template <typename T>
     concept is_abstract = std::is_abstract_v<unqualify<T>>;
+
+    template <typename T>
+    concept not_abstract = !is_abstract<T>;
 
     template <typename T>
     concept is_final = std::is_final_v<unqualify<T>>;
 
     template <typename T>
+    concept not_final = !is_final<T>;
+
+    template <typename T>
     concept is_aggregate = std::is_aggregate_v<unqualify<T>>;
+
+    template <typename T>
+    concept not_aggregate = !is_aggregate<T>;
 
     ////////////////////////////
     ////    CONSTRUCTION    ////
