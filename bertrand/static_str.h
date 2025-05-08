@@ -2360,142 +2360,6 @@ namespace impl {
         }
     };
 
-    /// TODO: hashed_string_slice should not be necessary - just use impl::slice
-    /// like normal?
-
-    template <meta::not_void T> requires (!meta::reference<T>)
-    struct hashed_string_slice {
-    private:
-
-        template <typename V>
-        struct iter {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = ssize_t;
-            using value_type = V;
-            using reference = meta::as_lvalue<value_type>;
-            using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-            using pointer = meta::as_pointer<value_type>;
-            using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-
-            pointer table = nullptr;
-            const size_t* hash_index = nullptr;
-            ssize_t index = 0;
-            ssize_t step = 1;
-
-            [[nodiscard]] constexpr reference operator*() noexcept {
-                return table[hash_index[index]];
-            }
-
-            [[nodiscard]] constexpr const_reference operator*() const noexcept {
-                return table[hash_index[index]];
-            }
-
-            [[nodiscard]] constexpr pointer operator->() noexcept {
-                return table + hash_index[index];
-            }
-
-            [[nodiscard]] constexpr const_pointer operator->() const noexcept {
-                return table + hash_index[index];
-            }
-
-            [[maybe_unused]] constexpr iter& operator++() noexcept {
-                index += step;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr iter operator++(int) noexcept {
-                iterator copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            [[nodiscard]] constexpr bool operator==(const iter& other) noexcept {
-                return step > 0 ? index >= other.index : index <= other.index;
-            }
-
-            [[nodiscard]] constexpr bool operator!=(const iter& other) noexcept {
-                return !(*this == other);
-            }
-        };
-
-    public:
-        using value_type = T;
-        using reference = meta::as_lvalue<value_type>;
-        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-        using pointer = meta::as_pointer<value_type>;
-        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-        using iterator = iter<value_type>;
-        using const_iterator = iter<meta::as_const<value_type>>;
-
-        constexpr hashed_string_slice(
-            pointer table,
-            const size_t* hash_index,
-            bertrand::slice::normalized indices
-        ) noexcept :
-            m_table(table),
-            m_hash_index(hash_index),
-            m_indices(indices)
-        {}
-
-        constexpr hashed_string_slice(const hashed_string_slice&) = delete;
-        constexpr hashed_string_slice(hashed_string_slice&&) = delete;
-        constexpr hashed_string_slice& operator=(const hashed_string_slice&) = delete;
-        constexpr hashed_string_slice& operator=(hashed_string_slice&&) = delete;
-
-        [[nodiscard]] constexpr pointer data() const noexcept { return m_table; }
-        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
-        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
-        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
-        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(size()); }
-        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
-
-        [[nodiscard]] constexpr iterator begin() noexcept {
-            return {m_table, m_hash_index, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator begin() const noexcept {
-            return {m_table, m_hash_index, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator cbegin() noexcept {
-            return {m_table, m_hash_index, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr iterator end() noexcept {
-            return {m_table, m_hash_index, m_indices.stop, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator end() const noexcept {
-            return {m_table, m_hash_index, m_indices.stop, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator cend() const noexcept {
-            return {m_table, m_hash_index, m_indices.stop, m_indices.step};
-        }
-
-        template <typename V>
-            requires (meta::constructible_from<V, std::from_range_t, hashed_string_slice&>)
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(std::from_range, *this))) {
-            return V(std::from_range, *this);
-        }
-
-        template <typename V>
-            requires (
-                !meta::constructible_from<V, std::from_range_t, hashed_string_slice&> &&
-                meta::constructible_from<V, iterator, iterator>
-            )
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(begin(), end()))) {
-            return V(begin(), end());
-        }
-
-    private:
-        pointer m_table;
-        const size_t* m_hash_index;
-        bertrand::slice::normalized m_indices;
-    };
-
 }
 
 
@@ -3173,8 +3037,8 @@ struct string_set : impl::string_set_tag {
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = reverse_iterator;
-    using slice = impl::hashed_string_slice<value_type>;
-    using const_slice = slice;
+    using slice = impl::slice<iterator>;
+    using const_slice = impl::slice<const_iterator>;
 
     template <typename T>
     static constexpr bool hashable = hasher::template hashable<T>;
@@ -3393,10 +3257,10 @@ public:
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept(
-        noexcept(slice{data(), hash_index.data(), s.normalize(ssize())})
-    ) {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) const
+        noexcept(noexcept(slice{*this, s.normalize(ssize())}))
+    {
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to the key at index `I`, where `I` is known at compile time.
@@ -3429,8 +3293,8 @@ public:
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
-    [[nodiscard]] static constexpr slice at() noexcept {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+    [[nodiscard]] constexpr slice at() const noexcept {
+        return {*this, s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -3438,8 +3302,8 @@ public:
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] static constexpr slice at(bertrand::slice s) noexcept {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+    [[nodiscard]] constexpr slice at(bertrand::slice s) const noexcept {
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to a string within the set.  Returns an `end()` iterator if
@@ -3801,8 +3665,8 @@ struct string_map : impl::string_map_tag {
     using const_iterator = impl::hashed_string_iterator<meta::as_const<value_type>>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-    using slice = impl::hashed_string_slice<value_type>;
-    using const_slice = impl::hashed_string_slice<meta::as_const<value_type>>;
+    using slice = impl::slice<iterator>;
+    using const_slice = impl::slice<const_iterator>;
 
     template <typename U>
     static constexpr bool hashable = hasher::template hashable<U>;
@@ -4218,9 +4082,9 @@ public:
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr slice operator[](bertrand::slice s) noexcept(
-        noexcept(slice{data(), hash_index.data(), s.normalize(ssize())})
+        noexcept(slice{*this, s.normalize(ssize())})
     ) {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -4229,9 +4093,9 @@ public:
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const noexcept(
-        noexcept(const_slice{data(), hash_index.data(), s.normalize(ssize())})
+        noexcept(const_slice{*this, s.normalize(ssize())})
     ) {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to the key-value pair at index `I`, where `I` is known at
@@ -4291,7 +4155,7 @@ public:
     Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] constexpr slice at() noexcept {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -4301,7 +4165,7 @@ public:
     Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] constexpr const_slice at() const noexcept {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -4310,7 +4174,7 @@ public:
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr slice at(bertrand::slice s) noexcept {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -4319,7 +4183,7 @@ public:
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr const_slice at(bertrand::slice s) const noexcept {
-        return {data(), hash_index.data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to a string within the set.  Returns an `end()` iterator if
