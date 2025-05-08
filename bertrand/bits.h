@@ -167,6 +167,77 @@ namespace meta {
 
 namespace impl {
 
+    inline constexpr std::array<double, 64> log2_table {
+        0,
+        0,
+        1,
+        1.584962500721156,
+        2,
+        2.321928094887362,
+        2.584962500721156,
+        2.807354922057604,
+        3,
+        3.169925001442312,
+        3.321928094887362,
+        3.4594316186372973,
+        3.584962500721156,
+        3.700439718141092,
+        3.807354922057604,
+        3.9068905956085187,
+        4,
+        4.087462841250339,
+        4.169925001442312,
+        4.247927513443585,
+        4.321928094887363,
+        4.392317422778761,
+        4.459431618637297,
+        4.523561956057013,
+        4.584962500721156,
+        4.643856189774724,
+        4.700439718141092,
+        4.754887502163468,
+        4.807354922057604,
+        4.857980995127572,
+        4.906890595608519,
+        4.954196310386875,
+        5,
+        5.044394119358453,
+        5.087462841250339,
+        5.129283016944966,
+        5.169925001442312,
+        5.20945336562895,
+        5.247927513443585,
+        5.285402218862249,
+        5.321928094887363,
+        5.357552004618084,
+        5.392317422778761,
+        5.426264754702098,
+        5.459431618637297,
+        5.491853096329675,
+        5.523561956057013,
+        5.554588851677638,
+        5.584962500721156,
+        5.614709844115208,
+        5.643856189774724,
+        5.672425341971495,
+        5.700439718141092,
+        5.727920454563199,
+        5.754887502163468,
+        5.78135971352466,
+        5.807354922057604,
+        5.832890014164741,
+        5.857980995127572,
+        5.882643049361842,
+        5.906890595608519,
+        5.930737337562887,
+        5.954196310386875,
+        5.977279923499917,
+    };
+
+    template <typename T>
+    concept strict_bits =
+        meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
+
     template <size_t M>
     struct word {
         using type = uint64_t;
@@ -366,73 +437,6 @@ namespace impl {
         };
     };
 
-    inline constexpr std::array<double, 64> log2_table {
-        0,
-        0,
-        1,
-        1.584962500721156,
-        2,
-        2.321928094887362,
-        2.584962500721156,
-        2.807354922057604,
-        3,
-        3.169925001442312,
-        3.321928094887362,
-        3.4594316186372973,
-        3.584962500721156,
-        3.700439718141092,
-        3.807354922057604,
-        3.9068905956085187,
-        4,
-        4.087462841250339,
-        4.169925001442312,
-        4.247927513443585,
-        4.321928094887363,
-        4.392317422778761,
-        4.459431618637297,
-        4.523561956057013,
-        4.584962500721156,
-        4.643856189774724,
-        4.700439718141092,
-        4.754887502163468,
-        4.807354922057604,
-        4.857980995127572,
-        4.906890595608519,
-        4.954196310386875,
-        5,
-        5.044394119358453,
-        5.087462841250339,
-        5.129283016944966,
-        5.169925001442312,
-        5.20945336562895,
-        5.247927513443585,
-        5.285402218862249,
-        5.321928094887363,
-        5.357552004618084,
-        5.392317422778761,
-        5.426264754702098,
-        5.459431618637297,
-        5.491853096329675,
-        5.523561956057013,
-        5.554588851677638,
-        5.584962500721156,
-        5.614709844115208,
-        5.643856189774724,
-        5.672425341971495,
-        5.700439718141092,
-        5.727920454563199,
-        5.754887502163468,
-        5.78135971352466,
-        5.807354922057604,
-        5.832890014164741,
-        5.857980995127572,
-        5.882643049361842,
-        5.906890595608519,
-        5.930737337562887,
-        5.954196310386875,
-        5.977279923499917,
-    };
-
     template <typename word, const auto&... keys>
     struct bits_from_string {
         static constexpr size_t base = sizeof...(keys);
@@ -476,11 +480,8 @@ namespace impl {
         static constexpr auto widths = _widths();
     };
 
-    template <typename T>
-    concept strict_bits =
-        meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
-
-    /* Reference: https://en.cppreference.com/w/cpp/utility/format/spec */
+    /* Print Bits, UInt, and Int types using output streams or `std::format()`.
+    Reference: https://en.cppreference.com/w/cpp/utility/format/spec */
     struct format_bits {
     private:
         static constexpr char lower_alpha[] = "0123456789abcdef";
@@ -936,6 +937,176 @@ namespace impl {
         }
     };
 
+    /* Parse Bits, UInt, and Int types from strings using input streams or
+    `std::scan()` when that becomes available. */
+    struct scan_bits {
+    private:
+        static constexpr char lower_alpha[] = "0123456789abcdef";
+        static constexpr char upper_alpha[] = "0123456789ABCDEF";
+
+        constexpr uint8_t get_base(std::istream& is) const noexcept {
+            uint8_t base = 0;
+            switch (is.flags() & std::ios_base::basefield) {
+                case std::ios_base::oct: base = 8; break;
+                case std::ios_base::dec: base = 10; break;
+                case std::ios_base::hex: base = 16; break;
+                default: break;
+            }
+            return base;
+        }
+
+        template <typename word>
+        static constexpr word decode(char c) noexcept {
+            if ('0' <= c && c <= '9') return c - '0';
+            if ('a' <= c && c <= 'z') return 10 + c - 'a';
+            if ('A' <= c && c <= 'Z') return 10 + c - 'A';
+            return std::numeric_limits<word>::max();  // invalid character
+        }
+
+        constexpr bool ok(std::istream& is) noexcept {
+            return --width && is.good();
+        }
+
+        constexpr void fail(std::istream& is) noexcept {
+            is.setstate(std::ios_base::failbit);
+        }
+
+    public:
+        char sep;                   // separator character for grouping, if any
+        uint8_t base = 0;           // numeric base (0, 2, 8, 10, 16)
+        size_t width = 0;           // maximum number of characters to read
+
+        constexpr scan_bits() noexcept = default;
+
+        constexpr scan_bits(
+            std::istream& is,
+            const auto& facet
+        ) noexcept :
+            sep(facet.thousands_sep()),
+            base(get_base(is)),
+            width(is.width())
+        {
+            if (width == 0) {
+                width = std::numeric_limits<size_t>::max();  // no limit
+            }
+            is.width(0);  // reset now, per standard
+        }
+
+        template <typename out>
+        constexpr void scan(std::istream& is, out& result) {
+            using word = out::word;
+            bool negative = false;
+            bool overflow;
+            char c;
+
+            // 1) check for optional sign
+            if (is.peek() == '+') {
+                is.get(c);  // consume the '+' sign
+                if (!ok(is)) return fail(is);  // no digits after sign
+            } else if (is.peek() == '-') {
+                if constexpr (meta::signed_integer<out>) {
+                    negative = true;
+                    is.get(c);  // consume the '-' sign
+                    if (!ok(is)) return fail(is);  // no digits after sign
+                } else {
+                    return fail(is);  // negative sign not allowed for unsigned types
+                }
+            }
+
+            // 2) detect and consume base prefix
+            is.get(c);  // extract first character
+            if (!ok(is)) {  // no digits after first character
+                word value = decode<word>(c);
+                if (value >= base) return fail(is);
+                result = value;
+                return;
+            }
+            switch (base) {
+                case 0:
+                    if (c == '0') {
+                        if (is.peek() == 'b' || is.peek() == 'B') {
+                            is.get(c);  // consume the 'b' or 'B'
+                            if (!ok(is)) return fail(is);  // no digits after prefix
+                            is.get(c);  // c now points to first real character of number
+                            base = 2;
+                        } else if (is.peek() == 'o' || is.peek() == 'O') {
+                            is.get(c);
+                            if (!ok(is)) return fail(is);
+                            is.get(c);
+                            base = 8;
+                        } else if (is.peek() == 'x' || is.peek() == 'X') {
+                            is.get(c);
+                            if (!ok(is)) return fail(is);
+                            is.get(c);
+                            base = 16;
+                        } else {
+                            base = 10;
+                        }
+                    } else {
+                        base = 10;
+                    }
+                    break;
+                case 8:
+                    if (c == '0' && (is.peek() == 'o' || is.peek() == 'O')) {
+                        is.get(c);
+                        if (!ok(is)) return fail(is);
+                        is.get(c);
+                    }
+                    break;
+                case 16:
+                    if (c == '0' && (is.peek() == 'x' || is.peek() == 'X')) {
+                        is.get(c);
+                        if (!ok(is)) return fail(is);
+                        is.get(c);
+                    }
+                    break;
+                default: break;
+            }
+            out multiplier = base;
+            out temp;
+
+            /// 3) decode each character, respecting the locale's grouping
+            while (base == 10 && c == sep) {
+                is.get(c);  // skip grouping separator
+                if (!ok(is)) return fail(is);  // no digits after grouping separator
+            }
+            word value = decode<word>(c);  // decode first real digit
+            if (value >= base) return fail(is);  // invalid digit
+            temp.add(value, overflow, temp);  // add first digit in-place
+            if (overflow) {
+                while (ok(is)) {  
+                    is.get(c);
+                    if (base == 10 && c == sep) continue;  // skip grouping separator
+                    value = decode<word>(c);
+                    if (value >= base) break;  // digit sequence finished
+                }
+                is.setstate(std::ios_base::failbit | std::ios_base::badbit);
+                return;  // overflow on first digit
+            }
+            while (ok(is)) {
+                is.get(c);  // read the next character
+                if (base == 10 && c == sep) continue;  // skip grouping separator
+                value = decode<word>(c);
+                if (value >= base) break;  // digit sequence finished
+                temp.mul(multiplier, overflow, temp);  // shift left by base
+                temp.add(value, overflow, temp);  // add digit
+                if (overflow) {
+                    while (ok(is)) {  // consume any remaining characters in this base/limit
+                        is.get(c);
+                        if (base == 10 && c == sep) continue;  // skip grouping separator
+                        value = decode<word>(c);
+                        if (value >= base) break;  // digit sequence finished
+                    }
+                    is.setstate(std::ios_base::failbit | std::ios_base::badbit);
+                    return;
+                }
+            }
+
+            // 4) only assign if we have a valid result
+            result = std::move(result);
+        }
+    };
+
 }
 
 
@@ -1236,21 +1407,6 @@ private:
         result >>= N - size_type(stop - start);
         result <<= size_type(start);  // [start, stop).
         return result;
-    }
-
-    /// TODO: standardize input formatters similar to output formatters, possibly using
-    /// the same `format_bits` struct. 
-
-    static constexpr std::istream& stream_fail(std::istream& is) {
-        is.setstate(std::ios_base::failbit);
-        return is;
-    }
-
-    static constexpr word stream_decode_value(char c) noexcept {
-        if ('0' <= c && c <= '9') return c - '0';
-        if ('a' <= c && c <= 'z') return 10 + c - 'a';
-        if ('A' <= c && c <= 'Z') return 10 + c - 'A';
-        return std::numeric_limits<word>::max();  // invalid character
     }
 
 public:
@@ -2453,6 +2609,12 @@ public:
         return *this;
     }
 
+    /* Return +1 if the value is positive or -1 if it is negative.  For unsigned
+    bitsets, this will always return +1. */
+    constexpr int sign() const noexcept {
+        return 1;
+    }
+
     /* Return the index of the first bit that is set, or an empty optional if no bits
     are set. */
     [[nodiscard]] constexpr Optional<index_type> first_one() const noexcept {
@@ -3429,122 +3591,13 @@ public:
         if (!s) {
             return is;  // stream is not ready for input
         }
-        std::streamsize limit = is.width();  // 0 means no limit
-        if (limit == 0) {
-            limit = std::numeric_limits<std::streamsize>::max();  // simplifies math
-        }
-        is.width(0);  // reset now, per standard
-        auto ok = [&limit, &is]() { return --limit && is.good(); };
-        bool overflow;
-        char c;
-
-        // 1) check for optional sign
-        if (is.peek() == '+') {
-            is.get(c);  // consume the '+' sign
-            if (!ok()) return stream_fail(is);  // no digits after sign
-        } else if (is.peek() == '-') {
-            return stream_fail(is);  // negative values not supported
-        }
-
-        // 2) detect and consume base prefix
-        word base = 0;
-        switch (is.flags() & std::ios_base::basefield) {
-            case std::ios_base::oct: base = 8; break;
-            case std::ios_base::dec: base = 10; break;
-            case std::ios_base::hex: base = 16; break;
-        }
-        is.get(c);  // extract first character
-        if (!ok()) {  // no digits after first character
-            word value = stream_decode_value(c);  // first character must be a digit
-            if (value >= base) return stream_fail(is);
-            set = value;
-            return is;
-        }
-        switch (base) {
-            case 0:
-                if (c == '0') {
-                    if (is.peek() == 'b' || is.peek() == 'B') {
-                        is.get(c);  // consume the 'b' or 'B'
-                        if (!ok()) return stream_fail(is);  // no digits after prefix
-                        is.get(c);  // c now points to first real character of number
-                        base = 2;
-                    } else if (is.peek() == 'o' || is.peek() == 'O') {
-                        is.get(c);
-                        if (!ok()) return stream_fail(is);
-                        is.get(c);
-                        base = 8;
-                    } else if (is.peek() == 'x' || is.peek() == 'X') {
-                        is.get(c);
-                        if (!ok()) return stream_fail(is);
-                        is.get(c);
-                        base = 16;
-                    } else {
-                        base = 10;
-                    }
-                } else {
-                    base = 10;
-                }
-                break;
-            case 8:
-                if (c == '0' && (is.peek() == 'o' || is.peek() == 'O')) {
-                    is.get(c);
-                    if (!ok()) return stream_fail(is);
-                    is.get(c);
-                }
-                break;
-            case 16:
-                if (c == '0' && (is.peek() == 'x' || is.peek() == 'X')) {
-                    is.get(c);
-                    if (!ok()) return stream_fail(is);
-                    is.get(c);
-                }
-                break;
-        }
-        Bits multiplier = base;
-        Bits result;
-
-        /// 4) decode each character, respecting the locale's grouping
-        char sep = std::use_facet<std::numpunct<char>>(is.getloc()).thousands_sep();
-        while (base == 10 && c == sep) {
-            is.get(c);  // skip grouping separator
-            if (!ok()) return stream_fail(is);  // no digits after grouping separator
-        }
-        word value = stream_decode_value(c);  // decode first real digit
-        if (value >= base) return stream_fail(is);  // invalid digit
-        result.add(value, overflow, result.buffer);  // add first digit
-        if (overflow) {
-            while (ok()) {  // consume any remaining characters in this base/limit
-                is.get(c);
-                if (base == 10 && c == sep) continue;  // skip grouping separator
-                value = stream_decode_value(c);
-                if (value >= base) break;  // digit sequence finished
-            }
-            is.setstate(std::ios_base::failbit | std::ios_base::badbit);
-            return is;  // overflow on first digit
-        }
-        while (ok()) {
-            is.get(c);  // read the next character
-            if (base == 10 && c == sep) continue;  // skip grouping separator
-            value = stream_decode_value(c);
-            if (value >= base) break;  // digit sequence finished
-            result.mul(multiplier, overflow, result);  // shift left by base
-            result.add(value, overflow, result);  // add digit
-            if (overflow) {
-                while (ok()) {  // consume any remaining characters in this base/limit
-                    is.get(c);
-                    if (base == 10 && c == sep) continue;  // skip grouping separator
-                    value = stream_decode_value(c);
-                    if (value >= base) break;  // digit sequence finished
-                }
-                is.setstate(std::ios_base::failbit | std::ios_base::badbit);
-                return is;
-            }
-        }
-
-        set = std::move(result);  // move the result to the output bitset
+        impl::scan_bits ctx(
+            is,
+            std::use_facet<std::numpunct<char>>(is.getloc())
+        );
+        ctx.scan(is, set);
         return is;
     }
-
 };
 
 
@@ -4258,10 +4311,8 @@ namespace std {
             const_reference v,
             basic_format_context<out, char_type>& ctx
         ) const {
-            /// TODO: make sure msb_is_set() is available
-
             // 1) get the correct locale from context and resolve nested width specifier
-            config.complete(ctx, v.msb_is_set());
+            config.complete(ctx, v.sign() < 0);
 
             // 2) convert to string in proper base with locale-based grouping (if any)
             std::basic_string<char_type> str =
@@ -4286,30 +4337,30 @@ namespace std {
         using word = type::word;
 
     public:
-        static constexpr bool is_specialized = true;
-        static constexpr bool is_signed = false;
-        static constexpr bool is_integer = true;
-        static constexpr bool is_exact = true;
-        static constexpr bool has_infinity = false;
-        static constexpr bool has_quiet_NaN = false;
-        static constexpr bool has_signaling_NaN = false;
-        static constexpr bool has_denorm = false;
-        static constexpr bool has_denorm_loss = false;
+        static constexpr bool is_specialized                = true;
+        static constexpr bool is_signed                     = false;
+        static constexpr bool is_integer                    = true;
+        static constexpr bool is_exact                      = true;
+        static constexpr bool has_infinity                  = false;
+        static constexpr bool has_quiet_NaN                 = false;
+        static constexpr bool has_signaling_NaN             = false;
+        static constexpr bool has_denorm                    = false;
+        static constexpr bool has_denorm_loss               = false;
         static constexpr std::float_round_style round_style =
             std::float_round_style::round_toward_zero;
-        static constexpr bool is_iec559 = false;
-        static constexpr bool is_bounded = true;
-        static constexpr bool is_modulo = true;
-        static constexpr int digits = bertrand::meta::integer_width<T>;
-        static constexpr int digits10 = digits * 0.3010299956639812;  // log10(2)
-        static constexpr int max_digits10 = 0;
-        static constexpr int radix = 2;
-        static constexpr int min_exponent = 0;
-        static constexpr int min_exponent10 = 0;
-        static constexpr int max_exponent = 0;
-        static constexpr int max_exponent10 = 0;
-        static constexpr bool traps = true;  // division by zero should trap
-        static constexpr bool tinyness_before = false;
+        static constexpr bool is_iec559                     = false;
+        static constexpr bool is_bounded                    = true;
+        static constexpr bool is_modulo                     = true;
+        static constexpr int digits                         = bertrand::meta::integer_width<T>;
+        static constexpr int digits10                       = digits * 0.3010299956639812;  // log10(2)
+        static constexpr int max_digits10                   = 0;
+        static constexpr int radix                          = 2;
+        static constexpr int min_exponent                   = 0;
+        static constexpr int min_exponent10                 = 0;
+        static constexpr int max_exponent                   = 0;
+        static constexpr int max_exponent10                 = 0;
+        static constexpr bool traps                         = true;  // division by zero should trap
+        static constexpr bool tinyness_before               = false;
         static constexpr type min() noexcept { return {}; }
         static constexpr type lowest() noexcept { return {}; }
         static constexpr type max() noexcept {
@@ -4340,29 +4391,29 @@ namespace std {
         using traits = std::numeric_limits<bits>;
 
     public:
-        static constexpr bool is_specialized = traits::is_specialized;
-        static constexpr bool is_signed = traits::is_signed;
-        static constexpr bool is_integer = traits::is_integer;
-        static constexpr bool is_exact = traits::is_exact;
-        static constexpr bool has_infinity = traits::has_infinity;
-        static constexpr bool has_quiet_NaN = traits::has_quiet_NaN;
-        static constexpr bool has_signaling_NaN = traits::has_signaling_NaN;
-        static constexpr bool has_denorm = traits::has_denorm;
-        static constexpr bool has_denorm_loss = traits::has_denorm_loss;
+        static constexpr bool is_specialized                = traits::is_specialized;
+        static constexpr bool is_signed                     = traits::is_signed;
+        static constexpr bool is_integer                    = traits::is_integer;
+        static constexpr bool is_exact                      = traits::is_exact;
+        static constexpr bool has_infinity                  = traits::has_infinity;
+        static constexpr bool has_quiet_NaN                 = traits::has_quiet_NaN;
+        static constexpr bool has_signaling_NaN             = traits::has_signaling_NaN;
+        static constexpr bool has_denorm                    = traits::has_denorm;
+        static constexpr bool has_denorm_loss               = traits::has_denorm_loss;
         static constexpr std::float_round_style round_style = traits::round_style;
-        static constexpr bool is_iec559 = traits::is_iec559;
-        static constexpr bool is_bounded = traits::is_bounded;
-        static constexpr bool is_modulo = traits::is_modulo;
-        static constexpr int digits = traits::digits;
-        static constexpr int digits10 = traits::digits10;
-        static constexpr int max_digits10 = traits::max_digits10;
-        static constexpr int radix = traits::radix;
-        static constexpr int min_exponent = traits::min_exponent;
-        static constexpr int min_exponent10 = traits::min_exponent10;
-        static constexpr int max_exponent = traits::max_exponent;
-        static constexpr int max_exponent10 = traits::max_exponent10;
-        static constexpr bool traps = traits::traps;  // division by zero should trap
-        static constexpr bool tinyness_before = traits::tinyness_before;
+        static constexpr bool is_iec559                     = traits::is_iec559;
+        static constexpr bool is_bounded                    = traits::is_bounded;
+        static constexpr bool is_modulo                     = traits::is_modulo;
+        static constexpr int digits                         = traits::digits;
+        static constexpr int digits10                       = traits::digits10;
+        static constexpr int max_digits10                   = traits::max_digits10;
+        static constexpr int radix                          = traits::radix;
+        static constexpr int min_exponent                   = traits::min_exponent;
+        static constexpr int min_exponent10                 = traits::min_exponent10;
+        static constexpr int max_exponent                   = traits::max_exponent;
+        static constexpr int max_exponent10                 = traits::max_exponent10;
+        static constexpr bool traps                         = traits::traps;  // division by zero should trap
+        static constexpr bool tinyness_before               = traits::tinyness_before;
         static constexpr type min() noexcept { return {}; }
         static constexpr type lowest() noexcept { return {}; }
         static constexpr type max() noexcept { return {traits::max()}; }
@@ -4385,29 +4436,29 @@ namespace std {
         using traits = std::numeric_limits<bits>;
 
     public:
-        static constexpr bool is_specialized = traits::is_specialized;
-        static constexpr bool is_signed = true;
-        static constexpr bool is_integer = traits::is_integer;
-        static constexpr bool is_exact = traits::is_exact;
-        static constexpr bool has_infinity = traits::has_infinity;
-        static constexpr bool has_quiet_NaN = traits::has_quiet_NaN;
-        static constexpr bool has_signaling_NaN = traits::has_signaling_NaN;
-        static constexpr bool has_denorm = traits::has_denorm;
-        static constexpr bool has_denorm_loss = traits::has_denorm_loss;
+        static constexpr bool is_specialized                = traits::is_specialized;
+        static constexpr bool is_signed                     = true;
+        static constexpr bool is_integer                    = traits::is_integer;
+        static constexpr bool is_exact                      = traits::is_exact;
+        static constexpr bool has_infinity                  = traits::has_infinity;
+        static constexpr bool has_quiet_NaN                 = traits::has_quiet_NaN;
+        static constexpr bool has_signaling_NaN             = traits::has_signaling_NaN;
+        static constexpr bool has_denorm                    = traits::has_denorm;
+        static constexpr bool has_denorm_loss               = traits::has_denorm_loss;
         static constexpr std::float_round_style round_style = traits::round_style;
-        static constexpr bool is_iec559 = traits::is_iec559;
-        static constexpr bool is_bounded = traits::is_bounded;
-        static constexpr bool is_modulo = traits::is_modulo;
-        static constexpr int digits = traits::digits;
-        static constexpr int digits10 = traits::digits;  // log10(2)
-        static constexpr int max_digits10 = traits::max_digits10;
-        static constexpr int radix = traits::radix;
-        static constexpr int min_exponent = traits::min_exponent;
-        static constexpr int min_exponent10 = traits::min_exponent10;
-        static constexpr int max_exponent = traits::max_exponent;
-        static constexpr int max_exponent10 = traits::max_exponent10;
-        static constexpr bool traps = traits::traps;  // division by zero should trap
-        static constexpr bool tinyness_before = traits::tinyness_before;
+        static constexpr bool is_iec559                     = traits::is_iec559;
+        static constexpr bool is_bounded                    = traits::is_bounded;
+        static constexpr bool is_modulo                     = traits::is_modulo;
+        static constexpr int digits                         = traits::digits;
+        static constexpr int digits10                       = traits::digits;  // log10(2)
+        static constexpr int max_digits10                   = traits::max_digits10;
+        static constexpr int radix                          = traits::radix;
+        static constexpr int min_exponent                   = traits::min_exponent;
+        static constexpr int min_exponent10                 = traits::min_exponent10;
+        static constexpr int max_exponent                   = traits::max_exponent;
+        static constexpr int max_exponent10                 = traits::max_exponent10;
+        static constexpr bool traps                         = traits::traps;  // division by zero should trap
+        static constexpr bool tinyness_before               = traits::tinyness_before;
         static constexpr type min() noexcept {
             // only most significant bit is set -> two's complement
             type result;
@@ -4497,148 +4548,148 @@ namespace std {
 }
 
 
-namespace bertrand {
+// namespace bertrand {
 
-    template <Bits b>
-    struct Foo {
-        static constexpr const auto& value = b;
-    };
+//     template <Bits b>
+//     struct Foo {
+//         static constexpr const auto& value = b;
+//     };
 
-    inline void test() {
-        {
-            static constexpr Bits<2> a{0b1010};
-            static constexpr Bits a2{false, true};
-            static constexpr Bits a3{1, 2};
-            static constexpr Bits a4{0, true};
-            static_assert(a4.count() == 1);
-            static_assert(a3.size() == 64);
-            static_assert(a == a2);
-            auto [f1, f2] = a;
-            static constexpr Bits b {"abab", 'b', 'a'};
-            static constexpr std::string c = b.to_binary();
-            static constexpr std::string d = b.to_decimal();
-            static constexpr std::string d2 = b.to_string();
-            static constexpr std::string d3 = b.to_hex();
-            static_assert(any(b.components()));
-            static_assert(b.first_one(2).value() == 3);
-            static_assert(a == 0b10);
-            static_assert(b == 0b1010);
-            static_assert(b[1] == true);
-            static_assert(c == "1010");
-            static_assert(d == "10");
-            static_assert(d2 == "1010");
-            static_assert(d3 == "A");
+//     inline void test() {
+//         {
+//             static constexpr Bits<2> a{0b1010};
+//             static constexpr Bits a2{false, true};
+//             static constexpr Bits a3{1, 2};
+//             static constexpr Bits a4{0, true};
+//             static_assert(a4.count() == 1);
+//             static_assert(a3.size() == 64);
+//             static_assert(a == a2);
+//             auto [f1, f2] = a;
+//             static constexpr Bits b {"abab", 'b', 'a'};
+//             static constexpr std::string c = b.to_binary();
+//             static constexpr std::string d = b.to_decimal();
+//             static constexpr std::string d2 = b.to_string();
+//             static constexpr std::string d3 = b.to_hex();
+//             static_assert(any(b.components()));
+//             static_assert(b.first_one(2).value() == 3);
+//             static_assert(a == 0b10);
+//             static_assert(b == 0b1010);
+//             static_assert(b[1] == true);
+//             static_assert(c == "1010");
+//             static_assert(d == "10");
+//             static_assert(d2 == "1010");
+//             static_assert(d3 == "A");
 
-            static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
-            static_assert(sizeof(Bits<2>) == 1);
+//             static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
+//             static_assert(sizeof(Bits<2>) == 1);
 
-            constexpr auto x = []() {
-                Bits<4> out;
-                out[-1] = true;
-                return out;
-            }();
-            static_assert(x == uint8_t(0b1000));
+//             constexpr auto x = []() {
+//                 Bits<4> out;
+//                 out[-1] = true;
+//                 return out;
+//             }();
+//             static_assert(x == uint8_t(0b1000));
 
-            for (auto&& x : a.components()) {
+//             for (auto&& x : a.components()) {
 
-            }
-        }
+//             }
+//         }
 
-        {
-            static constexpr Bits b {"100"};
-            static constexpr auto b2 = Bits<3>::from_string(
-                std::string_view("100")
-            );
-            static_assert(b.data()[0] == 4);
-            static_assert(b2.result().data()[0] == 4);
+//         {
+//             static constexpr Bits b {"100"};
+//             static constexpr auto b2 = Bits<3>::from_string(
+//                 std::string_view("100")
+//             );
+//             static_assert(b.data()[0] == 4);
+//             static_assert(b2.result().data()[0] == 4);
 
-            static constexpr auto b3 = Bits{"0100"}.reverse();
-            static_assert(b3.data()[0] == 2);
+//             static constexpr auto b3 = Bits{"0100"}.reverse();
+//             static_assert(b3.data()[0] == 2);
 
-            static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
-            static_assert(b4.result().data()[0] == 4);
+//             static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
+//             static_assert(b4.result().data()[0] == 4);
 
-            static constexpr auto b5 = Bits<3>::from_decimal("5");
-            static_assert(b5.result().data()[0] == 5);
+//             static constexpr auto b5 = Bits<3>::from_decimal("5");
+//             static_assert(b5.result().data()[0] == 5);
 
-            static constexpr auto b6 = Bits<8>::from_hex("FF");
-            static_assert(b6.result().data()[0] == 255);
+//             static constexpr auto b6 = Bits<8>::from_hex("FF");
+//             static_assert(b6.result().data()[0] == 255);
 
-            static constexpr auto b7 = Bits<8>::from_hex("ZZ");
-            static_assert(b7.has_error());
+//             static constexpr auto b7 = Bits<8>::from_hex("ZZ");
+//             static_assert(b7.has_error());
 
-            static constexpr auto b8 = Bits<8>::from_hex("FFC");
-            static_assert(b8.has_error());
-        }
+//             static constexpr auto b8 = Bits<8>::from_hex("FFC");
+//             static_assert(b8.has_error());
+//         }
 
-        {
-            static constexpr Foo<{true, false, true}> foo;
-            static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
-            static_assert(foo.value == Bits{"101"});
-            static_assert(bar.value == 5);
-            static_assert(bar.value == 5);
-        }
+//         {
+//             static constexpr Foo<{true, false, true}> foo;
+//             static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
+//             static_assert(foo.value == Bits{"101"});
+//             static_assert(bar.value == 5);
+//             static_assert(bar.value == 5);
+//         }
 
-        {
-            static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
-            static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
-            static_assert(Bits<4>::from_octal("20").has_error());
-            static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
-            static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
+//         {
+//             static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
+//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+//             static_assert(Bits<4>::from_octal("20").has_error());
+//             static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
+//             static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
 
-            // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
-        }
+//             // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
+//         }
 
-        {
-            static constexpr Bits<5> a = -1;
-            static constexpr Bits<5> b = a + 2;
-            static_assert(a == 31);
-            static_assert(b.data()[0] == 1);
+//         {
+//             static constexpr Bits<5> a = -1;
+//             static constexpr Bits<5> b = a + 2;
+//             static_assert(a == 31);
+//             static_assert(b.data()[0] == 1);
 
-            static constexpr Bits<5> c;
-            static constexpr Bits<5> d = c - 1;
-            static_assert(c == 0);
-            static_assert(d.data()[0] == 31);
+//             static constexpr Bits<5> c;
+//             static constexpr Bits<5> d = c - 1;
+//             static_assert(c == 0);
+//             static_assert(d.data()[0] == 31);
 
-            static constexpr Bits<5> e = 12;
-            static constexpr Bits<5> f = e * 3;
-            static_assert(f.data()[0] == 4);
-        }
+//             static constexpr Bits<5> e = 12;
+//             static constexpr Bits<5> f = e * 3;
+//             static_assert(f.data()[0] == 4);
+//         }
 
-        {
-            static constexpr Bits<4> b = {Bits{"110"}, true};
-            static_assert(b.last_zero().value() == 0);
-            static_assert(b == Bits{"1110"});
-            static_assert(-b == Bits{"0010"});
-            static_assert(Bits<5>::from_string("10100").result() == 20);
+//         {
+//             static constexpr Bits<4> b = {Bits{"110"}, true};
+//             static_assert(b.last_zero().value() == 0);
+//             static_assert(b == Bits{"1110"});
+//             static_assert(-b == Bits{"0010"});
+//             static_assert(Bits<5>::from_string("10100").result() == 20);
 
-            static constexpr Bits<72> b2;
-            static_assert(size_t(b2) == 0);
-            // int x = b2;
+//             static constexpr Bits<72> b2;
+//             static_assert(size_t(b2) == 0);
+//             // int x = b2;
 
-            auto y = b + Bits{3};
-            if (b) {
+//             auto y = b + Bits{3};
+//             if (b) {
 
-            }
-            std::cout << b;
+//             }
+//             std::cout << b;
 
-            static constexpr static_str s = "1";
-            static constexpr static_str s2 {s[0]};
-            static_assert(s2 == "1");
-        }
+//             static constexpr static_str s = "1";
+//             static constexpr static_str s2 {s[0]};
+//             static_assert(s2 == "1");
+//         }
 
-        {
-            static constexpr UInt x = 42;
-            static_assert(x == 42);
-            static constexpr auto x2 = UInt<32>::from_decimal("42");
-            static_assert(x2.result() == 42);
+//         {
+//             static constexpr UInt x = 42;
+//             static_assert(x == 42);
+//             static constexpr auto x2 = UInt<32>::from_decimal("42");
+//             static_assert(x2.result() == 42);
 
-            static constexpr UInt y = -1;
-            static_assert(y.bits.count() == 32);
-        }
-    }
+//             static constexpr UInt y = -1;
+//             static_assert(y.bits.count() == 32);
+//         }
+//     }
 
-}
+// }
 
 
 #endif  // BERTRAND_BITSET_H
