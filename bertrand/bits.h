@@ -6,7 +6,6 @@
 #include "bertrand/math.h"
 #include "bertrand/iter.h"
 #include "bertrand/static_str.h"
-#include <format>
 
 
 namespace bertrand {
@@ -1466,8 +1465,8 @@ public:
 
     private:
         friend Bits;
-        Bits* self;
-        difference_type index;
+        Bits* self = nullptr;
+        difference_type index = 0;
         mutable value_type cache;
 
         constexpr iterator(Bits* self, difference_type index) noexcept :
@@ -1475,7 +1474,9 @@ public:
         {}
 
     public:
-        [[nodiscard]] constexpr reference operator*() noexcept(!DEBUG) {
+        constexpr iterator() = default;
+
+        [[nodiscard]] constexpr reference operator*() const noexcept(!DEBUG) {
             if constexpr (DEBUG) {
                 if (index < 0 || index >= N) {
                     throw IndexError(std::to_string(index));
@@ -1485,21 +1486,7 @@ public:
             return cache;
         }
 
-        [[nodiscard]] constexpr const_reference operator*() const noexcept(!DEBUG) {
-            if constexpr (DEBUG) {
-                if (index < 0 || index >= N) {
-                    throw IndexError(std::to_string(index));
-                }
-            }
-            cache = {&self->buffer[index / word_size], word(index % word_size)};
-            return cache;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() noexcept(!DEBUG) {
-            return &**this;
-        }
-
-        [[nodiscard]] constexpr const_pointer operator->() const noexcept(!DEBUG) {
+        [[nodiscard]] constexpr pointer operator->() const noexcept(!DEBUG) {
             return &**this;
         }
 
@@ -1610,22 +1597,24 @@ public:
 
     private:
         friend Bits;
-        const Bits* self;
-        difference_type index;
-        mutable bool cache;
+        const Bits* self = nullptr;
+        difference_type index = 0;
+        mutable bool cache = false;
 
         constexpr const_iterator(const Bits* self, difference_type index) noexcept :
             self(self), index(index)
         {}
 
     public:
+        constexpr const_iterator() = default;
+
         [[nodiscard]] constexpr const_reference operator*() const noexcept(!DEBUG) {
             if constexpr (DEBUG) {
                 if (index < 0 || index >= N) {
                     throw IndexError(std::to_string(index));
                 }
             }
-            cache = self->get(static_cast<size_type>(index));
+            cache = self->buffer[index / word_size] & word(word(1) << (index % word_size));
             return cache;
         }
 
@@ -1727,6 +1716,8 @@ public:
 
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+    using slice = impl::slice<iterator>;
+    using const_slice = impl::slice<const_iterator>;
 
     /* A range that decomposes a bitmask into its one-hot components from least to
     most significant. */
@@ -2414,15 +2405,28 @@ public:
     }
     [[nodiscard]] constexpr bool operator[](index_type i) const noexcept(!DEBUG) {
         index_type j = impl::normalize_index(ssize(), i);
-        return buffer[j / word_size] & (word(1) << (j % word_size));
+        return buffer[j / word_size] & word(word(1) << (j % word_size));
     }
 
-    /// TODO: operator[slice{}] returning a range of the bitset.
-    /// -> Is it possible to generalize the slice classes to account for the category
-    /// of the underlying iterator?  So `Bits` could use a random access
-    /// specialization that gets an iterator to the start using `begin() + slice.first`
-    /// and an iterator to the end using `begin() + slice.last`, and then jump by
-    /// `step` at every iteration.
+    /* Get a view over a range of the set as a Python-style slice.  Applies wraparound
+    to the indices, and normalizes according to the step size.  The result is a range
+    adaptor that yields the contents of the slice when iterated over.  The adaptor
+    itself can also be implicitly converted to any other container type that  has a
+    suitable range constructor or is constructible from a pair of input iterators.
+    Assigning a range to an rvalue adaptor will write the new values into the slice's
+    existing contents, assuming the underlying iterator is an output iterator.  If the
+    start and stop indices do not denote a valid range according to the step size, then
+    the resulting view will be empty. */
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s)
+        noexcept(noexcept(slice{*this, s.normalize(ssize())}))
+    {
+        return {*this, s.normalize(ssize())};
+    }
+    [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const
+        noexcept(noexcept(const_slice{*this, s.normalize(ssize())}))
+    {
+        return {*this, s.normalize(ssize())};
+    }
 
     /* Check if any of the bits are set. */
     [[nodiscard]] constexpr bool any() const noexcept {
@@ -3151,8 +3155,6 @@ public:
             }
         }
     }
-
-    /// TODO: root<N>(), log<N>(), pow<N>()?
 
     /* Lexicographically compare two bitsets of equal size. */
     [[nodiscard]] friend constexpr auto operator<=>(
@@ -4630,7 +4632,13 @@ namespace bertrand {
             }();
             static_assert(x == uint8_t(0b1000));
 
+            for (auto&& x : a) {
+
+            }
             for (auto&& x : a.components()) {
+
+            }
+            for (auto&& x : a[slice{1, -1}]) {
 
             }
         }

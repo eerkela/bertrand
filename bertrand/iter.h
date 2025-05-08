@@ -25,9 +25,9 @@ public:
     ssize_t step;
 
     [[nodiscard]] explicit constexpr slice(
-        std::optional<ssize_t> start = std::nullopt,
-        std::optional<ssize_t> stop = std::nullopt,
-        std::optional<ssize_t> step = std::nullopt
+        Optional<ssize_t> start = std::nullopt,
+        Optional<ssize_t> stop = std::nullopt,
+        Optional<ssize_t> step = std::nullopt
     ) :
         start(start.value_or(missing)),
         stop(stop.value_or(missing)),
@@ -630,6 +630,270 @@ namespace impl {
         pointer m_data;
         bertrand::slice::normalized m_indices;
     };
+
+    /// TODO: for both of these cases, the slice's assignment operator should be
+    /// enabled iff `T` is also an output iterator.
+
+    /* A wrapper around a bidirectional iterator that yields a subset of a given
+    container within a specified start and stop interval, with an arbitrary step
+    size. */
+    template <meta::unqualified T> requires (meta::bidirectional_iterator<T>)
+    struct slice {
+    private:
+
+        T m_begin;
+        bertrand::slice::normalized m_indices;
+
+        template <typename C> requires (!meta::random_access_iterator<T>)
+        static constexpr T get_begin(
+            C& container,
+            bertrand::slice::normalized indices
+        )
+            noexcept(
+                meta::nothrow::has_begin<C> &&
+                meta::nothrow::has_end<C> &&
+                meta::nothrow::has_preincrement<T> &&
+                meta::nothrow::has_predecrement<T>
+            )
+        {
+            if (indices.start < (container.size() + 1 / 2)) {
+                T it = container.begin();
+                for (ssize_t i = 0; i < indices.start; ++i) ++it;
+                return it;
+            } else {
+                T it = container.end();
+                for (ssize_t i = container.size(); i > indices.start; --i) --it;
+                return it;
+            }
+        }
+
+        template <typename C> requires (meta::random_access_iterator<T>)
+        static constexpr T get_begin(
+            C& container,
+            bertrand::slice::normalized indices
+        )
+            noexcept(noexcept(container.begin() + indices.start))
+        {
+            return container.begin() + indices.start;
+        }
+
+    public:
+        using value_type = std::iterator_traits<T>::value_type;
+        using reference = std::iterator_traits<T>::reference;
+        using const_reference = meta::as_const<reference>;
+        using pointer = std::iterator_traits<T>::pointer;
+        using const_pointer = meta::as_pointer<meta::as_const<meta::remove_pointer<pointer>>>;
+
+        struct iterator {
+            using iterator_category =
+                std::conditional_t<
+                    meta::output_iterator<T, slice::value_type>,
+                    std::output_iterator_tag,
+                    std::input_iterator_tag
+                >;
+            using difference_type = std::iterator_traits<T>::difference_type;
+            using value_type = slice::value_type;
+            using reference = slice::reference;
+            using const_reference = slice::const_reference;
+            using pointer = slice::pointer;
+            using const_pointer = slice::const_pointer;
+
+        private:
+            friend slice;
+
+            T iter;
+            ssize_t step;
+            ssize_t length;
+
+            constexpr iterator(const T& iter, ssize_t step, ssize_t length)
+                noexcept(meta::nothrow::copyable<T>)
+                requires(meta::copyable<T>)
+            :
+                iter(iter),
+                step(step),
+                length(length)
+            {}
+
+            constexpr iterator(T&& iter, ssize_t step, ssize_t length)
+                noexcept(meta::nothrow::movable<T>)
+                requires(meta::movable<T>)
+            :
+                iter(std::move(iter)),
+                step(step),
+                length(length)
+            {}
+
+        public:
+            constexpr iterator() = default;
+
+            [[nodiscard]] constexpr decltype(auto) operator*()
+                noexcept(meta::nothrow::dereferenceable<T>)
+                requires(meta::dereferenceable<T>)
+            {
+                return (*iter);
+            }
+
+            [[nodiscard]] constexpr decltype(auto) operator*() const
+                noexcept(meta::nothrow::dereferenceable<const T>)
+                requires(meta::dereferenceable<const T>)
+            {
+                return (*iter);
+            }
+
+            [[nodiscard]] constexpr decltype(auto) operator->()
+                noexcept(meta::nothrow::has_arrow<T>)
+                requires(meta::has_arrow<T>)
+            {
+                return (iter.operator->());
+            }
+
+            [[nodiscard]] constexpr decltype(auto) operator->() const
+                noexcept(meta::nothrow::has_arrow<const T>)
+                requires(meta::has_arrow<const T>)
+            {
+                return (iter.operator->());
+            }
+
+            constexpr iterator& operator++()
+                noexcept(
+                    meta::nothrow::has_preincrement<T> &&
+                    meta::nothrow::has_predecrement<T>
+                )
+                requires(
+                    meta::random_access_iterator<T> &&
+                    meta::has_iadd<T, ssize_t>
+                )
+            {
+                iter += step;
+                --length;
+                return *this;
+            }
+
+            constexpr iterator& operator++()
+                noexcept(
+                    meta::nothrow::has_preincrement<T> &&
+                    meta::nothrow::has_predecrement<T>
+                )
+                requires(
+                    !meta::random_access_iterator<T> &&
+                    meta::has_preincrement<T> &&
+                    meta::has_predecrement<T>
+                )
+            {
+                if (step > 0) {
+                    for (ssize_t i = 0; i < step; ++i) ++iter;
+                } else {
+                    for (ssize_t i = step; i < 0; ++i) --iter;
+                }
+                --length;
+                return *this;
+            }
+
+            [[nodiscard]] constexpr iterator operator++(int)
+                noexcept(
+                    meta::nothrow::copyable<iterator> &&
+                    meta::nothrow::has_preincrement<iterator>
+                )
+                requires(
+                    meta::copyable<iterator> &&
+                    meta::has_preincrement<iterator>
+                )
+            {
+                iterator copy = *this;
+                ++(*this);
+                return copy;
+            }
+
+            [[nodiscard]] constexpr bool operator==(const iterator& other) noexcept {
+                return length == other.length;
+            }
+
+            [[nodiscard]] constexpr bool operator!=(const iterator& other) noexcept {
+                return length != other.length;
+            }
+        };
+
+        using const_iterator = iterator;
+
+        template <meta::iterable C>
+            requires (
+                meta::has_size<C> &&
+                meta::is<meta::begin_type<C>, T> &&
+                meta::is<meta::end_type<C>, T>
+            )
+        [[nodiscard]] constexpr slice(
+            C& container,
+            bertrand::slice::normalized indices
+        ) noexcept(noexcept(get_begin(container, indices))) :
+            m_begin(get_begin(container, indices)),
+            m_indices(indices)
+        {}
+
+        constexpr slice(const slice&) = delete;
+        constexpr slice(slice&&) = delete;
+        constexpr slice& operator=(const slice&) = delete;
+        constexpr slice& operator=(slice&&) = delete;
+
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
+        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
+        [[nodiscard]] constexpr iterator begin() const
+            noexcept(noexcept(iterator{m_begin, m_indices.step, m_indices.length}))
+        {
+            return {m_begin, m_indices.step, m_indices.length};
+        }
+        [[nodiscard]] constexpr iterator begin() &&
+            noexcept(noexcept(iterator{
+                std::move(m_begin),
+                m_indices.step,
+                m_indices.length
+            }))
+        {
+            return {std::move(m_begin), m_indices.step, m_indices.length};
+        }
+        [[nodiscard]] constexpr iterator cbegin() const
+            noexcept(noexcept(iterator{m_begin, m_indices.step, m_indices.length}))
+        {
+            return {m_begin, m_indices.step, m_indices.length};
+        }
+        [[nodiscard]] constexpr iterator cbegin() &&
+            noexcept(noexcept(iterator{
+                std::move(m_begin),
+                m_indices.step,
+                m_indices.length
+            }))
+        {
+            return {std::move(m_begin), m_indices.step, m_indices.length};
+        }
+        [[nodiscard]] constexpr iterator end() const
+            noexcept(noexcept(iterator{T{}, m_indices.stop, 0}))
+        {
+            return {T{}, m_indices.step, 0};
+        }
+        [[nodiscard]] constexpr iterator cend() const
+            noexcept(noexcept(iterator{T{}, m_indices.stop, 0}))
+        {
+            return {T{}, m_indices.step, 0};
+        }
+
+        /// TODO: implicit conversion + assignment operator.
+
+
+        /// TODO: this would be constructed with a reference to the original container,
+        /// whose begin/end type is guaranteed to match T.  The constructor would then
+        /// call either begin() or end() to get an iterator to the start index,
+        /// whichever would be closer.  begin() would then return a new iterator
+        /// containing a copy of the begin iterator and a copy of the slice indices.
+        /// end() would return `sentinel`, making this a forward-only range.
+    };
+
+
+
+
 
     /* Enable/disable and optimize the `any()`/`all()` operators such that they fail
     fast where possible, unlike other reductions. */

@@ -1886,16 +1886,19 @@ namespace meta {
     concept output_iterator = iterator<T> && std::output_iterator<T, V>;
 
     template <typename T>
-    concept forward_iterator = std::forward_iterator<T>;
+    concept forward_iterator = iterator<T> && std::forward_iterator<T>;
 
     template <typename T>
-    concept bidirectional_iterator = std::bidirectional_iterator<T>;
+    concept bidirectional_iterator =
+        forward_iterator<T> && std::bidirectional_iterator<T>;
 
     template <typename T>
-    concept random_access_iterator = std::random_access_iterator<T>;
+    concept random_access_iterator =
+        bidirectional_iterator<T> && std::random_access_iterator<T>;
 
     template <typename T>
-    concept contiguous_iterator = std::contiguous_iterator<T>;
+    concept contiguous_iterator =
+        random_access_iterator<T> && std::contiguous_iterator<T>;
 
     template <typename T, typename Iter>
     concept sentinel_for = std::sentinel_for<T, Iter>;
