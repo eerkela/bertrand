@@ -160,480 +160,6 @@ namespace impl {
         }
     };
 
-    template <typename T>
-    concept contiguous_iterator_arg = meta::not_void<T> && !meta::reference<T>;
-
-    template <contiguous_iterator_arg T>
-    struct contiguous_iterator {
-        using iterator_category = std::contiguous_iterator_tag;
-        using difference_type = ssize_t;
-        using value_type = T;
-        using reference = meta::as_lvalue<value_type>;
-        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-        using pointer = meta::as_pointer<value_type>;
-        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-
-        constexpr contiguous_iterator(pointer ptr = nullptr) noexcept : ptr(ptr) {};
-        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
-        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
-        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
-        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
-
-        template <meta::more_qualified_than<T> U>
-        [[nodiscard]] constexpr operator contiguous_iterator<U>() noexcept {
-            return {ptr};
-        }
-
-        [[nodiscard]] constexpr reference operator*() noexcept {
-            return *ptr;
-        }
-
-        [[nodiscard]] constexpr const_reference operator*() const noexcept {
-            return *ptr;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() noexcept {
-            return ptr;
-        }
-
-        [[nodiscard]] constexpr const_pointer operator->() const noexcept {
-            return ptr;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) noexcept {
-            return ptr[n];
-        }
-
-        [[nodiscard]] constexpr const_reference operator[](difference_type n) const noexcept {
-            return ptr[n];
-        }
-
-        constexpr contiguous_iterator& operator++() noexcept {
-            ++ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
-            contiguous_iterator copy = *this;
-            ++(*this);
-            return copy;
-        }
-
-        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
-            ptr += n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator+(difference_type n) const noexcept {
-            return {ptr + n};
-        }
-
-        constexpr contiguous_iterator& operator--() noexcept {
-            --ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
-            contiguous_iterator copy = *this;
-            --(*this);
-            return copy;
-        }
-
-        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
-            ptr -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
-            return {ptr - n};
-        }
-
-        template <meta::is<T> U>
-        [[nodiscard]] constexpr difference_type operator-(
-            const contiguous_iterator<U>& rhs
-        ) const noexcept {
-            return ptr - rhs.ptr;
-        }
-
-        template <meta::is<T> U>
-        [[nodiscard]] constexpr std::strong_ordering operator<=>(
-            const contiguous_iterator<U>& rhs
-        ) const noexcept {
-            return ptr <=> rhs.ptr;
-        }
-
-        template <meta::is<T> U>
-        [[nodiscard]] constexpr bool operator==(
-            const contiguous_iterator<U>& rhs
-        ) const noexcept {
-            return ptr == rhs.ptr;
-        }
-
-    private:
-        pointer ptr;
-    };
-
-    /// TODO: store a reference to the container type within the iterator, and assume
-    /// it has a len() that the iterator can check against.  That should be slightly
-    /// more efficient in debug builds, which is actually relevant.  Not entirely sure.
-
-    template <contiguous_iterator_arg T> requires (DEBUG)
-    struct contiguous_iterator<T> {
-        using boundscheck = std::function<void(const contiguous_iterator&)>;
-
-        using iterator_category = std::contiguous_iterator_tag;
-        using difference_type = ssize_t;
-        using value_type = T;
-        using reference = meta::as_lvalue<value_type>;
-        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-        using pointer = meta::as_pointer<value_type>;
-        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-
-        constexpr contiguous_iterator(
-            pointer ptr = nullptr,
-            boundscheck check = [](const contiguous_iterator&) noexcept {}
-        ) :
-            ptr(ptr),
-            check(std::move(check))
-        {};
-
-        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
-        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
-        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
-        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
-
-        template <meta::more_qualified_than<T> U>
-        [[nodiscard]] constexpr operator contiguous_iterator<U>() {
-            return {ptr, check};
-        }
-
-        [[nodiscard]] constexpr reference operator*() {
-            check(*this);
-            return *ptr;
-        }
-
-        [[nodiscard]] constexpr const_reference operator*() const {
-            check(*this);
-            return *ptr;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() {
-            check(*this);
-            return ptr;
-        }
-
-        [[nodiscard]] constexpr const_pointer operator->() const {
-            check(*this);
-            return ptr;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) {
-            return *contiguous_iterator{ptr + n, check};
-        }
-
-        [[nodiscard]] constexpr const_reference operator[](difference_type n) const {
-            return *contiguous_iterator{ptr + n, check};
-        }
-
-        constexpr contiguous_iterator& operator++() noexcept {
-            ++ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
-            contiguous_iterator copy = *this;
-            ++(*this);
-            return copy;
-        }
-
-        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
-            ptr += n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator+(difference_type n) const {
-            return {ptr + n, check};
-        }
-
-        constexpr contiguous_iterator& operator--() noexcept {
-            --ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
-            contiguous_iterator copy = *this;
-            --(*this);
-            return copy;
-        }
-
-        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
-            ptr -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const {
-            return {ptr - n, check};
-        }
-
-        template <meta::is<T> U>
-        [[nodiscard]] constexpr difference_type operator-(
-            const contiguous_iterator<U>& rhs
-        ) const {
-            check(rhs);
-            return ptr - rhs.ptr;
-        }
-
-        template <meta::is<T> U>
-        [[nodiscard]] constexpr std::strong_ordering operator<=>(
-            const contiguous_iterator<U>& rhs
-        ) const {
-            check(rhs);
-            return ptr <=> rhs.ptr;
-        }
-
-        template <meta::is<T> U>
-        [[nodiscard]] constexpr bool operator==(
-            const contiguous_iterator<U>& rhs
-        ) const {
-            check(rhs);
-            return ptr == rhs.ptr;
-        }
-
-    private:
-        pointer ptr;
-        boundscheck check;
-    };
-
-    /// TODO: contiguous_slice can probably be generalized to just slice<Iter>, where
-    /// `Iter` is at minimum a bidirectional iterator, and may be a random access
-    /// iterator as well.  The assignment operator would be enabled iff the iterator
-    /// is also an output iterator, and the begin() and end() methods would generate
-    /// normal container iterators that can be used to iterate over the slice, using
-    /// whatever the most efficient algorithm for that is (O(1) for random access,
-    /// O(n) for bidirectional).
-
-    template <meta::not_void T> requires (!meta::reference<T>)
-    struct contiguous_slice {
-    private:
-
-        struct initializer {
-            std::initializer_list<T>& items;
-            [[nodiscard]] constexpr size_t size() const noexcept { return items.size(); }
-            [[nodiscard]] constexpr auto begin() const noexcept { return items.begin(); }
-            [[nodiscard]] constexpr auto end() const noexcept { return items.end(); }
-        };
-
-        template <typename V>
-        struct iter {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = ssize_t;
-            using value_type = V;
-            using reference = meta::as_lvalue<value_type>;
-            using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-            using pointer = meta::as_pointer<value_type>;
-            using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-
-            pointer data = nullptr;
-            ssize_t index = 0;
-            ssize_t step = 1;
-
-            [[nodiscard]] constexpr reference operator*() noexcept {
-                return data[index];
-            }
-
-            [[nodiscard]] constexpr const_reference operator*() const noexcept {
-                return data[index];
-            }
-
-            [[nodiscard]] constexpr pointer operator->() noexcept {
-                return data + index;
-            }
-
-            [[nodiscard]] constexpr const_pointer operator->() const noexcept {
-                return data + index;
-            }
-
-            [[maybe_unused]] iter& operator++() noexcept {
-                index += step;
-                return *this;
-            }
-
-            [[nodiscard]] iter operator++(int) noexcept {
-                iterator copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            [[nodiscard]] constexpr bool operator==(const iter& other) noexcept {
-                return step > 0 ? index >= other.index : index <= other.index;
-            }
-
-            [[nodiscard]] constexpr bool operator!=(const iter& other) noexcept {
-                return !(*this == other);
-            }
-        };
-
-    public:
-        using value_type = T;
-        using reference = meta::as_lvalue<value_type>;
-        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
-        using pointer = meta::as_pointer<value_type>;
-        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
-        using iterator = iter<value_type>;
-        using const_iterator = iter<meta::as_const<value_type>>;
-
-        constexpr contiguous_slice(
-            pointer data,
-            bertrand::slice::normalized indices
-        ) noexcept :
-            m_data(data),
-            m_indices(indices)
-        {}
-
-        constexpr contiguous_slice(const contiguous_slice&) = delete;
-        constexpr contiguous_slice(contiguous_slice&&) = delete;
-        constexpr contiguous_slice& operator=(const contiguous_slice&) = delete;
-        constexpr contiguous_slice& operator=(contiguous_slice&&) = delete;
-
-        [[nodiscard]] constexpr pointer data() const noexcept { return m_data; }
-        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
-        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
-        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
-        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
-        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
-
-        [[nodiscard]] constexpr iterator begin() noexcept {
-            return {m_data, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator begin() const noexcept {
-            return {m_data, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator cbegin() noexcept {
-            return {m_data, m_indices.start, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr iterator end() noexcept {
-            return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator end() const noexcept {
-            return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        [[nodiscard]] constexpr const_iterator cend() const noexcept {
-            return {m_data, m_indices.stop, m_indices.step};
-        }
-
-        template <typename V>
-            requires (meta::constructible_from<V, std::from_range_t, contiguous_slice&>)
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(std::from_range, *this))) {
-            return V(std::from_range, *this);
-        }
-
-        template <typename V>
-            requires (
-                !meta::constructible_from<V, std::from_range_t, contiguous_slice&> &&
-                meta::constructible_from<V, iterator, iterator>
-            )
-        [[nodiscard]] constexpr operator V() && noexcept(noexcept(V(begin(), end()))) {
-            return V(begin(), end());
-        }
-
-        template <typename Dummy = value_type>
-            requires (
-                meta::not_const<Dummy> &&
-                meta::destructible<Dummy> &&
-                meta::copyable<Dummy>
-            )
-        [[maybe_unused]] constexpr contiguous_slice& operator=(
-            std::initializer_list<value_type> items
-        ) && {
-            return std::move(*this) = initializer{items};
-        }
-
-        template <meta::yields<value_type> Range>
-            requires (
-                meta::not_const<value_type> &&
-                meta::destructible<value_type> &&
-                meta::constructible_from<value_type, meta::yield_type<Range>>
-            )
-        [[maybe_unused]] constexpr contiguous_slice& operator=(Range&& range) && {
-            using type = meta::unqualify<value_type>;
-            constexpr bool has_size = meta::has_size<meta::as_lvalue<Range>>;
-            auto it = std::ranges::begin(range);
-            auto end = std::ranges::end(range);
-
-            // if the range has an explicit size, then we can check it ahead of time
-            // to ensure that it exactly matches that of the slice
-            if constexpr (has_size) {
-                if (std::ranges::size(range) != size()) {
-                    throw ValueError(
-                        "cannot assign a range of size " +
-                        std::to_string(std::ranges::size(range)) +
-                        " to a slice of size " + std::to_string(size())
-                    );
-                }
-            }
-
-            // If we checked the size above, we can avoid checking it again on each
-            // iteration
-            if (step() > 0) {
-                for (ssize_t i = start(); i < stop(); i += step()) {
-                    if constexpr (!has_size) {
-                        if (it == end) {
-                            throw ValueError(
-                                "not enough values to fill slice of size " +
-                                std::to_string(size())
-                            );
-                        }
-                    }
-                    if constexpr (!meta::trivially_destructible<type>) {
-                        std::destroy_at(m_data + i);
-                    }
-                    std::construct_at(m_data + i, *it);
-                    ++it;
-                }
-            } else {
-                for (ssize_t i = start(); i > stop(); i += step()) {
-                    if constexpr (!has_size) {
-                        if (it == end) {
-                            throw ValueError(
-                                "not enough values to fill slice of size " +
-                                std::to_string(size())
-                            );
-                        }
-                    }
-                    if constexpr (!meta::trivially_destructible<type>) {
-                        std::destroy_at(m_data + i);
-                    }
-                    std::construct_at(m_data + i, *it);
-                    ++it;
-                }
-            }
-
-            if constexpr (!has_size) {
-                if (it != end) {
-                    throw ValueError(
-                        "range length exceeds slice of size " +
-                        std::to_string(size())
-                    );
-                }
-            }
-            return *this;
-        }
-
-    private:
-        pointer m_data;
-        bertrand::slice::normalized m_indices;
-    };
-
-    /// TODO: for both of these cases, the slice's assignment operator should be
-    /// enabled iff `T` is also an output iterator.
-
     /* A wrapper around a bidirectional iterator that yields a subset of a given
     container within a specified start and stop interval, with an arbitrary step
     size. */
@@ -880,20 +406,316 @@ namespace impl {
             return {T{}, m_indices.step, 0};
         }
 
-        /// TODO: implicit conversion + assignment operator.
+        template <typename V>
+        [[nodiscard]] constexpr operator V() &&
+            noexcept(noexcept(V(std::from_range, *this)))
+            requires(meta::constructible_from<V, std::from_range_t, slice&>)
+        {
+            return V(std::from_range, *this);
+        }
 
+        template <typename V>
+        [[nodiscard]] constexpr operator V() &&
+            noexcept(noexcept(V(begin(), end())))
+            requires(
+                !meta::constructible_from<V, std::from_range_t, slice&> &&
+                meta::constructible_from<V, iterator, iterator>
+            )
+        {
+            return V(begin(), end());
+        }
 
-        /// TODO: this would be constructed with a reference to the original container,
-        /// whose begin/end type is guaranteed to match T.  The constructor would then
-        /// call either begin() or end() to get an iterator to the start index,
-        /// whichever would be closer.  begin() would then return a new iterator
-        /// containing a copy of the begin iterator and a copy of the slice indices.
-        /// end() would return `sentinel`, making this a forward-only range.
+        template <meta::iterable Range>
+        constexpr slice& operator=(Range&& range) &&
+            requires (meta::output_iterator<T, meta::yield_type<Range>>)
+        {
+            constexpr bool has_size = meta::has_size<meta::as_lvalue<Range>>;
+
+            // if the range has an explicit size, then we can check it ahead of time
+            // to ensure that it exactly matches that of the slice
+            if constexpr (has_size) {
+                if (std::ranges::size(range) != size()) {
+                    throw ValueError(
+                        "cannot assign a range of size " +
+                        std::to_string(std::ranges::size(range)) +
+                        " to a slice of size " + std::to_string(size())
+                    );
+                }
+            }
+
+            // If we checked the size above, we can avoid checking it again on each
+            // iteration
+            auto it = std::ranges::begin(range);
+            auto end = std::ranges::end(range);
+            auto output = begin();
+            for (ssize_t i = 0; i < m_indices.length; ++i) {
+                if constexpr (!has_size) {
+                    if (it == end) {
+                        throw ValueError(
+                            "not enough values to fill slice of size " +
+                            std::to_string(size())
+                        );
+                    }
+                }
+                *output = *it;
+                ++it;
+            }
+
+            if constexpr (!has_size) {
+                if (it != end) {
+                    throw ValueError(
+                        "range length exceeds slice of size " +
+                        std::to_string(size())
+                    );
+                }
+            }
+            return *this;
+        }
     };
 
+    template <typename T>
+    concept contiguous_iterator_arg = meta::not_void<T> && !meta::reference<T>;
 
+    template <contiguous_iterator_arg T>
+    struct contiguous_iterator {
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = ssize_t;
+        using value_type = T;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
+        constexpr contiguous_iterator(pointer ptr = nullptr) noexcept : ptr(ptr) {};
+        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
+        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
 
+        template <meta::more_qualified_than<T> U>
+        [[nodiscard]] constexpr operator contiguous_iterator<U>() noexcept {
+            return {ptr};
+        }
+
+        [[nodiscard]] constexpr reference operator*() noexcept {
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr const_reference operator*() const noexcept {
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() noexcept {
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr const_pointer operator->() const noexcept {
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) noexcept {
+            return ptr[n];
+        }
+
+        [[nodiscard]] constexpr const_reference operator[](difference_type n) const noexcept {
+            return ptr[n];
+        }
+
+        constexpr contiguous_iterator& operator++() noexcept {
+            ++ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
+            contiguous_iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
+            ptr += n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator+(difference_type n) const noexcept {
+            return {ptr + n};
+        }
+
+        constexpr contiguous_iterator& operator--() noexcept {
+            --ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
+            contiguous_iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
+            ptr -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
+            return {ptr - n};
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr difference_type operator-(
+            const contiguous_iterator<U>& rhs
+        ) const noexcept {
+            return ptr - rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(
+            const contiguous_iterator<U>& rhs
+        ) const noexcept {
+            return ptr <=> rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr bool operator==(
+            const contiguous_iterator<U>& rhs
+        ) const noexcept {
+            return ptr == rhs.ptr;
+        }
+
+    private:
+        pointer ptr;
+    };
+
+    /// TODO: store a reference to the container type within the iterator, and assume
+    /// it has a len() that the iterator can check against.  That should be slightly
+    /// more efficient in debug builds, which is actually relevant.  Not entirely sure.
+
+    template <contiguous_iterator_arg T> requires (DEBUG)
+    struct contiguous_iterator<T> {
+        using boundscheck = std::function<void(const contiguous_iterator&)>;
+
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = ssize_t;
+        using value_type = T;
+        using reference = meta::as_lvalue<value_type>;
+        using const_reference = meta::as_lvalue<meta::as_const<value_type>>;
+        using pointer = meta::as_pointer<value_type>;
+        using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+
+        constexpr contiguous_iterator(
+            pointer ptr = nullptr,
+            boundscheck check = [](const contiguous_iterator&) noexcept {}
+        ) :
+            ptr(ptr),
+            check(std::move(check))
+        {};
+
+        constexpr contiguous_iterator(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator(contiguous_iterator&&) noexcept = default;
+        constexpr contiguous_iterator& operator=(const contiguous_iterator&) noexcept = default;
+        constexpr contiguous_iterator& operator=(contiguous_iterator&&) noexcept = default;
+
+        template <meta::more_qualified_than<T> U>
+        [[nodiscard]] constexpr operator contiguous_iterator<U>() {
+            return {ptr, check};
+        }
+
+        [[nodiscard]] constexpr reference operator*() {
+            check(*this);
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr const_reference operator*() const {
+            check(*this);
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() {
+            check(*this);
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr const_pointer operator->() const {
+            check(*this);
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) {
+            return *contiguous_iterator{ptr + n, check};
+        }
+
+        [[nodiscard]] constexpr const_reference operator[](difference_type n) const {
+            return *contiguous_iterator{ptr + n, check};
+        }
+
+        constexpr contiguous_iterator& operator++() noexcept {
+            ++ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
+            contiguous_iterator copy = *this;
+            ++(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
+            ptr += n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator+(difference_type n) const {
+            return {ptr + n, check};
+        }
+
+        constexpr contiguous_iterator& operator--() noexcept {
+            --ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
+            contiguous_iterator copy = *this;
+            --(*this);
+            return copy;
+        }
+
+        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
+            ptr -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const {
+            return {ptr - n, check};
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr difference_type operator-(
+            const contiguous_iterator<U>& rhs
+        ) const {
+            check(rhs);
+            return ptr - rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(
+            const contiguous_iterator<U>& rhs
+        ) const {
+            check(rhs);
+            return ptr <=> rhs.ptr;
+        }
+
+        template <meta::is<T> U>
+        [[nodiscard]] constexpr bool operator==(
+            const contiguous_iterator<U>& rhs
+        ) const {
+            check(rhs);
+            return ptr == rhs.ptr;
+        }
+
+    private:
+        pointer ptr;
+        boundscheck check;
+    };
 
     /* Enable/disable and optimize the `any()`/`all()` operators such that they fail
     fast where possible, unlike other reductions. */

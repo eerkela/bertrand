@@ -1147,6 +1147,11 @@ struct Bits : impl::Bits_tag {
     }
 
 private:
+    template <size_type>
+    friend struct bertrand::UInt;
+    template <size_type>
+    friend struct bertrand::Int;
+
     using big_word = impl::word<N>::big;
 
     template <size_type I>
@@ -2171,6 +2176,16 @@ public:
             "A", "B", "C", "D", "E", "F"
         >(str, continuation);
     }
+
+    /// TODO: the internal machinery for from_string() and to_string() should be
+    /// abstracted into the impl:: namespace, so that I can reuse as much of it as
+    /// possible for signed integers.  Or, all I need to do is record the sign and
+    /// take a two's complement, then delegate to the unsigned version, and then
+    /// append the sign manually.  This could likely be done efficiently by extracting
+    /// the component calculation into a separate method, and then calling it with a
+    /// mutable string that may already have a negative sign in it, and possibly be
+    /// reserved to the correct size.  This would avoid any unnecessary reallocation or
+    /// bitwise copy.
 
     /* Encode the bitset into a string representation.  Defaults to base 2 with the
     given zero and one digit strings, which are given as template parameters.  The
@@ -3785,6 +3800,9 @@ struct UInt : impl::UInt_tag {
     /// underlying bitset, which should not be the case for integers, or for
     /// std::format or std::ostream formatting.  I can either eliminate it for the
     /// bitset itself, or add a special case.
+    /// -> Maybe what I ought to do is add a boolean flag as an argument?  Or just
+    /// leave padding up to the user?  I can still probably overallocate as an
+    /// optimization, but I just wouldn't fill in any leading zeroes.
 
     /* Encode an integer into a string representation.  Defaults to base 2 with the
     given zero and one digit strings, which are provided as template parameters, and

@@ -201,8 +201,8 @@ struct static_str : impl::static_str_tag {
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-    using slice = impl::contiguous_slice<value_type>;
-    using const_slice = slice;
+    using slice = impl::slice<iterator>;
+    using const_slice = impl::slice<const_iterator>;
 
     char buffer[N + 1];  // +1 for null terminator
 
@@ -325,9 +325,9 @@ public:
     initializing it to `std::nullopt`, which is equivalent to an empty slice index in
     Python.  Applies Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr slice operator[](bertrand::slice s) const noexcept(
-        noexcept(slice{data(), s.normalize(ssize())})
+        noexcept(slice{*this, s.normalize(ssize())})
     ) {
-        return {data(), s.normalize(ssize())};
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to the character at index `i`.  Applies Python-style wraparound
@@ -2360,6 +2360,9 @@ namespace impl {
         }
     };
 
+    /// TODO: hashed_string_slice should not be necessary - just use impl::slice
+    /// like normal?
+
     template <meta::not_void T> requires (!meta::reference<T>)
     struct hashed_string_slice {
     private:
@@ -2562,8 +2565,8 @@ struct string_list : impl::string_list_tag {
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = reverse_iterator;
-    using slice = impl::contiguous_slice<value_type>;
-    using const_slice = slice;
+    using slice = impl::slice<iterator>;
+    using const_slice = impl::slice<const_iterator>;
 
     /* Swap the contents of two string lists.  Does nothing, since the strings are
     encoded entirely at compile time. */
@@ -2814,10 +2817,10 @@ struct string_list : impl::string_list_tag {
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] static constexpr slice operator[](bertrand::slice s) noexcept(
-        noexcept(slice{data(), s.normalize(ssize())})
-    ) {
-        return {data(), s.normalize(ssize())};
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) const
+        noexcept(noexcept(slice{*this, s.normalize(ssize())}))
+    {
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to the string at index `I`, where `I` is known at compile
@@ -2849,8 +2852,8 @@ struct string_list : impl::string_list_tag {
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
-    [[nodiscard]] static constexpr slice at() noexcept {
-        return {data(), s.normalize(ssize())};
+    [[nodiscard]] constexpr slice at() const noexcept {
+        return {*this, s.normalize(ssize())};
     }
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
@@ -2858,8 +2861,8 @@ struct string_list : impl::string_list_tag {
     the strings within the slice.  Each index can be omitted by initializing it to
     `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
     Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] static constexpr slice at(bertrand::slice s) noexcept {
-        return {data(), s.normalize(ssize())};
+    [[nodiscard]] constexpr slice at(bertrand::slice s) const noexcept {
+        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to the first occurrence of a string within the list.  Returns
