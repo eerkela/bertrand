@@ -162,7 +162,10 @@ namespace impl {
 
     /* A wrapper around a bidirectional iterator that yields a subset of a given
     container within a specified start and stop interval, with an arbitrary step
-    size. */
+    size.  Containers can expose an `operator[]` overload that returns one of these
+    objects to allow Python-style slicing semantics in conjunction with the
+    `bertrand::slice` helper class, including basic iteration, assignment and
+    extraction via an implicit conversion operator. */
     template <meta::unqualified T> requires (meta::bidirectional_iterator<T>)
     struct slice {
     private:
@@ -366,7 +369,7 @@ namespace impl {
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
         [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
         [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return ssize(); }
+        [[nodiscard]] constexpr explicit operator bool() const noexcept { return ssize(); }
         [[nodiscard]] constexpr iterator begin() const
             noexcept(noexcept(iterator{m_begin, m_indices.step, m_indices.length}))
         {

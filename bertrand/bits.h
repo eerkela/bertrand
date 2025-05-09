@@ -1372,18 +1372,20 @@ private:
         const auto& digits,
         Bits& quotient,
         Bits& remainder,
-        size_type& size
+        size_type& size,
+        size_type count
     ) {
         quotient.divmod(divisor, quotient, remainder);
         std::string_view out = digits[remainder.data()[0]];
-        size += out.size();
+        size += out.size() * (J < count);
         return out;
     }
 
     template <size_t J, word mask, size_type nbits>
     constexpr std::string_view extract_digit_power2(
         const auto& digits,
-        size_type& size
+        size_type& size,
+        size_type count
     ) const {
         constexpr size_type idx = (J * nbits) / word_size;
         constexpr size_type bit = (J * nbits) % word_size;
@@ -1401,8 +1403,77 @@ private:
 
         // look up completed value in digit map
         std::string_view out = digits[val];
-        size += out.size();
+        size += out.size() * (J < count);
         return out;
+    }
+
+    template <static_str zero, static_str one, static_str... rest>
+        requires (
+            sizeof...(rest) + 2 <= 64 &&
+            !zero.empty() && !one.empty() && (... && !rest.empty()) &&
+            meta::strings_are_unique<zero, one, rest...>
+        )
+    [[nodiscard]] constexpr auto _to_string(size_type& size, size_type& count) const
+        noexcept
+    {
+        // # of digits needed to represent the value in `base = sizeof...(Strs)` is
+        // ceil(N / log2(base))
+        static constexpr size_type base = sizeof...(rest) + 2;
+        static constexpr double _ceil = N / impl::log2_table[base];
+        static constexpr size_type ceil = size_type(_ceil) + (size_type(_ceil) < _ceil);
+
+        // generate a lookup table of substrings to use for each digit
+        static constexpr std::array<std::string_view, base> digits {zero, one, rest...};
+        static constexpr Bits divisor = base;
+
+        // digit count is equal to the number of digits needed to represent the most
+        // significant active bit in the set
+        index_type msb = last_one().value_or(0);
+        double _count = (msb + 1) / impl::log2_table[base];
+        count = size_type(_count) + (size_type(_count) < _count);
+
+        // if the base is a power of 2, then we can use a simple bitscan to determine
+        // the final string, rather than doing multi-word division
+        if constexpr (impl::is_power2(base)) {
+            static constexpr word mask = word(base - 1);
+            static constexpr size_type nbits = std::bit_width(mask);
+            return [this]<size_t... Js>(
+                std::index_sequence<Js...>,
+                size_type& size,
+                size_type count
+            ) {
+                return std::array<std::string_view, ceil>{
+                    extract_digit_power2<Js, mask, nbits>(
+                        digits,
+                        size,
+                        count
+                    )...
+                };
+            }(std::make_index_sequence<ceil>{}, size, count);
+
+        // otherwise, use modular division to calculate all the substrings needed to
+        // represent the value, from the least significant digit to most significant.
+        } else {
+            Bits quotient = *this;
+            Bits remainder;
+            return []<size_t... Js>(
+                std::index_sequence<Js...>,
+                Bits& quotient,
+                Bits& remainder,
+                size_type& size,
+                size_type count
+            ) {
+                return std::array<std::string_view, ceil>{
+                    extract_digit<Js, divisor>(
+                        digits,
+                        quotient,
+                        remainder,
+                        size,
+                        count
+                    )...
+                };
+            }(std::make_index_sequence<ceil>{}, quotient, remainder, size, count);
+        }
     }
 
     constexpr bool msb_is_set() const noexcept {
@@ -2177,22 +2248,12 @@ public:
         >(str, continuation);
     }
 
-    /// TODO: the internal machinery for from_string() and to_string() should be
-    /// abstracted into the impl:: namespace, so that I can reuse as much of it as
-    /// possible for signed integers.  Or, all I need to do is record the sign and
-    /// take a two's complement, then delegate to the unsigned version, and then
-    /// append the sign manually.  This could likely be done efficiently by extracting
-    /// the component calculation into a separate method, and then calling it with a
-    /// mutable string that may already have a negative sign in it, and possibly be
-    /// reserved to the correct size.  This would avoid any unnecessary reallocation or
-    /// bitwise copy.
-
     /* Encode the bitset into a string representation.  Defaults to base 2 with the
     given zero and one digit strings, which are given as template parameters.  The
     total number of digits dictates the base for the conversion, which must be at least
-    2 and at most 64.  The result is always padded to the exact width needed to
-    represent the bitset in the chosen base, including leading zeroes if needed.  Note
-    that the resulting string is always big-endian, meaning the first substring
+    2 and at most 64.  No leading zeroes will be included in the string.
+
+    Note that the resulting string is always big-endian, meaning the first substring
     corresponds to the most significant digit in the bitset, and the last substring
     corresponds to the least significant digit.  If the base is 2, then the result can
     be passed back to the `Bits` constructor to recover the original state.  Fails to
@@ -2204,70 +2265,17 @@ public:
             meta::strings_are_unique<zero, one, rest...>
         )
     [[nodiscard]] constexpr std::string to_string() const noexcept {
-        // # of digits needed to represent the value in `base = sizeof...(Strs)` is
-        // ceil(N / log2(base))
-        static constexpr size_type base = sizeof...(rest) + 2;
-        static constexpr double len = N / impl::log2_table[base];
-        static constexpr size_type ceil = size_type(len) + (size_type(len) < len);
+        size_type size = 0;
+        size_type count = 0;
+        auto parts = _to_string<zero, one, rest...>(size, count);
 
-        // generate a lookup table of substrings to use for each digit
-        static constexpr std::array<std::string_view, base> digits {zero, one, rest...};
-        static constexpr Bits divisor = word(base);
-
-        // if the base is larger than the representable range of the bitset, then we
-        // can avoid division entirely.
-        if constexpr (base >= (1ULL << bertrand::min(N, word_size - 1))) {
-            return std::string(digits[buffer[0]]);
-
-        // if the base is a power of 2, then we can use a simple bitscan to determine
-        // the final string, rather than doing multi-word division
-        } else if constexpr (impl::is_power2(base)) {
-            static constexpr word mask = word(base - 1);
-            static constexpr size_type nbits = std::bit_width(mask);
-
-            size_type size = 0;
-            auto parts = [this]<size_t... Js>(
-                std::index_sequence<Js...>,
-                size_type& size
-            ) {
-                return std::array<std::string_view, ceil>{
-                    extract_digit_power2<Js, mask, nbits>(digits, size)...
-                };
-            }(std::make_index_sequence<ceil>{}, size);
-
-            // join the substrings in reverse order to create the final result
-            std::string result;
-            result.reserve(size);
-            for (size_type i = ceil; i-- > 0;) {
-                result.append(parts[i]);
-            }
-            return result;
-
-        // otherwise, use modular division to calculate all the substrings needed to
-        // represent the value, from the least significant digit to most significant.
-        } else {
-            Bits quotient = *this;
-            Bits remainder;
-            size_type size = 0;
-            auto parts = []<size_t... Js>(
-                std::index_sequence<Js...>,
-                Bits& quotient,
-                Bits& remainder,
-                size_type& size
-            ) {
-                return std::array<std::string_view, ceil>{
-                    extract_digit<Js, divisor>(digits, quotient, remainder, size)...
-                };
-            }(std::make_index_sequence<ceil>{}, quotient, remainder, size);
-
-            // join the substrings in reverse order to create the final result
-            std::string result;
-            result.reserve(size);
-            for (size_type i = ceil; i-- > 0;) {
-                result.append(parts[i]);
-            }
-            return result;
+        // join the substrings in reverse order to create the final result
+        std::string result;
+        result.reserve(size);
+        for (size_type i = count; i-- > 0;) {
+            result.append(parts[i]);
         }
+        return result;
     }
 
     /* A shorthand for `to_string<"0", "1">()`, which yields a string in the canonical
@@ -3795,14 +3803,6 @@ struct UInt : impl::UInt_tag {
     ) noexcept {
         return Bits::from_hex(str, continuation);
     }
-
-    /// TODO: the result from to_string() is zero padded to the exact width of the
-    /// underlying bitset, which should not be the case for integers, or for
-    /// std::format or std::ostream formatting.  I can either eliminate it for the
-    /// bitset itself, or add a special case.
-    /// -> Maybe what I ought to do is add a boolean flag as an argument?  Or just
-    /// leave padding up to the user?  I can still probably overallocate as an
-    /// optimization, but I just wouldn't fill in any leading zeroes.
 
     /* Encode an integer into a string representation.  Defaults to base 2 with the
     given zero and one digit strings, which are provided as template parameters, and
