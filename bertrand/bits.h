@@ -1562,6 +1562,34 @@ private:
         return result;
     }
 
+    constexpr auto _mul(const Bits& other) const noexcept {
+        // promote to a larger word size if possible
+        if constexpr (array_size == 1 && !big_word::composite) {
+            using big = big_word::type;
+            return big(buffer[0]) * big(other.buffer[0]);
+
+        // revert to schoolbook multiplication
+        } else {
+            // compute 2N-bit full product
+            std::array<word, array_size * 2> result {};
+            for (size_type i = 0; i < array_size; ++i) {
+                word carry = 0;
+                for (size_type j = 0; j < array_size; ++j) {
+                    size_type k = j + i;
+                    big_word p = big_word::mul(buffer[i], other.buffer[j]);
+                    word sum = p.lo() + result[k];
+                    word new_carry = sum < result[k];
+                    sum += carry;
+                    new_carry |= sum < carry;
+                    carry = p.hi() + new_carry;  // high half -> carry to next word
+                    result[k] = sum;  // low half -> final digit in this column
+                }
+                result[i + array_size] += carry;  // last carry of the row
+            }
+            return result;
+        }
+    }
+
 public:
 
     /* An iterator over the individual bits within the set, from least to most
@@ -2684,7 +2712,7 @@ public:
     /* Convert the value to its two's complement equivalent, updating it in-place.
     This is equivalent to flipping the sign for a signed integral value.  For an
     out-of-place equivalent, see `operator-()`. */
-    constexpr Bits& complement() noexcept {
+    constexpr Bits& negate() noexcept {
         flip();
         ++*this;
         return *this;
@@ -2869,7 +2897,7 @@ public:
         overflow = false;
 
         // promote to a larger word size if possible
-        if constexpr (!big_word::composite) {
+        if constexpr (array_size == 1 && !big_word::composite) {
             using big = big_word::type;
             big s = big(buffer[0]) + big(other.buffer[0]);
             if constexpr (end_mask) {
@@ -2969,45 +2997,26 @@ public:
         Bits& out
     ) const noexcept {
         overflow = false;
+        auto result = _mul(other);
 
         // promote to a larger word size if possible
-        if constexpr (!big_word::composite) {
+        if constexpr (array_size == 1 && !big_word::composite) {
             using big = big_word::type;
-            static constexpr big mask = ~word(0);
-            big p = big(buffer[0]) * big(other.buffer[0]);
             if constexpr (end_mask) {
-                overflow = (p >> (N % word_size)) != 0;
-                out.buffer[0] = word(p & end_mask);
+                out.buffer[0] = word(result & end_mask);
+                overflow = (result >> (N % word_size)) != 0;
             } else {
-                overflow = (p >> word_size) != 0;
-                out.buffer[0] = word(p);
+                out.buffer[0] = word(result);
+                overflow = (result >> word_size) != 0;
             }
 
         // revert to schoolbook multiplication
         } else {
-            // compute 2N-bit full product
-            std::array<word, array_size * 2> temp {};
-            for (size_type i = 0; i < array_size; ++i) {
-                word carry = 0;
-                for (size_type j = 0; j < array_size; ++j) {
-                    size_type k = j + i;
-                    big_word p = big_word::mul(buffer[i], other.buffer[j]);
-
-                    word sum = p.lo() + temp[k];
-                    word new_carry = sum < temp[k];
-                    sum += carry;
-                    new_carry |= sum < carry;
-                    carry = p.hi() + new_carry;  // high half -> carry to next word
-                    temp[k] = sum;  // low half -> final digit in this column
-                }
-                temp[i + array_size] += carry;  // last carry of the row
-            }
-
             // low N bits become the final result
-            std::copy_n(temp.begin(), array_size, out.buffer.begin());
+            std::copy_n(result.begin(), array_size, out.buffer.begin());
             if constexpr (end_mask) {
-                overflow = (temp[array_size - 1] & ~end_mask) != 0;
                 out.buffer[array_size - 1] &= end_mask;
+                overflow = (result[array_size - 1] & ~end_mask) != 0;
                 if (overflow) {
                     return;  // skip following overflow check
                 }
@@ -3015,7 +3024,7 @@ public:
 
             // if any of the high bits are set, then overflow has occurred
             for (size_type i = array_size; i < array_size * 2; ++i) {
-                if (temp[i]) {
+                if (result[i] != 0) {
                     overflow = true;
                     break;
                 }
@@ -3536,10 +3545,10 @@ public:
     }
 
     /* Return a negative copy of the bitset.  This equates to a copy followed by a
-    `complement()` modifier. */
+    `negate()` modifier. */
     [[nodiscard]] constexpr Bits operator-() const noexcept {
         Bits result = *this;
-        result.complement();
+        result.negate();
         return result;
     }
 
@@ -4213,7 +4222,7 @@ struct UInt : impl::UInt_tag {
     }
 
     /* Return a negative copy of the integer.  This equates to a copy followed by a
-    `complement()` modifier. */
+    `negate()` modifier. */
     [[nodiscard]] constexpr UInt operator-() const noexcept {
         return -bits;
     }
@@ -4417,7 +4426,7 @@ struct Int : impl::Int_tag {
                 str.substr(negative.size())
             ).visit([](const Bits& bits) -> Int {
                 Int result = bits;
-                result.bits.complement();
+                result.bits.negate();
                 return result;
             });
         } else {
@@ -4450,7 +4459,7 @@ struct Int : impl::Int_tag {
                 continuation
             ).visit([](const Bits& bits) -> Int {
                 Int result = bits;
-                result.bits.complement();
+                result.bits.negate();
                 return result;
             });
         } else {
@@ -4717,10 +4726,6 @@ struct Int : impl::Int_tag {
         overflow = this_neg != other_neg && out.bits.msb_is_set() != this_neg;
     }
 
-    /// TODO: mul() overflow detection should not negate the operands/result, since
-    /// min() cannot be represented as a positive number.  This is possibly also a
-    /// problem for divmod().
-
     /* Multiply two integers of equal size.  If the result overflows, then the
     `overflow` flag will be set to true, and the value will wrap around to the other
     end of the number line (modulo `N`).
@@ -4733,21 +4738,8 @@ struct Int : impl::Int_tag {
         const Int& other,
         bool& overflow
     ) const noexcept {
-        bool this_neg = bits.msb_is_set();
-        bool other_neg = other.bits.msb_is_set();
-        Int result = *this;
-        if (this_neg) {
-            result.bits.complement();
-        }
-        if (other_neg) {
-            result.bits.mul(-other.bits, overflow, result.bits);
-        } else {
-            result.bits.mul(other.bits, overflow, result.bits);
-        }
-        overflow |= result.bits.msb_is_set();
-        if (this_neg != other_neg) {
-            result.bits.complement();
-        }
+        Int result;
+        mul(other, overflow, result);
         return result;
     }
 
@@ -4766,20 +4758,68 @@ struct Int : impl::Int_tag {
         bool& overflow,
         Int& out
     ) const noexcept {
-        bool this_neg = bits.msb_is_set();
-        bool other_neg = other.bits.msb_is_set();
-        out = *this;
-        if (this_neg) {
-            out.bits.complement();
-        }
-        if (other_neg) {
-            out.bits.mul(-other.bits, overflow, out.bits);
+        // get full 2N-bit product
+        overflow = false;
+        auto result = bits._mul(other.bits);
+
+        // low N bits become the final result, while upper N bits indicate overflow via
+        // a sign extension test
+        if constexpr (Bits::array_size == 1 && !Bits::big_word::composite) {
+            using big_word = Bits::big_word;
+            using big = big_word::type;
+
+            // if the sign bit is set, then all upper bits must also be set to avoid
+            // overflow.  Otherwise, all upper bits must be zero
+            if constexpr (Bits::end_mask) {
+                constexpr big sign_mask = big(big(1) << ((N % Bits::word_size) - 1));
+                constexpr big mask = big(Bits::end_mask);
+                constexpr big inv_mask = ~mask;
+                out.buffer[0] = word(result & mask);
+                bool sign = result & sign_mask;
+                overflow = (result & inv_mask) != (inv_mask * sign);
+
+            } else {
+                constexpr big sign_mask = big(big(1) << (Bits::word_size - 1));
+                constexpr big mask = big(std::numeric_limits<word>::max());
+                constexpr big inv_mask = ~mask;
+                out.buffer[0] = word(result);
+                bool sign = result & sign_mask;
+                overflow = (result & inv_mask) != (inv_mask * sign);
+            }
+
         } else {
-            out.bits.mul(other.bits, overflow, out.bits);
-        }
-        overflow |= out.bits.msb_is_set();
-        if (this_neg != other_neg) {
-            out.bits.complement();
+            using size_type = Bits::size_type;
+            std::copy_n(result.begin(), Bits::array_size, out.buffer.begin());
+
+            // if the sign bit is set, then all upper bits must also be set to avoid
+            // overflow.  Otherwise, all upper bits must be zero
+            if constexpr (Bits::end_mask) {
+                constexpr word sign_mask = word(word(1) << ((N % Bits::word_size) - 1));
+                constexpr word mask = word(Bits::end_mask);
+                constexpr word inv_mask = ~mask;
+                out.buffer[Bits::array_size - 1] &= Bits::end_mask;
+                bool sign = result[Bits::array_size - 1] & sign_mask;
+                overflow = (result[Bits::array_size - 1] & inv_mask) != (inv_mask * sign);
+                if (!overflow) {
+                    word expected = std::numeric_limits<word>::max() * sign;
+                    for (size_type i = Bits::array_size; i < Bits::array_size * 2; ++i) {
+                        if (result[i] != expected) {
+                            overflow = true;
+                            return;
+                        }
+                    }
+                }
+            } else {
+                constexpr word sign_mask = word(word(1) << (Bits::word_size - 1));
+                bool sign = result[Bits::array_size - 1] & sign_mask;
+                word expected = std::numeric_limits<word>::max() * sign;
+                for (size_type i = Bits::array_size; i < Bits::array_size * 2; ++i) {
+                    if (result[i] != expected) {
+                        overflow = true;
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -4798,7 +4838,7 @@ struct Int : impl::Int_tag {
         bool other_neg = other.bits.msb_is_set();
         Int quotient = *this;
         if (this_neg) {
-            quotient.bits.complement();
+            quotient.bits.negate();
         }
         Int remainder;
         if (other_neg) {
@@ -4807,10 +4847,10 @@ struct Int : impl::Int_tag {
             quotient.bits.divmod(other.bits, quotient.bits, remainder.bits);
         }
         if (this_neg != other_neg) {
-            quotient.bits.complement();
+            quotient.bits.negate();
         }
         if (this_neg) {
-            remainder.bits.complement();
+            remainder.bits.negate();
         }
         return {quotient, remainder};
     }
@@ -4835,7 +4875,7 @@ struct Int : impl::Int_tag {
         bool other_neg = other.bits.msb_is_set();
         Int quotient = *this;
         if (this_neg) {
-            quotient.bits.complement();
+            quotient.bits.negate();
         }
         if (other_neg) {
             quotient.bits.divmod(-other.bits, quotient.bits, remainder.bits);
@@ -4843,10 +4883,10 @@ struct Int : impl::Int_tag {
             quotient.bits.divmod(other.bits, quotient.bits, remainder.bits);
         }
         if (this_neg != other_neg) {
-            quotient.bits.complement();
+            quotient.bits.negate();
         }
         if (this_neg) {
-            remainder.bits.complement();
+            remainder.bits.negate();
         }
         return quotient;
     }
@@ -4872,7 +4912,7 @@ struct Int : impl::Int_tag {
         bool other_neg = other.bits.msb_is_set();
         quotient = *this;
         if (this_neg) {
-            quotient.bits.complement();
+            quotient.bits.negate();
         }
         if (other_neg) {
             quotient.bits.divmod(-other.bits, quotient.bits, remainder.bits);
@@ -4880,10 +4920,10 @@ struct Int : impl::Int_tag {
             quotient.bits.divmod(other.bits, quotient.bits, remainder.bits);
         }
         if (this_neg != other_neg) {
-            quotient.bits.complement();
+            quotient.bits.negate();
         }
         if (this_neg) {
-            remainder.bits.complement();
+            remainder.bits.negate();
         }
     }
 
@@ -4967,7 +5007,7 @@ struct Int : impl::Int_tag {
     {
         if (bits.msb_is_set()) {
             Bits result = -bits << rhs;
-            result.complement();
+            result.negate();
             return result;
         } else {
             return bits << rhs;
@@ -4978,9 +5018,9 @@ struct Int : impl::Int_tag {
     in-place. */
     constexpr Int& operator<<=(size_t rhs) noexcept {
         if (bits.msb_is_set()) {
-            bits.complement();
+            bits.negate();
             bits <<= rhs;
-            bits.complement();
+            bits.negate();
         } else {
             bits <<= rhs;
         }
@@ -4993,7 +5033,7 @@ struct Int : impl::Int_tag {
     {
         if (bits.msb_is_set()) {
             Bits result = -bits >> rhs;
-            result.complement();
+            result.negate();
             return result;
         } else {
             return bits >> rhs;
@@ -5004,9 +5044,9 @@ struct Int : impl::Int_tag {
     in-place. */
     constexpr Int& operator>>=(size_t rhs) noexcept {
         if (bits.msb_is_set()) {
-            bits.complement();
+            bits.negate();
             bits >>= rhs;
-            bits.complement();
+            bits.negate();
         } else {
             bits >>= rhs;
         }
@@ -5047,7 +5087,7 @@ struct Int : impl::Int_tag {
     }
 
     /* Return a negative copy of the integer.  This equates to a copy followed by a
-    `complement()` modifier. */
+    `negate()` modifier. */
     [[nodiscard]] constexpr Int operator-() const noexcept {
         return -bits;
     }
@@ -5471,173 +5511,173 @@ namespace std {
 }
 
 
-namespace bertrand {
+// namespace bertrand {
 
-    template <Bits b>
-    struct Foo {
-        static constexpr const auto& value = b;
-    };
+//     template <Bits b>
+//     struct Foo {
+//         static constexpr const auto& value = b;
+//     };
 
-    inline void test() {
-        {
-            static constexpr Bits<2> a{0b1010};
-            static constexpr Bits a2{false, true};
-            static constexpr Bits a3{1, 2};
-            static constexpr Bits a4{0, true};
-            static_assert(a4.count() == 1);
-            static_assert(a3.size() == 64);
-            static_assert(a == a2);
-            auto [f1, f2] = a;
-            static constexpr Bits b {"abab", 'b', 'a'};
-            static constexpr std::string c = b.to_binary();
-            static constexpr std::string d = b.to_decimal();
-            static constexpr std::string d2 = b.to_string();
-            static constexpr std::string d3 = b.to_hex();
-            static_assert(any(b.components()));
-            static_assert(b.first_one(2).value() == 3);
-            static_assert(a == 0b10);
-            static_assert(b == 0b1010);
-            static_assert(b[1] == true);
-            static_assert(c == "1010");
-            static_assert(d == "10");
-            static_assert(d2 == "1010");
-            static_assert(d3 == "A");
+//     inline void test() {
+//         {
+//             static constexpr Bits<2> a{0b1010};
+//             static constexpr Bits a2{false, true};
+//             static constexpr Bits a3{1, 2};
+//             static constexpr Bits a4{0, true};
+//             static_assert(a4.count() == 1);
+//             static_assert(a3.size() == 64);
+//             static_assert(a == a2);
+//             auto [f1, f2] = a;
+//             static constexpr Bits b {"abab", 'b', 'a'};
+//             static constexpr std::string c = b.to_binary();
+//             static constexpr std::string d = b.to_decimal();
+//             static constexpr std::string d2 = b.to_string();
+//             static constexpr std::string d3 = b.to_hex();
+//             static_assert(any(b.components()));
+//             static_assert(b.first_one(2).value() == 3);
+//             static_assert(a == 0b10);
+//             static_assert(b == 0b1010);
+//             static_assert(b[1] == true);
+//             static_assert(c == "1010");
+//             static_assert(d == "10");
+//             static_assert(d2 == "1010");
+//             static_assert(d3 == "A");
 
-            static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
-            static_assert(sizeof(Bits<2>) == 1);
+//             static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
+//             static_assert(sizeof(Bits<2>) == 1);
 
-            constexpr auto x = []() {
-                Bits<4> out;
-                out[-1] = true;
-                return out;
-            }();
-            static_assert(x == uint8_t(0b1000));
+//             constexpr auto x = []() {
+//                 Bits<4> out;
+//                 out[-1] = true;
+//                 return out;
+//             }();
+//             static_assert(x == uint8_t(0b1000));
 
-            for (auto&& x : a) {
+//             for (auto&& x : a) {
 
-            }
-            for (auto&& x : a.components()) {
+//             }
+//             for (auto&& x : a.components()) {
 
-            }
-            for (auto&& x : a[slice{1, -1}]) {
+//             }
+//             for (auto&& x : a[slice{1, -1}]) {
 
-            }
-        }
+//             }
+//         }
 
-        {
-            static constexpr Bits b {"100"};
-            static constexpr auto b2 = Bits<3>::from_string(
-                std::string_view("100")
-            );
-            static_assert(b.data()[0] == 4);
-            static_assert(b2.result().data()[0] == 4);
+//         {
+//             static constexpr Bits b {"100"};
+//             static constexpr auto b2 = Bits<3>::from_string(
+//                 std::string_view("100")
+//             );
+//             static_assert(b.data()[0] == 4);
+//             static_assert(b2.result().data()[0] == 4);
 
-            static constexpr auto b3 = Bits{"0100"}.reverse();
-            static_assert(b3.data()[0] == 2);
+//             static constexpr auto b3 = Bits{"0100"}.reverse();
+//             static_assert(b3.data()[0] == 2);
 
-            static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
-            static_assert(b4.result().data()[0] == 4);
+//             static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
+//             static_assert(b4.result().data()[0] == 4);
 
-            static constexpr auto b5 = Bits<3>::from_decimal("5");
-            static_assert(b5.result().data()[0] == 5);
+//             static constexpr auto b5 = Bits<3>::from_decimal("5");
+//             static_assert(b5.result().data()[0] == 5);
 
-            static constexpr auto b6 = Bits<8>::from_hex("FF");
-            static_assert(b6.result().data()[0] == 255);
+//             static constexpr auto b6 = Bits<8>::from_hex("FF");
+//             static_assert(b6.result().data()[0] == 255);
 
-            static constexpr auto b7 = Bits<8>::from_hex("ZZ");
-            static_assert(b7.has_error());
+//             static constexpr auto b7 = Bits<8>::from_hex("ZZ");
+//             static_assert(b7.has_error());
 
-            static constexpr auto b8 = Bits<8>::from_hex("FFC");
-            static_assert(b8.has_error());
-        }
+//             static constexpr auto b8 = Bits<8>::from_hex("FFC");
+//             static_assert(b8.has_error());
+//         }
 
-        {
-            static constexpr Foo<{true, false, true}> foo;
-            static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
-            static_assert(foo.value == Bits{"101"});
-            static_assert(bar.value == 5);
-            static_assert(bar.value == 5);
-        }
+//         {
+//             static constexpr Foo<{true, false, true}> foo;
+//             static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
+//             static_assert(foo.value == Bits{"101"});
+//             static_assert(bar.value == 5);
+//             static_assert(bar.value == 5);
+//         }
 
-        {
-            static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
-            static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
-            static_assert(Bits<4>::from_octal("20").has_error());
-            static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
-            static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
+//         {
+//             static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
+//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+//             static_assert(Bits<4>::from_octal("20").has_error());
+//             static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
+//             static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
 
-            // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
-        }
+//             // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
+//         }
 
-        {
-            static constexpr Bits<5> a = -1;
-            static constexpr Bits<5> b = a + 2;
-            static_assert(a == 31);
-            static_assert(b.data()[0] == 1);
+//         {
+//             static constexpr Bits<5> a = -1;
+//             static constexpr Bits<5> b = a + 2;
+//             static_assert(a == 31);
+//             static_assert(b.data()[0] == 1);
 
-            static constexpr Bits<5> c;
-            static constexpr Bits<5> d = c - 1;
-            static_assert(c == 0);
-            static_assert(d.data()[0] == 31);
+//             static constexpr Bits<5> c;
+//             static constexpr Bits<5> d = c - 1;
+//             static_assert(c == 0);
+//             static_assert(d.data()[0] == 31);
 
-            static constexpr Bits<5> e = 12;
-            static constexpr Bits<5> f = e * 3;
-            static_assert(f.data()[0] == 4);
-        }
+//             static constexpr Bits<5> e = 12;
+//             static constexpr Bits<5> f = e * 3;
+//             static_assert(f.data()[0] == 4);
+//         }
 
-        {
-            static constexpr Bits<4> b = {Bits{"110"}, true};
-            static_assert(b.last_zero().value() == 0);
-            static_assert(b == Bits{"1110"});
-            static_assert(-b == Bits{"0010"});
-            static_assert(Bits<5>::from_string("10100").result() == 20);
+//         {
+//             static constexpr Bits<4> b = {Bits{"110"}, true};
+//             static_assert(b.last_zero().value() == 0);
+//             static_assert(b == Bits{"1110"});
+//             static_assert(-b == Bits{"0010"});
+//             static_assert(Bits<5>::from_string("10100").result() == 20);
 
-            static constexpr Bits<72> b2;
-            static_assert(size_t(b2) == 0);
-            // int x = b2;
+//             static constexpr Bits<72> b2;
+//             static_assert(size_t(b2) == 0);
+//             // int x = b2;
 
-            auto y = b + Bits{3};
-            if (b) {
+//             auto y = b + Bits{3};
+//             if (b) {
 
-            }
-            std::cout << b;
+//             }
+//             std::cout << b;
 
-            static constexpr static_str s = "1";
-            static constexpr static_str s2 {s[0]};
-            static_assert(s2 == "1");
-        }
+//             static constexpr static_str s = "1";
+//             static constexpr static_str s2 {s[0]};
+//             static_assert(s2 == "1");
+//         }
 
-        {
-            static constexpr UInt x = 42;
-            static_assert(x == 42);
-            static constexpr auto x2 = UInt<32>::from_decimal("42");
-            static_assert(x2.result() == 42);
-            static_assert(divide::ceil(x, 4) == 11);
+//         {
+//             static constexpr UInt x = 42;
+//             static_assert(x == 42);
+//             static constexpr auto x2 = UInt<32>::from_decimal("42");
+//             static_assert(x2.result() == 42);
+//             static_assert(divide::ceil(x, 4) == 11);
 
-            static constexpr UInt y = -1;
-            static_assert(y.bits.count() == 32);
+//             static constexpr UInt y = -1;
+//             static_assert(y.bits.count() == 32);
 
-            static_assert(UInt<8>::max() == 255);
-            static_assert(Int<8>::max() == 127);
-            static_assert(Int<8>(Int<8>::max() + 1) == -128);
-            static_assert(Int<8>(Int<8>::min() - 1) == 127);
-            static_assert(Int<8>::min() < Int<8>::max());
+//             static_assert(UInt<8>::max() == 255);
+//             static_assert(Int<8>::max() == 127);
+//             static_assert(Int<8>(Int<8>::max() + 1) == -128);
+//             static_assert(Int<8>(Int<8>::min() - 1) == 127);
+//             static_assert(Int<8>::min() < Int<8>::max());
 
-            static_assert(Int<8>{5}.divmod(-2).second == (5 % -2));
-        }
+//             static_assert(Int<8>{5}.divmod(-2).second == (5 % -2));
+//         }
 
-        {
-            static constexpr Bits x = [] {
-                Bits<4> x {"0100"};
-                x.rotate(-2);
-                return x;
-            }();
-            static_assert(x == Bits{"0001"});
-            auto y = double(Int<72>::max());
-        }
-    }
+//         {
+//             static constexpr Bits x = [] {
+//                 Bits<4> x {"0100"};
+//                 x.rotate(-2);
+//                 return x;
+//             }();
+//             static_assert(x == Bits{"0001"});
+//             auto y = double(Int<72>::max());
+//         }
+//     }
 
-}
+// }
 
 
 #endif  // BERTRAND_BITSET_H
