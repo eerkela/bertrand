@@ -2623,9 +2623,27 @@ public:
         return *this;
     }
 
-    /// TODO: rotate(n), which is like a shift, but wraps around the bits that are
-    /// shifted, and may only operate within a certain interval.
+    /* Shift all bits to the right `n` indices, wrapping any overflowing bits around to
+    the left (most significant) side of the bitset.  Negative values of `n` count to
+    the left instead. */
+    constexpr Bits& rotate(index_type n) noexcept {
+        index_type m = n % ssize();  // actual shift amount
+        if (m == 0) {
+            return *this;
+        }
+        if (n > 0) {  // m is positive
+            Bits temp = *this >> m;
+            *this <<= ssize() - m;
+            *this |= temp;
+        } else {  // m is negative
+            Bits temp = *this << -m;
+            *this >>= ssize() + m;
+            *this |= temp;
+        }
+        return *this;
+    }
 
+    /// TODO: rotate(n, start, stop)?
 
     /// TODO: Although two's complement ensures the actual arithmetic is correct, all
     /// the overflow detection works differently for signed vs unsigned integers, since
@@ -3600,7 +3618,7 @@ public:
     }
 
     /* Print the bitset to an output stream. */
-    constexpr friend std::ostream& operator<<(std::ostream& os, const Bits& set)
+    constexpr friend std::ostream& operator<<(std::ostream& os, const Bits& self)
         requires(array_size > 1)
     {
         std::ostream::sentry s(os);
@@ -3616,7 +3634,7 @@ public:
         );
 
         // 2) convert to string in proper base with locale-based grouping (if any)
-        std::string str = ctx.template digits_with_grouping<char>(set);
+        std::string str = ctx.template digits_with_grouping<char>(self);
 
         // 3) adjust for sign + base prefix, and fill to width
         ctx.template pad_and_align<char>(str);
@@ -3628,7 +3646,7 @@ public:
     }
 
     /* Read the bitset from an input stream. */
-    constexpr friend std::istream& operator>>(std::istream& is, Bits& set) {
+    constexpr friend std::istream& operator>>(std::istream& is, Bits& self) {
         std::istream::sentry s(is);  // automatically skips leading whitespace
         if (!s) {
             return is;  // stream is not ready for input
@@ -3637,7 +3655,7 @@ public:
             is,
             std::use_facet<std::numpunct<char>>(is.getloc())
         );
-        ctx.scan(is, set);
+        ctx.scan(is, self);
         return is;
     }
 };
@@ -3928,9 +3946,9 @@ struct UInt : impl::UInt_tag {
     constexpr void add(
         const UInt& other,
         bool& overflow,
-        UInt& result
+        UInt& out
     ) const noexcept {
-        bits.add(other.bits, overflow, result.bits);
+        bits.add(other.bits, overflow, out.bits);
     }
 
     /* Subtract two integers of equal size.  If the result overflows, then the
@@ -3951,9 +3969,9 @@ struct UInt : impl::UInt_tag {
     constexpr void sub(
         const UInt& other,
         bool& overflow,
-        UInt& result
+        UInt& out
     ) const noexcept {
-        bits.sub(other.bits, overflow, result.bits);
+        bits.sub(other.bits, overflow, out.bits);
     }
 
     /* Multiply two integers of equal size.  If the result overflows, then the
@@ -3984,9 +4002,9 @@ struct UInt : impl::UInt_tag {
     constexpr void mul(
         const UInt& other,
         bool& overflow,
-        UInt& result
+        UInt& out
     ) const noexcept {
-        bits.mul(other.bits, overflow, result.bits);
+        bits.mul(other.bits, overflow, out.bits);
     }
 
     /* Divide two integers of equal size, returning both the quotient and remainder.
@@ -4257,17 +4275,17 @@ struct UInt : impl::UInt_tag {
     /* Print the integer to an output stream. */
     constexpr friend std::ostream& operator<<(
         std::ostream& os,
-        const UInt& set
+        const UInt& self
     ) {
-        return os << set.bits;  // defaults to decimal
+        return os << self.bits;  // defaults to decimal
     }
 
     /* Read the integer from an input stream. */
     constexpr friend std::istream& operator>>(
         std::istream& is,
-        UInt& set
+        UInt& self
     ) {
-        return is >> set.bits;  // defaults to decimal
+        return is >> self.bits;  // defaults to decimal
     }
 };
 
@@ -4593,26 +4611,225 @@ struct Int : impl::Int_tag {
         }
     }
 
-    /// TODO: implicit conversion to other integer types via explicit conversion for
-    /// multi-word integers.  Also a conversion to floating point types that preserves
-    /// as much precision as possible.
+    /* Explicitly convert a multi-word integer into a hardware integer type, possibly
+    truncating any upper bits. */
+    template <std::integral T>
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits::array_size > 1 && meta::explicitly_convertible_to<Bits, T>)
+    {
+        return static_cast<T>(bits);
+    }
+
+    /* Explicitly convert a multi-word integer into a floating point type, retaining as
+    much precision as possible. */
+    template <meta::floating T>
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits::array_size > 1 && meta::explicitly_convertible_to<Bits, T>)
+    {
+        if (bits.msb_is_set()) {
+            return -(static_cast<T>(-bits));
+        } else {
+            return static_cast<T>(bits);
+        }
+    }
 
     /* Return +1 if the integer is positive or -1 if it is negative. */
     [[nodiscard]] constexpr int sign() const noexcept {
         return 1 - (2 * bits.msb_is_set());
     }
 
-    /// TODO: add() works just like normal unsigned integer addition except for the
-    /// calculation of the overflow flag.  Same with sub().  mul() and divmod() are
-    /// probably going to be a lot harder.
+    /* Add two integers of equal size.  If the result overflows, then the `overflow`
+    flag will be set to true, and the value will wrap around to the other end of the
+    number line (module `N`). */
+    [[nodiscard]] constexpr Int add(
+        const Int& other,
+        bool& overflow
+    ) const noexcept {
+        Int result = bits.add(other.bits, overflow);
+        if (other.bits.msb_is_set()) {
+            overflow = result > *this;
+        } else {
+            overflow = result < *this;
+        }
+        return result;
+    }
+
+    /* Add two integers of equal size and store the sum as a mutable out parameter.  If
+    the result overflows, then the `overflow` flag will be set to true, and the value
+    will wrap around to the other end of the number line (modulo `N`).  The out
+    parameter may be a reference to either operand, without affecting the overall
+    calculation. */
+    constexpr void add(
+        const Int& other,
+        bool& overflow,
+        Int& out
+    ) const noexcept {
+        if (&out == this) {
+            Int temp = *this;
+            bits.add(other.bits, overflow, out.bits);
+            if (other.bits.msb_is_set()) {
+                overflow = out > temp;
+            } else {
+                overflow = out < temp;
+            }
+        } else {
+            bits.add(other.bits, overflow, out.bits);
+            if (other.bits.msb_is_set()) {
+                overflow = out > *this;
+            } else {
+                overflow = out < *this;
+            }
+        }
+    }
+
+    /* Subtract two integers of equal size.  If the result overflows, then the
+    `overflow` flag will be set to true, and the value will wrap around to the other
+    end of the number line (modulo `N`). */
+    [[nodiscard]] constexpr Int sub(
+        const Int& other,
+        bool& overflow
+    ) const noexcept {
+        Int result = bits.sub(other.bits, overflow);
+        if (other.bits.msb_is_set()) {
+            overflow = result < *this;
+        } else {
+            overflow = result > *this;
+        }
+        return result;
+    }
+
+    /* Subtract two bitsets of equal size and store the difference as a mutable out
+    parameter.  If the result overflows, then the `overflow` flag will be set to true,
+    and the value will wrap around to the other end of the number line (modulo `N`).
+    The out parameter may be a reference to either operand, without affecting the
+    overall calculation. */
+    constexpr void sub(
+        const Int& other,
+        bool& overflow,
+        Int& out
+    ) const noexcept {
+        if (&out == this) {
+            Int temp = *this;
+            bits.sub(other.bits, overflow, out.bits);
+            if (other.bits.msb_is_set()) {
+                overflow = out < temp;
+            } else {
+                overflow = out > temp;
+            }
+        } else {
+            bits.sub(other.bits, overflow, out.bits);
+            if (other.bits.msb_is_set()) {
+                overflow = out < *this;
+            } else {
+                overflow = out > *this;
+            }
+        }
+    }
+
+    /// TODO: Multiplication and division are more complicated than addition and
+    /// subtraction, especially when it comes to tracking overflow.  What I may need to
+    /// do is take the complement, then multiply, and then take the complement again.
+    /// This would overflow if the result of the unsigned multiplication overflows, or
+    /// if the most significant bit of the intermediate result is set, before undoing
+    /// the complement.
+
+    // /* Multiply two integers of equal size.  If the result overflows, then the
+    // `overflow` flag will be set to true, and the value will wrap around to the other
+    // end of the number line (modulo `N`).
+
+    // Note that this uses simple schoolbook multiplication under the hood, which is
+    // generally optimized for small bit counts (up to a few thousand bits).  For larger
+    // bit counts, it may be more efficient to use a specialized library such as GMP or
+    // `boost::multiprecision`. */
+    // [[nodiscard]] constexpr Int mul(
+    //     const Int& other,
+    //     bool& overflow
+    // ) const noexcept {
+    //     return bits.mul(other.bits, overflow);
+    // }
+
+    // /* Multiply two integers of equal size and store the product as a mutable out
+    // parameter.  If the result overflows, then the `overflow` flag will be set to true,
+    // and the value will wrap around to the other end of the number line (modulo `N`).
+    // The out parameter may be a reference to either operand, without affecting the
+    // overall calculation.
+
+    // Note that this uses simple schoolbook multiplication under the hood, which is
+    // generally optimized for small bit counts (up to a few thousand bits).  For larger
+    // bit counts, it may be more efficient to use a specialized library such as GMP or
+    // `boost::multiprecision`. */
+    // constexpr void mul(
+    //     const Int& other,
+    //     bool& overflow,
+    //     Int& out
+    // ) const noexcept {
+    //     bits.mul(other.bits, overflow, out.bits);
+    // }
+
+    /// TODO: division cannot possibly overflow, but I do have to make sure that the
+    /// signs of the quotient and remainder are correct, which is its own issue.
+
+    // /* Divide two integers of equal size, returning both the quotient and remainder.
+    // If the divisor is zero and the program is compiled in debug mode, then a
+    // `ZeroDivisionError` will be thrown.
+
+    // Note that this uses Knuth's Algorithm D under the hood, which is generally
+    // optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    // it may be more efficient to use a specialized library such as GMP or
+    // `boost::multiprecision`. */
+    // [[nodiscard]] constexpr std::pair<Int, Int> divmod(
+    //     const Int& other
+    // ) const noexcept {
+    //     auto [quotient, remainder] = bits.divmod(other.bits);
+    //     return {quotient, remainder};
+    // }
+
+    // /* Divide two integers of equal size, returning the quotient and storing the
+    // remainder as a mutable out parameter.  If the divisor is zero and the program is
+    // compiled in debug mode, then a `ZeroDivisionError` will be thrown.
+
+    // Listing either the dividend or divisor as the out parameter for the remainder is
+    // allowed (but not required), and will update the referenced integer in-place, without
+    // affecting the calculation.
+
+    // Note that this uses Knuth's Algorithm D under the hood, which is generally
+    // optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    // it may be more efficient to use a specialized library such as GMP or
+    // `boost::multiprecision`. */
+    // [[nodiscard]] constexpr Int divmod(
+    //     const Int& other,
+    //     Int& remainder
+    // ) const noexcept {
+    //     return bits.divmod(other.bits, remainder.bits);
+    // }
+
+    // /* Divide two integers of equal size, storing both the quotient and remainder as
+    // mutable out parameters.  If the divisor is zero and the program is compiled in
+    // debug mode, then a `ZeroDivisionError` will be thrown.
+
+    // Listing either the dividend or divisor as the out parameter for the quotient or
+    // remainder is allowed (but not required), and will update the referenced integer
+    // in-place, without affecting the calculation.
+
+    // Note that this uses Knuth's Algorithm D under the hood, which is generally
+    // optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
+    // it may be more efficient to use a specialized library such as GMP or
+    // `boost::multiprecision`. */
+    // constexpr void divmod(
+    //     const Int& other,
+    //     Int& quotient,
+    //     Int& remainder
+    // ) const noexcept {
+    //     bits.divmod(other.bits, quotient.bits, remainder.bits);
+    // }
 
     /* Compare two integers of equal size. */
     [[nodiscard]] friend constexpr auto operator<=>(
         const Int& lhs,
         const Int& rhs
     ) noexcept requires(Bits::array_size > 1) {
-        int a = lhs.sign();
-        int b = rhs.sign();
+        int a = -lhs.bits.msb_is_set();
+        int b = -rhs.bits.msb_is_set();
         return a != b ? a <=> b : lhs.bits <=> rhs.bits;
     }
 
@@ -4623,7 +4840,6 @@ struct Int : impl::Int_tag {
     ) noexcept requires(Bits::array_size > 1) {
         return lhs.bits == rhs.bits;
     }
-
 
     /* Apply a bitwise NOT to the integer. */
     [[nodiscard]] constexpr Int operator~() const noexcept {
@@ -4681,9 +4897,179 @@ struct Int : impl::Int_tag {
         return *this;
     }
 
-    /// TODO: left/right shifts should preserve sign?
+    /* Apply a bitwise left shift to the contents of the integer. */
+    [[nodiscard]] constexpr Int operator<<(size_t rhs) const noexcept
+        requires(Bits::array_size > 1)
+    {
+        if (bits.msb_is_set()) {
+            Bits result = -bits << rhs;
+            result.complement();
+            return result;
+        } else {
+            return bits << rhs;
+        }
+    }
+
+    /* Apply a bitwise left shift to the contents of this integer, updating it
+    in-place. */
+    constexpr Int& operator<<=(size_t rhs) noexcept {
+        if (bits.msb_is_set()) {
+            bits.complement();
+            bits <<= rhs;
+            bits.complement();
+        } else {
+            bits <<= rhs;
+        }
+        return *this;
+    }
+
+    /* Apply a bitwise right shift to the contents of the integer. */
+    [[nodiscard]] constexpr Int operator>>(size_t rhs) const noexcept
+        requires(Bits::array_size > 1)
+    {
+        if (bits.msb_is_set()) {
+            Bits result = -bits >> rhs;
+            result.complement();
+            return result;
+        } else {
+            return bits >> rhs;
+        }
+    }
+
+    /* Apply a bitwise right shift to the contents of this integer, updating it
+    in-place. */
+    constexpr Int& operator>>=(size_t rhs) noexcept {
+        if (bits.msb_is_set()) {
+            bits.complement();
+            bits >>= rhs;
+            bits.complement();
+        } else {
+            bits >>= rhs;
+        }
+        return *this;
+    }
+
+    /* Return a copy of the integer. */
+    [[nodiscard]] constexpr Int operator+() const noexcept {
+        return bits;
+    }
+
+    /* Increment a integer by one and return a reference to the new value. */
+    constexpr Int& operator++() noexcept {
+        ++bits;
+        return *this;
+    }
+
+    /* Increment the integer by one and return a copy of the old value. */
+    [[nodiscard]] constexpr Int operator++(int) noexcept {
+        Int copy = *this;
+        ++bits;
+        return copy;
+    }
+
+    /* Operator version of `Int.add()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr Int operator+(
+        const Int& lhs,
+        const Int& rhs
+    ) noexcept requires(Bits::array_size > 1) {
+        return lhs.bits + rhs.bits;
+    }
+
+    /* Operator version of `Int.add()` that discards the overflow flag and
+    writes the sum back to this integer. */
+    constexpr Int& operator+=(const Int& other) noexcept {
+        bits += other.bits;
+        return *this;
+    }
+
+    /* Return a negative copy of the integer.  This equates to a copy followed by a
+    `complement()` modifier. */
+    [[nodiscard]] constexpr Int operator-() const noexcept {
+        return -bits;
+    }
+
+    /* Decrement the integer by one and return a reference to the new value. */
+    constexpr Int& operator--() noexcept {
+        --bits;
+        return *this;
+    }
+
+    /* Decrement the integer by one and return a copy of the old value. */
+    [[nodiscard]] constexpr Int operator--(int) noexcept {
+        Int copy = *this;
+        --bits;
+        return copy;
+    }
+
+    /* Operator version of `Int.sub()` that discards the overflow flag. */
+    [[nodiscard]] friend constexpr Int operator-(
+        const Int& lhs,
+        const Int& rhs
+    ) noexcept requires(Bits::array_size > 1) {
+        return lhs.bits - rhs.bits;
+    }
+
+    /* Operator version of `Int.sub()` that discards the overflow flag and
+    writes the difference back to this integer. */
+    constexpr Int& operator-=(const Int& other) noexcept {
+        bits -= other.bits;
+        return *this;
+    }
 
 
+    /// TODO: operator versions of multiply and divide don't need complicated overflow
+    /// detection, but do need to take the complement and adjust afterwards.
+
+
+
+
+
+
+    /* Print the integer to an output stream. */
+    constexpr friend std::ostream& operator<<(
+        std::ostream& os,
+        const Int& self
+    ) {
+        std::ostream::sentry s(os);
+        if (!s) {
+            return os;  // stream is not ready for output
+        }
+
+        // 1) extract configuration from stream
+        impl::format_bits ctx(
+            os,
+            self.bits.msb_is_set(),
+            std::use_facet<std::numpunct<char>>(os.getloc())
+        );
+
+        // 2) convert to string in proper base with locale-based grouping (if any)
+        std::string str = ctx.template digits_with_grouping<char>(self);
+
+        // 3) adjust for sign + base prefix, and fill to width
+        ctx.template pad_and_align<char>(str);
+
+        // 4) write to output stream
+        os.write(str.data(), str.size());
+        os.width(0);  // reset width for next output (mandatory)
+        return os;
+    }
+
+    /* Read the integer from an input stream. */
+    constexpr friend std::istream& operator>>(
+        std::istream& is,
+        Int& self
+    ) {
+        std::istream::sentry s(is);  // automatically skips leading whitespace
+        if (!s) {
+            return is;  // stream is not ready for input
+        }
+        impl::scan_bits ctx(
+            is,
+            std::use_facet<std::numpunct<char>>(is.getloc())
+        );
+        ctx.scan(is, self);
+        return is;
+    }
 };
 
 
@@ -5126,6 +5512,16 @@ namespace std {
 //             static_assert(y.bits.count() == 32);
 
 //             static_assert(UInt<8>::max() == 255);
+//         }
+
+//         {
+//             static constexpr Bits x = [] {
+//                 Bits<4> x {"0100"};
+//                 x.rotate(-2);
+//                 return x;
+//             }();
+//             static_assert(x == Bits{"0001"});
+//             auto y = double(Int<72>::max());
 //         }
 //     }
 
