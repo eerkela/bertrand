@@ -190,7 +190,7 @@ namespace impl {
         return result % mod;
     }
 
-    /* Returns true if `n` is a power of two or zero.  False otherwise. */
+    /* Returns true if `n` is a power of two (incl. 1) or zero.  False otherwise. */
     template <meta::unsigned_integer T>
     constexpr bool is_power2(T n) noexcept {
         return (n & (n - 1)) == 0;

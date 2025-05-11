@@ -237,6 +237,33 @@ namespace impl {
     concept strict_bits =
         meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
 
+    /* Hardware words scale from 8 to 64 bits, based on the overall number needed to
+    represent a bitset.  Bitsets greater than 64 bits are stored as arrays of 64-bit
+    words.
+
+    Each word must expose the following operations at a minimum:
+        - `type` - the underlying hardware type
+        - `big` - a word type of the next size class, which can represent two words
+                  in the high and low halves, respectively.  64-bit words will attempt
+                  to use 128-bit representations if available (GCC + LLVM usually do),
+                  or a composite representation of two 64-bit words otherwise (which
+                  may be slower in some cases).
+
+    The `big` type must expose the following operations at a minimum:
+        - `composite` - a compile-time boolean that is true if the word is a composite
+                        representation of two smaller words, and false if it is a
+                        single type of a larger size class.  If false, then `big` must
+                        also expose a `type` alias that indicates the larger word
+                        type directly, which will be used in place of the `big` type
+                        where possible for single-word arithmetic, as an optimization.
+        - {hi, lo} constructor taking individual words
+        - hi() and lo() accessors returning the initializers
+        - operator> for comparison
+        - a widening, static mul() method that takes two words and returns their full
+          product as a big word.
+        - a narrowing, member divmod() method that takes a single word and returns a
+          pair of words containing the quotient and remainder
+    */
     template <size_t M>
     struct word {
         using type = uint64_t;
@@ -257,16 +284,18 @@ namespace impl {
                     return word::type(value >> size);
                 }
                 constexpr word::type lo() const noexcept {
-                    return word::type(value & ((type(1) << size) - 1));
+                    return word::type(value & type(type(type(1) << size) - 1));
+                }
+                constexpr bool operator>(big other) const noexcept {
+                    return value > other.value;
                 }
                 static constexpr big mul(word::type a, word::type b) noexcept {
                     return {type(type(a) * type(b))};
                 }
-                constexpr big operator/(word::type v) const noexcept {
-                    return {type(value / v)};
-                }
-                constexpr bool operator>(big other) const noexcept {
-                    return value > other.value;
+                constexpr std::pair<word::type, word::type> divmod(word::type v) const
+                    noexcept
+                {
+                    return {word::type(value / v), word::type(value % v)};
                 }
             };
         #else
@@ -274,10 +303,13 @@ namespace impl {
                 static constexpr bool composite = true;
                 type h;
                 type l;
-                constexpr big(type v) noexcept : l(v) {}
+
                 constexpr big(type hi, type lo) noexcept : h(hi), l(lo) {}
                 constexpr type hi() const noexcept { return h; }
                 constexpr type lo() const noexcept { return l; }
+                constexpr bool operator>(big other) const noexcept {
+                    return h > other.h || l > other.l;
+                }
                 static constexpr big mul(type a, type b) noexcept {
                     constexpr size_t chunk = size / 2;
                     constexpr type mask = (type(1) << chunk) - 1;
@@ -302,76 +334,84 @@ namespace impl {
                         (lo_lo & mask) | (cross << chunk)
                     };
                 }
-                constexpr big operator/(type v) const noexcept {
-                    /// NOTE: this implementation is taken from the libdivide reference:
-                    /// https://github.com/ridiculousfish/libdivide/blob/master/doc/divlu.c
-                    /// It should be much faster than the naive approach found in Hacker's Delight.
-                    using Signed = meta::as_signed<type>;
-                    constexpr size_t chunk = size / 2;
-                    constexpr type b = type(1) << chunk;
-                    constexpr type mask = b - 1;
-                    type h = this->h;
-                    type l = this->l;
+                /* This implementation is taken from the libdivide reference:
+                    https://github.com/ridiculousfish/libdivide/blob/master/doc/divlu.c
 
-                    // 1. If the high bits are empty, then we devolve to a single word divide.
-                    if (!h) {
-                        return {l / v, l % v};
-                    }
-
-                    // 2. Check for overflow and divide by zero.
-                    if (h >= v) {
+                It should be slightly faster than the naive approach found in Hacker's
+                Delight. */
+                constexpr std::pair<uint64_t, uint64_t> divmod(uint64_t v) const
+                    noexcept
+                {
+                    // 1. Check for overflow and divide by zero.
+                    if (hi() >= v) {
                         return {
-                            std::numeric_limits<type>::max(),
-                            std::numeric_limits<type>::max()
+                            std::numeric_limits<uint64_t>::max(),
+                            std::numeric_limits<uint64_t>::max()
                         };
                     }
 
-                    // 3. Left shift divisor until the most significant bit is set.  This
-                    // cannot overflow the numerator because u.hi() < v.  The strange
-                    // bitwise AND is meant to avoid undefined behavior when shifting by a
-                    // full word size.  It is taken from
+                    // 2. If the high bits of the dividend are empty, then we devolve
+                    // to a single word divide as an optimization.
+                    if (!hi()) {
+                        return {lo() / v, lo() % v};
+                    }
+
+                    constexpr size_t chunk = size / 2;
+                    constexpr uint64_t b = uint64_t(1) << chunk;
+                    constexpr uint64_t mask = b - 1;
+                    uint64_t h = hi();
+                    uint64_t l = lo();
+
+                    // 3. Normalize by left shifting divisor until the most significant
+                    // bit is set.  This cannot overflow the numerator because h < v.
+                    // The strange bitwise AND is meant to avoid undefined behavior
+                    // when shifting by a full word size.  It is taken from
                     // https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
-                    size_t shift = std::countl_zero(v);
+                    int shift = std::countl_zero(v);
                     v <<= shift;
                     h <<= shift;
-                    h |= ((l >> (-shift & (size - 1))) & (-Signed(shift) >> (size - 1)));
+                    h |= ((l >> (-shift & (size - 1))) & (-int64_t(shift) >> (size - 1)));
                     l <<= shift;
 
-                    // 4. Split divisor and low bits of numerator into partial words.
-                    big n = {l >> chunk, l & mask};
-                    big d = {v >> chunk, v & mask};
+                    // 4. Split divisor and low bits of numerator into partial
+                    // half-words.
+                    uint32_t n1 = l >> chunk;
+                    uint32_t n0 = l & mask;
+                    uint32_t d1 = v >> chunk;
+                    uint32_t d0 = v & mask;
 
-                    // 5. Estimate q1 = [n3 n2 n1] / [d1 d0].  Note that while qhat may be 2
-                    // half-words, q1 is always just the lower half, which translates to the upper
-                    // half of the final quotient.
-                    type qhat = n.hi() / d.hi();
-                    type rhat = n.hi() % d.hi();
-                    type c1 = qhat * d.lo();
-                    type c2 = rhat * b + n.lo();
+                    // 5. Estimate q1 = [n3 n2 n1] / [d1 d0].  Note that while qhat may
+                    // be 2 half-words, q1 is always just the lower half, which
+                    // translates to the upper half of the final quotient.
+                    uint64_t qhat = h / d1;
+                    uint64_t rhat = h % d1;
+                    uint64_t c1 = qhat * d0;
+                    uint64_t c2 = rhat * b + n1;
                     if (c1 > c2) {
                         qhat -= 1 + ((c1 - c2) > v);
                     }
-                    type q1 = qhat & mask;
+                    uint32_t q1 = uint32_t(qhat & mask);
 
                     // 6. Compute the true (normalized) partial remainder.
-                    type r = n.hi() * b + n.lo() - q1 * v;
+                    uint64_t r = h * b + n1 - q1 * v;
 
-                    // 7. Estimate q0 = [r1 r0 n0] / [d1 d0].  These are the bottom bits of the
-                    // final quotient.
-                    qhat = r / d.hi();
-                    rhat = r % d.hi();
-                    c1 = qhat * d.lo();
-                    c2 = rhat * b + n.lo();
+                    // 7. Estimate q0 = [r1 r0 n0] / [d1 d0].  Estimate q0 as
+                    // [r1 r0] / [d1] and correct it.  These become the bottom bits of
+                    // the final quotient.
+                    qhat = r / d1;
+                    rhat = r % d1;
+                    c1 = qhat * d0;
+                    c2 = rhat * b + n0;
                     if (c1 > c2) {
                         qhat -= 1 + ((c1 - c2) > v);
                     }
-                    type q0 = qhat & mask;
+                    uint32_t q0 = uint32_t(qhat & mask);
 
                     // 8. Return the quotient and unnormalized remainder
-                    return {(q1 << chunk) | q0, ((r * b) + n.lo() - (q0 * v)) >> shift};
-                }
-                constexpr bool operator>(big other) const noexcept {
-                    return h > other.h || l > other.l;
+                    return {
+                        (uint64_t(q1) << chunk) | q0,
+                        ((r * b) + n0 - (q0 * v)) >> shift
+                    };
                 }
             };
         #endif
@@ -394,14 +434,16 @@ namespace impl {
             constexpr word::type lo() const noexcept {
                 return word::type(value & ((type(1) << size) - 1));
             }
+            constexpr bool operator>(big other) const noexcept {
+                return value > other.value;
+            }
             static constexpr big mul(word::type a, word::type b) noexcept {
                 return {type(type(a) * type(b))};
             }
-            constexpr big operator/(word::type v) const noexcept {
-                return {type(value / v)};
-            }
-            constexpr bool operator>(big other) const noexcept {
-                return value > other.value;
+            constexpr std::pair<word::type, word::type> divmod(word::type v) const
+                noexcept
+            {
+                return {word::type(value / v), word::type(value % v)};
             }
         };
     };
@@ -424,14 +466,16 @@ namespace impl {
             constexpr word::type lo() const noexcept {
                 return word::type(value & ((type(1) << size) - 1));
             }
+            constexpr bool operator>(big other) const noexcept {
+                return value > other.value;
+            }
             static constexpr big mul(word::type a, word::type b) noexcept {
                 return {type(type(a) * type(b))};
             }
-            constexpr big operator/(word::type v) const noexcept {
-                return {type(value / v)};
-            }
-            constexpr bool operator>(big other) const noexcept {
-                return value > other.value;
+            constexpr std::pair<word::type, word::type> divmod(word::type v) const
+                noexcept
+            {
+                return {word::type(value / v), word::type(value % v)};
             }
         };
     };
@@ -454,14 +498,16 @@ namespace impl {
             constexpr word::type lo() const noexcept {
                 return word::type(value & ((type(1) << size) - 1));
             }
+            constexpr bool operator>(big other) const noexcept {
+                return value > other.value;
+            }
             static constexpr big mul(word::type a, word::type b) noexcept {
                 return {type(type(a) * type(b))};
             }
-            constexpr big operator/(word::type v) const noexcept {
-                return {type(value / v)};
-            }
-            constexpr bool operator>(big other) const noexcept {
-                return value > other.value;
+            constexpr std::pair<word::type, word::type> divmod(word::type v) const
+                noexcept
+            {
+                return {word::type(value / v), word::type(value % v)};
             }
         };
     };
@@ -1565,8 +1611,7 @@ private:
     constexpr auto _mul(const Bits& other) const noexcept {
         // promote to a larger word size if possible
         if constexpr (array_size == 1 && !big_word::composite) {
-            using big = big_word::type;
-            return big(buffer[0]) * big(other.buffer[0]);
+            return big_word::mul(buffer[0], other.buffer[0]).value;
 
         // revert to schoolbook multiplication
         } else {
@@ -3001,7 +3046,6 @@ public:
 
         // promote to a larger word size if possible
         if constexpr (array_size == 1 && !big_word::composite) {
-            using big = big_word::type;
             if constexpr (end_mask) {
                 out.buffer[0] = word(result & end_mask);
                 overflow = (result >> (N % word_size)) != 0;
@@ -3042,7 +3086,7 @@ public:
     `boost::multiprecision`. */
     [[nodiscard]] constexpr std::pair<Bits, Bits> divmod(
         const Bits& other
-    ) const {
+    ) const noexcept(!DEBUG) {
         Bits quotient, remainder;
         divmod(other, quotient, remainder);
         return {quotient, remainder};
@@ -3063,7 +3107,7 @@ public:
     [[nodiscard]] constexpr Bits divmod(
         const Bits& other,
         Bits& remainder
-    ) const {
+    ) const noexcept(!DEBUG) {
         Bits quotient;
         divmod(other, quotient, remainder);
         return quotient;
@@ -3085,30 +3129,60 @@ public:
         const Bits& other,
         Bits& quotient,
         Bits& remainder
-    ) const {
+    ) const noexcept(!DEBUG) {
+        // Check for zero divisor
+        Optional<index_type> power_of_two = other.first_one();
+        if constexpr (DEBUG) {
+            if (!power_of_two.has_value()) {
+                throw ZeroDivisionError();
+            }
+        }
+
+        // If the dividend is less than the divisor, then the quotient is always zero,
+        // and the remainder is trivial
+        if (*this < other) {
+            remainder = *this;
+            quotient.fill(0);
+            return;
+        }
+
+        // If the divisor is a power of two, then we can use a simple right shift and
+        // bitwise AND instead of entering the full division kernel, which is
+        // substantially faster
+        Bits power_mask = 1;
+        power_mask <<= power_of_two.value();
+        if (other == power_mask) {
+            Bits temp = *this;
+            power_mask -= 1;
+            remainder = temp & power_mask;
+            temp >>= power_of_two.value();
+            quotient = temp;
+            return;
+        }
+
+        // If both operands are single-word, then we can default to hardware division
         if constexpr (array_size == 1) {
             word l = buffer[0];
             word r = other.buffer[0];
             quotient.buffer[0] = l / r;
             remainder.buffer[0] = l % r;
 
+        // Otherwise, we need to use the full division algorithm.  This is based on
+        // Knuth's Algorithm D, which is among the simplest for bigint division.  Much
+        // of the implementation was taken from:
+        //
+        //      https://skanthak.hier-im-netz.de/division.html
+        //      https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
+        //
+        // Both of which reference Hacker's Delight, with a helpful explanation of the
+        // algorithm design.  See that or the Knuth reference for more details.
         } else {
-            using Signed = meta::as_signed<word>;
             constexpr size_type chunk = word_size / 2;
             constexpr word b = word(1) << chunk;
 
-            if (!other) {
-                throw ZeroDivisionError();
-            }
-            if (*this < other) {
-                remainder = other;
-                quotient.fill(0);
-                return;
-            }
-
-            // 1. Compute effective lengths.  Above checks ensure that neither operand
-            // is zero.
-            size_type lhs_last = size();
+            // 1. Compute effective lengths as index of most significant active bit.
+            // Previous checks ensure that neither operand is zero.
+            size_type lhs_last;
             for (size_type i = array_size; i-- > 0;) {
                 size_type j = size_type(std::countl_zero(buffer[i]));
                 if (j < word_size) {
@@ -3116,7 +3190,7 @@ public:
                     break;
                 }
             }
-            size_type rhs_last = size();
+            size_type rhs_last;
             for (size_type i = array_size; i-- > 0;) {
                 size_type j = size_type(std::countl_zero(other.buffer[i]));
                 if (j < word_size) {
@@ -3127,14 +3201,15 @@ public:
             size_type n = (rhs_last + (word_size - 1)) / word_size;
             size_type m = ((lhs_last + (word_size - 1)) / word_size) - n;
 
-            // 2. If the divisor is a single word, then we can avoid multi-word division.
+            // 2. If the divisor is a single word, then we can avoid multi-word
+            // division.  This also allows us to avoid bounds checking
             if (n == 1) {
                 word v = other.buffer[0];
                 word rem = 0;
                 for (size_type i = m + n; i-- > 0;) {
-                    auto wide = big_word{rem, buffer[i]} / v;
-                    quotient.buffer[i] = wide.hi();
-                    rem = wide.lo();
+                    auto [qhat, rhat] = big_word{rem, buffer[i]}.divmod(v);
+                    quotient.buffer[i] = qhat;
+                    rem = rhat;
                 }
                 for (size_type i = m + n; i < array_size; ++i) {
                     quotient.buffer[i] = 0;
@@ -3146,46 +3221,38 @@ public:
                 return;
             }
 
-            /// NOTE: this is based on Knuth's Algorithm D, which is among the simplest for
-            /// bigint division.  Much of the implementation was taken from:
-            /// https://skanthak.hier-im-netz.de/division.html
-            /// Which references Hacker's Delight, with a helpful explanation of the
-            /// algorithm design.  See that or the Knuth reference for more details.
-            std::array<word, array_size> v = other.buffer;
+            // 3. Normalize by left shifting until the highest set bit in the divisor
+            // is at the top of its respective word.
             std::array<word, array_size + 1> u;
-            for (size_type i = 0; i < array_size; ++i) {
-                u[i] = buffer[i];
-            }
+            std::copy_n(buffer.begin(), array_size, u.begin());
             u[array_size] = 0;
-
-            // 3. Left shift until the highest set bit in the divisor is at the top of its
-            // respective word.  The strange bitwise AND is meant to avoid undefined
-            // behavior when shifting by a full word size (i.e. shift == 0).  It is taken
-            // from https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
+            std::array<word, array_size> v = other.buffer;
             size_type shift = word_size - 1 - (rhs_last % word_size);
-            size_type shift_carry = -shift & (word_size - 1);
-            size_type shift_correct = -Signed(shift) >> (word_size - 1);
-            for (size_type i = array_size + 1; i-- > 1;) {
-                u[i] = (u[i] << shift) | ((u[i - 1] >> shift_carry) & shift_correct);
+            if (shift) {
+                word carry = 0;
+                for (size_type i = 0; i <= array_size; ++i) {
+                    word new_carry = u[i] >> (word_size - shift);
+                    u[i] = (u[i] << shift) | carry;
+                    carry = new_carry;
+                }
+                carry = 0;
+                for (size_type i = 0; i < array_size; ++i) {
+                    word new_carry = v[i] >> (word_size - shift);
+                    v[i] = (v[i] << shift) | carry;
+                    carry = new_carry;
+                }
             }
-            u[0] <<= shift;
-            for (size_type i = array_size; i-- > 1;) {
-                v[i] = (v[i] << shift) | ((v[i - 1] >> shift_carry) & shift_correct);
-            }
-            v[0] <<= shift;
 
             // 4. Trial division
             quotient.fill(0);
             for (size_type j = m + 1; j-- > 0;) {
                 // take the top two words of the numerator for wide division
-                auto hat = big_word{u[j + n], u[j + n - 1]} / v[n - 1];
-                word qhat = hat.hi();
-                word rhat = hat.lo();
+                auto [qhat, rhat] = big_word{u[j + n], u[j + n - 1]}.divmod(v[n - 1]);
 
                 // refine quotient if guess is too large
-                while (qhat >= b || (big_word::mul(
-                    qhat,
-                    v[n - 2]) > big_word{word(rhat * b), u[j + n - 2]}
+                while (qhat >= b || (
+                    big_word::mul(qhat, v[n - 2]) >
+                    big_word{word(rhat * b), u[j + n - 2]}
                 )) {
                     --qhat;
                     rhat += v[n - 1];
@@ -3613,7 +3680,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator/(
         const Bits& lhs,
         const Bits& rhs
-    ) requires(array_size > 1) {
+    ) noexcept(!DEBUG) requires(array_size > 1) {
         Bits quotient, remainder;
         lhs.divmod(rhs, quotient, remainder);
         return quotient;
@@ -3621,7 +3688,7 @@ public:
 
     /* Operator version of `Bits.divmod()` that discards the remainder and
     writes the quotient back to this bitset. */
-    constexpr Bits& operator/=(const Bits& other) {
+    constexpr Bits& operator/=(const Bits& other) noexcept(!DEBUG) {
         Bits remainder;
         divmod(other, *this, remainder);
         return *this;
@@ -3631,7 +3698,7 @@ public:
     [[nodiscard]] friend constexpr Bits operator%(
         const Bits& lhs,
         const Bits& rhs
-    ) requires(array_size > 1) {
+    ) noexcept(!DEBUG) requires(array_size > 1) {
         Bits quotient, remainder;
         lhs.divmod(rhs, quotient, remainder);
         return remainder;
@@ -3639,7 +3706,7 @@ public:
 
     /* Operator version of `Bits.divmod()` that discards the quotient and
     writes the remainder back to this bitset. */
-    constexpr Bits& operator%=(const Bits& other) {
+    constexpr Bits& operator%=(const Bits& other) noexcept(!DEBUG) {
         Bits quotient;
         divmod(other, quotient, *this);
         return *this;
@@ -4045,7 +4112,7 @@ struct UInt : impl::UInt_tag {
     `boost::multiprecision`. */
     [[nodiscard]] constexpr std::pair<UInt, UInt> divmod(
         const UInt& other
-    ) const {
+    ) const noexcept(!DEBUG) {
         auto [quotient, remainder] = bits.divmod(other.bits);
         return {quotient, remainder};
     }
@@ -4065,7 +4132,7 @@ struct UInt : impl::UInt_tag {
     [[nodiscard]] constexpr UInt divmod(
         const UInt& other,
         UInt& remainder
-    ) const {
+    ) const noexcept(!DEBUG) {
         return bits.divmod(other.bits, remainder.bits);
     }
 
@@ -4085,7 +4152,7 @@ struct UInt : impl::UInt_tag {
         const UInt& other,
         UInt& quotient,
         UInt& remainder
-    ) const {
+    ) const noexcept(!DEBUG) {
         bits.divmod(other.bits, quotient.bits, remainder.bits);
     }
 
@@ -4274,13 +4341,13 @@ struct UInt : impl::UInt_tag {
     [[nodiscard]] friend constexpr UInt operator/(
         const UInt& lhs,
         const UInt& rhs
-    ) requires(Bits::array_size > 1) {
+    ) noexcept(!DEBUG) requires(Bits::array_size > 1) {
         return lhs.bits / rhs.bits;
     }
 
     /* Operator version of `UInt.divmod()` that discards the remainder and
     writes the quotient back to this integer. */
-    constexpr UInt& operator/=(const UInt& other) {
+    constexpr UInt& operator/=(const UInt& other) noexcept(!DEBUG) {
         bits /= other.bits;
         return *this;
     }
@@ -4289,13 +4356,13 @@ struct UInt : impl::UInt_tag {
     [[nodiscard]] friend constexpr UInt operator%(
         const UInt& lhs,
         const UInt& rhs
-    ) requires(Bits::array_size > 1) {
+    ) noexcept(!DEBUG) requires(Bits::array_size > 1) {
         return lhs.bits % rhs.bits;
     }
 
     /* Operator version of `UInt.divmod()` that discards the quotient and
     writes the remainder back to this integer. */
-    constexpr UInt& operator%=(const UInt& other) {
+    constexpr UInt& operator%=(const UInt& other) noexcept(!DEBUG) {
         bits %= other.bits;
         return *this;
     }
@@ -4825,7 +4892,9 @@ struct Int : impl::Int_tag {
 
     /* Divide two integers of equal size, returning both the quotient and remainder.
     If the divisor is zero and the program is compiled in debug mode, then a
-    `ZeroDivisionError` will be thrown.
+    `ZeroDivisionError` will be thrown.  Otherwise, there is precisely one possible
+    overflow case at `Int::min() / -1`, which results in an `OverflowError` when the
+    program is compiled in debug mode.  Overflow cannot occur in any other case.
 
     Note that this uses Knuth's Algorithm D under the hood, which is generally
     optimized for small bit counts (up to a few thousand bits).  For larger bit counts,
@@ -4833,31 +4902,19 @@ struct Int : impl::Int_tag {
     `boost::multiprecision`. */
     [[nodiscard]] constexpr std::pair<Int, Int> divmod(
         const Int& other
-    ) const {
-        bool this_neg = bits.msb_is_set();
-        bool other_neg = other.bits.msb_is_set();
-        Int quotient = *this;
-        if (this_neg) {
-            quotient.bits.negate();
-        }
+    ) const noexcept(!DEBUG) {
+        Int quotient;
         Int remainder;
-        if (other_neg) {
-            quotient.bits.divmod(-other.bits, quotient.bits, remainder.bits);
-        } else {
-            quotient.bits.divmod(other.bits, quotient.bits, remainder.bits);
-        }
-        if (this_neg != other_neg) {
-            quotient.bits.negate();
-        }
-        if (this_neg) {
-            remainder.bits.negate();
-        }
+        divmod(other, quotient, remainder);
         return {quotient, remainder};
     }
 
     /* Divide two integers of equal size, returning the quotient and storing the
     remainder as a mutable out parameter.  If the divisor is zero and the program is
-    compiled in debug mode, then a `ZeroDivisionError` will be thrown.
+    compiled in debug mode, then a `ZeroDivisionError` will be thrown.  Otherwise,
+    there is precisely one possible overflow case at `Int::min() / -1`, which results
+    in an `OverflowError` when the program is compiled in debug mode.  Overflow cannot
+    occur in any other case.
 
     Listing either the dividend or divisor as the out parameter for the remainder is
     allowed (but not required), and will update the referenced integer in-place, without
@@ -4870,30 +4927,18 @@ struct Int : impl::Int_tag {
     [[nodiscard]] constexpr Int divmod(
         const Int& other,
         Int& remainder
-    ) const {
-        bool this_neg = bits.msb_is_set();
-        bool other_neg = other.bits.msb_is_set();
-        Int quotient = *this;
-        if (this_neg) {
-            quotient.bits.negate();
-        }
-        if (other_neg) {
-            quotient.bits.divmod(-other.bits, quotient.bits, remainder.bits);
-        } else {
-            quotient.bits.divmod(other.bits, quotient.bits, remainder.bits);
-        }
-        if (this_neg != other_neg) {
-            quotient.bits.negate();
-        }
-        if (this_neg) {
-            remainder.bits.negate();
-        }
+    ) const noexcept(!DEBUG) {
+        Int quotient;
+        divmod(other, quotient, remainder);
         return quotient;
     }
 
     /* Divide two integers of equal size, storing both the quotient and remainder as
     mutable out parameters.  If the divisor is zero and the program is compiled in
-    debug mode, then a `ZeroDivisionError` will be thrown.
+    debug mode, then a `ZeroDivisionError` will be thrown.  Otherwise, there is
+    precisely one possible overflow case at `Int::min() / -1`, which results in an
+    `OverflowError` when the program is compiled in debug mode.  Overflow cannot occur
+    in any other case.
 
     Listing either the dividend or divisor as the out parameter for the quotient or
     remainder is allowed (but not required), and will update the referenced integer
@@ -4907,11 +4952,18 @@ struct Int : impl::Int_tag {
         const Int& other,
         Int& quotient,
         Int& remainder
-    ) const {
+    ) const noexcept(!DEBUG) {
         bool this_neg = bits.msb_is_set();
         bool other_neg = other.bits.msb_is_set();
         quotient = *this;
         if (this_neg) {
+            if constexpr (DEBUG) {
+                if (*this == min() && other == -1) {
+                    throw OverflowError(
+                        "Integer overflow: cannot divide min() by -1"
+                    );
+                }
+            }
             quotient.bits.negate();
         }
         if (other_neg) {
@@ -5141,14 +5193,14 @@ struct Int : impl::Int_tag {
     [[nodiscard]] friend constexpr Int operator/(
         const Int& lhs,
         const Int& rhs
-    ) requires(Bits::array_size > 1) {
+    ) noexcept(!DEBUG) requires(Bits::array_size > 1) {
         auto [quotient, remainder] = lhs.divmod(rhs);
         return quotient;
     }
 
     /* Operator version of `Int.divmod()` that discards the remainder and
     writes the quotient back to this integer. */
-    constexpr Int& operator/=(const Int& other) {
+    constexpr Int& operator/=(const Int& other) noexcept(!DEBUG) {
         Int remainder;
         divmod(other, *this, remainder);
         return *this;
@@ -5158,14 +5210,14 @@ struct Int : impl::Int_tag {
     [[nodiscard]] friend constexpr Int operator%(
         const Int& lhs,
         const Int& rhs
-    ) requires(Bits::array_size > 1) {
+    ) noexcept(!DEBUG) requires(Bits::array_size > 1) {
         auto [quotient, remainder] = lhs.divmod(rhs);
         return remainder;
     }
 
     /* Operator version of `Int.divmod()` that discards the quotient and
     writes the remainder back to this integer. */
-    constexpr Int& operator%=(const Int& other) {
+    constexpr Int& operator%=(const Int& other) noexcept(!DEBUG) {
         Int quotient;
         divmod(other, quotient, *this);
         return *this;
@@ -5511,173 +5563,184 @@ namespace std {
 }
 
 
-// namespace bertrand {
+namespace bertrand {
 
-//     template <Bits b>
-//     struct Foo {
-//         static constexpr const auto& value = b;
-//     };
+    template <Bits b>
+    struct Foo {
+        static constexpr const auto& value = b;
+    };
 
-//     inline void test() {
-//         {
-//             static constexpr Bits<2> a{0b1010};
-//             static constexpr Bits a2{false, true};
-//             static constexpr Bits a3{1, 2};
-//             static constexpr Bits a4{0, true};
-//             static_assert(a4.count() == 1);
-//             static_assert(a3.size() == 64);
-//             static_assert(a == a2);
-//             auto [f1, f2] = a;
-//             static constexpr Bits b {"abab", 'b', 'a'};
-//             static constexpr std::string c = b.to_binary();
-//             static constexpr std::string d = b.to_decimal();
-//             static constexpr std::string d2 = b.to_string();
-//             static constexpr std::string d3 = b.to_hex();
-//             static_assert(any(b.components()));
-//             static_assert(b.first_one(2).value() == 3);
-//             static_assert(a == 0b10);
-//             static_assert(b == 0b1010);
-//             static_assert(b[1] == true);
-//             static_assert(c == "1010");
-//             static_assert(d == "10");
-//             static_assert(d2 == "1010");
-//             static_assert(d3 == "A");
+    inline void test() {
+        {
+            static constexpr Bits<2> a{0b1010};
+            static constexpr Bits a2{false, true};
+            static constexpr Bits a3{1, 2};
+            static constexpr Bits a4{0, true};
+            static_assert(a4.count() == 1);
+            static_assert(a3.size() == 64);
+            static_assert(a == a2);
+            auto [f1, f2] = a;
+            static constexpr Bits b {"abab", 'b', 'a'};
+            static constexpr std::string c = b.to_binary();
+            static constexpr std::string d = b.to_decimal();
+            static constexpr std::string d2 = b.to_string();
+            static constexpr std::string d3 = b.to_hex();
+            static_assert(any(b.components()));
+            static_assert(b.first_one(2).value() == 3);
+            static_assert(a == 0b10);
+            static_assert(b == 0b1010);
+            static_assert(b[1] == true);
+            static_assert(c == "1010");
+            static_assert(d == "10");
+            static_assert(d2 == "1010");
+            static_assert(d3 == "A");
 
-//             static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
-//             static_assert(sizeof(Bits<2>) == 1);
+            static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
+            static_assert(sizeof(Bits<2>) == 1);
 
-//             constexpr auto x = []() {
-//                 Bits<4> out;
-//                 out[-1] = true;
-//                 return out;
-//             }();
-//             static_assert(x == uint8_t(0b1000));
+            constexpr auto x = []() {
+                Bits<4> out;
+                out[-1] = true;
+                return out;
+            }();
+            static_assert(x == uint8_t(0b1000));
 
-//             for (auto&& x : a) {
+            for (auto&& x : a) {
 
-//             }
-//             for (auto&& x : a.components()) {
+            }
+            for (auto&& x : a.components()) {
 
-//             }
-//             for (auto&& x : a[slice{1, -1}]) {
+            }
+            for (auto&& x : a[slice{1, -1}]) {
 
-//             }
-//         }
+            }
+        }
 
-//         {
-//             static constexpr Bits b {"100"};
-//             static constexpr auto b2 = Bits<3>::from_string(
-//                 std::string_view("100")
-//             );
-//             static_assert(b.data()[0] == 4);
-//             static_assert(b2.result().data()[0] == 4);
+        {
+            static constexpr Bits b {"100"};
+            static constexpr auto b2 = Bits<3>::from_string(
+                std::string_view("100")
+            );
+            static_assert(b.data()[0] == 4);
+            static_assert(b2.result().data()[0] == 4);
 
-//             static constexpr auto b3 = Bits{"0100"}.reverse();
-//             static_assert(b3.data()[0] == 2);
+            static constexpr auto b3 = Bits{"0100"}.reverse();
+            static_assert(b3.data()[0] == 2);
 
-//             static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
-//             static_assert(b4.result().data()[0] == 4);
+            static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
+            static_assert(b4.result().data()[0] == 4);
 
-//             static constexpr auto b5 = Bits<3>::from_decimal("5");
-//             static_assert(b5.result().data()[0] == 5);
+            static constexpr auto b5 = Bits<3>::from_decimal("5");
+            static_assert(b5.result().data()[0] == 5);
 
-//             static constexpr auto b6 = Bits<8>::from_hex("FF");
-//             static_assert(b6.result().data()[0] == 255);
+            static constexpr auto b6 = Bits<8>::from_hex("FF");
+            static_assert(b6.result().data()[0] == 255);
 
-//             static constexpr auto b7 = Bits<8>::from_hex("ZZ");
-//             static_assert(b7.has_error());
+            static constexpr auto b7 = Bits<8>::from_hex("ZZ");
+            static_assert(b7.has_error());
 
-//             static constexpr auto b8 = Bits<8>::from_hex("FFC");
-//             static_assert(b8.has_error());
-//         }
+            static constexpr auto b8 = Bits<8>::from_hex("FFC");
+            static_assert(b8.has_error());
+        }
 
-//         {
-//             static constexpr Foo<{true, false, true}> foo;
-//             static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
-//             static_assert(foo.value == Bits{"101"});
-//             static_assert(bar.value == 5);
-//             static_assert(bar.value == 5);
-//         }
+        {
+            static constexpr Foo<{true, false, true}> foo;
+            static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
+            static_assert(foo.value == Bits{"101"});
+            static_assert(bar.value == 5);
+            static_assert(bar.value == 5);
+        }
 
-//         {
-//             static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
-//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
-//             static_assert(Bits<4>::from_octal("20").has_error());
-//             static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
-//             static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
+        {
+            static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
+            static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+            static_assert(Bits<4>::from_octal("20").has_error());
+            static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
+            static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
 
-//             // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
-//         }
+            // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
+        }
 
-//         {
-//             static constexpr Bits<5> a = -1;
-//             static constexpr Bits<5> b = a + 2;
-//             static_assert(a == 31);
-//             static_assert(b.data()[0] == 1);
+        {
+            static constexpr Bits<5> a = -1;
+            static constexpr Bits<5> b = a + 2;
+            static_assert(a == 31);
+            static_assert(b.data()[0] == 1);
 
-//             static constexpr Bits<5> c;
-//             static constexpr Bits<5> d = c - 1;
-//             static_assert(c == 0);
-//             static_assert(d.data()[0] == 31);
+            static constexpr Bits<5> c;
+            static constexpr Bits<5> d = c - 1;
+            static_assert(c == 0);
+            static_assert(d.data()[0] == 31);
 
-//             static constexpr Bits<5> e = 12;
-//             static constexpr Bits<5> f = e * 3;
-//             static_assert(f.data()[0] == 4);
-//         }
+            static constexpr Bits<5> e = 12;
+            static constexpr Bits<5> f = e * 3;
+            static_assert(f.data()[0] == 4);
+        }
 
-//         {
-//             static constexpr Bits<4> b = {Bits{"110"}, true};
-//             static_assert(b.last_zero().value() == 0);
-//             static_assert(b == Bits{"1110"});
-//             static_assert(-b == Bits{"0010"});
-//             static_assert(Bits<5>::from_string("10100").result() == 20);
+        {
+            static constexpr Bits<4> b = {Bits{"110"}, true};
+            static_assert(b.last_zero().value() == 0);
+            static_assert(b == Bits{"1110"});
+            static_assert(-b == Bits{"0010"});
+            static_assert(Bits<5>::from_string("10100").result() == 20);
 
-//             static constexpr Bits<72> b2;
-//             static_assert(size_t(b2) == 0);
-//             // int x = b2;
+            static constexpr Bits<72> b2;
+            static_assert(size_t(b2) == 0);
+            // int x = b2;
 
-//             auto y = b + Bits{3};
-//             if (b) {
+            auto y = b + Bits{3};
+            if (b) {
 
-//             }
-//             std::cout << b;
+            }
+            std::cout << b;
 
-//             static constexpr static_str s = "1";
-//             static constexpr static_str s2 {s[0]};
-//             static_assert(s2 == "1");
-//         }
+            static constexpr static_str s = "1";
+            static constexpr static_str s2 {s[0]};
+            static_assert(s2 == "1");
+        }
 
-//         {
-//             static constexpr UInt x = 42;
-//             static_assert(x == 42);
-//             static constexpr auto x2 = UInt<32>::from_decimal("42");
-//             static_assert(x2.result() == 42);
-//             static_assert(divide::ceil(x, 4) == 11);
+        {
+            static constexpr UInt x = 42;
+            static_assert(x == 42);
+            static constexpr auto x2 = UInt<32>::from_decimal("42");
+            static_assert(x2.result() == 42);
+            static_assert(divide::ceil(x, 4) == 11);
 
-//             static constexpr UInt y = -1;
-//             static_assert(y.bits.count() == 32);
+            static constexpr UInt y = -1;
+            static_assert(y.bits.count() == 32);
 
-//             static_assert(UInt<8>::max() == 255);
-//             static_assert(Int<8>::max() == 127);
-//             static_assert(Int<8>(Int<8>::max() + 1) == -128);
-//             static_assert(Int<8>(Int<8>::min() - 1) == 127);
-//             static_assert(Int<8>::min() < Int<8>::max());
+            static_assert(UInt<8>::max() == 255);
+            static_assert(Int<8>::max() == 127);
+            static_assert(Int<8>(Int<8>::max() + 1) == -128);
+            static_assert(Int<8>(Int<8>::min() - 1) == 127);
+            static_assert(Int<8>::min() < Int<8>::max());
 
-//             static_assert(Int<8>{5}.divmod(-2).second == (5 % -2));
-//         }
+            static_assert(Bits<8>{5}.divmod(2).first == (5 / 2));
+            static_assert(Bits<8>{5}.divmod(2).second == (5 % 2));
+            static_assert(UInt<8>{5}.divmod(2).second == (5 % 2));
+            static_assert(Int<8>{5}.divmod(2).second == (5 % 2));
 
-//         {
-//             static constexpr Bits x = [] {
-//                 Bits<4> x {"0100"};
-//                 x.rotate(-2);
-//                 return x;
-//             }();
-//             static_assert(x == Bits{"0001"});
-//             auto y = double(Int<72>::max());
-//         }
-//     }
 
-// }
+            static_assert(Bits<72>::max().divmod(2).first == Bits<71>::max());
+            static_assert(Bits<72>::max().divmod(2).first.data()[0] == std::numeric_limits<uint64_t>::max());
+            static_assert(Bits<72>::max().divmod(2).second == 1);
+            static_assert(Bits<72>::max().divmod(2).second.data()[0] == 1);
+
+            static_assert(Bits<72>::max().divmod(Bits<71>::max()).first.data()[0] == 2);
+        }
+
+        {
+            static constexpr Bits x = [] {
+                Bits<4> x {"0100"};
+                x.rotate(-2);
+                return x;
+            }();
+            static_assert(x == Bits{"0001"});
+            auto y = double(Int<72>::max());
+        }
+    }
+
+}
 
 
 #endif  // BERTRAND_BITSET_H
