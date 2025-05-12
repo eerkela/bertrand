@@ -238,6 +238,19 @@ namespace impl {
     concept strict_bits =
         meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
 
+    template <size_t N, typename... words>
+    concept strict_bitwise_constructor =
+        (impl::strict_bits<words> && ...) &&
+        ((meta::integer_width<words> + ... + 0) <= N);
+
+    template <size_t N, typename... words>
+    concept loose_bitwise_constructor =
+        sizeof...(words) > 0 &&
+        !(impl::strict_bits<words> && ...) &&
+        (meta::integer<words> && ... && (
+            (meta::integer_width<words> + ... + 0) <= bertrand::max(N, 64)
+        ));
+
     /* Hardware words scale from 8 to 64 bits, based on the overall number needed to
     represent a bitset.  Bitsets greater than 64 bits are stored as arrays of 64-bit
     words.
@@ -1351,66 +1364,49 @@ private:
         static constexpr size_type stop_word = J / word_size;
         static constexpr size_type stop_bit = J % word_size;
 
-        if constexpr (stop_bit == 0 || start_word == stop_word) {
-            data[start_word] |= word(word(v) << start_bit);
-        } else {
-            data[start_word] |= word(word(v) << start_bit);
-            size_type consumed = word_size - start_bit;
-            v >>= consumed;
-            size_type i = start_word;
-            while (consumed < meta::integer_width<T>) {
-                data[++i] |= word(v);
-                if constexpr (word_size < meta::integer_width<T>) {
-                    v >>= word_size;
+        if constexpr (meta::Bits<T>) {
+            if constexpr (start_bit == 0) {
+                size_type i = 0;
+                while (i < v.array_size && (start_word + i) < array_size) {
+                    data[start_word + i] |= v.buffer[i];
+                    ++i;
                 }
-                consumed += word_size;
+    
+            } else {
+                T temp = v;
+                data[start_word] |= word(temp.buffer[0] << start_bit);
+                size_type consumed = word_size - start_bit;
+                temp >>= consumed;
+                size_type i = start_word;
+                size_type j = 0;
+                while (consumed < temp.size()) {
+                    data[++i] |= temp.buffer[j++];
+                    consumed += word_size;
+                }
             }
-        }
+            from_ints<I + meta::integer_width<T>>(data, rest...);
 
-        from_ints<I + meta::integer_width<T>>(data, rest...);
-    }
-
-    template <size_type I, meta::Bits T, typename... Ts>
-    static constexpr void from_ints(
-        std::array<word, array_size>& data,
-        const T& v,
-        const Ts&... rest
-    ) noexcept {
-        static constexpr size_type J = I + meta::integer_width<T>;
-        static constexpr size_type start_bit = I % word_size;
-        static constexpr size_type start_word = I / word_size;
-        static constexpr size_type stop_word = J / word_size;
-        static constexpr size_type stop_bit = J % word_size;
-
-        if constexpr (start_bit == 0) {
-            for (size_type i = 0; i < v.buffer.size(); ++i) {
-                data[start_word + i] |= v.buffer[i];
-            }
+        } else if constexpr (meta::UInt<T> || meta::Int<T>) {
+            from_ints<I>(data, v.bits, rest...);
 
         } else {
-            T temp = v;
-            data[start_word] |= word(temp.buffer[0] << start_bit);
-            size_type consumed = word_size - start_bit;
-            temp >>= consumed;
-            size_type i = start_word;
-            size_type j = 0;
-            while (consumed < temp.size()) {
-                data[++i] |= temp.buffer[j++];
-                consumed += word_size;
+            if constexpr (stop_bit == 0 || start_word == stop_word) {
+                data[start_word] |= word(word(v) << start_bit);
+            } else {
+                data[start_word] |= word(word(v) << start_bit);
+                size_type consumed = word_size - start_bit;
+                v >>= consumed;
+                size_type i = start_word;
+                while (consumed < meta::integer_width<T>) {
+                    data[++i] |= word(v);
+                    if constexpr (word_size < meta::integer_width<T>) {
+                        v >>= word_size;
+                    }
+                    consumed += word_size;
+                }
             }
+            from_ints<I + meta::integer_width<T>>(data, rest...);
         }
-
-        from_ints<I + T::size()>(data, rest...);
-    }
-
-    template <size_type I, typename T, typename... Ts>
-        requires (meta::UInt<T> || meta::Int<T>)
-    static constexpr void from_ints(
-        std::array<word, array_size>& data,
-        const T& v,
-        const Ts&... rest
-    ) noexcept {
-        from_ints<I, T, Ts...>(data, v.value, rest...);
     }
 
     template <size_type I, typename ctx>
@@ -1619,14 +1615,13 @@ private:
         size_type stop,
         size_type step
     ) noexcept {
-        Bits mask = 1;
-        size_type diff = stop - start;
-        for (size_type s = step; s <= diff; s <<= 1) {
-            mask <<= step;
-            mask.buffer[0] |= word(1);
-        }
-        mask <<= start;
-        return mask;
+        constexpr size_type wide = N + word_size;
+        size_type k = (stop - start + step - 1) / step;
+        Bits<wide> num = Bits<wide>::max() >> (wide - (step * k));
+        Bits<wide> denom = Bits<wide>::max() >> (wide - step);
+        Bits result {num / denom};
+        result <<= start;
+        return result;
     }
 
     static constexpr Bits _mask(const bertrand::slice::normalized& indices) noexcept {
@@ -2388,10 +2383,7 @@ public:
     remaining bits will be set to zero.  The total bit width of the arguments cannot
     exceed `N`, otherwise the constructor will fail to compile. */
     template <typename... words>
-        requires (
-            (impl::strict_bits<words> && ...) &&
-            ((meta::integer_width<words> + ... + 0) <= N)
-        )
+        requires (impl::strict_bitwise_constructor<N, words...>)
     [[nodiscard]] constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_bits<0>(buffer, vals...);
     }
@@ -2411,16 +2403,23 @@ public:
     bitarray, which will be terminate at index `sum(M_i...)`, where `M_i` is the bit
     width of the `i`th integer. */
     template <typename... words>
-        requires (
-            sizeof...(words) > 0 &&
-            !(impl::strict_bits<words> && ...) &&
-            (meta::integer<words> && ... && (
-                (meta::integer_width<words> + ... + 0) <= bertrand::max(capacity(), 64)
-            ))
-        )
+        requires (impl::loose_bitwise_constructor<capacity(), words...>)
     [[nodiscard]] constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_ints<0>(buffer, vals...);
     }
+
+    template <meta::integer... words>
+        requires (
+            !impl::strict_bitwise_constructor<N, words...> &&
+            !impl::loose_bitwise_constructor<capacity(), words...>
+        )
+    [[nodiscard]] explicit constexpr Bits(const words&... vals) noexcept : buffer{} {
+        from_ints<0>(buffer, vals...);
+    }
+
+
+    /// TODO: there has to be a fallback explicit constructor that works when the
+    /// integer width does not fit within the bitset's storage capacity.
 
     /* Construct a bitset from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -2439,7 +2438,8 @@ public:
         auto end = range.end();
         while (it != end && i < size()) {
             if constexpr (meta::boolean<meta::yield_type<T>>) {
-                buffer[i / word_size] |= (word(*it) << (i % word_size));
+                buffer[i / word_size] |=
+                    (word(static_cast<bool>(*it)) << (i % word_size));
                 ++i;
             } else if constexpr (meta::integer<meta::yield_type<T>>) {
                 Bits temp = *it;
@@ -2447,7 +2447,8 @@ public:
                 *this |= temp;
                 i += meta::integer_width<meta::yield_type<T>>;
             } else {
-                buffer[i / word_size] |= (word(*it) << (i % word_size));
+                buffer[i / word_size] |=
+                    (word(static_cast<bool>(*it)) << (i % word_size));
                 ++i;
             }
             ++it;
@@ -6018,8 +6019,26 @@ namespace bertrand {
                 2
             );
             static_assert(alt == Bits{"01010101"});
-            static constexpr Bits alt2 = Bits<8>::mask(1, -1);
-            static_assert(alt2 == Bits{"01111110"});
+            static constexpr Bits alt2 = Bits<8>::mask(1, -1, 2);
+            static_assert(alt2 == Bits{"00101010"});
+            static constexpr Bits alt3 = Bits<8>::mask(
+                std::nullopt,
+                std::nullopt,
+                3
+            );
+            static_assert(alt3 == Bits{"01001001"});
+            static constexpr Bits alt4 = Bits<8>::mask(
+                std::nullopt,
+                std::nullopt,
+                4
+            );
+            static_assert(alt4 == Bits{"00010001"});
+            static constexpr Bits alt5 = Bits<8>::mask(
+                std::nullopt,
+                std::nullopt,
+                5
+            );
+            static_assert(alt5 == Bits{"00100001"});
 
             static constexpr Bits x = [] {
                 Bits<4> x {"0100"};
@@ -6029,6 +6048,13 @@ namespace bertrand {
             static_assert(x == Bits{"0001"});
             auto y = double(Int<72>::max());
             double z = alt;
+
+            static constexpr Bits alt6 = Bits<72>::mask(
+                std::nullopt,
+                std::nullopt,
+                3
+            );
+            
         }
     }
 
