@@ -118,6 +118,7 @@ struct Int;
 
 namespace impl {
     struct Bits_tag {};
+    struct Bits_slice_tag {};
     struct UInt_tag {};
     struct Int_tag {};
 }
@@ -308,7 +309,7 @@ namespace impl {
                 constexpr type hi() const noexcept { return h; }
                 constexpr type lo() const noexcept { return l; }
                 constexpr bool operator>(big other) const noexcept {
-                    return h > other.h || l > other.l;
+                    return h > other.h || (h == other.h && l > other.l);
                 }
                 static constexpr big mul(type a, type b) noexcept {
                     constexpr size_t chunk = size / 2;
@@ -531,17 +532,23 @@ namespace impl {
             return *value & (word(1) << index);
         }
 
-        [[nodiscard]] constexpr bool operator~() const noexcept {
-            return !*this;
-        }
-
         constexpr bit_reference& operator=(bool x) noexcept {
-            *value = (*value & ~(word(1) << index)) | (x << index);
+            *value = word(*value & ~word(word(1) << index)) | word(word(x) << index);
             return *this;
         }
 
-        constexpr bit_reference& flip() noexcept {
-            *value ^= word(1) << index;
+        constexpr bit_reference& operator|=(bool x) noexcept {
+            *value |= word(word(x) << index);
+            return *this;
+        }
+
+        constexpr bit_reference& operator&=(bool x) noexcept {
+            *value &= word(word(x) << index);
+            return *this;
+        }
+
+        constexpr bit_reference& operator^=(bool x) noexcept {
+            *value ^= word(word(x) << index);
             return *this;
         }
     };
@@ -1599,13 +1606,130 @@ private:
         }
     }
 
-    static constexpr Bits interval_mask(index_type start, index_type stop) noexcept {
-        Bits result;
-        result.fill(1);
-        result <<= N - size_type(stop);
-        result >>= N - size_type(stop - start);
-        result <<= size_type(start);  // [start, stop).
+    static constexpr Bits interval_mask(size_type start, size_type stop) noexcept {
+        Bits result = max();
+        result <<= N - stop;
+        result >>= N - (stop - start);
+        result <<= start;  // [start, stop).
         return result;
+    }
+
+    static constexpr Bits alternating_mask(
+        size_type start,
+        size_type stop,
+        size_type step
+    ) noexcept {
+        Bits mask = 1;
+        size_type diff = stop - start;
+        for (size_type s = step; s <= diff; s <<= 1) {
+            mask <<= step;
+            mask.buffer[0] |= word(1);
+        }
+        mask <<= start;
+        return mask;
+    }
+
+    static constexpr Bits _mask(const bertrand::slice::normalized& indices) noexcept {
+        if (indices.length == 0) {
+            return {};
+        }
+
+        // if step size is positive, then no adjustment is needed
+        if (indices.step > 0) {
+            if (indices.step == 1) {
+                return interval_mask(
+                    size_type(indices.start),
+                    size_type(indices.stop)
+                );
+            }
+            return alternating_mask(
+                size_type(indices.start),
+                size_type(indices.stop),
+                size_type(indices.step)
+            );
+        }
+
+        // otherwise, we have to invert stop and start so that we can use the same
+        // optimized mask generation code
+        size_type norm_start = size_type(
+            indices.start + (indices.step * (indices.length - 1))
+        );
+        size_type norm_stop = size_type(indices.start + 1);
+        if (indices.step == -1) {
+            return interval_mask(
+                norm_start,
+                norm_stop
+            );
+        }
+        return alternating_mask(
+            norm_start,
+            norm_stop,
+            size_type(-indices.step)
+        );
+    }
+
+    constexpr bool slice_any(const Bits& mask) const noexcept {
+        return static_cast<bool>(*this & mask);
+    }
+
+    constexpr bool slice_all(const Bits& mask) const noexcept {
+        return *this & mask == mask;
+    }
+
+    constexpr size_type slice_count(const Bits& mask) const noexcept {
+        size_type count = 0;
+        for (size_type i = 0; i < array_size; ++i) {
+            count += size_type(std::popcount(buffer[i] & mask.buffer[i]));
+        }
+        return count;
+    }
+
+    constexpr Optional<index_type> slice_first_one(const Bits& mask) const noexcept {
+        for (size_type i = 0; i < array_size; ++i) {
+            size_type j = size_type(std::countr_zero(
+                word(buffer[i] & mask.buffer[i])
+            ));
+            if (j < word_size) {
+                return index_type(word_size * i + j);
+            }
+        }
+        return std::nullopt;
+    }
+
+    constexpr Optional<index_type> slice_last_one(const Bits& mask) const noexcept {
+        for (size_type i = array_size; i-- > 0;) {
+            size_type j = size_type(std::countl_zero(
+                word(buffer[i] & mask.buffer[i])
+            ));
+            if (j < word_size) {
+                return index_type(word_size * i + word_size - 1 - j);
+            }
+        }
+        return std::nullopt;
+    }
+
+    constexpr Optional<index_type> slice_first_zero(const Bits& mask) const noexcept {
+        for (size_type i = 0; i < array_size; ++i) {
+            size_type j = size_type(std::countr_one(
+                word(buffer[i] & mask.buffer[i])
+            ));
+            if (j < word_size) {
+                return index_type(word_size * i + j);
+            }
+        }
+        return std::nullopt;
+    }
+
+    constexpr Optional<index_type> slice_last_zero(const Bits& mask) const noexcept {
+        for (size_type i = array_size; i-- > 0;) {
+            size_type j = size_type(std::countl_one(
+                word(buffer[i] | ~mask.buffer[i])
+            ));
+            if (j < word_size) {
+                return index_type(word_size * i + word_size - 1 - j);
+            }
+        }
+        return std::nullopt;
     }
 
     constexpr auto _mul(const Bits& other) const noexcept {
@@ -1636,6 +1760,138 @@ private:
     }
 
 public:
+
+    /* A range that decomposes a bitmask into its one-hot components from least to
+    most significant. */
+    struct one_hot {
+    private:
+        friend Bits;
+        const Bits* self;
+        index_type start;
+        index_type stop;
+
+        constexpr one_hot(
+            const Bits* self,
+            index_type start,
+            index_type stop
+        ) noexcept :
+            self(self), start(start), stop(stop)
+        {}
+
+    public:
+        struct iterator {
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = index_type;
+            using value_type = Bits;
+            using reference = const value_type&;
+            using const_reference = reference;
+            using pointer = const value_type*;
+            using const_pointer = pointer;
+
+        private:
+            friend one_hot;
+            const Bits* self;
+            difference_type index;
+            difference_type stop;
+            value_type curr;
+
+            static constexpr difference_type next(
+                const Bits* self,
+                difference_type start,
+                difference_type stop
+            ) noexcept {
+                Bits temp;
+                temp.fill(1);
+                temp <<= N - size_type(stop);
+                temp >>= N - size_type(stop - start);
+                temp <<= size_type(start);  
+                for (size_type i = 0; i < array_size; ++i) {
+                    size_type j = size_type(std::countr_zero(
+                        word(self->buffer[i] & temp.buffer[i])
+                    ));
+                    if (j < word_size) {
+                        return difference_type(word_size * i + j);
+                    }
+                }
+                return stop;
+            }
+
+            constexpr iterator(
+                const Bits* self,
+                difference_type start,
+                difference_type stop
+            ) noexcept :
+                self(self),
+                index(start < stop ? next(self, start, stop) : stop),
+                stop(stop),
+                curr(word(1))
+            {
+                curr <<= size_type(index);
+            }
+
+        public:
+            [[nodiscard]] constexpr reference operator*() const noexcept {
+                return curr;
+            }
+
+            [[nodiscard]] constexpr pointer operator->() const noexcept {
+                return &curr;
+            }
+
+            constexpr iterator& operator++() noexcept {
+                if (index >= stop) {
+                    return *this;
+                }
+                difference_type new_index = next(self, index + 1, stop);
+                curr <<= size_type(new_index - index);
+                index = new_index;
+                return *this;
+            }
+
+            [[nodiscard]] constexpr iterator operator++(int) noexcept {
+                iterator copy = *this;
+                ++*this;
+                return copy;
+            }
+
+            [[nodiscard]] friend constexpr bool operator==(
+                const iterator& self,
+                impl::sentinel
+            ) noexcept {
+                return self.index >= self.stop;
+            }
+
+            [[nodiscard]] friend constexpr bool operator==(
+                impl::sentinel,
+                const iterator& self
+            ) noexcept {
+                return self.index >= self.stop;
+            }
+
+            [[nodiscard]] friend constexpr bool operator!=(
+                const iterator& self,
+                impl::sentinel
+            ) noexcept {
+                return self.index < self.stop;
+            }
+
+            [[nodiscard]] friend constexpr bool operator!=(
+                impl::sentinel,
+                const iterator& self
+            ) noexcept {
+                return self.index < self.stop;
+            }
+        };
+
+        [[nodiscard]] constexpr iterator begin() const noexcept {
+            return {self, start, stop};
+        }
+        [[nodiscard]] constexpr iterator cbegin() const noexcept {
+            return {self, start, stop};
+        }
+        [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
+        [[nodiscard]] constexpr impl::sentinel cend() const noexcept { return {}; }
+    };
 
     /* An iterator over the individual bits within the set, from least to most
     significant. */
@@ -1901,139 +2157,228 @@ public:
 
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-    using slice = impl::slice<iterator>;
-    using const_slice = impl::slice<const_iterator>;
 
-    /* A range that decomposes a bitmask into its one-hot components from least to
-    most significant. */
-    struct one_hot {
+    /* A view over a section of the bitset with Python-style start and stop indices, as
+    well as a nonzero step size.  The slice view acts just like a bitset of a smaller
+    size, and does not need to be contiguous in memory.  It can be iterated over and
+    implicitly converted to any other container that is constructible from a boolean
+    range, including other bitsets.  Mutable slices can also be assigned to from such
+    containers, updating the original bitset's contents in-place. */
+    struct slice : impl::slice<iterator>, impl::Bits_slice_tag {
     private:
         friend Bits;
-        const Bits* self;
-        index_type start;
-        index_type stop;
+        using base = impl::slice<iterator>;
 
-        constexpr one_hot(
-            const Bits* self,
-            index_type start,
-            index_type stop
-        ) noexcept :
-            self(self), start(start), stop(stop)
+        Bits& bits;
+
+        constexpr slice(Bits& bits, bertrand::slice::normalized indices)
+            noexcept(noexcept(base(bits, indices)))
+        :
+            base(bits, indices),
+            bits(bits)
         {}
 
     public:
-        struct iterator {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = index_type;
-            using value_type = Bits;
-            using reference = const value_type&;
-            using const_reference = reference;
-            using pointer = const value_type*;
-            using const_pointer = pointer;
+        static constexpr size_type n = Bits::size();  // allows for CTAD
 
-        private:
-            friend one_hot;
-            const Bits* self;
-            difference_type index;
-            difference_type stop;
-            value_type curr;
+        /// TODO: I could take this opportunity to turn this into an owning range
+        /// storing a union of a mutable reference to the underlying bitset or an
+        /// owning copy of the bitset.  Then, the operations would be visitors.
+        /// possibly, the same effect can be achieved with less code size if I store
+        /// a raw union directly, and interact with it through a mutable reference.
+        /// The union would simply not be initialized in the non-owning case.
 
-            static constexpr difference_type next(
-                const Bits* self,
-                difference_type start,
-                difference_type stop
-            ) noexcept {
-                Bits temp;
-                temp.fill(1);
-                temp <<= N - size_type(stop);
-                temp >>= N - size_type(stop - start);
-                temp <<= size_type(start);  
-                for (size_type i = 0; i < array_size; ++i) {
-                    size_type j = size_type(std::countr_zero(
-                        word(self->buffer[i] & temp.buffer[i])
-                    ));
-                    if (j < word_size) {
-                        return difference_type(word_size * i + j);
-                    }
-                }
-                return stop;
-            }
+        /// TODO: some modifications will need to be made for the slice to be
+        /// implicitly convertible to a `Bits` object, and allow `Bits` to be assigned
+        /// to a slice.  It's possible that this will be automatically handled by the
+        /// range-based operators, but I'm not entirely sure if that's the case, or
+        /// if that's the best way to do it.  It might be.
 
-            constexpr iterator(
-                const Bits* self,
-                difference_type start,
-                difference_type stop
-            ) noexcept :
-                self(self),
-                index(start < stop ? next(self, start, stop) : stop),
-                stop(stop),
-                curr(word(1))
-            {
-                curr <<= size_type(index);
-            }
+        /// TODO: indexing into a slice should be possible.  Maybe also at() returning
+        /// a bitset iterator to that index.  Possibly, one_hot could be used to
+        /// decompose the slice into one-hot component masks, which are relative to
+        /// the parent bitset.
 
-        public:
-            [[nodiscard]] constexpr reference operator*() const noexcept {
-                return curr;
-            }
-
-            [[nodiscard]] constexpr pointer operator->() const noexcept {
-                return &curr;
-            }
-
-            constexpr iterator& operator++() noexcept {
-                if (index >= stop) {
-                    return *this;
-                }
-                difference_type new_index = next(self, index + 1, stop);
-                curr <<= size_type(new_index - index);
-                index = new_index;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr iterator operator++(int) noexcept {
-                iterator copy = *this;
-                ++*this;
-                return copy;
-            }
-
-            [[nodiscard]] friend constexpr bool operator==(
-                const iterator& self,
-                impl::sentinel
-            ) noexcept {
-                return self.index >= self.stop;
-            }
-
-            [[nodiscard]] friend constexpr bool operator==(
-                impl::sentinel,
-                const iterator& self
-            ) noexcept {
-                return self.index >= self.stop;
-            }
-
-            [[nodiscard]] friend constexpr bool operator!=(
-                const iterator& self,
-                impl::sentinel
-            ) noexcept {
-                return self.index < self.stop;
-            }
-
-            [[nodiscard]] friend constexpr bool operator!=(
-                impl::sentinel,
-                const iterator& self
-            ) noexcept {
-                return self.index < self.stop;
-            }
-        };
-
-        [[nodiscard]] constexpr iterator begin() const noexcept {
-            return {self, start, stop};
+        /* Produce a bitmask with a one in all the indices that are contained within
+        this slice, and zero everywhere else. */
+        [[nodiscard]] constexpr Bits mask() const noexcept {
+            return Bits::_mask(base::indices());
         }
-        [[nodiscard]] constexpr iterator cbegin() const noexcept {
-            return {self, start, stop};
+
+        /* Check if any of the bits within the slice are set. */
+        [[nodiscard]] constexpr bool any() const noexcept {
+            return bits.slice_any(mask());
         }
-        [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
-        [[nodiscard]] constexpr impl::sentinel cend() const noexcept { return {}; }
+
+        /* Check if all of the bits within the slice are set. */
+        [[nodiscard]] constexpr bool all() const noexcept {
+            return bits.slice_all(mask());
+        }
+
+        /* Get the number of bits within the slice that are currently set. */
+        [[nodiscard]] constexpr size_type count() const noexcept {
+            return bits.slice_count(mask());
+        }
+
+        /* Return the proper index of the first active bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if no bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> first_one() const noexcept {
+            return bits.slice_first_one(mask());
+        }
+
+        /* Return the proper index of the last active bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if no bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> last_one() const noexcept {
+            return bits.slice_last_one(mask());
+        }
+
+        /* Return the proper index of the first inactive bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if all bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> first_zero() const noexcept {
+            return bits.slice_first_zero(mask());
+        }
+
+        /* Return the proper index of the last inactive bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if all bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> last_zero() const noexcept {
+            return bits.slice_last_zero(mask());
+        }
+
+        /* Set all bits within the slice to the given value. */
+        constexpr Bits& fill(bool value) noexcept {
+            if (value) {
+                bits |= mask();
+            } else {
+                bits &= ~mask();
+            }
+            return bits;
+        }
+
+        /* Toggle all bits within the slice. */
+        constexpr Bits& flip() noexcept {
+            bits ^= mask();
+            return bits;
+        }
+
+        /* Reverse the order of bits within the slice. */
+        constexpr Bits& reverse() noexcept {
+            Bits temp = mask();
+            Bits reversed = bits & temp;
+            reversed.reverse();
+            bits &= ~temp;  // clear the bits in the original
+            bits |= reversed;  // set the reversed bits back into the original
+            return bits;
+        }
+
+        /// TODO: reverse_bytes(), rotate(), and negate() may not necessarily make
+        /// sense when applied to a slice, since they depend on the order of the
+        /// bits.  Perhaps they can be made to work by some complicated algorithm, but
+        /// the value of that is questionable.  It might be necessary for other
+        /// operators though.  Like what if you could do:
+        ///
+        ///     bits[slice{0, 6}] += 1;
+        ///
+        /// And it would only add one within that subset of bits.  That would mean the
+        /// slice would truly act like a view into the bitset, and not just an iterable
+        /// proxy over it.  Perhaps that is the way to do it, but it is definitely
+        /// rather complicated to implement.
+
+
+
+        // /* Reverse the order of bytes within the slice.  Note that this does not
+        // strictly require the slice to be contiguous; each consecutive sequence of 8
+        // bits is considered a byte for the purposes of this operation, regardless of
+        // the slice's step size. */
+        // constexpr Bits& reverse_bytes() noexcept {
+        //     Bits temp = mask();
+        //     Bits reversed = bits & temp;
+        //     reversed.reverse_bytes();
+        //     bits &= ~temp;  // clear the bits in the original
+        //     bits |= reversed;  // set the reversed bits back into the original
+        //     return bits;
+        // }
+
+        /// TODO: all the other methods that operate on slices.
+
+
+    };
+
+    /* A view over a section of the bitset with Python-style start and stop indices, as
+    well as a nonzero step size.  The slice view acts just like an immutable bitset of
+    a smaller size, and does not need to be contiguous in memory.  It can be iterated
+    over and implicitly converted to any other container that is constructible from a
+    boolean range, including other bitsets. */
+    struct const_slice : impl::slice<const_iterator>, impl::Bits_slice_tag {
+    private:
+        friend Bits;
+        using base = impl::slice<const_iterator>;
+
+        const Bits& bits;
+
+        constexpr const_slice(
+            const Bits& bits,
+            bertrand::slice::normalized indices
+        ) noexcept(noexcept(base(bits, indices))) :
+            base(bits, indices),
+            bits(bits)
+        {}
+
+    public:
+        static constexpr size_type n = Bits::size();  // allows for CTAD
+
+        /* Produce a bitmask with a one in all the indices that are contained within
+        this slice, and zero everywhere else. */
+        [[nodiscard]] constexpr Bits mask() const noexcept {
+            return Bits::_mask(base::indices());
+        }
+
+        /* Check if any of the bits within the slice are set. */
+        [[nodiscard]] constexpr bool any() const noexcept {
+            return bits.slice_any(mask());
+        }
+
+        /* Check if all of the bits within the slice are set. */
+        [[nodiscard]] constexpr bool all() const noexcept {
+            return bits.slice_all(mask());
+        }
+
+        /* Get the number of bits within the slice that are currently set. */
+        [[nodiscard]] constexpr size_type count() const noexcept {
+            return bits.slice_count(mask());
+        }
+
+        /* Return the proper index of the first active bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if no bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> first_one() const noexcept {
+            return bits.slice_first_one(mask());
+        }
+
+        /* Return the proper index of the last active bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if no bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> last_one() const noexcept {
+            return bits.slice_last_one(mask());
+        }
+
+        /* Return the proper index of the first inactive bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if all bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> first_zero() const noexcept {
+            return bits.slice_first_zero(mask());
+        }
+
+        /* Return the proper index of the last inactive bit within the slice, relative
+        to the start of the bitset.  Returns an empty optional monad if all bits are
+        set. */
+        [[nodiscard]] constexpr Optional<index_type> last_zero() const noexcept {
+            return bits.slice_last_zero(mask());
+        }
+
     };
 
     /* Construct a bitset from a variadic parameter pack of bitset and/or boolean
@@ -2077,6 +2422,38 @@ public:
         from_ints<0>(buffer, vals...);
     }
 
+    /* Construct a bitset from a range yielding values that are contextually
+    convertible to bool, stopping at either the end of the range or the maximum width
+    of the bitset, whichever comes first.  If the range yields integer types, then they
+    will populate a number of consecutive bits equal to their detected width, with any
+    extra bits above the bitset width masked out.  Values are given from least to most
+    significant.  A constructor of this form enables implicit conversion from slices,
+    as well as the `std::ranges::to()` universal constructor. */
+    template <meta::iterable T>
+        requires (meta::explicitly_convertible_to<meta::yield_type<T>, bool>)
+    [[nodiscard]] explicit constexpr Bits(std::from_range_t, const T& range) noexcept :
+        buffer{}
+    {
+        size_type i = 0;
+        auto it = range.begin();
+        auto end = range.end();
+        while (it != end && i < size()) {
+            if constexpr (meta::boolean<meta::yield_type<T>>) {
+                buffer[i / word_size] |= (word(*it) << (i % word_size));
+                ++i;
+            } else if constexpr (meta::integer<meta::yield_type<T>>) {
+                Bits temp = *it;
+                temp <<= i;
+                *this |= temp;
+                i += meta::integer_width<meta::yield_type<T>>;
+            } else {
+                buffer[i / word_size] |= (word(*it) << (i % word_size));
+                ++i;
+            }
+            ++it;
+        }
+    }
+
     /* Construct a bitset from a string literal containing exactly `N` of the indicated
     true and false characters.  Throws a `ValueError` if the string contains any
     characters other than the indicated ones.  A constructor of this form allows for
@@ -2108,6 +2485,24 @@ public:
         if (this != &other) {
             buffer.swap(other.buffer);
         }
+    }
+
+    /* Efficiently generate a bit pattern with a one in all the positions that would be
+    included in a hypothetical slice with the given indices.  Step magnitudes greater
+    than 1 can be used to generate alternating bit patterns, starting with a one in the
+    first index followed by `step - 1` zeros, repeating until the end of the slice.
+
+    Step sizes equal to zero are invalid, and will result in a `ValueError`. */
+    [[nodiscard]] static constexpr Bits mask(
+        const Optional<index_type>& start = std::nullopt,
+        const Optional<index_type>& stop = std::nullopt,
+        const Optional<index_type>& step = std::nullopt
+    )
+        noexcept(noexcept(
+            _mask(bertrand::slice{start, stop, step}.normalize(ssize()))
+        ))
+    {
+        return _mask(bertrand::slice{start, stop, step}.normalize(ssize()));
     }
 
     /* Decode a bitset from a string representation.  Defaults to base 2 with the given
@@ -2474,6 +2869,8 @@ public:
     [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept { return {begin()}; }
     [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept { return {cbegin()}; }
 
+    /// TODO: components() for slices?
+
     /* Return a range over the one-hot masks that make up the bitset within a given
     interval.  Iterating over the range yields bitsets of the same size as the input
     with only one active bit and zero everywhere else.  Summing the masks yields an
@@ -2530,7 +2927,9 @@ public:
 
     /* Get the value of a specific bit in the set.  Applies Python-style wraparound to
     the index, and throws an `IndexError` if the program is compiled in debug mode and
-    the index is out of bounds after normalizing. */
+    the index is out of bounds after normalizing.  If called on a mutable bitset, a
+    smart reference is returned, which is implicitly convertible to bool, and can be
+    assigned to in order to set the state of the referenced bit. */
     [[nodiscard]] constexpr reference operator[](index_type i) noexcept(!DEBUG) {
         index_type j = impl::normalize_index(ssize(), i);
         return reference{&buffer[j / word_size], word(j % word_size)};
@@ -2563,24 +2962,9 @@ public:
     /* Check if any of the bits are set. */
     [[nodiscard]] constexpr bool any() const noexcept {
         for (size_type i = 0; i < array_size; ++i) {
-            if (buffer[i]) {
-                return true;
-            }
+            if (buffer[i]) return true;
         }
         return false;
-    }
-
-    /* Check if any of the bits are set within a particular interval. */
-    [[nodiscard]] constexpr bool any(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return false;
-        }
-        return bool(*this & interval_mask(norm_start, norm_stop));
     }
 
     /* Check if all of the bits are set. */
@@ -2597,20 +2981,6 @@ public:
         }
     }
 
-    /* Check if all of the bits are set within a particular interval. */
-    [[nodiscard]] constexpr bool all(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return false;
-        }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        return (*this & temp) == temp;
-    }
-
     /* Get the number of bits that are currently set. */
     [[nodiscard]] constexpr size_type count() const noexcept {
         size_type count = 0;
@@ -2620,155 +2990,6 @@ public:
         return count;
     }
 
-    /* Get the number of bits that are currently set within a particular interval. */
-    [[nodiscard]] constexpr size_type count(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return 0;
-        }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        size_type count = 0;
-        for (size_type i = 0; i < array_size; ++i) {
-            count += size_type(std::popcount(word(buffer[i] & temp.buffer[i])));
-        }
-        return count;
-    }
-
-    /* Set all of the bits to the given value. */
-    constexpr Bits& fill(bool value) noexcept {
-        word filled = std::numeric_limits<word>::max() * value;
-        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            buffer[i] = filled;
-        }
-        if constexpr (end_mask) {
-            buffer[array_size - 1] = filled & end_mask;
-        }
-        return *this;
-    }
-
-    /* Set all of the bits within a certain interval to the given value. */
-    constexpr Bits& fill(
-        bool value,
-        index_type start,
-        index_type stop = ssize()
-    ) noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return *this;
-        }
-        if (value) {
-            *this |= interval_mask(norm_start, norm_stop);
-        } else {
-            *this &= ~interval_mask(norm_start, norm_stop);
-        }
-        return *this;
-    }
-
-    /* Toggle all of the bits in the set. */
-    constexpr Bits& flip() noexcept {
-        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            buffer[i] ^= std::numeric_limits<word>::max();
-        }
-        if constexpr (end_mask) {
-            buffer[array_size - 1] ^= end_mask;
-        }
-        return *this;
-    }
-
-    /* Toggle all of the bits within a certain interval. */
-    constexpr Bits& flip(index_type start, index_type stop = ssize()) noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return *this;
-        }
-        *this ^= interval_mask(norm_start, norm_stop);
-        return *this;
-    }
-
-    /// TODO: endianness has more to do with the ordering of bytes, not necessarily the
-    /// individual bits.
-
-    /* Reverse the order of all bits in the set.  This effectively converts from
-    big-endian to little-endian or vice versa. */
-    constexpr Bits& reverse() noexcept {
-        // swap the words in the array, and then reverse the bits within each word
-        for (size_type i = 0; i < array_size / 2; ++i) {
-            word temp = buffer[i];
-            buffer[i] = impl::bit_reverse(buffer[array_size - 1 - i]);
-            buffer[array_size - 1 - i] = impl::bit_reverse(temp);
-        }
-
-        // account for the middle word in an odd-sized array
-        if constexpr (array_size % 2) {
-            buffer[array_size / 2] = impl::bit_reverse(buffer[array_size / 2]);
-        }
-
-        // if there are any upper bits that should be masked off, shift down to align
-        // the bits in the view window
-        if constexpr (N % word_size) {
-            *this >>= (word_size - N % word_size);
-        }
-        return *this;
-    }
-
-    /* Reverse the order of the bits within a certain interval. */
-    constexpr Bits& reverse(index_type start, index_type stop = ssize()) noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return *this;
-        }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        Bits reversed = *this & temp;
-        reversed.reverse();
-        *this &= ~temp;  // clear the bits in the original bitset
-        *this |= reversed;  // set the reversed bits back into the original bitset
-        return *this;
-    }
-
-    /* Shift all bits to the right `n` indices, wrapping any overflowing bits around to
-    the left (most significant) side of the bitset.  Negative values of `n` count to
-    the left instead. */
-    constexpr Bits& rotate(index_type n) noexcept {
-        index_type m = n % ssize();  // actual shift amount
-        if (m == 0) {
-            return *this;
-        }
-        if (n > 0) {  // m is positive
-            Bits temp = *this >> m;
-            *this <<= ssize() - m;
-            *this |= temp;
-        } else {  // m is negative
-            Bits temp = *this << -m;
-            *this >>= ssize() + m;
-            *this |= temp;
-        }
-        return *this;
-    }
-
-    /// TODO: rotate(n, start, stop)?
-
-    /* Convert the value to its two's complement equivalent, updating it in-place.
-    This is equivalent to flipping the sign for a signed integral value.  For an
-    out-of-place equivalent, see `operator-()`. */
-    constexpr Bits& negate() noexcept {
-        flip();
-        ++*this;
-        return *this;
-    }
-
-    /* Return +1 if the value is positive or -1 if it is negative.  For unsigned
-    bitsets, this will always return +1. */
-    constexpr int sign() const noexcept {
-        return 1;
-    }
-
     /* Return the index of the first bit that is set, or an empty optional if no bits
     are set. */
     [[nodiscard]] constexpr Optional<index_type> first_one() const noexcept {
@@ -2776,29 +2997,6 @@ public:
             size_type j = size_type(std::countr_zero(buffer[i]));
             if (j < word_size) {
                 return index_type(word_size * i  + j);
-            }
-        }
-        return std::nullopt;
-    }
-
-    /* Return the index of the first bit that is set within a given interval, or an
-    empty optional if no bits are set. */
-    [[nodiscard]] constexpr Optional<index_type> first_one(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return std::nullopt;
-        }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        for (size_type i = 0; i < array_size; ++i) {
-            size_type j = size_type(std::countr_zero(
-                word(buffer[i] & temp.buffer[i])
-            ));
-            if (j < word_size) {
-                return index_type(word_size * i + j);
             }
         }
         return std::nullopt;
@@ -2816,57 +3014,11 @@ public:
         return std::nullopt;
     }
 
-    /* Return the index of the last bit that is set within a given interval, or an
-    empty optional if no bits are set. */
-    [[nodiscard]] constexpr Optional<index_type> last_one(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return std::nullopt;
-        }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        for (size_type i = array_size; i-- > 0;) {
-            size_type j = size_type(std::countl_zero(
-                word(buffer[i] & temp.buffer[i])
-            ));
-            if (j < word_size) {
-                return index_type(word_size * i + word_size - 1 - j);
-            }
-        }
-        return std::nullopt;
-    }
-
     /* Return the index of the first bit that is not set, or an empty optional if all
     bits are set. */
     [[nodiscard]] constexpr Optional<index_type> first_zero() const noexcept {
         for (size_type i = 0; i < array_size; ++i) {
             size_type j = size_type(std::countr_one(buffer[i]));
-            if (j < word_size) {
-                return index_type(word_size * i + j);
-            }
-        }
-        return std::nullopt;
-    }
-
-    /* Return the index of the first bit that is not set within a given interval, or
-    an empty optional if all bits are set. */
-    [[nodiscard]] constexpr Optional<index_type> first_zero(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return std::nullopt;
-        }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        for (size_type i = 0; i < array_size; ++i) {
-            size_type j = size_type(std::countr_one(
-                word(buffer[i] & temp.buffer[i])
-            ));
             if (j < word_size) {
                 return index_type(word_size * i + j);
             }
@@ -2894,27 +3046,110 @@ public:
         return std::nullopt;
     }
 
-    /* Return the index of the last bit that is not set within a given interval, or an
-    empty optional if all bits are set. */
-    [[nodiscard]] constexpr Optional<index_type> last_zero(
-        index_type start,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = bertrand::max(start + ssize() * (start < 0), index_type(0));
-        index_type norm_stop = bertrand::min(stop + ssize() * (stop < 0), ssize());
-        if (norm_stop <= norm_start) {
-            return std::nullopt;
+    /* Set all of the bits to the given value. */
+    constexpr Bits& fill(bool value) noexcept {
+        word filled = std::numeric_limits<word>::max() * value;
+        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
+            buffer[i] = filled;
         }
-        Bits temp = interval_mask(norm_start, norm_stop);
-        for (size_type i = array_size; i-- > 0;) {
-            size_type j = size_type(std::countl_one(
-                word(buffer[i] | ~temp.buffer[i])
-            ));
-            if (j < word_size) {
-                return index_type(word_size * i + word_size - 1 - j);
-            }
+        if constexpr (end_mask) {
+            buffer[array_size - 1] = filled & end_mask;
         }
-        return std::nullopt;
+        return *this;
+    }
+
+    /* Toggle all of the bits in the set. */
+    constexpr Bits& flip() noexcept {
+        for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
+            buffer[i] ^= std::numeric_limits<word>::max();
+        }
+        if constexpr (end_mask) {
+            buffer[array_size - 1] ^= end_mask;
+        }
+        return *this;
+    }
+
+    /// TODO: convert interval-based reverse_bytes(), rotate(), negate().  Maybe even
+    /// the other math operators, too, as abstractions over the masked bitset.
+
+    /* Reverse the order of all bits in the set. */
+    constexpr Bits& reverse() noexcept {
+        // swap the words in the array, and then reverse the bits within each word
+        for (size_type i = 0; i < array_size / 2; ++i) {
+            word temp = buffer[i];
+            buffer[i] = impl::bit_reverse(buffer[array_size - 1 - i]);
+            buffer[array_size - 1 - i] = impl::bit_reverse(temp);
+        }
+
+        // account for the middle word in an odd-sized array
+        if constexpr (array_size % 2) {
+            buffer[array_size / 2] = impl::bit_reverse(buffer[array_size / 2]);
+        }
+
+        // if there are any upper bits that should be masked off, shift down to align
+        // the bits in the view window
+        if constexpr (N % word_size) {
+            *this >>= (word_size - N % word_size);
+        }
+        return *this;
+    }
+
+    /* Reverse the order of bytes in the set.  This effectively converts from
+    big-endian to little-endian or vice versa. */
+    constexpr Bits& reverse_bytes() noexcept {
+        // reverse bytes and swap the words in the array (middle word unchanged)
+        for (size_type i = 0; i < array_size / 2; ++i) {
+            word temp = impl::byte_reverse(buffer[i]);
+            buffer[i] = impl::byte_reverse(buffer[array_size - 1 - i]);
+            buffer[array_size - 1 - i] = temp;
+        }
+
+        // reverse the middle word in-place
+        if constexpr (array_size % 2) {
+            buffer[array_size / 2] = impl::byte_reverse(buffer[array_size / 2]);
+        }
+
+        // if there are any upper bits that should be masked off, shift down to align
+        // the bits in the view window
+        if constexpr (end_mask) {
+            *this >>= (word_size - N % word_size);
+        }
+        return *this;
+    }
+
+    /* Shift all bits to the right `n` indices, wrapping any overflowing bits around to
+    the left (most significant) side of the bitset.  Negative values of `n` count to
+    the left instead. */
+    constexpr Bits& rotate(index_type n) noexcept {
+        index_type m = n % ssize();  // actual shift amount
+        if (m == 0) {
+            return *this;
+        }
+        if (n > 0) {  // m is positive
+            Bits temp = *this >> m;
+            *this <<= ssize() - m;
+            *this |= temp;
+        } else {  // m is negative
+            Bits temp = *this << -m;
+            *this >>= ssize() + m;
+            *this |= temp;
+        }
+        return *this;
+    }
+
+    /* Convert the value to its two's complement equivalent, updating it in-place.
+    This is equivalent to flipping the sign for a signed integral value.  For an
+    out-of-place equivalent, see `operator-()`. */
+    constexpr Bits& negate() noexcept {
+        flip();
+        ++*this;
+        return *this;
+    }
+
+    /* Return +1 if the value is positive or -1 if it is negative.  For unsigned
+    bitsets, this will always return +1. */
+    constexpr int sign() const noexcept {
+        return 1;
     }
 
     /* Add two bitsets of equal size.  If the result overflows, then the `overflow`
@@ -3758,6 +3993,8 @@ public:
 
 template <meta::integer... Ts>
 Bits(Ts...) -> Bits<(meta::integer_width<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Bits(T) -> Bits<T::n>;
 template <size_t N>
 Bits(const char(&)[N]) -> Bits<N - 1>;
 template <size_t N>
@@ -3814,6 +4051,19 @@ struct UInt : impl::UInt_tag {
             ))
         )
     [[nodiscard]] constexpr UInt(const words&... vals) noexcept : bits(vals...) {}
+
+    /* Construct an integer from a range yielding values that are contextually
+    convertible to bool, stopping at either the end of the range or the maximum width
+    of the integer, whichever comes first.  If the range yields integer types, then they
+    will populate a number of consecutive bits equal to their detected width, with any
+    extra bits above the integer width masked out.  Values are given from least to most
+    significant.  A constructor of this form enables implicit conversion from slices,
+    as well as the `std::ranges::to()` universal constructor. */
+    template <meta::iterable T>
+        requires (meta::explicitly_convertible_to<meta::yield_type<T>, bool>)
+    [[nodiscard]] explicit constexpr UInt(std::from_range_t, const T& range) noexcept :
+        bits(std::from_range, range)
+    {}
 
     /* Trivially swap the values of two integers. */
     constexpr void swap(UInt& other) noexcept {
@@ -4387,6 +4637,8 @@ struct UInt : impl::UInt_tag {
 
 template <meta::integer... Ts>
 UInt(Ts...) -> UInt<(meta::integer_width<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+UInt(T) -> UInt<T::n>;
 
 
 /* ADL `swap()` method for `bertrand::UInt` instances. */
@@ -4464,6 +4716,19 @@ struct Int : impl::Int_tag {
             ))
         )
     [[nodiscard]] constexpr Int(const words&... vals) noexcept : bits(vals...) {}
+
+    /* Construct an integer from a range yielding values that are contextually
+    convertible to bool, stopping at either the end of the range or the maximum width
+    of the integer, whichever comes first.  If the range yields integer types, then they
+    will populate a number of consecutive bits equal to their detected width, with any
+    extra bits above the integer width masked out.  Values are given from least to most
+    significant.  A constructor of this form enables implicit conversion from slices,
+    as well as the `std::ranges::to()` universal constructor. */
+    template <meta::iterable T>
+        requires (meta::explicitly_convertible_to<meta::yield_type<T>, bool>)
+    [[nodiscard]] explicit constexpr Int(std::from_range_t, const T& range) noexcept :
+        bits(std::from_range, range)
+    {}
 
     /* Trivially swap the values of two integers. */
     constexpr void swap(Int& other) noexcept {
@@ -5273,6 +5538,8 @@ struct Int : impl::Int_tag {
 
 template <meta::integer... Ts>
 Int(Ts...) -> Int<(meta::integer_width<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Int(T) -> Int<T::n>;
 
 
 /* ADL `swap()` method for `bertrand::Int<N>` instances. */
@@ -5586,7 +5853,7 @@ namespace bertrand {
             static constexpr std::string d2 = b.to_string();
             static constexpr std::string d3 = b.to_hex();
             static_assert(any(b.components()));
-            static_assert(b.first_one(2).value() == 3);
+            static_assert(b[slice{2}].first_one().value() == 3);
             static_assert(a == 0b10);
             static_assert(b == 0b1010);
             static_assert(b[1] == true);
@@ -5727,9 +5994,33 @@ namespace bertrand {
             static_assert(Bits<72>::max().divmod(2).second.data()[0] == 1);
 
             static_assert(Bits<72>::max().divmod(Bits<71>::max()).first.data()[0] == 2);
+
+            static constexpr Bits extracted = Bits{"0101"}[slice{0, 2}];
+            static constexpr UInt extracted2 = Bits{"0101"}[slice{0, 2}];
+            static constexpr Int extracted3 = Bits{"0101"}[slice{0, 2}];
+            static_assert(Bits{"0101"}[slice{-2, std::nullopt, -2}].any());
+            static_assert(extracted == Bits{"01"});
+
+            // for (auto x : Bits{"0101"}[slice{0, 2}]) {
+
+            // }
+            // static constexpr Bits temp = Bits{"0101"};
+            // static constexpr auto it = std::ranges::end(temp[slice{0, 2}]);
+            // static constexpr auto temp2 = temp[slice{0, 2}];
+            // static constexpr auto it2 = std::ranges::end(temp2);
+            // static_assert(meta::iterable<decltype(temp2)>);
         }
 
         {
+            static constexpr Bits alt = Bits<8>::mask(
+                std::nullopt,
+                std::nullopt,
+                2
+            );
+            static_assert(alt == Bits{"01010101"});
+            static constexpr Bits alt2 = Bits<8>::mask(1, -1);
+            static_assert(alt2 == Bits{"01111110"});
+
             static constexpr Bits x = [] {
                 Bits<4> x {"0100"};
                 x.rotate(-2);
@@ -5737,6 +6028,7 @@ namespace bertrand {
             }();
             static_assert(x == Bits{"0001"});
             auto y = double(Int<72>::max());
+            double z = alt;
         }
     }
 

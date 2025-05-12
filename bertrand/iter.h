@@ -25,9 +25,9 @@ public:
     ssize_t step;
 
     [[nodiscard]] explicit constexpr slice(
-        Optional<ssize_t> start = std::nullopt,
-        Optional<ssize_t> stop = std::nullopt,
-        Optional<ssize_t> step = std::nullopt
+        const Optional<ssize_t>& start = std::nullopt,
+        const Optional<ssize_t>& stop = std::nullopt,
+        const Optional<ssize_t>& step = std::nullopt
     ) :
         start(start.value_or(missing)),
         stop(stop.value_or(missing)),
@@ -169,15 +169,13 @@ namespace impl {
     template <meta::unqualified T> requires (meta::bidirectional_iterator<T>)
     struct slice {
     private:
+        using normalized = bertrand::slice::normalized;
 
         T m_begin;
-        bertrand::slice::normalized m_indices;
+        normalized m_indices;
 
         template <typename C> requires (!meta::random_access_iterator<T>)
-        static constexpr T get_begin(
-            C& container,
-            bertrand::slice::normalized indices
-        )
+        static constexpr T get_begin(C& container, const normalized& indices)
             noexcept(
                 meta::nothrow::has_begin<C> &&
                 meta::nothrow::has_end<C> &&
@@ -197,10 +195,7 @@ namespace impl {
         }
 
         template <typename C> requires (meta::random_access_iterator<T>)
-        static constexpr T get_begin(
-            C& container,
-            bertrand::slice::normalized indices
-        )
+        static constexpr T get_begin(C& container, const normalized& indices)
             noexcept(noexcept(container.begin() + indices.start))
         {
             return container.begin() + indices.start;
@@ -333,11 +328,15 @@ namespace impl {
                 return copy;
             }
 
-            [[nodiscard]] constexpr bool operator==(const iterator& other) noexcept {
+            [[nodiscard]] constexpr bool operator==(const iterator& other) const
+                noexcept
+            {
                 return length == other.length;
             }
 
-            [[nodiscard]] constexpr bool operator!=(const iterator& other) noexcept {
+            [[nodiscard]] constexpr bool operator!=(const iterator& other) const
+                noexcept
+            {
                 return length != other.length;
             }
         };
@@ -350,10 +349,9 @@ namespace impl {
                 meta::is<meta::begin_type<C>, T> &&
                 meta::is<meta::end_type<C>, T>
             )
-        [[nodiscard]] constexpr slice(
-            C& container,
-            bertrand::slice::normalized indices
-        ) noexcept(noexcept(get_begin(container, indices))) :
+        [[nodiscard]] constexpr slice(C& container, const normalized& indices)
+            noexcept(noexcept(get_begin(container, indices)))
+        :
             m_begin(get_begin(container, indices)),
             m_indices(indices)
         {}
@@ -363,13 +361,13 @@ namespace impl {
         constexpr slice& operator=(const slice&) = delete;
         constexpr slice& operator=(slice&&) = delete;
 
+        [[nodiscard]] constexpr const normalized& indices() const noexcept { return m_indices; }
         [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
         [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
         [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
         [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
         [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
-        [[nodiscard]] constexpr explicit operator bool() const noexcept { return ssize(); }
         [[nodiscard]] constexpr iterator begin() const
             noexcept(noexcept(iterator{m_begin, m_indices.step, m_indices.length}))
         {
