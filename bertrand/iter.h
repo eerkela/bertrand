@@ -111,6 +111,7 @@ public:
 
 
 namespace impl {
+    struct slice_tag {};
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
@@ -167,7 +168,7 @@ namespace impl {
     `bertrand::slice` helper class, including basic iteration, assignment and
     extraction via an implicit conversion operator. */
     template <meta::unqualified T> requires (meta::bidirectional_iterator<T>)
-    struct slice {
+    struct slice : slice_tag {
     private:
         using normalized = bertrand::slice::normalized;
 
@@ -408,7 +409,7 @@ namespace impl {
         }
 
         template <typename V>
-        [[nodiscard]] constexpr operator V() &&
+        [[nodiscard]] constexpr operator V() const
             noexcept(noexcept(V(std::from_range, *this)))
             requires(meta::constructible_from<V, std::from_range_t, slice&>)
         {
@@ -416,7 +417,7 @@ namespace impl {
         }
 
         template <typename V>
-        [[nodiscard]] constexpr operator V() &&
+        [[nodiscard]] constexpr operator V() const
             noexcept(noexcept(V(begin(), end())))
             requires(
                 !meta::constructible_from<V, std::from_range_t, slice&> &&
@@ -460,6 +461,7 @@ namespace impl {
                 }
                 *output = *it;
                 ++it;
+                ++output;
             }
 
             if constexpr (!has_size) {
@@ -2025,6 +2027,17 @@ template <meta::default_constructible F = impl::Less, meta::iterable T>
 
 
 namespace meta {
+
+    template <typename T>
+    concept slice = meta::inherits<T, impl::slice_tag>;
+
+    template <typename T>
+    concept sliceable = requires(T t, bertrand::slice s) {
+        { t[s] } -> meta::slice;
+    };
+
+    template <sliceable T>
+    using slice_type = decltype(::std::declval<T>()[::std::declval<bertrand::slice>()]);
 
     template <typename Less, typename Begin, typename End>
     concept iter_sortable =

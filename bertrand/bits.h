@@ -1242,6 +1242,18 @@ namespace impl {
 }
 
 
+template <meta::integer... Ts>
+Bits(Ts...) -> Bits<(meta::integer_width<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Bits(T) -> Bits<T::container::size()>;
+template <size_t N>
+Bits(const char(&)[N]) -> Bits<N - 1>;
+template <size_t N>
+Bits(const char(&)[N], char) -> Bits<N - 1>;
+template <size_t N>
+Bits(const char(&)[N], char, char) -> Bits<N - 1>;
+
+
 template <size_t N>
 struct Bits : impl::Bits_tag {
     using word = impl::word<N>::type;
@@ -1259,7 +1271,10 @@ struct Bits : impl::Bits_tag {
     /* A bitmask that identifies the valid bits for the last word, assuming
     `N % word_size` is nonzero.  Otherwise, if `N` is a clean multiple of `word_size`,
     then this mask will be set to zero. */
-    static constexpr word end_mask = word(word(1) << (N % word_size)) - word(1);
+    static constexpr word end_mask =
+        N % word_size ?
+            word(word(1) << (N % word_size)) - word(1) :
+            word(0);
 
     /* The minimum value that the bitset can hold. */
     static constexpr Bits min() noexcept { return {}; }
@@ -1790,6 +1805,10 @@ public:
             difference_type stop;
             value_type curr;
 
+            /// TODO: I should be able to optimize the bitmask here so that it persists
+            /// across iterations.  Also, this entire class should be usable with
+            /// slices, such that slices decompose into their one-hot components.
+
             static constexpr difference_type next(
                 const Bits* self,
                 difference_type start,
@@ -2158,7 +2177,8 @@ public:
     size, and does not need to be contiguous in memory.  It can be iterated over and
     implicitly converted to any other container that is constructible from a boolean
     range, including other bitsets.  Mutable slices can also be assigned to from such
-    containers, updating the original bitset's contents in-place. */
+    containers or from raw integers, updating the original bitset's contents
+    in-place. */
     struct slice : impl::slice<iterator>, impl::Bits_slice_tag {
     private:
         friend Bits;
@@ -2174,7 +2194,8 @@ public:
         {}
 
     public:
-        static constexpr size_type n = Bits::size();  // allows for CTAD
+        using container = Bits;  // TODO: rename to `self`?
+        using base::operator=;
 
         /// TODO: I could take this opportunity to turn this into an owning range
         /// storing a union of a mutable reference to the underlying bitset or an
@@ -2183,16 +2204,25 @@ public:
         /// a raw union directly, and interact with it through a mutable reference.
         /// The union would simply not be initialized in the non-owning case.
 
-        /// TODO: some modifications will need to be made for the slice to be
-        /// implicitly convertible to a `Bits` object, and allow `Bits` to be assigned
-        /// to a slice.  It's possible that this will be automatically handled by the
-        /// range-based operators, but I'm not entirely sure if that's the case, or
-        /// if that's the best way to do it.  It might be.
-
         /// TODO: indexing into a slice should be possible.  Maybe also at() returning
         /// a bitset iterator to that index.  Possibly, one_hot could be used to
         /// decompose the slice into one-hot component masks, which are relative to
         /// the parent bitset.
+
+        /// TODO: also, one-hot decomposition of slices
+
+        /* Overwrite the slice contents with a numeric value in bitwise
+        representation. */
+        constexpr slice& operator=(const Bits& value) && noexcept {
+            Bits temp = mask();
+            bits &= ~temp;  // clear the bits in the original
+            bits |= value.scatter(temp);  // set the bits in the original
+            return *this;
+        }
+
+        /* Return a reference to the underlying bitset. */
+        [[nodiscard]] constexpr Bits& data() noexcept { return bits; }
+        [[nodiscard]] constexpr const Bits& data() const noexcept { return bits; }
 
         /* Produce a bitmask with a one in all the indices that are contained within
         this slice, and zero everywhere else. */
@@ -2271,18 +2301,7 @@ public:
 
         /// TODO: reverse_bytes(), rotate(), and negate() may not necessarily make
         /// sense when applied to a slice, since they depend on the order of the
-        /// bits.  Perhaps they can be made to work by some complicated algorithm, but
-        /// the value of that is questionable.  It might be necessary for other
-        /// operators though.  Like what if you could do:
-        ///
-        ///     bits[slice{0, 6}] += 1;
-        ///
-        /// And it would only add one within that subset of bits.  That would mean the
-        /// slice would truly act like a view into the bitset, and not just an iterable
-        /// proxy over it.  Perhaps that is the way to do it, but it is definitely
-        /// rather complicated to implement.
-
-
+        /// bits.
 
         // /* Reverse the order of bytes within the slice.  Note that this does not
         // strictly require the slice to be contiguous; each consecutive sequence of 8
@@ -2297,9 +2316,343 @@ public:
         //     return bits;
         // }
 
-        /// TODO: all the other methods that operate on slices.
+        /* See `Bits<N>::add()`. */
+        [[nodiscard]] constexpr Bits add(
+            const Bits& other,
+            bool& overflow
+        ) const noexcept {
+            return Bits{*this}.add(other, overflow);
+        }
 
+        /* See `Bits<N>::add()`. */
+        constexpr void add(
+            const Bits& other,
+            bool& overflow,
+            Bits& out
+        ) const noexcept {
+            Bits{*this}.add(other, overflow, out);
+        }
 
+        /* See `Bits<N>::sub()`. */
+        [[nodiscard]] constexpr Bits sub(
+            const Bits& other,
+            bool& overflow
+        ) const noexcept {
+            return Bits{*this}.sub(other, overflow);
+        }
+
+        /* See `Bits<N>::sub()`. */
+        constexpr void sub(
+            const Bits& other,
+            bool& overflow,
+            Bits& out
+        ) const noexcept {
+            Bits{*this}.sub(other, overflow, out);
+        }
+
+        /* See `Bits<N>::mul()`. */
+        [[nodiscard]] constexpr Bits mul(
+            const Bits& other,
+            bool& overflow
+        ) const noexcept {
+            return Bits{*this}.mul(other, overflow);
+        }
+
+        /* See `Bits<N>::mul()`. */
+        constexpr void mul(
+            const Bits& other,
+            bool& overflow,
+            Bits& out
+        ) const noexcept {
+            Bits{*this}.mul(other, overflow, out);
+        }
+
+        /* See `Bits<N>::divmod()`. */
+        [[nodiscard]] constexpr std::pair<Bits, Bits> divmod(
+            const Bits& other
+        ) const noexcept(!DEBUG) {
+            return Bits{*this}.divmod(other);
+        }
+
+        /* See `Bits<N>::divmod()`. */
+        [[nodiscard]] constexpr Bits divmod(
+            const Bits& other,
+            Bits& remainder
+        ) const noexcept(!DEBUG) {
+            return Bits{*this}.divmod(other, remainder);
+        }
+
+        /* See `Bits<N>::divmod()`. */
+        constexpr void divmod(
+            const Bits& other,
+            Bits& quotient,
+            Bits& remainder
+        ) const noexcept(!DEBUG) {
+            Bits{*this}.divmod(other, quotient, remainder);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} <=> rhs;
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs <=> Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} == rhs;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs == Bits{rhs};
+        }
+
+        [[nodiscard]] constexpr Bits operator~() const noexcept {
+            return ~Bits{*this};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator&(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} & rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator&(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs & Bits{rhs};
+        }
+
+        constexpr Bits& operator&=(const Bits& other) noexcept {
+            bits &= other.scatter(mask());
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator|(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} | rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator|(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs | Bits{rhs};
+        }
+
+        constexpr Bits& operator|=(const Bits& other) noexcept {
+            bits |= other.scatter(mask());
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator^(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} ^ rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator^(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs ^ Bits{rhs};
+        }
+
+        constexpr Bits& operator^=(const Bits& other) noexcept {
+            bits ^= other.scatter(mask());
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator<<(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} << rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator<<(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs << Bits{rhs};
+        }
+
+        constexpr Bits& operator<<=(const Bits& other) noexcept {
+            *this = Bits{*this} << other;
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator>>(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} >> rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator>>(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs >> Bits{rhs};
+        }
+
+        constexpr Bits& operator>>=(const Bits& other) noexcept {
+            *this = Bits{*this} >> other;
+            return bits;
+        }
+
+        [[nodiscard]] constexpr Bits operator+() const noexcept {
+            return +Bits{*this};
+        }
+
+        constexpr Bits& operator++() noexcept {
+            Bits temp = Bits{*this};
+            ++temp;
+            *this = temp;
+            return bits;
+        }
+
+        [[nodiscard]] constexpr Bits operator++(int) noexcept {
+            Bits copy = Bits{*this};
+            ++*this;
+            return copy;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator+(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} + rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator+(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs + Bits{rhs};
+        }
+
+        constexpr Bits& operator+=(const Bits& other) noexcept {
+            *this = Bits{*this} + other;
+            return bits;
+        }
+
+        [[nodiscard]] constexpr Bits operator-() const noexcept {
+            return -Bits{*this};
+        }
+
+        constexpr Bits& operator--() noexcept {
+            Bits temp = Bits{*this};
+            --temp;
+            *this = temp;
+            return bits;
+        }
+
+        [[nodiscard]] constexpr Bits operator--(int) noexcept {
+            Bits copy = Bits{*this};
+            --*this;
+            return copy;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator-(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} - rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator-(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs - Bits{rhs};
+        }
+
+        constexpr Bits& operator-=(const Bits& other) noexcept {
+            *this = Bits{*this} - other;
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator*(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} * rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator*(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs * Bits{rhs};
+        }
+
+        constexpr Bits& operator*=(const Bits& other) noexcept {
+            *this = Bits{*this} * other;
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator/(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} / rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator/(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs / Bits{rhs};
+        }
+
+        constexpr Bits& operator/=(const Bits& other) noexcept {
+            *this = Bits{*this} / other;
+            return bits;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator%(
+            const slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} % rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator%(
+            const Bits& lhs,
+            const slice& rhs
+        ) noexcept {
+            return lhs % Bits{rhs};
+        }
+    
+        constexpr Bits& operator%=(const Bits& other) noexcept {
+            *this = Bits{*this} % other;
+            return bits;
+        }
+
+        friend constexpr std::ostream& operator<<(
+            std::ostream& os,
+            const slice& bits
+        ) noexcept {
+            return os << Bits{bits};
+        }
     };
 
     /* A view over a section of the bitset with Python-style start and stop indices, as
@@ -2323,7 +2676,10 @@ public:
         {}
 
     public:
-        static constexpr size_type n = Bits::size();  // allows for CTAD
+        using container = const Bits;
+
+        /* Return a reference to the underlying bitset. */
+        [[nodiscard]] constexpr const Bits& data() const noexcept { return bits; }
 
         /* Produce a bitmask with a one in all the indices that are contained within
         this slice, and zero everywhere else. */
@@ -2374,6 +2730,271 @@ public:
             return bits.slice_last_zero(mask());
         }
 
+        /* See `Bits<N>::add()`. */
+        [[nodiscard]] constexpr Bits add(
+            const Bits& other,
+            bool& overflow
+        ) const noexcept {
+            return Bits{*this}.add(other, overflow);
+        }
+
+        /* See `Bits<N>::add()`. */
+        constexpr void add(
+            const Bits& other,
+            bool& overflow,
+            Bits& out
+        ) const noexcept {
+            Bits{*this}.add(other, overflow, out);
+        }
+
+        /* See `Bits<N>::sub()`. */
+        [[nodiscard]] constexpr Bits sub(
+            const Bits& other,
+            bool& overflow
+        ) const noexcept {
+            return Bits{*this}.sub(other, overflow);
+        }
+
+        /* See `Bits<N>::sub()`. */
+        constexpr void sub(
+            const Bits& other,
+            bool& overflow,
+            Bits& out
+        ) const noexcept {
+            Bits{*this}.sub(other, overflow, out);
+        }
+
+        /* See `Bits<N>::mul()`. */
+        [[nodiscard]] constexpr Bits mul(
+            const Bits& other,
+            bool& overflow
+        ) const noexcept {
+            return Bits{*this}.mul(other, overflow);
+        }
+
+        /* See `Bits<N>::mul()`. */
+        constexpr void mul(
+            const Bits& other,
+            bool& overflow,
+            Bits& out
+        ) const noexcept {
+            Bits{*this}.mul(other, overflow, out);
+        }
+
+        /* See `Bits<N>::divmod()`. */
+        [[nodiscard]] constexpr std::pair<Bits, Bits> divmod(
+            const Bits& other
+        ) const noexcept(!DEBUG) {
+            return Bits{*this}.divmod(other);
+        }
+
+        /* See `Bits<N>::divmod()`. */
+        [[nodiscard]] constexpr Bits divmod(
+            const Bits& other,
+            Bits& remainder
+        ) const noexcept(!DEBUG) {
+            return Bits{*this}.divmod(other, remainder);
+        }
+
+        /* See `Bits<N>::divmod()`. */
+        constexpr void divmod(
+            const Bits& other,
+            Bits& quotient,
+            Bits& remainder
+        ) const noexcept(!DEBUG) {
+            Bits{*this}.divmod(other, quotient, remainder);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} <=> rhs;
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs <=> Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} == rhs;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs == Bits{rhs};
+        }
+
+        [[nodiscard]] constexpr Bits operator~() const noexcept {
+            return ~Bits{*this};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator&(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} & rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator&(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs & Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator|(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} | rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator|(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs | Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator^(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} ^ rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator^(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs ^ Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator<<(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} << rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator<<(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs << Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator>>(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} >> rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator>>(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs >> Bits{rhs};
+        }
+
+        [[nodiscard]] constexpr Bits operator+(
+            const Bits& rhs
+        ) const noexcept {
+            return Bits{*this} + rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator+(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} + rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator+(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs + Bits{rhs};
+        }
+
+        [[nodiscard]] constexpr Bits operator-(
+            const Bits& rhs
+        ) const noexcept {
+            return Bits{*this} - rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator-(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} - rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator-(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs - Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator*(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} * rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator*(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs * Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator/(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} / rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator/(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs / Bits{rhs};
+        }
+
+        [[nodiscard]] friend constexpr Bits operator%(
+            const const_slice& lhs,
+            const Bits& rhs
+        ) noexcept {
+            return Bits{lhs} % rhs;
+        }
+
+        [[nodiscard]] friend constexpr Bits operator%(
+            const Bits& lhs,
+            const const_slice& rhs
+        ) noexcept {
+            return lhs % Bits{rhs};
+        }
+    
+        friend constexpr std::ostream& operator<<(
+            std::ostream& os,
+            const const_slice& bits
+        ) noexcept {
+            return os << Bits{bits};
+        }
     };
 
     /* Construct a bitset from a variadic parameter pack of bitset and/or boolean
@@ -2408,6 +3029,9 @@ public:
         from_ints<0>(buffer, vals...);
     }
 
+    /* Explicitly construct a bitset from a sequence of integer values regardless of
+    their width.  This is identical to the implicit constructors, but ignores the extra
+    safety checks to allow for explicit truncation. */
     template <meta::integer... words>
         requires (
             !impl::strict_bitwise_constructor<N, words...> &&
@@ -2416,10 +3040,6 @@ public:
     [[nodiscard]] explicit constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_ints<0>(buffer, vals...);
     }
-
-
-    /// TODO: there has to be a fallback explicit constructor that works when the
-    /// integer width does not fit within the bitset's storage capacity.
 
     /* Construct a bitset from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -2433,25 +3053,29 @@ public:
     [[nodiscard]] explicit constexpr Bits(std::from_range_t, const T& range) noexcept :
         buffer{}
     {
-        size_type i = 0;
-        auto it = range.begin();
-        auto end = range.end();
-        while (it != end && i < size()) {
-            if constexpr (meta::boolean<meta::yield_type<T>>) {
-                buffer[i / word_size] |=
-                    (word(static_cast<bool>(*it)) << (i % word_size));
-                ++i;
-            } else if constexpr (meta::integer<meta::yield_type<T>>) {
-                Bits temp = *it;
-                temp <<= i;
-                *this |= temp;
-                i += meta::integer_width<meta::yield_type<T>>;
-            } else {
-                buffer[i / word_size] |=
-                    (word(static_cast<bool>(*it)) << (i % word_size));
-                ++i;
+        if constexpr (meta::inherits<T, impl::Bits_slice_tag>) {
+            *this |= range.data() & range.mask();
+        } else {
+            size_type i = 0;
+            auto it = range.begin();
+            auto end = range.end();
+            while (it != end && i < size()) {
+                if constexpr (meta::boolean<meta::yield_type<T>>) {
+                    buffer[i / word_size] |=
+                        (word(static_cast<bool>(*it)) << (i % word_size));
+                    ++i;
+                } else if constexpr (meta::integer<meta::yield_type<T>>) {
+                    Bits temp = *it;
+                    temp <<= i;
+                    *this |= temp;
+                    i += meta::integer_width<meta::yield_type<T>>;
+                } else {
+                    buffer[i / word_size] |=
+                        (word(static_cast<bool>(*it)) << (i % word_size));
+                    ++i;
+                }
+                ++it;
             }
-            ++it;
         }
     }
 
@@ -2870,7 +3494,8 @@ public:
     [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept { return {begin()}; }
     [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept { return {cbegin()}; }
 
-    /// TODO: components() for slices?
+    /// TODO: components() for slices?  Also, I can skip the index normalization here,
+    /// since the slice version will do that for me much more intuitively.
 
     /* Return a range over the one-hot masks that make up the bitset within a given
     interval.  Iterating over the range yields bitsets of the same size as the input
@@ -3047,6 +3672,28 @@ public:
         return std::nullopt;
     }
 
+    /* Distribute the bits within this bitset over an arbitrary mask, such that the
+    least significant bit is shifted to the index of the first active bit in the mask,
+    and the next bit to the second active bit, and so on.  Note that any bits that do
+    not have a corresponding active bit in the mask will be discarded.  This is also
+    sometimes called a "bit-deposit" operation. */
+    [[nodiscard]] constexpr Bits scatter(const Bits& mask) const noexcept {
+        Bits out;
+        Bits src = *this;
+        Bits slots = mask;
+        for (Bits slot; slots; slots ^= slot) {
+            slot = slots & -slots;
+            if (src & 1) {
+                out |= slot;
+            }
+            src >>= 1;
+            if (!src) {
+                break;
+            }
+        }
+        return out;
+    }
+
     /* Set all of the bits to the given value. */
     constexpr Bits& fill(bool value) noexcept {
         word filled = std::numeric_limits<word>::max() * value;
@@ -3070,8 +3717,9 @@ public:
         return *this;
     }
 
-    /// TODO: convert interval-based reverse_bytes(), rotate(), negate().  Maybe even
-    /// the other math operators, too, as abstractions over the masked bitset.
+    /// TODO: convert interval-based reverse_bytes(), rotate(), negate() to use slices.
+    /// Maybe even the other math operators, too, as abstractions over the masked
+    /// bitset.
 
     /* Reverse the order of all bits in the set. */
     constexpr Bits& reverse() noexcept {
@@ -3564,13 +4212,13 @@ public:
     }
 
     /* Apply a bitwise NOT to the contents of the bitset. */
-    [[nodiscard]] friend constexpr Bits operator~(const Bits& set) noexcept {
+    [[nodiscard]] friend constexpr Bits operator~(const Bits& self) noexcept {
         Bits result;
         for (size_type i = 0; i < array_size - (end_mask > 0); ++i) {
-            result.buffer[i] = ~set.buffer[i];
+            result.buffer[i] = ~self.buffer[i];
         }
         if constexpr (end_mask) {
-            result.buffer[array_size - 1] = ~set.buffer[array_size - 1] & end_mask;
+            result.buffer[array_size - 1] = ~self.buffer[array_size - 1] & end_mask;
         }
         return result;
     }
@@ -3949,7 +4597,7 @@ public:
     }
 
     /* Print the bitset to an output stream. */
-    constexpr friend std::ostream& operator<<(std::ostream& os, const Bits& self)
+    friend constexpr std::ostream& operator<<(std::ostream& os, const Bits& self)
         requires(array_size > 1)
     {
         std::ostream::sentry s(os);
@@ -3977,7 +4625,7 @@ public:
     }
 
     /* Read the bitset from an input stream. */
-    constexpr friend std::istream& operator>>(std::istream& is, Bits& self) {
+    friend constexpr std::istream& operator>>(std::istream& is, Bits& self) {
         std::istream::sentry s(is);  // automatically skips leading whitespace
         if (!s) {
             return is;  // stream is not ready for input
@@ -3990,18 +4638,6 @@ public:
         return is;
     }
 };
-
-
-template <meta::integer... Ts>
-Bits(Ts...) -> Bits<(meta::integer_width<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-Bits(T) -> Bits<T::n>;
-template <size_t N>
-Bits(const char(&)[N]) -> Bits<N - 1>;
-template <size_t N>
-Bits(const char(&)[N], char) -> Bits<N - 1>;
-template <size_t N>
-Bits(const char(&)[N], char, char) -> Bits<N - 1>;
 
 
 /* ADL `swap()` method for `bertrand::Bits` instances.  */
@@ -4034,24 +4670,27 @@ struct UInt : impl::UInt_tag {
     /* Construct an integer from a variadic parameter pack of component words of exact
     width.  See `Bits<N>` for more details. */
     template <typename... words>
-        requires (
-            (impl::strict_bits<words> && ...) &&
-            ((meta::integer_width<words> + ... + 0) <= N)
-        )
+        requires (impl::strict_bitwise_constructor<N, words...>)
     [[nodiscard]] constexpr UInt(const words&... vals) noexcept : bits(vals...) {}
 
     /* Construct an integer from a sequence of integer values whose bit widths sum to
     an amount less than or equal to the integer's storage capacity.  See `Bits<N>` for
     more details. */
     template <typename... words>
-        requires (
-            sizeof...(words) > 0 &&
-            !(impl::strict_bits<words> && ...) &&
-            (meta::integer<words> && ... && (
-                (meta::integer_width<words> + ... + 0) <= bertrand::max(Bits::capacity(), 64)
-            ))
-        )
+        requires (impl::loose_bitwise_constructor<Bits::capacity(), words...>)
     [[nodiscard]] constexpr UInt(const words&... vals) noexcept : bits(vals...) {}
+
+    /* Explicitly construct an integer from a sequence of integer values regardless of
+    their width.  This is identical to the implicit constructors, but ignores the extra
+    safety checks to allow for explicit truncation. */
+    template <meta::integer... words>
+        requires (
+            !impl::strict_bitwise_constructor<N, words...> &&
+            !impl::loose_bitwise_constructor<Bits::capacity(), words...>
+        )
+    [[nodiscard]] explicit constexpr UInt(const words&... vals) noexcept :
+        bits(vals...)
+    {}
 
     /* Construct an integer from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -4639,7 +5278,7 @@ struct UInt : impl::UInt_tag {
 template <meta::integer... Ts>
 UInt(Ts...) -> UInt<(meta::integer_width<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
-UInt(T) -> UInt<T::n>;
+UInt(T) -> UInt<T::container::size()>;
 
 
 /* ADL `swap()` method for `bertrand::UInt` instances. */
@@ -4699,24 +5338,27 @@ struct Int : impl::Int_tag {
     /* Construct an integer from a variadic parameter pack of component words of exact
     width.  See `Bits<N>` for more details. */
     template <typename... words>
-        requires (
-            (impl::strict_bits<words> && ...) &&
-            ((meta::integer_width<words> + ... + 0) <= N)
-        )
+        requires (impl::strict_bitwise_constructor<N, words...>)
     [[nodiscard]] constexpr Int(const words&... vals) noexcept : bits(vals...) {}
 
     /* Construct an integer from a sequence of integer values whose bit widths sum to
     an amount less than or equal to the integer's storage capacity.  See `Bits<N>` for
     more details. */
     template <typename... words>
-        requires (
-            sizeof...(words) > 0 &&
-            !(impl::strict_bits<words> && ...) &&
-            (meta::integer<words> && ... && (
-                (meta::integer_width<words> + ... + 0) <= bertrand::max(Bits::capacity(), 64)
-            ))
-        )
+        requires (impl::loose_bitwise_constructor<Bits::capacity(), words...>)
     [[nodiscard]] constexpr Int(const words&... vals) noexcept : bits(vals...) {}
+
+    /* Explicitly construct an integer from a sequence of integer values regardless of
+    their width.  This is identical to the implicit constructors, but ignores the extra
+    safety checks to allow for explicit truncation. */
+    template <meta::integer... words>
+        requires (
+            !impl::strict_bitwise_constructor<N, words...> &&
+            !impl::loose_bitwise_constructor<Bits::capacity(), words...>
+        )
+    [[nodiscard]] explicit constexpr Int(const words&... vals) noexcept :
+        bits(vals...)
+    {}
 
     /* Construct an integer from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -5540,7 +6182,7 @@ struct Int : impl::Int_tag {
 template <meta::integer... Ts>
 Int(Ts...) -> Int<(meta::integer_width<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
-Int(T) -> Int<T::n>;
+Int(T) -> Int<T::container::size()>;
 
 
 /* ADL `swap()` method for `bertrand::Int<N>` instances. */
@@ -5555,8 +6197,8 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 
 namespace std {
 
-    /* Specializing `std::formatter` allows bitsets to be formatted using `std::format`,
-    `repr()`, `print`, and other formatting functions. */
+    /* Specializing `std::formatter` allows bitsets to be formatted using
+    `std::format()`, `repr()`, `print()`, and other formatting functions. */
     template <bertrand::meta::Bits T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
@@ -5595,8 +6237,8 @@ namespace std {
     };
 
     /* Specializing `std::formatter` allows unsigned integers to be formatted using
-    `std::format`, `repr()`, `print`, and other formatting functions.  This reuses the
-    same logic as `Bits<N>`. */
+    `std::format()`, `repr()`, `print()`, and other formatting functions.  This reuses
+    the same logic as `Bits<N>`. */
     template <bertrand::meta::UInt T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
@@ -5614,7 +6256,7 @@ namespace std {
     };
 
     /* Specializing `std::formatter` allows signed integers to be formatted using
-    `std::format`, `repr()`, `print`, and other formatting functions. */
+    `std::format()`, `repr()`, `print()`, and other formatting functions. */
     template <bertrand::meta::Int T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
@@ -5641,6 +6283,24 @@ namespace std {
             out it = ctx.out();
             it = std::copy(str.begin(), str.end(), it);
             return it;
+        }
+    };
+
+    /* Specializing `std::formatter` allows bitset slices to be formatted using
+    `std::format()`, `repr()`, `print()`, and other formatting functions. */
+    template <bertrand::meta::inherits<bertrand::impl::Bits_slice_tag> T>
+    struct formatter<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        formatter<bertrand::Bits<bertrand::meta::unqualify<T>::container::size()>> config;
+        constexpr auto parse(format_parse_context& ctx) {
+            return config.parse(ctx);
+        }
+        template <typename out, typename char_type>
+        constexpr auto format(
+            const_reference v,
+            basic_format_context<out, char_type>& ctx
+        ) const {
+            return config.format(bertrand::Bits{v}, ctx);
         }
     };
 
@@ -5790,7 +6450,7 @@ namespace std {
         }
     };
 
-    /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
+    /* Specializing `std::hash` allows integers to be used as keys in hash tables. */
     template <bertrand::meta::UInt T>
     struct hash<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
@@ -5799,12 +6459,24 @@ namespace std {
         }
     };
 
-    /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
+    /* Specializing `std::hash` allows integers to be used as keys in hash tables. */
     template <bertrand::meta::Int T>
     struct hash<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
         [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
             return hash<bertrand::Bits<bertrand::meta::integer_width<T>>>{}(x.bits);
+        }
+    };
+
+    /* Specializing `std::hash` allows bitset slices to be used as keys to hash
+    tables. */
+    template <bertrand::meta::inherits<bertrand::impl::Bits_slice_tag> T>
+    struct hash<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
+            return hash<
+                bertrand::Bits<bertrand::meta::unqualify<T>::container::size()>
+            >{}(bertrand::Bits{x});
         }
     };
 
@@ -6054,7 +6726,30 @@ namespace bertrand {
                 std::nullopt,
                 3
             );
-            
+            static_assert(alt6 == Bits{"001001001001001001001001001001001001001001001001001001001001001001001001"});
+
+            static constexpr auto alt7 = [] {
+                Bits x {"0100"};
+                x[slice{0, 2}] = 3;
+                return x;
+            }();
+            static_assert(alt7 == Bits{"0111"});
+
+            static constexpr auto alt8 = [] {
+                Bits x {"0100"};
+                x[slice{0, 2}] = std::vector<bool>{true, true};
+                return x;
+            }();
+            static_assert(alt8 == Bits{"0111"});
+
+            static constexpr auto alt9 = [] {
+                Bits x {"0100"};
+                x[slice{0, 2}] = {true, true};
+                return x;
+            }();
+            static_assert(alt9 == Bits{"0111"});
+
+            static_assert(alt9[slice{0, 2}] < 4);
         }
     }
 
