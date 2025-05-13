@@ -1242,18 +1242,6 @@ namespace impl {
 }
 
 
-template <meta::integer... Ts>
-Bits(Ts...) -> Bits<(meta::integer_width<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-Bits(T) -> Bits<T::container::size()>;
-template <size_t N>
-Bits(const char(&)[N]) -> Bits<N - 1>;
-template <size_t N>
-Bits(const char(&)[N], char) -> Bits<N - 1>;
-template <size_t N>
-Bits(const char(&)[N], char, char) -> Bits<N - 1>;
-
-
 template <size_t N>
 struct Bits : impl::Bits_tag {
     using word = impl::word<N>::type;
@@ -2184,32 +2172,45 @@ public:
         friend Bits;
         using base = impl::slice<iterator>;
 
+        [[no_unique_address]] union storage {
+            [[no_unique_address]] std::nullopt_t borrow;
+            [[no_unique_address]] Bits own;
+            constexpr storage() noexcept : borrow(std::nullopt) {}
+            constexpr storage(Bits&& val) noexcept : own(std::move(val)) {}
+            constexpr ~storage() noexcept {
+                /// NOTE: since `Bits` are trivially-destructible, we don't actually
+                /// need to store a discriminator or provide any destructor logic.
+            }
+        } store;
         Bits& bits;
 
         constexpr slice(Bits& bits, bertrand::slice::normalized indices)
             noexcept(noexcept(base(bits, indices)))
         :
             base(bits, indices),
+            store(),
             bits(bits)
         {}
 
+        constexpr slice(
+            Bits&& bits,
+            bertrand::slice::normalized indices
+        ) noexcept(noexcept(base(bits, indices))) :
+            base(bits, indices),
+            store(std::move(bits)),
+            bits(store.own)
+        {}
+
     public:
-        using container = Bits;  // TODO: rename to `self`?
+        using self = Bits;
         using base::operator=;
 
-        /// TODO: I could take this opportunity to turn this into an owning range
-        /// storing a union of a mutable reference to the underlying bitset or an
-        /// owning copy of the bitset.  Then, the operations would be visitors.
-        /// possibly, the same effect can be achieved with less code size if I store
-        /// a raw union directly, and interact with it through a mutable reference.
-        /// The union would simply not be initialized in the non-owning case.
-
         /// TODO: indexing into a slice should be possible.  Maybe also at() returning
-        /// a bitset iterator to that index.  Possibly, one_hot could be used to
-        /// decompose the slice into one-hot component masks, which are relative to
-        /// the parent bitset.
+        /// a slice iterator that passes through to the underlying iterator, with a
+        /// proper length based on the number of remaining slice elements.
 
-        /// TODO: also, one-hot decomposition of slices
+        /// TODO: one_hot could be used to decompose the slice into one-hot component
+        /// masks, which are relative to the parent bitset.
 
         /* Overwrite the slice contents with a numeric value in bitwise
         representation. */
@@ -2665,6 +2666,16 @@ public:
         friend Bits;
         using base = impl::slice<const_iterator>;
 
+        [[no_unique_address]] union storage {
+            [[no_unique_address]] std::nullopt_t borrow;
+            [[no_unique_address]] Bits own;
+            constexpr storage() noexcept : borrow(std::nullopt) {}
+            constexpr storage(Bits&& val) noexcept : own(std::move(val)) {}
+            constexpr ~storage() noexcept {
+                /// NOTE: since `Bits` are trivially-destructible, we don't actually
+                /// need to store a discriminator or provide any destructor logic.
+            }
+        } store;
         const Bits& bits;
 
         constexpr const_slice(
@@ -2672,11 +2683,21 @@ public:
             bertrand::slice::normalized indices
         ) noexcept(noexcept(base(bits, indices))) :
             base(bits, indices),
+            store(),
             bits(bits)
         {}
 
+        constexpr const_slice(
+            Bits&& bits,
+            bertrand::slice::normalized indices
+        ) noexcept(noexcept(base(bits, indices))) :
+            base(bits, indices),
+            store(std::move(bits)),
+            bits(store.own)
+        {}
+
     public:
-        using container = const Bits;
+        using self = const Bits;
 
         /* Return a reference to the underlying bitset. */
         [[nodiscard]] constexpr const Bits& data() const noexcept { return bits; }
@@ -3574,15 +3595,25 @@ public:
     existing contents, assuming the underlying iterator is an output iterator.  If the
     start and stop indices do not denote a valid range according to the step size, then
     the resulting view will be empty. */
-    [[nodiscard]] constexpr slice operator[](bertrand::slice s)
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) &
         noexcept(noexcept(slice{*this, s.normalize(ssize())}))
     {
         return {*this, s.normalize(ssize())};
     }
-    [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const
+    [[nodiscard]] constexpr slice operator[](bertrand::slice s) &&
+        noexcept(noexcept(slice{std::move(*this), s.normalize(ssize())}))
+    {
+        return {std::move(*this), s.normalize(ssize())};
+    }
+    [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const &
         noexcept(noexcept(const_slice{*this, s.normalize(ssize())}))
     {
         return {*this, s.normalize(ssize())};
+    }
+    [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const &&
+        noexcept(noexcept(const_slice{std::move(*this), s.normalize(ssize())}))
+    {
+        return {std::move(*this), s.normalize(ssize())};
     }
 
     /* Check if any of the bits are set. */
@@ -4640,6 +4671,18 @@ public:
 };
 
 
+template <meta::integer... Ts>
+Bits(Ts...) -> Bits<(meta::integer_width<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Bits(T) -> Bits<T::self::size()>;
+template <size_t N>
+Bits(const char(&)[N]) -> Bits<N - 1>;
+template <size_t N>
+Bits(const char(&)[N], char) -> Bits<N - 1>;
+template <size_t N>
+Bits(const char(&)[N], char, char) -> Bits<N - 1>;
+
+
 /* ADL `swap()` method for `bertrand::Bits` instances.  */
 template <size_t N>
 constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept {
@@ -5278,7 +5321,7 @@ struct UInt : impl::UInt_tag {
 template <meta::integer... Ts>
 UInt(Ts...) -> UInt<(meta::integer_width<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
-UInt(T) -> UInt<T::container::size()>;
+UInt(T) -> UInt<T::self::size()>;
 
 
 /* ADL `swap()` method for `bertrand::UInt` instances. */
@@ -6182,7 +6225,7 @@ struct Int : impl::Int_tag {
 template <meta::integer... Ts>
 Int(Ts...) -> Int<(meta::integer_width<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
-Int(T) -> Int<T::container::size()>;
+Int(T) -> Int<T::self::size()>;
 
 
 /* ADL `swap()` method for `bertrand::Int<N>` instances. */
@@ -6291,7 +6334,7 @@ namespace std {
     template <bertrand::meta::inherits<bertrand::impl::Bits_slice_tag> T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        formatter<bertrand::Bits<bertrand::meta::unqualify<T>::container::size()>> config;
+        formatter<bertrand::Bits<bertrand::meta::unqualify<T>::self::size()>> config;
         constexpr auto parse(format_parse_context& ctx) {
             return config.parse(ctx);
         }
@@ -6475,7 +6518,7 @@ namespace std {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
         [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
             return hash<
-                bertrand::Bits<bertrand::meta::unqualify<T>::container::size()>
+                bertrand::Bits<bertrand::meta::unqualify<T>::self::size()>
             >{}(bertrand::Bits{x});
         }
     };

@@ -3554,4 +3554,15 @@ template <
 }
 
 
+namespace std {
+
+    /* Specializing `std::ranges::enable_borrowed_range` ensures that iterators over
+    slices are not tied to the lifetime of the slice itself, but rather to that of the
+    underlying container. */
+    template <bertrand::meta::slice T>
+    constexpr bool ranges::enable_borrowed_range<T> = true;
+
+}
+
+
 #endif
