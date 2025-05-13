@@ -2148,6 +2148,26 @@ namespace meta {
 
     }
 
+    template <typename T>
+    concept has_at = requires (T t, ssize_t i) {
+        { t.at(i) } -> meta::iterator;
+    };
+
+    template <has_at T>
+    using at_type = decltype(::std::declval<T>().at(::std::declval<ssize_t>()));
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_at =
+            meta::has_at<T> &&
+            noexcept(std::declval<T>().at(std::declval<ssize_t>()));
+
+        template <has_at T>
+        using at_type = meta::at_type<T>;
+
+    }
+
     ////////////////////////
     ////    INDEXING    ////
     ////////////////////////

@@ -112,6 +112,26 @@ public:
 
 namespace impl {
     struct slice_tag {};
+}
+
+
+namespace meta {
+
+    template <typename T>
+    concept slice = meta::inherits<T, impl::slice_tag>;
+
+    template <typename T>
+    concept sliceable = requires(T t, bertrand::slice s) {
+        { t[s] } -> meta::slice;
+    };
+
+    template <sliceable T>
+    using slice_type = decltype(::std::declval<T>()[::std::declval<bertrand::slice>()]);
+
+}
+
+
+namespace impl {
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
@@ -175,33 +195,6 @@ namespace impl {
         T m_begin;
         normalized m_indices;
 
-        template <typename C> requires (!meta::random_access_iterator<T>)
-        static constexpr T get_begin(C& container, const normalized& indices)
-            noexcept(
-                meta::nothrow::has_begin<C> &&
-                meta::nothrow::has_end<C> &&
-                meta::nothrow::has_preincrement<T> &&
-                meta::nothrow::has_predecrement<T>
-            )
-        {
-            if (indices.start < (container.size() + 1 / 2)) {
-                T it = container.begin();
-                for (ssize_t i = 0; i < indices.start; ++i) ++it;
-                return it;
-            } else {
-                T it = container.end();
-                for (ssize_t i = container.size(); i > indices.start; --i) --it;
-                return it;
-            }
-        }
-
-        template <typename C> requires (meta::random_access_iterator<T>)
-        static constexpr T get_begin(C& container, const normalized& indices)
-            noexcept(noexcept(container.begin() + indices.start))
-        {
-            return container.begin() + indices.start;
-        }
-
     public:
         using value_type = std::iterator_traits<T>::value_type;
         using reference = std::iterator_traits<T>::reference;
@@ -210,12 +203,11 @@ namespace impl {
         using const_pointer = meta::as_pointer<meta::as_const<meta::remove_pointer<pointer>>>;
 
         struct iterator {
-            using iterator_category =
-                std::conditional_t<
-                    meta::output_iterator<T, slice::value_type>,
-                    std::output_iterator_tag,
-                    std::input_iterator_tag
-                >;
+            using iterator_category = std::conditional_t<
+                meta::output_iterator<T, slice::value_type>,
+                std::output_iterator_tag,
+                std::input_iterator_tag
+            >;
             using difference_type = std::iterator_traits<T>::difference_type;
             using value_type = slice::value_type;
             using reference = slice::reference;
@@ -224,12 +216,12 @@ namespace impl {
             using const_pointer = slice::const_pointer;
 
         private:
-            friend slice;
-
             T iter;
             ssize_t step;
             ssize_t length;
 
+        public:
+            constexpr iterator() = default;
             constexpr iterator(const T& iter, ssize_t step, ssize_t length)
                 noexcept(meta::nothrow::copyable<T>)
                 requires(meta::copyable<T>)
@@ -247,9 +239,6 @@ namespace impl {
                 step(step),
                 length(length)
             {}
-
-        public:
-            constexpr iterator() = default;
 
             [[nodiscard]] constexpr decltype(auto) operator*()
                 noexcept(meta::nothrow::dereferenceable<T>)
@@ -344,16 +333,11 @@ namespace impl {
 
         using const_iterator = iterator;
 
-        template <meta::iterable C>
-            requires (
-                meta::has_size<C> &&
-                meta::is<meta::begin_type<C>, T> &&
-                meta::is<meta::end_type<C>, T>
-            )
+        template <meta::has_at C> requires (meta::is<meta::at_type<C>, T>)
         [[nodiscard]] constexpr slice(C& container, const normalized& indices)
-            noexcept(noexcept(get_begin(container, indices)))
+            noexcept(noexcept(container.at(indices.start)))
         :
-            m_begin(get_begin(container, indices)),
+            m_begin(container.at(indices.start)),
             m_indices(indices)
         {}
 
@@ -2027,17 +2011,6 @@ template <meta::default_constructible F = impl::Less, meta::iterable T>
 
 
 namespace meta {
-
-    template <typename T>
-    concept slice = meta::inherits<T, impl::slice_tag>;
-
-    template <typename T>
-    concept sliceable = requires(T t, bertrand::slice s) {
-        { t[s] } -> meta::slice;
-    };
-
-    template <sliceable T>
-    using slice_type = decltype(::std::declval<T>()[::std::declval<bertrand::slice>()]);
 
     template <typename Less, typename Begin, typename End>
     concept iter_sortable =
