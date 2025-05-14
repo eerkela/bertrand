@@ -41,26 +41,10 @@ public:
     /* Result of the `normalize` method.  Indices of this form can be passed to
     per-container slice implementations to implement the correct traversal logic. */
     struct normalized {
-    private:
-        friend slice;
-
-        constexpr normalized(
-            ssize_t start,
-            ssize_t stop,
-            ssize_t step,
-            ssize_t length
-        ) noexcept :
-            start(start),
-            stop(stop),
-            step(step),
-            length(length)
-        {}
-
-    public:
-        ssize_t start;
-        ssize_t stop;
-        ssize_t step;
-        ssize_t length;
+        ssize_t start = 0;
+        ssize_t stop = 0;
+        ssize_t step = 0;
+        ssize_t length = 0;
     };
 
     /* Normalize the provided indices against a container of a given size, returning a
@@ -333,9 +317,9 @@ namespace impl {
 
         using const_iterator = iterator;
 
-        template <meta::has_at C> requires (meta::is<meta::at_type<C>, T>)
+        template <meta::at_returns<T> C>
         [[nodiscard]] constexpr slice(C& container, const normalized& indices)
-            noexcept(noexcept(container.at(indices.start)))
+            noexcept(meta::nothrow::at_returns<C, T>)
         :
             m_begin(container.at(indices.start)),
             m_indices(indices)
@@ -412,7 +396,7 @@ namespace impl {
         }
 
         template <meta::iterable Range>
-        constexpr slice& operator=(Range&& range) &&
+        constexpr slice& operator=(Range&& range)
             requires (meta::output_iterator<T, meta::yield_type<Range>>)
         {
             constexpr bool has_size = meta::has_size<meta::as_lvalue<Range>>;

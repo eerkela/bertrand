@@ -2156,6 +2156,9 @@ namespace meta {
     template <has_at T>
     using at_type = decltype(::std::declval<T>().at(::std::declval<ssize_t>()));
 
+    template <typename T, typename Ret>
+    concept at_returns = has_at<T> && convertible_to<at_type<T>, Ret>;
+
     namespace nothrow {
 
         template <typename T>
@@ -2165,6 +2168,9 @@ namespace meta {
 
         template <has_at T>
         using at_type = meta::at_type<T>;
+
+        template <typename T, typename Ret>
+        concept at_returns = has_at<T> && convertible_to<at_type<T>, Ret>;
 
     }
 

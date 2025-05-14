@@ -329,42 +329,6 @@ namespace impl {
         return n;
     }
 
-    /* Reverse the order of bytes in a byte. */
-    template <meta::unsigned_integer T> requires (sizeof(T) == 1)
-    constexpr T byte_reverse(T n) noexcept {
-        return n;
-    }
-
-    /* Reverse the order of bytes in a 16-bit integer. */
-    template <meta::unsigned_integer T> requires (sizeof(T) == 2)
-    constexpr T byte_reverse(T n) noexcept {
-        return (n >> 8) | (n << 8);
-    }
-
-    /* Reverse the order of bytes in a 32-bit integer. */
-    template <meta::unsigned_integer T> requires (sizeof(T) == 4)
-    constexpr T byte_reverse(T n) noexcept {
-        return
-            (n >> 24) |
-            ((n & 0x00FF0000) >> 8) |
-            ((n & 0x0000FF00) << 8) |
-            (n << 24);
-    }
-
-    /* Reverse the order of bytes in a 64-bit integer. */
-    template <meta::unsigned_integer T> requires (sizeof(T) == 8)
-    constexpr T byte_reverse(T n) noexcept {
-        return
-            (n >> 56) |
-            ((n & 0x00FF000000000000) >> 40) |
-            ((n & 0x0000FF0000000000) >> 24) |
-            ((n & 0x000000FF00000000) >> 8) |
-            ((n & 0x00000000FF000000) << 8) |
-            ((n & 0x0000000000FF0000) << 24) |
-            ((n & 0x000000000000FF00) << 40) |
-            (n << 56);
-    }
-
     namespace divide {
 
         template <typename L, typename R>

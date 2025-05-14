@@ -119,6 +119,7 @@ struct Int;
 namespace impl {
     struct Bits_tag {};
     struct Bits_slice_tag {};
+    struct Bits_one_hot_tag {};
     struct UInt_tag {};
     struct Int_tag {};
 }
@@ -1671,13 +1672,13 @@ private:
     }
 
     constexpr bool slice_all(const Bits& mask) const noexcept {
-        return *this & mask == mask;
+        return (*this & mask) == mask;
     }
 
     constexpr size_type slice_count(const Bits& mask) const noexcept {
         size_type count = 0;
         for (size_type i = 0; i < array_size; ++i) {
-            count += size_type(std::popcount(buffer[i] & mask.buffer[i]));
+            count += size_type(std::popcount(word(buffer[i] & mask.buffer[i])));
         }
         return count;
     }
@@ -1757,26 +1758,45 @@ private:
         }
     }
 
-public:
-
-    /* A range that decomposes a bitmask into its one-hot components from least to
-    most significant. */
-    struct one_hot {
+    struct one_hot : impl::Bits_one_hot_tag {
     private:
-        friend Bits;
-        const Bits* self;
-        index_type start;
-        index_type stop;
+        using normalized = bertrand::slice::normalized;
 
-        constexpr one_hot(
-            const Bits* self,
-            index_type start,
-            index_type stop
-        ) noexcept :
-            self(self), start(start), stop(stop)
-        {}
+        [[no_unique_address]] union storage {
+            [[no_unique_address]] std::nullopt_t borrow;
+            [[no_unique_address]] Bits own;
+            constexpr storage() noexcept : borrow(std::nullopt) {}
+            constexpr storage(Bits&& val) noexcept : own(std::move(val)) {}
+            constexpr ~storage() noexcept {
+                /// NOTE: since `Bits` are trivially-destructible, we don't actually
+                /// need to store a discriminator or provide any destructor logic.
+            }
+        } store;
+        const Bits& bits;
+        normalized m_indices;
 
     public:
+        constexpr one_hot(const Bits& bits, const normalized& indices)
+            noexcept
+        :
+            store(),
+            bits(bits),
+            m_indices(indices)
+        {}
+
+        constexpr one_hot(Bits&& bits, const normalized& indices)
+            noexcept
+        :
+            store(std::move(bits)),
+            bits(store.own),
+            m_indices(indices)
+        {}
+
+        constexpr one_hot(const one_hot&) = delete;
+        constexpr one_hot(one_hot&&) = delete;
+        constexpr one_hot& operator=(const one_hot&) = delete;
+        constexpr one_hot& operator=(one_hot&&) = delete;
+
         struct iterator {
             using iterator_category = std::input_iterator_tag;
             using difference_type = index_type;
@@ -1788,50 +1808,36 @@ public:
 
         private:
             friend one_hot;
-            const Bits* self;
-            difference_type index;
-            difference_type stop;
+            const Bits* bits = nullptr;
+            normalized indices;
             value_type curr;
 
-            /// TODO: I should be able to optimize the bitmask here so that it persists
-            /// across iterations.  Also, this entire class should be usable with
-            /// slices, such that slices decompose into their one-hot components.
-
-            static constexpr difference_type next(
-                const Bits* self,
-                difference_type start,
-                difference_type stop
-            ) noexcept {
-                Bits temp;
-                temp.fill(1);
-                temp <<= N - size_type(stop);
-                temp >>= N - size_type(stop - start);
-                temp <<= size_type(start);  
-                for (size_type i = 0; i < array_size; ++i) {
-                    size_type j = size_type(std::countr_zero(
-                        word(self->buffer[i] & temp.buffer[i])
-                    ));
-                    if (j < word_size) {
-                        return difference_type(word_size * i + j);
-                    }
-                }
-                return stop;
-            }
-
-            constexpr iterator(
-                const Bits* self,
-                difference_type start,
-                difference_type stop
-            ) noexcept :
-                self(self),
-                index(start < stop ? next(self, start, stop) : stop),
-                stop(stop),
+            constexpr iterator(const Bits& bits, const normalized& indices) noexcept :
+                bits(&bits),
+                indices(indices),
                 curr(word(1))
             {
-                curr <<= size_type(index);
+                curr <<= size_type(indices.start);
+                if (indices.step > 0) {
+                    size_type shift = size_type(indices.step);
+                    while (this->indices.length) {
+                        if (bits & curr) break;
+                        curr <<= shift;
+                        --this->indices.length;
+                    }
+                } else {
+                    size_type shift = size_type(-indices.step);
+                    while (this->indices.length) {
+                        if (bits & curr) break;
+                        curr >>= shift;
+                        --this->indices.length;
+                    }
+                }
             }
 
         public:
+            constexpr iterator() noexcept = default;
+
             [[nodiscard]] constexpr reference operator*() const noexcept {
                 return curr;
             }
@@ -1841,12 +1847,21 @@ public:
             }
 
             constexpr iterator& operator++() noexcept {
-                if (index >= stop) {
-                    return *this;
+                if (indices.step > 0) {
+                    size_type shift = size_type(indices.step);
+                    while (indices.length) {
+                        curr <<= shift;
+                        --indices.length;
+                        if (*bits & curr) break;
+                    }
+                } else {
+                    size_type shift = size_type(-indices.step);
+                    while (indices.length) {
+                        curr >>= shift;
+                        --indices.length;
+                        if (*bits & curr) break;
+                    }
                 }
-                difference_type new_index = next(self, index + 1, stop);
-                curr <<= size_type(new_index - index);
-                index = new_index;
                 return *this;
             }
 
@@ -1860,40 +1875,54 @@ public:
                 const iterator& self,
                 impl::sentinel
             ) noexcept {
-                return self.index >= self.stop;
+                return self.indices.length == 0;
             }
 
             [[nodiscard]] friend constexpr bool operator==(
                 impl::sentinel,
                 const iterator& self
             ) noexcept {
-                return self.index >= self.stop;
+                return self.indices.length == 0;
             }
 
             [[nodiscard]] friend constexpr bool operator!=(
                 const iterator& self,
                 impl::sentinel
             ) noexcept {
-                return self.index < self.stop;
+                return self.indices.length > 0;
             }
 
             [[nodiscard]] friend constexpr bool operator!=(
                 impl::sentinel,
                 const iterator& self
             ) noexcept {
-                return self.index < self.stop;
+                return self.indices.length > 0;
             }
         };
 
-        [[nodiscard]] constexpr iterator begin() const noexcept {
-            return {self, start, stop};
+        /* Return a reference to the underlying bitset. */
+        [[nodiscard]] constexpr const Bits& data() const noexcept { return bits; }
+
+        /* Produce a bitmask with a one in all the indices that are contained within
+        this slice, and zero everywhere else. */
+        [[nodiscard]] constexpr Bits mask() const noexcept {
+            return Bits::_mask(m_indices);
         }
-        [[nodiscard]] constexpr iterator cbegin() const noexcept {
-            return {self, start, stop};
-        }
+
+        [[nodiscard]] constexpr const normalized& indices() const noexcept { return m_indices; }
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
+        [[nodiscard]] constexpr iterator begin() const noexcept { return {bits, m_indices}; }
+        [[nodiscard]] constexpr iterator cbegin() const noexcept { return {bits, m_indices}; }
         [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
         [[nodiscard]] constexpr impl::sentinel cend() const noexcept { return {}; }
     };
+
+public:
 
     /* An iterator over the individual bits within the set, from least to most
     significant. */
@@ -1936,7 +1965,7 @@ public:
         [[nodiscard]] constexpr value_type operator[](difference_type n) const
             noexcept(!DEBUG)
         {
-            size_t idx = static_cast<size_t>(index + n);
+            size_type idx = static_cast<size_type>(index + n);
             if constexpr (DEBUG) {
                 if (idx >= N) {
                     throw IndexError(std::to_string(index + n));
@@ -2066,13 +2095,13 @@ public:
         }
 
         [[nodiscard]] constexpr value_type operator[](difference_type n) const noexcept {
-            size_t idx = static_cast<size_t>(index + n);
+            size_type idx = static_cast<size_type>(index + n);
             if constexpr (DEBUG) {
                 if (idx >= N) {
                     throw IndexError(std::to_string(index + n));
                 }
             }
-            return self->get(static_cast<size_type>(index));
+            return self->buffer[idx / word_size] & word(idx % word_size);
         }
 
         constexpr const_iterator& operator++() noexcept {
@@ -2171,6 +2200,7 @@ public:
     private:
         friend Bits;
         using base = impl::slice<iterator>;
+        using normalized = bertrand::slice::normalized;
 
         [[no_unique_address]] union storage {
             [[no_unique_address]] std::nullopt_t borrow;
@@ -2184,7 +2214,7 @@ public:
         } store;
         Bits& bits;
 
-        constexpr slice(Bits& bits, bertrand::slice::normalized indices)
+        constexpr slice(Bits& bits, const normalized& indices)
             noexcept(noexcept(base(bits, indices)))
         :
             base(bits, indices),
@@ -2192,10 +2222,9 @@ public:
             bits(bits)
         {}
 
-        constexpr slice(
-            Bits&& bits,
-            bertrand::slice::normalized indices
-        ) noexcept(noexcept(base(bits, indices))) :
+        constexpr slice(Bits&& bits, const normalized& indices)
+            noexcept(noexcept(base(bits, indices)))
+        :
             base(bits, indices),
             store(std::move(bits)),
             bits(store.own)
@@ -2205,20 +2234,22 @@ public:
         using self = Bits;
         using base::operator=;
 
-        /// TODO: indexing into a slice should be possible.  Maybe also at() returning
-        /// a slice iterator that passes through to the underlying iterator, with a
-        /// proper length based on the number of remaining slice elements.
-
-        /// TODO: one_hot could be used to decompose the slice into one-hot component
-        /// masks, which are relative to the parent bitset.
-
         /* Overwrite the slice contents with a numeric value in bitwise
         representation. */
-        constexpr slice& operator=(const Bits& value) && noexcept {
+        constexpr slice& operator=(const Bits& value) noexcept {
             Bits temp = mask();
             bits &= ~temp;  // clear the bits in the original
             bits |= value.scatter(temp);  // set the bits in the original
             return *this;
+        }
+
+        /* Return a range over the one-hot masks that make up the slice.  Iterating
+        over the range yields bitsets of the same size as the underlying bitset with
+        only one active bit and zero everywhere else.  Summing the masks yields an
+        exact copy of the input slice.  The range may be empty if no bits are set
+        within the slice. */
+        [[nodiscard]] constexpr one_hot components() const noexcept {
+            return {bits, base::indices()};
         }
 
         /* Return a reference to the underlying bitset. */
@@ -2300,22 +2331,21 @@ public:
             return bits;
         }
 
-        /// TODO: reverse_bytes(), rotate(), and negate() may not necessarily make
-        /// sense when applied to a slice, since they depend on the order of the
-        /// bits.
+        /// TODO: rotate().  The only problem is that the bits would have to be rotated
+        /// only in the fixed interval, meaning extras shouldn't wrap around to the
+        /// other side of the full bitset, but only just the actual slice indices.
+        /// -> It's possible that this can be accounted for by shifting by n times the
+        /// step size, and then calculating the corrective shift amount by the
+        /// start index, but this will require some thought.
 
-        // /* Reverse the order of bytes within the slice.  Note that this does not
-        // strictly require the slice to be contiguous; each consecutive sequence of 8
-        // bits is considered a byte for the purposes of this operation, regardless of
-        // the slice's step size. */
-        // constexpr Bits& reverse_bytes() noexcept {
-        //     Bits temp = mask();
-        //     Bits reversed = bits & temp;
-        //     reversed.reverse_bytes();
-        //     bits &= ~temp;  // clear the bits in the original
-        //     bits |= reversed;  // set the reversed bits back into the original
-        //     return bits;
-        // }
+        /* Convert the contents of the slice to their two's complement representation.
+        This equates to flipping the sign of a signed integer. */
+        constexpr Bits& negate() noexcept {
+            Bits temp {*this};
+            temp.negate();
+            *this = temp;
+            return bits;
+        }
 
         /* See `Bits<N>::add()`. */
         [[nodiscard]] constexpr Bits add(
@@ -2665,6 +2695,7 @@ public:
     private:
         friend Bits;
         using base = impl::slice<const_iterator>;
+        using normalized = bertrand::slice::normalized;
 
         [[no_unique_address]] union storage {
             [[no_unique_address]] std::nullopt_t borrow;
@@ -2678,19 +2709,20 @@ public:
         } store;
         const Bits& bits;
 
-        constexpr const_slice(
-            const Bits& bits,
-            bertrand::slice::normalized indices
-        ) noexcept(noexcept(base(bits, indices))) :
+        constexpr const_slice(const Bits& bits, const normalized& indices)
+            noexcept(noexcept(base(bits, indices)))
+        :
             base(bits, indices),
             store(),
             bits(bits)
         {}
 
-        constexpr const_slice(
-            Bits&& bits,
-            bertrand::slice::normalized indices
-        ) noexcept(noexcept(base(bits, indices))) :
+        /// TODO: this problem is a bit tricky.  I need a way to convert mutable
+        /// iterators into const iterators, but not the other way around.
+
+        constexpr const_slice(Bits&& bits, const normalized& indices)
+            noexcept(noexcept(base(bits, indices)))
+        :
             base(bits, indices),
             store(std::move(bits)),
             bits(store.own)
@@ -2699,8 +2731,19 @@ public:
     public:
         using self = const Bits;
 
+        /* Return a range over the one-hot masks that make up the slice.  Iterating
+        over the range yields bitsets of the same size as the underlying bitset with
+        only one active bit and zero everywhere else.  Summing the masks yields an
+        exact copy of the input slice.  The range may be empty if no bits are set
+        within the slice. */
+        [[nodiscard]] constexpr one_hot components() const noexcept {
+            return {bits, base::indices()};
+        }
+
         /* Return a reference to the underlying bitset. */
-        [[nodiscard]] constexpr const Bits& data() const noexcept { return bits; }
+        [[nodiscard]] constexpr const Bits& data() const noexcept {
+            return bits;
+        }
 
         /* Produce a bitmask with a one in all the indices that are contained within
         this slice, and zero everywhere else. */
@@ -3074,29 +3117,40 @@ public:
     [[nodiscard]] explicit constexpr Bits(std::from_range_t, const T& range) noexcept :
         buffer{}
     {
-        if constexpr (meta::inherits<T, impl::Bits_slice_tag>) {
+        if constexpr (meta::inherits<T, impl::Bits_one_hot_tag>)  {
             *this |= range.data() & range.mask();
-        } else {
-            size_type i = 0;
-            auto it = range.begin();
-            auto end = range.end();
-            while (it != end && i < size()) {
-                if constexpr (meta::boolean<meta::yield_type<T>>) {
-                    buffer[i / word_size] |=
-                        (word(static_cast<bool>(*it)) << (i % word_size));
-                    ++i;
-                } else if constexpr (meta::integer<meta::yield_type<T>>) {
-                    Bits temp = *it;
-                    temp <<= i;
-                    *this |= temp;
-                    i += meta::integer_width<meta::yield_type<T>>;
-                } else {
-                    buffer[i / word_size] |=
-                        (word(static_cast<bool>(*it)) << (i % word_size));
-                    ++i;
-                }
-                ++it;
+            return;
+        } else if constexpr (meta::inherits<T, impl::Bits_slice_tag>) {
+            if (range.step() == 1) {
+                *this |= range.data() & range.mask();
+                *this >>= size_type(range.start());
+                return;
+            } else if (range.step() == -1) {
+                *this |= range.data() & range.mask();
+                size_type idx = size_type(range.start() + range.ssize() * range.step());
+                *this >>= size_type(idx);
+                return;
             }
+        }
+        size_type i = 0;
+        auto it = range.begin();
+        auto end = range.end();
+        while (it != end && i < size()) {
+            if constexpr (meta::boolean<meta::yield_type<T>>) {
+                buffer[i / word_size] |=
+                    (word(static_cast<bool>(*it)) << (i % word_size));
+                ++i;
+            } else if constexpr (meta::integer<meta::yield_type<T>>) {
+                Bits temp = *it;
+                temp <<= i;
+                *this |= temp;
+                i += meta::integer_width<meta::yield_type<T>>;
+            } else {
+                buffer[i / word_size] |=
+                    (word(static_cast<bool>(*it)) << (i % word_size));
+                ++i;
+            }
+            ++it;
         }
     }
 
@@ -3508,34 +3562,37 @@ public:
     [[nodiscard]] constexpr iterator end() noexcept { return {this, ssize()}; }
     [[nodiscard]] constexpr const_iterator end() const noexcept { return {this, ssize()}; }
     [[nodiscard]] constexpr const_iterator cend() const noexcept { return {this, ssize()}; }
-    [[nodiscard]] constexpr reverse_iterator rbegin() noexcept { return {end()}; }
-    [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept { return {end()}; }
-    [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept { return {cend()}; }
-    [[nodiscard]] constexpr reverse_iterator rend() noexcept { return {begin()}; }
-    [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept { return {begin()}; }
-    [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept { return {cbegin()}; }
-
-    /// TODO: components() for slices?  Also, I can skip the index normalization here,
-    /// since the slice version will do that for me much more intuitively.
+    [[nodiscard]] constexpr reverse_iterator rbegin() noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept {
+        return std::make_reverse_iterator(cend());
+    }
+    [[nodiscard]] constexpr reverse_iterator rend() noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept {
+        return std::make_reverse_iterator(cbegin());
+    }
 
     /* Return a range over the one-hot masks that make up the bitset within a given
     interval.  Iterating over the range yields bitsets of the same size as the input
     with only one active bit and zero everywhere else.  Summing the masks yields an
     exact copy of the input bitset within the interval.  The range may be empty if no
     bits are set within the interval. */
-    [[nodiscard]] constexpr one_hot components(
-        index_type start = 0,
-        index_type stop = ssize()
-    ) const noexcept {
-        index_type norm_start = start + ssize() * (start < 0);
-        if (norm_start < 0) {
-            norm_start = 0;
-        }
-        index_type norm_stop = stop + ssize() * (stop < 0);
-        if (norm_stop > ssize()) {
-            norm_stop = ssize();
-        }
-        return {this, norm_start, norm_stop};
+    [[nodiscard]] constexpr one_hot components() const noexcept {
+        return {*this, bertrand::slice::normalized{
+            .start = 0,
+            .stop = ssize(),
+            .step = 1,
+            .length = ssize()
+        }};
     }
 
     /* Return an iterator to a specific bit in the set.  Applies Python-style
@@ -3748,10 +3805,6 @@ public:
         return *this;
     }
 
-    /// TODO: convert interval-based reverse_bytes(), rotate(), negate() to use slices.
-    /// Maybe even the other math operators, too, as abstractions over the masked
-    /// bitset.
-
     /* Reverse the order of all bits in the set. */
     constexpr Bits& reverse() noexcept {
         // swap the words in the array, and then reverse the bits within each word
@@ -3779,14 +3832,14 @@ public:
     constexpr Bits& reverse_bytes() noexcept {
         // reverse bytes and swap the words in the array (middle word unchanged)
         for (size_type i = 0; i < array_size / 2; ++i) {
-            word temp = impl::byte_reverse(buffer[i]);
-            buffer[i] = impl::byte_reverse(buffer[array_size - 1 - i]);
+            word temp = std::byteswap(buffer[i]);
+            buffer[i] = std::byteswap(buffer[array_size - 1 - i]);
             buffer[array_size - 1 - i] = temp;
         }
 
         // reverse the middle word in-place
         if constexpr (array_size % 2) {
-            buffer[array_size / 2] = impl::byte_reverse(buffer[array_size / 2]);
+            buffer[array_size / 2] = std::byteswap(buffer[array_size / 2]);
         }
 
         // if there are any upper bits that should be masked off, shift down to align
@@ -4322,6 +4375,8 @@ public:
         }
         return *this;
     }
+
+    /// TODO: shift amount should be another bitset of equal size, for completeness?
 
     /* Apply a bitwise left shift to the contents of the bitset. */
     [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept
@@ -5610,19 +5665,19 @@ struct Int : impl::Int_tag {
     /* A shorthand for `to_string<"0", "1">()`, which yields a string in the canonical
     binary representation. */
     [[nodiscard]] constexpr std::string to_binary() const noexcept {
-        return to_string<"0", "1">();
+        return to_string<"-", "0", "1">();
     }
 
     /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7">()`, which
     yields a string in the canonical octal representation. */
     [[nodiscard]] constexpr std::string to_octal() const noexcept {
-        return to_string<"0", "1", "2", "3", "4", "5", "6", "7">();
+        return to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7">();
     }
 
     /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">()`,
     which yields a string in the canonical decimal representation. */
     [[nodiscard]] constexpr std::string to_decimal() const noexcept {
-        return to_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">();
+        return to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9">();
     }
 
     /* A shorthand for
@@ -5630,7 +5685,7 @@ struct Int : impl::Int_tag {
     which yields a string in the canonical hexadecimal representation. */
     [[nodiscard]] constexpr std::string to_hex() const noexcept {
         return to_string<
-            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+            "-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
             "A", "B", "C", "D", "E", "F"
         >();
     }
@@ -5792,7 +5847,7 @@ struct Int : impl::Int_tag {
                 constexpr big sign_mask = big(big(1) << ((N % Bits::word_size) - 1));
                 constexpr big mask = big(Bits::end_mask);
                 constexpr big inv_mask = ~mask;
-                out.buffer[0] = word(result & mask);
+                out.bits.data()[0] = word(result & mask);
                 bool sign = result & sign_mask;
                 overflow = (result & inv_mask) != (inv_mask * sign);
 
@@ -5800,14 +5855,18 @@ struct Int : impl::Int_tag {
                 constexpr big sign_mask = big(big(1) << (Bits::word_size - 1));
                 constexpr big mask = big(std::numeric_limits<word>::max());
                 constexpr big inv_mask = ~mask;
-                out.buffer[0] = word(result);
+                out.bits.data()[0] = word(result);
                 bool sign = result & sign_mask;
                 overflow = (result & inv_mask) != (inv_mask * sign);
             }
 
         } else {
             using size_type = Bits::size_type;
-            std::copy_n(result.begin(), Bits::array_size, out.buffer.begin());
+            std::copy_n(
+                result.begin(),
+                Bits::array_size,
+                out.bits.data().begin()
+            );
 
             // if the sign bit is set, then all upper bits must also be set to avoid
             // overflow.  Otherwise, all upper bits must be zero
@@ -5815,7 +5874,7 @@ struct Int : impl::Int_tag {
                 constexpr word sign_mask = word(word(1) << ((N % Bits::word_size) - 1));
                 constexpr word mask = word(Bits::end_mask);
                 constexpr word inv_mask = ~mask;
-                out.buffer[Bits::array_size - 1] &= Bits::end_mask;
+                out.bits.data()[Bits::array_size - 1] &= Bits::end_mask;
                 bool sign = result[Bits::array_size - 1] & sign_mask;
                 overflow = (result[Bits::array_size - 1] & inv_mask) != (inv_mask * sign);
                 if (!overflow) {
@@ -6233,6 +6292,63 @@ template <size_t N>
 constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
     lhs.value.swap(rhs.value);
 }
+
+
+template struct Bits<8>;
+template struct Bits<16>;
+template struct Bits<32>;
+template struct Bits<64>;
+template struct Bits<128>;
+
+
+using int8 = Int<8>;
+using int16 = Int<16>;
+using int32 = Int<32>;
+using int64 = Int<64>;
+using int128 = Int<128>;
+template struct Int<8>;
+template struct Int<16>;
+template struct Int<32>;
+template struct Int<64>;
+template struct Int<128>;
+
+
+using uint8 = UInt<8>;
+using uint16 = UInt<16>;
+using uint32 = UInt<32>;
+using uint64 = UInt<64>;
+using uint128 = UInt<128>;
+template struct UInt<8>;
+template struct UInt<16>;
+template struct UInt<32>;
+template struct UInt<64>;
+template struct UInt<128>;
+
+
+/// TODO: I can likely provide a softfloat implementation with a customizable exponent
+/// and mantissa, which could store the result as a float of the nearest size class,
+/// and just mask off the unused bits.  That would be the fastest way to do this, and
+/// would retain identical codegen to the existing float types.
+
+/// TODO: One of the only big problems for masking is making sure I don't clobber
+/// inf/quiet nan/signalling nan/subnormals.
+
+
+#ifdef __STDCPP_BFLOAT16_T__
+    using bfloat16 = std::bfloat16_t;
+#endif
+#ifdef __STDCPP_FLOAT16_T__
+    using float16 = std::float16_t;
+#endif
+#ifdef __STDCPP_FLOAT32_T__
+    using float32 = std::float32_t;
+#endif
+#ifdef __STDCPP_FLOAT64_T__
+    using float64 = std::float64_t;
+#endif
+#ifdef __STDCPP_FLOAT128_T__
+    using float128 = std::float128_t;
+#endif
 
 
 }  // namespace bertrand
