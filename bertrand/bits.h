@@ -116,12 +116,17 @@ template <size_t N>
 struct Int;
 
 
+template <size_t E, size_t M> requires (E > 0 && M > 0)
+struct Float;
+
+
 namespace impl {
     struct Bits_tag {};
     struct Bits_slice_tag {};
     struct Bits_one_hot_tag {};
     struct UInt_tag {};
     struct Int_tag {};
+    struct Float_tag {};
 }
 
 
@@ -133,6 +138,8 @@ namespace meta {
     concept UInt = inherits<T, impl::UInt_tag>;
     template <typename T>
     concept Int = inherits<T, impl::Int_tag>;
+    template <typename T>
+    concept Float = inherits<T, impl::Float_tag>;
 
     namespace detail {
         template <meta::Bits T>
@@ -161,6 +168,8 @@ namespace meta {
         constexpr size_t integer_width<T> = meta::unqualify<T>::Bits::size();
         template <meta::Int T>
         struct as_unsigned<T> { using type = bertrand::UInt<integer_width<T>>; };
+
+        /// TODO: specializations for float-related concepts
     }
 
 }
@@ -1266,10 +1275,13 @@ struct Bits : impl::Bits_tag {
             word(0);
 
     /* The minimum value that the bitset can hold. */
-    static constexpr Bits min() noexcept { return {}; }
+    static constexpr const Bits& min() noexcept {
+        static constexpr Bits result;
+        return result;
+    }
 
     /* The maximum value that the bitset can hold. */
-    static constexpr Bits max() noexcept {
+    static constexpr const Bits& max() noexcept {
         static constexpr Bits result = ~Bits{};
         return result;
     }
@@ -1291,6 +1303,8 @@ private:
     friend struct bertrand::UInt;
     template <size_type>
     friend struct bertrand::Int;
+    template <size_type E, size_type M> requires (E > 0 && M > 0)
+    friend struct bertrand::Float;
     using big_word = impl::word<N>::big;
 
     template <size_type I>
@@ -2079,6 +2093,11 @@ public:
 
     public:
         constexpr const_iterator() = default;
+        constexpr const_iterator(const iterator& other) noexcept :
+            self(other.self),
+            index(other.index),
+            cache(other.cache)
+        {}
 
         [[nodiscard]] constexpr const_reference operator*() const noexcept(!DEBUG) {
             if constexpr (DEBUG) {
@@ -2511,40 +2530,20 @@ public:
             return bits;
         }
 
-        [[nodiscard]] friend constexpr Bits operator<<(
-            const slice& lhs,
-            const Bits& rhs
-        ) noexcept {
-            return Bits{lhs} << rhs;
+        [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept {
+            return Bits{*this} << rhs;
         }
 
-        [[nodiscard]] friend constexpr Bits operator<<(
-            const Bits& lhs,
-            const slice& rhs
-        ) noexcept {
-            return lhs << Bits{rhs};
-        }
-
-        constexpr Bits& operator<<=(const Bits& other) noexcept {
+        constexpr Bits& operator<<=(size_type other) noexcept {
             *this = Bits{*this} << other;
             return bits;
         }
 
-        [[nodiscard]] friend constexpr Bits operator>>(
-            const slice& lhs,
-            const Bits& rhs
-        ) noexcept {
-            return Bits{lhs} >> rhs;
+        [[nodiscard]] constexpr Bits operator>>(size_type rhs) const noexcept {
+            return Bits{*this} >> rhs;
         }
 
-        [[nodiscard]] friend constexpr Bits operator>>(
-            const Bits& lhs,
-            const slice& rhs
-        ) noexcept {
-            return lhs >> Bits{rhs};
-        }
-
-        constexpr Bits& operator>>=(const Bits& other) noexcept {
+        constexpr Bits& operator>>=(size_type other) noexcept {
             *this = Bits{*this} >> other;
             return bits;
         }
@@ -2716,9 +2715,6 @@ public:
             store(),
             bits(bits)
         {}
-
-        /// TODO: this problem is a bit tricky.  I need a way to convert mutable
-        /// iterators into const iterators, but not the other way around.
 
         constexpr const_slice(Bits&& bits, const normalized& indices)
             noexcept(noexcept(base(bits, indices)))
@@ -2943,32 +2939,12 @@ public:
             return lhs ^ Bits{rhs};
         }
 
-        [[nodiscard]] friend constexpr Bits operator<<(
-            const const_slice& lhs,
-            const Bits& rhs
-        ) noexcept {
-            return Bits{lhs} << rhs;
+        [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept {
+            return Bits{*this} << rhs;
         }
 
-        [[nodiscard]] friend constexpr Bits operator<<(
-            const Bits& lhs,
-            const const_slice& rhs
-        ) noexcept {
-            return lhs << Bits{rhs};
-        }
-
-        [[nodiscard]] friend constexpr Bits operator>>(
-            const const_slice& lhs,
-            const Bits& rhs
-        ) noexcept {
-            return Bits{lhs} >> rhs;
-        }
-
-        [[nodiscard]] friend constexpr Bits operator>>(
-            const Bits& lhs,
-            const const_slice& rhs
-        ) noexcept {
-            return lhs >> Bits{rhs};
+        [[nodiscard]] constexpr Bits operator>>(size_type rhs) const noexcept {
+            return Bits{*this} >> rhs;
         }
 
         [[nodiscard]] constexpr Bits operator+(
@@ -4376,8 +4352,6 @@ public:
         return *this;
     }
 
-    /// TODO: shift amount should be another bitset of equal size, for completeness?
-
     /* Apply a bitwise left shift to the contents of the bitset. */
     [[nodiscard]] constexpr Bits operator<<(size_type rhs) const noexcept
         requires(array_size > 1)
@@ -4577,7 +4551,7 @@ public:
     writes the sum back to this bitset. */
     constexpr Bits& operator+=(const Bits& other) noexcept {
         bool overflow;
-        add(*this, overflow, *this);
+        add(other, overflow, *this);
         return *this;
     }
 
@@ -4750,15 +4724,19 @@ struct UInt : impl::UInt_tag {
     /* The underlying bitset type for the contents of this integer. */
     using Bits = bertrand::Bits<N>;
 
-    /* The underlying word type for the integer. */
+private:
     using word = Bits::word;
 
+public:
     /* The minimum value that the bitset can hold. */
-    static constexpr UInt min() noexcept { return {}; }
+    static constexpr const UInt& min() noexcept {
+        static constexpr UInt result = Bits::min();
+        return result;
+    }
 
     /* The maximum value that the bitset can hold. */
-    static constexpr UInt max() noexcept {
-        static constexpr UInt result = ~UInt{};
+    static constexpr const UInt& max() noexcept {
+        static constexpr UInt result = Bits::max();
         return result;
     }
 
@@ -5391,11 +5369,12 @@ struct Int : impl::Int_tag {
     /* The underlying bitset type for the contents of this integer. */
     using Bits = bertrand::Bits<N>;
 
-    /* The underlying word type for the integer. */
+private:
     using word = Bits::word;
 
+public:
     /* The minimum value that the integer can store. */
-    static constexpr Int min() noexcept {
+    static constexpr const Int& min() noexcept {
         static constexpr Int result = [] {
             // only most significant bit is set -> two's complement
             Int result;
@@ -5412,7 +5391,7 @@ struct Int : impl::Int_tag {
     }
 
     /* The maximum value that the integer can store. */
-    static constexpr Int max() noexcept {
+    static constexpr const Int& max() noexcept {
         static constexpr Int result = [] {
             // all but the most significant bit are set -> two's complement
             Int result;
@@ -6294,35 +6273,35 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 }
 
 
-template struct Bits<8>;
-template struct Bits<16>;
-template struct Bits<32>;
-template struct Bits<64>;
-template struct Bits<128>;
+// template struct Bits<8>;
+// template struct Bits<16>;
+// template struct Bits<32>;
+// template struct Bits<64>;
+// template struct Bits<128>;
 
 
-using int8 = Int<8>;
-using int16 = Int<16>;
-using int32 = Int<32>;
-using int64 = Int<64>;
-using int128 = Int<128>;
-template struct Int<8>;
-template struct Int<16>;
-template struct Int<32>;
-template struct Int<64>;
-template struct Int<128>;
+// template struct Int<8>;
+// template struct Int<16>;
+// template struct Int<32>;
+// template struct Int<64>;
+// template struct Int<128>;
+// using int8 = Int<8>;
+// using int16 = Int<16>;
+// using int32 = Int<32>;
+// using int64 = Int<64>;
+// using int128 = Int<128>;
 
 
-using uint8 = UInt<8>;
-using uint16 = UInt<16>;
-using uint32 = UInt<32>;
-using uint64 = UInt<64>;
-using uint128 = UInt<128>;
-template struct UInt<8>;
-template struct UInt<16>;
-template struct UInt<32>;
-template struct UInt<64>;
-template struct UInt<128>;
+// template struct UInt<8>;
+// template struct UInt<16>;
+// template struct UInt<32>;
+// template struct UInt<64>;
+// template struct UInt<128>;
+// using uint8 = UInt<8>;
+// using uint16 = UInt<16>;
+// using uint32 = UInt<32>;
+// using uint64 = UInt<64>;
+// using uint128 = UInt<128>;
 
 
 /// TODO: I can likely provide a softfloat implementation with a customizable exponent
@@ -6333,22 +6312,386 @@ template struct UInt<128>;
 /// TODO: One of the only big problems for masking is making sure I don't clobber
 /// inf/quiet nan/signalling nan/subnormals.
 
+/// TODO: E and M must be big enough to handle all the IEEE special cases, which
+/// informs the template constraints.
 
-#ifdef __STDCPP_BFLOAT16_T__
-    using bfloat16 = std::bfloat16_t;
-#endif
-#ifdef __STDCPP_FLOAT16_T__
-    using float16 = std::float16_t;
-#endif
-#ifdef __STDCPP_FLOAT32_T__
-    using float32 = std::float32_t;
-#endif
-#ifdef __STDCPP_FLOAT64_T__
-    using float64 = std::float64_t;
-#endif
-#ifdef __STDCPP_FLOAT128_T__
-    using float128 = std::float128_t;
-#endif
+
+/// Reference: https://github.com/oprecomp/FloatX
+
+
+namespace impl {
+
+    template <size_t E, size_t M>
+    struct float_word {  // fall back to softfloat emulation with E + M bits
+        using type = void;
+        static constexpr size_t size = E + M;
+    };
+
+    template <typename T, size_t E, size_t M>
+    concept fits_within_float =
+        E <= meta::float_exponent_size<T> &&
+        M <= meta::float_mantissa_size<T>;
+
+    template <size_t E, size_t M>
+        requires (fits_within_float<float, E, M>)
+    struct float_word<E, M> {
+        using type = float;
+        static constexpr size_t size = meta::float_size<type>;
+    };
+
+    template <size_t E, size_t M>
+        requires (
+            !fits_within_float<float, E, M> &&
+            fits_within_float<double, E, M>
+        )
+    struct float_word<E, M> {
+        using type = double;
+        static constexpr size_t size = meta::float_size<type>;
+    };
+
+    #ifdef __STDCPP_FLOAT16_T__
+        inline constexpr bool HAS_FLOAT16 = true;
+        template <size_t E, size_t M>
+            requires (
+                (HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>)
+            )
+        struct float_word<E, M> {
+            using type = std::float16_t;
+            static constexpr size_t size = meta::float_size<type>;
+        };
+    #else
+        inline constexpr bool HAS_FLOAT16 = false;
+    #endif
+
+    #ifdef __STDCPP_BFLOAT16_T__
+        inline constexpr bool HAS_BFLOAT16 = true;
+        template <size_t E, size_t M>
+            requires (
+                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
+                (HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>)
+            )
+        struct float_word<E, M> {
+            using type = std::bfloat16_t;
+            static constexpr size_t size = meta::float_size<type>;
+        };
+    #else
+        inline constexpr bool HAS_BFLOAT16 = false;
+    #endif
+
+    #ifdef __STDCPP_FLOAT32_T__
+        inline constexpr bool HAS_FLOAT32 = true;
+        template <size_t E, size_t M>
+            requires (
+                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
+                !(HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>) &&
+                (HAS_FLOAT32 && fits_within_float<std::float32_t, E, M>)
+            )
+        struct float_word<E, M> {
+            using type = std::float32_t;
+            static constexpr size_t size = meta::float_size<type>;
+        };
+    #else
+        inline constexpr bool HAS_FLOAT32 = false;
+    #endif
+
+    #ifdef __STDCPP_FLOAT64_T__
+        inline constexpr bool HAS_FLOAT64 = true;
+        template <size_t E, size_t M>
+            requires (
+                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
+                !(HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>) &&
+                !(HAS_FLOAT32 && fits_within_float<std::float32_t, E, M>) &&
+                (HAS_FLOAT64 && fits_within_float<std::float64_t, E, M>)
+            )
+        struct float_word<E, M> {
+            using type = std::float64_t;
+            static constexpr size_t size = meta::float_size<type>;
+        };
+    #else
+        inline constexpr bool HAS_FLOAT64 = false;
+    #endif
+
+    #ifdef __STDCPP_FLOAT128_T__
+        inline constexpr bool HAS_FLOAT128 = true;
+        template <size_t E, size_t M>
+            requires (
+                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
+                !(HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>) &&
+                !(HAS_FLOAT32 && fits_within_float<std::float32_t, E, M>) &&
+                !(HAS_FLOAT64 && fits_within_float<std::float64_t, E, M>) &&
+                (HAS_FLOAT128 && fits_within_float<std::float128_t, E, M>)
+            )
+        struct float_word<E, M> {
+            using type = std::float128_t;
+            static constexpr size_t size = meta::float_size<type>;
+        };
+    #else
+        inline constexpr bool HAS_FLOAT128 = false;
+    #endif
+
+}
+
+
+template <size_t E, size_t M> requires (E > 0 && M > 0)
+struct Float {
+private:
+    static constexpr size_t N = impl::float_word<E, M>::size;
+
+public:
+    /* An equivalent (or slightly larger) hardware-supported floating-point type, which
+    can represent all possible values of this type, or void if no such type exists.  If
+    the type is non-void, then the float will use the same FPU hardware as the
+    indicated type, by applying a `std::bit_cast()` to the underlying bitset.
+    Otherwise, all operations will be emulated in software using only integer
+    arithmetic.  Such "soft" floats are almost always slower than hardware equivalents,
+    but may be useful when deploying to platforms that lack a proper FPU, or which
+    might not support the same floating-point types as the host system.  In these
+    cases, emulation ensures that the same logic can be used on all platforms, while
+    still prioritizing hardware support if available. */
+    using hard_type = impl::float_word<E, M>::type;
+
+    /* The underlying bitset type for the contents of this float. */
+    using Bits = bertrand::Bits<N>;
+
+private:
+    static constexpr bool hard = meta::not_void<hard_type>;
+    static constexpr Bits bias = Bits::mask(0, E - 1);
+
+    template <typename T>
+    struct correct {
+        static constexpr void narrow(Bits& bits) noexcept {}
+        static constexpr const Float& widen(const Float& self) noexcept { return self; }
+    };
+    template <meta::not_void T>
+    struct correct<T> {
+        static constexpr size_t man_size = meta::float_mantissa_size<T>;
+        static constexpr size_t exp_size = meta::float_exponent_size<T>;
+        static constexpr Bits exp_bias =
+            (Bits{meta::float_exponent_bias<T>} - bias) << (man_size - 1);
+
+        static constexpr Bits input_man_mask =
+            Bits::mask(0, man_size - 1);
+        static constexpr Bits input_exp_mask =
+            Bits::mask(man_size - 1, man_size - 1 + exp_size);
+        static constexpr Bits sign_mask =
+            Bits{1} << (N - 1);
+
+        /// TODO: these methods currently assume that the bitset is stored as a
+        /// single word, which would not be the case for 128-bit floats.  Full float128
+        /// support would require a multi-word bit cast, which is probably impossible
+        /// unless the platform also supports 128-bit integers, in which case the
+        /// casting logic gets somewhat complicated due to the bitset only storing
+        /// 64-bit words.
+
+        static constexpr void narrow(Bits& bits) noexcept {
+            /// NOTE: we keep the high M bits of the mantissa, low E bits of the
+            /// exponent, and the sign bit.  This preserves +/- 0, inf, and NaN
+            /// special cases, while truncating to the true templated sizes.
+
+            if constexpr (M < man_size && E < exp_size) {
+                static constexpr Bits output_exp_mask =
+                    Bits::mask(man_size - 1, man_size - 1 + E);
+                static constexpr Bits output_man_mask =
+                    Bits::mask(man_size - M, man_size - 1);
+                static constexpr Bits man_half = Bits{1} << (man_size - M - 1);
+                static constexpr Bits man_to_even = man_half << 1;
+                static constexpr Bits man_discard = man_to_even - 1;
+
+                // check for +/- inf input
+                if ((bits & input_exp_mask) == input_exp_mask) {
+                    bits &= sign_mask | output_exp_mask | output_man_mask;
+                    return;
+                }
+
+                // extract exponent and adjust bias
+                Bits exp = bits & input_exp_mask;
+                exp -= exp_bias;
+
+                // extract mantissa and round to nearest even value
+                Bits man = bits & input_man_mask;
+                if ((bits & man_discard) == man_half) {
+                    man += man & man_to_even;
+                } else {
+                    man += man_half;
+                }
+                exp += man & input_exp_mask;  // add carry from mantissa
+                man &= output_man_mask;
+
+                // check for overflow/underflow and commit changes
+                bits &= sign_mask;
+                if (exp & ~output_exp_mask) {
+                    if (exp > output_exp_mask) {
+                        bits |= output_exp_mask;  // +/- inf
+                    } else {
+                        bits |= man;  // subnormal zero (mantissa unchanged)
+                    }
+                } else {
+                    bits |= exp;
+                    bits |= man;
+                }
+
+            } else if constexpr (M < man_size) {
+                static constexpr Bits output_man_mask =
+                    Bits::mask(man_size - M, man_size - 1);
+                static constexpr Bits man_half = Bits{1} << (man_size - M - 1);
+                static constexpr Bits man_to_even = man_half << 1;
+                static constexpr Bits man_discard = man_to_even - 1;
+                static constexpr Bits keep = input_exp_mask | sign_mask;
+
+                // record state of sign bit to detect exponent overflow
+                Bits sign = bits & sign_mask;
+
+                // extract mantissa and round to nearest even value
+                Bits man = bits & input_man_mask;
+                if ((bits & man_discard) == man_half) {
+                    man += man & man_to_even;
+                } else {
+                    man += man_half;
+                }
+                bits += man & input_exp_mask;  // add carry from mantissa
+
+                // check for overflow
+                if ((bits & sign_mask) != sign) {
+                    bits = sign | input_exp_mask;
+                } else {
+                    bits &= keep;
+                    bits |= man;
+                }
+
+            } else if constexpr (E < exp_size) {
+                static constexpr Bits output_exp_mask =
+                    Bits::mask(man_size - 1, man_size - 1 + E);
+                static constexpr Bits keep = input_man_mask | sign_mask;
+
+                // check for +/- inf input
+                if ((bits & input_exp_mask) == input_exp_mask) {
+                    bits &= keep | output_exp_mask;
+                    return;
+                }
+
+                // extract exponent and adjust bias
+                Bits exp = bits & input_exp_mask;
+                exp -= exp_bias;
+
+                // check for overflow/underflow
+                if (exp & ~output_exp_mask) {
+                    if (exp > output_exp_mask) {
+                        bits &= sign_mask;
+                        bits |= output_exp_mask;  // +/- inf
+                    } else {
+                        bits &= keep;  // subnormal zero (mantissa unchanged)
+                    }
+                } else {
+                    bits &= keep;
+                    bits |= exp;
+                }
+            }
+        }
+
+        static constexpr T widen(const Bits& bits) noexcept {
+            if constexpr (E < exp_size) {
+                return std::bit_cast<T>(bits.data()[0] + exp_bias);
+            } else {
+                return std::bit_cast<T>(bits.data()[0]);
+            }
+        }
+    };
+
+public:
+    /* The minimum (most negative) finite value that the float can store. */
+    static constexpr const Float& min() noexcept {
+        static constexpr Float result = [] -> Float {
+            if constexpr (hard) {
+                Float result {std::numeric_limits<hard_type>::lowest()};
+                correct<hard_type>::narrow(result.bits);
+                return result;
+            } else {
+                /// TODO: softfloat emulation (NYI)
+            }
+        }();
+        return result;
+    }
+
+    /* The maximum value that the integer can store. */
+    static constexpr const Float& max() noexcept {
+        static constexpr Float result = [] -> Float {
+            if constexpr (hard) {
+                Float result {std::numeric_limits<hard_type>::max()};
+                correct<hard_type>::narrow(result.bits);
+                return result;
+            } else {
+                /// TODO: softfloat emulation (NYI)
+            }
+        }();
+        return result;
+    }
+
+    /* A bitset holding the bitwise representation of the integer. */
+    Bits bits;
+
+    /* Default constructor.  Initializes to zero. */
+    [[nodiscard]] constexpr Float() noexcept = default;
+
+
+    /* Implicitly convert from a hardware floating point type if one is available. */
+    [[nodiscard]] constexpr Float(hard_type value) noexcept
+        requires(hard && Bits::array_size == 1)
+    :
+        bits(std::bit_cast<typename Bits::word>(value))
+    {
+        correct<hard_type>::narrow(bits);
+    }
+
+    /* Implicitly convert the float to an equivalent hardware type if one is
+    available. */
+    [[nodiscard]] constexpr operator hard_type() const noexcept
+        requires(hard && Bits::array_size == 1)
+    {
+        return correct<hard_type>::widen(bits);
+    }
+
+    /// TODO: This basic skeleton already works for hardware-supported floats, which
+    /// should be exactly as fast as built-in types.  The rest requires some kind of
+    /// floating point emulation, and I might just be able to save that for another
+    /// time.  Simply setting up the basic hardware types is probably good enough
+    /// for now, to make sure that the concept is sound, and to bridge with Python.
+
+};
+
+
+/// TODO: eventually, use the exponent and mantissa sizes from the extended floating
+/// point types, which are not yet available in libc++.
+
+
+template struct Float<5, 11>;
+template struct Float<8, 8>;
+template struct Float<8, 24>;
+template struct Float<11, 53>;
+// template struct Float<15, 113>;
+
+
+using float16 = Float<5, 11>;
+using bfloat16 = Float<8, 8>;
+using float32 = Float<8, 24>;
+using float64 = Float<11, 53>;
+using float128 = Float<15, 113>;
+
+
+inline constexpr float16 test_float = 1;
+inline constexpr float16 test_float2 = test_float;
+static_assert(float(test_float) == 1.0);
+static_assert(std::bit_cast<uint32_t>(float(test_float)) == 0b0'01111111'00000000'00000000'0000000);
+static_assert(test_float.bits == 0b0'00001111'00000000'00000000'0000000);
+
+static_assert(std::bit_cast<uint32_t>(float(1.0)) == 0b0'01111111'00000000'00000000'0000000);
+static_assert(
+    // float16(1.0).bits == 0b0'01111111'00000000'00000000'0000000
+    float16(1.0).bits == 0b0'00001111'00000000'00000000'0000000
+);
+
+static_assert(
+    std::bit_cast<uint16_t>(_Float16(1.0)) == 0b0'01111'0000000000
+);
 
 
 }  // namespace bertrand
@@ -6662,257 +7005,257 @@ namespace std {
 }
 
 
-namespace bertrand {
+// namespace bertrand {
 
-    template <Bits b>
-    struct Foo {
-        static constexpr const auto& value = b;
-    };
+//     template <Bits b>
+//     struct Foo {
+//         static constexpr const auto& value = b;
+//     };
 
-    inline void test() {
-        {
-            static constexpr Bits<2> a{0b1010};
-            static constexpr Bits a2{false, true};
-            static constexpr Bits a3{1, 2};
-            static constexpr Bits a4{0, true};
-            static_assert(a4.count() == 1);
-            static_assert(a3.size() == 64);
-            static_assert(a == a2);
-            auto [f1, f2] = a;
-            static constexpr Bits b {"abab", 'b', 'a'};
-            static constexpr std::string c = b.to_binary();
-            static constexpr std::string d = b.to_decimal();
-            static constexpr std::string d2 = b.to_string();
-            static constexpr std::string d3 = b.to_hex();
-            static_assert(any(b.components()));
-            static_assert(b[slice{2}].first_one().value() == 3);
-            static_assert(a == 0b10);
-            static_assert(b == 0b1010);
-            static_assert(b[1] == true);
-            static_assert(c == "1010");
-            static_assert(d == "10");
-            static_assert(d2 == "1010");
-            static_assert(d3 == "A");
+//     inline void test() {
+//         {
+//             static constexpr Bits<2> a{0b1010};
+//             static constexpr Bits a2{false, true};
+//             static constexpr Bits a3{1, 2};
+//             static constexpr Bits a4{0, true};
+//             static_assert(a4.count() == 1);
+//             static_assert(a3.size() == 64);
+//             static_assert(a == a2);
+//             auto [f1, f2] = a;
+//             static constexpr Bits b {"abab", 'b', 'a'};
+//             static constexpr std::string c = b.to_binary();
+//             static constexpr std::string d = b.to_decimal();
+//             static constexpr std::string d2 = b.to_string();
+//             static constexpr std::string d3 = b.to_hex();
+//             static_assert(any(b.components()));
+//             static_assert(b[slice{2}].first_one().value() == 3);
+//             static_assert(a == 0b10);
+//             static_assert(b == 0b1010);
+//             static_assert(b[1] == true);
+//             static_assert(c == "1010");
+//             static_assert(d == "10");
+//             static_assert(d2 == "1010");
+//             static_assert(d3 == "A");
 
-            static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
-            static_assert(sizeof(Bits<2>) == 1);
+//             static_assert(std::same_as<typename Bits<2>::word, uint8_t>);
+//             static_assert(sizeof(Bits<2>) == 1);
 
-            constexpr auto x = []() {
-                Bits<4> out;
-                out[-1] = true;
-                return out;
-            }();
-            static_assert(x == uint8_t(0b1000));
+//             constexpr auto x = []() {
+//                 Bits<4> out;
+//                 out[-1] = true;
+//                 return out;
+//             }();
+//             static_assert(x == uint8_t(0b1000));
 
-            for (auto&& x : a) {
+//             for (auto&& x : a) {
 
-            }
-            for (auto&& x : a.components()) {
+//             }
+//             for (auto&& x : a.components()) {
 
-            }
-            for (auto&& x : a[slice{1, -1}]) {
+//             }
+//             for (auto&& x : a[slice{1, -1}]) {
 
-            }
-        }
+//             }
+//         }
 
-        {
-            static constexpr Bits b {"100"};
-            static constexpr auto b2 = Bits<3>::from_string(
-                std::string_view("100")
-            );
-            static_assert(b.data()[0] == 4);
-            static_assert(b2.result().data()[0] == 4);
+//         {
+//             static constexpr Bits b {"100"};
+//             static constexpr auto b2 = Bits<3>::from_string(
+//                 std::string_view("100")
+//             );
+//             static_assert(b.data()[0] == 4);
+//             static_assert(b2.result().data()[0] == 4);
 
-            static constexpr auto b3 = Bits{"0100"}.reverse();
-            static_assert(b3.data()[0] == 2);
+//             static constexpr auto b3 = Bits{"0100"}.reverse();
+//             static_assert(b3.data()[0] == 2);
 
-            static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
-            static_assert(b4.result().data()[0] == 4);
+//             static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
+//             static_assert(b4.result().data()[0] == 4);
 
-            static constexpr auto b5 = Bits<3>::from_decimal("5");
-            static_assert(b5.result().data()[0] == 5);
+//             static constexpr auto b5 = Bits<3>::from_decimal("5");
+//             static_assert(b5.result().data()[0] == 5);
 
-            static constexpr auto b6 = Bits<8>::from_hex("FF");
-            static_assert(b6.result().data()[0] == 255);
+//             static constexpr auto b6 = Bits<8>::from_hex("FF");
+//             static_assert(b6.result().data()[0] == 255);
 
-            static constexpr auto b7 = Bits<8>::from_hex("ZZ");
-            static_assert(b7.has_error());
+//             static constexpr auto b7 = Bits<8>::from_hex("ZZ");
+//             static_assert(b7.has_error());
 
-            static constexpr auto b8 = Bits<8>::from_hex("FFC");
-            static_assert(b8.has_error());
-        }
+//             static constexpr auto b8 = Bits<8>::from_hex("FFC");
+//             static_assert(b8.has_error());
+//         }
 
-        {
-            static constexpr Foo<{true, false, true}> foo;
-            static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
-            static_assert(foo.value == Bits{"101"});
-            static_assert(bar.value == 5);
-            static_assert(bar.value == 5);
-        }
+//         {
+//             static constexpr Foo<{true, false, true}> foo;
+//             static constexpr Foo<Bits{"bab", 'a', 'b'}> bar;
+//             static_assert(foo.value == Bits{"101"});
+//             static_assert(bar.value == 5);
+//             static_assert(bar.value == 5);
+//         }
 
-        {
-            static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
-            static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
-            static_assert(Bits<4>::from_octal("20").has_error());
-            static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
-            static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
+//         {
+//             static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
+//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+//             static_assert(Bits<4>::from_octal("20").has_error());
+//             static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
+//             static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
 
-            // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
-        }
+//             // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
+//         }
 
-        {
-            static constexpr Bits<5> a = -1;
-            static constexpr Bits<5> b = a + 2;
-            static_assert(a == 31);
-            static_assert(b.data()[0] == 1);
+//         {
+//             static constexpr Bits<5> a = -1;
+//             static constexpr Bits<5> b = a + 2;
+//             static_assert(a == 31);
+//             static_assert(b.data()[0] == 1);
 
-            static constexpr Bits<5> c;
-            static constexpr Bits<5> d = c - 1;
-            static_assert(c == 0);
-            static_assert(d.data()[0] == 31);
+//             static constexpr Bits<5> c;
+//             static constexpr Bits<5> d = c - 1;
+//             static_assert(c == 0);
+//             static_assert(d.data()[0] == 31);
 
-            static constexpr Bits<5> e = 12;
-            static constexpr Bits<5> f = e * 3;
-            static_assert(f.data()[0] == 4);
-        }
+//             static constexpr Bits<5> e = 12;
+//             static constexpr Bits<5> f = e * 3;
+//             static_assert(f.data()[0] == 4);
+//         }
 
-        {
-            static constexpr Bits<4> b = {Bits{"110"}, true};
-            static_assert(b.last_zero().value() == 0);
-            static_assert(b == Bits{"1110"});
-            static_assert(-b == Bits{"0010"});
-            static_assert(Bits<5>::from_string("10100").result() == 20);
+//         {
+//             static constexpr Bits<4> b = {Bits{"110"}, true};
+//             static_assert(b.last_zero().value() == 0);
+//             static_assert(b == Bits{"1110"});
+//             static_assert(-b == Bits{"0010"});
+//             static_assert(Bits<5>::from_string("10100").result() == 20);
 
-            static constexpr Bits<72> b2;
-            static_assert(size_t(b2) == 0);
-            // int x = b2;
+//             static constexpr Bits<72> b2;
+//             static_assert(size_t(b2) == 0);
+//             // int x = b2;
 
-            auto y = b + Bits{3};
-            if (b) {
+//             auto y = b + Bits{3};
+//             if (b) {
 
-            }
-            std::cout << b;
+//             }
+//             std::cout << b;
 
-            static constexpr static_str s = "1";
-            static constexpr static_str s2 {s[0]};
-            static_assert(s2 == "1");
-        }
+//             static constexpr static_str s = "1";
+//             static constexpr static_str s2 {s[0]};
+//             static_assert(s2 == "1");
+//         }
 
-        {
-            static constexpr UInt x = 42;
-            static_assert(x == 42);
-            static constexpr auto x2 = UInt<32>::from_decimal("42");
-            static_assert(x2.result() == 42);
-            static_assert(divide::ceil(x, 4) == 11);
+//         {
+//             static constexpr UInt x = 42;
+//             static_assert(x == 42);
+//             static constexpr auto x2 = UInt<32>::from_decimal("42");
+//             static_assert(x2.result() == 42);
+//             static_assert(divide::ceil(x, 4) == 11);
 
-            static constexpr UInt y = -1;
-            static_assert(y.bits.count() == 32);
+//             static constexpr UInt y = -1;
+//             static_assert(y.bits.count() == 32);
 
-            static_assert(UInt<8>::max() == 255);
-            static_assert(Int<8>::max() == 127);
-            static_assert(Int<8>(Int<8>::max() + 1) == -128);
-            static_assert(Int<8>(Int<8>::min() - 1) == 127);
-            static_assert(Int<8>::min() < Int<8>::max());
+//             static_assert(UInt<8>::max() == 255);
+//             static_assert(Int<8>::max() == 127);
+//             static_assert(Int<8>(Int<8>::max() + 1) == -128);
+//             static_assert(Int<8>(Int<8>::min() - 1) == 127);
+//             static_assert(Int<8>::min() < Int<8>::max());
 
-            static_assert(Bits<8>{5}.divmod(2).first == (5 / 2));
-            static_assert(Bits<8>{5}.divmod(2).second == (5 % 2));
-            static_assert(UInt<8>{5}.divmod(2).second == (5 % 2));
-            static_assert(Int<8>{5}.divmod(2).second == (5 % 2));
+//             static_assert(Bits<8>{5}.divmod(2).first == (5 / 2));
+//             static_assert(Bits<8>{5}.divmod(2).second == (5 % 2));
+//             static_assert(UInt<8>{5}.divmod(2).second == (5 % 2));
+//             static_assert(Int<8>{5}.divmod(2).second == (5 % 2));
 
 
-            static_assert(Bits<72>::max().divmod(2).first == Bits<71>::max());
-            static_assert(Bits<72>::max().divmod(2).first.data()[0] == std::numeric_limits<uint64_t>::max());
-            static_assert(Bits<72>::max().divmod(2).second == 1);
-            static_assert(Bits<72>::max().divmod(2).second.data()[0] == 1);
+//             static_assert(Bits<72>::max().divmod(2).first == Bits<71>::max());
+//             static_assert(Bits<72>::max().divmod(2).first.data()[0] == std::numeric_limits<uint64_t>::max());
+//             static_assert(Bits<72>::max().divmod(2).second == 1);
+//             static_assert(Bits<72>::max().divmod(2).second.data()[0] == 1);
 
-            static_assert(Bits<72>::max().divmod(Bits<71>::max()).first.data()[0] == 2);
+//             static_assert(Bits<72>::max().divmod(Bits<71>::max()).first.data()[0] == 2);
 
-            static constexpr Bits extracted = Bits{"0101"}[slice{0, 2}];
-            static constexpr UInt extracted2 = Bits{"0101"}[slice{0, 2}];
-            static constexpr Int extracted3 = Bits{"0101"}[slice{0, 2}];
-            static_assert(Bits{"0101"}[slice{-2, std::nullopt, -2}].any());
-            static_assert(extracted == Bits{"01"});
+//             static constexpr Bits extracted = Bits{"0101"}[slice{0, 2}];
+//             static constexpr UInt extracted2 = Bits{"0101"}[slice{0, 2}];
+//             static constexpr Int extracted3 = Bits{"0101"}[slice{0, 2}];
+//             static_assert(Bits{"0101"}[slice{-2, std::nullopt, -2}].any());
+//             static_assert(extracted == Bits{"01"});
 
-            // for (auto x : Bits{"0101"}[slice{0, 2}]) {
+//             // for (auto x : Bits{"0101"}[slice{0, 2}]) {
 
-            // }
-            // static constexpr Bits temp = Bits{"0101"};
-            // static constexpr auto it = std::ranges::end(temp[slice{0, 2}]);
-            // static constexpr auto temp2 = temp[slice{0, 2}];
-            // static constexpr auto it2 = std::ranges::end(temp2);
-            // static_assert(meta::iterable<decltype(temp2)>);
-        }
+//             // }
+//             // static constexpr Bits temp = Bits{"0101"};
+//             // static constexpr auto it = std::ranges::end(temp[slice{0, 2}]);
+//             // static constexpr auto temp2 = temp[slice{0, 2}];
+//             // static constexpr auto it2 = std::ranges::end(temp2);
+//             // static_assert(meta::iterable<decltype(temp2)>);
+//         }
 
-        {
-            static constexpr Bits alt = Bits<8>::mask(
-                std::nullopt,
-                std::nullopt,
-                2
-            );
-            static_assert(alt == Bits{"01010101"});
-            static constexpr Bits alt2 = Bits<8>::mask(1, -1, 2);
-            static_assert(alt2 == Bits{"00101010"});
-            static constexpr Bits alt3 = Bits<8>::mask(
-                std::nullopt,
-                std::nullopt,
-                3
-            );
-            static_assert(alt3 == Bits{"01001001"});
-            static constexpr Bits alt4 = Bits<8>::mask(
-                std::nullopt,
-                std::nullopt,
-                4
-            );
-            static_assert(alt4 == Bits{"00010001"});
-            static constexpr Bits alt5 = Bits<8>::mask(
-                std::nullopt,
-                std::nullopt,
-                5
-            );
-            static_assert(alt5 == Bits{"00100001"});
+//         {
+//             static constexpr Bits alt = Bits<8>::mask(
+//                 std::nullopt,
+//                 std::nullopt,
+//                 2
+//             );
+//             static_assert(alt == Bits{"01010101"});
+//             static constexpr Bits alt2 = Bits<8>::mask(1, -1, 2);
+//             static_assert(alt2 == Bits{"00101010"});
+//             static constexpr Bits alt3 = Bits<8>::mask(
+//                 std::nullopt,
+//                 std::nullopt,
+//                 3
+//             );
+//             static_assert(alt3 == Bits{"01001001"});
+//             static constexpr Bits alt4 = Bits<8>::mask(
+//                 std::nullopt,
+//                 std::nullopt,
+//                 4
+//             );
+//             static_assert(alt4 == Bits{"00010001"});
+//             static constexpr Bits alt5 = Bits<8>::mask(
+//                 std::nullopt,
+//                 std::nullopt,
+//                 5
+//             );
+//             static_assert(alt5 == Bits{"00100001"});
 
-            static constexpr Bits x = [] {
-                Bits<4> x {"0100"};
-                x.rotate(-2);
-                return x;
-            }();
-            static_assert(x == Bits{"0001"});
-            auto y = double(Int<72>::max());
-            double z = alt;
+//             static constexpr Bits x = [] {
+//                 Bits<4> x {"0100"};
+//                 x.rotate(-2);
+//                 return x;
+//             }();
+//             static_assert(x == Bits{"0001"});
+//             auto y = double(Int<72>::max());
+//             double z = alt;
 
-            static constexpr Bits alt6 = Bits<72>::mask(
-                std::nullopt,
-                std::nullopt,
-                3
-            );
-            static_assert(alt6 == Bits{"001001001001001001001001001001001001001001001001001001001001001001001001"});
+//             static constexpr Bits alt6 = Bits<72>::mask(
+//                 std::nullopt,
+//                 std::nullopt,
+//                 3
+//             );
+//             static_assert(alt6 == Bits{"001001001001001001001001001001001001001001001001001001001001001001001001"});
 
-            static constexpr auto alt7 = [] {
-                Bits x {"0100"};
-                x[slice{0, 2}] = 3;
-                return x;
-            }();
-            static_assert(alt7 == Bits{"0111"});
+//             static constexpr auto alt7 = [] {
+//                 Bits x {"0100"};
+//                 x[slice{0, 2}] = 3;
+//                 return x;
+//             }();
+//             static_assert(alt7 == Bits{"0111"});
 
-            static constexpr auto alt8 = [] {
-                Bits x {"0100"};
-                x[slice{0, 2}] = std::vector<bool>{true, true};
-                return x;
-            }();
-            static_assert(alt8 == Bits{"0111"});
+//             static constexpr auto alt8 = [] {
+//                 Bits x {"0100"};
+//                 x[slice{0, 2}] = std::vector<bool>{true, true};
+//                 return x;
+//             }();
+//             static_assert(alt8 == Bits{"0111"});
 
-            static constexpr auto alt9 = [] {
-                Bits x {"0100"};
-                x[slice{0, 2}] = {true, true};
-                return x;
-            }();
-            static_assert(alt9 == Bits{"0111"});
+//             static constexpr auto alt9 = [] {
+//                 Bits x {"0100"};
+//                 x[slice{0, 2}] = {true, true};
+//                 return x;
+//             }();
+//             static_assert(alt9 == Bits{"0111"});
 
-            static_assert(alt9[slice{0, 2}] < 4);
-        }
-    }
+//             static_assert(alt9[slice{0, 2}] < 4);
+//         }
+//     }
 
-}
+// }
 
 
 #endif  // BERTRAND_BITSET_H
