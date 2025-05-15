@@ -116,7 +116,11 @@ template <size_t N>
 struct Int;
 
 
-template <size_t E, size_t M> requires (E > 0 && M > 0)
+/// TODO: when writing docs, note that the exponent and mantissa must be at least 2
+/// in order to support all IEEE 754 principles.
+
+
+template <size_t E, size_t M> requires (E > 1 && M > 1)
 struct Float;
 
 
@@ -1275,13 +1279,13 @@ struct Bits : impl::Bits_tag {
             word(0);
 
     /* The minimum value that the bitset can hold. */
-    static constexpr const Bits& min() noexcept {
+    [[nodiscard]] static constexpr const Bits& min() noexcept {
         static constexpr Bits result;
         return result;
     }
 
     /* The maximum value that the bitset can hold. */
-    static constexpr const Bits& max() noexcept {
+    [[nodiscard]] static constexpr const Bits& max() noexcept {
         static constexpr Bits result = ~Bits{};
         return result;
     }
@@ -1303,7 +1307,7 @@ private:
     friend struct bertrand::UInt;
     template <size_type>
     friend struct bertrand::Int;
-    template <size_type E, size_type M> requires (E > 0 && M > 0)
+    template <size_type E, size_type M> requires (E > 1 && M > 1)
     friend struct bertrand::Float;
     using big_word = impl::word<N>::big;
 
@@ -3855,8 +3859,8 @@ public:
         return *this;
     }
 
-    /* Return +1 if the value is positive or -1 if it is negative.  For unsigned
-    bitsets, this will always return +1. */
+    /* Return +1 if the value is positive or zero, or -1 if it is negative.  For
+    unsigned bitsets, this will always return +1. */
     constexpr int sign() const noexcept {
         return 1;
     }
@@ -4729,13 +4733,13 @@ private:
 
 public:
     /* The minimum value that the bitset can hold. */
-    static constexpr const UInt& min() noexcept {
+    [[nodiscard]] static constexpr const UInt& min() noexcept {
         static constexpr UInt result = Bits::min();
         return result;
     }
 
     /* The maximum value that the bitset can hold. */
-    static constexpr const UInt& max() noexcept {
+    [[nodiscard]] static constexpr const UInt& max() noexcept {
         static constexpr UInt result = Bits::max();
         return result;
     }
@@ -4983,8 +4987,8 @@ public:
         return static_cast<T>(bits);
     }
 
-    /* Return +1 if the integer is positive or -1 if it is negative.  For unsigned
-    integers, this will always return +1. */
+    /* Return +1 if the integer is positive or zero, or -1 if it is negative.  For
+    unsigned integers, this will always return +1. */
     constexpr int sign() const noexcept {
         return bits.sign();
     }
@@ -5374,7 +5378,7 @@ private:
 
 public:
     /* The minimum value that the integer can store. */
-    static constexpr const Int& min() noexcept {
+    [[nodiscard]] static constexpr const Int& min() noexcept {
         static constexpr Int result = [] {
             // only most significant bit is set -> two's complement
             Int result;
@@ -5391,7 +5395,7 @@ public:
     }
 
     /* The maximum value that the integer can store. */
-    static constexpr const Int& max() noexcept {
+    [[nodiscard]] static constexpr const Int& max() noexcept {
         static constexpr Int result = [] {
             // all but the most significant bit are set -> two's complement
             Int result;
@@ -5713,7 +5717,7 @@ public:
         }
     }
 
-    /* Return +1 if the integer is positive or -1 if it is negative. */
+    /* Return +1 if the integer is positive or zero, or -1 if it is negative. */
     [[nodiscard]] constexpr int sign() const noexcept {
         return 1 - (2 * bits.msb_is_set());
     }
@@ -6311,6 +6315,8 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 
 /// TODO: One of the only big problems for masking is making sure I don't clobber
 /// inf/quiet nan/signalling nan/subnormals.
+/// -> this should be good now in the hardware case, but it would need a lot of care
+/// to maintain in the softfloat implementation.
 
 /// TODO: E and M must be big enough to handle all the IEEE special cases, which
 /// informs the template constraints.
@@ -6432,7 +6438,7 @@ namespace impl {
 }
 
 
-template <size_t E, size_t M> requires (E > 0 && M > 0)
+template <size_t E, size_t M> requires (E > 1 && M > 1)
 struct Float {
 private:
     static constexpr size_t N = impl::float_word<E, M>::size;
@@ -6454,27 +6460,51 @@ public:
     using Bits = bertrand::Bits<N>;
 
 private:
-    static constexpr bool hard = meta::not_void<hard_type>;
-    static constexpr Bits bias = Bits::mask(0, E - 1);
 
     template <typename T>
-    struct correct {
+    struct _traits {
+        static constexpr bool hard = false;
+        static constexpr size_t man_size = M;
+        static constexpr size_t exp_size = E;
+        static constexpr Bits exp_bias =
+            Bits::mask(man_size - 1, man_size + E - 2);
+
+        static constexpr Bits sign_mask = Bits{1} << (N - 1);
+        static constexpr Bits exp_mask =
+            Bits::mask(man_size - 1, man_size - 1 + E);
+        static constexpr Bits man_mask =
+            Bits::mask(man_size - M, man_size - 1);
+
+        static constexpr Bits man_to_even = 1;
+
         static constexpr void narrow(Bits& bits) noexcept {}
         static constexpr const Float& widen(const Float& self) noexcept { return self; }
     };
     template <meta::not_void T>
-    struct correct<T> {
+    struct _traits<T> {
+        static constexpr bool hard = true;
         static constexpr size_t man_size = meta::float_mantissa_size<T>;
         static constexpr size_t exp_size = meta::float_exponent_size<T>;
         static constexpr Bits exp_bias =
-            (Bits{meta::float_exponent_bias<T>} - bias) << (man_size - 1);
+            Bits::mask(man_size - 1, man_size + E - 2);
 
-        static constexpr Bits input_man_mask =
-            Bits::mask(0, man_size - 1);
+        static constexpr Bits sign_mask = Bits{1} << (N - 1);
+        static constexpr Bits exp_mask =
+            Bits::mask(man_size - 1, man_size - 1 + E);
+        static constexpr Bits man_mask =
+            Bits::mask(man_size - M, man_size - 1);
+
+        static constexpr Bits man_half =
+            M == man_size ? Bits{} : Bits{Bits{1} << (man_size - M - 1)};
+        static constexpr Bits man_to_even = man_half << 1;
+        static constexpr Bits man_discard = man_to_even ? Bits{man_to_even - 1} : Bits{};
+
+        static constexpr Bits norm_bias =
+            (Bits{meta::float_exponent_bias<T>} << (man_size - 1)) - exp_bias;
         static constexpr Bits input_exp_mask =
             Bits::mask(man_size - 1, man_size - 1 + exp_size);
-        static constexpr Bits sign_mask =
-            Bits{1} << (N - 1);
+        static constexpr Bits input_man_mask =
+            Bits::mask(0, man_size - 1);
 
         /// TODO: these methods currently assume that the bitset is stored as a
         /// single word, which would not be the case for 128-bit floats.  Full float128
@@ -6489,23 +6519,15 @@ private:
             /// special cases, while truncating to the true templated sizes.
 
             if constexpr (M < man_size && E < exp_size) {
-                static constexpr Bits output_exp_mask =
-                    Bits::mask(man_size - 1, man_size - 1 + E);
-                static constexpr Bits output_man_mask =
-                    Bits::mask(man_size - M, man_size - 1);
-                static constexpr Bits man_half = Bits{1} << (man_size - M - 1);
-                static constexpr Bits man_to_even = man_half << 1;
-                static constexpr Bits man_discard = man_to_even - 1;
-
                 // check for +/- inf input
                 if ((bits & input_exp_mask) == input_exp_mask) {
-                    bits &= sign_mask | output_exp_mask | output_man_mask;
+                    bits &= sign_mask | exp_mask | man_mask;
                     return;
                 }
 
                 // extract exponent and adjust bias
                 Bits exp = bits & input_exp_mask;
-                exp -= exp_bias;
+                exp -= norm_bias;
 
                 // extract mantissa and round to nearest even value
                 Bits man = bits & input_man_mask;
@@ -6515,13 +6537,13 @@ private:
                     man += man_half;
                 }
                 exp += man & input_exp_mask;  // add carry from mantissa
-                man &= output_man_mask;
+                man &= man_mask;
 
                 // check for overflow/underflow and commit changes
                 bits &= sign_mask;
-                if (exp & ~output_exp_mask) {
-                    if (exp > output_exp_mask) {
-                        bits |= output_exp_mask;  // +/- inf
+                if (exp & ~exp_mask) {
+                    if (exp > exp_mask) {
+                        bits |= exp_mask;  // +/- inf
                     } else {
                         bits |= man;  // subnormal zero (mantissa unchanged)
                     }
@@ -6531,11 +6553,6 @@ private:
                 }
 
             } else if constexpr (M < man_size) {
-                static constexpr Bits output_man_mask =
-                    Bits::mask(man_size - M, man_size - 1);
-                static constexpr Bits man_half = Bits{1} << (man_size - M - 1);
-                static constexpr Bits man_to_even = man_half << 1;
-                static constexpr Bits man_discard = man_to_even - 1;
                 static constexpr Bits keep = input_exp_mask | sign_mask;
 
                 // record state of sign bit to detect exponent overflow
@@ -6559,25 +6576,23 @@ private:
                 }
 
             } else if constexpr (E < exp_size) {
-                static constexpr Bits output_exp_mask =
-                    Bits::mask(man_size - 1, man_size - 1 + E);
                 static constexpr Bits keep = input_man_mask | sign_mask;
 
                 // check for +/- inf input
                 if ((bits & input_exp_mask) == input_exp_mask) {
-                    bits &= keep | output_exp_mask;
+                    bits &= keep | exp_mask;
                     return;
                 }
 
                 // extract exponent and adjust bias
                 Bits exp = bits & input_exp_mask;
-                exp -= exp_bias;
+                exp -= norm_bias;
 
                 // check for overflow/underflow
-                if (exp & ~output_exp_mask) {
-                    if (exp > output_exp_mask) {
+                if (exp & ~exp_mask) {
+                    if (exp > exp_mask) {
                         bits &= sign_mask;
-                        bits |= output_exp_mask;  // +/- inf
+                        bits |= exp_mask;  // +/- inf
                     } else {
                         bits &= keep;  // subnormal zero (mantissa unchanged)
                     }
@@ -6590,21 +6605,20 @@ private:
 
         static constexpr T widen(const Bits& bits) noexcept {
             if constexpr (E < exp_size) {
-                return std::bit_cast<T>(bits.data()[0] + exp_bias);
+                return std::bit_cast<T>(bits.data()[0] + norm_bias);
             } else {
                 return std::bit_cast<T>(bits.data()[0]);
             }
         }
     };
+    using traits = _traits<hard_type>;
 
 public:
     /* The minimum (most negative) finite value that the float can store. */
-    static constexpr const Float& min() noexcept {
+    [[nodiscard]] static constexpr const Float& min() noexcept {
         static constexpr Float result = [] -> Float {
-            if constexpr (hard) {
-                Float result {std::numeric_limits<hard_type>::lowest()};
-                correct<hard_type>::narrow(result.bits);
-                return result;
+            if constexpr (traits::hard) {
+                return {std::numeric_limits<hard_type>::lowest()};
             } else {
                 /// TODO: softfloat emulation (NYI)
             }
@@ -6612,13 +6626,59 @@ public:
         return result;
     }
 
-    /* The maximum value that the integer can store. */
-    static constexpr const Float& max() noexcept {
+    /* The maximum (most positive) finite value that the float can store. */
+    [[nodiscard]] static constexpr const Float& max() noexcept {
         static constexpr Float result = [] -> Float {
-            if constexpr (hard) {
-                Float result {std::numeric_limits<hard_type>::max()};
-                correct<hard_type>::narrow(result.bits);
-                return result;
+            if constexpr (traits::hard) {
+                return {std::numeric_limits<hard_type>::max()};
+            } else {
+                /// TODO: softfloat emulation (NYI)
+            }
+        }();
+        return result;
+    }
+
+    /* Positive infinity sentinel. */
+    [[nodiscard]] static constexpr const Float& inf() noexcept {
+        static constexpr Float result = [] -> Float {
+            if constexpr (traits::hard) {
+                return {std::numeric_limits<hard_type>::infinity()};
+            } else {
+                /// TODO: softfloat emulation (NYI)
+            }
+        }();
+        return result;
+    }
+
+    /* Negative infinity sentinel. */
+    [[nodiscard]] static constexpr const Float& neg_inf() noexcept {
+        static constexpr Float result = [] -> Float {
+            if constexpr (traits::hard) {
+                return {-std::numeric_limits<hard_type>::infinity()};
+            } else {
+                /// TODO: softfloat emulation (NYI)
+            }
+        }();
+        return result;
+    }
+
+    /* Quiet NaN sentinel. */
+    [[nodiscard]] static constexpr const Float& nan() noexcept {
+        static constexpr Float result = [] -> Float {
+            if constexpr (traits::hard) {
+                return {std::numeric_limits<hard_type>::quiet_NaN()};
+            } else {
+                /// TODO: softfloat emulation (NYI)
+            }
+        }();
+        return result;
+    }
+
+    /* Signaling NaN sentinel. */
+    [[nodiscard]] static constexpr const Float& sig_nan() noexcept {
+        static constexpr Float result = [] -> Float {
+            if constexpr (traits::hard) {
+                return {std::numeric_limits<hard_type>::signaling_NaN()};
             } else {
                 /// TODO: softfloat emulation (NYI)
             }
@@ -6632,22 +6692,13 @@ public:
     /* Default constructor.  Initializes to zero. */
     [[nodiscard]] constexpr Float() noexcept = default;
 
-
     /* Implicitly convert from a hardware floating point type if one is available. */
     [[nodiscard]] constexpr Float(hard_type value) noexcept
-        requires(hard && Bits::array_size == 1)
+        requires(traits::hard && Bits::array_size == 1)
     :
         bits(std::bit_cast<typename Bits::word>(value))
     {
-        correct<hard_type>::narrow(bits);
-    }
-
-    /* Implicitly convert the float to an equivalent hardware type if one is
-    available. */
-    [[nodiscard]] constexpr operator hard_type() const noexcept
-        requires(hard && Bits::array_size == 1)
-    {
-        return correct<hard_type>::widen(bits);
+        traits::narrow(bits);
     }
 
     /// TODO: This basic skeleton already works for hardware-supported floats, which
@@ -6655,6 +6706,144 @@ public:
     /// floating point emulation, and I might just be able to save that for another
     /// time.  Simply setting up the basic hardware types is probably good enough
     /// for now, to make sure that the concept is sound, and to bridge with Python.
+
+    /// TODO: string conversions can possibly reuse the continuation constructors from
+    /// Bits, so that I don't need to do the actual parsing here.
+
+    template <
+        static_str negative = "-",
+        static_str decimal = ".",
+        static_str zero = "0",
+        static_str one = "1",
+        static_str two = "2",
+        static_str three = "3",
+        static_str four = "4",
+        static_str five = "5",
+        static_str six = "6",
+        static_str seven = "7",
+        static_str eight = "8",
+        static_str nine = "9",
+        static_str exponent = "e",
+        static_str inf = "inf",
+        static_str nan = "nan"
+    >
+        requires (
+            !negative.empty() && !decimal.empty() && !zero.empty() && !one.empty() &&
+            !two.empty() && !three.empty() && !four.empty() && !five.empty() &&
+            !six.empty() && !seven.empty() && !eight.empty() && !nine.empty() &&
+            !exponent.empty() && !inf.empty() && !nan.empty() &&
+            meta::perfectly_hashable<
+                negative, decimal, zero, one, two, three, four, five, six, seven,
+                eight, nine, exponent, inf, nan
+            >
+        )
+    [[nodiscard]] static constexpr Float from_string() {
+        /// TODO: quite a bit more complicated than the integer version, but still
+        /// doable.
+        return {};
+    }
+
+    template <
+        static_str negative = "-",
+        static_str decimal = ".",
+        static_str zero = "0",
+        static_str one = "1",
+        static_str two = "2",
+        static_str three = "3",
+        static_str four = "4",
+        static_str five = "5",
+        static_str six = "6",
+        static_str seven = "7",
+        static_str eight = "8",
+        static_str nine = "9",
+        static_str exponent = "e",
+        static_str inf = "inf",
+        static_str nan = "nan"
+    >
+        requires (
+            !negative.empty() && !decimal.empty() && !zero.empty() && !one.empty() &&
+            !two.empty() && !three.empty() && !four.empty() && !five.empty() &&
+            !six.empty() && !seven.empty() && !eight.empty() && !nine.empty() &&
+            !exponent.empty() && !inf.empty() && !nan.empty() &&
+            meta::strings_are_unique<
+                negative, decimal, zero, one, two, three, four, five, six, seven,
+                eight, nine, exponent, inf, nan
+            >
+        )
+    [[nodiscard]] constexpr std::string to_string() const noexcept {
+        /// TODO: also some complications here, but not impossible.
+        return {};
+    }
+
+    /* Convert the integer to a decimal string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_string();
+    }
+
+    /* Non-zero floats evaluate to true under boolean logic. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return bool(bits & traits::exp_mask);
+    }
+
+    /* Implicitly convert the float to an equivalent hardware type if one is
+    available. */
+    [[nodiscard]] constexpr operator hard_type() const noexcept
+        requires(traits::hard && Bits::array_size == 1)
+    {
+        return traits::widen(bits);
+    }
+
+    /// TODO: explicit conversion from multi-word floats to smaller float types
+
+    /// TODO: explicit (not implicit) conversion to integer types
+
+    /* Returns true if the float represents positive or negative infinity. */
+    [[nodiscard]] constexpr bool is_inf() const noexcept {
+        return (bits & traits::exp_mask) == traits::exp_mask;
+    }
+
+    /* Returns true if the float represents quiet or signaling NaN. */
+    [[nodiscard]] constexpr bool is_nan() const noexcept {
+        return
+            (bits & traits::exp_mask) == traits::exp_mask &&
+            (bits & traits::man_mask) != 0;
+    }
+
+    /* Returns true if the float represents a subnormal number (with zero exponent and
+    nonzero mantissa). */
+    [[nodiscard]] constexpr bool is_subnormal() const noexcept {
+        return
+            (bits & traits::exp_mask) == 0 &&
+            (bits & traits::man_mask) != 0;
+    }
+
+    /* Return +1 if the float is positive or zero, or -1 if it is negative. */
+    [[nodiscard]] constexpr int sign() const noexcept {
+        return 1 - (2 * bits.msb_is_set());
+    }
+
+    /// TODO: exponent and mantissa should return signed integers?  Maybe the mantissa
+    /// is a float, and multiplying the exponent by the mantissa gives the original
+    /// value.  They should also always be positive?
+
+    [[nodiscard]] constexpr Bits exponent() const noexcept {
+        return (bits & traits::exp_mask) >> (N - traits::man_size - 1);
+    }
+
+    [[nodiscard]] constexpr Bits mantissa() const noexcept {
+        return (bits & traits::man_mask);
+    }
+
+    /// TODO: add(), sub(), mul(), div(), etc. methods
+
+    /// TODO: comparisons
+
+    /// TODO: unary positive/negative, increment/decrement, addition/subtraction,
+    /// and in-place versions
+
+    /// TODO: multiplication/division, and in-place versions
+
+    /// TODO: stream operators
 
 };
 
