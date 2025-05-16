@@ -960,6 +960,11 @@ namespace meta {
         { static_cast<R>(from) } -> std::same_as<R>;
     };
 
+    template <typename L, typename R>
+    concept bit_castable_to = requires(L from) {
+        { std::bit_cast<R>(from) } -> std::same_as<R>;
+    };
+
     namespace nothrow {
 
         template <typename L, typename R>
@@ -971,6 +976,11 @@ namespace meta {
         concept explicitly_convertible_to =
             meta::explicitly_convertible_to<L, R> &&
             noexcept(static_cast<R>(std::declval<L>()));
+
+        template <typename L, typename R>
+        concept bit_castable_to =
+            meta::bit_castable_to<L, R> &&
+            noexcept(std::bit_cast<R>(std::declval<L>()));
 
     }
 
