@@ -6392,11 +6392,6 @@ using uint64 = UInt<64>;
 using uint128 = UInt<128>;
 
 
-/// TODO: One of the only big problems for masking is making sure I don't clobber
-/// inf/quiet nan/signalling nan/subnormals.
-/// -> this should be good now in the hardware case, but it would need a lot of care
-/// to maintain in the softfloat implementation.
-
 /// TODO: endianness presents a pretty massive problem for floating point numbers, and
 /// for arithmetic types in general.  It might interfere with the rather delicate
 /// masking logic that I need to provide the correct results, and I'll need to keep it
@@ -6545,13 +6540,6 @@ public:
 
     /* The underlying bitset representation for the contents of this float. */
     using Bits = bertrand::Bits<N>;
-
-    /* The number of bits devoted to the exponent.  Equivalent to `E`. */
-    static constexpr size_t exponent_size = E;
-
-    /* The number of bits devoted to the mantissa, including the implicit ones bit.
-    Equivalent to `M`. */
-    static constexpr size_t mantissa_size = M;
 
 private:
 
@@ -6730,6 +6718,22 @@ private:
     using traits = _traits<hard_type>;
 
 public:
+
+    /* The number of bits devoted to the exponent.  Equivalent to `E`. */
+    static constexpr size_t exponent_size = E;
+
+    /* The number of bits devoted to the mantissa, including the implicit ones bit.
+    Equivalent to `M`. */
+    static constexpr size_t mantissa_size = M;
+
+    /* The minimum exponent that the base can be raised to before producing a subnormal
+    value. */
+    static constexpr Int<32> min_exponent = Int<32>{1} - traits::exp_bias;
+
+    /* The maximum exponent that the base can be raised to before producing an
+    infinity. */
+    static constexpr Int<32> max_exponent = Int<32>{1} + traits::exp_bias;
+    
     /* The minimum (most negative) finite value that the float can store. */
     [[nodiscard]] static constexpr const Float& min() noexcept {
         static constexpr Float result = [] -> Float {
@@ -6755,13 +6759,24 @@ public:
         return result;
     }
 
-    /* The smallest (closest to zero) positive value that the float can store. */
+    /* The smallest positive, normalized value that the float can store. */
     [[nodiscard]] static constexpr const Float& smallest() noexcept {
         static constexpr Float result = [] -> Float {
             // smallest occurs at exponent == 1 and mantissa == 0
             Float result;
             result.bits |= 1;
             result.bits <<= traits::man_size - 1;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The smallest positive, subnormal value that the float can store. */
+    [[nodiscard]] static constexpr const Float& denorm_min() noexcept {
+        static constexpr Float result = [] -> Float {
+            // denorm min occurs at exponent == 0 and mantissa == 1
+            Float result;
+            result.bits |= 1;
             return result;
         }();
         return result;
@@ -6807,22 +6822,7 @@ public:
         return result;
     }
 
-    /// TODO: 16-bit floats on some architectures encode quiet nan as setting the
-    /// most significant bit of the mantissa, and the next most significant is used
-    /// for signaling nan.  This can possibly become a problem for 4-bit float
-    /// emulation, where the sign bit must be used to differentiate them.  That logic
-    /// might need to be written into the requisite logic, so that the behavior is
-    /// always well-defined.
-    /// -> Maybe that needs to be accounted for here in the `traits::hard` case.  I
-    /// might also just be able to override the default semantics in these types, so
-    /// that they always use the same layout as the softfloat implementation, which
-    /// promotes consistency.  That does mean implicit conversion can turn a signaling
-    /// nan into a quiet one, but that might be a small price to pay overall.
-
-    /// TODO: I can't actually emit SIGFPE traps in the softfloat case, so perhaps
-    /// soft floats just don't support signalling nans.
-
-    /* Quiet NaN sentinel. */
+    /* NaN sentinel. */
     [[nodiscard]] static constexpr const Float& nan() noexcept {
         static constexpr Float result = [] -> Float {
             // NaN layout may be implementation-defined
@@ -6833,26 +6833,6 @@ public:
             // exponent, and non-zero mantissa MSB
             } else {
                 Float result;
-                result.bits |= traits::exp_mask;
-                result.bits |= Bits{1} << (traits::man_size - 2);
-                return result;
-            }
-        }();
-        return result;
-    }
-
-    /* Signaling NaN sentinel. */
-    [[nodiscard]] static constexpr const Float& sig_nan() noexcept {
-        static constexpr Float result = [] -> Float {
-            // NaN layout may be implementation-defined
-            if constexpr (traits::hard) {
-                return {std::numeric_limits<hard_type>::signaling_NaN()};
-
-            // in softfloat mode, signaling NaN corresponds to negative sign, maximum
-            // exponent, and non-zero mantissa MSB
-            } else {
-                Float result;
-                result.bits |= traits::sign_mask;
                 result.bits |= traits::exp_mask;
                 result.bits |= Bits{1} << (traits::man_size - 2);
                 return result;
@@ -7145,7 +7125,7 @@ public:
         return (bits & traits::payload_mask) == traits::exp_mask;  // exp == max, man == 0
     }
 
-    /* Returns true if the float represents quiet or signaling NaN. */
+    /* Returns true if the float represents NaN. */
     [[nodiscard]] constexpr bool is_nan() const noexcept {
         return (bits & traits::payload_mask) > traits::exp_mask;  // exp == max, man != 0
     }
@@ -7169,7 +7149,7 @@ public:
         2.  +/- inf -> +inf, which causes `f.sign() * pow(...)` to obey the identity
         3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
-    [[nodiscard]] constexpr UInt<32> base() const noexcept {
+    [[nodiscard]] static constexpr UInt<32> base() noexcept {
         return 2;
     }
 
@@ -7195,8 +7175,6 @@ public:
         if (payload >= traits::exp_mask) {
             Float result;
             result.bits |= payload;
-            /// TODO: may need to set the sign bit here for signaling NaN in softfloat
-            /// emulation mode?
             return result;
         }
 
@@ -7241,6 +7219,12 @@ public:
         result.bits &= traits::payload_mask;
         return result;
     }
+
+    /// TODO: nextafter, nexttoward, copysign, etc.
+
+    /// TODO: on ULPs: https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+
+
 
     /// TODO: documentation for arithmetic methods, and possible softfloat emulation
 
@@ -7514,10 +7498,6 @@ template <size_t E, size_t M>
 constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept { lhs.swap(rhs); }
 
 
-
-
-
-
 /// TODO: eventually, use the exponent and mantissa sizes from the extended floating
 /// point types, which are not yet available in libc++.
 
@@ -7535,6 +7515,9 @@ using float64 = Float<11, 53>;
 
 
 // static_assert(int16(float32(10)) == 10);
+
+
+static_assert(Bits{std::numeric_limits<float>::denorm_min()}.data()[0] == 0b0'00000000'00000000'00000000'0000001);
 
 
 
@@ -7740,8 +7723,6 @@ namespace std {
         static constexpr bool has_infinity                  = false;
         static constexpr bool has_quiet_NaN                 = false;
         static constexpr bool has_signaling_NaN             = false;
-        static constexpr bool has_denorm                    = false;
-        static constexpr bool has_denorm_loss               = false;
         static constexpr std::float_round_style round_style =
             std::float_round_style::round_toward_zero;
         static constexpr bool is_iec559                     = false;
@@ -7768,8 +7749,8 @@ namespace std {
         static constexpr type denorm_min() noexcept { return {}; }
     };
 
-    /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
-    other integer types. */
+    /* Specializing `std::numeric_limits` allows unsigned integers to be introspected
+    just like other integer types. */
     template <bertrand::meta::UInt T>
     struct numeric_limits<T> {
     private:
@@ -7785,8 +7766,6 @@ namespace std {
         static constexpr bool has_infinity                  = traits::has_infinity;
         static constexpr bool has_quiet_NaN                 = traits::has_quiet_NaN;
         static constexpr bool has_signaling_NaN             = traits::has_signaling_NaN;
-        static constexpr bool has_denorm                    = traits::has_denorm;
-        static constexpr bool has_denorm_loss               = traits::has_denorm_loss;
         static constexpr std::float_round_style round_style = traits::round_style;
         static constexpr bool is_iec559                     = traits::is_iec559;
         static constexpr bool is_bounded                    = traits::is_bounded;
@@ -7812,8 +7791,8 @@ namespace std {
         static constexpr type denorm_min() noexcept { return {}; }
     };
 
-    /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
-    other integer types. */
+    /* Specializing `std::numeric_limits` allows signed integers to be introspected
+    just like other integer types. */
     template <bertrand::meta::Int T>
     struct numeric_limits<T> {
     private:
@@ -7830,8 +7809,6 @@ namespace std {
         static constexpr bool has_infinity                  = traits::has_infinity;
         static constexpr bool has_quiet_NaN                 = traits::has_quiet_NaN;
         static constexpr bool has_signaling_NaN             = traits::has_signaling_NaN;
-        static constexpr bool has_denorm                    = traits::has_denorm;
-        static constexpr bool has_denorm_loss               = traits::has_denorm_loss;
         static constexpr std::float_round_style round_style = traits::round_style;
         static constexpr bool is_iec559                     = traits::is_iec559;
         static constexpr bool is_bounded                    = traits::is_bounded;
@@ -7857,9 +7834,52 @@ namespace std {
         static constexpr type denorm_min() noexcept { return {}; }
     };
 
+    /* Specializing `std::numeric_limits` allows floats to be introspected just like
+    other float types. */
     template <bertrand::meta::Float T>
     struct numeric_limits<T> {
-        /// TODO: proper traits for floating point types
+    private:
+        using type = std::remove_cvref_t<T>;
+        static constexpr double log10_2 = 0.3010299956639812;  // log2(10)
+
+    public:
+        static constexpr bool is_specialized                = true;
+        static constexpr bool is_signed                     = true;
+        static constexpr bool is_integer                    = false;
+        static constexpr bool is_exact                      = false;
+        static constexpr bool has_infinity                  = true;
+        static constexpr bool has_quiet_NaN                 = true;
+        static constexpr bool has_signaling_NaN             = false;
+        static constexpr std::float_round_style round_style = std::float_round_style::round_to_nearest;
+        static constexpr bool is_iec559                     = false;  // no signaling NaN
+        static constexpr bool is_bounded                    = true;
+        static constexpr bool is_modulo                     = false;
+        static constexpr int digits                         = type::mantissa_size;
+        static constexpr int digits10                       = (digits - 1) * log10_2;  // log10(2)
+        static constexpr int max_digits10                   = [] {
+            double temp = digits * log10_2 + 1;
+            int result = static_cast<int>(temp);
+            if (result < temp) {
+                ++result;
+            }
+            return result;
+        }();
+        static constexpr int radix                          = 2;
+        static constexpr int min_exponent                   = type::min_exponent + 1;
+        static constexpr int min_exponent10                 = type::min_exponent * log10_2;
+        static constexpr int max_exponent                   = type::max_exponent + 1;
+        static constexpr int max_exponent10                 = type::max_exponent * log10_2;
+        static constexpr bool traps                         = false;
+        static constexpr bool tinyness_before               = false;
+        static constexpr type min() noexcept { return type::smallest(); }
+        static constexpr type lowest() noexcept { return type::min(); }
+        static constexpr type max() noexcept { return type::max(); }
+        static constexpr type epsilon() noexcept { return type::epsilon(); }
+        static constexpr type round_error() noexcept { return 0.5; }
+        static constexpr type infinity() noexcept { return type::inf(); }
+        static constexpr type quiet_NaN() noexcept { return type::nan(); }
+        static constexpr type signaling_NaN() noexcept { return type::nan(); }
+        static constexpr type denorm_min() noexcept { return type::denorm_min(); }
     };
 
     /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
