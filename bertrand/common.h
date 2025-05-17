@@ -722,9 +722,9 @@ namespace meta {
 
     namespace detail {
         template <meta::integer T>
-        constexpr size_t integer_width = sizeof(unqualify<T>) * 8;
+        constexpr size_t integer_size = sizeof(unqualify<T>) * 8;
         template <meta::boolean T>
-        constexpr size_t integer_width<T> = 1;
+        constexpr size_t integer_size<T> = 1;
 
         template <typename T>
         struct as_signed { using type = std::make_signed_t<T>; };
@@ -733,22 +733,22 @@ namespace meta {
     }
 
     template <integer T>
-    constexpr size_t integer_width = detail::integer_width<T>;
+    constexpr size_t integer_size = detail::integer_size<T>;
 
     template <typename T>
-    concept int8 = signed_integer<T> && integer_width<T> == 8;
+    concept int8 = signed_integer<T> && integer_size<T> == 8;
 
     template <typename T>
-    concept int16 = signed_integer<T> && integer_width<T> == 16;
+    concept int16 = signed_integer<T> && integer_size<T> == 16;
 
     template <typename T>
-    concept int32 = signed_integer<T> && integer_width<T> == 32;
+    concept int32 = signed_integer<T> && integer_size<T> == 32;
 
     template <typename T>
-    concept int64 = signed_integer<T> && integer_width<T> == 64;
+    concept int64 = signed_integer<T> && integer_size<T> == 64;
 
     template <typename T>
-    concept int128 = signed_integer<T> && integer_width<T> == 128;
+    concept int128 = signed_integer<T> && integer_size<T> == 128;
 
     template <typename T>
     concept unsigned_integer = integer<T> && detail::unsigned_integer<T>;
@@ -767,19 +767,19 @@ namespace meta {
     using as_unsigned = qualify<typename detail::as_unsigned<T>::type, T>;
 
     template <typename T>
-    concept uint8 = unsigned_integer<T> && integer_width<T> == 8;
+    concept uint8 = unsigned_integer<T> && integer_size<T> == 8;
 
     template <typename T>
-    concept uint16 = unsigned_integer<T> && integer_width<T> == 16;
+    concept uint16 = unsigned_integer<T> && integer_size<T> == 16;
 
     template <typename T>
-    concept uint32 = unsigned_integer<T> && integer_width<T> == 32;
+    concept uint32 = unsigned_integer<T> && integer_size<T> == 32;
 
     template <typename T>
-    concept uint64 = unsigned_integer<T> && integer_width<T> == 64;
+    concept uint64 = unsigned_integer<T> && integer_size<T> == 64;
 
     template <typename T>
-    concept uint128 = unsigned_integer<T> && integer_width<T> == 128;
+    concept uint128 = unsigned_integer<T> && integer_size<T> == 128;
 
     template <typename T>
     concept floating = detail::floating<T>;

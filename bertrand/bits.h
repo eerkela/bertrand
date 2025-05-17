@@ -151,7 +151,7 @@ namespace meta {
         template <meta::Bits T>
         constexpr bool unsigned_integer<T> = true;
         template <meta::integer T> requires (meta::Bits<T>)
-        constexpr size_t integer_width<T> = T::size();
+        constexpr size_t integer_size<T> = T::size();
         template <meta::Bits T>
         struct as_signed<T> { using type = bertrand::Int<T::size()>; };
 
@@ -160,18 +160,18 @@ namespace meta {
         template <meta::UInt T>
         constexpr bool unsigned_integer<T> = true;
         template <meta::integer T> requires (meta::UInt<T>)
-        constexpr size_t integer_width<T> = meta::unqualify<T>::Bits::size();
+        constexpr size_t integer_size<T> = meta::unqualify<T>::Bits::size();
         template <meta::UInt T>
-        struct as_signed<T> { using type = bertrand::Int<integer_width<T>>; };
+        struct as_signed<T> { using type = bertrand::Int<integer_size<T>>; };
 
         template <meta::Int T>
         constexpr bool integer<T> = true;
         template <meta::Int T>
         constexpr bool signed_integer<T> = true;
         template <meta::integer T> requires (meta::Int<T>)
-        constexpr size_t integer_width<T> = meta::unqualify<T>::Bits::size();
+        constexpr size_t integer_size<T> = meta::unqualify<T>::Bits::size();
         template <meta::Int T>
-        struct as_unsigned<T> { using type = bertrand::UInt<integer_width<T>>; };
+        struct as_unsigned<T> { using type = bertrand::UInt<integer_size<T>>; };
 
         /// TODO: specializations for float-related concepts
     }
@@ -180,6 +180,10 @@ namespace meta {
 
 
 namespace impl {
+
+    /// TODO: extend log2_table to 256 bits, so that any bitset can be encoded as an
+    /// ASCII string, and vice versa.  Maybe `to_ascii()` and `from_ascii()` can even
+    /// be standard methods
 
     inline constexpr std::array<double, 64> log2_table {
         0,
@@ -255,14 +259,14 @@ namespace impl {
     template <size_t N, typename... words>
     concept strict_bitwise_constructor =
         (impl::strict_bits<words> && ...) &&
-        ((meta::integer_width<words> + ... + 0) <= N);
+        ((meta::integer_size<words> + ... + 0) <= N);
 
     template <size_t N, typename... words>
     concept loose_bitwise_constructor =
         sizeof...(words) > 0 &&
         !(impl::strict_bits<words> && ...) &&
         (meta::integer<words> && ... && (
-            (meta::integer_width<words> + ... + 0) <= bertrand::max(N, 64)
+            (meta::integer_size<words> + ... + 0) <= bertrand::max(N, 64)
         ));
 
     /// TODO: bit_cast_constructor should possibly assert that not ALL Ts... are
@@ -305,7 +309,7 @@ namespace impl {
     template <size_t M>
     struct word {
         using type = uint64_t;
-        static constexpr size_t size = meta::integer_width<type>;
+        static constexpr size_t size = meta::integer_size<type>;
 
         // if 128-bit integers are available, use them.  Otherwise, use a composite
         // word with 2 64-bit limbs.
@@ -454,10 +458,10 @@ namespace impl {
             };
         #endif
     };
-    template <size_t M> requires (M <= meta::integer_width<uint8_t>)
+    template <size_t M> requires (M <= meta::integer_size<uint8_t>)
     struct word<M> {
         using type = uint8_t;
-        static constexpr size_t size = meta::integer_width<type>;
+        static constexpr size_t size = meta::integer_size<type>;
         struct big {
             using type = uint16_t;
             static constexpr bool composite = false;
@@ -486,10 +490,10 @@ namespace impl {
         };
     };
     template <size_t M>
-        requires (M > meta::integer_width<uint8_t> && M <= meta::integer_width<uint16_t>)
+        requires (M > meta::integer_size<uint8_t> && M <= meta::integer_size<uint16_t>)
     struct word<M> {
         using type = uint16_t;
-        static constexpr size_t size = meta::integer_width<type>;
+        static constexpr size_t size = meta::integer_size<type>;
         struct big {
             using type = uint32_t;
             static constexpr bool composite = false;
@@ -518,10 +522,10 @@ namespace impl {
         };
     };
     template <size_t M>
-        requires (M > meta::integer_width<uint16_t> && M <= meta::integer_width<uint32_t>)
+        requires (M > meta::integer_size<uint16_t> && M <= meta::integer_size<uint32_t>)
     struct word<M> {
         using type = uint32_t;
-        static constexpr size_t size = meta::integer_width<type>;
+        static constexpr size_t size = meta::integer_size<type>;
         struct big {
             using type = uint64_t;
             static constexpr bool composite = false;
@@ -1333,7 +1337,7 @@ private:
 
     template <size_type I, meta::Bits T, typename... Ts>
     static constexpr void from_bits(array& data, const T& v, const Ts&... rest) noexcept {
-        static constexpr size_type J = I + meta::integer_width<T>;
+        static constexpr size_type J = I + meta::integer_size<T>;
         static constexpr size_type start_bit = I % word_size;
         static constexpr size_type start_word = I / word_size;
         static constexpr size_type stop_word = J / word_size;
@@ -1375,7 +1379,7 @@ private:
 
     template <size_type I, meta::integer T, typename... Ts>
     static constexpr void from_ints(array& data, T v, const Ts&... rest) noexcept {
-        static constexpr size_type J = I + meta::integer_width<T>;
+        static constexpr size_type J = I + meta::integer_size<T>;
         static constexpr size_type start_bit = I % word_size;
         static constexpr size_type start_word = I / word_size;
         static constexpr size_type stop_word = J / word_size;
@@ -1401,7 +1405,7 @@ private:
                     consumed += word_size;
                 }
             }
-            from_ints<I + meta::integer_width<T>>(data, rest...);
+            from_ints<I + meta::integer_size<T>>(data, rest...);
 
         } else if constexpr (meta::UInt<T> || meta::Int<T>) {
             from_ints<I>(data, v.bits, rest...);
@@ -1414,15 +1418,15 @@ private:
                 size_type consumed = word_size - start_bit;
                 v >>= consumed;
                 size_type i = start_word;
-                while (consumed < meta::integer_width<T>) {
+                while (consumed < meta::integer_size<T>) {
                     data[++i] |= word(v);
-                    if constexpr (word_size < meta::integer_width<T>) {
+                    if constexpr (word_size < meta::integer_size<T>) {
                         v >>= word_size;
                     }
                     consumed += word_size;
                 }
             }
-            from_ints<I + meta::integer_width<T>>(data, rest...);
+            from_ints<I + meta::integer_size<T>>(data, rest...);
         }
     }
 
@@ -2141,15 +2145,6 @@ public:
             index(other.index),
             cache(other.cache)
         {}
-
-        /// TODO: bit_cast()-based explicit conversion operator, such that you can
-        /// write something like `X field {Bits{Y()}[slice{0, 8}]};` in order to
-        /// extract a slice as a full POD type.
-        /// uint32 morton = ...;
-        /// uint8 x = morton.bits[slice{0, std::nullopt, 4}];
-        /// uint8 y = morton.bits[slice{1, std::nullopt, 4}];
-        /// uint8 z = morton.bits[slice{2, std::nullopt, 4}];
-        /// uint8 w = morton.bits[slice{3, std::nullopt, 4}];
 
         [[nodiscard]] constexpr const_reference operator*() const noexcept(!DEBUG) {
             if constexpr (DEBUG) {
@@ -3205,7 +3200,7 @@ public:
                 Bits temp = *it;
                 temp <<= i;
                 *this |= temp;
-                i += meta::integer_width<meta::yield_type<T>>;
+                i += meta::integer_size<meta::yield_type<T>>;
             } else {
                 buffer[i / word_size] |=
                     (word(static_cast<bool>(*it)) << (i % word_size));
@@ -4759,7 +4754,7 @@ public:
 
 
 template <meta::integer... Ts>
-Bits(Ts...) -> Bits<(meta::integer_width<Ts> + ... + 0)>;
+Bits(Ts...) -> Bits<(meta::integer_size<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
 Bits(T) -> Bits<T::self::size()>;
 template <size_t N>
@@ -5417,7 +5412,7 @@ public:
 
 
 template <meta::integer... Ts>
-UInt(Ts...) -> UInt<(meta::integer_width<Ts> + ... + 0)>;
+UInt(Ts...) -> UInt<(meta::integer_size<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
 UInt(T) -> UInt<T::self::size()>;
 
@@ -5501,6 +5496,8 @@ public:
     [[nodiscard]] explicit constexpr Int(const words&... vals) noexcept :
         bits(vals...)
     {}
+
+    /// TODO: explicit constructor from floating point types
 
     /* Construct an integer from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -5706,26 +5703,26 @@ public:
         return result;
     }
 
-    /* A shorthand for `to_string<"0", "1">()`, which yields a string in the canonical
+    /* A shorthand for `to_string<"-", "0", "1">()`, which yields a string in the canonical
     binary representation. */
     [[nodiscard]] constexpr std::string to_binary() const noexcept {
         return to_string<"-", "0", "1">();
     }
 
-    /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7">()`, which
+    /* A shorthand for `to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7">()`, which
     yields a string in the canonical octal representation. */
     [[nodiscard]] constexpr std::string to_octal() const noexcept {
         return to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7">();
     }
 
-    /* A shorthand for `to_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9">()`,
+    /* A shorthand for `to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9">()`,
     which yields a string in the canonical decimal representation. */
     [[nodiscard]] constexpr std::string to_decimal() const noexcept {
         return to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9">();
     }
 
     /* A shorthand for
-    `to_string<"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">()`,
+    `to_string<"-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">()`,
     which yields a string in the canonical hexadecimal representation. */
     [[nodiscard]] constexpr std::string to_hex() const noexcept {
         return to_string<
@@ -6326,7 +6323,7 @@ public:
 
 
 template <meta::integer... Ts>
-Int(Ts...) -> Int<(meta::integer_width<Ts> + ... + 0)>;
+Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
 Int(T) -> Int<T::self::size()>;
 
@@ -6377,7 +6374,7 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 /// TODO: endianness presents a pretty massive problem for floating point numbers, and
 /// for arithmetic types in general.  It might interfere with the rather delicate
 /// masking logic that I need to provide the correct results, and I'll need to keep it
-/// mind.
+/// in mind.
 
 
 /// Reference: https://github.com/oprecomp/FloatX
@@ -6518,6 +6515,13 @@ public:
     /* The underlying bitset representation for the contents of this float. */
     using Bits = bertrand::Bits<N>;
 
+    /* The number of bits devoted to the exponent.  Equivalent to `E`. */
+    static constexpr size_t exponent_size = E;
+
+    /* The number of bits devoted to the mantissa, including the implicit ones bit.
+    Equivalent to `M`. */
+    static constexpr size_t mantissa_size = M;
+
 private:
 
     template <typename T>
@@ -6529,6 +6533,7 @@ private:
             Bits::mask(0, E - 1);
 
         static constexpr Bits sign_mask = Bits{1} << (N - 1);
+        static constexpr Bits payload_mask = ~sign_mask;
         static constexpr Bits exp_mask =
             Bits::mask(man_size - 1, man_size - 1 + E);
         static constexpr Bits man_mask =
@@ -6538,6 +6543,20 @@ private:
 
         static constexpr void narrow(Bits& bits) noexcept {}
         static constexpr const Float& widen(const Float& self) noexcept { return self; }
+
+        template <meta::floating U>
+        static constexpr Bits from_float(const U& value) noexcept {
+            /// TODO: this is where I would need to convert from a hardware float to a
+            /// software float, or from a softfloat of a different size to this one.
+            return {};
+        }
+
+        template <meta::integer U>
+        static constexpr Bits from_int(const U& value) noexcept {
+            /// TODO: convert an integer into a float with the correct exponent and
+            /// mantissa.
+            return {};
+        }
     };
     template <meta::not_void T>
     struct _traits<T> {
@@ -6548,6 +6567,7 @@ private:
             Bits::mask(0, E - 1);
 
         static constexpr Bits sign_mask = Bits{1} << (N - 1);
+        static constexpr Bits payload_mask = ~sign_mask;
         static constexpr Bits exp_mask =
             Bits::mask(man_size - 1, man_size - 1 + E);
         static constexpr Bits man_mask =
@@ -6661,6 +6681,20 @@ private:
                 return static_cast<T>(bits);
             }
         }
+
+        template <meta::floating U>
+        static constexpr Bits from_float(const U& value) noexcept {
+            Bits result = Bits{static_cast<T>(value)};
+            narrow(result);
+            return result;
+        }
+
+        template <meta::integer U>
+        static constexpr Bits from_int(const U& value) noexcept {
+            Bits result = Bits{static_cast<T>(value)};
+            narrow(result);
+            return result;
+        }
     };
     using traits = _traits<hard_type>;
 
@@ -6668,6 +6702,7 @@ public:
     /* The minimum (most negative) finite value that the float can store. */
     [[nodiscard]] static constexpr const Float& min() noexcept {
         static constexpr Float result = [] -> Float {
+            // min occurs at exponent == max - 1 and mantissa == all ones
             Float result;
             result.bits |= traits::sign_mask;
             result.bits |= traits::exp_bias << traits::man_size;
@@ -6680,6 +6715,7 @@ public:
     /* The maximum (most positive) finite value that the float can store. */
     [[nodiscard]] static constexpr const Float& max() noexcept {
         static constexpr Float result = [] -> Float {
+            // max occurs at exponent == max - 1 and mantissa == all ones
             Float result;
             result.bits |= traits::exp_bias << traits::man_size;
             result.bits |= traits::man_mask;
@@ -6688,9 +6724,39 @@ public:
         return result;
     }
 
+    /* The smallest (closest to zero) positive value that the float can store. */
+    [[nodiscard]] static constexpr const Float& smallest() noexcept {
+        static constexpr Float result = [] -> Float {
+            // smallest occurs at exponent == 1 and mantissa == 0
+            Float result;
+            result.bits |= 1;
+            result.bits <<= traits::man_size - 1;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The difference in magnitude between 1.0 and the next representable value for
+    this floating point type.  Smaller results indicate a higher floating point
+    resolution, which is correlated with `M` (the number of bits devoted to the
+    mantissa).  Epsilon is used as the default floating point tolerance for approximate
+    comparisons. */
+    [[nodiscard]] static constexpr const Float& epsilon() noexcept {
+        static constexpr Float result = [] -> Float {
+            // epsilon occurs at exponent == bias and mantissa == 1, then subtract 1
+            Float result;
+            result.bits |= 1;
+            result.bits <<= traits::man_size - M;
+            result.bits |= traits::exp_bias << (traits::man_size - 1);
+            return result - 1;
+        }();
+        return result;
+    }
+
     /* Negative infinity sentinel. */
     [[nodiscard]] static constexpr const Float& neg_inf() noexcept {
         static constexpr Float result = [] -> Float {
+            // infinity occurs at max exponent and zero mantissa
             Float result;
             result.bits |= traits::sign_mask;
             result.bits |= traits::exp_mask;
@@ -6702,6 +6768,7 @@ public:
     /* Positive infinity sentinel. */
     [[nodiscard]] static constexpr const Float& inf() noexcept {
         static constexpr Float result = [] -> Float {
+            // infinity occurs at max exponent and zero mantissa
             Float result;
             result.bits |= traits::exp_mask;
             return result;
@@ -6720,6 +6787,9 @@ public:
     /// that they always use the same layout as the softfloat implementation, which
     /// promotes consistency.  That does mean implicit conversion can turn a signaling
     /// nan into a quiet one, but that might be a small price to pay overall.
+
+    /// TODO: I can't actually emit SIGFPE traps in the softfloat case, so perhaps
+    /// soft floats just don't support signalling nans.
 
     /* Quiet NaN sentinel. */
     [[nodiscard]] static constexpr const Float& nan() noexcept {
@@ -6760,22 +6830,28 @@ public:
         return result;
     }
 
-    /* A bitset holding the bitwise representation of the integer. */
+    /* A bitset holding the bitwise representation of the float. */
     Bits bits;
 
     /* Default constructor.  Initializes to positive zero. */
     [[nodiscard]] constexpr Float() noexcept = default;
 
-    /* Implicitly convert from a hardware floating point type if one is available. */
-    [[nodiscard]] constexpr Float(hard_type value) noexcept requires(traits::hard) :
-        bits(value)
-    {
-        traits::narrow(bits);
-    }
+    /* Implicitly convert from a float of any width, rounding the result to the nearest
+    representable value. */
+    template <meta::floating T>
+    [[nodiscard]] constexpr Float(const T& value) noexcept :
+        bits(traits::from_float(value))
+    {}
 
-    /// TODO: some kind of constructor for the softfloat case, which would take any
-    /// float type and convert it to the correct size.  That might be the default
-    /// constructor once everything is figured out.
+    /// TODO: the explicit constructor from integers should not interfere with the
+    /// explicit conversion on the integers themselves.
+
+    /* Explicitly convert an integer into a float, rounding the result to the nearest
+    representable value. */
+    template <meta::integer T> requires (!meta::Bits<T>)
+    [[nodiscard]] explicit constexpr Float(const T& value) noexcept :
+        bits(traits::from_int(value))
+    {}
 
     /* Trivially swap the values of two floats. */
     constexpr void swap(Float& other) noexcept {
@@ -6792,31 +6868,23 @@ public:
     template <
         static_str negative = "-",
         static_str decimal = ".",
-        static_str zero = "0",
-        static_str one = "1",
-        static_str two = "2",
-        static_str three = "3",
-        static_str four = "4",
-        static_str five = "5",
-        static_str six = "6",
-        static_str seven = "7",
-        static_str eight = "8",
-        static_str nine = "9",
         static_str exponent = "e",
         static_str inf = "inf",
-        static_str nan = "nan"
+        static_str nan = "nan",
+        static_str zero = "0",
+        static_str one = "1",
+        static_str... rest
     >
         requires (
-            !negative.empty() && !decimal.empty() && !zero.empty() && !one.empty() &&
-            !two.empty() && !three.empty() && !four.empty() && !five.empty() &&
-            !six.empty() && !seven.empty() && !eight.empty() && !nine.empty() &&
-            !exponent.empty() && !inf.empty() && !nan.empty() &&
-            meta::perfectly_hashable<
-                negative, decimal, zero, one, two, three, four, five, six, seven,
-                eight, nine, exponent, inf, nan
+            !negative.empty() && !decimal.empty() && !exponent.empty() &&
+            !inf.empty() && !nan.empty() && !zero.empty() && !one.empty() &&
+            (!rest.empty() && ...) && meta::perfectly_hashable<
+                negative, decimal, exponent, inf, nan, zero, one, rest...
             >
         )
-    [[nodiscard]] static constexpr Float from_string() {
+    [[nodiscard]] static constexpr auto from_string(std::string_view str) noexcept
+        -> Expected<Float, ValueError>  // TODO: no overflow error possible?
+    {
         /// TODO: quite a bit more complicated than the integer version, but still
         /// doable.
         return {};
@@ -6825,28 +6893,135 @@ public:
     template <
         static_str negative = "-",
         static_str decimal = ".",
-        static_str zero = "0",
-        static_str one = "1",
-        static_str two = "2",
-        static_str three = "3",
-        static_str four = "4",
-        static_str five = "5",
-        static_str six = "6",
-        static_str seven = "7",
-        static_str eight = "8",
-        static_str nine = "9",
         static_str exponent = "e",
         static_str inf = "inf",
-        static_str nan = "nan"
+        static_str nan = "nan",
+        static_str zero = "0",
+        static_str one = "1",
+        static_str... rest
     >
         requires (
-            !negative.empty() && !decimal.empty() && !zero.empty() && !one.empty() &&
-            !two.empty() && !three.empty() && !four.empty() && !five.empty() &&
-            !six.empty() && !seven.empty() && !eight.empty() && !nine.empty() &&
-            !exponent.empty() && !inf.empty() && !nan.empty() &&
-            meta::strings_are_unique<
-                negative, decimal, zero, one, two, three, four, five, six, seven,
-                eight, nine, exponent, inf, nan
+            !negative.empty() && !decimal.empty() && !exponent.empty() &&
+            !inf.empty() && !nan.empty() && !zero.empty() && !one.empty() &&
+            (!rest.empty() && ...) && meta::perfectly_hashable<
+                negative, decimal, exponent, inf, nan, zero, one, rest...
+            >
+        )
+    [[nodiscard]] static constexpr Float from_string(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        /// TODO: quite a bit more complicated than the integer version, but still
+        /// doable.
+        return {};
+    }
+
+    /* A shorthand for `from_string<"-", ".", "e", "inf", "nan", "0", "1">(str)`, which
+    decodes a string in the canonical binary representation. */
+    [[nodiscard]] static constexpr auto from_binary(std::string_view str) noexcept
+        -> Expected<Float, ValueError>
+    {
+        return from_string<"-", ".", "e", "inf", "nan", "0", "1">(str);
+    }
+
+    /* A shorthand for
+    `from_string<"-", ".", "e", "inf", "nan", "0", "1">(str, continuation)`, which
+    decodes a string in the canonical binary representation. */
+    [[nodiscard]] static constexpr Float from_binary(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<"-", ".", "e", "inf", "nan", "0", "1">(str, continuation);
+    }
+
+    /* A shorthand for
+    `from_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7">(str)`,
+    which decodes a string in the canonical octal representation. */
+    [[nodiscard]] static constexpr auto from_octal(std::string_view str) noexcept
+        -> Expected<Float, ValueError>
+    {
+        return from_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7"
+        >(str);
+    }
+
+    /* A shorthand for
+    `from_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7">(str, continuation)`,
+    which decodes a string in the canonical octal representation. */
+    [[nodiscard]] static constexpr Float from_octal(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7"
+        >(str, continuation);
+    }
+
+    /* A shorthand for
+    `from_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str)`, which
+    decodes a string in the canonical decimal representation. */
+    [[nodiscard]] static constexpr auto from_decimal(std::string_view str) noexcept
+        -> Expected<Float, ValueError>
+    {
+        return from_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7",
+            "8", "9"
+        >(str);
+    }
+
+    /* A shorthand for
+    `from_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9">(str, continuation)`,
+    which decodes a string in the canonical decimal representation. */
+    [[nodiscard]] static constexpr Float from_decimal(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7",
+            "8", "9"
+        >(str, continuation);
+    }
+
+    /* A shorthand for
+    `from_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">(str)`,
+    which decodes a string in the canonical hexadecimal representation. */
+    [[nodiscard]] static constexpr auto from_hex(std::string_view str) noexcept
+        -> Expected<Float, ValueError>
+    {
+        return from_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7",
+            "8", "9", "A", "B", "C", "D", "E", "F"
+        >(str);
+    }
+
+    /* A shorthand for
+    `from_string<"-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">(str, continuation)`,
+    which decodes a string in the canonical hexadecimal representation. */
+    [[nodiscard]] static constexpr Float from_hex(
+        std::string_view str,
+        std::string_view& continuation
+    ) noexcept {
+        return from_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7",
+            "8", "9", "A", "B", "C", "D", "E", "F"
+        >(str, continuation);
+    }
+
+    template <
+        static_str negative = "-",
+        static_str decimal = ".",
+        static_str exponent = "e",
+        static_str inf = "inf",
+        static_str nan = "nan",
+        static_str zero = "0",
+        static_str one = "1",
+        static_str... rest
+    >
+        requires (
+            !negative.empty() && !decimal.empty() && !exponent.empty() &&
+            !inf.empty() && !nan.empty() && !zero.empty() && !one.empty() &&
+            (!rest.empty() && ...) && meta::strings_are_unique<
+                negative, decimal, exponent, inf, nan, zero, one, rest...
             >
         )
     [[nodiscard]] constexpr std::string to_string() const noexcept {
@@ -6854,14 +7029,49 @@ public:
         return {};
     }
 
-    /* Convert the integer to a decimal string representation. */
-    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        return to_string();
+    /* A shorthand for `to_string<"-", ".", "e", "inf", "nan", "0", "1">()`, which
+    yields a string in the canonical binary representation. */
+    [[nodiscard]] constexpr std::string to_binary() const noexcept {
+        return to_string<"-", ".", "e", "inf", "nan", "0", "1">();
     }
 
-    /* Non-zero floats evaluate to true under boolean logic. */
+    /* A shorthand for
+    `to_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7">()`,
+    which yields a string in the canonical octal representation. */
+    [[nodiscard]] constexpr std::string to_octal() const noexcept {
+        return to_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7"
+        >();
+    }
+
+    /* A shorthand for
+    `to_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9">()`,
+    which yields a string in the canonical decimal representation. */
+    [[nodiscard]] constexpr std::string to_decimal() const noexcept {
+        return to_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7",
+            "8", "9"
+        >();
+    }
+
+    /* A shorthand for
+    `to_string<"-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "A", "B", "C", "D", "E", "F">()`,
+    which yields a string in the canonical hexadecimal representation. */
+    [[nodiscard]] constexpr std::string to_hex() const noexcept {
+        return to_string<
+            "-", ".", "e", "inf", "nan", "0", "1", "2", "3", "4", "5", "6", "7",
+            "8", "9", "A", "B", "C", "D", "E", "F"
+        >();
+    }
+
+    /* Explicitly Convert the float to a decimal string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_decimal();
+    }
+
+    /* Non-zero floats (including subnormals) evaluate to true under boolean logic. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return bool(bits & traits::exp_mask);
+        return bool(bits & traits::payload_mask);
     }
 
     /* Implicitly convert the float to an equivalent hardware type if one is
@@ -6870,26 +7080,31 @@ public:
         return traits::widen(bits);
     }
 
-    /// TODO: explicit (not implicit) conversion to integer types
+    /// TODO: explicit (not implicit) conversion to integer types?  Providing the
+    /// above conversion operator also allows implicit conversion to integer types,
+    /// which may not be desirable.
 
     /// TODO: explicit conversion from multi-word floats to smaller float types
 
+    /* Returns true if the float represents zero, regardless of sign. */
+    [[nodiscard]] constexpr bool is_zero() const noexcept {
+        return !*this;
+    }
+
+    /* Returns true if the float represents a subnormal number, regardless of sign. */
+    [[nodiscard]] constexpr bool is_subnormal() const noexcept {
+        Bits payload = bits & traits::payload_mask;
+        return (payload <= traits::man_mask) && payload;  // exp == 0, man != 0
+    }
+
     /* Returns true if the float represents positive or negative infinity. */
     [[nodiscard]] constexpr bool is_inf() const noexcept {
-        return (bits & traits::exp_mask) == traits::exp_mask;
+        return (bits & traits::payload_mask) == traits::exp_mask;  // exp == max, man == 0
     }
 
     /* Returns true if the float represents quiet or signaling NaN. */
     [[nodiscard]] constexpr bool is_nan() const noexcept {
-        return
-            (bits & traits::exp_mask) == traits::exp_mask &&
-            (bits & traits::man_mask) != 0;
-    }
-
-    /* Returns true if the float represents zero, regardless of sign or subnormal
-    mantissa. */
-    [[nodiscard]] constexpr bool is_zero() const noexcept {
-        return (bits & traits::exp_mask) == 0;
+        return (bits & traits::payload_mask) > traits::exp_mask;  // exp == max, man != 0
     }
 
     /* Return +1 if the float is positive or -1 if it is negative. */
@@ -6903,22 +7118,57 @@ public:
         ```
         assert(f == f.sign() * pow(f.base(), f.exponent()) * f.mantissa());
         ```
+
+    ... Except in the case of subnormal numbers, which get rounded down to zero.  For
+    each of the IEEE 754 special cases:
+
+        1.  +/- zero or subnormal -> -inf, which causes `pow(...)` to return 0.0
+        2.  +/- inf -> +inf, which causes `f.sign() * pow(...)` to obey the identity
+        3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
     [[nodiscard]] constexpr UInt<32> base() const noexcept {
         return 2;
     }
 
     /* Return the normalized exponent being used by the float.  The result is given as
-    a signed integer with the bias subtracted away, and always obeys the identity:
+    another float with a signed integral value centered on zero.  It always obeys the
+    identity:
 
         ```
         assert(f == f.sign() * pow(f.base(), f.exponent()) * f.mantissa());
         ```
+
+    ... Except in the case of subnormal numbers, which get rounded down to zero.  For
+    each of the IEEE 754 special cases:
+
+        1.  +/- zero or subnormal -> -inf, which causes `pow(...)` to return 0.0
+        2.  +/- inf -> +inf, which causes `f.sign() * pow(...)` to obey the identity
+        3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
-    [[nodiscard]] constexpr Int<E> exponent() const noexcept {
-        return
+    [[nodiscard]] constexpr Float exponent() const noexcept {
+        Bits payload = bits & traits::payload_mask;
+
+        // inf/NaN get passed through with positive sign
+        if (payload >= traits::exp_mask) {
+            Float result;
+            result.bits |= payload;
+            /// TODO: may need to set the sign bit here for signaling NaN in softfloat
+            /// emulation mode?
+            return result;
+        }
+
+        // zero and subnormals get converted to negative infinity
+        if (payload <= traits::man_mask) {
+            return neg_inf();
+        }
+
+        // all other values get converted to a signed integer and subtracted by the
+        // bias before being converted back to a float.
+        Int<E> result = {
             Int<E>{(bits & traits::exp_mask) >> (traits::man_size - 1)} -
-            Int<E>(traits::exp_bias);
+            Int<E>(traits::exp_bias)
+        };
+        return Float{result};
     }
 
     /* Return the fractional mantissa being used by the float.  This is always another
@@ -6928,12 +7178,25 @@ public:
         ```
         assert(f == f.sign() * pow(f.base(), f.exponent()) * f.mantissa());
         ```
+
+    ... Except in the case of subnormal numbers, which get rounded down to zero.  For
+    each of the IEEE 754 special cases:
+
+        1.  +/- zero or subnormal -> -inf, which causes `pow(...)` to return 0.0
+        2.  +/- inf -> +inf, which causes `f.sign() * pow(...)` to obey the identity
+        3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
     [[nodiscard]] constexpr Float mantissa() const noexcept {
         return Float(
-            (bits & traits::man_mask) |
-            (traits::exp_bias << (traits::man_size - 1))
+            (bits & traits::man_mask) | (traits::exp_bias << (traits::man_size - 1))
         );
+    }
+
+    /* Get the absolute value of this float.  This equates to clearing the sign bit. */
+    [[nodiscard]] constexpr Float abs() const noexcept {
+        Float result = *this;
+        result.bits &= traits::payload_mask;
+        return result;
     }
 
     /// TODO: documentation for arithmetic methods, and possible softfloat emulation
@@ -7010,26 +7273,95 @@ public:
         }
     }
 
-    /// TODO: write correct comparisons
+    /// TODO: perhaps if the tolerance is given as an integer, it signifies a ULP
+    /// tolerance, which is the number of bits in the mantissa that are allowed to
+    /// differ before two floats are considered unequal.  If given as a float, it is an
+    /// absolute tolerance, applied as below.  Alternatively, and perhaps more safely,
+    /// a ULP-based approximate comparison could be exposed as a .bit_compare(val, 5)
+    /// method, which would be more explicit.
 
-    /* Compare two floats of equal size. */
-    [[nodiscard]] friend constexpr auto operator<=>(
+    /* Compare two floats of equal size.  The operands will be considered equal if they
+    differ by no more than `tolerance.abs()`, which defaults to `epsilon()`.  The
+    result is a `std::partial_ordering` value that indicates the relationship between
+    the operands, the value of which can be obtained by comparing it with the literal
+    0, like so:
+
+        ```
+        auto result = lhs.compare(rhs, tolerance);
+        if (result < 0) {
+            // lhs < rhs
+        } else if (result > 0) {
+            // lhs > rhs
+        } else {
+            // lhs == rhs
+        }
+        ```
+    */
+    [[nodiscard]] constexpr std::partial_ordering compare(
+        const Float& other,
+        const Float& tolerance = epsilon()
+    ) const noexcept {
+        std::partial_ordering result = *this <=> other;
+        if (result < 0) {
+            Float diff = other - *this;
+            diff.bits &= traits::payload_mask;
+            if (diff <= tolerance.abs()) {
+                return std::partial_ordering::equivalent;
+            }
+        } else if (result > 0) {
+            Float diff = *this - other;
+            diff.bits &= traits::payload_mask;
+            if (diff <= tolerance.abs()) {
+                return std::partial_ordering::equivalent;
+            }
+        }
+        return result;
+    }
+
+    /* Compare two floats of equal size.  Note that this only compares exact
+    (bit-level) equality.  To check for approximate equality, use `Float::compare()`
+    instead. */
+    [[nodiscard]] friend constexpr std::partial_ordering operator<=>(
         const Float& lhs,
         const Float& rhs
     ) noexcept requires(!traits::hard) {
-        /// TODO: handling all the edge cases here is kind of a nightmare
+        Bits lhs_payload = lhs.bits & traits::payload_mask;
+        Bits rhs_payload = rhs.bits & traits::payload_mask;
+
+        // NaNs compare unordered to everything, including themselves
+        if (lhs_payload > traits::exp_mask || rhs_payload > traits::exp_mask) {
+            return std::partial_ordering::unordered;
+        }
+
+        // +/- zero compare equal regardless of sign
+        if (lhs_payload == 0 && rhs_payload == 0) {
+            return std::partial_ordering::equivalent;
+        }
+
+        // all other values compare normally, taking sign into account
+        if (lhs.bits.msb_is_set()) {
+            if (rhs.bits.msb_is_set()) {
+                return rhs_payload <=> lhs_payload;
+            } else {
+                return std::partial_ordering::less;
+            }
+        } else {
+            if (rhs.bits.msb_is_set()) {
+                return std::partial_ordering::greater;
+            } else {
+                return lhs_payload <=> rhs_payload;
+            }
+        }
     }
 
-    /// TODO: should nan compare equal to itself?
-
-    /* Compare two floats of equal size.  Note that this only compares exact
-    (bit-level) equality.  To check for approximate equality, use `Float::approx()`
-    instead. */
+    /* Compare two floats of equal size for equality.  Note that this only compares
+    exact (bit-level) equality.  To check for approximate equality, use
+    `Float::compare()` instead. */
     [[nodiscard]] friend constexpr bool operator==(
         const Float& lhs,
         const Float& rhs
     ) noexcept requires(!traits::hard) {
-        return lhs.bits == rhs.bits;
+        return (lhs <=> rhs) == 0;
     }
 
     /* Return a copy of the float. */
@@ -7039,7 +7371,7 @@ public:
 
     /* Increment the float by one and return a reference to the new value. */
     constexpr Float& operator++() noexcept {
-        static constexpr Float one = 1;
+        static constexpr Float one = 1.0;
         add(one, *this);
         return *this;
     }
@@ -7072,7 +7404,7 @@ public:
 
     /* Decrement the float by one and return a reference to the new value. */
     constexpr Float& operator--() noexcept {
-        static constexpr Float one = 1;
+        static constexpr Float one = 1.0;
         sub(one, *this);
         return *this;
     }
@@ -7168,7 +7500,10 @@ using float64 = Float<11, 53>;
 // using float128 = Float<15, 113>;
 
 
-inline constexpr float16 test_float = 1;
+
+
+
+inline constexpr float16 test_float = 1.0;
 inline constexpr float16 test_float2 = test_float;
 static_assert(float(test_float) == 1.0);
 static_assert(std::bit_cast<uint32_t>(float(test_float)) == 0b0'01111111'00000000'00000000'0000000);
@@ -7192,17 +7527,45 @@ static_assert(float32(bitwise) == 1.0);
 static_assert(float32(1.0) + 0.5 == 1.5);
 
 
+inline constexpr Int<8> x = 1;
+static_assert(float32(x) == 1.0);
+
+
 inline constexpr float32 xyz = 3.5;
+// inline constexpr Int<32> xyz2 {xyz};
+static_assert(float32(Int<32>(0)) == 0.0);
 static_assert(xyz.mantissa() == 1.75);
 static_assert(xyz.exponent() == 1);
 static_assert(xyz.base() == 2);
-static_assert(xyz == xyz.sign() * pow(xyz.base(), xyz.exponent()) * xyz.mantissa());
+// static_assert(xyz == xyz.sign() * pow(xyz.base(), xyz.exponent()) * xyz.mantissa());
+
+// log<2>(x)
+// root<2>(x)
+
 
 inline constexpr auto bitwise_nan = Bits{std::numeric_limits<float>::signaling_NaN()};
 static_assert(bitwise_nan.data()[0] == 0b0'11111111'01000000'00000000'0000000);
 
 static_assert(float32::max() == std::numeric_limits<float>::max());
 static_assert(float32::min() == std::numeric_limits<float>::lowest());
+static_assert(Float{1.0}.bits.size() == 64);
+static_assert(float32::nan().is_nan());
+static_assert(float32(1.5) <= float32(1.5));
+
+
+static_assert(float32::epsilon() == std::numeric_limits<float>::epsilon());
+// static_assert(
+//     Bits{Bits{std::numeric_limits<float>::epsilon()}[slice{0, 24}]}.data()[0] ==
+//     0b0'01111111'00000000'00000000'0000000
+// );
+static_assert(
+    Bits{std::numeric_limits<float>::epsilon()}.data()[0] ==
+    0b0'01101000'00000000'00000000'0000000
+);
+
+static_assert(float32::nan().compare(float32::nan(), 0.5) != 0);
+
+static_assert(float32::smallest() == std::numeric_limits<float>::min());
 
 
 }  // namespace bertrand
@@ -7249,13 +7612,31 @@ namespace std {
         }
     };
 
+    /* Specializing `std::formatter` allows bitset slices to be formatted using
+    `std::format()`, `repr()`, `print()`, and other formatting functions. */
+    template <bertrand::meta::inherits<bertrand::impl::Bits_slice_tag> T>
+    struct formatter<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        formatter<bertrand::Bits<bertrand::meta::unqualify<T>::self::size()>> config;
+        constexpr auto parse(format_parse_context& ctx) {
+            return config.parse(ctx);
+        }
+        template <typename out, typename char_type>
+        constexpr auto format(
+            const_reference v,
+            basic_format_context<out, char_type>& ctx
+        ) const {
+            return config.format(bertrand::Bits{v}, ctx);
+        }
+    };
+
     /* Specializing `std::formatter` allows unsigned integers to be formatted using
     `std::format()`, `repr()`, `print()`, and other formatting functions.  This reuses
     the same logic as `Bits<N>`. */
     template <bertrand::meta::UInt T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        formatter<bertrand::Bits<bertrand::meta::integer_width<T>>> config;
+        formatter<bertrand::Bits<bertrand::meta::integer_size<T>>> config;
         constexpr auto parse(format_parse_context& ctx) {
             return config.parse(ctx);
         }
@@ -7273,7 +7654,7 @@ namespace std {
     template <bertrand::meta::Int T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        formatter<bertrand::Bits<bertrand::meta::integer_width<T>>> config;
+        formatter<bertrand::Bits<bertrand::meta::integer_size<T>>> config;
         constexpr auto parse(format_parse_context& ctx) {
             return config.parse(ctx);
         }
@@ -7299,22 +7680,13 @@ namespace std {
         }
     };
 
-    /* Specializing `std::formatter` allows bitset slices to be formatted using
+    /* Specializing `std::formatter` allows floats to be formatted using
     `std::format()`, `repr()`, `print()`, and other formatting functions. */
-    template <bertrand::meta::inherits<bertrand::impl::Bits_slice_tag> T>
+    template <bertrand::meta::Float T>
     struct formatter<T> {
-        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        formatter<bertrand::Bits<bertrand::meta::unqualify<T>::self::size()>> config;
-        constexpr auto parse(format_parse_context& ctx) {
-            return config.parse(ctx);
-        }
-        template <typename out, typename char_type>
-        constexpr auto format(
-            const_reference v,
-            basic_format_context<out, char_type>& ctx
-        ) const {
-            return config.format(bertrand::Bits{v}, ctx);
-        }
+        /// TODO: this will get really complicated really fast.  All format specifiers
+        /// that apply to built-in floating point types must also apply to generalized
+        /// floats.
     };
 
     /* Specializing `std::numeric_limits` allows bitsets to be introspected just like
@@ -7340,7 +7712,7 @@ namespace std {
         static constexpr bool is_iec559                     = false;
         static constexpr bool is_bounded                    = true;
         static constexpr bool is_modulo                     = true;
-        static constexpr int digits                         = bertrand::meta::integer_width<T>;
+        static constexpr int digits                         = bertrand::meta::integer_size<T>;
         static constexpr int digits10                       = digits * 0.3010299956639812;  // log10(2)
         static constexpr int max_digits10                   = 0;
         static constexpr int radix                          = 2;
@@ -7367,7 +7739,7 @@ namespace std {
     struct numeric_limits<T> {
     private:
         using type = std::remove_cvref_t<T>;
-        using bits = bertrand::Bits<bertrand::meta::integer_width<T>>;
+        using bits = bertrand::Bits<bertrand::meta::integer_size<T>>;
         using traits = std::numeric_limits<bits>;
 
     public:
@@ -7411,7 +7783,7 @@ namespace std {
     struct numeric_limits<T> {
     private:
         using type = std::remove_cvref_t<T>;
-        using bits = bertrand::Bits<bertrand::meta::integer_width<T>>;
+        using bits = bertrand::Bits<bertrand::meta::integer_size<T>>;
         using word = type::word;
         using traits = std::numeric_limits<bits>;
 
@@ -7450,6 +7822,11 @@ namespace std {
         static constexpr type denorm_min() noexcept { return {}; }
     };
 
+    template <bertrand::meta::Float T>
+    struct numeric_limits<T> {
+        /// TODO: proper traits for floating point types
+    };
+
     /* Specializing `std::hash` allows bitsets to be used as keys in hash tables. */
     template <bertrand::meta::Bits T>
     struct hash<T> {
@@ -7463,24 +7840,6 @@ namespace std {
         }
     };
 
-    /* Specializing `std::hash` allows integers to be used as keys in hash tables. */
-    template <bertrand::meta::UInt T>
-    struct hash<T> {
-        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
-            return hash<bertrand::Bits<bertrand::meta::integer_width<T>>>{}(x.bits);
-        }
-    };
-
-    /* Specializing `std::hash` allows integers to be used as keys in hash tables. */
-    template <bertrand::meta::Int T>
-    struct hash<T> {
-        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
-            return hash<bertrand::Bits<bertrand::meta::integer_width<T>>>{}(x.bits);
-        }
-    };
-
     /* Specializing `std::hash` allows bitset slices to be used as keys to hash
     tables. */
     template <bertrand::meta::inherits<bertrand::impl::Bits_slice_tag> T>
@@ -7490,6 +7849,34 @@ namespace std {
             return hash<
                 bertrand::Bits<bertrand::meta::unqualify<T>::self::size()>
             >{}(bertrand::Bits{x});
+        }
+    };
+
+    /* Specializing `std::hash` allows integers to be used as keys in hash tables. */
+    template <bertrand::meta::UInt T>
+    struct hash<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
+            return hash<bertrand::Bits<bertrand::meta::integer_size<T>>>{}(x.bits);
+        }
+    };
+
+    /* Specializing `std::hash` allows integers to be used as keys in hash tables. */
+    template <bertrand::meta::Int T>
+    struct hash<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
+            return hash<bertrand::Bits<bertrand::meta::integer_size<T>>>{}(x.bits);
+        }
+    };
+
+    /* Specializing `std::hash` allows floats to be used as keys in hash tables. */
+    template <bertrand::meta::Float T>
+    struct hash<T> {
+        using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
+        [[nodiscard]] static constexpr size_t operator()(const_reference x) noexcept {
+            /// TODO: any special treatment for +/- zero, NaN, infinity, or subnormals?
+            return hash<bertrand::Bits<bertrand::meta::integer_size<T>>>{}(x.bits);
         }
     };
 

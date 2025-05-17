@@ -1900,21 +1900,23 @@ namespace impl {
 
         /* Find the index of the first string at which a particular character occurs
         for a given offset. */
-        template <size_t I, unsigned char C, static_str... Strings>
+        template <size_t, unsigned char, static_str...>
         static constexpr size_t first_occurrence = 0;
-        template <size_t I, unsigned char C, static_str First, static_str... Rest>
-        static constexpr size_t first_occurrence<I, C, First, Rest...> =
-            (I < First.size() && First.data()[I] == C) ?
-                0 : first_occurrence<I, C, Rest...> + 1;
+        template <size_t I, unsigned char C, static_str S, static_str... R> requires (I < S.size())
+        static constexpr size_t first_occurrence<I, C, S, R...> =
+            S.data()[I] == C ? 0 : first_occurrence<I, C, R...> + 1;
+        template <size_t I, unsigned char C, static_str S, static_str... R> requires (I >= S.size())
+        static constexpr size_t first_occurrence<I, C, S, R...> = first_occurrence<I, C, R...> + 1;
 
         /* Count the number of unique characters that occur at a given offset across
         all strings. */
-        template <size_t I, size_t J, static_str... Strings>
+        template <size_t, size_t, static_str...>
         static constexpr size_t _variation = 0;
-        template <size_t I, size_t J, static_str First, static_str... Rest>
-        static constexpr size_t _variation<I, J, First, Rest...> =
-            (I < First.size() && J == first_occurrence<I, First.data()[I], Keys...>) +
-            _variation<I, J + 1, Rest...>;
+        template <size_t I, size_t J, static_str S, static_str... R> requires (I < S.size())
+        static constexpr size_t _variation<I, J, S, R...> =
+            _variation<I, J + 1, R...> + (J == first_occurrence<I, S.data()[I], Keys...>);
+        template <size_t I, size_t J, static_str S, static_str... R> requires (I >= S.size())
+        static constexpr size_t _variation<I, J, S, R...> = _variation<I, J + 1, R...>;
         template <size_t I, static_str... Strings>
         static constexpr size_t variation = _variation<I, 0, Strings...>;
 
