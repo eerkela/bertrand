@@ -154,6 +154,8 @@ namespace meta {
         constexpr size_t integer_size<T> = T::size();
         template <meta::Bits T>
         struct as_signed<T> { using type = bertrand::Int<T::size()>; };
+        template <meta::Bits T>
+        constexpr bool prefer_constructor<T> = true;
 
         template <meta::UInt T>
         constexpr bool integer<T> = true;
@@ -163,6 +165,8 @@ namespace meta {
         constexpr size_t integer_size<T> = meta::unqualify<T>::Bits::size();
         template <meta::UInt T>
         struct as_signed<T> { using type = bertrand::Int<integer_size<T>>; };
+        template <meta::UInt T>
+        constexpr bool prefer_constructor<T> = true;
 
         template <meta::Int T>
         constexpr bool integer<T> = true;
@@ -172,8 +176,21 @@ namespace meta {
         constexpr size_t integer_size<T> = meta::unqualify<T>::Bits::size();
         template <meta::Int T>
         struct as_unsigned<T> { using type = bertrand::UInt<integer_size<T>>; };
+        template <meta::Int T>
+        constexpr bool prefer_constructor<T> = true;
 
-        /// TODO: specializations for float-related concepts
+        template <meta::Float T>
+        constexpr bool floating<T> = true;
+        template <meta::floating T> requires (meta::Float<T>)
+        constexpr size_t float_exponent_size<T> =
+            meta::unqualify<T>::exponent_size;
+        template <meta::floating T> requires (meta::Float<T>)
+        constexpr size_t float_mantissa_size<T> =
+            meta::unqualify<T>::mantissa_size;
+        template <meta::floating T> requires (meta::Float<T>)
+        constexpr size_t float_size<T> = float_exponent_size<T> + float_mantissa_size<T>;
+        template <meta::Float T>
+        constexpr bool prefer_constructor<T> = true;
     }
 
 }
@@ -1270,6 +1287,21 @@ namespace impl {
 }
 
 
+template <meta::integer... Ts>
+Bits(Ts...) -> Bits<(meta::integer_size<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Bits(T) -> Bits<T::self::size()>;
+template <size_t N>
+Bits(const char(&)[N]) -> Bits<N - 1>;
+template <size_t N>
+Bits(const char(&)[N], char) -> Bits<N - 1>;
+template <size_t N>
+Bits(const char(&)[N], char, char) -> Bits<N - 1>;
+template <typename... Ts>
+    requires (impl::bit_cast_constructor<((sizeof(Ts) * 8) + ... + 0), Ts...>)
+Bits(const Ts&...) -> Bits<((sizeof(Ts) * 8) + ... + 0)>;
+
+
 template <size_t N>
 struct Bits : impl::Bits_tag {
     using word = impl::word<N>::type;
@@ -1367,7 +1399,7 @@ private:
     template <size_type I, typename T, typename... Ts>
         requires (meta::UInt<T> || meta::Int<T>)
     static constexpr void from_bits(array& data, const T& v, const Ts&... rest) noexcept {
-        from_bits<I, T, Ts...>(data, v.value, rest...);
+        from_bits<I>(data, v.bits, rest...);
     }
 
     template <size_type I>
@@ -3555,31 +3587,38 @@ public:
         return any();
     }
 
-    /* Reinterpret the bit pattern stored in the bitset as another type by applying a
-    `std::bit_cast()` on either the full array or a subset of it starting from the
-    least significant bit.  Common uses for this conversion include interpreting the
-    bit pattern as a floating-point value or any other POD (Plain Old Data, possibly
-    aggregate) type.  It also enables explicit conversions to integers of smaller size,
-    possibly truncating any unused bits.  Note that the result will store a copy of the
-    underlying bit pattern, and does not depend on the lifetime of the bitset. */
-    template <meta::trivially_copyable T>
-    [[nodiscard]] explicit constexpr operator T() const
-        noexcept(meta::nothrow::copyable<T>)
-        requires(meta::integer<T> || sizeof(T) * 8 == N)
-    {
-        // if the buffer is exactly the right size, then we can just bit_cast it
-        // directly
-        if constexpr (sizeof(T) * 8 == capacity()) {
-            return std::bit_cast<T>(buffer);
-
-        // otherwise, if the result is an integer, then we can build it up word-by-word
-        } else if constexpr (meta::integer<T>) {
+    /* Explicitly convert the bit pattern to an integer regardless of width.  If the
+    width is less than that of the bitset, then only the `M` least significant bits
+    will be included, where `M` is bit width of the target integer.  */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (meta::integer_size<T> <= word_size) {
+            return static_cast<T>(buffer[0]);
+        } else {
             T out(buffer[array_size - 1]);
             for (size_type i = array_size - 1; i-- > 0;) {
                 out <<= word_size;
                 out |= buffer[i];
             }
             return out;
+        }
+    }
+
+    /* Reinterpret the bit pattern stored in the bitset as another type by applying a
+    `std::bit_cast()` on either the full array or a subset of it starting from the
+    least significant bit.  Common uses for this conversion include interpreting the
+    bit pattern as a floating-point value or any other POD (Plain Old Data, possibly
+    aggregate) type.  Note that the result will store a copy of the underlying bit
+    pattern, and does not depend on the lifetime of the bitset. */
+    template <meta::trivially_copyable T> requires (!meta::integer<T>)
+    [[nodiscard]] explicit constexpr operator T() const
+        noexcept(meta::nothrow::copyable<T>)
+        requires(sizeof(T) * 8 == N)
+    {
+        // if the buffer is exactly the right size, then we can just bit_cast it
+        // directly
+        if constexpr (sizeof(T) * 8 == capacity()) {
+            return std::bit_cast<T>(buffer);
 
         // otherwise, we need to scale down to individual bytes and then bit_cast the
         // aligned result.
@@ -4753,26 +4792,15 @@ public:
 };
 
 
-template <meta::integer... Ts>
-Bits(Ts...) -> Bits<(meta::integer_size<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-Bits(T) -> Bits<T::self::size()>;
-template <size_t N>
-Bits(const char(&)[N]) -> Bits<N - 1>;
-template <size_t N>
-Bits(const char(&)[N], char) -> Bits<N - 1>;
-template <size_t N>
-Bits(const char(&)[N], char, char) -> Bits<N - 1>;
-template <typename... Ts>
-    requires (impl::bit_cast_constructor<((sizeof(Ts) * 8) + ... + 0), Ts...>)
-Bits(const Ts&...) -> Bits<((sizeof(Ts) * 8) + ... + 0)>;
-
-
 /* ADL `swap()` method for `bertrand::Bits` instances.  */
 template <size_t N>
-constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept {
-    lhs.swap(rhs);
-}
+constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept { lhs.swap(rhs); }
+
+
+template <meta::integer... Ts>
+UInt(Ts...) -> UInt<(meta::integer_size<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+UInt(T) -> UInt<T::self::size()>;
 
 
 template <size_t N>
@@ -5021,9 +5049,9 @@ public:
         return word(bits);
     }
 
-    /* Explicitly convert a multi-word integer into a hardware integer type, possibly
+    /* Explicitly convert a multi-word integer into a different integer type, possibly
     truncating any upper bits. */
-    template <std::integral T>
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept
         requires(Bits::array_size > 1)
     {
@@ -5032,7 +5060,7 @@ public:
 
     /* Explicitly convert a multi-word integer into a floating point type, retaining as
     much precision as possible. */
-    template <meta::floating T>
+    template <meta::floating T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept
         requires(Bits::array_size > 1)
     {
@@ -5411,17 +5439,15 @@ public:
 };
 
 
-template <meta::integer... Ts>
-UInt(Ts...) -> UInt<(meta::integer_size<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-UInt(T) -> UInt<T::self::size()>;
-
-
 /* ADL `swap()` method for `bertrand::UInt` instances. */
 template <size_t N>
-constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept {
-    lhs.value.swap(rhs.value);
-}
+constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept { lhs.swap(rhs); }
+
+
+template <meta::integer... Ts>
+Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Int(T) -> Int<T::self::size()>;
 
 
 template <size_t N>
@@ -5497,7 +5523,15 @@ public:
         bits(vals...)
     {}
 
-    /// TODO: explicit constructor from floating point types
+    /* Explicitly convert a floating point value into an integer, possibly truncating
+    towards zero. */
+    template <meta::floating T>
+    [[nodiscard]] explicit constexpr Int(const T& val) noexcept :
+        bits()
+    {
+        /// TODO: convert a floating point type to an integer safely, and retaining
+        /// as much precision as possible
+    }
 
     /* Construct an integer from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -5753,9 +5787,9 @@ public:
         }
     }
 
-    /* Explicitly convert a multi-word integer into a hardware integer type, possibly
+    /* Explicitly convert a multi-word integer into another integer type, possibly
     truncating any upper bits. */
-    template <std::integral T>
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept
         requires(Bits::array_size > 1)
     {
@@ -5764,7 +5798,7 @@ public:
 
     /* Explicitly convert a multi-word integer into a floating point type, retaining as
     much precision as possible. */
-    template <meta::floating T>
+    template <meta::floating T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept
         requires(Bits::array_size > 1)
     {
@@ -6322,17 +6356,9 @@ public:
 };
 
 
-template <meta::integer... Ts>
-Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-Int(T) -> Int<T::self::size()>;
-
-
 /* ADL `swap()` method for `bertrand::Int<N>` instances. */
 template <size_t N>
-constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
-    lhs.value.swap(rhs.value);
-}
+constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept { lhs.swap(rhs); }
 
 
 // template struct Bits<8>;
@@ -6347,11 +6373,11 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 // template struct Int<32>;
 // template struct Int<64>;
 // template struct Int<128>;
-// using int8 = Int<8>;
-// using int16 = Int<16>;
-// using int32 = Int<32>;
-// using int64 = Int<64>;
-// using int128 = Int<128>;
+using int8 = Int<8>;
+using int16 = Int<16>;
+using int32 = Int<32>;
+using int64 = Int<64>;
+using int128 = Int<128>;
 
 
 // template struct UInt<8>;
@@ -6359,11 +6385,11 @@ constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept {
 // template struct UInt<32>;
 // template struct UInt<64>;
 // template struct UInt<128>;
-// using uint8 = UInt<8>;
-// using uint16 = UInt<16>;
-// using uint32 = UInt<32>;
-// using uint64 = UInt<64>;
-// using uint128 = UInt<128>;
+using uint8 = UInt<8>;
+using uint16 = UInt<16>;
+using uint32 = UInt<32>;
+using uint64 = UInt<64>;
+using uint128 = UInt<128>;
 
 
 /// TODO: One of the only big problems for masking is making sure I don't clobber
@@ -6494,8 +6520,13 @@ namespace impl {
 }
 
 
+template <meta::floating T>
+    requires (meta::float_exponent_size<T> > 1 && meta::float_mantissa_size<T> > 1)
+Float(T) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
+
+
 template <size_t E, size_t M> requires (E > 1 && M > 1)
-struct Float {
+struct Float : impl::Float_tag {
 private:
     static constexpr size_t N = impl::float_word<E, M>::size;
 
@@ -6843,9 +6874,6 @@ public:
         bits(traits::from_float(value))
     {}
 
-    /// TODO: the explicit constructor from integers should not interfere with the
-    /// explicit conversion on the integers themselves.
-
     /* Explicitly convert an integer into a float, rounding the result to the nearest
     representable value. */
     template <meta::integer T> requires (!meta::Bits<T>)
@@ -7080,11 +7108,26 @@ public:
         return traits::widen(bits);
     }
 
-    /// TODO: explicit (not implicit) conversion to integer types?  Providing the
-    /// above conversion operator also allows implicit conversion to integer types,
-    /// which may not be desirable.
+    /* Explicitly convert the float to an integer type, truncating towards zero. */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (traits::hard) {
+            return static_cast<T>(static_cast<hard_type>(*this));
+        } else {
+            /// TODO: softfloat emulation
+        }
+    }
 
-    /// TODO: explicit conversion from multi-word floats to smaller float types
+    /* Explicitly convert the float to another floating point type, rounding to the
+    nearest representable value. */
+    template <meta::floating T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (traits::hard) {
+            return static_cast<T>(static_cast<hard_type>(*this));
+        } else {
+            /// TODO: softfloat emulation
+        }
+    }
 
     /* Returns true if the float represents zero, regardless of sign. */
     [[nodiscard]] constexpr bool is_zero() const noexcept {
@@ -7466,16 +7509,9 @@ public:
 };
 
 
-template <meta::floating T>
-    requires (meta::float_exponent_size<T> > 1 && meta::float_mantissa_size<T> > 1)
-Float(T) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
-
-
 /* ADL `swap()` method for `bertrand::Float<E, M>` instances. */
 template <size_t E, size_t M>
-constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept {
-    lhs.value.swap(rhs.value);
-}
+constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept { lhs.swap(rhs); }
 
 
 
@@ -7486,13 +7522,11 @@ constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept {
 /// point types, which are not yet available in libc++.
 
 
-template struct Float<5, 11>;
-template struct Float<8, 8>;
-template struct Float<8, 24>;
-template struct Float<11, 53>;
+// template struct Float<5, 11>;
+// template struct Float<8, 8>;
+// template struct Float<8, 24>;
+// template struct Float<11, 53>;
 // template struct Float<15, 113>;
-
-
 using float16 = Float<5, 11>;
 using bfloat16 = Float<8, 8>;
 using float32 = Float<8, 24>;
@@ -7500,6 +7534,7 @@ using float64 = Float<11, 53>;
 // using float128 = Float<15, 113>;
 
 
+// static_assert(int16(float32(10)) == 10);
 
 
 

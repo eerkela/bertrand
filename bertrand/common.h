@@ -952,6 +952,14 @@ namespace meta {
 
     }
 
+    namespace detail {
+        template <typename T>
+        constexpr bool prefer_constructor = false;
+    }
+
+    template <typename T>
+    concept prefer_constructor = detail::prefer_constructor<T>;
+
     template <typename L, typename R>
     concept convertible_to = std::convertible_to<L, R>;
 
