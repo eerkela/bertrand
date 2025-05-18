@@ -182,13 +182,11 @@ namespace meta {
         template <meta::Float T>
         constexpr bool floating<T> = true;
         template <meta::floating T> requires (meta::Float<T>)
-        constexpr size_t float_exponent_size<T> =
-            meta::unqualify<T>::exponent_size;
-        template <meta::floating T> requires (meta::Float<T>)
         constexpr size_t float_mantissa_size<T> =
             meta::unqualify<T>::mantissa_size;
         template <meta::floating T> requires (meta::Float<T>)
-        constexpr size_t float_size<T> = float_exponent_size<T> + float_mantissa_size<T>;
+        constexpr size_t float_exponent_size<T> =
+            meta::unqualify<T>::exponent_size;
         template <meta::Float T>
         constexpr bool prefer_constructor<T> = true;
     }
@@ -6517,7 +6515,7 @@ namespace impl {
 
 template <meta::floating T>
     requires (meta::float_exponent_size<T> > 1 && meta::float_mantissa_size<T> > 1)
-Float(T) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
+Float(const T&) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
 
 
 template <size_t E, size_t M> requires (E > 1 && M > 1)
@@ -6543,6 +6541,26 @@ public:
 
 private:
 
+    template <size_t m, meta::Bits T>
+    static constexpr Bits round_mantissa(T& man) noexcept {
+        if constexpr (m < M) {
+            return Bits{man} << (M - m);  // pad with trailing zeros
+        } else if constexpr (m == M) {
+            return Bits{man};
+        } else {
+            static constexpr T half = T{1} << (m - M - 1);
+            static constexpr T to_even = half << 1;
+            static constexpr T discard = to_even - 1;
+            if ((man & discard) == half) {
+                man += man & to_even;  // perfect ties round to even
+            } else {
+                man += half;  // others round to nearest
+            }
+            man >>= m - M;  // truncate to M bits
+            return Bits{man};
+        }
+    }
+
     template <typename T>
     struct _traits {
         static constexpr bool hard = false;
@@ -6563,11 +6581,238 @@ private:
         static constexpr void narrow(Bits& bits) noexcept {}
         static constexpr const Float& widen(const Float& self) noexcept { return self; }
 
+        /// TODO: a lot of the concepts of `from_float` should be scaled down to the
+        /// `narrow` method for the hardware case, since I have to tackle most of the
+        /// same problems.  In fact, I might be able to abstract this entirely between
+        /// the two cases.
+
         template <meta::floating U>
         static constexpr Bits from_float(const U& value) noexcept {
-            /// TODO: this is where I would need to convert from a hardware float to a
-            /// software float, or from a softfloat of a different size to this one.
-            return {};
+            static constexpr size_t e = meta::float_exponent_size<U>;
+            static constexpr size_t m = meta::float_mantissa_size<U>;
+            using observed = bertrand::Bits<e + m>;
+
+            static constexpr observed get_exp =
+                observed::mask(m - 1, m - 1 + e);
+            static constexpr observed get_man = observed::mask(0, m - 1);
+            static constexpr observed bias =
+                (exp_bias - observed{meta::float_exponent_bias<T>}) << (m - 1);
+
+            observed bits {value};
+            observed exp = bits & get_exp;
+            observed man = bits & get_man;
+            Bits result;
+
+            // preserve NaN/infinity
+            if (exp == get_exp) {
+                if (bits.msb_is_set()) {
+                    result |= sign_mask;  // copy sign bit
+                }
+                result |= exp_mask;  // maximum exponent
+                if constexpr (m <= M) {
+                    result |= Bits{man} << (M - m);  // pad with trailing zeros
+                } else {
+                    result |= Bits{man >> (m - M)};  // truncate and preserve payload
+                }
+                return result;
+            }
+
+            // preserve zero and scale subnormals
+            if (exp == 0) {
+                // subnormal scaling does not occur if exponent widths are the same.
+                // However, rounding the mantissa could possibly promote the value to a
+                // normal with an exponent of 1, which is standard behavior.
+                if constexpr (e == E) {
+                    result |= round_mantissa<m>(man);
+
+                // otherwise, subnormals need to be scaled up or down to account for
+                // the increase/decrease in exponent resolution.  This can cause a
+                // subnormal to become a normal, or be zeroed out entirely.
+                } else {
+                    /// TODO: this branch needs a look over to ensure everything is
+                    /// correct.
+
+                    // get index of leading mantissa bit for scaling.  If no bits are
+                    // set, then the value is a true zero, and the result is trivial.
+                    if (auto idx = man.last_one(); idx.has_value()) {
+                        // if the new exponent is wider than the old one, then
+                        // subnormals need to be left-shifted until either the adjusted
+                        // bias is reached and the result remains subnormal, or the
+                        // leading one is at the implicit bit, rendering it normal.
+                        if constexpr (e < E) {
+                            static constexpr size_t bias {
+                                observed::mask(0, E - 1) -
+                                observed::mask(0, e - 1)
+                            };
+                            size_t shift = m - 1 - idx.value();  // minimum of 1
+                            if (shift <= bias) {
+                                // result is normal - shift leading one to implicit
+                                // bit, then round and join to result.  This will
+                                // always set either the first or second bit (due to
+                                // rounding) of the exponent.  We then add the leftover
+                                // bias to get the final normalized exponent.
+                                man <<= shift;
+                                result |= round_mantissa<m>(man);
+                                result += Bits{bias - shift} << (M - 1);
+                            } else {
+                                man <<= shift - bias;  // result remains subnormal
+                                result |= round_mantissa<m>(man);
+                            }
+
+                        // if the new exponent is narrower than the old one, then
+                        // subnormals need to be right-shifted until the adjusted bias
+                        // is reached, possibly zeroing them.
+                        } else {
+                            static constexpr observed bias =
+                                observed::mask(0, e - 1) -
+                                observed::mask(0, E - 1);
+
+                            // if the leading index is less than or equal to the bias,
+                            // then it would be zeroed out entirely.
+                            if (idx.value() > bias) {
+                                // if the new mantissa is wider, then we can capture as
+                                // many of the lower mantissa bits as possible
+                                if constexpr (m <= M) {
+                                    result |= Bits{man} >> bias;
+
+                                // if the new mantissa is narrower, then we need to
+                                // shift first and then round
+                                } else {
+                                    man >>= bias;
+                                    result |= round_mantissa<m>(man);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // copy sign bit
+                if (bits.msb_is_set()) {
+                    result |= sign_mask;
+                }
+                return result;
+            }
+
+            // adjust exponent bias and detect overflow/underflow.
+            if constexpr (e == E) {
+                if constexpr (m == M) {
+                    result |= Bits{exp};  // exact
+                } else if constexpr (m < M) {
+                    result |= Bits{exp};  // convert, then shift
+                    result <<= M - m;
+                } else {
+                    exp >>= m - M;  // shift, then convert
+                    result |= Bits{exp};
+                }
+
+                // add rounded mantissa, possibly carrying into the exponent.  This may
+                // cause the exponent to overflow, in which case we clamp to infinity.
+                result += round_mantissa<m>(man);
+                if (result > exp_mask) {
+                    result = exp_mask;  // clamp mantissa bits
+                }
+
+            // if the new exponent is wider than the old one, then we need to adjust
+            // the bias, but are otherwise safe from overflow due to rounding of the
+            // mantissa.
+            } else if constexpr (e < E) {
+                static constexpr Bits bias =
+                    Bits::mask(M - 1, M + E - 2) -
+                    Bits::mask(M - 1, M + e - 2);
+
+                if constexpr (m == M) {
+                    result |= Bits{exp};  // exact
+                } else if constexpr (m < M) {
+                    result |= Bits{exp};  // convert, then shift
+                    result <<= M - m;
+                } else {
+                    exp >>= m - M;  // shift, then convert
+                    result |= Bits{exp};
+                }
+
+                result += bias;
+                result += round_mantissa<m>(man);
+
+            // otherwise, if the new exponent is narrower than the old one, then it's
+            // possible that the current exponent lies outside its representable range,
+            // indicating either overflow or underflow
+            } else {
+                static constexpr observed max =  // equates to one before infinity
+                    observed::mask(m - 1, m + e - 2) +
+                    observed::mask(m - 1, m + E - 2);
+                static constexpr observed min =  // equates to zero
+                    observed::mask(m - 1, m + e - 2) -
+                    observed::mask(m - 1, m + E - 2);
+
+                // if the current exponent is greater than the maximum valid exponent,
+                // overflow to infinity
+                if (exp > max) {
+                    result = exp_mask;
+
+                // if the current exponent is less than or equal to the minimum valid
+                // exponent, then the result underflows to a subnormal
+                } else if (exp <= min) {
+                    exp >>= m - 1;
+
+                    /// TODO: this is really the only part where things get tricky.  I
+                    /// need to make suret that I always retain as much information as
+                    /// possible, and end up with a valid subnormal.
+
+
+                    /// TODO: not sure if these bounds checks are correct.
+
+                    // if the distance between the current exponent and zero is greater
+                    // than the new mantissa size, then the result is zero.
+                    if (exp > M) {
+                        result = 0;
+
+                    // otherwise, the result may be a subnormal
+                    } else {
+                        // insert implicit leading bit
+                        /// TODO: the order of operations here depends on whether m
+                        /// is smaller than M or not.  If it is, then I should convert
+                        /// to Bits first, and then shift to produce the subnormal.
+                        /// Otherwise, I should shift first and then convert to Bits
+                        /// with correct rounding.
+
+                    }
+
+                    /// TODO: produce a subnormal.  This means inserting an implicit
+                    /// bit and then right shifting by the distance between the
+                    /// current exponent and zero, and then rounding the mantissa.  If
+                    /// this distance is greater than the new mantissa size, then the
+                    /// result is zero.
+
+                    /// the mantissa until the minimum
+                    /// valid exponent is reached.  If the distance between the
+                    /// current exponent and the minimum exponent is greater than the
+                    /// new mantissa size, then the result is zero.
+
+
+                // otherwise, the exponent is valid, and produces a normal number
+                } else {
+                    exp -= min;
+                    if constexpr (m == M) {
+                        result |= Bits{exp};  // exact
+                    } else if constexpr (m < M) {
+                        result |= Bits{exp};  // convert, then shift
+                        result <<= M - m;
+                    } else {
+                        exp >>= m - M;  // shift, then convert
+                        result |= Bits{exp};
+                    }
+                    result += round_mantissa<m>(man);
+                    if (result > exp_mask) {
+                        result = exp_mask;  // clamp mantissa bits
+                    }
+                }
+            }
+
+            // copy sign bit
+            if (bits.msb_is_set()) {
+                result |= sign_mask;
+            }
+            return result;
         }
 
         template <meta::integer U>
@@ -6604,6 +6849,9 @@ private:
         static constexpr Bits input_man_mask =
             Bits::mask(0, man_size - 1);
 
+        /// TODO: make sure to pass through NaN and infinity unchanged, and handle
+        /// subnormals correctly with respect to the bias adjustment.
+
         static constexpr void narrow(Bits& bits) noexcept {
             /// NOTE: we keep the high M bits of the mantissa, low E bits of the
             /// exponent, and the sign bit.  This preserves +/- 0, inf, and NaN
@@ -6614,6 +6862,9 @@ private:
                     bits &= sign_mask | exp_mask | man_mask;
                     return;
                 }
+
+                /// TODO: if exponent is zero, then the subtraction here will cause
+                /// overflow, which is not so great.
 
                 // extract exponent and adjust bias
                 Bits exp = bits & input_exp_mask;
@@ -6626,6 +6877,9 @@ private:
                 } else {
                     man += man_half;
                 }
+                /// TODO: perhaps if I handle the mantissa first, then place it into
+                /// the result, then the carry will be automatically added to the
+                /// exponent without me needing to handle it here.
                 exp += man & input_exp_mask;  // add carry from mantissa
                 man &= man_mask;
 
@@ -6693,6 +6947,7 @@ private:
             }
         }
 
+        /// TODO: rename to to_float()
         static constexpr T widen(const Bits& bits) noexcept {
             if constexpr (E < exp_size) {
                 return static_cast<T>(bits + norm_bias);
@@ -6703,6 +6958,11 @@ private:
 
         template <meta::floating U>
         static constexpr Bits from_float(const U& value) noexcept {
+            /// TODO: just call the abstracted `from_float` method from above, which
+            /// handles all the logic for me, including promotion/demotion of subnormals.
+            /// These then just static cast to the correct type, and possibly pass in
+            /// the correct widths.
+
             Bits result = Bits{static_cast<T>(value)};
             narrow(result);
             return result;

@@ -787,40 +787,33 @@ namespace meta {
     namespace detail {
 
         template <meta::floating T>
-        constexpr size_t float_size = sizeof(unqualify<T>) * 8;
+        constexpr size_t float_mantissa_size =
+            std::numeric_limits<meta::unqualify<T>>::digits;
 
         template <meta::floating T>
         constexpr size_t float_exponent_size =
-            float_size<T> - std::numeric_limits<meta::unqualify<T>>::digits;
-
-        template <meta::floating T>
-        constexpr size_t float_exponent_bias =
-            size_t(size_t(1) << (float_exponent_size<T> - size_t(1))) - size_t(1);
-
-        template <meta::floating T>
-        constexpr size_t float_mantissa_size =
-            std::numeric_limits<meta::unqualify<T>>::digits;
+            sizeof(unqualify<T>) * 8 - float_mantissa_size<T>;
 
         /// NOTE: the default x86 long double is an 80-bit format, but on other
         /// platforms it may be a true 128-bit quadruple-precision float, which makes
         /// it difficult to use portably.
         template <meta::floating T>
-            requires (meta::is<T, long double> && float_mantissa_size<T> <= 80)
-        constexpr size_t float_size<T> = 80;  // x86 long double
-
+            requires (meta::is<T, long double> && float_mantissa_size<T> == 64)
+        constexpr size_t float_exponent_size<T> = 15;  // x86 long double
     }
 
     template <floating T>
-    constexpr size_t float_size = detail::float_size<T>;
+    constexpr size_t float_mantissa_size = detail::float_mantissa_size<T>;
 
     template <floating T>
     constexpr size_t float_exponent_size = detail::float_exponent_size<T>;
 
     template <floating T>
-    constexpr size_t float_exponent_bias = detail::float_exponent_bias<T>;
+    constexpr size_t float_exponent_bias =
+        size_t(size_t(1) << (float_exponent_size<T> - size_t(1))) - size_t(1);
 
     template <floating T>
-    constexpr size_t float_mantissa_size = detail::float_mantissa_size<T>;
+    constexpr size_t float_size = float_exponent_size<T> + float_mantissa_size<T>;
 
     template <typename T>
     concept float8 = floating<T> && float_size<T> == 8;
