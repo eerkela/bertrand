@@ -116,10 +116,70 @@ template <size_t N>
 struct Int;
 
 
-/// TODO: when writing docs, note that the exponent and mantissa must be at least 2
-/// in order to support all IEEE 754 principles.
+/* A generalized, arbitrary-width floating point type backed by a bitset of `E + M`
+bits.
 
+The stored value is always arranged according to IEEE 754 format, with `E` exponent
+bits and `M` mantissa bits, including the implicit leading bit.  `E` and `M` must both
+be at least 2 in order to support all IEEE 754 special cases, but are otherwise
+unconstrained, and can take on any value regardless of platform or underlying hardware.
+In particular, all floats fall into one of 2 categories, described below:
 
+    1.  Hardware ("hard") floats: If both `E` and `M` fit within one of the built-in
+        primitive floating point types, then the stored bit pattern will directly mimic
+        that type, and will use all the same hardware operations for maximum
+        performance.  The public `float16`, `bfloat16`, `float32`, `float64`, and
+        `float128` aliases fall into this category as long as the underlying hardware
+        supports them, turning the aliases into drop-in replacements for the built-in
+        `std::float16_t`, `std::bfloat16_t`, `std::float32_t`, `std::float64_t`, and
+        `std::float128_t` types, respectively:
+
+            - `float16` (IEEE half precision) -> Float<5, 11>
+            - `bfloat16` (Google "brain" float) -> Float<8, 8>
+            - `float32` (IEEE single precision) -> Float<8, 24>
+            - `float64` (IEEE double precision) -> Float<11, 53>
+            - `float128` (IEEE quad precision) -> Float<15, 113>
+        
+        If `E` and/or `M` do not exactly match the widths of the built-in types, then
+        the value will be promoted to the next larger type that can hold it, and the
+        unused bits will be masked out.  The value will be interpreted as the larger
+        type during arithmetic operations, and will use the same hardware as that type,
+        but with an extra masking step to ensure that the value always obeys the bit
+        layout dictated by `E` and `M`.  This incurs a small performance penalty, but
+        much less than a purely software implementation, while still allowing arbitrary
+        choices of `E` and `M` as long as they fit within the hardware limits.  Note
+        that the masking step is never applied to the public alias types, which exactly
+        match the hardware layout at all times.
+
+    2.  Software ("soft") floats: If either `E` or `M` is outside the range of the
+        largest supported floating point type, then the value will be stored as a raw
+        bitset of `E + M` bits, and all operations will be implemented using pure
+        integer arithmetic, according to the IEEE 754 standard.  This allows choices of
+        `E` and `M` to be unbounded by hardware, and for the public alias types to be
+        available even on platforms that lack proper FPU support.  As such, floating
+        point algorithms that are defined in terms of `Float<E, M>` should compile and
+        run on all platforms, regardless of the underlying hardware, albeit with a
+        performance penalty due to the extra software emulation.  
+
+Note that the semantics of `Float<E, M>` do not change from one category to the other,
+merely the underlying implementation, and therefore performance of each operation.
+Generally speaking, users should stick to the public alias types unless they need a
+specific bit layout or precision that is not available in hardware, or if they are
+interested in the mechanics of such types for educational purposes.  Limiting the
+floating point types to the public aliases ensures that the generated code is as
+efficient as possible (identical to the built-in types), can be ported to any
+language with a similar set of types, and runs on all platforms, regardless of
+hardware.
+
+Aliases to each of the public floating point types are also available in Python as
+`bertrand.float16`, `bertrand.bfloat16`, `bertrand.float32`, `bertrand.float64`, and
+`bertrand.float128`, respectively.  These alias to `bertrand.Float[E, M]`, which can
+be specialized just like the C++ equivalent, and shares all the same semantics.  This
+arrangement allows native C++ floats to be passed up to Python and vice versa, without
+changing their size or layout, and without any intermediate conversions along the way.
+It also means all floating point types are centralized in a single shared abstraction
+that services multiple languages, both static and dynamic, without requiring an array
+of distinct types or extra overhead at the language boundary. */
 template <size_t E, size_t M> requires (E > 1 && M > 1)
 struct Float;
 
@@ -3240,13 +3300,6 @@ public:
         }
     }
 
-    /* Trivially swap the values of two bitsets. */
-    constexpr void swap(Bits& other) noexcept {
-        if (this != &other) {
-            buffer.swap(other.buffer);
-        }
-    }
-
     /* Efficiently generate a bit pattern with a one in all the positions that would be
     included in a hypothetical slice with the given indices.  Step magnitudes greater
     than 1 can be used to generate alternating bit patterns, starting with a one in the
@@ -3263,6 +3316,74 @@ public:
         ))
     {
         return _mask(bertrand::slice{start, stop, step}.normalize(ssize()));
+    }
+
+    /* Trivially swap the values of two bitsets. */
+    constexpr void swap(Bits& other) noexcept {
+        if (this != &other) {
+            buffer.swap(other.buffer);
+        }
+    }
+
+    /* Explicitly convert the bit pattern to an integer regardless of width.  If the
+    width is less than that of the bitset, then only the `M` least significant bits
+    will be included, where `M` is bit width of the target integer.  */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (meta::integer_size<T> <= word_size) {
+            return static_cast<T>(buffer[0]);
+        } else {
+            T out(buffer[array_size - 1]);
+            for (size_type i = array_size - 1; i-- > 0;) {
+                out <<= word_size;
+                out |= buffer[i];
+            }
+            return out;
+        }
+    }
+
+    /* Reinterpret the bit pattern stored in the bitset as another type by applying a
+    `std::bit_cast()` on either the full array or a subset of it starting from the
+    least significant bit.  Common uses for this conversion include interpreting the
+    bit pattern as a floating-point value or any other POD (Plain Old Data, possibly
+    aggregate) type.  Note that the result will store a copy of the underlying bit
+    pattern, and does not depend on the lifetime of the bitset. */
+    template <meta::trivially_copyable T> requires (!meta::integer<T>)
+    [[nodiscard]] explicit constexpr operator T() const
+        noexcept(meta::nothrow::copyable<T>)
+        requires(sizeof(T) * 8 == N)
+    {
+        // if the buffer is exactly the right size, then we can just bit_cast it
+        // directly
+        if constexpr (sizeof(T) * 8 == capacity()) {
+            return std::bit_cast<T>(buffer);
+
+        // otherwise, we need to scale down to individual bytes and then bit_cast the
+        // aligned result.
+        } else {
+            std::array<uint8_t, sizeof(T)> out {};
+            for (size_type i = 0, j = 0; i < out.size() && j < N; ++i, j += 8) {
+                out[i] = uint8_t(
+                    word(buffer[j / word_size] >> (j % word_size)) & word(0xFF)
+                );
+            }
+            return std::bit_cast<T>(out);
+        }
+    }
+
+    /* Bitsets evalute to true if any of their bits are set. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return any();
+    }
+
+    /* Convert the bitset to a string representation with '1' as the true character and
+    '0' as the false character.  Note that the string is returned in big-endian order,
+    meaning the first character corresponds to the most significant bit in the bitset,
+    and the last character corresponds to the least significant bit.  The string will
+    be zero-padded to the exact width of the bitset, and can be passed to
+    `Bits::from_binary()` to recover the original state. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_binary();
     }
 
     /* Decode a bitset from a string representation.  Defaults to base 2 with the given
@@ -3568,67 +3689,6 @@ public:
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
             "A", "B", "C", "D", "E", "F"
         >();
-    }
-
-    /* Convert the bitset to a string representation with '1' as the true character and
-    '0' as the false character.  Note that the string is returned in big-endian order,
-    meaning the first character corresponds to the most significant bit in the bitset,
-    and the last character corresponds to the least significant bit.  The string will
-    be zero-padded to the exact width of the bitset, and can be passed to
-    `Bits::from_binary()` to recover the original state. */
-    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        return to_binary();
-    }
-
-    /* Bitsets evalute to true if any of their bits are set. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return any();
-    }
-
-    /* Explicitly convert the bit pattern to an integer regardless of width.  If the
-    width is less than that of the bitset, then only the `M` least significant bits
-    will be included, where `M` is bit width of the target integer.  */
-    template <meta::integer T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept {
-        if constexpr (meta::integer_size<T> <= word_size) {
-            return static_cast<T>(buffer[0]);
-        } else {
-            T out(buffer[array_size - 1]);
-            for (size_type i = array_size - 1; i-- > 0;) {
-                out <<= word_size;
-                out |= buffer[i];
-            }
-            return out;
-        }
-    }
-
-    /* Reinterpret the bit pattern stored in the bitset as another type by applying a
-    `std::bit_cast()` on either the full array or a subset of it starting from the
-    least significant bit.  Common uses for this conversion include interpreting the
-    bit pattern as a floating-point value or any other POD (Plain Old Data, possibly
-    aggregate) type.  Note that the result will store a copy of the underlying bit
-    pattern, and does not depend on the lifetime of the bitset. */
-    template <meta::trivially_copyable T> requires (!meta::integer<T>)
-    [[nodiscard]] explicit constexpr operator T() const
-        noexcept(meta::nothrow::copyable<T>)
-        requires(sizeof(T) * 8 == N)
-    {
-        // if the buffer is exactly the right size, then we can just bit_cast it
-        // directly
-        if constexpr (sizeof(T) * 8 == capacity()) {
-            return std::bit_cast<T>(buffer);
-
-        // otherwise, we need to scale down to individual bytes and then bit_cast the
-        // aligned result.
-        } else {
-            std::array<uint8_t, sizeof(T)> out {};
-            for (size_type i = 0, j = 0; i < out.size() && j < N; ++i, j += 8) {
-                out[i] = uint8_t(
-                    word(buffer[j / word_size] >> (j % word_size)) & word(0xFF)
-                );
-            }
-            return std::bit_cast<T>(out);
-        }
     }
 
     /* Get the underlying array. */
@@ -4795,6 +4855,13 @@ template <size_t N>
 constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept { lhs.swap(rhs); }
 
 
+// template struct Bits<8>;
+// template struct Bits<16>;
+// template struct Bits<32>;
+// template struct Bits<64>;
+// template struct Bits<128>;
+
+
 template <meta::integer... Ts>
 UInt(Ts...) -> UInt<(meta::integer_size<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
@@ -4866,6 +4933,46 @@ public:
     /* Trivially swap the values of two integers. */
     constexpr void swap(UInt& other) noexcept {
         bits.swap(other.bits);
+    }
+
+    /* Implicitly convert a single-word integer to its underlying integer
+    representation. */
+    [[nodiscard]] constexpr operator word() const noexcept
+        requires(Bits::array_size == 1)
+    {
+        return word(bits);
+    }
+
+    /* Explicitly convert a multi-word integer into a different integer type, possibly
+    truncating any upper bits. */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits::array_size > 1)
+    {
+        return static_cast<T>(bits);
+    }
+
+    /* Explicitly convert a multi-word integer into a floating point type, retaining as
+    much precision as possible. */
+    template <meta::floating T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits::array_size > 1)
+    {
+        T value = 0;
+        for (size_t i = Bits::array_size; i-- > 0;) {
+            value = std::ldexp(value, Bits::word_size) + static_cast<T>(bits.data()[i]);
+        }
+        return value;
+    }
+
+    /* Non-zero integers evaluate to true under boolean logic. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return bool(bits);
+    }
+
+    /* Convert the integer to a decimal string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_decimal();
     }
 
     /* Decode an integer from a string representation.  Defaults to base 2 with the
@@ -5027,46 +5134,6 @@ public:
             "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
             "A", "B", "C", "D", "E", "F"
         >();
-    }
-
-    /* Convert the integer to a decimal string representation. */
-    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        return to_decimal();
-    }
-
-    /* Non-zero integers evaluate to true under boolean logic. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return bool(bits);
-    }
-
-    /* Implicitly convert a single-word integer to its underlying integer
-    representation. */
-    [[nodiscard]] constexpr operator word() const noexcept
-        requires(Bits::array_size == 1)
-    {
-        return word(bits);
-    }
-
-    /* Explicitly convert a multi-word integer into a different integer type, possibly
-    truncating any upper bits. */
-    template <meta::integer T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept
-        requires(Bits::array_size > 1)
-    {
-        return static_cast<T>(bits);
-    }
-
-    /* Explicitly convert a multi-word integer into a floating point type, retaining as
-    much precision as possible. */
-    template <meta::floating T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept
-        requires(Bits::array_size > 1)
-    {
-        T value = 0;
-        for (size_t i = Bits::array_size; i-- > 0;) {
-            value = std::ldexp(value, Bits::word_size) + static_cast<T>(bits.data()[i]);
-        }
-        return value;
     }
 
     /* Return +1 if the integer is positive or zero, or -1 if it is negative.  For
@@ -5442,6 +5509,18 @@ template <size_t N>
 constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept { lhs.swap(rhs); }
 
 
+// template struct UInt<8>;
+// template struct UInt<16>;
+// template struct UInt<32>;
+// template struct UInt<64>;
+// template struct UInt<128>;
+using uint8 = UInt<8>;
+using uint16 = UInt<16>;
+using uint32 = UInt<32>;
+using uint64 = UInt<64>;
+using uint128 = UInt<128>;
+
+
 template <meta::integer... Ts>
 Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
 template <meta::inherits<impl::Bits_slice_tag> T>
@@ -5547,6 +5626,50 @@ public:
     /* Trivially swap the values of two integers. */
     constexpr void swap(Int& other) noexcept {
         bits.swap(other.bits);
+    }
+
+    /* Implicitly convert a single-word integer to its underlying integer
+    representation. */
+    [[nodiscard]] constexpr operator meta::as_signed<word>() const noexcept
+        requires(Bits::array_size == 1)
+    {
+        if (bits.msb_is_set()) {
+            return -meta::as_signed<word>(-bits);
+        } else {
+            return meta::as_signed<word>(bits);
+        }
+    }
+
+    /* Explicitly convert a multi-word integer into another integer type, possibly
+    truncating any upper bits. */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits::array_size > 1)
+    {
+        return static_cast<T>(bits);
+    }
+
+    /* Explicitly convert a multi-word integer into a floating point type, retaining as
+    much precision as possible. */
+    template <meta::floating T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept
+        requires(Bits::array_size > 1)
+    {
+        T value = 0;
+        for (size_t i = Bits::array_size; i-- > 0;) {
+            value = std::ldexp(value, Bits::word_size) + static_cast<T>(bits.data()[i]);
+        }
+        return bits.msb_is_set() ? -value : value;
+    }
+
+    /* Non-zero integers evaluate to true under boolean logic. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return bool(bits);
+    }
+
+    /* Convert the integer to a decimal string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_decimal();
     }
 
     /* Decode an integer from a string representation.  Defaults to base 2 with the
@@ -5761,50 +5884,6 @@ public:
             "-", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
             "A", "B", "C", "D", "E", "F"
         >();
-    }
-
-    /* Convert the integer to a decimal string representation. */
-    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        return to_decimal();
-    }
-
-    /* Non-zero integers evaluate to true under boolean logic. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return bool(bits);
-    }
-
-    /* Implicitly convert a single-word integer to its underlying integer
-    representation. */
-    [[nodiscard]] constexpr operator meta::as_signed<word>() const noexcept
-        requires(Bits::array_size == 1)
-    {
-        if (bits.msb_is_set()) {
-            return -meta::as_signed<word>(-bits);
-        } else {
-            return meta::as_signed<word>(bits);
-        }
-    }
-
-    /* Explicitly convert a multi-word integer into another integer type, possibly
-    truncating any upper bits. */
-    template <meta::integer T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept
-        requires(Bits::array_size > 1)
-    {
-        return static_cast<T>(bits);
-    }
-
-    /* Explicitly convert a multi-word integer into a floating point type, retaining as
-    much precision as possible. */
-    template <meta::floating T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept
-        requires(Bits::array_size > 1)
-    {
-        T value = 0;
-        for (size_t i = Bits::array_size; i-- > 0;) {
-            value = std::ldexp(value, Bits::word_size) + static_cast<T>(bits.data()[i]);
-        }
-        return bits.msb_is_set() ? -value : value;
     }
 
     /* Return +1 if the integer is positive or zero, or -1 if it is negative. */
@@ -6359,13 +6438,6 @@ template <size_t N>
 constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept { lhs.swap(rhs); }
 
 
-// template struct Bits<8>;
-// template struct Bits<16>;
-// template struct Bits<32>;
-// template struct Bits<64>;
-// template struct Bits<128>;
-
-
 // template struct Int<8>;
 // template struct Int<16>;
 // template struct Int<32>;
@@ -6378,24 +6450,6 @@ using int64 = Int<64>;
 using int128 = Int<128>;
 
 
-// template struct UInt<8>;
-// template struct UInt<16>;
-// template struct UInt<32>;
-// template struct UInt<64>;
-// template struct UInt<128>;
-using uint8 = UInt<8>;
-using uint16 = UInt<16>;
-using uint32 = UInt<32>;
-using uint64 = UInt<64>;
-using uint128 = UInt<128>;
-
-
-/// TODO: endianness presents a pretty massive problem for floating point numbers, and
-/// for arithmetic types in general.  It might interfere with the rather delicate
-/// masking logic that I need to provide the correct results, and I'll need to keep it
-/// in mind.
-
-
 /// Reference: https://github.com/oprecomp/FloatX
 /// https://en.wikipedia.org/wiki/Minifloat
 
@@ -6406,6 +6460,7 @@ namespace impl {
     struct float_word {  // fall back to softfloat emulation with E + M bits
         using type = void;
         static constexpr size_t size = E + M;
+        static constexpr bool exact = false;
     };
 
     template <typename T, size_t E, size_t M>
@@ -6418,6 +6473,9 @@ namespace impl {
     struct float_word<E, M> {
         using type = float;
         static constexpr size_t size = meta::float_size<type>;
+        static constexpr bool exact =
+            E == meta::float_exponent_size<type> &&
+            M == meta::float_mantissa_size<type>;
     };
 
     template <size_t E, size_t M>
@@ -6428,6 +6486,9 @@ namespace impl {
     struct float_word<E, M> {
         using type = double;
         static constexpr size_t size = meta::float_size<type>;
+        static constexpr bool exact =
+            E == meta::float_exponent_size<type> &&
+            M == meta::float_mantissa_size<type>;
     };
 
     #ifdef __STDCPP_FLOAT16_T__
@@ -6439,6 +6500,9 @@ namespace impl {
         struct float_word<E, M> {
             using type = std::float16_t;
             static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool exact =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
         };
     #else
         inline constexpr bool HAS_FLOAT16 = false;
@@ -6454,6 +6518,9 @@ namespace impl {
         struct float_word<E, M> {
             using type = std::bfloat16_t;
             static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool exact =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
         };
     #else
         inline constexpr bool HAS_BFLOAT16 = false;
@@ -6470,6 +6537,9 @@ namespace impl {
         struct float_word<E, M> {
             using type = std::float32_t;
             static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool exact =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
         };
     #else
         inline constexpr bool HAS_FLOAT32 = false;
@@ -6487,6 +6557,9 @@ namespace impl {
         struct float_word<E, M> {
             using type = std::float64_t;
             static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool exact =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
         };
     #else
         inline constexpr bool HAS_FLOAT64 = false;
@@ -6505,6 +6578,9 @@ namespace impl {
         struct float_word<E, M> {
             using type = std::float128_t;
             static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool exact =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
         };
     #else
         inline constexpr bool HAS_FLOAT128 = false;
@@ -6536,11 +6612,185 @@ public:
     configuration, while still prioritizing hardware acceleration if available. */
     using hard_type = impl::float_word<E, M>::type;
 
-    /* The underlying bitset representation for the contents of this float. */
+    /* Indicates whether the float is backed by hardware (true) or software (false).
+    This is equivalent to checking whether `hard_type` is void. */
+    static constexpr bool hard = meta::not_void<hard_type>;
+
+    /* Indicates whether the float is backed by hardware and exactly matches the
+    corresponding type's exponent and mantissa widths.  If `hard == true` and
+    `no_mask == false`, then all operations will be buffered with an extra masking step
+    to force the result to conform to the expected exponent and mantissa limits. */
+    static constexpr bool no_mask = impl::float_word<E, M>::exact;
+
+    /* The underlying bitset representation for the contents of this float.  Note that
+    the size may be larger than `E + M` if `hard == true` and `no_mask == false`, in
+    order to account for the masked bits and keep the type layout-compatible with the
+    equivalent hardware type. */
     using Bits = bertrand::Bits<N>;
 
-private:
+    /* The number of bits devoted to the exponent.  Equivalent to `E`. */
+    static constexpr size_t exponent_size = E;
 
+    /* The number of bits devoted to the mantissa, including the implicit leading bit.
+    Equivalent to `M`. */
+    static constexpr size_t mantissa_size = M;
+
+    /* The minimum (most negative) finite value that the float can store. */
+    [[nodiscard]] static constexpr const Float& min() noexcept {
+        static constexpr Float result = [] -> Float {
+            // min occurs at exponent == max - 1 and mantissa == all ones
+            Float result;
+            result.bits |= traits::sign_mask;
+            result.bits |= traits::exp_bias << traits::man_size;
+            result.bits |= traits::man_mask;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The maximum (most positive) finite value that the float can store. */
+    [[nodiscard]] static constexpr const Float& max() noexcept {
+        static constexpr Float result = [] -> Float {
+            // max occurs at exponent == max - 1 and mantissa == all ones
+            Float result;
+            result.bits |= traits::exp_bias << traits::man_size;
+            result.bits |= traits::man_mask;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The smallest positive normalized value that the float can store. */
+    [[nodiscard]] static constexpr const Float& smallest() noexcept {
+        static constexpr Float result = [] -> Float {
+            // smallest occurs at exponent == 1 and mantissa == 0
+            Float result;
+            result.bits |= 1;
+            result.bits <<= traits::man_size - 1;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The smallest positive subnormal value that the float can store. */
+    [[nodiscard]] static constexpr const Float& denorm_min() noexcept {
+        static constexpr Float result = [] -> Float {
+            // denorm min occurs at exponent == 0 and mantissa == 1
+            Float result;
+            result.bits |= 1;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The minimum (most negative) integer that can be exactly represented by the
+    float.  Integers below this value may be subjected to precision loss according to
+    normal half-even rounding semantics. */
+    [[nodiscard]] static constexpr const Float& min_int() noexcept {
+        static constexpr Float result = [] -> Float {
+            // min int occurs at exponent = bias + M, followed by all zeros
+            // in the mantissa
+            Float result;
+            result.bits |= traits::exp_bias + M;
+            result.bits <<= traits::man_size - 1;
+            result.bits |= traits::sign_mask;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The maximum (most positive) integer that can be exactly represented by the
+    float.  Integers above this value may be subjected to precision loss according to
+    normal half-even rounding semantics. */
+    [[nodiscard]] static constexpr const Float& max_int() noexcept {
+        static constexpr Float result = [] -> Float {
+            // max int occurs at exponent = bias + M, followed by all zeros in the
+            // mantissa
+            Float result;
+            result.bits |= traits::exp_bias + M;
+            result.bits <<= traits::man_size - 1;
+            return result;
+        }();
+        return result;
+    }
+
+    /* The minimum exponent that the base can be raised to before producing a subnormal
+    value. */
+    [[nodiscard]] static constexpr const int32 min_exponent() noexcept {
+        static constexpr int32 result {int32{1} - traits::exp_bias};
+        return result;
+    }
+
+    /* The maximum exponent that the base can be raised to before producing an
+    infinity. */
+    [[nodiscard]] static constexpr const int32 max_exponent() noexcept {
+        static constexpr int32 result {traits::exp_bias};
+        return result;
+    }
+
+    /* The difference in magnitude between 1.0 and the next representable value for
+    this floating point type.  Smaller results indicate a higher floating point
+    resolution, which is correlated with `M` (the number of bits devoted to the
+    mantissa). */
+    [[nodiscard]] static constexpr const Float& epsilon() noexcept {
+        static constexpr Float result = [] -> Float {
+            // epsilon occurs at exponent == bias and mantissa == 1, then subtract 1
+            Float result;
+            result.bits |= 1;
+            result.bits <<= traits::man_size - M;
+            result.bits |= traits::exp_bias << (traits::man_size - 1);
+            return result - 1;
+        }();
+        return result;
+    }
+
+    /* Negative infinity sentinel. */
+    [[nodiscard]] static constexpr const Float& neg_inf() noexcept {
+        static constexpr Float result = [] -> Float {
+            // infinity occurs at max exponent and zero mantissa
+            Float result;
+            result.bits |= traits::sign_mask;
+            result.bits |= traits::exp_mask;
+            return result;
+        }();
+        return result;
+    }
+
+    /* Positive infinity sentinel. */
+    [[nodiscard]] static constexpr const Float& inf() noexcept {
+        static constexpr Float result = [] -> Float {
+            // infinity occurs at max exponent and zero mantissa
+            Float result;
+            result.bits |= traits::exp_mask;
+            return result;
+        }();
+        return result;
+    }
+
+    /* Not-a-Number sentinel.  Note that this is always a "quiet" NaN, as
+    `bertrand::Float<E, M>` does not implement signaling NaN directly, which is the one
+    and only deviation from the IEEE 754 standard.  Signaling NaNs are largely
+    superceded by more advanced error handling mechanisms, like exceptions or
+    `Expected<T, Es...>`, both of which should be preferred over raw hardware traps. */
+    [[nodiscard]] static constexpr const Float& nan() noexcept {
+        static constexpr Float result = [] -> Float {
+            // NaN layout may be implementation-defined
+            if constexpr (hard) {
+                return {std::numeric_limits<hard_type>::quiet_NaN()};
+
+            // in softfloat mode, quiet NaN corresponds to positive sign, maximum
+            // exponent, and non-zero mantissa MSB
+            } else {
+                Float result;
+                result.bits |= traits::exp_mask;
+                result.bits |= Bits{1} << (traits::man_size - 2);
+                return result;
+            }
+        }();
+        return result;
+    }
+
+private:
     /* Given a pre-normalized mantissa of length `m` stored in a bitset of any size,
     convert it into an equivalent mantissa of length `M`, padding with trailing zeros
     if `m < M` and rounding excess bits if `m > M`. */
@@ -7119,167 +7369,20 @@ private:
     using traits = _traits<hard_type>;
 
 public:
-    /* The number of bits devoted to the exponent.  Equivalent to `E`. */
-    static constexpr size_t exponent_size = E;
-
-    /* The number of bits devoted to the mantissa, including the implicit ones bit.
-    Equivalent to `M`. */
-    static constexpr size_t mantissa_size = M;
-
-    /* The minimum exponent that the base can be raised to before producing a subnormal
-    value. */
-    static constexpr Int<32> min_exponent = Int<32>{1} - traits::exp_bias;
-
-    /* The maximum exponent that the base can be raised to before producing an
-    infinity. */
-    static constexpr Int<32> max_exponent = Int<32>{1} + traits::exp_bias;
-    
-    /* The minimum (most negative) finite value that the float can store. */
-    [[nodiscard]] static constexpr const Float& min() noexcept {
-        static constexpr Float result = [] -> Float {
-            // min occurs at exponent == max - 1 and mantissa == all ones
-            Float result;
-            result.bits |= traits::sign_mask;
-            result.bits |= traits::exp_bias << traits::man_size;
-            result.bits |= traits::man_mask;
-            return result;
-        }();
-        return result;
-    }
-
-    /* The maximum (most positive) finite value that the float can store. */
-    [[nodiscard]] static constexpr const Float& max() noexcept {
-        static constexpr Float result = [] -> Float {
-            // max occurs at exponent == max - 1 and mantissa == all ones
-            Float result;
-            result.bits |= traits::exp_bias << traits::man_size;
-            result.bits |= traits::man_mask;
-            return result;
-        }();
-        return result;
-    }
-
-    /* The smallest positive, normalized value that the float can store. */
-    [[nodiscard]] static constexpr const Float& smallest() noexcept {
-        static constexpr Float result = [] -> Float {
-            // smallest occurs at exponent == 1 and mantissa == 0
-            Float result;
-            result.bits |= 1;
-            result.bits <<= traits::man_size - 1;
-            return result;
-        }();
-        return result;
-    }
-
-    /* The smallest positive, subnormal value that the float can store. */
-    [[nodiscard]] static constexpr const Float& denorm_min() noexcept {
-        static constexpr Float result = [] -> Float {
-            // denorm min occurs at exponent == 0 and mantissa == 1
-            Float result;
-            result.bits |= 1;
-            return result;
-        }();
-        return result;
-    }
-
-    /* The minimum (most negative) integer that can be exactly represented by the
-    float.  Integers below this value may be subjected to precision loss according to
-    normal half-even rounding semantics. */
-    [[nodiscard]] static constexpr const Float& min_int() noexcept {
-        static constexpr Float result = [] -> Float {
-            /// TODO: figure out the proper bitwise representation for 2^M
-            // min int occurs at exponent = bias + M - 1
-            Float result;
-            // result.bits |= 1;
-            // result.bits <<= M;
-            result.bits |= traits::sign_mask;
-            return result;
-        }();
-        return result;
-    }
-
-    /* The maximum (most positive) integer that can be exactly represented by the
-    float.  Integers above this value may be subjected to precision loss according to
-    normal half-even rounding semantics. */
-    [[nodiscard]] static constexpr const Float& max_int() noexcept {
-        static constexpr Float result = [] -> Float {
-            /// TODO: figure out the proper bitwise representation for 2^M
-            // max int occurs at exponent = bias + M - 1
-            Float result;
-            // result.bits |= 1;
-            // result.bits <<= M;
-            return result;
-        }();
-        return result;
-    }
-
-    /* The difference in magnitude between 1.0 and the next representable value for
-    this floating point type.  Smaller results indicate a higher floating point
-    resolution, which is correlated with `M` (the number of bits devoted to the
-    mantissa).  Epsilon is used as the default floating point tolerance for approximate
-    comparisons. */
-    [[nodiscard]] static constexpr const Float& epsilon() noexcept {
-        static constexpr Float result = [] -> Float {
-            // epsilon occurs at exponent == bias and mantissa == 1, then subtract 1
-            Float result;
-            result.bits |= 1;
-            result.bits <<= traits::man_size - M;
-            result.bits |= traits::exp_bias << (traits::man_size - 1);
-            return result - 1;
-        }();
-        return result;
-    }
-
-    /* Negative infinity sentinel. */
-    [[nodiscard]] static constexpr const Float& neg_inf() noexcept {
-        static constexpr Float result = [] -> Float {
-            // infinity occurs at max exponent and zero mantissa
-            Float result;
-            result.bits |= traits::sign_mask;
-            result.bits |= traits::exp_mask;
-            return result;
-        }();
-        return result;
-    }
-
-    /* Positive infinity sentinel. */
-    [[nodiscard]] static constexpr const Float& inf() noexcept {
-        static constexpr Float result = [] -> Float {
-            // infinity occurs at max exponent and zero mantissa
-            Float result;
-            result.bits |= traits::exp_mask;
-            return result;
-        }();
-        return result;
-    }
-
-    /* NaN sentinel. */
-    [[nodiscard]] static constexpr const Float& nan() noexcept {
-        static constexpr Float result = [] -> Float {
-            // NaN layout may be implementation-defined
-            if constexpr (traits::hard) {
-                return {std::numeric_limits<hard_type>::quiet_NaN()};
-
-            // in softfloat mode, quiet NaN corresponds to positive sign, maximum
-            // exponent, and non-zero mantissa MSB
-            } else {
-                Float result;
-                result.bits |= traits::exp_mask;
-                result.bits |= Bits{1} << (traits::man_size - 2);
-                return result;
-            }
-        }();
-        return result;
-    }
-
-    /* A bitset holding the bitwise representation of the float. */
+    /* A bitset holding the bitwise representation of the float.  For hardware floats,
+    all operations consist of a `std::bit_cast()` from the contents of this bitset to
+    the equivalent hardware type, with zero overhead. */
     Bits bits;
 
     /* Default constructor.  Initializes to positive zero. */
     [[nodiscard]] constexpr Float() noexcept = default;
 
-    /* Implicitly convert from a float of any width, rounding the result to the nearest
-    representable value. */
+    /* Implicitly convert from an arbitrary floating point initializer, rounding the
+    result to the nearest representable value.  Infinities and NaNs are passed through
+    as-is, and previously-normalized results may become subnormal if `E` is narrower
+    than the input exponent, or vice versa if `E` is wider.  Conversely, if the input
+    exponent exceeds the new maximum, then the result will overflow to positive or
+    negative infinity, whichever is closer. */
     template <meta::floating T>
     [[nodiscard]] constexpr Float(const T& value) noexcept :
         bits{}
@@ -7288,7 +7391,12 @@ public:
     }
 
     /* Explicitly convert an integer into a float, rounding the result to the nearest
-    representable value. */
+    representable value.  If the conversion would cause the exponent to exceed its
+    maximum value, then the result will overflow to positive or negative infinity,
+    whichever is closer.  Otherwise, if the result is outside the range indicated by
+    `::min_int()` and `::max_int()`, then the result may be subject to precision loss
+    according to normal half-even rounding semantics.  NaNs and subnormals will never
+    be generated by this constructor. */
     template <meta::integer T> requires (!meta::Bits<T>)
     [[nodiscard]] explicit constexpr Float(const T& value) noexcept :
         bits{}
@@ -7299,6 +7407,43 @@ public:
     /* Trivially swap the values of two floats. */
     constexpr void swap(Float& other) noexcept {
         bits.swap(other.bits);
+    }
+
+    /* Implicitly convert the float to an equivalent hardware type if one is
+    available. */
+    [[nodiscard]] constexpr operator hard_type() const noexcept requires(hard) {
+        return traits::widen(bits);
+    }
+
+    /* Explicitly convert the float to an integer type, truncating towards zero. */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (hard) {
+            return static_cast<T>(static_cast<hard_type>(*this));
+        } else {
+            /// TODO: softfloat emulation
+        }
+    }
+
+    /* Explicitly convert the float to another floating point type, rounding to the
+    nearest representable value. */
+    template <meta::floating T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const noexcept {
+        if constexpr (hard) {
+            return static_cast<T>(static_cast<hard_type>(*this));
+        } else {
+            /// TODO: softfloat emulation
+        }
+    }
+
+    /* Non-zero floats (including subnormals) evaluate to true under boolean logic. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return bool(bits & traits::payload_mask);
+    }
+
+    /* Explicitly convert the float to a decimal string representation. */
+    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
+        return to_decimal();
     }
 
     /// TODO: string conversions can possibly reuse the continuation constructors from
@@ -7507,43 +7652,6 @@ public:
         >();
     }
 
-    /* Explicitly Convert the float to a decimal string representation. */
-    [[nodiscard]] explicit constexpr operator std::string() const noexcept {
-        return to_decimal();
-    }
-
-    /* Non-zero floats (including subnormals) evaluate to true under boolean logic. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return bool(bits & traits::payload_mask);
-    }
-
-    /* Implicitly convert the float to an equivalent hardware type if one is
-    available. */
-    [[nodiscard]] constexpr operator hard_type() const noexcept requires(traits::hard) {
-        return traits::widen(bits);
-    }
-
-    /* Explicitly convert the float to an integer type, truncating towards zero. */
-    template <meta::integer T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept {
-        if constexpr (traits::hard) {
-            return static_cast<T>(static_cast<hard_type>(*this));
-        } else {
-            /// TODO: softfloat emulation
-        }
-    }
-
-    /* Explicitly convert the float to another floating point type, rounding to the
-    nearest representable value. */
-    template <meta::floating T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept {
-        if constexpr (traits::hard) {
-            return static_cast<T>(static_cast<hard_type>(*this));
-        } else {
-            /// TODO: softfloat emulation
-        }
-    }
-
     /* Returns true if the float represents zero, regardless of sign. */
     [[nodiscard]] constexpr bool is_zero() const noexcept {
         return !*this;
@@ -7584,7 +7692,7 @@ public:
         2.  +/- inf -> +inf, which causes `f.sign() * pow(...)` to obey the identity
         3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
-    [[nodiscard]] static constexpr UInt<32> base() noexcept {
+    [[nodiscard]] static constexpr uint32 base() noexcept {
         return 2;
     }
 
@@ -7655,16 +7763,55 @@ public:
         return result;
     }
 
-    /// TODO: nextafter, nexttoward, copysign, etc.
+    /* Compose a float with the magnitude from this float and the sign from `other`. */
+    [[nodiscard]] constexpr Float copy_sign(const Float& other) const noexcept {
+        Float result = *this;
+        result.bits &= traits::payload_mask;
+        result.bits |= other.bits & traits::sign_mask;
+        return result;
+    }
+
+    /* The next representable value after this one.  Infinities and NaN are passed
+    through as-is. */
+    [[nodiscard]] constexpr Float next() const noexcept {
+        Float result = *this;
+        if ((result.bits & traits::payload_mask) < traits::exp_mask) {
+            ++result.bits;
+        }
+        return result;
+    }
+
+    /* The previous representable value before this one.  Ininities and NaN are passed
+    through as-is. */
+    [[nodiscard]] constexpr Float prev() const noexcept {
+        Float result = *this;
+        if ((result.bits & traits::payload_mask) < traits::exp_mask) {
+            --result.bits;
+        }
+        return result;
+    }
+
+    /* The next representable value toward another floating point sentinel.  Ininities
+    and NaN are passed through as-is, and if `other` is equal to this float, then the
+    result is an exact copy */
+    [[nodiscard]] constexpr Float toward(const Float& other) const noexcept {
+        Float result = *this;
+        if ((result.bits & traits::payload_mask) < traits::exp_mask) {
+            if (result < other) {
+                ++result.bits;
+            } else  if (result > other){
+                --result.bits;
+            }
+        }
+        return result;
+    }
 
     /// TODO: on ULPs: https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
-
-
 
     /// TODO: documentation for arithmetic methods, and possible softfloat emulation
 
     [[nodiscard]] constexpr Float add(const Float& other) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             return hard_type(*this) + hard_type(other);
         } else {
             Float result;
@@ -7674,7 +7821,7 @@ public:
     }
 
     constexpr void add(const Float& other, Float& out) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             out = hard_type(*this) + hard_type(other);
         } else {
             /// TODO: softfloat emulation (NYI)
@@ -7682,7 +7829,7 @@ public:
     }
 
     [[nodiscard]] constexpr Float sub(const Float& other) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             return hard_type(*this) - hard_type(other);
         } else {
             Float result;
@@ -7692,7 +7839,7 @@ public:
     }
 
     constexpr void sub(const Float& other, Float& out) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             out = hard_type(*this) - hard_type(other);
         } else {
             /// TODO: softfloat emulation (NYI)
@@ -7700,7 +7847,7 @@ public:
     }
 
     [[nodiscard]] constexpr Float mul(const Float& other) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             return hard_type(*this) * hard_type(other);
         } else {
             Float result;
@@ -7710,7 +7857,7 @@ public:
     }
 
     constexpr void mul(const Float& other, Float& out) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             out = hard_type(*this) * hard_type(other);
         } else {
             /// TODO: softfloat emulation (NYI)
@@ -7718,7 +7865,7 @@ public:
     }
 
     [[nodiscard]] constexpr Float div(const Float& other) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             return hard_type(*this) / hard_type(other);
         } else {
             Float result;
@@ -7728,7 +7875,7 @@ public:
     }
 
     constexpr void div(const Float& other, Float& out) const noexcept {
-        if constexpr (traits::hard) {
+        if constexpr (hard) {
             out = hard_type(*this) / hard_type(other);
         } else {
             /// TODO: softfloat emulation (NYI)
@@ -7764,6 +7911,8 @@ public:
         const Float& tolerance = epsilon()
     ) const noexcept {
         std::partial_ordering result = *this <=> other;
+
+        // if not equivalent, check if the difference is within tolerance
         if (result < 0) {
             Float diff = other - *this;
             diff.bits &= traits::payload_mask;
@@ -7777,6 +7926,7 @@ public:
                 return std::partial_ordering::equivalent;
             }
         }
+
         return result;
     }
 
@@ -7786,7 +7936,7 @@ public:
     [[nodiscard]] friend constexpr std::partial_ordering operator<=>(
         const Float& lhs,
         const Float& rhs
-    ) noexcept requires(!traits::hard) {
+    ) noexcept requires(!hard) {
         Bits lhs_payload = lhs.bits & traits::payload_mask;
         Bits rhs_payload = rhs.bits & traits::payload_mask;
 
@@ -7822,7 +7972,7 @@ public:
     [[nodiscard]] friend constexpr bool operator==(
         const Float& lhs,
         const Float& rhs
-    ) noexcept requires(!traits::hard) {
+    ) noexcept requires(!hard) {
         return (lhs <=> rhs) == 0;
     }
 
@@ -7831,14 +7981,14 @@ public:
         return *this;
     }
 
-    /* Increment the float by one and return a reference to the new value. */
+    /* Increment the float by 1.0 and return a reference to the new value. */
     constexpr Float& operator++() noexcept {
         static constexpr Float one = 1.0;
         add(one, *this);
         return *this;
     }
 
-    /* Increment the float by one and return a copy of the old value. */
+    /* Increment the float by 1.0 and return a copy of the old value. */
     [[nodiscard]] constexpr Float operator++(int) noexcept {
         Float copy = *this;
         ++*this;
@@ -7849,7 +7999,7 @@ public:
     [[nodiscard]] friend constexpr Float operator+(
         const Float& lhs,
         const Float& rhs
-    ) noexcept requires(!traits::hard) {
+    ) noexcept requires(!hard) {
         return lhs.add(rhs);
     }
 
@@ -7864,14 +8014,14 @@ public:
         return Float{bits ^ traits::sign_mask};
     }
 
-    /* Decrement the float by one and return a reference to the new value. */
+    /* Decrement the float by 1.0 and return a reference to the new value. */
     constexpr Float& operator--() noexcept {
         static constexpr Float one = 1.0;
         sub(one, *this);
         return *this;
     }
 
-    /* Decrement the float by one and return a copy of the old value. */
+    /* Decrement the float by 1.0 and return a copy of the old value. */
     [[nodiscard]] constexpr Float operator--(int) noexcept {
         Float copy = *this;
         --*this;
@@ -7882,7 +8032,7 @@ public:
     [[nodiscard]] friend constexpr Float operator-(
         const Float& lhs,
         const Float& rhs
-    ) noexcept requires(!traits::hard) {
+    ) noexcept requires(!hard) {
         return lhs.sub(rhs);
     }
 
@@ -7897,7 +8047,7 @@ public:
     [[nodiscard]] friend constexpr Float operator*(
         const Float& lhs,
         const Float& rhs
-    ) noexcept requires(!traits::hard) {
+    ) noexcept requires(!hard) {
         return lhs.mul(rhs);
     }
 
@@ -7912,7 +8062,7 @@ public:
     [[nodiscard]] friend constexpr Float operator/(
         const Float& lhs,
         const Float& rhs
-    ) noexcept requires(!traits::hard) {
+    ) noexcept requires(!hard) {
         return lhs.div(rhs);
     }
 
@@ -7947,6 +8097,15 @@ using bfloat16 = Float<8, 8>;
 using float32 = Float<8, 24>;
 using float64 = Float<11, 53>;
 // using float128 = Float<15, 113>;
+
+
+
+
+
+
+static_assert(float16(float16::min_int() - 1) == float16::min_int());
+static_assert(float32(float32::max_int()) == float32::max_int());
+
 
 
 // static_assert(int16(float32(10)) == 10);
@@ -7985,8 +8144,8 @@ static_assert(float32(x) == 1.0);
 
 
 inline constexpr float32 xyz = 3.5;
-// inline constexpr Int<32> xyz2 {xyz};
-static_assert(float32(Int<32>(0)) == 0.0);
+// inline constexpr int32 xyz2 {xyz};
+static_assert(float32(int32(0)) == 0.0);
 static_assert(xyz.mantissa() == 1.75);
 static_assert(xyz.exponent() == 1);
 static_assert(xyz.base() == 2);
@@ -8532,7 +8691,7 @@ namespace std {
 //         {
 //             static constexpr UInt x = 42;
 //             static_assert(x == 42);
-//             static constexpr auto x2 = UInt<32>::from_decimal("42");
+//             static constexpr auto x2 = uint32::from_decimal("42");
 //             static_assert(x2.result() == 42);
 //             static_assert(divide::ceil(x, 4) == 11);
 
