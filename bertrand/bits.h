@@ -344,14 +344,11 @@ namespace impl {
             (meta::integer_size<words> + ... + 0) <= bertrand::max(N, 64)
         ));
 
-    /// TODO: bit_cast_constructor should possibly assert that not ALL Ts... are
-    /// integers, not fail if only one is.
-
     template <size_t N, typename... Ts>
     concept bit_cast_constructor =
         sizeof...(Ts) > 0 &&
         (meta::trivially_copyable<Ts> && ...) &&
-        ((!meta::integer<Ts> && !meta::inherits<Ts, impl::Bits_slice_tag>) && ...) &&
+        ((!meta::integer<Ts> && !meta::inherits<Ts, impl::Bits_slice_tag>) || ...) &&
         ((sizeof(Ts) * 8) + ... + 0) <= N;
 
     /* Hardware words scale from 8 to 64 bits, based on the overall number needed to
@@ -6640,9 +6637,10 @@ public:
         static constexpr Float result = [] -> Float {
             // min occurs at exponent == max - 1 and mantissa == all ones
             Float result;
-            result.bits |= traits::sign_mask;
-            result.bits |= traits::exp_bias << traits::man_size;
-            result.bits |= traits::man_mask;
+            result.bits |= traits::mask::bias;
+            result.bits <<= 1;
+            result.bits |= traits::mask::mantissa;
+            result.bits |= traits::mask::sign;
             return result;
         }();
         return result;
@@ -6653,8 +6651,9 @@ public:
         static constexpr Float result = [] -> Float {
             // max occurs at exponent == max - 1 and mantissa == all ones
             Float result;
-            result.bits |= traits::exp_bias << traits::man_size;
-            result.bits |= traits::man_mask;
+            result.bits |= traits::mask::bias;
+            result.bits <<= 1;
+            result.bits |= traits::mask::mantissa;
             return result;
         }();
         return result;
@@ -6665,8 +6664,7 @@ public:
         static constexpr Float result = [] -> Float {
             // smallest occurs at exponent == 1 and mantissa == 0
             Float result;
-            result.bits |= 1;
-            result.bits <<= traits::man_size - 1;
+            result.bits |= traits::mask::implicit_bit;
             return result;
         }();
         return result;
@@ -6678,6 +6676,7 @@ public:
             // denorm min occurs at exponent == 0 and mantissa == 1
             Float result;
             result.bits |= 1;
+            result.bits <<= traits::man_size - M;
             return result;
         }();
         return result;
@@ -6688,12 +6687,15 @@ public:
     normal half-even rounding semantics. */
     [[nodiscard]] static constexpr const Float& min_int() noexcept {
         static constexpr Float result = [] -> Float {
+            /// TODO: is it possible for the mantissa size to exceed the maximum
+            /// exponent?  I believe so, and that means this is incorrect
+
             // min int occurs at exponent = bias + M, followed by all zeros
             // in the mantissa
             Float result;
             result.bits |= traits::exp_bias + M;
             result.bits <<= traits::man_size - 1;
-            result.bits |= traits::sign_mask;
+            result.bits |= traits::mask::sign;
             return result;
         }();
         return result;
@@ -6704,6 +6706,9 @@ public:
     normal half-even rounding semantics. */
     [[nodiscard]] static constexpr const Float& max_int() noexcept {
         static constexpr Float result = [] -> Float {
+            /// TODO: is it possible for the mantissa size to exceed the maximum
+            /// exponent?  I believe so, and that means this is incorrect
+
             // max int occurs at exponent = bias + M, followed by all zeros in the
             // mantissa
             Float result;
@@ -6716,15 +6721,15 @@ public:
 
     /* The minimum exponent that the base can be raised to before producing a subnormal
     value. */
-    [[nodiscard]] static constexpr const int32 min_exponent() noexcept {
-        static constexpr int32 result {int32{1} - traits::exp_bias};
+    [[nodiscard]] static constexpr const int32& min_exponent() noexcept {
+        static constexpr int32 result = 1 - traits::exp_bias;
         return result;
     }
 
     /* The maximum exponent that the base can be raised to before producing an
     infinity. */
-    [[nodiscard]] static constexpr const int32 max_exponent() noexcept {
-        static constexpr int32 result {traits::exp_bias};
+    [[nodiscard]] static constexpr const int32& max_exponent() noexcept {
+        static constexpr int32 result = traits::exp_bias;
         return result;
     }
 
@@ -6738,7 +6743,7 @@ public:
             Float result;
             result.bits |= 1;
             result.bits <<= traits::man_size - M;
-            result.bits |= traits::exp_bias << (traits::man_size - 1);
+            result.bits |= traits::mask::bias;
             return result - 1;
         }();
         return result;
@@ -6749,8 +6754,8 @@ public:
         static constexpr Float result = [] -> Float {
             // infinity occurs at max exponent and zero mantissa
             Float result;
-            result.bits |= traits::sign_mask;
-            result.bits |= traits::exp_mask;
+            result.bits |= traits::mask::exponent;
+            result.bits |= traits::mask::sign;
             return result;
         }();
         return result;
@@ -6761,7 +6766,7 @@ public:
         static constexpr Float result = [] -> Float {
             // infinity occurs at max exponent and zero mantissa
             Float result;
-            result.bits |= traits::exp_mask;
+            result.bits |= traits::mask::exponent;
             return result;
         }();
         return result;
@@ -6782,8 +6787,9 @@ public:
             // exponent, and non-zero mantissa MSB
             } else {
                 Float result;
-                result.bits |= traits::exp_mask;
-                result.bits |= Bits{1} << (traits::man_size - 2);
+                result.bits |= traits::mask::implicit_bit;
+                result.bits >>= 1;
+                result.bits |= traits::mask::exponent;
                 return result;
             }
         }();
@@ -6817,6 +6823,10 @@ private:
 
     template <typename T>
     struct _traits {
+        /// TODO: exp_bias should be an integer, not a bitset.  Also, this should use
+        /// consistent logic with the hardware case, so that the backends are
+        /// symmetrical as much as possible.
+
         static constexpr bool hard = false;
         static constexpr size_t man_size = M;
         static constexpr size_t exp_size = E;
@@ -7169,21 +7179,20 @@ private:
         static constexpr bool hard = true;
         static constexpr size_t man_size = meta::float_mantissa_size<T>;
         static constexpr size_t exp_size = meta::float_exponent_size<T>;
-        static constexpr Bits exp_bias =
-            Bits::mask(0, E - 1);
+        static constexpr size_t exp_bias = size_t(Bits::mask(0, E - 1));
 
-        static constexpr Bits sign_mask = Bits{1} << (N - 1);
-        static constexpr Bits exp_mask =
-            Bits::mask(man_size - 1, man_size - 1 + E);
-        static constexpr Bits man_mask =
-            Bits::mask(man_size - M, man_size - 1);
+        struct mask {
+            static constexpr Bits sign = Bits{1} << (N - 1);
+            static constexpr Bits exponent =
+                Bits::mask(man_size - 1, man_size - 1 + E);
+            static constexpr Bits mantissa =
+                Bits::mask(man_size - M, man_size - 1);
 
-        static constexpr Bits all_mask = sign_mask | exp_mask | man_mask;
-        static constexpr Bits payload_mask = ~sign_mask;
-        static constexpr Bits implicit_bit = Bits{1} << (man_size - 1);
-
-        /// TODO: make sure to pass through NaN and infinity unchanged, and handle
-        /// subnormals correctly with respect to the bias adjustment.
+            static constexpr Bits all = sign | exponent | mantissa;
+            static constexpr Bits payload = ~sign;
+            static constexpr Bits bias = Bits{exp_bias} << (man_size - 1);
+            static constexpr Bits implicit_bit = Bits{1} << (man_size - 1);
+        };
 
         template <meta::floating U>
         static constexpr void from_float(Float& out, const U& value) noexcept {
@@ -7197,173 +7206,207 @@ private:
             narrow(out.bits);
         }
 
-        /// TODO: rename to to_float()
-        static constexpr T widen(const Bits& bits) noexcept {
+        template <meta::floating To>
+        static constexpr To to_float(const Float& self) noexcept {
             if constexpr (E < exp_size) {
-                return static_cast<T>(bits + min_exponent);
+                static constexpr size_t offset = size_t(wide::zero >> (man_size - 1));
+
+                // preserve NaN/infinity
+                Bits temp = self.bits & mask::payload;
+                if (temp >= mask::exponent) {
+                    return static_cast<To>(static_cast<T>(self.bits | wide::exponent));
+                }
+
+                // scale up subnormals
+                if (temp < mask::implicit_bit) {
+                    if (auto idx = temp.last_one(); idx.has_value()) {
+                        size_t shift = man_size - 1 - idx.value();
+
+                        // if the shift amount exceeds the available offset, then we
+                        // need to left shift by the offset and leave the exponent zero.
+                        // Note that if shift == offset, then the result will become
+                        // a normal number with an exponent of 1, which is fine.
+                        if (shift >= offset) {
+                            temp <<= offset;
+                            temp |= self.bits & mask::sign;
+
+                        // otherwise, we shift until the leading one is in the implicit
+                        // bit position, and then set the exponent to the difference
+                        // from the offset.
+                        } else {
+                            temp <<= shift;
+                            temp += Bits{offset - shift - 1} << (man_size - 1);
+                            temp |= self.bits & mask::sign;
+                        }
+
+                        // reinterpret the bits as a hardware float, and then convert
+                        // to the final result
+                        return static_cast<To>(static_cast<T>(temp));
+                    }
+
+                    // preserve zero
+                    return static_cast<To>(static_cast<T>(self.bits));
+                }
+
+                // adjust bias for normals
+                return static_cast<To>(static_cast<T>(self.bits + wide::zero));
             } else {
-                return static_cast<T>(bits);
+                return static_cast<To>(static_cast<T>(self.bits));
+            }
+        }
+
+        template <meta::integer To>
+        static constexpr To to_int(const Float& self) noexcept {
+            /// NOTE: the C++ standard does not rigorously define the behavior of
+            /// float -> int conversions, so the only correct thing to do here is to
+            /// piggyback off the hardware type as much as possible.  Also, note that
+            /// we don't need to explicitly handle zero or subnormals here, since they
+            /// will always end up with an exponent less than the bias, and thus round
+            /// to zero naturally in the conversion.
+            if constexpr (E < exp_size) {
+                if ((self.bits & mask::exponent) == mask::exponent) {
+                    return static_cast<To>(static_cast<T>(self.bits | wide::exponent));
+                }
+                return static_cast<To>(static_cast<T>(self.bits + wide::zero));
+            } else {
+                return static_cast<To>(static_cast<T>(self.bits));
             }
         }
 
     private:
-        static constexpr Bits get_exp =
-            Bits::mask(man_size - 1, man_size - 1 + exp_size);
-        static constexpr Bits get_man =
-            Bits::mask(0, man_size - 1);
-        static constexpr Bits get_exp_man = get_exp | get_man;
+        struct wide {
+            static constexpr Bits exponent =
+                Bits::mask(man_size - 1, man_size - 1 + exp_size);
+            static constexpr Bits mantissa =
+                Bits::mask(0, man_size - 1);
 
-        static constexpr Bits min_exponent =
-            (Bits{meta::float_exponent_bias<T>} - exp_bias) << (man_size - 1);
-        static constexpr Bits max_exponent =
-            (Bits{meta::float_exponent_bias<T>} + exp_bias + 1) << (man_size - 1);
-
-        static constexpr Bits half =
-            M == man_size ? Bits{} : Bits{Bits{1} << (man_size - M - 1)};
-        static constexpr Bits to_even = half << 1;
-        static constexpr Bits discard = to_even ? Bits{to_even - 1} : Bits{};
+            static constexpr Bits zero =
+                Bits{meta::float_exponent_bias<T> - exp_bias} << (man_size - 1);
+            static constexpr Bits inf =
+                Bits{meta::float_exponent_bias<T> + exp_bias + 1} << (man_size - 1);
+            static constexpr Bits first = zero + mask::implicit_bit;
+        };
 
         static constexpr void narrow(Bits& bits) noexcept {
             // we keep the high M bits of the mantissa, low E bits of the exponent, and
             // the sign bit.  This preserves +/- 0, inf, and NaN special cases, while
             // truncating to the true templated sizes.
             if constexpr (E < exp_size && M < man_size) {
-                Bits exp = bits & get_exp;
-
-                // if the exponent is greater than the maximum valid exponent, then
-                // the value is already NaN/inf or needs to overflow to inf.
-                if (exp > max_exponent) {
-                    // preserve NaN/infinity
-                    if (exp == get_exp) {
-                        bits &= all_mask;  // truncate any unused bits
-                    } else {
-                        bits &= sign_mask;  // clear all but sign
-                        bits |= exp_mask;  // +/- inf
-                    }
-                    return;
-
-                // If the exponent is smaller than or equal to the minimum valid
-                // exponent, then the value is already zero or subnormal, or underflows
-                // to a subnormal in the new range.
-                } else if (exp <= min_exponent) {
-                    /// TODO: subnormal scaling
-                    if (exp == 0) {
-
-                    } else {
-
-                    }
-                    return;
-                }
-
-                // otherwise, the exponent is valid and produces a normal number in the
-                // new range.
-                exp -= min_exponent;
-
-                // extract mantissa and round to nearest even value
-                Bits man = bits & get_man;
-                if ((bits & discard) == half) {
-                    man += man & to_even;
-                } else {
-                    man += half;
-                }
-                /// TODO: perhaps if I handle the mantissa first, then place it into
-                /// the result, then the carry will be automatically added to the
-                /// exponent without me needing to handle it here.
-                exp += man & get_exp;  // add carry from mantissa
-                man &= man_mask;
-
-                // check for overflow/underflow and commit changes
-                bits &= sign_mask;
-                if (exp & ~exp_mask) {
-                    if (exp > exp_mask) {
-                        bits |= exp_mask;  // +/- inf
-                    } else {
-                        bits |= man;  // subnormal zero (mantissa unchanged)
-                    }
-                } else {
-                    bits |= exp;
-                    bits |= man;
-                }
-
-            } else if constexpr (E < exp_size) {
-                Bits temp = bits & get_exp_man;
+                Bits temp = bits & mask::payload;
 
                 // if the exponent saturates the adjusted range, then the value is
-                // already inf/NaN or needs to overflow to inf.
-                if (temp >= max_exponent) {
-                    if (temp >= get_exp) {  // preserve NaN/infinity
-                        bits &= all_mask;  // truncate any unused bits
-                    } else {
-                        bits &= sign_mask;
-                        bits |= exp_mask;
+                // already inf/NaN or needs to overflow to inf
+                if (temp >= wide::inf) {
+                    if (temp >= wide::exponent) {  // preserve NaN/infinity
+                        bits &= mask::all;  // truncate any unused bits
+                    } else {  // overflow
+                        bits &= mask::sign;
+                        bits |= mask::exponent;
                     }
                     return;
 
-                // If the exponent is smaller than or equal to the zero exponent in the
-                // new range, then the value is already zero or subnormal, or underflows
-                // to a subnormal
-                } else if (temp <= min_exponent) {
-                    if (temp) {  // value is subnormal
-                        /// TODO: ughh
-
-                        // extract exponent and get the distance between it and the
-                        // zero exponent in the new range.
-                        Bits exp = temp & get_exp;
-                        size_t shift = size_t((min_exponent - exp) >> (man_size - 1));
-
-                        // if the shift amount is greater than the mantissa size, then
-                        // the result is always zero
-                        if (shift >= M) {
-                            bits &= sign_mask;
-
-                        // otherwise, the result may be another subnormal, and we need
-                        // to apply rounding on that basis
-                        } else {
-                            temp &= get_man;  // clear exponent bits
-
-                            // if the value was previously normalized, set the implicit
-                            // leading bit
-                            if (exp) {
-                                temp |= implicit_bit;
-                                ++shift;  // account for implicit bit
-                            }
-
-                            /// TODO: find the last bit that would be shifted out of
-                            /// the mantissa, and add half there, with ties to even.
-                            /// then shift
-
-                            temp >>= shift;
-                            bits &= sign_mask;  // clear all but sign
-                            bits |= temp;
-                        }
-                    }
+                // If the exponent is smaller than the minimum valid exponent, then the
+                // value is already zero or subnormal, or underflows to a subnormal in
+                // the new range
+                } else if (temp < wide::first) {
+                    narrow_subnormal(bits, temp);
                     return;
                 }
 
                 // otherwise, the exponent is valid and produces a normal number in the
-                // new range, so all we need to do is account for the change in bias
-                bits -= min_exponent;
+                // new range, so we need to account for the change in bias, and then
+                // round the mantissa to fit within the new range
+                bits -= wide::zero;
+                narrow_mantissa(bits);
+
+            } else if constexpr (E < exp_size) {
+                Bits temp = bits & mask::payload;
+                if (temp >= wide::inf) {
+                    if (temp >= wide::exponent) {  // preserve NaN/infinity
+                        bits &= mask::all;
+                    } else {  // overflow
+                        bits &= mask::sign;
+                        bits |= mask::exponent;
+                    }
+                    return;
+                } else if (temp < wide::first) {  // handle subnormals
+                    narrow_subnormal(bits, temp);
+                    return;
+                }
+                bits -= wide::zero;  // adjust bias
 
             } else if constexpr (M < man_size) {
-                // preserve NaN/infinity/zero
-                Bits temp = bits & get_exp_man;
-                if (temp >= get_exp) {
-                    bits &= all_mask;  // truncate any unused bits
+                Bits temp = bits & mask::payload;
+                if (temp >= wide::exponent) {  // preserve NaN/infinity
+                    bits &= mask::all;  // truncate to fit within mantissa
                     return;
-                } else if (temp == 0) {
+                } else if (temp == 0) {  // preserve zero
                     return;
                 }
-
-                // round mantissa to nearest even value.  This may cause the exponent
-                // to overflow to infinity, which is fine, since the mantissa will be
-                // zero in that case.
-                if ((bits & discard) == half) {
-                    bits += bits & to_even;
-                } else {
-                    bits += half;
-                }
-                bits &= all_mask;  // truncate unused bits
+                narrow_mantissa(bits);  // round normals and subnormals
             }
+        }
+
+        static constexpr void narrow_subnormal(Bits& bits, Bits& temp) noexcept
+            requires(E < exp_size)
+        {
+            if (temp) {
+                // extract exponent and get the distance between it and the
+                // minimum valid exponent in the new range.
+                Bits exp = temp & wide::exponent;
+                size_t shift = size_t((wide::first - exp) >> (man_size - 1));
+
+                // if the shift amount is greater than the mantissa size, then the
+                // result is always zero
+                if (shift >= M) {
+                    bits &= mask::sign;
+
+                // otherwise, the result may be another subnormal, and we need to apply
+                // rounding on that basis.
+                } else {
+                    temp &= wide::mantissa;  // clear exponent bits
+
+                    // if the value was previously normalized, set the implicit
+                    // leading bit
+                    if (exp) {
+                        temp |= mask::implicit_bit;
+                    }
+
+                    // identify the lowest bit that will be kept, and the bits below
+                    // that, which must be rounded.  Note: shift ∈ [1, M - 1]
+                    Bits to_even = Bits{1} << shift;
+                    Bits half = to_even >> 1;
+                    Bits discard = to_even - 1;
+                    if ((temp & discard) == half) {
+                        temp += temp & to_even;  // ties round to even
+                    } else {
+                        temp += half;  // others round to nearest
+                    }
+
+                    // perform the shift, then copy results into output
+                    temp >>= shift;
+                    bits &= mask::sign;
+                    bits |= temp;
+                }
+            }
+        }
+
+        static constexpr void narrow_mantissa(Bits& bits) noexcept
+            requires(M < man_size)
+        {
+            static constexpr Bits to_even = Bits{1} << (man_size - M);
+            static constexpr Bits half = to_even >> 1;
+            static constexpr Bits discard = to_even - 1;
+
+            // round mantissa to nearest even value.  This may cause the exponent
+            // to overflow to infinity, or a subnormal to become a normal, both of
+            // which are fine, since the resulting mantissa will be zero in that case.
+            if ((bits & discard) == half) {
+                bits += bits & to_even;
+            } else {
+                bits += half;
+            }
+            bits &= mask::all;  // truncate unused bits
         }
     };
     using traits = _traits<hard_type>;
@@ -7412,33 +7455,25 @@ public:
     /* Implicitly convert the float to an equivalent hardware type if one is
     available. */
     [[nodiscard]] constexpr operator hard_type() const noexcept requires(hard) {
-        return traits::widen(bits);
+        return traits::template to_float<hard_type>(*this);
     }
 
     /* Explicitly convert the float to an integer type, truncating towards zero. */
     template <meta::integer T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept {
-        if constexpr (hard) {
-            return static_cast<T>(static_cast<hard_type>(*this));
-        } else {
-            /// TODO: softfloat emulation
-        }
+        return traits::template to_int<T>(*this);
     }
 
     /* Explicitly convert the float to another floating point type, rounding to the
     nearest representable value. */
     template <meta::floating T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept {
-        if constexpr (hard) {
-            return static_cast<T>(static_cast<hard_type>(*this));
-        } else {
-            /// TODO: softfloat emulation
-        }
+        return traits::template to_float<T>(*this);
     }
 
     /* Non-zero floats (including subnormals) evaluate to true under boolean logic. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return bool(bits & traits::payload_mask);
+        return bool(bits & traits::mask::payload);
     }
 
     /* Explicitly convert the float to a decimal string representation. */
@@ -7659,18 +7694,18 @@ public:
 
     /* Returns true if the float represents a subnormal number, regardless of sign. */
     [[nodiscard]] constexpr bool is_subnormal() const noexcept {
-        Bits payload = bits & traits::payload_mask;
-        return (payload <= traits::man_mask) && payload;  // exp == 0, man != 0
+        Bits payload = bits & traits::mask::payload;
+        return (payload < traits::mask::implicit_bit) && payload;
     }
 
     /* Returns true if the float represents positive or negative infinity. */
     [[nodiscard]] constexpr bool is_inf() const noexcept {
-        return (bits & traits::payload_mask) == traits::exp_mask;  // exp == max, man == 0
+        return (bits & traits::mask::payload) == traits::mask::exponent;
     }
 
     /* Returns true if the float represents NaN. */
     [[nodiscard]] constexpr bool is_nan() const noexcept {
-        return (bits & traits::payload_mask) > traits::exp_mask;  // exp == max, man != 0
+        return (bits & traits::mask::payload) > traits::mask::exponent;
     }
 
     /* Return +1 if the float is positive or -1 if it is negative. */
@@ -7712,26 +7747,24 @@ public:
         3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
     [[nodiscard]] constexpr Float exponent() const noexcept {
-        Bits payload = bits & traits::payload_mask;
+        Bits payload = bits & traits::mask::payload;
 
         // inf/NaN get passed through with positive sign
-        if (payload >= traits::exp_mask) {
+        if (payload >= traits::mask::exponent) {
             Float result;
             result.bits |= payload;
             return result;
         }
 
         // zero and subnormals get converted to negative infinity
-        if (payload <= traits::man_mask) {
+        if (payload < traits::mask::implicit_bit) {
             return neg_inf();
         }
 
         // all other values get converted to a signed integer and subtracted by the
         // bias before being converted back to a float.
-        Int<E> result = {
-            Int<E>{(bits & traits::exp_mask) >> (traits::man_size - 1)} -
-            Int<E>(traits::exp_bias)
-        };
+        Int<E> result {(bits & traits::mask::exponent) >> (traits::man_size - 1)};
+        result -= traits::exp_bias;
         return Float{result};
     }
 
@@ -7751,23 +7784,24 @@ public:
         3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
     [[nodiscard]] constexpr Float mantissa() const noexcept {
-        return Float(
-            (bits & traits::man_mask) | (traits::exp_bias << (traits::man_size - 1))
-        );
+        Float result;
+        result.bits = bits & traits::mask::mantissa;
+        result.bits |= traits::mask::bias;
+        return result;
     }
 
     /* Get the absolute value of this float.  This equates to clearing the sign bit. */
     [[nodiscard]] constexpr Float abs() const noexcept {
         Float result = *this;
-        result.bits &= traits::payload_mask;
+        result.bits &= traits::mask::payload;
         return result;
     }
 
     /* Compose a float with the magnitude from this float and the sign from `other`. */
     [[nodiscard]] constexpr Float copy_sign(const Float& other) const noexcept {
         Float result = *this;
-        result.bits &= traits::payload_mask;
-        result.bits |= other.bits & traits::sign_mask;
+        result.bits &= traits::mask::payload;
+        result.bits |= other.bits & traits::mask::sign;
         return result;
     }
 
@@ -7775,7 +7809,7 @@ public:
     through as-is. */
     [[nodiscard]] constexpr Float next() const noexcept {
         Float result = *this;
-        if ((result.bits & traits::payload_mask) < traits::exp_mask) {
+        if ((result.bits & traits::mask::payload) < traits::mask::payload) {
             ++result.bits;
         }
         return result;
@@ -7785,7 +7819,7 @@ public:
     through as-is. */
     [[nodiscard]] constexpr Float prev() const noexcept {
         Float result = *this;
-        if ((result.bits & traits::payload_mask) < traits::exp_mask) {
+        if ((result.bits & traits::mask::payload) < traits::mask::exponent) {
             --result.bits;
         }
         return result;
@@ -7796,7 +7830,7 @@ public:
     result is an exact copy */
     [[nodiscard]] constexpr Float toward(const Float& other) const noexcept {
         Float result = *this;
-        if ((result.bits & traits::payload_mask) < traits::exp_mask) {
+        if ((result.bits & traits::mask::payload) < traits::mask::exponent) {
             if (result < other) {
                 ++result.bits;
             } else  if (result > other){
@@ -7882,6 +7916,9 @@ public:
         }
     }
 
+    /// TODO: fma(), reciprocal()
+
+
     /// TODO: perhaps if the tolerance is given as an integer, it signifies a ULP
     /// tolerance, which is the number of bits in the mantissa that are allowed to
     /// differ before two floats are considered unequal.  If given as a float, it is an
@@ -7915,13 +7952,13 @@ public:
         // if not equivalent, check if the difference is within tolerance
         if (result < 0) {
             Float diff = other - *this;
-            diff.bits &= traits::payload_mask;
+            diff.bits &= traits::mask::payload;
             if (diff <= tolerance.abs()) {
                 return std::partial_ordering::equivalent;
             }
         } else if (result > 0) {
             Float diff = *this - other;
-            diff.bits &= traits::payload_mask;
+            diff.bits &= traits::mask::payload;
             if (diff <= tolerance.abs()) {
                 return std::partial_ordering::equivalent;
             }
@@ -7937,11 +7974,11 @@ public:
         const Float& lhs,
         const Float& rhs
     ) noexcept requires(!hard) {
-        Bits lhs_payload = lhs.bits & traits::payload_mask;
-        Bits rhs_payload = rhs.bits & traits::payload_mask;
+        Bits lhs_payload = lhs.bits & traits::mask::payload;
+        Bits rhs_payload = rhs.bits & traits::mask::payload;
 
         // NaNs compare unordered to everything, including themselves
-        if (lhs_payload > traits::exp_mask || rhs_payload > traits::exp_mask) {
+        if (lhs_payload > traits::mask::exponent || rhs_payload > traits::mask::exponent) {
             return std::partial_ordering::unordered;
         }
 
@@ -8011,7 +8048,7 @@ public:
 
     /* Return a negative copy of the float.  This equates to flipping the sign bit. */
     [[nodiscard]] constexpr Float operator-() const noexcept {
-        return Float{bits ^ traits::sign_mask};
+        return Float{bits ^ traits::mask::sign};
     }
 
     /* Decrement the float by 1.0 and return a reference to the new value. */
@@ -8100,11 +8137,17 @@ using float64 = Float<11, 53>;
 
 
 
+static_assert(float16(std::numeric_limits<float>::infinity()) == float16::inf());
+static_assert(int(float32(-0.3)) == 0);
+
+
 
 
 
 static_assert(float16(float16::min_int() - 1) == float16::min_int());
 static_assert(float32(float32::max_int()) == float32::max_int());
+
+static_assert(float16(3.5) == 3.5);
 
 
 
