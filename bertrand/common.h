@@ -709,7 +709,36 @@ namespace meta {
         constexpr bool boolean = meta::is<unqualify<T>, bool>;
         template <typename T>
         constexpr bool floating = std::floating_point<unqualify<T>>;
+
+        template <typename T>
+        struct as_integer {
+            static constexpr bool enable = false;
+        };
+        template <typename T>
+        struct as_signed {
+            static constexpr bool enable = false;
+        };
+        template <typename T>
+        struct as_unsigned {
+            static constexpr bool enable = false;
+        };
+        template <typename T>
+        struct as_float {
+            static constexpr bool enable = false;
+        };
     }
+
+    template <typename T> requires (detail::as_integer<T>::enable)
+    using as_integer = qualify<typename detail::as_integer<unqualify<T>>::type, T>;
+
+    template <typename T> requires (detail::as_signed<T>::enable)
+    using as_signed = qualify<typename detail::as_signed<unqualify<T>>::type, T>;
+
+    template <typename T> requires (detail::as_unsigned<T>::enable)
+    using as_unsigned = qualify<typename detail::as_unsigned<T>::type, T>;
+
+    template <typename T> requires (detail::as_float<T>::enable)
+    using as_float = qualify<typename detail::as_float<unqualify<T>>::type, T>;
 
     template <typename T>
     concept integer = detail::integer<T>;
@@ -726,10 +755,23 @@ namespace meta {
         template <meta::boolean T>
         constexpr size_t integer_size<T> = 1;
 
-        template <typename T>
-        struct as_signed { using type = std::make_signed_t<T>; };
+        template <meta::integer T>
+        struct as_integer<T> {
+            static constexpr bool enable = true;
+            using type = T;
+        };
+
+        template <typename T> requires (requires{typename std::make_signed_t<T>;})
+        struct as_signed<T> {
+            static constexpr bool enable = true;
+            using type = std::make_signed_t<T>;
+        };
         template <meta::signed_integer T>
-        struct as_signed<T> { using type = T; };
+            requires (!requires{typename std::make_signed_t<T>;})
+        struct as_signed<T> {
+            static constexpr bool enable = true;
+            using type = T;
+        };
     }
 
     template <integer T>
@@ -753,18 +795,19 @@ namespace meta {
     template <typename T>
     concept unsigned_integer = integer<T> && detail::unsigned_integer<T>;
 
-    template <integer T>
-    using as_signed = qualify<typename detail::as_signed<unqualify<T>>::type, T>;
-
     namespace detail {
-        template <typename T>
-        struct as_unsigned { using type = std::make_unsigned_t<T>; };
+        template <typename T> requires (requires{typename std::make_unsigned_t<T>;})
+        struct as_unsigned<T> {
+            static constexpr bool enable = true;
+            using type = std::make_unsigned_t<T>;
+        };
         template <meta::unsigned_integer T>
-        struct as_unsigned<T> { using type = T; };
+            requires (!requires{typename std::make_unsigned_t<T>;})
+        struct as_unsigned<T> {
+            static constexpr bool enable = true;
+            using type = T;
+        };
     }
-
-    template <integer T>
-    using as_unsigned = qualify<typename detail::as_unsigned<T>::type, T>;
 
     template <typename T>
     concept uint8 = unsigned_integer<T> && integer_size<T> == 8;
@@ -785,7 +828,6 @@ namespace meta {
     concept floating = detail::floating<T>;
 
     namespace detail {
-
         template <meta::floating T>
         constexpr size_t float_mantissa_size =
             std::numeric_limits<meta::unqualify<T>>::digits;
@@ -800,6 +842,12 @@ namespace meta {
         template <meta::floating T>
             requires (meta::is<T, long double> && float_mantissa_size<T> == 64)
         constexpr size_t float_exponent_size<T> = 15;  // x86 long double
+
+        template <meta::floating T>
+        struct as_float<T> {
+            static constexpr bool enable = true;
+            using type = T;
+        };
     }
 
     template <floating T>

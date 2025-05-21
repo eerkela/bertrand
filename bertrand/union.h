@@ -2992,6 +2992,10 @@ public:
 };
 
 
+/// TODO: expected.result() -> expected.value()
+/// TODO: expected.has_result() -> expected.has_value()
+
+
 template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
 struct Expected : impl::expected_tag {

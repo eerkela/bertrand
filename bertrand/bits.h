@@ -213,7 +213,10 @@ namespace meta {
         template <meta::integer T> requires (meta::Bits<T>)
         constexpr size_t integer_size<T> = T::size();
         template <meta::Bits T>
-        struct as_signed<T> { using type = bertrand::Int<T::size()>; };
+        struct as_signed<T> {
+            static constexpr bool enable = true;
+            using type = bertrand::Int<T::size()>;
+        };
         template <meta::Bits T>
         constexpr bool prefer_constructor<T> = true;
 
@@ -224,7 +227,10 @@ namespace meta {
         template <meta::integer T> requires (meta::UInt<T>)
         constexpr size_t integer_size<T> = meta::unqualify<T>::Bits::size();
         template <meta::UInt T>
-        struct as_signed<T> { using type = bertrand::Int<integer_size<T>>; };
+        struct as_signed<T> {
+            static constexpr bool enable = true;
+            using type = bertrand::Int<integer_size<T>>;
+        };
         template <meta::UInt T>
         constexpr bool prefer_constructor<T> = true;
 
@@ -235,18 +241,29 @@ namespace meta {
         template <meta::integer T> requires (meta::Int<T>)
         constexpr size_t integer_size<T> = meta::unqualify<T>::Bits::size();
         template <meta::Int T>
-        struct as_unsigned<T> { using type = bertrand::UInt<integer_size<T>>; };
+        struct as_unsigned<T> {
+            static constexpr bool enable = true;
+            using type = bertrand::UInt<integer_size<T>>;
+        };
         template <meta::Int T>
         constexpr bool prefer_constructor<T> = true;
 
         template <meta::Float T>
         constexpr bool floating<T> = true;
         template <meta::floating T> requires (meta::Float<T>)
-        constexpr size_t float_mantissa_size<T> =
-            meta::unqualify<T>::mantissa_size;
+        constexpr size_t float_mantissa_size<T> = meta::unqualify<T>::mantissa_size;
         template <meta::floating T> requires (meta::Float<T>)
-        constexpr size_t float_exponent_size<T> =
-            meta::unqualify<T>::exponent_size;
+        constexpr size_t float_exponent_size<T> = meta::unqualify<T>::exponent_size;
+        /// TODO: idk what I was trying to do here, or if it's necessary.  It might be
+        /// nice to have some way in metaprogramming to get a floating point type that
+        /// is guaranteed to be able to exactly represent all values of a given
+        /// integer, and vice versa, and that's kind of the intent here, but that's
+        /// probably unnecessarily complicated.
+        // template <meta::Float T>
+        // struct as_integer<T> {
+        //     static constexpr bool enable = true;
+        //     using type = bertrand::Int<float_mantissa_size<T> + float_exponent_size<T>>;
+        // };
         template <meta::Float T>
         constexpr bool prefer_constructor<T> = true;
     }
@@ -256,138 +273,290 @@ namespace meta {
 
 namespace impl {
 
-    /// TODO: extend log2_table to 256 bits, so that any bitset can be encoded as an
-    /// ASCII string, and vice versa.  Maybe `to_ascii()` and `from_ascii()` can even
-    /// be standard methods
+    inline constexpr double log10_2 = 0.3010299956639812;
 
-    inline constexpr std::array<double, 64> log2_table {
-        0,
-        0,
-        1,
-        1.584962500721156,
-        2,
-        2.321928094887362,
-        2.584962500721156,
-        2.807354922057604,
-        3,
-        3.169925001442312,
-        3.321928094887362,
-        3.4594316186372973,
-        3.584962500721156,
-        3.700439718141092,
-        3.807354922057604,
-        3.9068905956085187,
-        4,
-        4.087462841250339,
-        4.169925001442312,
-        4.247927513443585,
-        4.321928094887363,
-        4.392317422778761,
-        4.459431618637297,
-        4.523561956057013,
-        4.584962500721156,
-        4.643856189774724,
-        4.700439718141092,
-        4.754887502163468,
-        4.807354922057604,
-        4.857980995127572,
-        4.906890595608519,
-        4.954196310386875,
-        5,
-        5.044394119358453,
-        5.087462841250339,
-        5.129283016944966,
-        5.169925001442312,
-        5.20945336562895,
-        5.247927513443585,
-        5.285402218862249,
-        5.321928094887363,
-        5.357552004618084,
-        5.392317422778761,
-        5.426264754702098,
-        5.459431618637297,
-        5.491853096329675,
-        5.523561956057013,
-        5.554588851677638,
-        5.584962500721156,
-        5.614709844115208,
-        5.643856189774724,
-        5.672425341971495,
-        5.700439718141092,
-        5.727920454563199,
-        5.754887502163468,
-        5.78135971352466,
-        5.807354922057604,
-        5.832890014164741,
-        5.857980995127572,
-        5.882643049361842,
-        5.906890595608519,
-        5.930737337562887,
-        5.954196310386875,
-        5.977279923499917,
-    };
+    namespace integer {
 
-    template <typename T>
-    concept strict_bits =
-        meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
+        /// TODO: extend log2_table to 256 bits, so that any bitset can be encoded as an
+        /// ASCII string, and vice versa.  Maybe `to_ascii()` and `from_ascii()` can even
+        /// be standard methods
 
-    template <size_t N, typename... words>
-    concept strict_bitwise_constructor =
-        (impl::strict_bits<words> && ...) &&
-        ((meta::integer_size<words> + ... + 0) <= N);
+        inline constexpr std::array<double, 64> log2_table {
+            0,
+            0,
+            1,
+            1.584962500721156,
+            2,
+            2.321928094887362,
+            2.584962500721156,
+            2.807354922057604,
+            3,
+            3.169925001442312,
+            3.321928094887362,
+            3.4594316186372973,
+            3.584962500721156,
+            3.700439718141092,
+            3.807354922057604,
+            3.9068905956085187,
+            4,
+            4.087462841250339,
+            4.169925001442312,
+            4.247927513443585,
+            4.321928094887363,
+            4.392317422778761,
+            4.459431618637297,
+            4.523561956057013,
+            4.584962500721156,
+            4.643856189774724,
+            4.700439718141092,
+            4.754887502163468,
+            4.807354922057604,
+            4.857980995127572,
+            4.906890595608519,
+            4.954196310386875,
+            5,
+            5.044394119358453,
+            5.087462841250339,
+            5.129283016944966,
+            5.169925001442312,
+            5.20945336562895,
+            5.247927513443585,
+            5.285402218862249,
+            5.321928094887363,
+            5.357552004618084,
+            5.392317422778761,
+            5.426264754702098,
+            5.459431618637297,
+            5.491853096329675,
+            5.523561956057013,
+            5.554588851677638,
+            5.584962500721156,
+            5.614709844115208,
+            5.643856189774724,
+            5.672425341971495,
+            5.700439718141092,
+            5.727920454563199,
+            5.754887502163468,
+            5.78135971352466,
+            5.807354922057604,
+            5.832890014164741,
+            5.857980995127572,
+            5.882643049361842,
+            5.906890595608519,
+            5.930737337562887,
+            5.954196310386875,
+            5.977279923499917,
+        };
 
-    template <size_t N, typename... words>
-    concept loose_bitwise_constructor =
-        sizeof...(words) > 0 &&
-        !(impl::strict_bits<words> && ...) &&
-        (meta::integer<words> && ... && (
-            (meta::integer_size<words> + ... + 0) <= bertrand::max(N, 64)
-        ));
+        template <typename T>
+        concept strict =
+            meta::boolean<T> || meta::Bits<T> || meta::UInt<T> || meta::Int<T>;
 
-    template <size_t N, typename... Ts>
-    concept bit_cast_constructor =
-        sizeof...(Ts) > 0 &&
-        (meta::trivially_copyable<Ts> && ...) &&
-        ((!meta::integer<Ts> && !meta::inherits<Ts, impl::Bits_slice_tag>) || ...) &&
-        ((sizeof(Ts) * 8) + ... + 0) <= N;
+        template <size_t N, typename... words>
+        concept strict_constructor =
+            (strict<words> && ...) &&
+            ((meta::integer_size<words> + ... + 0) <= N);
 
-    /* Hardware words scale from 8 to 64 bits, based on the overall number needed to
-    represent a bitset.  Bitsets greater than 64 bits are stored as arrays of 64-bit
-    words.
+        template <size_t N, typename... words>
+        concept loose_constructor =
+            sizeof...(words) > 0 &&
+            !(strict<words> && ...) &&
+            (meta::integer<words> && ... && (
+                (meta::integer_size<words> + ... + 0) <= bertrand::max(N, 64)
+            ));
 
-    Each word must expose the following operations at a minimum:
-        - `type` - the underlying hardware type
-        - `big` - a word type of the next size class, which can represent two words
-                  in the high and low halves, respectively.  64-bit words will attempt
-                  to use 128-bit representations if available (GCC + LLVM usually do),
-                  or a composite representation of two 64-bit words otherwise (which
-                  may be slower in some cases).
+        template <size_t N, typename... Ts>
+        concept bit_cast_constructor =
+            sizeof...(Ts) > 0 &&
+            (meta::trivially_copyable<Ts> && ...) &&
+            ((!meta::integer<Ts> && !meta::inherits<Ts, impl::Bits_slice_tag>) || ...) &&
+            ((sizeof(Ts) * 8) + ... + 0) <= N;
 
-    The `big` type must expose the following operations at a minimum:
-        - `composite` - a compile-time boolean that is true if the word is a composite
-                        representation of two smaller words, and false if it is a
-                        single type of a larger size class.  If false, then `big` must
-                        also expose a `type` alias that indicates the larger word
-                        type directly, which will be used in place of the `big` type
-                        where possible for single-word arithmetic, as an optimization.
-        - {hi, lo} constructor taking individual words
-        - hi() and lo() accessors returning the initializers
-        - operator> for comparison
-        - a widening, static mul() method that takes two words and returns their full
-          product as a big word.
-        - a narrowing, member divmod() method that takes a single word and returns a
-          pair of words containing the quotient and remainder
-    */
-    template <size_t M>
-    struct word {
-        using type = uint64_t;
-        static constexpr size_t size = meta::integer_size<type>;
+        /* Hardware words scale from 8 to 64 bits, based on the overall number needed to
+        represent a bitset.  Bitsets greater than 64 bits are stored as arrays of 64-bit
+        words.
 
-        // if 128-bit integers are available, use them.  Otherwise, use a composite
-        // word with 2 64-bit limbs.
-        #ifdef __SIZEOF_INT128__
+        Each word must expose the following operations at a minimum:
+            - `type` - the underlying hardware type
+            - `big` - a word type of the next size class, which can represent two words
+                    in the high and low halves, respectively.  64-bit words will attempt
+                    to use 128-bit representations if available (GCC + LLVM usually do),
+                    or a composite representation of two 64-bit words otherwise (which
+                    may be slower in some cases).
+
+        The `big` type must expose the following operations at a minimum:
+            - `composite` - a compile-time boolean that is true if the word is a composite
+                            representation of two smaller words, and false if it is a
+                            single type of a larger size class.  If false, then `big` must
+                            also expose a `type` alias that indicates the larger word
+                            type directly, which will be used in place of the `big` type
+                            where possible for single-word arithmetic, as an optimization.
+            - {hi, lo} constructor taking individual words
+            - hi() and lo() accessors returning the initializers
+            - operator> for comparison
+            - a widening, static mul() method that takes two words and returns their full
+            product as a big word.
+            - a narrowing, member divmod() method that takes a single word and returns a
+            pair of words containing the quotient and remainder
+        */
+        template <size_t M>
+        struct word {
+            using type = uint64_t;
+            static constexpr size_t size = meta::integer_size<type>;
+
+            // if 128-bit integers are available, use them.  Otherwise, use a composite
+            // word with 2 64-bit limbs.
+            #ifdef __SIZEOF_INT128__
+                struct big {
+                    using type = __uint128_t;
+                    static constexpr bool composite = false;
+                    type value;
+                    constexpr big(type v) noexcept : value(v) {}
+                    constexpr big(word::type hi, word::type lo) noexcept :
+                        value((type(hi) << size) | type(lo))
+                    {}
+                    constexpr word::type hi() const noexcept {
+                        return word::type(value >> size);
+                    }
+                    constexpr word::type lo() const noexcept {
+                        return word::type(value & type(type(type(1) << size) - 1));
+                    }
+                    constexpr bool operator>(big other) const noexcept {
+                        return value > other.value;
+                    }
+                    static constexpr big mul(word::type a, word::type b) noexcept {
+                        return {type(type(a) * type(b))};
+                    }
+                    constexpr std::pair<word::type, word::type> divmod(word::type v) const
+                        noexcept
+                    {
+                        return {word::type(value / v), word::type(value % v)};
+                    }
+                };
+            #else
+                struct big {
+                    static constexpr bool composite = true;
+                    type h;
+                    type l;
+
+                    constexpr big(type hi, type lo) noexcept : h(hi), l(lo) {}
+                    constexpr type hi() const noexcept { return h; }
+                    constexpr type lo() const noexcept { return l; }
+                    constexpr bool operator>(big other) const noexcept {
+                        return h > other.h || (h == other.h && l > other.l);
+                    }
+                    static constexpr big mul(type a, type b) noexcept {
+                        constexpr size_t chunk = size / 2;
+                        constexpr type mask = (type(1) << chunk) - 1;
+
+                        // 1. split a, b into low and high halves
+                        big x = {a >> chunk, a & mask};
+                        big y = {b >> chunk, b & mask};
+
+                        // 2. compute partial products
+                        type lo_lo = x.lo() * y.lo();
+                        type lo_hi = x.lo() * y.hi();
+                        type hi_lo = x.hi() * y.lo();
+                        type hi_hi = x.hi() * y.hi();
+
+                        // 3. combine cross terms
+                        type cross = (lo_lo >> chunk) + (lo_hi & mask) + (hi_lo & mask);
+                        type carry = cross >> chunk;
+
+                        // 4. compute result
+                        return {
+                            hi_hi + (lo_hi >> chunk) + (hi_lo >> chunk) + carry,
+                            (lo_lo & mask) | (cross << chunk)
+                        };
+                    }
+                    /* This implementation is taken from the libdivide reference:
+                        https://github.com/ridiculousfish/libdivide/blob/master/doc/divlu.c
+
+                    It should be slightly faster than the naive approach found in Hacker's
+                    Delight. */
+                    constexpr std::pair<uint64_t, uint64_t> divmod(uint64_t v) const
+                        noexcept
+                    {
+                        // 1. Check for overflow and divide by zero.
+                        if (hi() >= v) {
+                            return {
+                                std::numeric_limits<uint64_t>::max(),
+                                std::numeric_limits<uint64_t>::max()
+                            };
+                        }
+
+                        // 2. If the high bits of the dividend are empty, then we devolve
+                        // to a single word divide as an optimization.
+                        if (!hi()) {
+                            return {lo() / v, lo() % v};
+                        }
+
+                        constexpr size_t chunk = size / 2;
+                        constexpr uint64_t b = uint64_t(1) << chunk;
+                        constexpr uint64_t mask = b - 1;
+                        uint64_t h = hi();
+                        uint64_t l = lo();
+
+                        // 3. Normalize by left shifting divisor until the most significant
+                        // bit is set.  This cannot overflow the numerator because h < v.
+                        // The strange bitwise AND is meant to avoid undefined behavior
+                        // when shifting by a full word size.  It is taken from
+                        // https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
+                        int shift = std::countl_zero(v);
+                        v <<= shift;
+                        h <<= shift;
+                        h |= ((l >> (-shift & (size - 1))) & (-int64_t(shift) >> (size - 1)));
+                        l <<= shift;
+
+                        // 4. Split divisor and low bits of numerator into partial
+                        // half-words.
+                        uint32_t n1 = l >> chunk;
+                        uint32_t n0 = l & mask;
+                        uint32_t d1 = v >> chunk;
+                        uint32_t d0 = v & mask;
+
+                        // 5. Estimate q1 = [n3 n2 n1] / [d1 d0].  Note that while qhat may
+                        // be 2 half-words, q1 is always just the lower half, which
+                        // translates to the upper half of the final quotient.
+                        uint64_t qhat = h / d1;
+                        uint64_t rhat = h % d1;
+                        uint64_t c1 = qhat * d0;
+                        uint64_t c2 = rhat * b + n1;
+                        if (c1 > c2) {
+                            qhat -= 1 + ((c1 - c2) > v);
+                        }
+                        uint32_t q1 = uint32_t(qhat & mask);
+
+                        // 6. Compute the true (normalized) partial remainder.
+                        uint64_t r = h * b + n1 - q1 * v;
+
+                        // 7. Estimate q0 = [r1 r0 n0] / [d1 d0].  Estimate q0 as
+                        // [r1 r0] / [d1] and correct it.  These become the bottom bits of
+                        // the final quotient.
+                        qhat = r / d1;
+                        rhat = r % d1;
+                        c1 = qhat * d0;
+                        c2 = rhat * b + n0;
+                        if (c1 > c2) {
+                            qhat -= 1 + ((c1 - c2) > v);
+                        }
+                        uint32_t q0 = uint32_t(qhat & mask);
+
+                        // 8. Return the quotient and unnormalized remainder
+                        return {
+                            (uint64_t(q1) << chunk) | q0,
+                            ((r * b) + n0 - (q0 * v)) >> shift
+                        };
+                    }
+                };
+            #endif
+        };
+        template <size_t M> requires (M <= meta::integer_size<uint8_t>)
+        struct word<M> {
+            using type = uint8_t;
+            static constexpr size_t size = meta::integer_size<type>;
             struct big {
-                using type = __uint128_t;
+                using type = uint16_t;
                 static constexpr bool composite = false;
                 type value;
                 constexpr big(type v) noexcept : value(v) {}
@@ -398,7 +567,7 @@ namespace impl {
                     return word::type(value >> size);
                 }
                 constexpr word::type lo() const noexcept {
-                    return word::type(value & type(type(type(1) << size) - 1));
+                    return word::type(value & ((type(1) << size) - 1));
                 }
                 constexpr bool operator>(big other) const noexcept {
                     return value > other.value;
@@ -412,932 +581,1677 @@ namespace impl {
                     return {word::type(value / v), word::type(value % v)};
                 }
             };
-        #else
+        };
+        template <size_t M>
+            requires (M > meta::integer_size<uint8_t> && M <= meta::integer_size<uint16_t>)
+        struct word<M> {
+            using type = uint16_t;
+            static constexpr size_t size = meta::integer_size<type>;
             struct big {
-                static constexpr bool composite = true;
-                type h;
-                type l;
-
-                constexpr big(type hi, type lo) noexcept : h(hi), l(lo) {}
-                constexpr type hi() const noexcept { return h; }
-                constexpr type lo() const noexcept { return l; }
+                using type = uint32_t;
+                static constexpr bool composite = false;
+                type value;
+                constexpr big(type v) noexcept : value(v) {}
+                constexpr big(word::type hi, word::type lo) noexcept :
+                    value((type(hi) << size) | type(lo))
+                {}
+                constexpr word::type hi() const noexcept {
+                    return word::type(value >> size);
+                }
+                constexpr word::type lo() const noexcept {
+                    return word::type(value & ((type(1) << size) - 1));
+                }
                 constexpr bool operator>(big other) const noexcept {
-                    return h > other.h || (h == other.h && l > other.l);
+                    return value > other.value;
                 }
-                static constexpr big mul(type a, type b) noexcept {
-                    constexpr size_t chunk = size / 2;
-                    constexpr type mask = (type(1) << chunk) - 1;
-
-                    // 1. split a, b into low and high halves
-                    big x = {a >> chunk, a & mask};
-                    big y = {b >> chunk, b & mask};
-
-                    // 2. compute partial products
-                    type lo_lo = x.lo() * y.lo();
-                    type lo_hi = x.lo() * y.hi();
-                    type hi_lo = x.hi() * y.lo();
-                    type hi_hi = x.hi() * y.hi();
-
-                    // 3. combine cross terms
-                    type cross = (lo_lo >> chunk) + (lo_hi & mask) + (hi_lo & mask);
-                    type carry = cross >> chunk;
-
-                    // 4. compute result
-                    return {
-                        hi_hi + (lo_hi >> chunk) + (hi_lo >> chunk) + carry,
-                        (lo_lo & mask) | (cross << chunk)
-                    };
+                static constexpr big mul(word::type a, word::type b) noexcept {
+                    return {type(type(a) * type(b))};
                 }
-                /* This implementation is taken from the libdivide reference:
-                    https://github.com/ridiculousfish/libdivide/blob/master/doc/divlu.c
-
-                It should be slightly faster than the naive approach found in Hacker's
-                Delight. */
-                constexpr std::pair<uint64_t, uint64_t> divmod(uint64_t v) const
+                constexpr std::pair<word::type, word::type> divmod(word::type v) const
                     noexcept
                 {
-                    // 1. Check for overflow and divide by zero.
-                    if (hi() >= v) {
-                        return {
-                            std::numeric_limits<uint64_t>::max(),
-                            std::numeric_limits<uint64_t>::max()
-                        };
-                    }
-
-                    // 2. If the high bits of the dividend are empty, then we devolve
-                    // to a single word divide as an optimization.
-                    if (!hi()) {
-                        return {lo() / v, lo() % v};
-                    }
-
-                    constexpr size_t chunk = size / 2;
-                    constexpr uint64_t b = uint64_t(1) << chunk;
-                    constexpr uint64_t mask = b - 1;
-                    uint64_t h = hi();
-                    uint64_t l = lo();
-
-                    // 3. Normalize by left shifting divisor until the most significant
-                    // bit is set.  This cannot overflow the numerator because h < v.
-                    // The strange bitwise AND is meant to avoid undefined behavior
-                    // when shifting by a full word size.  It is taken from
-                    // https://ridiculousfish.com/blog/posts/labor-of-division-episode-v.html
-                    int shift = std::countl_zero(v);
-                    v <<= shift;
-                    h <<= shift;
-                    h |= ((l >> (-shift & (size - 1))) & (-int64_t(shift) >> (size - 1)));
-                    l <<= shift;
-
-                    // 4. Split divisor and low bits of numerator into partial
-                    // half-words.
-                    uint32_t n1 = l >> chunk;
-                    uint32_t n0 = l & mask;
-                    uint32_t d1 = v >> chunk;
-                    uint32_t d0 = v & mask;
-
-                    // 5. Estimate q1 = [n3 n2 n1] / [d1 d0].  Note that while qhat may
-                    // be 2 half-words, q1 is always just the lower half, which
-                    // translates to the upper half of the final quotient.
-                    uint64_t qhat = h / d1;
-                    uint64_t rhat = h % d1;
-                    uint64_t c1 = qhat * d0;
-                    uint64_t c2 = rhat * b + n1;
-                    if (c1 > c2) {
-                        qhat -= 1 + ((c1 - c2) > v);
-                    }
-                    uint32_t q1 = uint32_t(qhat & mask);
-
-                    // 6. Compute the true (normalized) partial remainder.
-                    uint64_t r = h * b + n1 - q1 * v;
-
-                    // 7. Estimate q0 = [r1 r0 n0] / [d1 d0].  Estimate q0 as
-                    // [r1 r0] / [d1] and correct it.  These become the bottom bits of
-                    // the final quotient.
-                    qhat = r / d1;
-                    rhat = r % d1;
-                    c1 = qhat * d0;
-                    c2 = rhat * b + n0;
-                    if (c1 > c2) {
-                        qhat -= 1 + ((c1 - c2) > v);
-                    }
-                    uint32_t q0 = uint32_t(qhat & mask);
-
-                    // 8. Return the quotient and unnormalized remainder
-                    return {
-                        (uint64_t(q1) << chunk) | q0,
-                        ((r * b) + n0 - (q0 * v)) >> shift
-                    };
+                    return {word::type(value / v), word::type(value % v)};
                 }
             };
-        #endif
-    };
-    template <size_t M> requires (M <= meta::integer_size<uint8_t>)
-    struct word<M> {
-        using type = uint8_t;
-        static constexpr size_t size = meta::integer_size<type>;
-        struct big {
-            using type = uint16_t;
-            static constexpr bool composite = false;
-            type value;
-            constexpr big(type v) noexcept : value(v) {}
-            constexpr big(word::type hi, word::type lo) noexcept :
-                value((type(hi) << size) | type(lo))
-            {}
-            constexpr word::type hi() const noexcept {
-                return word::type(value >> size);
-            }
-            constexpr word::type lo() const noexcept {
-                return word::type(value & ((type(1) << size) - 1));
-            }
-            constexpr bool operator>(big other) const noexcept {
-                return value > other.value;
-            }
-            static constexpr big mul(word::type a, word::type b) noexcept {
-                return {type(type(a) * type(b))};
-            }
-            constexpr std::pair<word::type, word::type> divmod(word::type v) const
-                noexcept
-            {
-                return {word::type(value / v), word::type(value % v)};
-            }
         };
-    };
-    template <size_t M>
-        requires (M > meta::integer_size<uint8_t> && M <= meta::integer_size<uint16_t>)
-    struct word<M> {
-        using type = uint16_t;
-        static constexpr size_t size = meta::integer_size<type>;
-        struct big {
+        template <size_t M>
+            requires (M > meta::integer_size<uint16_t> && M <= meta::integer_size<uint32_t>)
+        struct word<M> {
             using type = uint32_t;
-            static constexpr bool composite = false;
-            type value;
-            constexpr big(type v) noexcept : value(v) {}
-            constexpr big(word::type hi, word::type lo) noexcept :
-                value((type(hi) << size) | type(lo))
+            static constexpr size_t size = meta::integer_size<type>;
+            struct big {
+                using type = uint64_t;
+                static constexpr bool composite = false;
+                type value;
+                constexpr big(type v) noexcept : value(v) {}
+                constexpr big(word::type hi, word::type lo) noexcept :
+                    value((type(hi) << size) | type(lo))
+                {}
+                constexpr word::type hi() const noexcept {
+                    return word::type(value >> size);
+                }
+                constexpr word::type lo() const noexcept {
+                    return word::type(value & ((type(1) << size) - 1));
+                }
+                constexpr bool operator>(big other) const noexcept {
+                    return value > other.value;
+                }
+                static constexpr big mul(word::type a, word::type b) noexcept {
+                    return {type(type(a) * type(b))};
+                }
+                constexpr std::pair<word::type, word::type> divmod(word::type v) const
+                    noexcept
+                {
+                    return {word::type(value / v), word::type(value % v)};
+                }
+            };
+        };
+
+        /* A mutable reference to a single bit in a bitset. */
+        template <typename word>
+        struct bit_reference {
+        private:
+            template <size_t N>
+            friend struct bertrand::Bits;
+            word* value = nullptr;
+            word index = 0;
+
+            constexpr bit_reference() noexcept = default;
+            constexpr bit_reference(word* value, word index) noexcept :
+                value(value), index(index)
             {}
-            constexpr word::type hi() const noexcept {
-                return word::type(value >> size);
+
+        public:
+            [[nodiscard]] constexpr operator bool() const noexcept {
+                return *value & (word(1) << index);
             }
-            constexpr word::type lo() const noexcept {
-                return word::type(value & ((type(1) << size) - 1));
+
+            constexpr bit_reference& operator=(bool x) noexcept {
+                *value = word(*value & ~word(word(1) << index)) | word(word(x) << index);
+                return *this;
             }
-            constexpr bool operator>(big other) const noexcept {
-                return value > other.value;
+
+            constexpr bit_reference& operator|=(bool x) noexcept {
+                *value |= word(word(x) << index);
+                return *this;
             }
-            static constexpr big mul(word::type a, word::type b) noexcept {
-                return {type(type(a) * type(b))};
+
+            constexpr bit_reference& operator&=(bool x) noexcept {
+                *value &= word(word(x) << index);
+                return *this;
             }
-            constexpr std::pair<word::type, word::type> divmod(word::type v) const
-                noexcept
-            {
-                return {word::type(value / v), word::type(value % v)};
+
+            constexpr bit_reference& operator^=(bool x) noexcept {
+                *value ^= word(word(x) << index);
+                return *this;
             }
         };
-    };
-    template <size_t M>
-        requires (M > meta::integer_size<uint16_t> && M <= meta::integer_size<uint32_t>)
-    struct word<M> {
-        using type = uint32_t;
-        static constexpr size_t size = meta::integer_size<type>;
-        struct big {
-            using type = uint64_t;
-            static constexpr bool composite = false;
-            type value;
-            constexpr big(type v) noexcept : value(v) {}
-            constexpr big(word::type hi, word::type lo) noexcept :
-                value((type(hi) << size) | type(lo))
-            {}
-            constexpr word::type hi() const noexcept {
-                return word::type(value >> size);
+
+        /* A compile-time context object backing the `Bits<N>::from_string()` factory
+        method.  Centralizing the context here reduces template instantiation depth, and
+        therefore compile time and binary size. */
+        template <typename word, const auto&... keys>
+        struct from_string {
+            static constexpr size_t base = sizeof...(keys);
+            static constexpr size_t bits_per_digit = std::bit_width(base - 1);
+
+            template <size_t... Is>
+            static constexpr auto _digits(std::index_sequence<Is...>) {
+                return string_map<word, keys...>{word(Is)...};
             }
-            constexpr word::type lo() const noexcept {
-                return word::type(value & ((type(1) << size) - 1));
+
+            static constexpr auto digits = _digits(std::make_index_sequence<base>{});
+
+            template <size_t... sizes>
+            static constexpr auto _digit_lengths() {
+                std::array<size_t, sizeof...(sizes)> out {sizes...};
+                bertrand::sort<impl::Greater>(out);
+                return out;
             }
-            constexpr bool operator>(big other) const noexcept {
-                return value > other.value;
-            }
-            static constexpr big mul(word::type a, word::type b) noexcept {
-                return {type(type(a) * type(b))};
-            }
-            constexpr std::pair<word::type, word::type> divmod(word::type v) const
-                noexcept
-            {
-                return {word::type(value / v), word::type(value % v)};
-            }
-        };
-    };
 
-    /* A mutable reference to a single bit in a bitset. */
-    template <typename word>
-    struct bit_reference {
-    private:
-        template <size_t N>
-        friend struct bertrand::Bits;
-        word* value = nullptr;
-        word index = 0;
+            static constexpr auto digit_lengths = _digit_lengths<keys.size()...>();
 
-        constexpr bit_reference() noexcept = default;
-        constexpr bit_reference(word* value, word index) noexcept :
-            value(value), index(index)
-        {}
-
-    public:
-        [[nodiscard]] constexpr operator bool() const noexcept {
-            return *value & (word(1) << index);
-        }
-
-        constexpr bit_reference& operator=(bool x) noexcept {
-            *value = word(*value & ~word(word(1) << index)) | word(word(x) << index);
-            return *this;
-        }
-
-        constexpr bit_reference& operator|=(bool x) noexcept {
-            *value |= word(word(x) << index);
-            return *this;
-        }
-
-        constexpr bit_reference& operator&=(bool x) noexcept {
-            *value &= word(word(x) << index);
-            return *this;
-        }
-
-        constexpr bit_reference& operator^=(bool x) noexcept {
-            *value ^= word(word(x) << index);
-            return *this;
-        }
-    };
-
-    /* A compile-time context object backing the `Bits<N>::from_string()` factory
-    method.  Centralizing the context here reduces template instantiation depth, and
-    therefore compile time and binary size. */
-    template <typename word, const auto&... keys>
-    struct bits_from_string {
-        static constexpr size_t base = sizeof...(keys);
-        static constexpr size_t bits_per_digit = std::bit_width(base - 1);
-
-        template <size_t... Is>
-        static constexpr auto _digits(std::index_sequence<Is...>) {
-            return string_map<word, keys...>{word(Is)...};
-        }
-
-        static constexpr auto digits = _digits(std::make_index_sequence<base>{});
-
-        template <size_t... sizes>
-        static constexpr auto _digit_lengths() {
-            std::array<size_t, sizeof...(sizes)> out {sizes...};
-            bertrand::sort<impl::Greater>(out);
-            return out;
-        }
-
-        static constexpr auto digit_lengths = _digit_lengths<keys.size()...>();
-
-        template <size_t I = 0, size_t... sizes>
-        static constexpr decltype(auto) _widths() noexcept {
-            if constexpr (I == 0) {
-                return (_widths<I + 1, digit_lengths[I]>());
-            } else {
-                if constexpr (
-                    digit_lengths[I] < meta::unpack_value<sizeof...(sizes) - 1, sizes...>
-                ) {
-                    return (_widths<I + 1, sizes..., digit_lengths[I]>());
+            template <size_t I = 0, size_t... sizes>
+            static constexpr decltype(auto) _widths() noexcept {
+                if constexpr (I == 0) {
+                    return (_widths<I + 1, digit_lengths[I]>());
                 } else {
-                    return (_widths<I + 1, sizes...>());
+                    if constexpr (
+                        digit_lengths[I] < meta::unpack_value<sizeof...(sizes) - 1, sizes...>
+                    ) {
+                        return (_widths<I + 1, sizes..., digit_lengths[I]>());
+                    } else {
+                        return (_widths<I + 1, sizes...>());
+                    }
                 }
             }
-        }
-        template <size_t I, size_t... sizes> requires (I == base)
-        static constexpr std::array<size_t, sizeof...(sizes)> _widths() noexcept {
-            return {sizes...};
-        }
-
-        static constexpr auto widths = _widths();
-    };
-
-    /* Print Bits, UInt, and Int types using output streams or `std::format()`.
-    Reference: https://en.cppreference.com/w/cpp/utility/format/spec */
-    struct format_bits {
-    private:
-        static constexpr char lower_alpha[] = "0123456789abcdef";
-        static constexpr char upper_alpha[] = "0123456789ABCDEF";
-
-        constexpr char get_align(std::ostream& os) const noexcept {
-            char align = '>';
-            switch (os.flags() & std::ios_base::adjustfield) {
-                case std::ios_base::left: align = '<'; break;
-                case std::ios_base::internal: align = '='; break;
-                default: break;
+            template <size_t I, size_t... sizes> requires (I == base)
+            static constexpr std::array<size_t, sizeof...(sizes)> _widths() noexcept {
+                return {sizes...};
             }
-            return align;
-        }
 
-        constexpr char get_base(std::ostream& os) const noexcept {
-            char base = 'd';
-            switch (os.flags() & std::ios_base::basefield) {
-                case std::ios_base::oct: base = 'o'; break;
-                case std::ios_base::hex:
-                    base = os.flags() & std::ios_base::uppercase ? 'X' : 'x';
-                    break;
-                default: break;
-            }
-            return base;
-        }
-
-        static constexpr char advance(auto& it, auto& end) {
-            char c = *it++;
-            if (it == end) {
-                throw std::format_error("Unbalanced braces in format string");
-            }
-            return c;
-        }
-
-    public:
-        enum class Width : uint8_t {
-            fixed,
-            arg_explicit,
-            arg_implicit
+            static constexpr auto widths = _widths();
         };
 
-        // [fill]['<'/'>'/'^']['+'/'-'/' ']['#']['0'][width]['L']
-        // ['b'/'B'/'c'/'d'/'o'/'x'/'X']
-        char fill = ' ';            // any character other than '{' or '}'
-        char align = '=';           // '<' (left), '>' (right - default), '^' (center)
-        char sign = '-';            // '+' (+ for positive, - for negative)
-                                    // '-' (- for negative only),
-                                    // ' ' (space for positive, - for negative)
-        bool negative = false;      // true if the actual value is negative
-        bool show_base = false;     // prefix "0b" (binary), "0" (octal), or "0x" (hex)
-        Width width_type;           // width may be a nested format specifier
-        bool locale = false;        // true if locale-based grouping is used
-        char base = 'd';            // 'b' (binary w/ prefix 0b)
-                                    // 'B' (binary w/ prefix 0B),
-                                    // 'c' (static cast to char or error if overflow)
-                                    // 'd' (decimal - default),
-                                    // 'o' (octal, prefix 0 unless value is zero),
-                                    // 'x' (hexadecimal w/ prefix 0x and lowercase letters)
-                                    // 'X' (hexadecimal w/ prefix 0X and uppercase letters)
-        char sep;                   // separator character for grouping, if any
-        size_t width = 0;           // minimum field width OR argument index
-        std::string grouping;       // locale-based grouping string
+        /* Print Bits, UInt, and Int types using output streams or `std::format()`.
+        Reference: https://en.cppreference.com/w/cpp/utility/format/spec */
+        struct format {
+        private:
+            static constexpr char lower_alpha[] = "0123456789abcdef";
+            static constexpr char upper_alpha[] = "0123456789ABCDEF";
 
-        constexpr format_bits() noexcept = default;
-
-        constexpr format_bits(
-            std::ostream& os,
-            bool negative,
-            const auto& facet
-        ) noexcept :
-            fill(os.fill()),
-            align(get_align(os)),
-            sign(os.flags() & std::ios_base::showpos ? '+' : '-'),
-            negative(negative),
-            show_base(os.flags() & std::ios_base::showbase),
-            width_type(Width::fixed),
-            locale(true),
-            base(get_base(os)),
-            sep(facet.thousands_sep()),
-            width(os.width()),
-            grouping(facet.grouping())
-        {}
-
-        constexpr format_bits(
-            std::format_parse_context& ctx,
-            auto& it
-        ) {
-            auto end = ctx.end();
-            if (it == end) {
-                throw std::format_error("Unbalanced braces in format string");
-            }
-            if (*it == '}') {
-                return;
-            }
-
-            // check for fill and align
-            if (*it == '<' || *it == '>' || *it == '^') {
-                align = advance(it, end);
-            } else if ((it + 1) != end && (
-                it[1] == '>' || it[1] == '<' || it[1] == '^'
-            )) {
-                if (*it == '{' || *it == '}') {
-                    throw std::format_error("Invalid fill character");
+            constexpr char get_align(std::ostream& os) const noexcept {
+                char align = '>';
+                switch (os.flags() & std::ios_base::adjustfield) {
+                    case std::ios_base::left: align = '<'; break;
+                    case std::ios_base::internal: align = '='; break;
+                    default: break;
                 }
-                fill = advance(it, end);
-                align = advance(it, end);
+                return align;
             }
 
-            // check for sign
-            if (*it == '+' || *it == '-' || *it == ' ') {
-                sign = advance(it, end);
-            }
-
-            // check for show_base
-            if (*it == '#') {
-                show_base = true;
-                advance(it, end);
-            }
-
-            // check for zero padding
-            if (*it == '0' && align == '=') {
-                fill = advance(it, end);
-            }
-
-            // check for width
-            if (*it == '{') {  // nested specifier
-                advance(it, end);
-                if (*it == '}') {  // implicit argument index
-                    advance(it, end);
-                    width_type = Width::arg_implicit;
-                    width = ctx.next_arg_id();
-                } else {  // explicit argument index
-                    while (std::isdigit(*it)) {
-                        width = width * 10 + (advance(it, end) - '0');
-                    }
-                    if (*it != '}') {
-                        throw std::format_error(
-                            "Bad index to nested width specifier"
-                        );
-                    }
-                    ctx.check_arg_id(width);
-                    advance(it, end);
-                    width_type = Width::arg_explicit;
+            constexpr char get_base(std::ostream& os) const noexcept {
+                char base = 'd';
+                switch (os.flags() & std::ios_base::basefield) {
+                    case std::ios_base::oct: base = 'o'; break;
+                    case std::ios_base::hex:
+                        base = os.flags() & std::ios_base::uppercase ? 'X' : 'x';
+                        break;
+                    default: break;
                 }
-            } else if (std::isdigit(*it)) {
-                do {
-                    width = width * 10 + (advance(it, end) - '0');
-                } while (std::isdigit(*it));
-                width_type = Width::fixed;
+                return base;
             }
 
-            // check for locale
-            if (*it == 'L') {
-                locale = true;
-                advance(it, end);
+            static constexpr char advance(auto& it, auto& end) {
+                char c = *it++;
+                if (it == end) {
+                    throw std::format_error("Unbalanced braces in format string");
+                }
+                return c;
             }
 
-            // check for base
-            if (
-                *it == 'b' || *it == 'B' || *it == 'c' || *it == 'd' ||
-                *it == 'o' || *it == 'x' || *it == 'X'
+        public:
+            enum class Width : uint8_t {
+                fixed,
+                arg_explicit,
+                arg_implicit
+            };
+
+            // [fill]['<'/'>'/'^']['+'/'-'/' ']['#']['0'][width]['L']
+            // ['b'/'B'/'c'/'d'/'o'/'x'/'X']
+            char fill = ' ';            // any character other than '{' or '}'
+            char align = '=';           // '<' (left), '>' (right - default), '^' (center)
+            char sign = '-';            // '+' (+ for positive, - for negative)
+                                        // '-' (- for negative only),
+                                        // ' ' (space for positive, - for negative)
+            bool negative = false;      // true if the actual value is negative
+            bool show_base = false;     // prefix "0b" (binary), "0" (octal), or "0x" (hex)
+            Width width_type;           // width may be a nested format specifier
+            bool locale = false;        // true if locale-based grouping is used
+            char base = 'd';            // 'b' (binary w/ prefix 0b)
+                                        // 'B' (binary w/ prefix 0B),
+                                        // 'c' (static cast to char or error if overflow)
+                                        // 'd' (decimal - default),
+                                        // 'o' (octal, prefix 0 unless value is zero),
+                                        // 'x' (hexadecimal w/ prefix 0x and lowercase letters)
+                                        // 'X' (hexadecimal w/ prefix 0X and uppercase letters)
+            char sep;                   // separator character for grouping, if any
+            size_t width = 0;           // minimum field width OR argument index
+            std::string grouping;       // locale-based grouping string
+
+            constexpr format() noexcept = default;
+
+            constexpr format(
+                std::ostream& os,
+                bool negative,
+                const auto& facet
+            ) noexcept :
+                fill(os.fill()),
+                align(get_align(os)),
+                sign(os.flags() & std::ios_base::showpos ? '+' : '-'),
+                negative(negative),
+                show_base(os.flags() & std::ios_base::showbase),
+                width_type(Width::fixed),
+                locale(true),
+                base(get_base(os)),
+                sep(facet.thousands_sep()),
+                width(os.width()),
+                grouping(facet.grouping())
+            {}
+
+            constexpr format(
+                std::format_parse_context& ctx,
+                auto& it
             ) {
-                if (*it == 'c') {
-                    if (show_base) {
-                        throw std::format_error(
-                            "base 'c' is mutually exclusive with '#'"
-                        );
-                    } else if (sign != '-') {
-                        throw std::format_error(
-                            "base 'c' is mutually exclusive with '+' or ' ' sign"
-                        );
+                auto end = ctx.end();
+                if (it == end) {
+                    throw std::format_error("Unbalanced braces in format string");
+                }
+                if (*it == '}') {
+                    return;
+                }
+
+                // check for fill and align
+                if (*it == '<' || *it == '>' || *it == '^') {
+                    align = advance(it, end);
+                } else if ((it + 1) != end && (
+                    it[1] == '>' || it[1] == '<' || it[1] == '^'
+                )) {
+                    if (*it == '{' || *it == '}') {
+                        throw std::format_error("Invalid fill character");
                     }
+                    fill = advance(it, end);
+                    align = advance(it, end);
                 }
 
-                base = advance(it, end);
-            }
-
-            // if the current character is not a closing brace, then the argument
-            // specifier is invalid somehow
-            if (*it != '}') {
-                throw std::format_error("Invalid format specifier");
-            }
-        }
-
-        template <typename out, typename char_type>
-        constexpr void complete(
-            std::basic_format_context<out, char_type>& ctx,
-            bool negative
-        ) {
-            this->negative = negative;
-
-            // get proper locale from context
-            if (locale) {
-                const auto& facet = std::use_facet<std::numpunct<char_type>>(
-                    ctx.locale()
-                );
-                sep = facet.thousands_sep();
-                grouping = facet.grouping();
-            }
-
-            // resolve nested width specifier
-            if (width_type != Width::fixed) {
-                auto arg = ctx.arg(width);
-                if (!arg) {
-                    throw std::format_error(
-                        "Invalid argument index for nested width specifier"
-                    );
+                // check for sign
+                if (*it == '+' || *it == '-' || *it == ' ') {
+                    sign = advance(it, end);
                 }
-                std::visit_format_arg([&](auto&& x) {
-                    using A = std::decay_t<decltype(x)>;
-                    if constexpr (meta::integer<decltype(x)>) {
-                        if (x < 0) {
+
+                // check for show_base
+                if (*it == '#') {
+                    show_base = true;
+                    advance(it, end);
+                }
+
+                // check for zero padding
+                if (*it == '0' && align == '=') {
+                    fill = advance(it, end);
+                }
+
+                // check for width
+                if (*it == '{') {  // nested specifier
+                    advance(it, end);
+                    if (*it == '}') {  // implicit argument index
+                        advance(it, end);
+                        width_type = Width::arg_implicit;
+                        width = ctx.next_arg_id();
+                    } else {  // explicit argument index
+                        while (std::isdigit(*it)) {
+                            width = width * 10 + (advance(it, end) - '0');
+                        }
+                        if (*it != '}') {
                             throw std::format_error(
-                                "Nested width specifier must be non-negative"
+                                "Bad index to nested width specifier"
                             );
                         }
-                        if (x > std::numeric_limits<size_t>::max()) {
+                        ctx.check_arg_id(width);
+                        advance(it, end);
+                        width_type = Width::arg_explicit;
+                    }
+                } else if (std::isdigit(*it)) {
+                    do {
+                        width = width * 10 + (advance(it, end) - '0');
+                    } while (std::isdigit(*it));
+                    width_type = Width::fixed;
+                }
+
+                // check for locale
+                if (*it == 'L') {
+                    locale = true;
+                    advance(it, end);
+                }
+
+                // check for base
+                if (
+                    *it == 'b' || *it == 'B' || *it == 'c' || *it == 'd' ||
+                    *it == 'o' || *it == 'x' || *it == 'X'
+                ) {
+                    if (*it == 'c') {
+                        if (show_base) {
                             throw std::format_error(
-                                "Nested width specifier must be less than "
-                                "std::numeric_limits<size_t>::max()"
+                                "base 'c' is mutually exclusive with '#'"
+                            );
+                        } else if (sign != '-') {
+                            throw std::format_error(
+                                "base 'c' is mutually exclusive with '+' or ' ' sign"
                             );
                         }
-                        width = static_cast<size_t>(x);
-                    } else {
+                    }
+
+                    base = advance(it, end);
+                }
+
+                // if the current character is not a closing brace, then the argument
+                // specifier is invalid somehow
+                if (*it != '}') {
+                    throw std::format_error("Invalid format specifier");
+                }
+            }
+
+            template <typename out, typename char_type>
+            constexpr void complete(
+                std::basic_format_context<out, char_type>& ctx,
+                bool negative
+            ) {
+                this->negative = negative;
+
+                // get proper locale from context
+                if (locale) {
+                    const auto& facet = std::use_facet<std::numpunct<char_type>>(
+                        ctx.locale()
+                    );
+                    sep = facet.thousands_sep();
+                    grouping = facet.grouping();
+                }
+
+                // resolve nested width specifier
+                if (width_type != Width::fixed) {
+                    auto arg = ctx.arg(width);
+                    if (!arg) {
                         throw std::format_error(
-                            "Nested width specifier must be an integer"
+                            "Invalid argument index for nested width specifier"
                         );
                     }
-                }, arg);
-            }
-        }
-
-        template <typename char_type, size_t N>
-        constexpr std::basic_string<char_type> digits_with_grouping(
-            const Bits<N>& bits
-        ) const {
-            using word = Bits<N>::word;
-
-            // if `base` is set to 'c', then we only output a single character, which
-            // is the value of the bitset converted to the character type of the format
-            // string, assuming it is within range
-            if (base == 'c') {
-                if (bits <= std::numeric_limits<char_type>::max()) {
-                    return {1, static_cast<char_type>(bits)};
-                } else {
-                    throw std::format_error(
-                        "Cannot convert Bits to char: value is too large"
-                    );
-                }
-            }
-
-            auto last = bits.last_one();
-            if (!last.has_value()) {
-                return {1, '0'};
-            }
-
-            // decode base specifier and choose the appropriate alphabet
-            size_t actual_base;
-            bool upper = false;
-            switch (base) {
-                case 'b':
-                    actual_base = 2;
-                    break;
-                case 'B':
-                    actual_base = 2;
-                    upper = true;
-                    break;
-                case 'd':
-                    actual_base = 10;
-                    break;
-                case 'o':
-                    actual_base = 8;
-                    break;
-                case 'x':
-                    actual_base = 16;
-                    break;
-                case 'X':
-                    actual_base = 16;
-                    upper = true;
-                    break;
-                default:
-                    throw std::format_error(
-                        "Invalid base for Bits::format_bits: '" +
-                        std::to_string(base) + "'"
-                    );
-            }
-            const char* alpha = upper ? upper_alpha : lower_alpha;
-
-            // compute # of digits in the given base needed to represent the most
-            // significant nonzero bit: ceil(N / log2(base))
-            size_t size = size_t(std::ceil(
-                double(last.value() + 1) / std::log2(actual_base)
-            ));
-            std::basic_string<char_type> result;
-            Bits<N> quotient = bits;
-
-            // if the base is a power of 2, prefer simple shifts and masks
-            if (impl::is_power2(actual_base)) {
-                result.reserve(size);
-                word mask = word(actual_base - 1);
-                word width = word(std::bit_width(mask));
-                for (size_t i = 0; i < size; ++i) {
-                    result.push_back(alpha[word(quotient) & mask]);
-                    quotient >>= width;
-                }
-
-            // otherwise, fall back to division-based extraction
-            } else {
-                Bits<N> divisor = actual_base;
-                Bits<N> remainder;
-                if (actual_base == 10 && !grouping.empty()) {
-                    // estimate final string length with separators inserted by getting
-                    // last positive group width less than CHAR_MAX and adding to size
-                    signed char group_len = 0;
-                    for (signed char s : reversed(grouping)) {
-                        if (s > 0 && s < CHAR_MAX) {
-                            group_len = s;
-                            break;
-                        }
-                    }
-                    if (group_len == 0) {
-                        result.reserve(size);
-                    } else {
-                        result.reserve(size + (size / size_t(group_len)));
-                    }
-                    group_len = grouping[0];
-                    for (size_t i = 0, group_idx = 0; i < size; ++i) {
-                        quotient.divmod(divisor, quotient, remainder);
-                        result.push_back(alpha[word(remainder)]);
-
-                        // if `group_len` is a positive number less than CHAR_MAX, then
-                        // decrement it and insert a separator if it reaches zero
-                        if (
-                            (i + 1) < size &&  // skip last sep if no subsequent digit
-                            group_len > 0 &&  // non-positive lengths are infinite size
-                            group_len < CHAR_MAX &&  // CHAR_MAX is infinite size
-                            --group_len == 0  // reached end of group
-                        ) {
-                            result.push_back(sep);
-                            if ((group_idx + 1) < grouping.size()) {
-                                group_len = grouping[++group_idx];  // advance group
-                            } else {
-                                group_len = grouping[group_idx];  // repeat last group
+                    std::visit_format_arg([&](auto&& x) {
+                        using A = std::decay_t<decltype(x)>;
+                        if constexpr (meta::integer<decltype(x)>) {
+                            if (x < 0) {
+                                throw std::format_error(
+                                    "Nested width specifier must be non-negative"
+                                );
                             }
+                            if (x > std::numeric_limits<size_t>::max()) {
+                                throw std::format_error(
+                                    "Nested width specifier must be less than "
+                                    "std::numeric_limits<size_t>::max()"
+                                );
+                            }
+                            width = static_cast<size_t>(x);
+                        } else {
+                            throw std::format_error(
+                                "Nested width specifier must be an integer"
+                            );
                         }
-                    }
-
-                } else {
-                    result.reserve(size);
-                    for (size_t i = 0; i < size; ++i) {
-                        quotient.divmod(divisor, quotient, remainder);
-                        result.push_back(alpha[word(remainder)]);
-                    }
+                    }, arg);
                 }
             }
 
-            std::reverse(result.begin(), result.end());
-            return result;
-        }
+            template <typename char_type, size_t N>
+            constexpr std::basic_string<char_type> digits_with_grouping(
+                const Bits<N>& bits
+            ) const {
+                using word = Bits<N>::word;
 
-        template <typename char_type>
-        constexpr void pad_and_align(
-            std::basic_string<char_type>& str
-        ) const {
-            size_t prefix_len = 0;
+                // if `base` is set to 'c', then we only output a single character, which
+                // is the value of the bitset converted to the character type of the format
+                // string, assuming it is within range
+                if (base == 'c') {
+                    if (bits <= std::numeric_limits<char_type>::max()) {
+                        return {1, static_cast<char_type>(bits)};
+                    } else {
+                        throw std::format_error(
+                            "Cannot convert Bits to char: value is too large"
+                        );
+                    }
+                }
 
-            // prepend base prefix if requested
-            if (show_base) {
+                auto last = bits.last_one();
+                if (!last.has_value()) {
+                    return {1, '0'};
+                }
+
+                // decode base specifier and choose the appropriate alphabet
+                size_t actual_base;
+                bool upper = false;
                 switch (base) {
                     case 'b':
-                        str.insert(0, std::string_view{"0b", 2});
-                        prefix_len += 2;
+                        actual_base = 2;
                         break;
                     case 'B':
-                        str.insert(0, std::string_view{"0B", 2});
-                        prefix_len += 2;
-                        break;
-                    case 'c':
+                        actual_base = 2;
+                        upper = true;
                         break;
                     case 'd':
+                        actual_base = 10;
                         break;
                     case 'o':
-                        if (str.size() > 1 || str[0] != '0') {
-                            str.insert(0, std::string_view{"0", 1});
-                            ++prefix_len;
-                        }
+                        actual_base = 8;
                         break;
                     case 'x':
-                        str.insert(0, std::string_view{"0x", 2});
-                        prefix_len += 2;
+                        actual_base = 16;
                         break;
                     case 'X':
-                        str.insert(0, std::string_view{"0X", 2});
-                        prefix_len += 2;
+                        actual_base = 16;
+                        upper = true;
                         break;
                     default:
                         throw std::format_error(
-                            "Invalid base for show_base: '" +
+                            "Invalid base for format(Bits): '" +
                             std::to_string(base) + "'"
                         );
                 }
-            }
+                const char* alpha = upper ? upper_alpha : lower_alpha;
 
-            // prepend sign if requested
-            switch (sign) {
-                case '+':  // always
-                    if (negative) str.insert(str.begin(), '-');
-                    else str.insert(str.begin(), '+');
-                    ++prefix_len;
-                    break;
-                case '-':  // only if negative
-                    if (negative) {
-                        str.insert(str.begin(), '-');
-                        ++prefix_len;
+                // compute # of digits in the given base needed to represent the most
+                // significant nonzero bit: ceil(N / log2(base))
+                size_t size = size_t(std::ceil(
+                    double(last.value() + 1) / std::log2(actual_base)
+                ));
+                std::basic_string<char_type> result;
+                Bits<N> quotient = bits;
+
+                // if the base is a power of 2, prefer simple shifts and masks
+                if (impl::is_power2(actual_base)) {
+                    result.reserve(size);
+                    word mask = word(actual_base - 1);
+                    word width = word(std::bit_width(mask));
+                    for (size_t i = 0; i < size; ++i) {
+                        result.push_back(alpha[word(quotient) & mask]);
+                        quotient >>= width;
                     }
-                    break;
-                case ' ':  // align using space if positive
-                    if (negative) str.insert(str.begin(), '-');
-                    else str.insert(str.begin(), ' ');
-                    ++prefix_len;
-                    break;
-                default:
-                    throw std::format_error(
-                        "Invalid sign: '" + std::to_string(sign) + "'"
-                    );
+
+                // otherwise, fall back to division-based extraction
+                } else {
+                    Bits<N> divisor = actual_base;
+                    Bits<N> remainder;
+                    if (actual_base == 10 && !grouping.empty()) {
+                        // estimate final string length with separators inserted by getting
+                        // last positive group width less than CHAR_MAX and adding to size
+                        signed char group_len = 0;
+                        for (signed char s : reversed(grouping)) {
+                            if (s > 0 && s < CHAR_MAX) {
+                                group_len = s;
+                                break;
+                            }
+                        }
+                        if (group_len == 0) {
+                            result.reserve(size);
+                        } else {
+                            result.reserve(size + (size / size_t(group_len)));
+                        }
+                        group_len = grouping[0];
+                        for (size_t i = 0, group_idx = 0; i < size; ++i) {
+                            quotient.divmod(divisor, quotient, remainder);
+                            result.push_back(alpha[word(remainder)]);
+
+                            // if `group_len` is a positive number less than CHAR_MAX, then
+                            // decrement it and insert a separator if it reaches zero
+                            if (
+                                (i + 1) < size &&  // skip last sep if no subsequent digit
+                                group_len > 0 &&  // non-positive lengths are infinite size
+                                group_len < CHAR_MAX &&  // CHAR_MAX is infinite size
+                                --group_len == 0  // reached end of group
+                            ) {
+                                result.push_back(sep);
+                                if ((group_idx + 1) < grouping.size()) {
+                                    group_len = grouping[++group_idx];  // advance group
+                                } else {
+                                    group_len = grouping[group_idx];  // repeat last group
+                                }
+                            }
+                        }
+
+                    } else {
+                        result.reserve(size);
+                        for (size_t i = 0; i < size; ++i) {
+                            quotient.divmod(divisor, quotient, remainder);
+                            result.push_back(alpha[word(remainder)]);
+                        }
+                    }
+                }
+
+                std::reverse(result.begin(), result.end());
+                return result;
             }
 
-            // fill to at least `width` characters
-            if (str.size() < width) {
-                size_t n = width - str.size();
-                switch (align) {
-                    case '<':  // left align
-                        str.append(n, fill);
+            template <typename char_type>
+            constexpr void pad_and_align(
+                std::basic_string<char_type>& str
+            ) const {
+                size_t prefix_len = 0;
+
+                // prepend base prefix if requested
+                if (show_base) {
+                    switch (base) {
+                        case 'b':
+                            str.insert(0, std::string_view{"0b", 2});
+                            prefix_len += 2;
+                            break;
+                        case 'B':
+                            str.insert(0, std::string_view{"0B", 2});
+                            prefix_len += 2;
+                            break;
+                        case 'c':
+                            break;
+                        case 'd':
+                            break;
+                        case 'o':
+                            if (str.size() > 1 || str[0] != '0') {
+                                str.insert(0, std::string_view{"0", 1});
+                                ++prefix_len;
+                            }
+                            break;
+                        case 'x':
+                            str.insert(0, std::string_view{"0x", 2});
+                            prefix_len += 2;
+                            break;
+                        case 'X':
+                            str.insert(0, std::string_view{"0X", 2});
+                            prefix_len += 2;
+                            break;
+                        default:
+                            throw std::format_error(
+                                "Invalid base for show_base: '" +
+                                std::to_string(base) + "'"
+                            );
+                    }
+                }
+
+                // prepend sign if requested
+                switch (sign) {
+                    case '+':  // always
+                        if (negative) str.insert(str.begin(), '-');
+                        else str.insert(str.begin(), '+');
+                        ++prefix_len;
                         break;
-                    case '>':  // right align
-                        str.insert(str.begin(), n, fill);
+                    case '-':  // only if negative
+                        if (negative) {
+                            str.insert(str.begin(), '-');
+                            ++prefix_len;
+                        }
                         break;
-                    case '^':  // center align
-                        str.insert(0, n / 2, fill);
-                        str.append(n - (n / 2), fill);
-                        break;
-                    case '=':  // internal alignment - pad between sign/base and value
-                        str.insert(prefix_len, n, fill);
+                    case ' ':  // align using space if positive
+                        if (negative) str.insert(str.begin(), '-');
+                        else str.insert(str.begin(), ' ');
+                        ++prefix_len;
                         break;
                     default:
                         throw std::format_error(
-                            "Invalid alignment for show_base: '" +
-                            std::to_string(align) + "'"
+                            "Invalid sign: '" + std::to_string(sign) + "'"
                         );
                 }
-            }
-        }
-    };
 
-    /* Parse Bits, UInt, and Int types from strings using input streams or
-    `std::scan()` when that becomes available. */
-    struct scan_bits {
-    private:
-        static constexpr char lower_alpha[] = "0123456789abcdef";
-        static constexpr char upper_alpha[] = "0123456789ABCDEF";
-
-        constexpr uint8_t get_base(std::istream& is) const noexcept {
-            uint8_t base = 0;
-            switch (is.flags() & std::ios_base::basefield) {
-                case std::ios_base::oct: base = 8; break;
-                case std::ios_base::dec: base = 10; break;
-                case std::ios_base::hex: base = 16; break;
-                default: break;
-            }
-            return base;
-        }
-
-        template <typename word>
-        static constexpr word decode(char c) noexcept {
-            if ('0' <= c && c <= '9') return c - '0';
-            if ('a' <= c && c <= 'z') return 10 + c - 'a';
-            if ('A' <= c && c <= 'Z') return 10 + c - 'A';
-            return std::numeric_limits<word>::max();  // invalid character
-        }
-
-        constexpr bool ok(std::istream& is) noexcept {
-            return --width && is.good();
-        }
-
-        constexpr void fail(std::istream& is) noexcept {
-            is.setstate(std::ios_base::failbit);
-        }
-
-    public:
-        char sep;                   // separator character for grouping, if any
-        uint8_t base = 0;           // numeric base (0, 2, 8, 10, 16)
-        size_t width = 0;           // maximum number of characters to read
-
-        constexpr scan_bits() noexcept = default;
-
-        constexpr scan_bits(
-            std::istream& is,
-            const auto& facet
-        ) noexcept :
-            sep(facet.thousands_sep()),
-            base(get_base(is)),
-            width(is.width())
-        {
-            if (width == 0) {
-                width = std::numeric_limits<size_t>::max();  // no limit
-            }
-            is.width(0);  // reset now, per standard
-        }
-
-        template <typename out>
-        constexpr void scan(std::istream& is, out& result) {
-            using word = out::word;
-            bool negative = false;
-            bool overflow;
-            char c;
-
-            // 1) check for optional sign
-            if (is.peek() == '+') {
-                is.get(c);  // consume the '+' sign
-                if (!ok(is)) return fail(is);  // no digits after sign
-            } else if (is.peek() == '-') {
-                if constexpr (meta::signed_integer<out>) {
-                    negative = true;
-                    is.get(c);  // consume the '-' sign
-                    if (!ok(is)) return fail(is);  // no digits after sign
-                } else {
-                    return fail(is);  // negative sign not allowed for unsigned types
+                // fill to at least `width` characters
+                if (str.size() < width) {
+                    size_t n = width - str.size();
+                    switch (align) {
+                        case '<':  // left align
+                            str.append(n, fill);
+                            break;
+                        case '>':  // right align
+                            str.insert(str.begin(), n, fill);
+                            break;
+                        case '^':  // center align
+                            str.insert(0, n / 2, fill);
+                            str.append(n - (n / 2), fill);
+                            break;
+                        case '=':  // internal alignment - pad between sign/base and value
+                            str.insert(prefix_len, n, fill);
+                            break;
+                        default:
+                            throw std::format_error(
+                                "Invalid alignment for show_base: '" +
+                                std::to_string(align) + "'"
+                            );
+                    }
                 }
             }
+        };
 
-            // 2) detect and consume base prefix
-            is.get(c);  // extract first character
-            if (!ok(is)) {  // no digits after first character
-                word value = decode<word>(c);
-                if (value >= base) return fail(is);
-                result = value;
-                return;
+        /* Parse Bits, UInt, and Int types from strings using input streams or
+        `std::scan()` when that becomes available. */
+        struct scan {
+        private:
+            static constexpr char lower_alpha[] = "0123456789abcdef";
+            static constexpr char upper_alpha[] = "0123456789ABCDEF";
+
+            constexpr uint8_t get_base(std::istream& is) const noexcept {
+                uint8_t base = 0;
+                switch (is.flags() & std::ios_base::basefield) {
+                    case std::ios_base::oct: base = 8; break;
+                    case std::ios_base::dec: base = 10; break;
+                    case std::ios_base::hex: base = 16; break;
+                    default: break;
+                }
+                return base;
             }
-            switch (base) {
-                case 0:
-                    if (c == '0') {
-                        if (is.peek() == 'b' || is.peek() == 'B') {
-                            is.get(c);  // consume the 'b' or 'B'
-                            if (!ok(is)) return fail(is);  // no digits after prefix
-                            is.get(c);  // c now points to first real character of number
-                            base = 2;
-                        } else if (is.peek() == 'o' || is.peek() == 'O') {
-                            is.get(c);
-                            if (!ok(is)) return fail(is);
-                            is.get(c);
-                            base = 8;
-                        } else if (is.peek() == 'x' || is.peek() == 'X') {
-                            is.get(c);
-                            if (!ok(is)) return fail(is);
-                            is.get(c);
-                            base = 16;
+
+            template <typename word>
+            static constexpr word decode(char c) noexcept {
+                if ('0' <= c && c <= '9') return c - '0';
+                if ('a' <= c && c <= 'z') return 10 + c - 'a';
+                if ('A' <= c && c <= 'Z') return 10 + c - 'A';
+                return std::numeric_limits<word>::max();  // invalid character
+            }
+
+            constexpr bool ok(std::istream& is) noexcept {
+                return --width && is.good();
+            }
+
+            constexpr void fail(std::istream& is) noexcept {
+                is.setstate(std::ios_base::failbit);
+            }
+
+        public:
+            char sep;                   // separator character for grouping, if any
+            uint8_t base = 0;           // numeric base (0, 2, 8, 10, 16)
+            size_t width = 0;           // maximum number of characters to read
+
+            constexpr scan() noexcept = default;
+
+            constexpr scan(
+                std::istream& is,
+                const auto& facet
+            ) noexcept :
+                sep(facet.thousands_sep()),
+                base(get_base(is)),
+                width(is.width())
+            {
+                if (width == 0) {
+                    width = std::numeric_limits<size_t>::max();  // no limit
+                }
+                is.width(0);  // reset now, per standard
+            }
+
+            template <typename out>
+            constexpr void operator()(std::istream& is, out& result) {
+                using word = out::word;
+                bool negative = false;
+                bool overflow;
+                char c;
+
+                // 1) check for optional sign
+                if (is.peek() == '+') {
+                    is.get(c);  // consume the '+' sign
+                    if (!ok(is)) return fail(is);  // no digits after sign
+                } else if (is.peek() == '-') {
+                    if constexpr (meta::signed_integer<out>) {
+                        negative = true;
+                        is.get(c);  // consume the '-' sign
+                        if (!ok(is)) return fail(is);  // no digits after sign
+                    } else {
+                        return fail(is);  // negative sign not allowed for unsigned types
+                    }
+                }
+
+                // 2) detect and consume base prefix
+                is.get(c);  // extract first character
+                if (!ok(is)) {  // no digits after first character
+                    word value = decode<word>(c);
+                    if (value >= base) return fail(is);
+                    result = value;
+                    return;
+                }
+                switch (base) {
+                    case 0:
+                        if (c == '0') {
+                            if (is.peek() == 'b' || is.peek() == 'B') {
+                                is.get(c);  // consume the 'b' or 'B'
+                                if (!ok(is)) return fail(is);  // no digits after prefix
+                                is.get(c);  // c now points to first real character of number
+                                base = 2;
+                            } else if (is.peek() == 'o' || is.peek() == 'O') {
+                                is.get(c);
+                                if (!ok(is)) return fail(is);
+                                is.get(c);
+                                base = 8;
+                            } else if (is.peek() == 'x' || is.peek() == 'X') {
+                                is.get(c);
+                                if (!ok(is)) return fail(is);
+                                is.get(c);
+                                base = 16;
+                            } else {
+                                base = 10;
+                            }
                         } else {
                             base = 10;
                         }
-                    } else {
-                        base = 10;
-                    }
-                    break;
-                case 8:
-                    if (c == '0' && (is.peek() == 'o' || is.peek() == 'O')) {
-                        is.get(c);
-                        if (!ok(is)) return fail(is);
-                        is.get(c);
-                    }
-                    break;
-                case 16:
-                    if (c == '0' && (is.peek() == 'x' || is.peek() == 'X')) {
-                        is.get(c);
-                        if (!ok(is)) return fail(is);
-                        is.get(c);
-                    }
-                    break;
-                default: break;
-            }
-            out multiplier = base;
-            out temp;
-
-            /// 3) decode each character, respecting the locale's grouping
-            while (base == 10 && c == sep) {
-                is.get(c);  // skip grouping separator
-                if (!ok(is)) return fail(is);  // no digits after grouping separator
-            }
-            word value = decode<word>(c);  // decode first real digit
-            if (value >= base) return fail(is);  // invalid digit
-            temp.add(value, overflow, temp);  // add first digit in-place
-            if (overflow) {
-                while (ok(is)) {  
-                    is.get(c);
-                    if (base == 10 && c == sep) continue;  // skip grouping separator
-                    value = decode<word>(c);
-                    if (value >= base) break;  // digit sequence finished
+                        break;
+                    case 8:
+                        if (c == '0' && (is.peek() == 'o' || is.peek() == 'O')) {
+                            is.get(c);
+                            if (!ok(is)) return fail(is);
+                            is.get(c);
+                        }
+                        break;
+                    case 16:
+                        if (c == '0' && (is.peek() == 'x' || is.peek() == 'X')) {
+                            is.get(c);
+                            if (!ok(is)) return fail(is);
+                            is.get(c);
+                        }
+                        break;
+                    default: break;
                 }
-                is.setstate(std::ios_base::failbit | std::ios_base::badbit);
-                return;  // overflow on first digit
-            }
-            while (ok(is)) {
-                is.get(c);  // read the next character
-                if (base == 10 && c == sep) continue;  // skip grouping separator
-                value = decode<word>(c);
-                if (value >= base) break;  // digit sequence finished
-                temp.mul(multiplier, overflow, temp);  // shift left by base
-                temp.add(value, overflow, temp);  // add digit
+                out multiplier = base;
+                out temp;
+
+                /// 3) decode each character, respecting the locale's grouping
+                while (base == 10 && c == sep) {
+                    is.get(c);  // skip grouping separator
+                    if (!ok(is)) return fail(is);  // no digits after grouping separator
+                }
+                word value = decode<word>(c);  // decode first real digit
+                if (value >= base) return fail(is);  // invalid digit
+                temp.add(value, overflow, temp);  // add first digit in-place
                 if (overflow) {
-                    while (ok(is)) {  // consume any remaining characters in this base/limit
+                    while (ok(is)) {  
                         is.get(c);
                         if (base == 10 && c == sep) continue;  // skip grouping separator
                         value = decode<word>(c);
                         if (value >= base) break;  // digit sequence finished
                     }
                     is.setstate(std::ios_base::failbit | std::ios_base::badbit);
-                    return;
+                    return;  // overflow on first digit
+                }
+                while (ok(is)) {
+                    is.get(c);  // read the next character
+                    if (base == 10 && c == sep) continue;  // skip grouping separator
+                    value = decode<word>(c);
+                    if (value >= base) break;  // digit sequence finished
+                    temp.mul(multiplier, overflow, temp);  // shift left by base
+                    temp.add(value, overflow, temp);  // add digit
+                    if (overflow) {
+                        while (ok(is)) {  // consume any remaining characters in this base/limit
+                            is.get(c);
+                            if (base == 10 && c == sep) continue;  // skip grouping separator
+                            value = decode<word>(c);
+                            if (value >= base) break;  // digit sequence finished
+                        }
+                        is.setstate(std::ios_base::failbit | std::ios_base::badbit);
+                        return;
+                    }
+                }
+
+                // 4) only assign if we have a valid result
+                result = std::move(result);
+            }
+        };
+
+    }
+
+    namespace floating {
+
+        template <typename T, size_t E, size_t M>
+        concept fits =
+            E <= meta::float_exponent_size<T> &&
+            M <= meta::float_mantissa_size<T>;
+
+        /* Hard floats are chosen if E and M both fit within a hardware-supported floating
+        point type, as indicated by the `impl::floating::fits<T, E, M>` helper concept.
+        Since these types are not available on every platform, they are hidden behind the
+        relevant C++ standard library macros, as defined in the fixed-width floating point
+        types section of the C++ standard (C++23 and later).  If no hardware type can be
+        found, then the default is to use the softfloat emulation with E + M bits. */
+        template <size_t E, size_t M>
+        struct hard {  // fall back to softfloat emulation with E + M bits
+            using type = void;
+            static constexpr size_t size = E + M;
+            static constexpr bool native = false;
+        };
+
+        template <size_t E, size_t M> requires (fits<float, E, M>)
+        struct hard<E, M> {
+            using type = float;
+            static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool native =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
+        };
+
+        template <size_t E, size_t M>
+            requires (!fits<float, E, M> && fits<double, E, M>)
+        struct hard<E, M> {
+            using type = double;
+            static constexpr size_t size = meta::float_size<type>;
+            static constexpr bool native =
+                E == meta::float_exponent_size<type> &&
+                M == meta::float_mantissa_size<type>;
+        };
+
+        #if __STDCPP_FLOAT16_T__
+            inline constexpr bool HAS_FLOAT16 = true;
+            template <size_t E, size_t M>
+                requires (HAS_FLOAT16 && fits<std::float16_t, E, M>)
+            struct hard<E, M> {
+                using type = std::float16_t;
+                static constexpr size_t size = meta::float_size<type>;
+                static constexpr bool native =
+                    E == meta::float_exponent_size<type> &&
+                    M == meta::float_mantissa_size<type>;
+            };
+        #else
+            inline constexpr bool HAS_FLOAT16 = false;
+        #endif
+
+        #if __STDCPP_BFLOAT16_T__
+            inline constexpr bool HAS_BFLOAT16 = true;
+            template <size_t E, size_t M>
+                requires (
+                    !(HAS_FLOAT16 && fits<std::float16_t, E, M>) &&
+                    (HAS_BFLOAT16 && fits<std::bfloat16_t, E, M>)
+                )
+            struct hard<E, M> {
+                using type = std::bfloat16_t;
+                static constexpr size_t size = meta::float_size<type>;
+                static constexpr bool native =
+                    E == meta::float_exponent_size<type> &&
+                    M == meta::float_mantissa_size<type>;
+            };
+        #else
+            inline constexpr bool HAS_BFLOAT16 = false;
+        #endif
+
+        #if __STDCPP_FLOAT32_T__
+            inline constexpr bool HAS_FLOAT32 = true;
+            template <size_t E, size_t M>
+                requires (
+                    !(HAS_FLOAT16 && fits<std::float16_t, E, M>) &&
+                    !(HAS_BFLOAT16 && fits<std::bfloat16_t, E, M>) &&
+                    (HAS_FLOAT32 && fits<std::float32_t, E, M>)
+                )
+            struct hard<E, M> {
+                using type = std::float32_t;
+                static constexpr size_t size = meta::float_size<type>;
+                static constexpr bool native =
+                    E == meta::float_exponent_size<type> &&
+                    M == meta::float_mantissa_size<type>;
+            };
+        #else
+            inline constexpr bool HAS_FLOAT32 = false;
+        #endif
+
+        #if __STDCPP_FLOAT64_T__
+            inline constexpr bool HAS_FLOAT64 = true;
+            template <size_t E, size_t M>
+                requires (
+                    !(HAS_FLOAT16 && fits<std::float16_t, E, M>) &&
+                    !(HAS_BFLOAT16 && fits<std::bfloat16_t, E, M>) &&
+                    !(HAS_FLOAT32 && fits<std::float32_t, E, M>) &&
+                    (HAS_FLOAT64 && fits<std::float64_t, E, M>)
+                )
+            struct hard<E, M> {
+                using type = std::float64_t;
+                static constexpr size_t size = meta::float_size<type>;
+                static constexpr bool native =
+                    E == meta::float_exponent_size<type> &&
+                    M == meta::float_mantissa_size<type>;
+            };
+        #else
+            inline constexpr bool HAS_FLOAT64 = false;
+        #endif
+
+        #if __STDCPP_FLOAT128_T__
+            inline constexpr bool HAS_FLOAT128 = true;
+            template <size_t E, size_t M>
+                requires (
+                    !(HAS_FLOAT16 && fits<std::float16_t, E, M>) &&
+                    !(HAS_BFLOAT16 && fits<std::bfloat16_t, E, M>) &&
+                    !(HAS_FLOAT32 && fits<std::float32_t, E, M>) &&
+                    !(HAS_FLOAT64 && fits<std::float64_t, E, M>) &&
+                    (HAS_FLOAT128 && fits<std::float128_t, E, M>)
+                )
+            struct hard<E, M> {
+                using type = std::float128_t;
+                static constexpr size_t size = meta::float_size<type>;
+                static constexpr bool native =
+                    E == meta::float_exponent_size<type> &&
+                    M == meta::float_mantissa_size<type>;
+            };
+        #else
+            inline constexpr bool HAS_FLOAT128 = false;
+        #endif
+
+        /* The internals of the IEEE 754 representation are abstracted into a separate
+        helper type, in order to facilitate value-preserving conversions for both the hard
+        and soft cases.  Note that the `Float` type is always expected to be an unqualified
+        specialization of `Float<E, M>`, but that constraint cannot be enforced due to
+        `Float<E, M>` not being complete until the end of its definition, which complicates
+        the dependency graph. */
+        template <typename Float>
+        struct traits;
+
+        /* Attempting to convert a float with an exponent greater than the maximum
+        representable integer in the destination type results in a debug assertion.  The
+        same is true when attempting to convert a negative float into an unsigned integer. */
+        template <meta::integer To, meta::Float From>
+        static constexpr void int_overflow(
+            const From& self,
+            const typename From::Bits& exp
+        ) noexcept {
+            using traits = floating::traits<From>;
+            static constexpr Bits max = traits::mask::bias + (
+                Bits{bertrand::min(traits::exp_bias + 1, std::numeric_limits<To>::digits)} <<
+                (traits::man_size - 1)
+            );
+
+            // exponent infinite or > # of available bits
+            if (exp >= max) {
+                static constexpr static_str message =
+                    type_name<From> + " -> " + type_name<To> +
+                    " conversion exceeds representable range";
+                if consteval {
+                    throw OverflowError(message);
+                } else {
+                    throw OverflowError(message + ": " + std::string(self));
                 }
             }
 
-            // 4) only assign if we have a valid result
-            result = std::move(result);
+            // converting negative float to unsigned integer
+            if constexpr (meta::unsigned_integer<To>) {
+                if (self.bits.msb_is_set()) {
+                    static constexpr static_str message =
+                        type_name<From> + " -> " + type_name<To> +
+                        " conversion results in negative value";
+                    if consteval {
+                        throw OverflowError(message);
+                    } else {
+                        throw OverflowError(message + ": " + std::string(self));
+                    }
+                }
+            }
         }
-    };
+
+        /// TODO: now that these are pulled out of the Float<> class itself, I should be
+        /// able to generalize the conversions to allow cross-conversion between each
+        /// type.  Then the public methods would just call into these without any extra
+        /// work.
+
+        /// TODO: this should be able to fully generalize both the int -> float and
+        /// float -> int conversions in a bit-perfect manner, such that both classes just
+        /// call into this infrastructure.
+
+        /* Data layout and conversions for soft floats. */
+        template <typename Float>
+        struct traits {
+        private:
+            using Bits = Float::Bits;
+            static constexpr size_t E = Float::exponent_size;
+            static constexpr size_t M = Float::mantissa_size;
+
+        public:
+            static constexpr bool hard = false;
+            static constexpr size_t man_size = M;
+            static constexpr size_t exp_size = E;
+            static constexpr size_t exp_bias = size_t(Bits::mask(0, E - 1));
+
+            struct mask {
+                static constexpr Bits sign = Bits{1} << (exp_size + man_size - 1);
+                static constexpr Bits exponent =
+                    Bits::mask(man_size - 1, man_size - 1 + E);
+                static constexpr Bits mantissa =
+                    Bits::mask(man_size - M, man_size - 1);
+
+                static constexpr Bits payload = ~sign;
+                static constexpr Bits bias = Bits{exp_bias} << (man_size - 1);
+                static constexpr Bits implicit_bit = Bits{1} << (man_size - 1);
+            };
+
+            template <meta::floating From>
+            static constexpr void from_float(Float& self, const From& value) noexcept {
+                static constexpr size_t e = meta::float_exponent_size<From>;
+                static constexpr size_t m = meta::float_mantissa_size<From>;
+                using observed = bertrand::Bits<e + m>;
+                static constexpr observed get_man = observed::mask(0, m - 1);
+                static constexpr observed get_exp =
+                    observed::mask(m - 1, m - 1 + e);
+
+                observed bits {value};
+                observed exp = bits & get_exp;
+                observed man = bits & get_man;
+
+                // preserve NaN/infinity
+                if (exp == get_exp) {
+                    self.bits = mask::exponent;
+                    if constexpr (m == M) {
+                        self.bits |= Bits{man};  // exact
+                    } else if constexpr (m < M) {
+                        self.bits |= Bits{man} << (M - m);  // pad with trailing zeros
+                    } else {
+                        self.bits |= Bits{man >> (m - M)};  // truncate and preserve payload
+                    }
+                    if (bits.msb_is_set()) {
+                        self.bits |= mask::sign;  // copy sign bit
+                    }
+                    return;
+                }
+
+                // preserve zero and scale subnormals
+                if (exp == 0) {
+                    // subnormal scaling does not occur if exponent widths are the same.
+                    // However, rounding the mantissa could possibly promote the value to a
+                    // normal with an exponent of 1, which is standard behavior.
+                    if constexpr (e == E) {
+                        self.bits |= round_mantissa<m>(man);
+
+                    // otherwise, subnormals need to be scaled up or down to account for
+                    // the increase/decrease in exponent resolution.  This can cause a
+                    // subnormal to become a normal, or be zeroed out entirely.
+                    } else {
+                        // get index of leading mantissa bit for scaling.  If no bits are
+                        // set, then the value is a true zero, and the result is trivial.
+                        if (auto idx = man.last_one(); idx.has_value()) {
+                            // if the new exponent is wider than the old one, then
+                            // subnormals need to be left-shifted until either the adjusted
+                            // bias is reached and the result remains subnormal, or the
+                            // leading one is at the implicit bit, rendering it normal.
+                            if constexpr (e < E) {
+                                static constexpr size_t bias {
+                                    observed::mask(0, E - 1) -
+                                    observed::mask(0, e - 1)
+                                };
+                                size_t shift = m - 1 - idx.value();  // minimum of 1
+                                if (shift <= bias) {
+                                    // result is normal - shift leading one to implicit
+                                    // bit, then round and join to result.  This will
+                                    // always set either the first or second bit (due to
+                                    // rounding) of the exponent.  We then add the leftover
+                                    // bias to get the final normalized exponent.
+                                    man <<= shift;
+                                    self.bits |= round_mantissa<m>(man);
+                                    self.bits += Bits{bias - shift} << (M - 1);
+                                } else {
+                                    man <<= shift - bias;  // result remains subnormal
+                                    self.bits |= round_mantissa<m>(man);
+                                }
+
+                            // if the new exponent is narrower than the old one, then
+                            // subnormals need to be right-shifted until the adjusted bias
+                            // is reached, possibly zeroing them.
+                            } else {
+                                static constexpr observed bias =
+                                    observed::mask(0, e - 1) -
+                                    observed::mask(0, E - 1);
+
+                                // if the bias adjustment is less than or equal to the
+                                // mantissa size, then we must round and then right shift
+                                // the mantissa into place.  Otherwise, the right shift
+                                // will always zero out the mantissa.
+                                if constexpr (bias <= M) {
+                                    /// TODO: how many bits do I need to shift?
+
+
+                                    /// TODO: add the rounding adjustment to `man` here.
+                                    /// Then, if the current mantissa size is less than
+                                    /// the new mantissa size, convert to the new size,
+                                    /// and then right shift.  Otherwise, right shift and
+                                    /// then convert to the new size.
+
+                                    // if the new mantissa is wider, then we can capture as
+                                    // many of the lower mantissa bits as possible
+                                    if constexpr (m <= M) {
+                                        self.bits |= Bits{man} >> bias;
+
+                                    // if the new mantissa is narrower, then we need to
+                                    // shift first and then round
+                                    } else {
+                                        man >>= bias;
+                                        self.bits |= round_mantissa<m>(man);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // copy sign bit
+                    if (bits.msb_is_set()) {
+                        self.bits |= mask::sign;
+                    }
+                    return;
+                }
+
+                // adjust exponent bias and detect overflow/underflow.
+                if constexpr (e == E) {
+                    if constexpr (m == M) {
+                        self.bits |= Bits{exp};  // exact
+                    } else if constexpr (m < M) {
+                        self.bits |= Bits{exp};  // convert, then shift
+                        self.bits <<= M - m;
+                    } else {
+                        exp >>= m - M;  // shift, then convert
+                        self.bits |= Bits{exp};
+                    }
+
+                    // add rounded mantissa, possibly carrying into the exponent.  This may
+                    // cause the exponent to overflow, in which case we clamp to infinity.
+                    self.bits += round_mantissa<m>(man);
+                    if (self.bits > mask::exponent) {
+                        self.bits = mask::exponent;  // clear mantissa bits
+                    }
+
+                // if the new exponent is wider than the old one, then we need to adjust
+                // the bias, but are otherwise safe from overflow due to rounding of the
+                // mantissa.
+                } else if constexpr (e < E) {
+                    static constexpr Bits bias =
+                        Bits::mask(M - 1, M + E - 2) -
+                        Bits::mask(M - 1, M + e - 2);
+
+                    if constexpr (m == M) {
+                        self.bits |= Bits{exp};  // exact
+                    } else if constexpr (m < M) {
+                        self.bits |= Bits{exp};  // convert, then shift
+                        self.bits <<= M - m;
+                    } else {
+                        exp >>= m - M;  // shift, then convert
+                        self.bits |= Bits{exp};
+                    }
+
+                    self.bits += bias;
+                    self.bits += round_mantissa<m>(man);
+
+                // otherwise, if the new exponent is narrower than the old one, then it's
+                // possible that the current exponent lies outside its representable range,
+                // indicating either overflow or underflow
+                } else {
+                    static constexpr observed max =  // one before infinity
+                        observed::mask(m - 1, m + e - 2) +
+                        observed::mask(m - 1, m + E - 2);
+                    static constexpr observed min =  // zero
+                        observed::mask(m - 1, m + e - 2) -
+                        observed::mask(m - 1, m + E - 2);
+
+                    // if the current exponent is greater than the maximum valid exponent,
+                    // overflow to infinity
+                    if (exp > max) {
+                        self.bits = mask::exponent;
+
+                    // if the current exponent is less than or equal to the minimum valid
+                    // exponent, then the result underflows to a subnormal
+                    } else if (exp <= min) {
+                        exp >>= m - 1;
+
+                        /// TODO: this is really the only part where things get tricky.  I
+                        /// need to make suret that I always retain as much information as
+                        /// possible, and end up with a valid subnormal.
+
+
+                        /// TODO: not sure if these bounds checks are correct.
+
+                        // if the distance between the current exponent and zero is greater
+                        // than the new mantissa size, then the result is zero.
+                        if (exp > M) {
+                            self.bits = 0;
+
+                        // otherwise, the result may be a subnormal
+                        } else {
+                            // insert implicit leading bit
+                            /// TODO: the order of operations here depends on whether m
+                            /// is smaller than M or not.  If it is, then I should convert
+                            /// to Bits first, and then shift to produce the subnormal.
+                            /// Otherwise, I should shift first and then convert to Bits
+                            /// with correct rounding.
+
+                        }
+
+                        /// TODO: produce a subnormal.  This means inserting an implicit
+                        /// bit and then right shifting by the distance between the
+                        /// current exponent and zero, and then rounding the mantissa.  If
+                        /// this distance is greater than the new mantissa size, then the
+                        /// result is zero.
+
+                        /// the mantissa until the minimum
+                        /// valid exponent is reached.  If the distance between the
+                        /// current exponent and the minimum exponent is greater than the
+                        /// new mantissa size, then the result is zero.
+
+
+                    // otherwise, the exponent is valid, and produces a normal number
+                    } else {
+                        exp -= min;
+                        if constexpr (m == M) {
+                            self.bits |= Bits{exp};  // exact
+                        } else if constexpr (m < M) {
+                            self.bits |= Bits{exp};  // convert, then shift
+                            self.bits <<= M - m;
+                        } else {
+                            exp >>= m - M;  // shift, then convert
+                            self.bits |= Bits{exp};
+                        }
+                        self.bits += round_mantissa<m>(man);
+                        if (self.bits > mask::exponent) {
+                            self.bits = mask::exponent;  // clamp mantissa bits
+                        }
+                    }
+                }
+
+                // copy sign bit
+                if (bits.msb_is_set()) {
+                    self.bits |= mask::sign;
+                }
+            }
+
+            template <meta::integer From>
+            static constexpr void from_int(Float& self, const From& value) noexcept {
+                if constexpr (meta::signed_integer<From>) {
+                    if (value < 0) {
+                        // the absolute minimum value may not have a valid complement, so
+                        // we can't just naively negate it.  Instead, we increment it by
+                        // one, then negate and compute the unsigned result, and then
+                        // increment again before restoring the sign.
+                        if (value == std::numeric_limits<From>::min()) {
+                            _from_int(self, bertrand::Bits{
+                                -(value + static_cast<From>(1))
+                            });
+                            ++self;
+                        } else {
+                            ;
+                            _from_int(self, bertrand::Bits{-value});
+                        }
+                        self.bits |= mask::sign;
+                        return;
+                    }
+                }
+                _from_int(self, bertrand::Bits{value});
+            }
+
+            template <meta::floating To>
+            static constexpr To to_float(const Float& self) noexcept {
+                /// TODO: convert a soft float to a hard float by resizing the exponent
+                /// and/or mantissa.  This might be generalizable in the long run
+                return self;
+            }
+
+            template <meta::integer To>
+            static constexpr To to_int(const Float& self) {
+                if constexpr (meta::signed_integer<To>) {
+                    return self.bits.msb_is_set() ? -_to_int<To>(self) : _to_int<To>(self);
+                } else {
+                    return _to_int<To>(self);
+                }
+            }
+
+        private:
+            /* Given a pre-normalized mantissa of length `m` stored in a bitset of any size,
+            convert it into an equivalent mantissa of length `M`, padding with trailing zeros
+            if `m < M` and rounding excess bits if `m > M`. */
+            template <size_t m, meta::Bits V>
+            static constexpr Bits round_mantissa(V& man) noexcept {
+                using B = meta::unqualify<V>;
+                if constexpr (m <= man_size) {
+                    Bits result = Bits{man};
+                    if constexpr (m < man_size) {
+                        result <<= man_size - m;  // pad with trailing zeros
+                    }
+                    return result;
+                } else {
+                    static constexpr B half = B{1} << (m - man_size - 1);
+                    static constexpr B to_even = half << 1;
+                    static constexpr B discard = to_even - 1;
+                    if ((man & discard) == half) {
+                        man += man & to_even;  // perfect ties round to even
+                    } else {
+                        man += half;  // others round to nearest
+                    }
+                    man >>= m - man_size;  // truncate to M bits
+                    return Bits{man};
+                }
+            }
+
+            template <meta::Bits observed>
+            static constexpr void _from_int(Float& self, observed&& bits) noexcept {
+                // get index of leading bit in the integer, which becomes the implicit
+                // mantissa bit, and whose index determines the exponent
+                if (auto idx = bits.last_one(); idx.has_value()) {
+                    size_t i = idx.value();
+
+                    // if index is greater than the maximum exponent, then the result
+                    // overflows to infinity
+                    if (i > exp_bias) {
+                        self.bits = mask::exponent;
+                        return;
+                    }
+
+                    // if the index is less than or equal to the mantissa size, then we
+                    // need to left shift it into the implicit bit position.
+                    if (i <= (man_size - 1)) {
+                        self.bits |= Bits{bits} << (man_size - 1 - i);
+
+                    // otherwise, we need to right shift and round to place the leading bit
+                    // into the implicit position.
+                    } else {
+                        observed half = observed{1};
+                        half <<= i - man_size;  // min 0
+                        observed to_even = half << 1;
+                        observed discard = to_even - 1;
+
+                        if ((bits & discard) == half) {
+                            bits += bits & to_even;  // perfect ties round to even
+                        } else {
+                            bits += half;  // others round to nearest
+                        }
+                        bits >>= i - (man_size - 1);  // truncate to M bits
+                        self.bits |= Bits{bits};
+
+                        // it's possible that rounding caused the integer to overflow,
+                        // in which case `bits` will truncate to zero after the shift.  If
+                        // that happens, then the implicit bit is lost, and we need to
+                        // increment the exponent by 1 to account for the overflow, and
+                        // another 1 to account for the missing implicit bit.  This could
+                        // cause the exponent to increment to infinity, which is fine,
+                        // since the mantissa is already zero.
+                        i += 2 * (bits == 0);
+                    }
+
+                    // the implicit bit becomes the first bit of the exponent.  We then
+                    // shift in the rest of the bias mask, and add the original index to
+                    // get the final exponent.
+                    self.bits += Bits{exp_bias + i - 1} << (man_size - 1);
+                }
+            }
+
+            template <meta::integer To>
+            static constexpr To _to_int(const Float& self) {
+                Bits temp = self.bits & mask::payload;
+
+                // if the exponent is less than the bias, then the result is between
+                // -1 and 1, and gets rounded to zero
+                if (temp < mask::bias) {
+                    return static_cast<To>(0);
+                }
+
+                // if the exponent is greater than the maximum exponent that the type
+                // can represent (incl. NaN and infinity), or the conversion is from a
+                // negative float to an unsigned integer, then we raise an overflow error
+                int_overflow(self, temp);
+
+                // otherwise, the exponent is valid - normalize and extract it, then append
+                // the implicit bit to the mantissa
+                temp -= mask::bias;
+                temp >>= (man_size - 1);
+                size_t exp = size_t(temp);
+                temp = self.bits & mask::mantissa;
+                temp |= mask::implicit_bit;
+
+                // if the exponent is less than the mantissa size, then we need to right
+                // shift by the difference and capture or truncate any excess bits
+                if (exp < man_size) {
+                    if constexpr (meta::integer_size<To> <= man_size + exp_size) {
+                        temp >>= man_size - exp;
+                        return static_cast<To>(temp);
+                    } else {
+                        To result = static_cast<To>(temp);
+                        result <<= meta::integer_size<To> - (man_size + exp_size);  // pad with zeros
+                        result >>= man_size - exp;  // right shift
+                        return result;
+                    }
+                }
+
+                // otherwise, we need to left shift
+                To result = static_cast<To>(temp);
+                result <<= exp - man_size;
+                return result;
+            }
+        };
+
+        /* Data layout and conversions for hard floats. */
+        template <typename Float> requires (Float::hard)
+        struct traits<Float> {
+        private:
+            using type = Float::hard_type;
+            using Bits = Float::Bits;
+            static constexpr size_t E = Float::exponent_size;
+            static constexpr size_t M = Float::mantissa_size;
+
+        public:
+            static constexpr bool hard = true;
+            static constexpr size_t man_size = meta::float_mantissa_size<type>;
+            static constexpr size_t exp_size = meta::float_exponent_size<type>;
+            static constexpr size_t exp_bias = size_t(Bits::mask(0, E - 1));
+
+            /* Common bitmasks are hidden behind their own namespace for clarity. */
+            struct mask {
+                static constexpr Bits sign = Bits{1} << (exp_size + man_size - 1);
+                static constexpr Bits exponent =
+                    Bits::mask(man_size - 1, man_size - 1 + E);
+                static constexpr Bits mantissa =
+                    Bits::mask(man_size - M, man_size - 1);
+
+                static constexpr Bits payload = ~sign;
+                static constexpr Bits bias = Bits{exp_bias} << (man_size - 1);
+                static constexpr Bits implicit_bit = Bits{1} << (man_size - 1);
+            };
+
+            /* Convert a float of any size to the templated type, populating `out.bits`. */
+            template <meta::floating U>
+            static constexpr void from_float(Float& out, const U& value) noexcept {
+                out.bits = Bits{static_cast<type>(value)};
+                narrow(out.bits);
+            }
+
+            /* Convert an integer of any size to the templated type, populating
+            `out.bits`. */
+            template <meta::integer U>
+            static constexpr void from_int(Float& out, const U& value) noexcept {
+                out.bits = Bits{static_cast<type>(value)};
+                narrow(out.bits);
+            }
+
+            /* Convert a `Float<E, M>` instance into another float type, regardless of
+            size. */
+            template <meta::floating To>
+            static constexpr To to_float(const Float& self) noexcept {
+                if constexpr (E < exp_size) {
+                    static constexpr size_t offset = size_t(wide::zero >> (man_size - 1));
+
+                    // preserve NaN/infinity
+                    Bits temp = self.bits & mask::payload;
+                    if (temp >= mask::exponent) {
+                        return static_cast<To>(static_cast<type>(self.bits | wide::exponent));
+                    }
+
+                    // scale up subnormals
+                    if (temp < mask::implicit_bit) {
+                        if (auto idx = temp.last_one(); idx.has_value()) {
+                            size_t shift = man_size - 1 - idx.value();
+
+                            // if the shift amount exceeds the available offset, then we
+                            // need to left shift by the offset and leave the exponent zero.
+                            // Note that if shift == offset, then the result will become
+                            // a normal number with an exponent of 1, which is fine.
+                            if (shift >= offset) {
+                                temp <<= offset;
+                                temp |= self.bits & mask::sign;
+
+                            // otherwise, we shift until the leading one is in the implicit
+                            // bit position, and then set the exponent to the difference
+                            // from the offset.
+                            } else {
+                                temp <<= shift;
+                                temp += Bits{offset - shift - 1} << (man_size - 1);
+                                temp |= self.bits & mask::sign;
+                            }
+
+                            // reinterpret the bits as a hardware float, and then convert
+                            // to the final result
+                            return static_cast<To>(static_cast<type>(temp));
+                        }
+
+                        // preserve zero
+                        return static_cast<To>(static_cast<type>(self.bits));
+                    }
+
+                    // adjust bias for normals
+                    return static_cast<To>(static_cast<type>(self.bits + wide::zero));
+                } else {
+                    return static_cast<To>(static_cast<type>(self.bits));
+                }
+            }
+
+            /* Convert a `Float<E, M>` instance into an integer type, regardless of
+            size. */
+            template <meta::integer To>
+            static constexpr To to_int(const Float& self) noexcept(!DEBUG) {
+                /// TODO: special cases for Bits<N>, UInt<N>, and Int<N>, which either
+                /// cast to an individual word, or fall back to the equivalent soft float
+                /// emulation.  That means I need to arrange this such that the soft float
+                /// implementation is in scope, and it also means that I absolutely do
+                /// need to implement soft floats in order to support all features.
+
+
+
+                /// NOTE: the C++ standard does not define the behavior of float -> int
+                /// conversions with respect to overflow, so we take the opportunity to do
+                /// so here, defining it as an OverflowError in debug builds.  The extra
+                /// check is optimized away in release builds, falling back to the
+                /// implementation-defined behavior of the hardware type.  Also, note that
+                /// we don't need to explicitly handle zero or subnormals here, since they
+                /// will always end up with an exponent less than the bias, and thus round
+                /// to zero naturally in the conversion.
+                if constexpr (E < exp_size) {
+                    Bits exp = self.bits & mask::exponent;
+                    if constexpr (DEBUG) {
+                        int_overflow(self, exp);
+                    }
+                    if (exp == mask::exponent) {
+                        return static_cast<To>(static_cast<type>(self.bits | wide::exponent));
+                    }
+                    return static_cast<To>(static_cast<type>(self.bits + wide::zero));
+                } else {
+                    if constexpr (DEBUG) {
+                        Bits exp = self.bits & mask::exponent;
+                        int_overflow(self, exp);
+                    }
+                    return static_cast<To>(static_cast<type>(self.bits));
+                }
+            }
+
+        private:
+            /* Hard floats can mask off some of the bits of the underlying type, in order
+            to support arbitrary-precision. */
+            struct wide {
+                static constexpr Bits exponent =
+                    Bits::mask(man_size - 1, man_size - 1 + exp_size);
+                static constexpr Bits mantissa =
+                    Bits::mask(0, man_size - 1);
+                static constexpr Bits truncate = mask::sign | mask::exponent | mask::mantissa;
+
+                static constexpr Bits zero =
+                    Bits{meta::float_exponent_bias<type> - exp_bias} << (man_size - 1);
+                static constexpr Bits inf =
+                    Bits{meta::float_exponent_bias<type> + exp_bias + 1} << (man_size - 1);
+                static constexpr Bits first = zero + mask::implicit_bit;
+            };
+
+            /* Applying the mask to the hardware type may require adjusting the exponent
+            (and therefore handling infinities/NaNs/subnormals) and/or rounding the
+            mantissa (which can overflow). */
+            static constexpr void narrow(Bits& bits) noexcept {
+                // we keep the high M bits of the mantissa, low E bits of the exponent, and
+                // the sign bit.  This preserves +/- 0, inf, and NaN special cases, while
+                // truncating to the true templated sizes.
+                if constexpr (E < exp_size && M < man_size) {
+                    Bits temp = bits & mask::payload;
+
+                    // if the exponent saturates the adjusted range, then the value is
+                    // already inf/NaN or needs to overflow to inf
+                    if (temp >= wide::inf) {
+                        if (temp >= wide::exponent) {  // preserve NaN/infinity
+                            bits &= wide::truncate;  // truncate any unused bits
+                        } else {  // overflow
+                            bits &= mask::sign;
+                            bits |= mask::exponent;
+                        }
+                        return;
+
+                    // If the exponent is smaller than the minimum valid exponent, then the
+                    // value is already zero or subnormal, or underflows to a subnormal in
+                    // the new range
+                    } else if (temp < wide::first) {
+                        narrow_subnormal(bits, temp);
+                        return;
+                    }
+
+                    // otherwise, the exponent is valid and produces a normal number in the
+                    // new range, so we need to account for the change in bias, and then
+                    // round the mantissa to fit within the new range
+                    bits -= wide::zero;
+                    narrow_mantissa(bits);
+
+                } else if constexpr (E < exp_size) {
+                    Bits temp = bits & mask::payload;
+                    if (temp >= wide::inf) {
+                        if (temp >= wide::exponent) {  // preserve NaN/infinity
+                            bits &= wide::truncate;
+                        } else {  // overflow
+                            bits &= mask::sign;
+                            bits |= mask::exponent;
+                        }
+                        return;
+                    } else if (temp < wide::first) {  // handle subnormals
+                        narrow_subnormal(bits, temp);
+                        return;
+                    }
+                    bits -= wide::zero;  // adjust bias
+
+                } else if constexpr (M < man_size) {
+                    Bits temp = bits & mask::payload;
+                    if (temp >= wide::exponent) {  // preserve NaN/infinity
+                        bits &= wide::truncate;  // truncate to fit within mantissa
+                        return;
+                    } else if (temp == 0) {  // preserve zero
+                        return;
+                    }
+                    narrow_mantissa(bits);  // round normals and subnormals
+                }
+            }
+
+            static constexpr void narrow_subnormal(Bits& bits, Bits& temp) noexcept
+                requires(E < exp_size)
+            {
+                if (temp) {
+                    // extract exponent and get the distance between it and the
+                    // minimum valid exponent in the new range.
+                    Bits exp = temp & wide::exponent;
+                    size_t shift = size_t((wide::first - exp) >> (man_size - 1));
+
+                    // if the shift amount is greater than the mantissa size, then the
+                    // result is always zero
+                    if (shift >= M) {
+                        bits &= mask::sign;
+
+                    // otherwise, the result may be another subnormal, and we need to apply
+                    // rounding on that basis.
+                    } else {
+                        temp &= wide::mantissa;  // clear exponent bits
+
+                        // if the value was previously normalized, set the implicit
+                        // leading bit
+                        if (exp) {
+                            temp |= mask::implicit_bit;
+                        }
+
+                        // identify the lowest bit that will be kept, and the bits below
+                        // that, which must be rounded.  Note: shift ∈ [1, M - 1]
+                        Bits to_even = Bits{1} << shift;
+                        Bits half = to_even >> 1;
+                        Bits discard = to_even - 1;
+                        if ((temp & discard) == half) {
+                            temp += temp & to_even;  // ties round to even
+                        } else {
+                            temp += half;  // others round to nearest
+                        }
+
+                        // perform the shift, then copy results into output
+                        temp >>= shift;
+                        bits &= mask::sign;
+                        bits |= temp;
+                    }
+                }
+            }
+
+            static constexpr void narrow_mantissa(Bits& bits) noexcept
+                requires(M < man_size)
+            {
+                static constexpr Bits to_even = Bits{1} << (man_size - M);
+                static constexpr Bits half = to_even >> 1;
+                static constexpr Bits discard = to_even - 1;
+
+                // round mantissa to nearest even value.  This may cause the exponent
+                // to overflow to infinity, or a subnormal to become a normal, both of
+                // which are fine, since the resulting mantissa will be zero in that case.
+                if ((bits & discard) == half) {
+                    bits += bits & to_even;
+                } else {
+                    bits += half;
+                }
+                bits &= wide::truncate;  // truncate unused bits
+            }
+        };
+
+    }
 
 }
 
@@ -1353,20 +2267,37 @@ Bits(const char(&)[N], char) -> Bits<N - 1>;
 template <size_t N>
 Bits(const char(&)[N], char, char) -> Bits<N - 1>;
 template <typename... Ts>
-    requires (impl::bit_cast_constructor<((sizeof(Ts) * 8) + ... + 0), Ts...>)
+    requires (impl::integer::bit_cast_constructor<((sizeof(Ts) * 8) + ... + 0), Ts...>)
 Bits(const Ts&...) -> Bits<((sizeof(Ts) * 8) + ... + 0)>;
+
+
+template <meta::integer... Ts>
+Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Int(T) -> Int<T::self::size()>;
+
+
+template <meta::integer... Ts>
+UInt(Ts...) -> UInt<(meta::integer_size<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+UInt(T) -> UInt<T::self::size()>;
+
+
+template <meta::floating T>
+    requires (meta::float_exponent_size<T> > 1 && meta::float_mantissa_size<T> > 1)
+Float(const T&) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
 
 
 template <size_t N>
 struct Bits : impl::Bits_tag {
-    using word = impl::word<N>::type;
+    using word = impl::integer::word<N>::type;
     using value_type = bool;
     using size_type = size_t;
     using index_type = ssize_t;
-    using reference = impl::bit_reference<word>;
+    using reference = impl::integer::bit_reference<word>;
 
     /* The number of bits in each machine word. */
-    static constexpr size_type word_size = impl::word<N>::size;
+    static constexpr size_type word_size = impl::integer::word<N>::size;
 
     /* The total number of words that back the bitset. */
     static constexpr size_type array_size = (N + word_size - 1) / word_size;
@@ -1411,7 +2342,7 @@ private:
     friend struct bertrand::Int;
     template <size_type E, size_type M> requires (E > 1 && M > 1)
     friend struct bertrand::Float;
-    using big_word = impl::word<N>::big;
+    using big_word = impl::integer::word<N>::big;
 
     template <size_type I>
     static constexpr void from_bits(array& data) noexcept {}
@@ -1689,7 +2620,7 @@ private:
         // # of digits needed to represent the value in `base = sizeof...(Strs)` is
         // ceil(N / log2(base))
         static constexpr size_type base = sizeof...(rest) + 2;
-        static constexpr double _ceil = N / impl::log2_table[base];
+        static constexpr double _ceil = N / impl::integer::log2_table[base];
         static constexpr size_type ceil = size_type(_ceil) + (size_type(_ceil) < _ceil);
 
         // generate a lookup table of substrings to use for each digit
@@ -1699,7 +2630,7 @@ private:
         // digit count is equal to the number of digits needed to represent the most
         // significant active bit in the set
         index_type msb = last_one().value_or(0);
-        double _count = (msb + 1) / impl::log2_table[base];
+        double _count = (msb + 1) / impl::integer::log2_table[base];
         count = size_type(_count) + (size_type(_count) < _count);
 
         // if the base is a power of 2, then we can use a simple bitscan to determine
@@ -3178,7 +4109,7 @@ public:
     width.  Any remaining bits will be set to zero.  The total bit width of the
     arguments cannot exceed `N`, otherwise the constructor will fail to compile. */
     template <typename... words>
-        requires (impl::strict_bitwise_constructor<N, words...>)
+        requires (impl::integer::strict_constructor<N, words...>)
     [[nodiscard]] constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_bits<0>(buffer, vals...);
     }
@@ -3193,7 +4124,7 @@ public:
     to have the same type, as long as their combined widths do not exceed the bitset's
     capacity.  Any remaining bits will be initialized to zero. */
     template <typename... words>
-        requires (impl::loose_bitwise_constructor<capacity(), words...>)
+        requires (impl::integer::loose_constructor<capacity(), words...>)
     [[nodiscard]] constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_ints<0>(buffer, vals...);
     }
@@ -3204,8 +4135,8 @@ public:
     template <meta::integer... words>
         requires (
             sizeof...(words) > 0 &&
-            !impl::strict_bitwise_constructor<N, words...> &&
-            !impl::loose_bitwise_constructor<capacity(), words...>
+            !impl::integer::strict_constructor<N, words...> &&
+            !impl::integer::loose_constructor<capacity(), words...>
         )
     [[nodiscard]] explicit constexpr Bits(const words&... vals) noexcept : buffer{} {
         from_ints<0>(buffer, vals...);
@@ -3243,7 +4174,7 @@ public:
     input types must be trivially copyable, in accordance with `std::bit_cast()`.  A
     constructor of this form allows safe, CTAD-based type punning usable in constant
     expressions, together with an equivalent explicit conversion operator. */
-    template <typename... Ts> requires (impl::bit_cast_constructor<N, Ts...>)
+    template <typename... Ts> requires (impl::integer::bit_cast_constructor<N, Ts...>)
     [[nodiscard]] explicit constexpr Bits(const Ts&... vals) noexcept :
         buffer(bitwise_repr(vals...))
     {}
@@ -3446,7 +4377,7 @@ public:
         // otherwise, we search against a minimal perfect hash table to get the
         // corresponding digit
         } else {
-            using ctx = impl::bits_from_string<word, zero, one, rest...>;
+            using ctx = impl::integer::from_string<word, zero, one, rest...>;
 
             // loop until the string is consumed or the bitset overflows
             std::string_view continuation;
@@ -3528,7 +4459,7 @@ public:
         // otherwise, we search against a minimal perfect hash table to get the
         // corresponding digit
         } else {
-            using ctx = impl::bits_from_string<word, zero, one, rest...>;
+            using ctx = impl::integer::from_string<word, zero, one, rest...>;
 
             // loop until the string is consumed or the bitset overflows
             while (idx < str.size()) {
@@ -4813,7 +5744,7 @@ public:
         }
 
         // 1) extract configuration from stream
-        impl::format_bits ctx(
+        impl::integer::format ctx(
             os,
             false,
             std::use_facet<std::numpunct<char>>(os.getloc())
@@ -4837,11 +5768,11 @@ public:
         if (!s) {
             return is;  // stream is not ready for input
         }
-        impl::scan_bits ctx(
+        impl::integer::scan ctx(
             is,
             std::use_facet<std::numpunct<char>>(is.getloc())
         );
-        ctx.scan(is, self);
+        ctx(is, self);
         return is;
     }
 };
@@ -4857,12 +5788,6 @@ constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept { lhs.swap(rhs); }
 // template struct Bits<32>;
 // template struct Bits<64>;
 // template struct Bits<128>;
-
-
-template <meta::integer... Ts>
-UInt(Ts...) -> UInt<(meta::integer_size<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-UInt(T) -> UInt<T::self::size()>;
 
 
 template <size_t N>
@@ -4892,14 +5817,14 @@ public:
     /* Construct an integer from a variadic parameter pack of component words of exact
     width.  See `Bits<N>` for more details. */
     template <typename... words>
-        requires (impl::strict_bitwise_constructor<N, words...>)
+        requires (impl::integer::strict_constructor<N, words...>)
     [[nodiscard]] constexpr UInt(const words&... vals) noexcept : bits(vals...) {}
 
     /* Construct an integer from a sequence of integer values whose bit widths sum to
     an amount less than or equal to the integer's storage capacity.  See `Bits<N>` for
     more details. */
     template <typename... words>
-        requires (impl::loose_bitwise_constructor<Bits::capacity(), words...>)
+        requires (impl::integer::loose_constructor<Bits::capacity(), words...>)
     [[nodiscard]] constexpr UInt(const words&... vals) noexcept : bits(vals...) {}
 
     /* Explicitly construct an integer from a sequence of integer values regardless of
@@ -4907,11 +5832,18 @@ public:
     safety checks to allow for explicit truncation. */
     template <meta::integer... words>
         requires (
-            !impl::strict_bitwise_constructor<N, words...> &&
-            !impl::loose_bitwise_constructor<Bits::capacity(), words...>
+            !impl::integer::strict_constructor<N, words...> &&
+            !impl::integer::loose_constructor<Bits::capacity(), words...>
         )
     [[nodiscard]] explicit constexpr UInt(const words&... vals) noexcept :
         bits(vals...)
+    {}
+
+    /* Explicitly convert a floating point value into an integer, possibly truncating
+    towards zero. */
+    template <meta::floating T>
+    [[nodiscard]] explicit constexpr UInt(const T& val) noexcept :
+        bits(impl::floating::traits<decltype(Float(val))>::template to_int<Bits>(val))
     {}
 
     /* Construct an integer from a range yielding values that are contextually
@@ -5518,12 +6450,6 @@ using uint64 = UInt<64>;
 using uint128 = UInt<128>;
 
 
-template <meta::integer... Ts>
-Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-Int(T) -> Int<T::self::size()>;
-
-
 template <size_t N>
 struct Int : impl::Int_tag {
     /* The underlying bitset type for the contents of this integer. */
@@ -5575,14 +6501,14 @@ public:
     /* Construct an integer from a variadic parameter pack of component words of exact
     width.  See `Bits<N>` for more details. */
     template <typename... words>
-        requires (impl::strict_bitwise_constructor<N, words...>)
+        requires (impl::integer::strict_constructor<N, words...>)
     [[nodiscard]] constexpr Int(const words&... vals) noexcept : bits(vals...) {}
 
     /* Construct an integer from a sequence of integer values whose bit widths sum to
     an amount less than or equal to the integer's storage capacity.  See `Bits<N>` for
     more details. */
     template <typename... words>
-        requires (impl::loose_bitwise_constructor<Bits::capacity(), words...>)
+        requires (impl::integer::loose_constructor<Bits::capacity(), words...>)
     [[nodiscard]] constexpr Int(const words&... vals) noexcept : bits(vals...) {}
 
     /* Explicitly construct an integer from a sequence of integer values regardless of
@@ -5590,8 +6516,8 @@ public:
     safety checks to allow for explicit truncation. */
     template <meta::integer... words>
         requires (
-            !impl::strict_bitwise_constructor<N, words...> &&
-            !impl::loose_bitwise_constructor<Bits::capacity(), words...>
+            !impl::integer::strict_constructor<N, words...> &&
+            !impl::integer::loose_constructor<Bits::capacity(), words...>
         )
     [[nodiscard]] explicit constexpr Int(const words&... vals) noexcept :
         bits(vals...)
@@ -5601,11 +6527,8 @@ public:
     towards zero. */
     template <meta::floating T>
     [[nodiscard]] explicit constexpr Int(const T& val) noexcept :
-        bits()
-    {
-        /// TODO: convert a floating point type to an integer safely, and retaining
-        /// as much precision as possible
-    }
+        bits(impl::floating::traits<decltype(Float(val))>::template to_int<Bits>(val))
+    {}
 
     /* Construct an integer from a range yielding values that are contextually
     convertible to bool, stopping at either the end of the range or the maximum width
@@ -5690,13 +6613,28 @@ public:
         if (str.starts_with(std::string_view(negative))) {
             return Bits::template from_string<zero, one, rest...>(
                 str.substr(negative.size())
-            ).visit([](const Bits& bits) -> Int {
+            ).visit([](const Bits& bits) -> Expected<Int, OverflowError> {
                 Int result = bits;
                 result.bits.negate();
+                if (result && !result.bits.msb_is_set()) {
+                    return OverflowError(
+                        "negative integer string overflows to positive"
+                    );
+                }
                 return result;
             });
         } else {
-            return Bits::template from_string<zero, one, rest...>(str);
+            return Bits::template from_string<zero, one, rest...>(str).visit(
+                [](const Bits& bits) -> Expected<Int, OverflowError> {
+                    Int result = bits;
+                    if (result.bits.msb_is_set()) {
+                        return OverflowError(
+                            "positive integer string overflows to negative"
+                        );
+                    }
+                    return result;
+                }
+            );
         }
     }
 
@@ -5723,13 +6661,28 @@ public:
             return Bits::template from_string<zero, one, rest...>(
                 str.substr(negative.size()),
                 continuation
-            ).visit([](const Bits& bits) -> Int {
+            ).visit([](const Bits& bits) -> Expected<Int, OverflowError> {
                 Int result = bits;
                 result.bits.negate();
+                if (!result.bits.msb_is_set()) {
+                    return OverflowError(
+                        "negative integer string overflows to positive"
+                    );
+                }
                 return result;
             });
         } else {
-            return Bits::template from_string<zero, one, rest...>(str, continuation);
+            return Bits::template from_string<zero, one, rest...>(str, continuation).visit(
+                [](const Bits& bits) -> Expected<Int, OverflowError> {
+                    Int result = bits;
+                    if (result.bits.msb_is_set()) {
+                        return OverflowError(
+                            "positive integer string overflows to negative"
+                        );
+                    }
+                    return result;
+                }
+            );
         }
     }
 
@@ -6393,7 +7346,7 @@ public:
         }
 
         // 1) extract configuration from stream
-        impl::format_bits ctx(
+        impl::integer::format ctx(
             os,
             self.bits.msb_is_set(),
             std::use_facet<std::numpunct<char>>(os.getloc())
@@ -6420,11 +7373,11 @@ public:
         if (!s) {
             return is;  // stream is not ready for input
         }
-        impl::scan_bits ctx(
+        impl::integer::scan ctx(
             is,
             std::use_facet<std::numpunct<char>>(is.getloc())
         );
-        ctx.scan(is, self);
+        ctx(is, self);
         return is;
     }
 };
@@ -6451,150 +7404,11 @@ using int128 = Int<128>;
 /// https://en.wikipedia.org/wiki/Minifloat
 
 
-namespace impl {
-
-    template <size_t E, size_t M>
-    struct float_word {  // fall back to softfloat emulation with E + M bits
-        using type = void;
-        static constexpr size_t size = E + M;
-        static constexpr bool exact = false;
-    };
-
-    template <typename T, size_t E, size_t M>
-    concept fits_within_float =
-        E <= meta::float_exponent_size<T> &&
-        M <= meta::float_mantissa_size<T>;
-
-    template <size_t E, size_t M>
-        requires (fits_within_float<float, E, M>)
-    struct float_word<E, M> {
-        using type = float;
-        static constexpr size_t size = meta::float_size<type>;
-        static constexpr bool exact =
-            E == meta::float_exponent_size<type> &&
-            M == meta::float_mantissa_size<type>;
-    };
-
-    template <size_t E, size_t M>
-        requires (
-            !fits_within_float<float, E, M> &&
-            fits_within_float<double, E, M>
-        )
-    struct float_word<E, M> {
-        using type = double;
-        static constexpr size_t size = meta::float_size<type>;
-        static constexpr bool exact =
-            E == meta::float_exponent_size<type> &&
-            M == meta::float_mantissa_size<type>;
-    };
-
-    #ifdef __STDCPP_FLOAT16_T__
-        inline constexpr bool HAS_FLOAT16 = true;
-        template <size_t E, size_t M>
-            requires (
-                (HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>)
-            )
-        struct float_word<E, M> {
-            using type = std::float16_t;
-            static constexpr size_t size = meta::float_size<type>;
-            static constexpr bool exact =
-                E == meta::float_exponent_size<type> &&
-                M == meta::float_mantissa_size<type>;
-        };
-    #else
-        inline constexpr bool HAS_FLOAT16 = false;
-    #endif
-
-    #ifdef __STDCPP_BFLOAT16_T__
-        inline constexpr bool HAS_BFLOAT16 = true;
-        template <size_t E, size_t M>
-            requires (
-                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
-                (HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>)
-            )
-        struct float_word<E, M> {
-            using type = std::bfloat16_t;
-            static constexpr size_t size = meta::float_size<type>;
-            static constexpr bool exact =
-                E == meta::float_exponent_size<type> &&
-                M == meta::float_mantissa_size<type>;
-        };
-    #else
-        inline constexpr bool HAS_BFLOAT16 = false;
-    #endif
-
-    #ifdef __STDCPP_FLOAT32_T__
-        inline constexpr bool HAS_FLOAT32 = true;
-        template <size_t E, size_t M>
-            requires (
-                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
-                !(HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>) &&
-                (HAS_FLOAT32 && fits_within_float<std::float32_t, E, M>)
-            )
-        struct float_word<E, M> {
-            using type = std::float32_t;
-            static constexpr size_t size = meta::float_size<type>;
-            static constexpr bool exact =
-                E == meta::float_exponent_size<type> &&
-                M == meta::float_mantissa_size<type>;
-        };
-    #else
-        inline constexpr bool HAS_FLOAT32 = false;
-    #endif
-
-    #ifdef __STDCPP_FLOAT64_T__
-        inline constexpr bool HAS_FLOAT64 = true;
-        template <size_t E, size_t M>
-            requires (
-                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
-                !(HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>) &&
-                !(HAS_FLOAT32 && fits_within_float<std::float32_t, E, M>) &&
-                (HAS_FLOAT64 && fits_within_float<std::float64_t, E, M>)
-            )
-        struct float_word<E, M> {
-            using type = std::float64_t;
-            static constexpr size_t size = meta::float_size<type>;
-            static constexpr bool exact =
-                E == meta::float_exponent_size<type> &&
-                M == meta::float_mantissa_size<type>;
-        };
-    #else
-        inline constexpr bool HAS_FLOAT64 = false;
-    #endif
-
-    #ifdef __STDCPP_FLOAT128_T__
-        inline constexpr bool HAS_FLOAT128 = true;
-        template <size_t E, size_t M>
-            requires (
-                !(HAS_FLOAT16 && fits_within_float<std::float16_t, E, M>) &&
-                !(HAS_BFLOAT16 && fits_within_float<std::bfloat16_t, E, M>) &&
-                !(HAS_FLOAT32 && fits_within_float<std::float32_t, E, M>) &&
-                !(HAS_FLOAT64 && fits_within_float<std::float64_t, E, M>) &&
-                (HAS_FLOAT128 && fits_within_float<std::float128_t, E, M>)
-            )
-        struct float_word<E, M> {
-            using type = std::float128_t;
-            static constexpr size_t size = meta::float_size<type>;
-            static constexpr bool exact =
-                E == meta::float_exponent_size<type> &&
-                M == meta::float_mantissa_size<type>;
-        };
-    #else
-        inline constexpr bool HAS_FLOAT128 = false;
-    #endif
-
-}
-
-
-template <meta::floating T>
-    requires (meta::float_exponent_size<T> > 1 && meta::float_mantissa_size<T> > 1)
-Float(const T&) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
-
-
 template <size_t E, size_t M> requires (E > 1 && M > 1)
 struct Float : impl::Float_tag {
 private:
-    static constexpr size_t N = impl::float_word<E, M>::size;
+    static constexpr size_t N = impl::floating::hard<E, M>::size;
+    using traits = impl::floating::traits<Float>;
 
 public:
     /* An equivalent (or slightly larger) hardware-supported floating-point type, which
@@ -6607,7 +7421,7 @@ public:
     FPU, but will always be slower than their hardware equivalents.  Emulation as a
     fallback ensures that the same logic can be used on all platforms regardless of
     configuration, while still prioritizing hardware acceleration if available. */
-    using hard_type = impl::float_word<E, M>::type;
+    using hard_type = impl::floating::hard<E, M>::type;
 
     /* Indicates whether the float is backed by hardware (true) or software (false).
     This is equivalent to checking whether `hard_type` is void. */
@@ -6615,12 +7429,12 @@ public:
 
     /* Indicates whether the float is backed by hardware and exactly matches the
     corresponding type's exponent and mantissa widths.  If `hard == true` and
-    `no_mask == false`, then all operations will be buffered with an extra masking step
-    to force the result to conform to the expected exponent and mantissa limits. */
-    static constexpr bool no_mask = impl::float_word<E, M>::exact;
+    `native == false`, then all operations will be buffered with an extra masking step
+    to force the result to conform to the indicated exponent and mantissa sizes. */
+    static constexpr bool native = impl::floating::hard<E, M>::native;
 
     /* The underlying bitset representation for the contents of this float.  Note that
-    the size may be larger than `E + M` if `hard == true` and `no_mask == false`, in
+    the size may be larger than `E + M` if `hard == true` and `native == false`, in
     order to account for the masked bits and keep the type layout-compatible with the
     equivalent hardware type. */
     using Bits = bertrand::Bits<N>;
@@ -6687,13 +7501,10 @@ public:
     normal half-even rounding semantics. */
     [[nodiscard]] static constexpr const Float& min_int() noexcept {
         static constexpr Float result = [] -> Float {
-            /// TODO: is it possible for the mantissa size to exceed the maximum
-            /// exponent?  I believe so, and that means this is incorrect
-
             // min int occurs at exponent = bias + M, followed by all zeros
             // in the mantissa
             Float result;
-            result.bits |= traits::exp_bias + M;
+            result.bits |= traits::exp_bias + bertrand::min(M, traits::exp_bias);
             result.bits <<= traits::man_size - 1;
             result.bits |= traits::mask::sign;
             return result;
@@ -6706,13 +7517,10 @@ public:
     normal half-even rounding semantics. */
     [[nodiscard]] static constexpr const Float& max_int() noexcept {
         static constexpr Float result = [] -> Float {
-            /// TODO: is it possible for the mantissa size to exceed the maximum
-            /// exponent?  I believe so, and that means this is incorrect
-
             // max int occurs at exponent = bias + M, followed by all zeros in the
             // mantissa
             Float result;
-            result.bits |= traits::exp_bias + M;
+            result.bits |= traits::exp_bias + bertrand::min(M, traits::exp_bias);
             result.bits <<= traits::man_size - 1;
             return result;
         }();
@@ -6744,7 +7552,8 @@ public:
             result.bits |= 1;
             result.bits <<= traits::man_size - M;
             result.bits |= traits::mask::bias;
-            return result - 1;
+            --result;
+            return result;
         }();
         return result;
     }
@@ -6796,622 +7605,6 @@ public:
         return result;
     }
 
-private:
-    /* Given a pre-normalized mantissa of length `m` stored in a bitset of any size,
-    convert it into an equivalent mantissa of length `M`, padding with trailing zeros
-    if `m < M` and rounding excess bits if `m > M`. */
-    template <size_t m, meta::Bits T>
-    static constexpr Bits round_mantissa(T& man) noexcept {
-        using B = meta::unqualify<T>;
-        if constexpr (m <= M) {
-            Bits result = Bits{man};
-            if constexpr (m < M) { result <<= M - m; }  // pad with trailing zeros
-            return result;
-        } else {
-            static constexpr B half = B{1} << (m - M - 1);
-            static constexpr B to_even = half << 1;
-            static constexpr B discard = to_even - 1;
-            if ((man & discard) == half) {
-                man += man & to_even;  // perfect ties round to even
-            } else {
-                man += half;  // others round to nearest
-            }
-            man >>= m - M;  // truncate to M bits
-            return Bits{man};
-        }
-    }
-
-    template <typename T>
-    struct _traits {
-        /// TODO: exp_bias should be an integer, not a bitset.  Also, this should use
-        /// consistent logic with the hardware case, so that the backends are
-        /// symmetrical as much as possible.
-
-        static constexpr bool hard = false;
-        static constexpr size_t man_size = M;
-        static constexpr size_t exp_size = E;
-        static constexpr Bits exp_bias =
-            Bits::mask(0, E - 1);
-
-        static constexpr Bits sign_mask = Bits{1} << (N - 1);
-        static constexpr Bits payload_mask = ~sign_mask;
-        static constexpr Bits exp_mask =
-            Bits::mask(man_size - 1, man_size - 1 + E);
-        static constexpr Bits man_mask =
-            Bits::mask(man_size - M, man_size - 1);
-
-        static constexpr Bits man_to_even = 1;
-
-        /// TODO: a lot of the concepts of `from_float` should be scaled down to the
-        /// `narrow` method for the hardware case, since I have to tackle most of the
-        /// same problems.  In fact, I might be able to abstract this entirely between
-        /// the two cases.  The only problem is that there's extra unnatural padding in
-        /// the hardware case, in order to keep the bit layout directly castable to the
-        /// hardware type.  The logic can probably account for this, but it's an extra
-        /// restriction that I need to keep in mind.
-
-        template <meta::floating From>
-        static constexpr void from_float(Float& self, const From& value) noexcept {
-            static constexpr size_t e = meta::float_exponent_size<From>;
-            static constexpr size_t m = meta::float_mantissa_size<From>;
-            using observed = bertrand::Bits<e + m>;
-            static constexpr observed get_man = observed::mask(0, m - 1);
-            static constexpr observed get_exp =
-                observed::mask(m - 1, m - 1 + e);
-
-            observed bits {value};
-            observed exp = bits & get_exp;
-            observed man = bits & get_man;
-
-            // preserve NaN/infinity
-            if (exp == get_exp) {
-                self.bits = exp_mask;  // maximum exponent
-                if constexpr (m == M) {
-                    self.bits |= Bits{man};  // exact
-                } else if constexpr (m < M) {
-                    self.bits |= Bits{man} << (M - m);  // pad with trailing zeros
-                } else {
-                    self.bits |= Bits{man >> (m - M)};  // truncate and preserve payload
-                }
-                if (bits.msb_is_set()) {
-                    self.bits |= sign_mask;  // copy sign bit
-                }
-                return;
-            }
-
-            // preserve zero and scale subnormals
-            if (exp == 0) {
-                // subnormal scaling does not occur if exponent widths are the same.
-                // However, rounding the mantissa could possibly promote the value to a
-                // normal with an exponent of 1, which is standard behavior.
-                if constexpr (e == E) {
-                    self.bits |= round_mantissa<m>(man);
-
-                // otherwise, subnormals need to be scaled up or down to account for
-                // the increase/decrease in exponent resolution.  This can cause a
-                // subnormal to become a normal, or be zeroed out entirely.
-                } else {
-                    // get index of leading mantissa bit for scaling.  If no bits are
-                    // set, then the value is a true zero, and the result is trivial.
-                    if (auto idx = man.last_one(); idx.has_value()) {
-                        // if the new exponent is wider than the old one, then
-                        // subnormals need to be left-shifted until either the adjusted
-                        // bias is reached and the result remains subnormal, or the
-                        // leading one is at the implicit bit, rendering it normal.
-                        if constexpr (e < E) {
-                            static constexpr size_t bias {
-                                observed::mask(0, E - 1) -
-                                observed::mask(0, e - 1)
-                            };
-                            size_t shift = m - 1 - idx.value();  // minimum of 1
-                            if (shift <= bias) {
-                                // result is normal - shift leading one to implicit
-                                // bit, then round and join to result.  This will
-                                // always set either the first or second bit (due to
-                                // rounding) of the exponent.  We then add the leftover
-                                // bias to get the final normalized exponent.
-                                man <<= shift;
-                                self.bits |= round_mantissa<m>(man);
-                                self.bits += Bits{bias - shift} << (M - 1);
-                            } else {
-                                man <<= shift - bias;  // result remains subnormal
-                                self.bits |= round_mantissa<m>(man);
-                            }
-
-                        // if the new exponent is narrower than the old one, then
-                        // subnormals need to be right-shifted until the adjusted bias
-                        // is reached, possibly zeroing them.
-                        } else {
-                            static constexpr observed bias =
-                                observed::mask(0, e - 1) -
-                                observed::mask(0, E - 1);
-
-                            // if the bias adjustment is less than or equal to the
-                            // mantissa size, then we must round and then right shift
-                            // the mantissa into place.  Otherwise, the right shift
-                            // will always zero out the mantissa.
-                            if constexpr (bias <= M) {
-                                /// TODO: how many bits do I need to shift?
-
-
-                                /// TODO: add the rounding adjustment to `man` here.
-                                /// Then, if the current mantissa size is less than
-                                /// the new mantissa size, convert to the new size,
-                                /// and then right shift.  Otherwise, right shift and
-                                /// then convert to the new size.
-
-                                // if the new mantissa is wider, then we can capture as
-                                // many of the lower mantissa bits as possible
-                                if constexpr (m <= M) {
-                                    self.bits |= Bits{man} >> bias;
-
-                                // if the new mantissa is narrower, then we need to
-                                // shift first and then round
-                                } else {
-                                    man >>= bias;
-                                    self.bits |= round_mantissa<m>(man);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // copy sign bit
-                if (bits.msb_is_set()) {
-                    self.bits |= sign_mask;
-                }
-                return;
-            }
-
-            // adjust exponent bias and detect overflow/underflow.
-            if constexpr (e == E) {
-                if constexpr (m == M) {
-                    self.bits |= Bits{exp};  // exact
-                } else if constexpr (m < M) {
-                    self.bits |= Bits{exp};  // convert, then shift
-                    self.bits <<= M - m;
-                } else {
-                    exp >>= m - M;  // shift, then convert
-                    self.bits |= Bits{exp};
-                }
-
-                // add rounded mantissa, possibly carrying into the exponent.  This may
-                // cause the exponent to overflow, in which case we clamp to infinity.
-                self.bits += round_mantissa<m>(man);
-                if (self.bits > exp_mask) {
-                    self.bits = exp_mask;  // clear mantissa bits
-                }
-
-            // if the new exponent is wider than the old one, then we need to adjust
-            // the bias, but are otherwise safe from overflow due to rounding of the
-            // mantissa.
-            } else if constexpr (e < E) {
-                static constexpr Bits bias =
-                    Bits::mask(M - 1, M + E - 2) -
-                    Bits::mask(M - 1, M + e - 2);
-
-                if constexpr (m == M) {
-                    self.bits |= Bits{exp};  // exact
-                } else if constexpr (m < M) {
-                    self.bits |= Bits{exp};  // convert, then shift
-                    self.bits <<= M - m;
-                } else {
-                    exp >>= m - M;  // shift, then convert
-                    self.bits |= Bits{exp};
-                }
-
-                self.bits += bias;
-                self.bits += round_mantissa<m>(man);
-
-            // otherwise, if the new exponent is narrower than the old one, then it's
-            // possible that the current exponent lies outside its representable range,
-            // indicating either overflow or underflow
-            } else {
-                static constexpr observed max =  // one before infinity
-                    observed::mask(m - 1, m + e - 2) +
-                    observed::mask(m - 1, m + E - 2);
-                static constexpr observed min =  // zero
-                    observed::mask(m - 1, m + e - 2) -
-                    observed::mask(m - 1, m + E - 2);
-
-                // if the current exponent is greater than the maximum valid exponent,
-                // overflow to infinity
-                if (exp > max) {
-                    self.bits = exp_mask;
-
-                // if the current exponent is less than or equal to the minimum valid
-                // exponent, then the result underflows to a subnormal
-                } else if (exp <= min) {
-                    exp >>= m - 1;
-
-                    /// TODO: this is really the only part where things get tricky.  I
-                    /// need to make suret that I always retain as much information as
-                    /// possible, and end up with a valid subnormal.
-
-
-                    /// TODO: not sure if these bounds checks are correct.
-
-                    // if the distance between the current exponent and zero is greater
-                    // than the new mantissa size, then the result is zero.
-                    if (exp > M) {
-                        self.bits = 0;
-
-                    // otherwise, the result may be a subnormal
-                    } else {
-                        // insert implicit leading bit
-                        /// TODO: the order of operations here depends on whether m
-                        /// is smaller than M or not.  If it is, then I should convert
-                        /// to Bits first, and then shift to produce the subnormal.
-                        /// Otherwise, I should shift first and then convert to Bits
-                        /// with correct rounding.
-
-                    }
-
-                    /// TODO: produce a subnormal.  This means inserting an implicit
-                    /// bit and then right shifting by the distance between the
-                    /// current exponent and zero, and then rounding the mantissa.  If
-                    /// this distance is greater than the new mantissa size, then the
-                    /// result is zero.
-
-                    /// the mantissa until the minimum
-                    /// valid exponent is reached.  If the distance between the
-                    /// current exponent and the minimum exponent is greater than the
-                    /// new mantissa size, then the result is zero.
-
-
-                // otherwise, the exponent is valid, and produces a normal number
-                } else {
-                    exp -= min;
-                    if constexpr (m == M) {
-                        self.bits |= Bits{exp};  // exact
-                    } else if constexpr (m < M) {
-                        self.bits |= Bits{exp};  // convert, then shift
-                        self.bits <<= M - m;
-                    } else {
-                        exp >>= m - M;  // shift, then convert
-                        self.bits |= Bits{exp};
-                    }
-                    self.bits += round_mantissa<m>(man);
-                    if (self.bits > exp_mask) {
-                        self.bits = exp_mask;  // clamp mantissa bits
-                    }
-                }
-            }
-
-            // copy sign bit
-            if (bits.msb_is_set()) {
-                self.bits |= sign_mask;
-            }
-        }
-
-        template <meta::integer From>
-        static constexpr void from_int(Float& self, const From& value) noexcept {
-            if constexpr (meta::signed_integer<From>) {
-                if (value < 0) {
-                    // the absolute minimum value may not have a valid complement, so
-                    // we can't just naively negate it.  Instead, we increment it by
-                    // one, then negate and compute the unsigned result, and then
-                    // increment again before restoring the sign.
-                    if (value == std::numeric_limits<From>::min()) {
-                        bertrand::Bits temp {-(value + static_cast<From>(1))};
-                        _from_int(self, temp);
-                        ++self;
-                    } else {
-                        bertrand::Bits temp {-value};
-                        _from_int(self, temp);
-                    }
-                    self.bits |= sign_mask;
-                    return;
-                }
-            }
-            bertrand::Bits bits {value};
-            _from_int(self, bits);
-        }
-
-        template <meta::floating To>
-        static constexpr To to_float(const Float& self) noexcept {
-            /// TODO: convert a soft float to a hard float by resizing the exponent
-            /// and/or mantissa.  This might be generalizable in the long run
-            return self;
-        }
-
-        template <meta::integer To>
-        static constexpr To to_int(const Float& self) noexcept {
-            /// TODO: to_int(), which pretty much does the same thing as from_int, but
-            /// in reverse.
-        }
-
-    private:
-        template <meta::Bits observed>
-        static constexpr void _from_int(Float& self, observed& bits) noexcept {
-            // get index of leading bit in the integer, which becomes the implicit
-            // mantissa bit, and whose index determines the exponent
-            if (auto idx = bits.last_one(); idx.has_value()) {
-                size_t i = idx.value();
-
-                // if index is greater than the maximum unbiased exponent, then the
-                // result overflows to infinity
-                if (i > exp_bias) {
-                    self.bits = exp_mask;
-                    return;
-                }
-
-                // if the index is less than or equal to the mantissa size, then we
-                // need to left shift it into the implicit bit position.
-                if (i <= (M - 1)) {
-                    self.bits |= Bits{bits} << (M - 1 - i);
-
-                // otherwise, we need to right shift and round to place the leading bit
-                // into the implicit position.
-                } else {
-                    observed half = observed{1};
-                    half <<= i - M;
-                    observed to_even = half << 1;
-                    observed discard = to_even - 1;
-
-                    if ((bits & discard) == half) {
-                        bits += bits & to_even;  // perfect ties round to even
-                    } else {
-                        bits += half;  // others round to nearest
-                    }
-                    bits >>= i - (M - 1);  // truncate to M bits
-                    self.bits |= Bits{bits};
-
-                    // it's possible that rounding caused the integer to overflow,
-                    // in which case `bits` will truncate to zero after the shift.  If
-                    // that happens, then the implicit bit is lost, and we need to
-                    // increment the exponent by 1 to account for the overflow, and
-                    // another 1 to account for the missing implicit bit.  This could
-                    // cause the exponent to increment to infinity, which is fine,
-                    // since the mantissa is already zero.
-                    i += 2 * (bits == 0);
-                }
-
-                // the implicit bit becomes the first bit of the exponent.  We then
-                // shift in the rest of the bias mask, and add the original index to
-                // get the final exponent.
-                self.bits += Bits{exp_bias + i - 1} << (M - 1);
-            }
-        }
-    };
-    template <meta::not_void T>
-    struct _traits<T> {
-        static constexpr bool hard = true;
-        static constexpr size_t man_size = meta::float_mantissa_size<T>;
-        static constexpr size_t exp_size = meta::float_exponent_size<T>;
-        static constexpr size_t exp_bias = size_t(Bits::mask(0, E - 1));
-
-        struct mask {
-            static constexpr Bits sign = Bits{1} << (N - 1);
-            static constexpr Bits exponent =
-                Bits::mask(man_size - 1, man_size - 1 + E);
-            static constexpr Bits mantissa =
-                Bits::mask(man_size - M, man_size - 1);
-
-            static constexpr Bits all = sign | exponent | mantissa;
-            static constexpr Bits payload = ~sign;
-            static constexpr Bits bias = Bits{exp_bias} << (man_size - 1);
-            static constexpr Bits implicit_bit = Bits{1} << (man_size - 1);
-        };
-
-        template <meta::floating U>
-        static constexpr void from_float(Float& out, const U& value) noexcept {
-            out.bits = Bits{static_cast<T>(value)};
-            narrow(out.bits);
-        }
-
-        template <meta::integer U>
-        static constexpr void from_int(Float& out, const U& value) noexcept {
-            out.bits = Bits{static_cast<T>(value)};
-            narrow(out.bits);
-        }
-
-        template <meta::floating To>
-        static constexpr To to_float(const Float& self) noexcept {
-            if constexpr (E < exp_size) {
-                static constexpr size_t offset = size_t(wide::zero >> (man_size - 1));
-
-                // preserve NaN/infinity
-                Bits temp = self.bits & mask::payload;
-                if (temp >= mask::exponent) {
-                    return static_cast<To>(static_cast<T>(self.bits | wide::exponent));
-                }
-
-                // scale up subnormals
-                if (temp < mask::implicit_bit) {
-                    if (auto idx = temp.last_one(); idx.has_value()) {
-                        size_t shift = man_size - 1 - idx.value();
-
-                        // if the shift amount exceeds the available offset, then we
-                        // need to left shift by the offset and leave the exponent zero.
-                        // Note that if shift == offset, then the result will become
-                        // a normal number with an exponent of 1, which is fine.
-                        if (shift >= offset) {
-                            temp <<= offset;
-                            temp |= self.bits & mask::sign;
-
-                        // otherwise, we shift until the leading one is in the implicit
-                        // bit position, and then set the exponent to the difference
-                        // from the offset.
-                        } else {
-                            temp <<= shift;
-                            temp += Bits{offset - shift - 1} << (man_size - 1);
-                            temp |= self.bits & mask::sign;
-                        }
-
-                        // reinterpret the bits as a hardware float, and then convert
-                        // to the final result
-                        return static_cast<To>(static_cast<T>(temp));
-                    }
-
-                    // preserve zero
-                    return static_cast<To>(static_cast<T>(self.bits));
-                }
-
-                // adjust bias for normals
-                return static_cast<To>(static_cast<T>(self.bits + wide::zero));
-            } else {
-                return static_cast<To>(static_cast<T>(self.bits));
-            }
-        }
-
-        template <meta::integer To>
-        static constexpr To to_int(const Float& self) noexcept {
-            /// NOTE: the C++ standard does not rigorously define the behavior of
-            /// float -> int conversions, so the only correct thing to do here is to
-            /// piggyback off the hardware type as much as possible.  Also, note that
-            /// we don't need to explicitly handle zero or subnormals here, since they
-            /// will always end up with an exponent less than the bias, and thus round
-            /// to zero naturally in the conversion.
-            if constexpr (E < exp_size) {
-                if ((self.bits & mask::exponent) == mask::exponent) {
-                    return static_cast<To>(static_cast<T>(self.bits | wide::exponent));
-                }
-                return static_cast<To>(static_cast<T>(self.bits + wide::zero));
-            } else {
-                return static_cast<To>(static_cast<T>(self.bits));
-            }
-        }
-
-    private:
-        struct wide {
-            static constexpr Bits exponent =
-                Bits::mask(man_size - 1, man_size - 1 + exp_size);
-            static constexpr Bits mantissa =
-                Bits::mask(0, man_size - 1);
-
-            static constexpr Bits zero =
-                Bits{meta::float_exponent_bias<T> - exp_bias} << (man_size - 1);
-            static constexpr Bits inf =
-                Bits{meta::float_exponent_bias<T> + exp_bias + 1} << (man_size - 1);
-            static constexpr Bits first = zero + mask::implicit_bit;
-        };
-
-        static constexpr void narrow(Bits& bits) noexcept {
-            // we keep the high M bits of the mantissa, low E bits of the exponent, and
-            // the sign bit.  This preserves +/- 0, inf, and NaN special cases, while
-            // truncating to the true templated sizes.
-            if constexpr (E < exp_size && M < man_size) {
-                Bits temp = bits & mask::payload;
-
-                // if the exponent saturates the adjusted range, then the value is
-                // already inf/NaN or needs to overflow to inf
-                if (temp >= wide::inf) {
-                    if (temp >= wide::exponent) {  // preserve NaN/infinity
-                        bits &= mask::all;  // truncate any unused bits
-                    } else {  // overflow
-                        bits &= mask::sign;
-                        bits |= mask::exponent;
-                    }
-                    return;
-
-                // If the exponent is smaller than the minimum valid exponent, then the
-                // value is already zero or subnormal, or underflows to a subnormal in
-                // the new range
-                } else if (temp < wide::first) {
-                    narrow_subnormal(bits, temp);
-                    return;
-                }
-
-                // otherwise, the exponent is valid and produces a normal number in the
-                // new range, so we need to account for the change in bias, and then
-                // round the mantissa to fit within the new range
-                bits -= wide::zero;
-                narrow_mantissa(bits);
-
-            } else if constexpr (E < exp_size) {
-                Bits temp = bits & mask::payload;
-                if (temp >= wide::inf) {
-                    if (temp >= wide::exponent) {  // preserve NaN/infinity
-                        bits &= mask::all;
-                    } else {  // overflow
-                        bits &= mask::sign;
-                        bits |= mask::exponent;
-                    }
-                    return;
-                } else if (temp < wide::first) {  // handle subnormals
-                    narrow_subnormal(bits, temp);
-                    return;
-                }
-                bits -= wide::zero;  // adjust bias
-
-            } else if constexpr (M < man_size) {
-                Bits temp = bits & mask::payload;
-                if (temp >= wide::exponent) {  // preserve NaN/infinity
-                    bits &= mask::all;  // truncate to fit within mantissa
-                    return;
-                } else if (temp == 0) {  // preserve zero
-                    return;
-                }
-                narrow_mantissa(bits);  // round normals and subnormals
-            }
-        }
-
-        static constexpr void narrow_subnormal(Bits& bits, Bits& temp) noexcept
-            requires(E < exp_size)
-        {
-            if (temp) {
-                // extract exponent and get the distance between it and the
-                // minimum valid exponent in the new range.
-                Bits exp = temp & wide::exponent;
-                size_t shift = size_t((wide::first - exp) >> (man_size - 1));
-
-                // if the shift amount is greater than the mantissa size, then the
-                // result is always zero
-                if (shift >= M) {
-                    bits &= mask::sign;
-
-                // otherwise, the result may be another subnormal, and we need to apply
-                // rounding on that basis.
-                } else {
-                    temp &= wide::mantissa;  // clear exponent bits
-
-                    // if the value was previously normalized, set the implicit
-                    // leading bit
-                    if (exp) {
-                        temp |= mask::implicit_bit;
-                    }
-
-                    // identify the lowest bit that will be kept, and the bits below
-                    // that, which must be rounded.  Note: shift ∈ [1, M - 1]
-                    Bits to_even = Bits{1} << shift;
-                    Bits half = to_even >> 1;
-                    Bits discard = to_even - 1;
-                    if ((temp & discard) == half) {
-                        temp += temp & to_even;  // ties round to even
-                    } else {
-                        temp += half;  // others round to nearest
-                    }
-
-                    // perform the shift, then copy results into output
-                    temp >>= shift;
-                    bits &= mask::sign;
-                    bits |= temp;
-                }
-            }
-        }
-
-        static constexpr void narrow_mantissa(Bits& bits) noexcept
-            requires(M < man_size)
-        {
-            static constexpr Bits to_even = Bits{1} << (man_size - M);
-            static constexpr Bits half = to_even >> 1;
-            static constexpr Bits discard = to_even - 1;
-
-            // round mantissa to nearest even value.  This may cause the exponent
-            // to overflow to infinity, or a subnormal to become a normal, both of
-            // which are fine, since the resulting mantissa will be zero in that case.
-            if ((bits & discard) == half) {
-                bits += bits & to_even;
-            } else {
-                bits += half;
-            }
-            bits &= mask::all;  // truncate unused bits
-        }
-    };
-    using traits = _traits<hard_type>;
-
-public:
     /* A bitset holding the bitwise representation of the float.  For hardware floats,
     all operations consist of a `std::bit_cast()` from the contents of this bitset to
     the equivalent hardware type, with zero overhead. */
@@ -7458,17 +7651,22 @@ public:
         return traits::template to_float<hard_type>(*this);
     }
 
-    /* Explicitly convert the float to an integer type, truncating towards zero. */
-    template <meta::integer T> requires (!meta::prefer_constructor<T>)
-    [[nodiscard]] explicit constexpr operator T() const noexcept {
-        return traits::template to_int<T>(*this);
-    }
-
     /* Explicitly convert the float to another floating point type, rounding to the
     nearest representable value. */
     template <meta::floating T> requires (!meta::prefer_constructor<T>)
     [[nodiscard]] explicit constexpr operator T() const noexcept {
         return traits::template to_float<T>(*this);
+    }
+
+    /* Explicitly convert the float to an integer type, truncating towards zero.  If
+    the program is compiled in debug mode or the type is a soft float, and the floating
+    point value cannot be represented in the requested range, then an OverflowError
+    will be thrown. */
+    template <meta::integer T> requires (!meta::prefer_constructor<T>)
+    [[nodiscard]] explicit constexpr operator T() const
+        noexcept(noexcept(traits::template to_int<T>(*this)))
+    {
+        return traits::template to_int<T>(*this);
     }
 
     /* Non-zero floats (including subnormals) evaluate to true under boolean logic. */
@@ -7481,13 +7679,21 @@ public:
         return to_decimal();
     }
 
-    /// TODO: string conversions can possibly reuse the continuation constructors from
-    /// Bits, so that I don't need to do the actual parsing here.
+    /* Decode a float from a string representation, which may be signed, contain a
+    decimal point, be in scientific format, or be one of the special infinity/NaN
+    sentinels.  The remaining strings provide an encoding for the individual digits,
+    which defaults to binary with the given zero and one digits, and whose number
+    dictates the base for the conversion.  See `Bits<N>::from_string()` for more
+    details.
+    
+    NOTE: This function is highly non-trivial, and has not been implemented yet.  Some
+    references for the final implementation will include:
 
-    /// TODO: possibly use the same base conversion logic as the integer types, so
-    /// that you can produce a true binary representation of the float with correct
-    /// bit representation, etc.
+        (Daniel Lemire, 2022, "Number Parsing at a Gigabyte per Second")
+        https://arxiv.org/abs/2101.11408
 
+    Significant alterations will need to be made to account for the compile-time digit
+    encoding and arbitrary precision, so this will not be a simple task. */
     template <
         static_str negative = "-",
         static_str decimal = ".",
@@ -7503,16 +7709,44 @@ public:
             !inf.empty() && !nan.empty() && !zero.empty() && !one.empty() &&
             (!rest.empty() && ...) && meta::perfectly_hashable<
                 negative, decimal, exponent, inf, nan, zero, one, rest...
-            >
+            > &&
+            false  // TODO: remove this once a working implementation is available
         )
-    [[nodiscard]] static constexpr auto from_string(std::string_view str) noexcept
+    [[nodiscard]] static constexpr auto from_string(std::string_view str)
+        noexcept
         -> Expected<Float, ValueError>  // TODO: no overflow error possible?
     {
-        /// TODO: quite a bit more complicated than the integer version, but still
-        /// doable.
-        return {};
+        std::string_view continuation;
+
+        // piggyback off continuation logic
+        Float result = from_string<
+            negative, decimal, exponent, inf, nan, zero, one, rest...
+        >(str, continuation);
+
+        // continuation must be empty at the end of the string.
+        if (!continuation.empty()) {
+            /// TODO: proper error message.
+            return ValueError();
+        }
+
+        return result;
     }
 
+    /* Decode a float from a string representation, which may be signed, contain a
+    decimal point, be in scientific format, or be one of the special infinity/NaN
+    sentinels.  The remaining strings provide an encoding for the individual digits,
+    which defaults to binary with the given zero and one digits, and whose number
+    dictates the base for the conversion.  See `Bits<N>::from_string()` for more
+    details.
+    
+    NOTE: This function is highly non-trivial, and has not been implemented yet.  Some
+    references for the final implementation will include:
+
+        (Daniel Lemire, 2022, "Number Parsing at a Gigabyte per Second")
+        https://arxiv.org/abs/2101.11408
+
+    Significant alterations will need to be made to account for the compile-time digit
+    encoding and arbitrary precision, so this will not be a simple task. */
     template <
         static_str negative = "-",
         static_str decimal = ".",
@@ -7528,15 +7762,70 @@ public:
             !inf.empty() && !nan.empty() && !zero.empty() && !one.empty() &&
             (!rest.empty() && ...) && meta::perfectly_hashable<
                 negative, decimal, exponent, inf, nan, zero, one, rest...
-            >
+            > &&
+            false  // TODO: remove this once a working implementation is available
         )
     [[nodiscard]] static constexpr Float from_string(
         std::string_view str,
         std::string_view& continuation
     ) noexcept {
-        /// TODO: quite a bit more complicated than the integer version, but still
-        /// doable.
-        return {};
+        if (str.starts_with(std::string_view(negative))) {
+            std::string_view substr = str.substr(negative.size());
+            if (substr == nan) {
+                return Float::nan();
+            }
+            if (substr == inf) {
+                return Float::neg_inf();
+            }
+
+            Float result;
+            /// TODO: continue
+        }
+
+        // preserve NaN/infinity
+        if (str == nan) return Float::nan();
+        if (str == inf) return Float::inf();
+
+        Float result;
+
+        // parse the first portion as an unsigned integer
+        if (auto integer = UInt<traits::exp_bias>::template from_string<zero, one, rest...>(
+            str,
+            continuation
+        ); integer.has_result()) {
+            result = Float{integer.result()};
+        } else {
+            return Float::inf();  // overflow
+        }
+
+        // continuation can point to a decimal point, followed by another unsigned
+        // integer indicating a fractional part, which must be added to the mantissa
+        if (continuation == decimal) {
+            std::string_view temp = continuation.substr(decimal.size());
+
+            // parse the next M - 1 bits
+            if (auto fraction = UInt<M - 1>::template from_string<zero, one, rest...>(
+                temp,
+                continuation
+            ); fraction.has_result()) {
+
+            // if the fraction overflows, then it means there is excess precision that
+            // can't be represented.  This is ok, we just truncate the excess bits
+            } else {
+
+            }
+
+            /// TODO: parse the next part as another unsigned integer, and add it to
+            /// the mantissa, shifted into the right position.
+        }
+
+        // finally, continuation can point to an explicit exponent, followed by a
+        // signed integer indicating a bias to be added to the exponent
+        if (continuation == exponent) {
+            continuation = continuation.substr(exponent.size());
+
+        }
+        return result;
     }
 
     /* A shorthand for `from_string<"-", ".", "e", "inf", "nan", "0", "1">(str)`, which
@@ -7630,6 +7919,21 @@ public:
         >(str, continuation);
     }
 
+    /* Encode a float into the shortest available string representation, using the
+    given sign, decimal, exponent, infinity, and NaN sentinels.  The remaining strings
+    represent digit encodings, which defaults to binary with the given zero and one
+    digits, and whose number dictates the base for the conversion.  See
+    `Bits<N>::to_string()` for more details.
+
+    NOTE: This function is highly non-trivial, and has not been implemented yet.  Some
+    references for the final implementation will include:
+
+        (Ulf Adams, 2018, "Ryu: fast float-to-string conversion")
+        https://dl.acm.org/doi/10.1145/3296979.3192369
+        https://github.com/ulfjack/ryu
+
+    Significant alterations will need to be made to account for the compile-time digit
+    encoding and arbitrary precision, so this will not be a simple task. */
     template <
         static_str negative = "-",
         static_str decimal = ".",
@@ -7645,10 +7949,10 @@ public:
             !inf.empty() && !nan.empty() && !zero.empty() && !one.empty() &&
             (!rest.empty() && ...) && meta::strings_are_unique<
                 negative, decimal, exponent, inf, nan, zero, one, rest...
-            >
+            > &&
+            false  // TODO: remove this once a working implementation is available
         )
     [[nodiscard]] constexpr std::string to_string() const noexcept {
-        /// TODO: also some complications here, but not impossible.
         return {};
     }
 
@@ -7692,10 +7996,10 @@ public:
         return !*this;
     }
 
-    /* Returns true if the float represents a subnormal number, regardless of sign. */
+    /* Returns true if the float represents a subnormal number (including zero),
+    regardless of sign. */
     [[nodiscard]] constexpr bool is_subnormal() const noexcept {
-        Bits payload = bits & traits::mask::payload;
-        return (payload < traits::mask::implicit_bit) && payload;
+        return (bits & traits::mask::payload) < traits::mask::implicit_bit;
     }
 
     /* Returns true if the float represents positive or negative infinity. */
@@ -7747,23 +8051,21 @@ public:
         3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
     [[nodiscard]] constexpr Float exponent() const noexcept {
-        Bits payload = bits & traits::mask::payload;
+        Bits exp = bits & traits::mask::exponent;
 
-        // inf/NaN get passed through with positive sign
-        if (payload >= traits::mask::exponent) {
-            Float result;
-            result.bits |= payload;
-            return result;
+        // inf/NaN get passed through as positive inf
+        if (exp == traits::mask::exponent) {
+            return inf();
         }
 
         // zero and subnormals get converted to negative infinity
-        if (payload < traits::mask::implicit_bit) {
+        if (exp == 0) {
             return neg_inf();
         }
 
         // all other values get converted to a signed integer and subtracted by the
         // bias before being converted back to a float.
-        Int<E> result {(bits & traits::mask::exponent) >> (traits::man_size - 1)};
+        Int<E> result {exp >> (traits::man_size - 1)};
         result -= traits::exp_bias;
         return Float{result};
     }
@@ -7784,8 +8086,8 @@ public:
         3.  NaN -> returns NaN, which causes `pow(...)` to also return NaN
     */
     [[nodiscard]] constexpr Float mantissa() const noexcept {
-        Float result;
-        result.bits = bits & traits::mask::mantissa;
+        Float result = *this;
+        result.bits &= traits::mask::mantissa;
         result.bits |= traits::mask::bias;
         return result;
     }
@@ -7805,21 +8107,22 @@ public:
         return result;
     }
 
-    /* The next representable value after this one.  Infinities and NaN are passed
-    through as-is. */
+    /* The next representable value after this one, toward positive or negative
+    infinity, whichever is closer.  Infinities and NaN are passed through as-is. */
     [[nodiscard]] constexpr Float next() const noexcept {
         Float result = *this;
-        if ((result.bits & traits::mask::payload) < traits::mask::payload) {
+        if ((result.bits & traits::mask::exponent) < traits::mask::exponent) {
             ++result.bits;
         }
         return result;
     }
 
-    /* The previous representable value before this one.  Ininities and NaN are passed
-    through as-is. */
+    /* The previous representable value before this one, toward zero.  Ininities, NaNs,
+    and zeroes are passed through as-is. */
     [[nodiscard]] constexpr Float prev() const noexcept {
         Float result = *this;
-        if ((result.bits & traits::mask::payload) < traits::mask::exponent) {
+        Bits payload = result.bits & traits::mask::payload;
+        if (payload && payload < traits::mask::exponent) {
             --result.bits;
         }
         return result;
@@ -7830,15 +8133,19 @@ public:
     result is an exact copy */
     [[nodiscard]] constexpr Float toward(const Float& other) const noexcept {
         Float result = *this;
-        if ((result.bits & traits::mask::payload) < traits::mask::exponent) {
+        if ((result.bits & traits::mask::exponent) < traits::mask::exponent) {
             if (result < other) {
                 ++result.bits;
-            } else  if (result > other){
+            } else if (result > other){
                 --result.bits;
             }
         }
         return result;
     }
+
+
+
+
 
     /// TODO: on ULPs: https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
 
@@ -8110,18 +8417,36 @@ public:
         return *this;
     }
 
-    /// TODO: stream operators
+    /* Print the integer to an output stream. */
+    friend constexpr std::ostream& operator<<(std::ostream& os, const Float& self) {
+        if constexpr (hard) {
+            os << hard_type(self);
+        } else {
+            /// TODO: softfloat emulation (NYI)
+        }
+        return os;
+    }
 
+    /* Read the integer from an input stream. */
+    friend constexpr std::istream& operator>>(
+        std::istream& is,
+        Float& self
+    ) {
+        if constexpr (hard) {
+            hard_type temp;
+            is >> temp;
+            self = Float{temp};
+        } else {
+            /// TODO: softfloat emulation (NYI)
+        }
+        return is;
+    }
 };
 
 
 /* ADL `swap()` method for `bertrand::Float<E, M>` instances. */
 template <size_t E, size_t M>
 constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept { lhs.swap(rhs); }
-
-
-/// TODO: eventually, use the exponent and mantissa sizes from the extended floating
-/// point types, which are not yet available in libc++.
 
 
 // template struct Float<5, 11>;
@@ -8133,14 +8458,24 @@ using float16 = Float<5, 11>;
 using bfloat16 = Float<8, 8>;
 using float32 = Float<8, 24>;
 using float64 = Float<11, 53>;
-// using float128 = Float<15, 113>;
+using float128 = Float<15, 113>;
+
+
+
+// static_assert(int32(1.5) == 1);
+
+
+
+
+static_assert(float32::max_int().exponent() == 24);
 
 
 
 static_assert(float16(std::numeric_limits<float>::infinity()) == float16::inf());
 static_assert(int(float32(-0.3)) == 0);
 
-
+static_assert(float64(std::numeric_limits<float>::denorm_min()).bits == Bits{double(std::numeric_limits<float>::denorm_min())});
+static_assert(float32(std::numeric_limits<double>::denorm_min()).bits == Bits{float(std::numeric_limits<double>::denorm_min())});
 
 
 
@@ -8233,13 +8568,13 @@ namespace std {
     template <bertrand::meta::Bits T>
     struct formatter<T> {
         using const_reference = bertrand::meta::as_const<bertrand::meta::as_lvalue<T>>;
-        mutable bertrand::impl::format_bits config;
+        mutable bertrand::impl::integer::format config;
 
         /* Parse the format specification mini-language as if the bitset were an
         ordinary integral type. */
         constexpr auto parse(format_parse_context& ctx) {
             auto it = ctx.begin();
-            config = bertrand::impl::format_bits(ctx, it);
+            config = bertrand::impl::integer::format(ctx, it);
             return it;
         }
 
@@ -8366,7 +8701,7 @@ namespace std {
         static constexpr bool is_bounded                    = true;
         static constexpr bool is_modulo                     = true;
         static constexpr int digits                         = bertrand::meta::integer_size<T>;
-        static constexpr int digits10                       = digits * 0.3010299956639812;  // log10(2)
+        static constexpr int digits10                       = digits * bertrand::impl::log10_2;
         static constexpr int max_digits10                   = 0;
         static constexpr int radix                          = 2;
         static constexpr int min_exponent                   = 0;
@@ -8450,8 +8785,8 @@ namespace std {
         static constexpr bool is_iec559                     = traits::is_iec559;
         static constexpr bool is_bounded                    = traits::is_bounded;
         static constexpr bool is_modulo                     = traits::is_modulo;
-        static constexpr int digits                         = traits::digits;
-        static constexpr int digits10                       = traits::digits;  // log10(2)
+        static constexpr int digits                         = bertrand::max(0, traits::digits - 1);
+        static constexpr int digits10                       = traits::digits * bertrand::impl::log10_2;
         static constexpr int max_digits10                   = traits::max_digits10;
         static constexpr int radix                          = traits::radix;
         static constexpr int min_exponent                   = traits::min_exponent;
@@ -8473,11 +8808,59 @@ namespace std {
 
     /* Specializing `std::numeric_limits` allows floats to be introspected just like
     other float types. */
-    template <bertrand::meta::Float T>
+    template <bertrand::meta::Float T> requires (std::remove_cvref_t<T>::hard)
     struct numeric_limits<T> {
     private:
         using type = std::remove_cvref_t<T>;
-        static constexpr double log10_2 = 0.3010299956639812;  // log2(10)
+        using hard = type::hard_type;
+        using traits = std::numeric_limits<hard>;
+
+    public:
+        static constexpr bool is_specialized                = traits::is_specialized;
+        static constexpr bool is_signed                     = traits::is_signed;
+        static constexpr bool is_integer                    = traits::is_integer;
+        static constexpr bool is_exact                      = traits::is_exact;
+        static constexpr bool has_infinity                  = traits::has_infinity;
+        static constexpr bool has_quiet_NaN                 = traits::has_quiet_NaN;
+        static constexpr bool has_signaling_NaN             = traits::has_signaling_NaN;
+        static constexpr std::float_round_style round_style = traits::round_style;
+        static constexpr bool is_iec559                     = traits::is_iec559;
+        static constexpr bool is_bounded                    = traits::is_bounded;
+        static constexpr bool is_modulo                     = traits::is_modulo;
+        static constexpr int digits                         = type::mantissa_size;
+        static constexpr int digits10                       = (digits - 1) * bertrand::impl::log10_2;
+        static constexpr int max_digits10                   = [] {
+            double temp = digits * bertrand::impl::log10_2 + 1;
+            int result = static_cast<int>(temp);
+            if (result < temp) {
+                ++result;
+            }
+            return result;
+        }();
+        static constexpr int radix                          = traits::radix;
+        static constexpr int min_exponent                   = type::min_exponent() + 1;
+        static constexpr int min_exponent10                 = type::min_exponent() * bertrand::impl::log10_2;
+        static constexpr int max_exponent                   = type::max_exponent() + 1;
+        static constexpr int max_exponent10                 = type::max_exponent() * bertrand::impl::log10_2;
+        static constexpr bool traps                         = traits::traps;
+        static constexpr bool tinyness_before               = traits::tinyness_before;
+        static constexpr type min() noexcept { return type::smallest(); }
+        static constexpr type lowest() noexcept { return type::min(); }
+        static constexpr type max() noexcept { return type::max(); }
+        static constexpr type epsilon() noexcept { return type::epsilon(); }
+        static constexpr type round_error() noexcept { return 0.5; }
+        static constexpr type infinity() noexcept { return type::inf(); }
+        static constexpr type quiet_NaN() noexcept { return type::nan(); }
+        static constexpr type signaling_NaN() noexcept { return type::nan(); }
+        static constexpr type denorm_min() noexcept { return type::denorm_min(); }
+    };
+
+    /* Specializing `std::numeric_limits` allows floats to be introspected just like
+    other float types. */
+    template <bertrand::meta::Float T> requires (!std::remove_cvref_t<T>::hard)
+    struct numeric_limits<T> {
+    private:
+        using type = std::remove_cvref_t<T>;
 
     public:
         static constexpr bool is_specialized                = true;
@@ -8492,9 +8875,9 @@ namespace std {
         static constexpr bool is_bounded                    = true;
         static constexpr bool is_modulo                     = false;
         static constexpr int digits                         = type::mantissa_size;
-        static constexpr int digits10                       = (digits - 1) * log10_2;  // log10(2)
+        static constexpr int digits10                       = (digits - 1) * bertrand::impl::log10_2;
         static constexpr int max_digits10                   = [] {
-            double temp = digits * log10_2 + 1;
+            double temp = digits * bertrand::impl::log10_2 + 1;
             int result = static_cast<int>(temp);
             if (result < temp) {
                 ++result;
@@ -8502,10 +8885,10 @@ namespace std {
             return result;
         }();
         static constexpr int radix                          = 2;
-        static constexpr int min_exponent                   = type::min_exponent + 1;
-        static constexpr int min_exponent10                 = type::min_exponent * log10_2;
-        static constexpr int max_exponent                   = type::max_exponent + 1;
-        static constexpr int max_exponent10                 = type::max_exponent * log10_2;
+        static constexpr int min_exponent                   = type::min_exponent() + 1;
+        static constexpr int min_exponent10                 = type::min_exponent() * bertrand::impl::log10_2;
+        static constexpr int max_exponent                   = type::max_exponent() + 1;
+        static constexpr int max_exponent10                 = type::max_exponent() * bertrand::impl::log10_2;
         static constexpr bool traps                         = false;
         static constexpr bool tinyness_before               = false;
         static constexpr type min() noexcept { return type::smallest(); }
