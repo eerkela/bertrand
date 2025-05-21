@@ -3587,55 +3587,17 @@ namespace meta {
 
     }
 
-    template <typename T>
-    concept has_member_to_string = requires(T t) {
-        { std::forward<T>(t).to_string() } -> convertible_to<std::string>;
-    };
-
-    template <typename T>
-    concept has_adl_to_string = requires(T t) {
-        { to_string(std::forward<T>(t)) } -> convertible_to<std::string>;
-    };
-
-    template <typename T>
-    concept has_std_to_string = requires(T t) {
-        { std::to_string(std::forward<T>(t)) } -> convertible_to<std::string>;
-    };
-
-    template <typename T>
-    concept has_to_string =
-        has_member_to_string<T> || has_adl_to_string<T> || has_std_to_string<T>;
-
-    template <typename T>
-    concept has_stream_insertion = requires(std::ostream& os, T t) {
-        { os << t } -> convertible_to<std::ostream&>;
+    template <typename T, typename Char = char>
+    concept has_stream_insertion = requires(std::basic_ostream<Char>& os, T t) {
+        { os << t } -> convertible_to<std::basic_ostream<Char>&>;
     };
 
     namespace nothrow {
 
-        template <typename T>
-        concept has_member_to_string =
-            meta::has_member_to_string<T> &&
-            noexcept(std::declval<T>().to_string());
-
-        template <typename T>
-        concept has_adl_to_string =
-            meta::has_adl_to_string<T> &&
-            noexcept(to_string(std::declval<T>()));
-
-        template <typename T>
-        concept has_std_to_string =
-            meta::has_std_to_string<T> &&
-            noexcept(std::to_string(std::declval<T>()));
-
-        template <typename T>
-        concept has_to_string =
-            has_member_to_string<T> || has_adl_to_string<T> || has_std_to_string<T>;
-
-        template <typename T>
+        template <typename T, typename Char = char>
         concept has_stream_insertion =
-            meta::has_stream_insertion<T> &&
-            noexcept(std::declval<std::ostream&>() << std::declval<T>());
+            meta::has_stream_insertion<T, Char> &&
+            noexcept(std::declval<std::basic_ostream<Char>&>() << std::declval<T>());
 
     }
 

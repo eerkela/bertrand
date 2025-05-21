@@ -184,6 +184,23 @@ template <size_t E, size_t M> requires (E > 1 && M > 1)
 struct Float;
 
 
+using uint8 = UInt<8>;
+using uint16 = UInt<16>;
+using uint32 = UInt<32>;
+using uint64 = UInt<64>;
+using uint128 = UInt<128>;
+using int8 = Int<8>;
+using int16 = Int<16>;
+using int32 = Int<32>;
+using int64 = Int<64>;
+using int128 = Int<128>;
+using float16 = Float<5, 11>;
+using bfloat16 = Float<8, 8>;
+using float32 = Float<8, 24>;
+using float64 = Float<11, 53>;
+using float128 = Float<15, 113>;
+
+
 namespace impl {
     struct Bits_tag {};
     struct Bits_slice_tag {};
@@ -1376,7 +1393,7 @@ namespace impl {
         types section of the C++ standard (C++23 and later).  If no hardware type can be
         found, then the default is to use the softfloat emulation with E + M bits. */
         template <size_t E, size_t M>
-        struct hard {  // fall back to softfloat emulation with E + M bits
+        struct hard {
             using type = void;
             static constexpr size_t size = E + M;
             static constexpr bool native = false;
@@ -2011,6 +2028,11 @@ namespace impl {
                 narrow(out.bits);
             }
 
+            /// TODO: I might have a problem with recursion here as well, if I intend
+            /// to make the floating point constructor and integer conversion operator
+            /// use this same function.  I'll need to find an elegant way to bridge
+            /// the two here.
+
             /* Convert an integer of any size to the templated type, populating
             `out.bits`. */
             template <meta::integer U>
@@ -2074,37 +2096,75 @@ namespace impl {
             size. */
             template <meta::integer To>
             static constexpr To to_int(const Float& self) noexcept(!DEBUG) {
-                /// TODO: special cases for Bits<N>, UInt<N>, and Int<N>, which either
-                /// cast to an individual word, or fall back to the equivalent soft float
-                /// emulation.  That means I need to arrange this such that the soft float
-                /// implementation is in scope, and it also means that I absolutely do
-                /// need to implement soft floats in order to support all features.
-
-
-
                 /// NOTE: the C++ standard does not define the behavior of float -> int
-                /// conversions with respect to overflow, so we take the opportunity to do
-                /// so here, defining it as an OverflowError in debug builds.  The extra
-                /// check is optimized away in release builds, falling back to the
-                /// implementation-defined behavior of the hardware type.  Also, note that
-                /// we don't need to explicitly handle zero or subnormals here, since they
-                /// will always end up with an exponent less than the bias, and thus round
-                /// to zero naturally in the conversion.
-                if constexpr (E < exp_size) {
-                    Bits exp = self.bits & mask::exponent;
-                    if constexpr (DEBUG) {
-                        int_overflow(self, exp);
+                /// conversions with respect to overflow, so we take the opportunity to
+                /// do so here, defining it as an OverflowError in debug builds.  The
+                /// extra check is optimized away in release builds, falling back to
+                /// the implementation-defined behavior of the hardware type.  Also,
+                /// note that we don't need to explicitly handle zero or subnormals
+                /// here, since they will always end up with an exponent less than the
+                /// bias, and thus round to zero naturally in the conversion.
+
+
+                // if we're converting to a multi-word Bits, UInt, or Int type, then
+                // we fall back to the soft float implementation, since the we don't
+                // have a simple integral cast to piggyback on.
+                if constexpr (meta::Bits<To> || meta::UInt<To> || meta::Int<To>) {
+                    if constexpr (To::array_size == 1) {
+                        /// TODO: this still breaks with signed integers, since I'm
+                        /// always trying to call the Bits<> version as part of the
+                        /// constructor.
+                        using word = std::conditional_t<
+                            meta::Int<To>,
+                            meta::as_signed<typename To::word>,
+                            typename To::word
+                        >;
+                        if constexpr (E < exp_size) {
+                            Bits exp = self.bits & mask::exponent;
+                            if constexpr (DEBUG) {
+                                int_overflow(self, exp);
+                            }
+                            if (exp == mask::exponent) {
+                                return static_cast<word>(
+                                    static_cast<type>(self.bits | wide::exponent)
+                                );
+                            }
+                            return static_cast<word>(
+                                static_cast<type>(self.bits + wide::zero)
+                            );
+                        } else {
+                            if constexpr (DEBUG) {
+                                Bits exp = self.bits & mask::exponent;
+                                int_overflow(self, exp);
+                            }
+                            return static_cast<word>(static_cast<type>(self.bits));
+                        }
+                    } else {
+                        /// TODO: fall back to softfloat emulation unless the array size
+                        /// is one, then we can take the fast path below.
                     }
-                    if (exp == mask::exponent) {
-                        return static_cast<To>(static_cast<type>(self.bits | wide::exponent));
-                    }
-                    return static_cast<To>(static_cast<type>(self.bits + wide::zero));
+
                 } else {
-                    if constexpr (DEBUG) {
+                    if constexpr (E < exp_size) {
                         Bits exp = self.bits & mask::exponent;
-                        int_overflow(self, exp);
+                        if constexpr (DEBUG) {
+                            int_overflow(self, exp);
+                        }
+                        if (exp == mask::exponent) {
+                            return static_cast<To>(
+                                static_cast<type>(self.bits | wide::exponent)
+                            );
+                        }
+                        return static_cast<To>(
+                            static_cast<type>(self.bits + wide::zero)
+                        );
+                    } else {
+                        if constexpr (DEBUG) {
+                            Bits exp = self.bits & mask::exponent;
+                            int_overflow(self, exp);
+                        }
+                        return static_cast<To>(static_cast<type>(self.bits));
                     }
-                    return static_cast<To>(static_cast<type>(self.bits));
                 }
             }
 
@@ -2271,10 +2331,9 @@ template <typename... Ts>
 Bits(const Ts&...) -> Bits<((sizeof(Ts) * 8) + ... + 0)>;
 
 
-template <meta::integer... Ts>
-Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
-template <meta::inherits<impl::Bits_slice_tag> T>
-Int(T) -> Int<T::self::size()>;
+/// TODO: Maybe CTAD-converting an integer to a float would pick the minimum size that
+/// can represent all values of that type?  Maybe there's an integer CTAD guide that
+/// does the opposite.
 
 
 template <meta::integer... Ts>
@@ -2283,9 +2342,35 @@ template <meta::inherits<impl::Bits_slice_tag> T>
 UInt(T) -> UInt<T::self::size()>;
 
 
+template <meta::integer... Ts>
+Int(Ts...) -> Int<(meta::integer_size<Ts> + ... + 0)>;
+template <meta::inherits<impl::Bits_slice_tag> T>
+Int(T) -> Int<T::self::size()>;
+
+
 template <meta::floating T>
     requires (meta::float_exponent_size<T> > 1 && meta::float_mantissa_size<T> > 1)
 Float(const T&) -> Float<meta::float_exponent_size<T>, meta::float_mantissa_size<T>>;
+
+
+/* ADL `swap()` method for `bertrand::Bits` instances.  */
+template <size_t N>
+constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept { lhs.swap(rhs); }
+
+
+/* ADL `swap()` method for `bertrand::UInt` instances. */
+template <size_t N>
+constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept { lhs.swap(rhs); }
+
+
+/* ADL `swap()` method for `bertrand::Int<N>` instances. */
+template <size_t N>
+constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept { lhs.swap(rhs); }
+
+
+/* ADL `swap()` method for `bertrand::Float<E, M>` instances. */
+template <size_t E, size_t M>
+constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept { lhs.swap(rhs); }
 
 
 template <size_t N>
@@ -5778,18 +5863,6 @@ public:
 };
 
 
-/* ADL `swap()` method for `bertrand::Bits` instances.  */
-template <size_t N>
-constexpr void swap(Bits<N>& lhs, Bits<N>& rhs) noexcept { lhs.swap(rhs); }
-
-
-// template struct Bits<8>;
-// template struct Bits<16>;
-// template struct Bits<32>;
-// template struct Bits<64>;
-// template struct Bits<128>;
-
-
 template <size_t N>
 struct UInt : impl::UInt_tag {
     /* The underlying bitset type for the contents of this integer. */
@@ -6431,23 +6504,6 @@ public:
         return is >> self.bits;  // defaults to decimal
     }
 };
-
-
-/* ADL `swap()` method for `bertrand::UInt` instances. */
-template <size_t N>
-constexpr void swap(UInt<N>& lhs, UInt<N>& rhs) noexcept { lhs.swap(rhs); }
-
-
-// template struct UInt<8>;
-// template struct UInt<16>;
-// template struct UInt<32>;
-// template struct UInt<64>;
-// template struct UInt<128>;
-using uint8 = UInt<8>;
-using uint16 = UInt<16>;
-using uint32 = UInt<32>;
-using uint64 = UInt<64>;
-using uint128 = UInt<128>;
 
 
 template <size_t N>
@@ -7383,23 +7439,6 @@ public:
 };
 
 
-/* ADL `swap()` method for `bertrand::Int<N>` instances. */
-template <size_t N>
-constexpr void swap(Int<N>& lhs, Int<N>& rhs) noexcept { lhs.swap(rhs); }
-
-
-// template struct Int<8>;
-// template struct Int<16>;
-// template struct Int<32>;
-// template struct Int<64>;
-// template struct Int<128>;
-using int8 = Int<8>;
-using int16 = Int<16>;
-using int32 = Int<32>;
-using int64 = Int<64>;
-using int128 = Int<128>;
-
-
 /// Reference: https://github.com/oprecomp/FloatX
 /// https://en.wikipedia.org/wiki/Minifloat
 
@@ -7792,8 +7831,8 @@ public:
         if (auto integer = UInt<traits::exp_bias>::template from_string<zero, one, rest...>(
             str,
             continuation
-        ); integer.has_result()) {
-            result = Float{integer.result()};
+        ); integer.has_value()) {
+            result = Float{integer.value()};
         } else {
             return Float::inf();  // overflow
         }
@@ -7807,7 +7846,7 @@ public:
             if (auto fraction = UInt<M - 1>::template from_string<zero, one, rest...>(
                 temp,
                 continuation
-            ); fraction.has_result()) {
+            ); fraction.has_value()) {
 
             // if the fraction overflows, then it means there is excess precision that
             // can't be represented.  This is ok, we just truncate the excess bits
@@ -8444,25 +8483,31 @@ public:
 };
 
 
-/* ADL `swap()` method for `bertrand::Float<E, M>` instances. */
-template <size_t E, size_t M>
-constexpr void swap(Float<E, M>& lhs, Float<E, M>& rhs) noexcept { lhs.swap(rhs); }
-
-
+// template struct Bits<8>;
+// template struct Bits<16>;
+// template struct Bits<32>;
+// template struct Bits<64>;
+// template struct Bits<128>;
+// template struct UInt<8>;
+// template struct UInt<16>;
+// template struct UInt<32>;
+// template struct UInt<64>;
+// template struct UInt<128>;
+// template struct Int<8>;
+// template struct Int<16>;
+// template struct Int<32>;
+// template struct Int<64>;
+// template struct Int<128>;
 // template struct Float<5, 11>;
 // template struct Float<8, 8>;
 // template struct Float<8, 24>;
 // template struct Float<11, 53>;
 // template struct Float<15, 113>;
-using float16 = Float<5, 11>;
-using bfloat16 = Float<8, 8>;
-using float32 = Float<8, 24>;
-using float64 = Float<11, 53>;
-using float128 = Float<15, 113>;
 
 
 
-// static_assert(int32(1.5) == 1);
+
+// static_assert(int32(-1.5) == -1);
 
 
 
@@ -9037,19 +9082,19 @@ namespace std {
 //                 std::string_view("100")
 //             );
 //             static_assert(b.data()[0] == 4);
-//             static_assert(b2.result().data()[0] == 4);
+//             static_assert(b2.value().data()[0] == 4);
 
 //             static constexpr auto b3 = Bits{"0100"}.reverse();
 //             static_assert(b3.data()[0] == 2);
 
 //             static constexpr auto b4 = Bits<3>::from_string<"ab", "c">("cabab");
-//             static_assert(b4.result().data()[0] == 4);
+//             static_assert(b4.value().data()[0] == 4);
 
 //             static constexpr auto b5 = Bits<3>::from_decimal("5");
-//             static_assert(b5.result().data()[0] == 5);
+//             static_assert(b5.value().data()[0] == 5);
 
 //             static constexpr auto b6 = Bits<8>::from_hex("FF");
-//             static_assert(b6.result().data()[0] == 255);
+//             static_assert(b6.value().data()[0] == 255);
 
 //             static constexpr auto b7 = Bits<8>::from_hex("ZZ");
 //             static_assert(b7.has_error());
@@ -9067,11 +9112,11 @@ namespace std {
 //         }
 
 //         {
-//             static_assert(Bits<5>::from_binary("10101").result().to_hex() == "15");
-//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").result().count() == 72);
+//             static_assert(Bits<5>::from_binary("10101").value().to_hex() == "15");
+//             static_assert(Bits<72>::from_hex("FFFFFFFFFFFFFFFFFF").value().count() == 72);
 //             static_assert(Bits<4>::from_octal("20").has_error());
 //             static_assert(Bits<4>::from_decimal("16").has_error<OverflowError>());
-//             static_assert(Bits<4>::from_decimal("15").result().data()[0] == 15);
+//             static_assert(Bits<4>::from_decimal("15").value().data()[0] == 15);
 
 //             // static_assert((Bits<4>{uint8_t(1)} * uint8_t(10) + uint8_t(2)).data()[0] == 10);
 //         }
@@ -9097,7 +9142,7 @@ namespace std {
 //             static_assert(b.last_zero().value() == 0);
 //             static_assert(b == Bits{"1110"});
 //             static_assert(-b == Bits{"0010"});
-//             static_assert(Bits<5>::from_string("10100").result() == 20);
+//             static_assert(Bits<5>::from_string("10100").value() == 20);
 
 //             static constexpr Bits<72> b2;
 //             static_assert(size_t(b2) == 0);
@@ -9118,7 +9163,7 @@ namespace std {
 //             static constexpr UInt x = 42;
 //             static_assert(x == 42);
 //             static constexpr auto x2 = uint32::from_decimal("42");
-//             static_assert(x2.result() == 42);
+//             static_assert(x2.value() == 42);
 //             static_assert(divide::ceil(x, 4) == 11);
 
 //             static constexpr UInt y = -1;

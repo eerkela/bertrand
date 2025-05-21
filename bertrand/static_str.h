@@ -43,18 +43,33 @@ template <static_str... Strings>
 struct string_list;
 
 
-/* CTAD guide allows string literals of any bound to be used as initializer to
-`static_str`, and therefore also as template parameters. */
 template <size_t N>
 static_str(const char(&)[N]) -> static_str<N - 1>;
 template <meta::is<char> T>
 static_str(T) -> static_str<1>;
-
-
-/* CTAD guide allows string wrappers to be implicitly converted to `static_str` without
-user intervention. */
 template <auto S>
 static_str(string_wrapper<S>) -> static_str<S.size()>;
+
+
+/* ADL `swap()` method for `bertrand::static_str` instances. */
+template <size_t N>
+constexpr void swap(static_str<N>& a, static_str<N>& b)
+    noexcept(noexcept(a.swap(b)))
+{ a.swap(b); }
+
+
+/* ADL `swap()` method for `bertrand::string_wrapper` instances. */
+template <static_str self>
+constexpr void swap(string_wrapper<self>& a, string_wrapper<self>& b)
+    noexcept(noexcept(a.swap(b)))
+{ a.swap(b); }
+
+
+/* ADL `swap()` method for `bertrand::string_list` instances. */
+template <static_str... Strings>
+inline constexpr void swap(string_list<Strings...>& a, string_list<Strings...>& b)
+    noexcept(noexcept(a.swap(b)))
+{ a.swap(b); }
 
 
 namespace impl {
@@ -206,12 +221,12 @@ struct static_str : impl::static_str_tag {
 
     char buffer[N + 1];  // +1 for null terminator
 
-    explicit consteval static_str(char c) noexcept requires (N == 1) {
+    explicit constexpr static_str(char c) noexcept requires (N == 1) {
         buffer[0] = c;
         buffer[1] = '\0';
     }
 
-    consteval static_str(const char* arr) noexcept {
+    constexpr static_str(const char* arr) noexcept {
         std::copy_n(arr, N, buffer);
         buffer[N] = '\0';
     }
@@ -224,7 +239,7 @@ struct static_str : impl::static_str_tag {
     }
 
 private:
-    consteval static_str() = default;
+    constexpr static_str() = default;
 
     template <size_t M>
     friend struct bertrand::static_str;
@@ -580,7 +595,7 @@ private:
 
     /* Repeat a string a given number of times at compile time. */
     template <bertrand::static_str self, size_type reps>
-    [[nodiscard]] static consteval auto repeat() noexcept {
+    [[nodiscard]] static constexpr auto repeat() noexcept {
         static_str<self.size() * reps> result;
         for (size_type i = 0; i < reps; ++i) {
             std::copy_n(self.buffer, self.size(), result.buffer + (self.size() * i));
@@ -590,7 +605,7 @@ private:
     }
 
     template <bertrand::static_str self, bertrand::static_str chars>
-    static consteval index_type first_non_stripped() noexcept {
+    static constexpr index_type first_non_stripped() noexcept {
         for (index_type i = 0; i < self.ssize(); ++i) {
             char c = self.buffer[i];
             index_type j = 0;
@@ -606,7 +621,7 @@ private:
     }
 
     template <bertrand::static_str self, bertrand::static_str chars>
-    static consteval index_type last_non_stripped() noexcept {
+    static constexpr index_type last_non_stripped() noexcept {
         for (index_type i = 0; i < self.ssize(); ++i) {
             index_type idx = self.ssize() - i - 1;
             char c = self.buffer[idx];
@@ -623,7 +638,7 @@ private:
     }
 
     /// NOTE: Because it is impossible to reference data from `this` within a
-    /// consteval context, all of these algorithms are implemented by taking the
+    /// constexpr context, all of these algorithms are implemented by taking the
     /// `self` string as a template parameter.  They are therefore private, so as not
     /// to confuse users who might expect them to be callable like Python methods.
     /// The `string_wrapper` class is used to abstract this distinction, yielding a
@@ -633,7 +648,7 @@ private:
 
     /* Equivalent to Python `str.capitalize()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval auto capitalize() noexcept {
+    [[nodiscard]] static constexpr auto capitalize() noexcept {
         static_str<self.size()> result;
         bool capitalized = false;
         for (size_type i = 0; i < self.size(); ++i) {
@@ -655,7 +670,7 @@ private:
 
     /* Equivalent to Python `str.center(width[, fillchar])`. */
     template <bertrand::static_str self, size_type width, char fillchar = ' '>
-    [[nodiscard]] static consteval auto center() noexcept {
+    [[nodiscard]] static constexpr auto center() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else {
@@ -681,7 +696,7 @@ private:
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static consteval size_type count() noexcept {
+    [[nodiscard]] static constexpr size_type count() noexcept {
         index_type nstart = impl::truncate_index(self.size(), start).first;
         index_type nstop = impl::truncate_index(self.size(), stop).first;
         size_type count = 0;
@@ -695,7 +710,7 @@ private:
 
     /* Equivalent to Python `str.endswith(suffix)`. */
     template <bertrand::static_str self, bertrand::static_str suffix>
-    [[nodiscard]] static consteval bool endswith() noexcept {
+    [[nodiscard]] static constexpr bool endswith() noexcept {
         return suffix.size() <= self.size() && std::equal(
             suffix.buffer,
             suffix.buffer + suffix.size(),
@@ -705,7 +720,7 @@ private:
 
     /* Equivalent to Python `str.expandtabs([tabsize])`. */
     template <bertrand::static_str self, size_type tabsize = 8>
-    [[nodiscard]] static consteval auto expandtabs() noexcept {
+    [[nodiscard]] static constexpr auto expandtabs() noexcept {
         constexpr size_type n = count<self, "\t">();
         static_str<self.size() - n + n * tabsize> result;
         size_type offset = 0;
@@ -722,6 +737,9 @@ private:
         return result;
     }
 
+    /// TODO: find() should return an iterator rather than an optional, in accordance
+    /// with the indexing API for all other containers.
+
     /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns an empty
     optional if the substring is not found. */
     template <
@@ -730,7 +748,7 @@ private:
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static consteval Optional<index_type> find() noexcept {
+    [[nodiscard]] static constexpr Optional<index_type> find() noexcept {
         constexpr index_type nstart =
             impl::truncate_index(self.size(), start).first;
         constexpr index_type nstop =
@@ -745,7 +763,7 @@ private:
 
     /* Equivalent to Python `str.isalpha()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool isalpha() noexcept {
+    [[nodiscard]] static constexpr bool isalpha() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_isalpha(self.buffer[i])) {
                 return false;
@@ -756,7 +774,7 @@ private:
 
     /* Equivalent to Python `str.isalnum()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool isalnum() noexcept {
+    [[nodiscard]] static constexpr bool isalnum() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_isalnum(self.buffer[i])) {
                 return false;
@@ -767,7 +785,7 @@ private:
 
     /* Equivalent to Python `str.isascii()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool isascii() noexcept {
+    [[nodiscard]] static constexpr bool isascii() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_isascii(self.buffer[i])) {
                 return false;
@@ -778,7 +796,7 @@ private:
 
     /* Equivalent to Python `str.isdigit()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool isdigit() noexcept {
+    [[nodiscard]] static constexpr bool isdigit() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_isdigit(self.buffer[i])) {
                 return false;
@@ -789,7 +807,7 @@ private:
 
     /* Equivalent to Python `str.islower()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool islower() noexcept {
+    [[nodiscard]] static constexpr bool islower() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_islower(self.buffer[i])) {
                 return false;
@@ -800,7 +818,7 @@ private:
 
     /* Equivalent to Python `str.isspace()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool isspace() noexcept {
+    [[nodiscard]] static constexpr bool isspace() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_isspace(self.buffer[i])) {
                 return false;
@@ -811,7 +829,7 @@ private:
 
     /* Equivalent to Python `str.istitle()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool istitle() noexcept {
+    [[nodiscard]] static constexpr bool istitle() noexcept {
         bool last_was_delimeter = true;
         for (size_type i = 0; i < self.size(); ++i) {
             char c = self.buffer[i];
@@ -825,7 +843,7 @@ private:
 
     /* Equivalent to Python `str.isupper()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval bool isupper() noexcept {
+    [[nodiscard]] static constexpr bool isupper() noexcept {
         for (size_type i = 0; i < self.size(); ++i) {
             if (!impl::char_isupper(self.buffer[i])) {
                 return false;
@@ -840,7 +858,7 @@ private:
         bertrand::static_str first,
         bertrand::static_str... rest
     >
-    [[nodiscard]] static consteval auto join() noexcept {
+    [[nodiscard]] static constexpr auto join() noexcept {
         static_str<first.size() + (0 + ... + (self.size() + rest.size()))> result;
         std::copy_n(first.buffer, first.size(), result.buffer);
         size_type offset = first.size();
@@ -867,7 +885,7 @@ private:
 
     /* Equivalent to Python `str.ljust(width[, fillchar])`. */
     template <bertrand::static_str self, size_type width, char fillchar = ' '>
-    [[nodiscard]] static consteval auto ljust() noexcept {
+    [[nodiscard]] static constexpr auto ljust() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else {
@@ -885,7 +903,7 @@ private:
 
     /* Equivalent to Python `str.lower()`. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval auto lower() noexcept {
+    [[nodiscard]] static constexpr auto lower() noexcept {
         static_str<self.size()> result;
         for (size_type i = 0; i < self.size(); ++i) {
             result.buffer[i] = impl::char_tolower(self.buffer[i]);
@@ -896,7 +914,7 @@ private:
 
     /* Equivalent to Python `str.lstrip([chars])`. */
     template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
-    [[nodiscard]] static consteval auto lstrip() noexcept {
+    [[nodiscard]] static constexpr auto lstrip() noexcept {
         constexpr index_type start = first_non_stripped<self, chars>();
         if constexpr (start < 0) {
             return bertrand::static_str{""};
@@ -911,7 +929,7 @@ private:
 
     /* Equivalent to Python `str.partition(sep)`. */
     template <bertrand::static_str self, bertrand::static_str sep>
-    [[nodiscard]] static consteval auto partition() noexcept {
+    [[nodiscard]] static constexpr auto partition() noexcept {
         constexpr size_type index = find<self, sep>();
         if constexpr (index < 0) {
             return string_list<self, "", "">{};
@@ -929,7 +947,7 @@ private:
     /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, bertrand::static_str prefix>
-    [[nodiscard]] static consteval auto removeprefix() noexcept {
+    [[nodiscard]] static constexpr auto removeprefix() noexcept {
         if constexpr (startswith<self, prefix>()) {
             static_str<self.size() - prefix.size()> result;
             std::copy_n(
@@ -947,7 +965,7 @@ private:
     /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, bertrand::static_str suffix>
-    [[nodiscard]] static consteval auto removesuffix() noexcept {
+    [[nodiscard]] static constexpr auto removesuffix() noexcept {
         if constexpr (endswith<self, suffix>()) {
             static_str<self.size() - suffix.size()> result;
             std::copy_n(
@@ -969,7 +987,7 @@ private:
         bertrand::static_str repl,
         size_type max_count = std::numeric_limits<size_type>::max()
     >
-    [[nodiscard]] static consteval auto replace() noexcept {
+    [[nodiscard]] static constexpr auto replace() noexcept {
         constexpr size_type freq = count<self, sub>();
         constexpr size_type n = freq < max_count ? freq : max_count;
         static_str<self.size() - (n * sub.size()) + (n * repl.size())> result;
@@ -992,6 +1010,8 @@ private:
         return result;
     }
 
+    /// TODO: rfind() should also return an iterator rather than an optional index.
+
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns an empty
     optional if the substring is not found. */
     template <
@@ -1000,7 +1020,7 @@ private:
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static consteval Optional<index_type> rfind() noexcept {
+    [[nodiscard]] static constexpr Optional<index_type> rfind() noexcept {
         constexpr index_type nstart =
             impl::truncate_index(self.size(), stop).first - 1;
         constexpr index_type nstop =
@@ -1015,7 +1035,7 @@ private:
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
     template <bertrand::static_str self, size_type width, char fillchar = ' '>
-    [[nodiscard]] static consteval auto rjust() noexcept {
+    [[nodiscard]] static constexpr auto rjust() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else {
@@ -1037,7 +1057,7 @@ private:
 
     /* Equivalent to Python `str.rpartition(sep)`. */
     template <bertrand::static_str self, bertrand::static_str sep>
-    [[nodiscard]] static consteval auto rpartition() noexcept {
+    [[nodiscard]] static constexpr auto rpartition() noexcept {
         constexpr size_type index = rfind<self, sep>();
         if constexpr (index < 0) {
             return string_list<self, "", "">{};
@@ -1058,7 +1078,7 @@ private:
         bertrand::static_str sep,
         size_type maxsplit = std::numeric_limits<size_type>::max()
     > requires (sep.size() > 0)
-    [[nodiscard]] static consteval auto rsplit() noexcept {
+    [[nodiscard]] static constexpr auto rsplit() noexcept {
         constexpr size_type freq = count<self, sep>();
         if constexpr (freq == 0) {
             return string_list<self>{};
@@ -1095,7 +1115,7 @@ private:
 
     /* Equivalent to Python `str.rstrip([chars])`. */
     template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
-    [[nodiscard]] static consteval auto rstrip() noexcept {
+    [[nodiscard]] static constexpr auto rstrip() noexcept {
         constexpr index_type stop = last_non_stripped<self, chars>();
         if constexpr (stop < 0) {
             return bertrand::static_str{""};
@@ -1111,7 +1131,7 @@ private:
     /* Return a new string containing a sorted permutation of these contents. */
     template <bertrand::static_str self, meta::default_constructible Less>
         requires (meta::iter_sortable<Less, char*, char*>)
-    [[nodiscard]] static consteval auto sort() noexcept {
+    [[nodiscard]] static constexpr auto sort() noexcept {
         static_str<self.size()> result;
         std::copy_n(self.buffer, self.size(), result.buffer);
         result.buffer[self.size()] = '\0';
@@ -1126,7 +1146,7 @@ private:
         bertrand::static_str sep,
         size_type maxsplit = std::numeric_limits<size_type>::max()
     > requires (sep.size() > 0)
-    [[nodiscard]] static consteval auto split() noexcept {
+    [[nodiscard]] static constexpr auto split() noexcept {
         constexpr size_type freq = count<self, sep>();
         if constexpr (freq == 0) {
             return string_list<self>{};
@@ -1164,7 +1184,7 @@ private:
 
     /* Equivalent to Python `str.splitlines([keepends])`. */
     template <bertrand::static_str self, bool keepends = false>
-    [[nodiscard]] static consteval auto splitlines() noexcept {
+    [[nodiscard]] static constexpr auto splitlines() noexcept {
         static constexpr size_type n = [] {
             size_type total = 1;
             for (size_type i = 0; i < self.size(); ++i) {
@@ -1242,7 +1262,7 @@ private:
     /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
     compile time. */
     template <bertrand::static_str self, bertrand::static_str prefix>
-    [[nodiscard]] static consteval bool startswith() noexcept {
+    [[nodiscard]] static constexpr bool startswith() noexcept {
         return (
             prefix.size() <= self.size() &&
             std::equal(prefix.buffer, prefix.buffer + prefix.size(), self.buffer)
@@ -1252,7 +1272,7 @@ private:
     /* Equivalent to Python `str.strip([chars])`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, bertrand::static_str chars = " \t\n\r\f\v">
-    [[nodiscard]] static consteval auto strip() noexcept {
+    [[nodiscard]] static constexpr auto strip() noexcept {
         constexpr index_type start = first_non_stripped<self, chars>();
         if constexpr (start < 0) {
             return bertrand::static_str{""};
@@ -1269,7 +1289,7 @@ private:
     /* Equivalent to Python `str.swapcase()`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval auto swapcase() noexcept {
+    [[nodiscard]] static constexpr auto swapcase() noexcept {
         static_str<self.size()> result;
         for (size_type i = 0; i < self.size(); ++i) {
             char c = self.buffer[i];
@@ -1287,7 +1307,7 @@ private:
 
     /* Equivalent to Python `str.title()`, but evaluated statically at compile time. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval auto title() noexcept {
+    [[nodiscard]] static constexpr auto title() noexcept {
         static_str<self.size()> result;
         bool capitalize_next = true;
         for (size_type i = 0; i < self.size(); ++i) {
@@ -1312,7 +1332,7 @@ private:
 
     /* Equivalent to Python `str.upper()`, but evaluated statically at compile time. */
     template <bertrand::static_str self>
-    [[nodiscard]] static consteval auto upper() noexcept {
+    [[nodiscard]] static constexpr auto upper() noexcept {
         static_str<self.size()> result;
         for (size_type i = 0; i < self.size(); ++i) {
             result.buffer[i] = impl::char_toupper(self.buffer[i]);
@@ -1324,7 +1344,7 @@ private:
     /* Equivalent to Python `str.zfill(width)`, but evaluated statically at compile
     time. */
     template <bertrand::static_str self, size_type width>
-    [[nodiscard]] static consteval auto zfill() noexcept {
+    [[nodiscard]] static constexpr auto zfill() noexcept {
         if constexpr (width <= self.size()) {
             return self;
         } else if constexpr (self.empty()) {
@@ -1354,15 +1374,6 @@ private:
         }
     }
 };
-
-
-/* ADL `swap()` method for `bertrand::static_str` instances. */
-template <size_t N>
-constexpr void swap(static_str<N>& a, static_str<N>& b)
-    noexcept(noexcept(a.swap(b)))
-{
-    a.swap(b);
-}
 
 
 template <static_str self>
@@ -1505,7 +1516,7 @@ public:
 
     /* Repeat a string a given number of times at compile time. */
     template <size_type reps>
-    [[nodiscard]] static consteval auto repeat() noexcept {
+    [[nodiscard]] static constexpr auto repeat() noexcept {
         return string_wrapper<self.template repeat<self, reps>()>{};
     }
 
@@ -1616,38 +1627,38 @@ public:
     }
 
     /* Equivalent to Python `str.capitalize()`. */
-    [[nodiscard]] static consteval auto capitalize() noexcept {
+    [[nodiscard]] static constexpr auto capitalize() noexcept {
         return string_wrapper<self.template capitalize<self>()>{};
     }
 
     /* Equivalent to Python `str.center(width[, fillchar])`. */
     template <size_type width, char fillchar = ' '>
-    [[nodiscard]] static consteval auto center() noexcept {
+    [[nodiscard]] static constexpr auto center() noexcept {
         return string_wrapper<self.template center<self, width, fillchar>()>{};
     }
 
     /* Equivalent to Python `str.count(sub[, start[, stop]])`. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
-    [[nodiscard]] static consteval auto count() noexcept {
+    [[nodiscard]] static constexpr auto count() noexcept {
         return self.template count<self, sub, start, stop>();
     }
 
     /* Equivalent to Python `str.endswith(suffix)`. */
     template <static_str suffix>
-    [[nodiscard]] static consteval auto endswith() noexcept {
+    [[nodiscard]] static constexpr auto endswith() noexcept {
         return self.template endswith<self, suffix>();
     }
 
     /* Equivalent to Python `str.expandtabs([tabsize])`. */
     template <size_type tabsize = 8>
-    [[nodiscard]] static consteval auto expandtabs() noexcept {
+    [[nodiscard]] static constexpr auto expandtabs() noexcept {
         return string_wrapper<self.template expandtabs<self, tabsize>()>{};
     }
 
     /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns -1 if the
     substring is not found. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
-    [[nodiscard]] static consteval auto find() noexcept {
+    [[nodiscard]] static constexpr auto find() noexcept {
         return self.template find<self, sub, start, stop>();
     }
 
@@ -1655,90 +1666,90 @@ public:
     the substring is not present. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
         requires (contains<sub, start, stop>())
-    [[nodiscard]] static consteval auto index() noexcept {
+    [[nodiscard]] static constexpr auto index() noexcept {
         return find<sub, start, stop>();
     }
 
     /* Equivalent to Python `str.isalpha()`. */
-    [[nodiscard]] static consteval auto isalpha() noexcept {
+    [[nodiscard]] static constexpr auto isalpha() noexcept {
         return self.template isalpha<self>();
     }
 
     /* Equivalent to Python `str.isalnum()`. */
-    [[nodiscard]] static consteval auto isalnum() noexcept {
+    [[nodiscard]] static constexpr auto isalnum() noexcept {
         return self.template isalnum<self>();
     }
 
     /* Equivalent to Python `str.isascii()`. */
-    [[nodiscard]] static consteval auto isascii() noexcept {
+    [[nodiscard]] static constexpr auto isascii() noexcept {
         return self.template isascii<self>();
     }
 
     /* Equivalent to Python `str.isdigit()`. */
-    [[nodiscard]] static consteval auto isdigit() noexcept {
+    [[nodiscard]] static constexpr auto isdigit() noexcept {
         return self.template isdigit<self>();
     }
 
     /* Equivalent to Python `str.islower()`. */
-    [[nodiscard]] static consteval auto islower() noexcept {
+    [[nodiscard]] static constexpr auto islower() noexcept {
         return self.template islower<self>();
     }
 
     /* Equivalent to Python `str.isspace()`. */
-    [[nodiscard]] static consteval auto isspace() noexcept {
+    [[nodiscard]] static constexpr auto isspace() noexcept {
         return self.template isspace<self>();
     }
 
     /* Equivalent to Python `str.istitle()`. */
-    [[nodiscard]] static consteval auto istitle() noexcept {
+    [[nodiscard]] static constexpr auto istitle() noexcept {
         return self.template istitle<self>();
     }
 
     /* Equivalent to Python `str.isupper()`. */
-    [[nodiscard]] static consteval auto isupper() noexcept {
+    [[nodiscard]] static constexpr auto isupper() noexcept {
         return self.template isupper<self>();
     }
 
     /* Equivalent to Python `str.join(strings...)`. */
     template <static_str first, static_str... rest>
-    [[nodiscard]] static consteval auto join() noexcept {
+    [[nodiscard]] static constexpr auto join() noexcept {
         return string_wrapper<self.template join<self, first, rest...>()>{};
     }
 
     /* Equivalent to Python `str.ljust(width[, fillchar])`. */
     template <size_type width, char fillchar = ' '>
-    [[nodiscard]] static consteval auto ljust() noexcept {
+    [[nodiscard]] static constexpr auto ljust() noexcept {
         return string_wrapper<self.template ljust<self, width, fillchar>()>{};
     }
 
     /* Equivalent to Python `str.lower()`. */
-    [[nodiscard]] static consteval auto lower() noexcept {
+    [[nodiscard]] static constexpr auto lower() noexcept {
         return string_wrapper<self.template lower<self>()>{};
     }
 
     /* Equivalent to Python `str.lstrip([chars])`. */
     template <static_str chars = " \t\n\r\f\v">
-    [[nodiscard]] static consteval auto lstrip() noexcept {
+    [[nodiscard]] static constexpr auto lstrip() noexcept {
         return string_wrapper<self.template lstrip<self, chars>()>{};
     }
 
     /* Equivalent to Python `str.partition(sep)`. */
     template <static_str sep>
-    [[nodiscard]] static consteval auto partition() noexcept {
+    [[nodiscard]] static constexpr auto partition() noexcept {
         return self.template partition<self, sep>();
     }
 
     /* Equivalent to Python `str.removeprefix()`, but evaluated statically at compile
     time. */
     template <static_str prefix>
-    [[nodiscard]] static consteval auto removeprefix() noexcept {
+    [[nodiscard]] static constexpr auto removeprefix() noexcept {
         return string_wrapper<self.template removeprefix<self, prefix>()>{};
     }
 
     /* Equivalent to Python `str.removesuffix()`, but evaluated statically at compile
     time. */
     template <static_str suffix>
-    [[nodiscard]] static consteval auto removesuffix() noexcept {
+    [[nodiscard]] static constexpr auto removesuffix() noexcept {
         return string_wrapper<self.template removesuffix<self, suffix>()>{};
     }
 
@@ -1748,14 +1759,14 @@ public:
         static_str repl,
         size_type max_count = std::numeric_limits<size_type>::max()
     >
-    [[nodiscard]] static consteval auto replace() noexcept {
+    [[nodiscard]] static constexpr auto replace() noexcept {
         return string_wrapper<self.template replace<self, sub, repl, max_count>()>{};
     }
 
     /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns -1 if the
     substring is not found. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
-    [[nodiscard]] static consteval auto rfind() noexcept {
+    [[nodiscard]] static constexpr auto rfind() noexcept {
         return self.template rfind<self, sub, start, stop>();
     }
 
@@ -1763,19 +1774,19 @@ public:
     the substring is not present. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
         requires (contains<sub, start, stop>())
-    [[nodiscard]] static consteval auto rindex() noexcept {
+    [[nodiscard]] static constexpr auto rindex() noexcept {
         return rfind<sub, start, stop>();
     }
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
     template <size_type width, char fillchar = ' '>
-    [[nodiscard]] static consteval auto rjust() noexcept {
+    [[nodiscard]] static constexpr auto rjust() noexcept {
         return string_wrapper<self.template rjust<self, width, fillchar>()>{};
     }
 
     /* Equivalent to Python `str.rpartition(sep)`. */
     template <static_str sep>
-    [[nodiscard]] static consteval auto rpartition() noexcept {
+    [[nodiscard]] static constexpr auto rpartition() noexcept {
         return self.template rpartition<self, sep>();
     }
 
@@ -1784,20 +1795,20 @@ public:
         static_str sep,
         size_type maxsplit = std::numeric_limits<size_type>::max()
     > requires (sep.size() > 0)
-    [[nodiscard]] static consteval auto rsplit() noexcept {
+    [[nodiscard]] static constexpr auto rsplit() noexcept {
         return self.template rsplit<self, sep, maxsplit>();
     }
 
     /* Equivalent to Python `str.rstrip([chars])`. */
     template <static_str chars = " \t\n\r\f\v">
-    [[nodiscard]] static consteval auto rstrip() noexcept {
+    [[nodiscard]] static constexpr auto rstrip() noexcept {
         return string_wrapper<self.template rstrip<self, chars>()>{};
     }
 
     /* Return a new string containing a sorted permutation of these contents. */
     template <meta::default_constructible Less = impl::Less>
         requires (meta::iter_sortable<Less, char*, char*>)
-    [[nodiscard]] static consteval auto sort() noexcept {
+    [[nodiscard]] static constexpr auto sort() noexcept {
         return string_wrapper<self.template sort<self, Less>()>{};
     }
 
@@ -1807,62 +1818,53 @@ public:
         static_str sep,
         size_type maxsplit = std::numeric_limits<size_type>::max()
     > requires (sep.size() > 0)
-    [[nodiscard]] static consteval auto split() noexcept {
+    [[nodiscard]] static constexpr auto split() noexcept {
         return self.template split<self, sep, maxsplit>();
     }
 
     /* Equivalent to Python `str.splitlines([keepends])`. */
     template <bool keepends = false>
-    [[nodiscard]] static consteval auto splitlines() noexcept {
+    [[nodiscard]] static constexpr auto splitlines() noexcept {
         return self.template splitlines<self, keepends>();
     }
 
     /* Equivalent to Python `str.startswith(prefix)`, but evaluated statically at
     compile time. */
     template <static_str prefix>
-    [[nodiscard]] static consteval auto startswith() noexcept {
+    [[nodiscard]] static constexpr auto startswith() noexcept {
         return self.template startswith<self, prefix>();
     }
 
     /* Equivalent to Python `str.strip([chars])`, but evaluated statically at compile
     time. */
     template <static_str chars = " \t\n\r\f\v">
-    [[nodiscard]] static consteval auto strip() noexcept {
+    [[nodiscard]] static constexpr auto strip() noexcept {
         return string_wrapper<self.template strip<self, chars>()>{};
     }
 
     /* Equivalent to Python `str.swapcase()`, but evaluated statically at compile
     time. */
-    [[nodiscard]] static consteval auto swapcase() noexcept {
+    [[nodiscard]] static constexpr auto swapcase() noexcept {
         return string_wrapper<self.template swapcase<self>()>{};
     }
 
     /* Equivalent to Python `str.title()`, but evaluated statically at compile time. */
-    [[nodiscard]] static consteval auto title() noexcept {
+    [[nodiscard]] static constexpr auto title() noexcept {
         return string_wrapper<self.template title<self>()>{};
     }
 
     /* Equivalent to Python `str.upper()`, but evaluated statically at compile time. */
-    [[nodiscard]] static consteval auto upper() noexcept {
+    [[nodiscard]] static constexpr auto upper() noexcept {
         return string_wrapper<self.template upper<self>()>{};
     }
 
     /* Equivalent to Python `str.zfill(width)`, but evaluated statically at compile
     time. */
     template <size_type width>
-    [[nodiscard]] static consteval auto zfill() noexcept {
+    [[nodiscard]] static constexpr auto zfill() noexcept {
         return string_wrapper<self.template zfill<self, width>()>{};
     }
 };
-
-
-/* ADL `swap()` method for `bertrand::string_wrapper` instances. */
-template <static_str self>
-constexpr void swap(string_wrapper<self>& a, string_wrapper<self>& b)
-    noexcept(noexcept(a.swap(b)))
-{
-    a.swap(b);
-}
 
 
 namespace impl {
@@ -2417,6 +2419,21 @@ template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashab
 struct string_map;
 
 
+/* ADL `swap()` method for `bertrand::string_set` instances. */
+template <static_str... Keys>
+constexpr void swap(string_set<Keys...>& a, string_set<Keys...>& b)
+    noexcept(noexcept(a.swap(b)))
+{ a.swap(b); }
+
+
+/* ADL `swap()` method for `bertrand::string_map` instances. */
+template <typename T, static_str... Keys>
+constexpr void swap(string_map<T, Keys...>& a, string_map<T, Keys...>& b)
+    noexcept(noexcept(a.swap(b)))
+    requires(requires{a.swap(b);})
+{ a.swap(b); }
+
+
 template <static_str... Strings>
 struct string_list : impl::string_list_tag {
     using value_type = const std::string_view;
@@ -2523,6 +2540,8 @@ struct string_list : impl::string_list_tag {
         std::string str = std::forward<T>(key);
         return ((size_type(0) + ... + (str == Strings)));
     }
+
+    /// TODO: index() should return Optional<index_type> instead of -1 on error.
 
     /* Get the index of the first occurrence of a string within the list.  Fails to
     compile if the string is not present. */
@@ -2689,46 +2708,15 @@ struct string_list : impl::string_list_tag {
         return {*this, s.normalize(ssize())};
     }
 
-    /* Get an iterator to the string at index `I`, where `I` is known at compile
-    time.  Applies Python-style wraparound for negative indices, and returns an `end()`
-    iterator if the index is out of bounds after normalization. */
-    template <index_type I>
-    [[nodiscard]] static constexpr iterator at() noexcept {
-        if constexpr (impl::valid_index<ssize(), I>) {
-            return {data() + impl::normalize_index<ssize(), I>()};
-        } else {
-            return end();
-        }
-    }
-
-    /* Get an iterator to the string at index `i`, where `i` is known at runtime.
-    Applies Python-style wraparound for negative indices, and returns an `end()`
-    iterator if the index is out of bounds after normalization. */
+    /* Get an iterator to the string at index `i`.  Applies Python-style wraparound for
+    negative indices, and returns an `end()` iterator if the index is out of bounds
+    after normalization. */
     [[nodiscard]] static constexpr iterator at(index_type i) noexcept {
         index_type index = i + ssize() * (i < 0);
         if (index < 0 || index >= ssize()) {
             return end();
         }
         return {data() + index};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    template <bertrand::slice s>
-    [[nodiscard]] constexpr slice at() const noexcept {
-        return {*this, s.normalize(ssize())};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] constexpr slice at(bertrand::slice s) const noexcept {
-        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to the first occurrence of a string within the list.  Returns
@@ -2841,7 +2829,7 @@ public:
     /* Remove the first occurrence of a string from the list, returning a new list
     without that element.  Fails to compile if the string is not present. */
     template <static_str Key> requires (contains<Key>())
-    [[nodiscard]] static consteval auto remove() noexcept {
+    [[nodiscard]] static constexpr auto remove() noexcept {
         constexpr size_type idx = size_type(index<Key>());
         return []<size_t... Prev, size_t... Next>(
             std::index_sequence<Prev...>,
@@ -2861,7 +2849,7 @@ public:
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
     template <index_type I> requires (impl::valid_index<ssize(), I>)
-    [[nodiscard]] static consteval auto remove() noexcept {
+    [[nodiscard]] static constexpr auto remove() noexcept {
         constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return []<size_t... Prev, size_t... Next>(
             std::index_sequence<Prev...>,
@@ -2883,7 +2871,7 @@ public:
     which is equivalent to an empty slice index in Python.  Applies Python-style
     wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
-    [[nodiscard]] static consteval auto remove() noexcept {
+    [[nodiscard]] static constexpr auto remove() noexcept {
         static constexpr auto indices = s.normalize(ssize());
         if constexpr (indices.length == 0) {
             return string_list{};
@@ -2896,7 +2884,7 @@ public:
 
     /* Equivalent to Python `sep.join(strings...)`. */
     template <static_str sep>
-    [[nodiscard]] static consteval auto join() noexcept {
+    [[nodiscard]] static constexpr auto join() noexcept {
         return string_wrapper<sep>::template join<Strings...>();
     }
 
@@ -2959,7 +2947,7 @@ public:
 
     /* Repeat the contents of the list `reps` times. */
     template <size_type reps>
-    [[nodiscard]] static consteval auto repeat() noexcept {
+    [[nodiscard]] static constexpr auto repeat() noexcept {
         return []<size_t I = 0>(this auto&& self) {
             if constexpr (I < reps) {
                 return
@@ -3014,13 +3002,6 @@ public:
 private:
     static constexpr std::array<value_type, size()> m_data {Strings...};
 };
-
-
-/* ADL `swap()` method for `bertrand::string_list` instances. */
-template <static_str... Strings>
-inline constexpr void swap(string_list<Strings...>& a, string_list<Strings...>& b)
-    noexcept(noexcept(a.swap(b)))
-{}
 
 
 template <static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
@@ -3195,6 +3176,8 @@ public:
         return lookup(std::forward<K>(key)) >= 0;
     }
 
+    /// TODO: index() should return Optional<index_type> instead of -1 on error.
+
     /* Get the index of a string within the set.  Fails to compile if the string is not
     present. */
     template <static_str Key>
@@ -3265,47 +3248,15 @@ public:
         return {*this, s.normalize(ssize())};
     }
 
-    /* Get an iterator to the key at index `I`, where `I` is known at compile time.
-    Applies Python-style wraparound for negative indices, and returns an `end()`
-    iterator if the index is out of bounds after normalization. */
-    template <index_type I>
-    [[nodiscard]] static constexpr iterator at() noexcept {
-        constexpr index_type index = I + ssize() * (I < 0);
-        if constexpr (index < 0 || index >= ssize()) {
-            return end();
-        } else {
-            return {data(), hash_index.data(), index_type(pack_index[index]), ssize()};
-        }
-    }
-
-    /* Get an iterator to the key at index `i`, where `i` is known at runtime.
-    Applies Python-style wraparound for negative indices, and returns an `end()`
-    iterator if the index is out of bounds after normalization. */
+    /* Get an iterator to the key at index `i`.  Applies Python-style wraparound for
+    negative indices, and returns an `end()` iterator if the index is out of bounds
+    after normalization. */
     [[nodiscard]] static constexpr iterator at(index_type i) noexcept {
         index_type index = i + ssize() * (i < 0);
         if (index < 0 || index >= ssize()) {
             return end();
         }
         return {data(), hash_index.data(), index, ssize()};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    template <bertrand::slice s>
-    [[nodiscard]] constexpr slice at() const noexcept {
-        return {*this, s.normalize(ssize())};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] constexpr slice at(bertrand::slice s) const noexcept {
-        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to a string within the set.  Returns an `end()` iterator if
@@ -3430,7 +3381,7 @@ public:
     /* Remove a string from the set, returning a new set without that element.  Fails
     to compile if the string is not present. */
     template <static_str Key> requires (contains<Key>())
-    [[nodiscard]] static consteval auto remove() noexcept {
+    [[nodiscard]] static constexpr auto remove() noexcept {
         constexpr size_type idx = size_type(index<Key>());
         return []<size_t... Prev, size_t... Next>(
             std::index_sequence<Prev...>,
@@ -3450,7 +3401,7 @@ public:
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
     template <index_type I> requires (impl::valid_index<ssize(), I>)
-    [[nodiscard]] static consteval auto remove() noexcept {
+    [[nodiscard]] static constexpr auto remove() noexcept {
         constexpr size_type idx = size_type(impl::normalize_index<ssize(), I>());
         return []<size_t... Prev, size_t... Next>(
             std::index_sequence<Prev...>,
@@ -3472,7 +3423,7 @@ public:
     which is equivalent to an empty slice index in Python.  Applies Python-style
     wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
-    [[nodiscard]] static consteval auto remove() noexcept {
+    [[nodiscard]] static constexpr auto remove() noexcept {
         static constexpr auto indices = s.normalize(ssize());
         if constexpr (indices.length == 0) {
             return string_set{};
@@ -3485,7 +3436,7 @@ public:
 
     /* Equivalent to Python `sep.join(keys...)` */
     template <static_str sep>
-    [[nodiscard]] static consteval auto join() noexcept {
+    [[nodiscard]] static constexpr auto join() noexcept {
         return string_wrapper<sep>::template join<Keys...>();
     }
 
@@ -3640,13 +3591,6 @@ private:
         };
     }(std::make_index_sequence<size()>{});
 };
-
-
-/* ADL `swap()` method for `bertrand::string_set` instances. */
-template <static_str... Keys>
-constexpr void swap(string_set<Keys...>& a, string_set<Keys...>& b)
-    noexcept(noexcept(a.swap(b)))
-{}
 
 
 template <meta::not_void T, static_str... Keys> requires (meta::perfectly_hashable<Keys...>)
@@ -3897,6 +3841,8 @@ public:
         return lookup(std::forward<K>(key)) >= 0;
     }
 
+    /// TODO: index() should return Optional<index_type> instead of -1 on error.
+
     /* Get the index of a string within the set.  Fails to compile if the string is not
     present. */
     template <static_str Key>
@@ -4014,6 +3960,8 @@ public:
         }(std::make_index_sequence<indices.length>{});
     }
 
+    /// TODO: maybe the bounds checks can be optimized out in non-debug builds?
+
     /* Get the value for a specific key within the table, where the key is known at
     runtime.  Throws a `KeyError` if the key is not present in the map. */
     template <typename K> requires (hashable<K>)
@@ -4100,35 +4048,9 @@ public:
         return {*this, s.normalize(ssize())};
     }
 
-    /* Get an iterator to the key-value pair at index `I`, where `I` is known at
-    compile time.  Applies Python-style wraparound for negative indices, and returns an
-    `end()` iterator if the index is out of bounds after normalization. */
-    template <index_type I>
-    [[nodiscard]] constexpr iterator at() noexcept {
-        constexpr index_type index = I + ssize() * (I < 0);
-        if constexpr (index < 0 || index >= ssize()) {
-            return end();
-        } else {
-            return {data(), hash_index.data(), index_type(pack_index[index]), ssize()};
-        }
-    }
-
-    /* Get an iterator to the key-value pair at index `I`, where `I` is known at
-    compile time.  Applies Python-style wraparound for negative indices, and returns an
-    `end()` iterator if the index is out of bounds after normalization. */
-    template <index_type I>
-    [[nodiscard]] constexpr const_iterator at() const noexcept {
-        constexpr index_type index = I + ssize() * (I < 0);
-        if constexpr (index < 0 || index >= ssize()) {
-            return end();
-        } else {
-            return {data(), hash_index.data(), index_type(pack_index[index]), ssize()};
-        }
-    }
-
-    /* Get an iterator to the key-value pair at index `i`, where `i` is known at
-    runtime.  Applies Python-style wraparound for negative indices, and returns an
-    `end()` iterator if the index is out of bounds after normalization. */
+    /* Get an iterator to the key-value pair at index `i`.  Applies Python-style
+    wraparound for negative indices, and returns an `end()` iterator if the index is
+    out of bounds after normalization. */
     [[nodiscard]] constexpr iterator at(index_type i) noexcept {
         index_type index = i + ssize() * (i < 0);
         if (index < 0 || index >= ssize()) {
@@ -4138,9 +4060,9 @@ public:
         }
     }
 
-    /* Get an iterator to the key-value pair at index `i`, where `i` is known at
-    runtime. Applies Python-style wraparound for negative indices, and returns an
-    `end()` iterator if the index is out of bounds after normalization. */
+    /* Get an iterator to the key-value pair at index `i`. Applies Python-style
+    wraparound for negative indices, and returns an `end()` iterator if the index is
+    out of bounds after normalization. */
     [[nodiscard]] constexpr const_iterator at(index_type i) const noexcept {
         index_type index = i + ssize() * (i < 0);
         if (index < 0 || index >= ssize()) {
@@ -4148,44 +4070,6 @@ public:
         } else {
             return {data(), hash_index.data(), index, ssize()};
         }
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    template <bertrand::slice s>
-    [[nodiscard]] constexpr slice at() noexcept {
-        return {*this, s.normalize(ssize())};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    template <bertrand::slice s>
-    [[nodiscard]] constexpr const_slice at() const noexcept {
-        return {*this, s.normalize(ssize())};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] constexpr slice at(bertrand::slice s) noexcept {
-        return {*this, s.normalize(ssize())};
-    }
-
-    /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
-    describing the start, stop, and step indices, and returns a slice object containing
-    the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
-    [[nodiscard]] constexpr const_slice at(bertrand::slice s) const noexcept {
-        return {*this, s.normalize(ssize())};
     }
 
     /* Get an iterator to a string within the set.  Returns an `end()` iterator if
@@ -4572,7 +4456,7 @@ public:
     /* Remove a string from the set, returning a new set without that element.  Fails
     to compile if the string is not present. */
     template <static_str Key, typename Self> requires (contains<Key>())
-    [[nodiscard]] consteval auto remove(this Self&& self)
+    [[nodiscard]] constexpr auto remove(this Self&& self)
         noexcept(noexcept(std::forward<Self>(self).template do_remove<size_type(index<Key>())>(
             std::make_index_sequence<size_type(index<Key>())>{},
             std::make_index_sequence<size() - size_type(index<Key>()) - 1>{}
@@ -4593,7 +4477,7 @@ public:
     Applies Python-style wraparound for negative indices, and fails to compile if the
     index is out of bounds after normalization. */
     template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
-    [[nodiscard]] consteval auto remove(this Self&& self)
+    [[nodiscard]] constexpr auto remove(this Self&& self)
         noexcept(noexcept(std::forward<Self>(self).template do_remove<
             size_type(impl::normalize_index<ssize(), I>())
         >(
@@ -4624,7 +4508,7 @@ public:
     which is equivalent to an empty slice index in Python.  Applies Python-style
     wraparound to both `start` and `stop`. */
     template <bertrand::slice s, typename Self>
-    [[nodiscard]] consteval auto remove(this Self&& self) noexcept(
+    [[nodiscard]] constexpr auto remove(this Self&& self) noexcept(
         noexcept(forward_remove<
             s.normalize(ssize()),
             0
@@ -4646,7 +4530,7 @@ public:
 
     /* Equivalent to Python `sep.join(keys...)` */
     template <static_str sep>
-    [[nodiscard]] static consteval auto join() noexcept {
+    [[nodiscard]] static constexpr auto join() noexcept {
         return string_wrapper<sep>::template join<Keys...>();
     }
 
@@ -5216,91 +5100,135 @@ public:
 };
 
 
-/* ADL `swap()` method for `bertrand::string_map` instances. */
-template <typename T, static_str... Keys>
-constexpr void swap(string_map<T, Keys...>& a, string_map<T, Keys...>& b)
-    noexcept(noexcept(a.swap(b)))
-    requires(requires{a.swap(b);})
-{}
+namespace impl {
+
+    /* Visitor for `bertrand::repr()`. */
+    template <typename Char>
+    struct Repr {
+        using type = std::basic_string<Char>;
+
+        // 1) prefer std::format() if it is available
+        template <typename T>
+        [[nodiscard]] static constexpr type operator()(T&& obj)
+            noexcept(noexcept(std::format("{}", std::forward<T>(obj))))
+            requires(std::formattable<T, Char>)
+        {
+            return std::format(
+                std::basic_format_string<Char, T>("{}"),
+                std::forward<T>(obj)
+            );
+        }
+
+        // 2) prefer explicit conversion to std::basic_string<Char>
+        template <typename T>
+        [[nodiscard]] static constexpr type operator()(T&& obj)
+            noexcept(noexcept(static_cast<std::basic_string<Char>>(std::forward<T>(obj))))
+            requires(
+                !std::formattable<T, Char> &&
+                meta::explicitly_convertible_to<T, type>
+            )
+        {
+            return static_cast<type>(std::forward<T>(obj));
+        }
+
+        // 3) attempt stream insertion operator
+        template <typename T>
+        [[nodiscard]] static constexpr type operator()(T&& obj)
+            noexcept(
+                noexcept(std::basic_ostringstream<Char>{} << std::forward<T>(obj)) &&
+                noexcept(std::basic_ostringstream<Char>{}.str())
+            )
+            requires(
+                !std::formattable<T, Char> &&
+                !meta::explicitly_convertible_to<T, type> &&
+                meta::has_stream_insertion<T, Char>
+            )
+        {
+            std::basic_ostringstream<Char> stream;
+            stream << std::forward<T>(obj);
+            return stream.str();
+        }
+
+        // 4) fall back to generic representation
+        template <typename T>
+        [[nodiscard]] static constexpr type operator()(const T& obj)
+            noexcept(noexcept(
+                "<" + type_name<T> + " at " +
+                std::to_string(reinterpret_cast<uintptr_t>(&obj)) + ">"
+            ))
+            requires(
+                !std::formattable<T, Char> &&
+                !meta::explicitly_convertible_to<T, type> &&
+                !meta::has_stream_insertion<T, Char> &&
+                meta::has_stream_insertion<uintptr_t, Char>
+            )
+        {
+            static constexpr static_str prefix = "<" + type_name<T> + " at ";
+            std::basic_ostringstream<Char> stream;
+            stream << prefix << reinterpret_cast<uintptr_t>(&obj) << ">";
+            return stream.str();
+        }
+    };
+
+}
 
 
 /* Get a simple string representation of an arbitrary object.  This is functionally
-equivalent to Python's `repr()` function, but extended to work for arbitrary C++ types.
-It is guaranteed not to fail, and will attempt the following, in order of precedence:
+equivalent to Python's `repr()` function, but extended to work for all C++ types.  It
+will attempt the following, in order of precedence:
 
     1.  A `std::format()` call using a registered `std::formatter<>` specialization.
-    2.  An explicit conversion to `std::string`.
-    3.  A member `.to_string()` function on the object's type.
-    4.  An ADL `to_string()` function in the same namespace as the object.
-    5.  A `std::to_string()` call.
-    6.  A stream insertion operator (`<<`).
-    7.  A generic identifier based on the demangled type name and memory address.
-*/
-template <typename Self>
-[[nodiscard]] constexpr std::string repr(Self&& obj) {
-    if constexpr (meta::wrapper<Self>) {
-        return repr(meta::unwrap(std::forward<Self>(obj)));
+    2.  An explicit conversion to `std::basic_string<Char>`.
+    3.  A stream insertion operator (`<<`).
+    4.  A generic identifier based on the demangled type name and memory address,
+        similar to Python.
 
-    } else if constexpr (std::formattable<Self, char>) {
-        return std::format("{}", std::forward<Self>(obj));
-
-    } else if constexpr (meta::explicitly_convertible_to<Self, std::string>) {
-        return static_cast<std::string>(obj);
-
-    } else if constexpr (meta::has_member_to_string<Self>) {
-        return std::forward<Self>(obj).to_string();
-
-    } else if constexpr (meta::has_adl_to_string<Self>) {
-        return to_string(std::forward<Self>(obj));
-
-    } else if constexpr (meta::has_std_to_string<Self>) {
-        return std::to_string(std::forward<Self>(obj));
-
-    } else if constexpr (meta::has_stream_insertion<Self>) {
-        std::ostringstream stream;
-        stream << std::forward<Self>(obj);
-        return stream.str();
-
-    } else {
-        return "<" + type_name<Self> + " at " + std::to_string(
-            reinterpret_cast<size_t>(&obj)
-        ) + ">";
-    }
+If you'd like to customize the output of `repr()` for a specific type, the best way to
+do this is to implement a `std::formatter<>` specialization for that type, which also
+enables Python-style format strings. */
+template <typename Char = char, typename T>
+[[nodiscard]] constexpr std::basic_string<Char> repr(T&& obj)
+    noexcept(meta::nothrow::visitor<impl::Repr<Char>, T>)
+    requires(meta::visitor<impl::Repr<Char>, T>)
+{
+    return visit(impl::Repr<Char>{}, std::forward<T>(obj));
 }
 
 
 namespace impl {
 
-    template <typename out, typename... Args>
+    template <typename...>
     struct _format_repr;
-    template <typename... out, typename... Args>
-    struct _format_repr<std::tuple<out...>, Args...> {
-        using type = std::format_string<out...>;
+    template <typename Char, typename... out, typename... Args>
+    struct _format_repr<Char, meta::pack<out...>, Args...> {
+        using type = std::basic_format_string<Char, out...>;
     };
-    template <typename... out, typename A, typename... Args>
-    struct _format_repr<std::tuple<out...>, A, Args...> {
+    template <typename Char, typename... out, typename A, typename... Args>
+    struct _format_repr<Char, meta::pack<out...>, A, Args...> {
         template <typename T>
-        struct to_repr { using type = std::string; };
-        template <std::formattable<char> T>
+        struct to_repr { using type = std::basic_string<Char>; };
+        template <std::formattable<Char> T>
         struct to_repr<T> { using type = T; };
         using type = _format_repr<
-            std::tuple<out..., typename to_repr<A>::type>,
+            Char,
+            meta::pack<out..., typename to_repr<A>::type>,
             Args...
         >::type;
     };
 
-    template <typename... Args>
-    using format_repr = _format_repr<std::tuple<>, Args...>::type;
+    template <typename Char, typename... Args>
+    using format_repr = _format_repr<Char, meta::pack<>, Args...>::type;
 
-    template <typename A>
-    constexpr decltype(auto) to_format_repr(A&& arg) {
-        if constexpr (meta::wrapper<A>) {
-            return to_format_repr(meta::unwrap(std::forward<A>(arg)));
-        } else if constexpr (std::formattable<decltype(arg), char>) {
-            return std::forward<decltype(arg)>(arg);
-        } else {
-            return bertrand::repr(std::forward<decltype(arg)>(arg));
-        }
+    template <typename Char, std::formattable<Char> A>
+    constexpr decltype(auto) to_format_repr(A&& arg) noexcept {
+        return (std::forward<A>(arg));
+    }
+
+    template <typename Char, typename A> requires (!std::formattable<A, Char>)
+    constexpr decltype(auto) to_format_repr(A&& arg)
+        noexcept(noexcept(bertrand::repr(std::forward<A>(arg))))
+    {
+        return bertrand::repr(std::forward<A>(arg));
     }
 
 }
@@ -5308,45 +5236,69 @@ namespace impl {
 
 /* Format a string similar to `std::format()`.  Unformattable objects will be passed
 through `repr()` to obtain a universal representation. */
-template <typename... Args>
-constexpr std::string format(impl::format_repr<Args...> fmt, Args&&... args) {
-    return std::format(fmt, impl::to_format_repr(std::forward<Args>(args))...);
+template <typename Char = char, typename... Args>
+constexpr std::string format(impl::format_repr<Char, Args...> fmt, Args&&... args)
+    noexcept(noexcept(std::format(
+        fmt,
+        impl::to_format_repr<Char>(std::forward<Args>(args))...
+    )))
+    requires(meta::visitor<impl::Repr<Char>, Args...>)
+{
+    return std::format(fmt, impl::to_format_repr<Char>(std::forward<Args>(args))...);
 }
 
 
 /* Print a format string to an output buffer.  Does not append a newline character.
 Unformattable objects will be passed through `repr()` to obtain a universal
 representation. */
-template <typename... Args>
-constexpr void print(impl::format_repr<Args...> fmt, Args&&... args) {
-    std::print(fmt, impl::to_format_repr(std::forward<Args>(args))...);
+template <typename Char = char, typename... Args>
+constexpr void print(impl::format_repr<Char, Args...> fmt, Args&&... args)
+    noexcept(noexcept(std::print(
+        fmt,
+        impl::to_format_repr<Char>(std::forward<Args>(args))...
+    )))
+    requires(meta::visitor<impl::Repr<Char>, Args...>)
+{
+    std::print(fmt, impl::to_format_repr<Char>(std::forward<Args>(args))...);
 }
 
 
 /* Print an arbitrary value to an output buffer by calling `repr()` on it. Does not
 append a newline character.  Unformattable objects will be passed through `repr()` to
 obtain a universal representation. */
-template <typename T>
-constexpr void print(T&& obj) {
-    std::cout << repr(std::forward<T>(obj));
+template <typename Char = char, typename T>
+constexpr void print(T&& obj)
+    noexcept(noexcept(std::cout << repr<Char>(std::forward<T>(obj))))
+    requires(meta::visitor<impl::Repr<Char>, T>)
+{
+    std::cout << repr<Char>(std::forward<T>(obj));
 }
 
 
 /* Print a format string to an output buffer.  Appends a newline character to the
 output.  Unformattable objects will be passed through `repr()` to obtain a universal
 representation. */
-template <typename... Args>
-constexpr void println(impl::format_repr<Args...> fmt, Args&&... args) {
-    std::println(fmt, impl::to_format_repr(std::forward<Args>(args))...);
+template <typename Char = char, typename... Args>
+constexpr void println(impl::format_repr<Char, Args...> fmt, Args&&... args)
+    noexcept(noexcept(std::println(
+        fmt,
+        impl::to_format_repr<Char>(std::forward<Args>(args))...
+    )))
+    requires(meta::visitor<impl::Repr<Char>, Args...>)
+{
+    std::println(fmt, impl::to_format_repr<Char>(std::forward<Args>(args))...);
 }
 
 
 /* Print an arbitrary value to an output buffer by calling `repr()` on it.  Appends a
 newline character to the output.  Unformattable objects will be passed through `repr()`
 to obtain a universal representation. */
-template <typename T>
-constexpr void println(T&& obj) {
-    std::cout << repr(std::forward<T>(obj)) << "\n";
+template <typename Char = char, typename T>
+constexpr void println(T&& obj)
+    noexcept(noexcept(std::cout << repr<Char>(std::forward<T>(obj)) << "\n"))
+    requires(meta::visitor<impl::Repr<Char>, T>)
+{
+    std::cout << repr<Char>(std::forward<T>(obj)) << "\n";
 }
 
 
@@ -5360,13 +5312,13 @@ tests using this function just as in native Python. */
 template <typename... Args> requires (DEBUG)
 [[gnu::always_inline]] void assert_(
     bool cnd,
-    impl::format_repr<Args...> msg = "",
+    impl::format_repr<char, Args...> msg = "",
     Args&&... args
 ) {
     if (!cnd) {
         throw AssertionError(std::format(
             msg,
-            impl::to_format_repr(std::forward<Args>(args))...
+            impl::to_format_repr<char>(std::forward<Args>(args))...
         ));
     }
 }

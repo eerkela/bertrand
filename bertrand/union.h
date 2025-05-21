@@ -1242,7 +1242,7 @@ namespace impl {
         struct _wrapped { using type = void; };
         template <meta::not_void V>
         struct _wrapped<V> {
-            using type = decltype((std::declval<T>().get_result()));
+            using type = decltype((std::declval<T>().get_value()));
         };
 
         template <size_t I, typename... Errs>
@@ -1260,7 +1260,7 @@ namespace impl {
             )
         struct _pack<I, Errs...> {
             using type = meta::pack<
-                decltype((std::declval<T>().get_result())),
+                decltype((std::declval<T>().get_value())),
                 Errs...
             >;
         };
@@ -1291,7 +1291,7 @@ namespace impl {
         template <meta::is<T> U>
         [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
             if constexpr (errors::size > 1) {
-                return u.has_result() ? 0 : u.get_error().index() + 1;
+                return u.has_value() ? 0 : u.get_error().index() + 1;
             } else {
                 return u.has_error();
             }
@@ -1300,9 +1300,9 @@ namespace impl {
         /* Perfectly forward the member at index I for an expected of this type. */
         template <size_t I, meta::is<T> U> requires (I == 0 && meta::not_void<wrapped>)
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).get_result())
+            noexcept(std::forward<U>(u).get_value())
         ) {
-            return (std::forward<U>(u).get_result());
+            return (std::forward<U>(u).get_value());
         }
 
         /* Perfectly forward the member at index I for an expected of this type. */
@@ -2992,10 +2992,6 @@ public:
 };
 
 
-/// TODO: expected.result() -> expected.value()
-/// TODO: expected.has_result() -> expected.has_value()
-
-
 template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
 struct Expected : impl::expected_tag {
@@ -3066,7 +3062,7 @@ private:
     storage m_storage;
 
     template <typename Self>
-    constexpr decltype(auto) get_result(this Self&& self) noexcept {
+    constexpr decltype(auto) get_value(this Self&& self) noexcept {
         return (std::forward<Self>(self).m_storage.m_storage.template get<0>());
     }
 
@@ -3092,7 +3088,7 @@ private:
     }
 
     template <typename Self>
-    using access = decltype((std::declval<Self>().get_result()));
+    using access = decltype((std::declval<Self>().get_value()));
 
     template <typename Self>
     using access_error = decltype((std::declval<Self>().get_error()));
@@ -3342,7 +3338,7 @@ public:
 
     /* True if the `Expected` stores a valid result.  `False` if it is in an error
     state. */
-    [[nodiscard]] constexpr bool has_result() const noexcept {
+    [[nodiscard]] constexpr bool has_value() const noexcept {
         return m_storage.index() == 0;
     }
 
@@ -3350,13 +3346,13 @@ public:
     currently in the error state and the program is compiled in debug mode.  Fails to
     compile if the result type is void. */
     template <typename Self> requires (meta::not_void<value_type>)
-    [[nodiscard]] constexpr access<Self> result(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr access<Self> value(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_error()) {
                 throw BadUnionAccess("Expected in error state has no result");
             }
         }
-        return std::forward<Self>(self).get_result();
+        return std::forward<Self>(self).get_value();
     }
 
     /* Access the stored value or return the default value if the expected is in an
@@ -3364,15 +3360,15 @@ public:
     value. */
     template <typename Self, typename V>
         requires (meta::not_void<value_type> && meta::has_common_type<access<Self>, V>)
-    [[nodiscard]] constexpr meta::common_type<access<Self>, V> result_or(
+    [[nodiscard]] constexpr meta::common_type<access<Self>, V> value_or(
         this Self&& self,
         V&& fallback
     ) noexcept(
         meta::nothrow::convertible_to<access<Self>, meta::common_type<access<Self>, V>> &&
         meta::nothrow::convertible_to<V, meta::common_type<access<Self>, V>>
     ) {
-        if (self.has_result()) {
-            return std::forward<Self>(self).get_result();
+        if (self.has_value()) {
+            return std::forward<Self>(self).get_value();
         } else {
             return std::forward<V>(fallback);
         }
@@ -3417,7 +3413,7 @@ public:
     template <typename Self>
     [[nodiscard]] constexpr access_error<Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (self.has_result()) {
+            if (self.has_value()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
         }
@@ -3426,13 +3422,13 @@ public:
 
     /* Access a particular error by index.  This is equivalent to the non-templated
     `error()` accessor in the single error case, and is a shorthand for
-    `error().get<I>().result()` in the union case.  A `BadUnionAccess` exception will
+    `error().get<I>().value()` in the union case.  A `BadUnionAccess` exception will
     be thrown in debug mode if the expected is currently in the valid state, or if the
     indexed error is not the active member of the union. */
     template <size_t I, typename Self> requires (I < errors::size)
     [[nodiscard]] constexpr access_at<I, Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (self.has_result()) {
+            if (self.has_value()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
             if constexpr (sizeof...(Es)) {
@@ -3448,13 +3444,13 @@ public:
 
     /* Access a particular error by type.  This is equivalent to the non-templated
     `error()` accessor in the single error case, and is a shorthand for
-    `error().get<T>().result()` in the union case.  A `BadUnionAccess` exception will
+    `error().get<T>().value()` in the union case.  A `BadUnionAccess` exception will
     be thrown in debug mode if the expected is currently in the valid state, or if the
     specified error is not the active member of the union. */
     template <typename Err, typename Self> requires (errors::template contains<Err>)
     [[nodiscard]] constexpr access_type<Err, Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
-            if (self.has_result()) {
+            if (self.has_value()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
             if constexpr (sizeof...(Es)) {
@@ -3496,7 +3492,7 @@ public:
     /* Access a particular error by index or return the default value if the expected
     stores a valid result, converting to the common type between the error and the
     default value.  This is equivalent to the non-templated `error_or()` accessor in
-    the single error case, and is a shorthand for `error().get<I>().result_or(fallback)`
+    the single error case, and is a shorthand for `error().get<I>().value_or(fallback)`
     in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
     the indexed error is not the active member of the union. */
     template <size_t I, typename Self, typename V>
@@ -3531,7 +3527,7 @@ public:
     /* Access a particular error by index or return the default value if the expected
     stores a valid result, converting to the common type between the error and the
     default value.  This is equivalent to the non-templated `error_or()` accessor in
-    the single error case, and is a shorthand for `error().get<I>().result_or(fallback)`
+    the single error case, and is a shorthand for `error().get<I>().value_or(fallback)`
     in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
     the indexed error is not the active member of the union. */
     template <typename Err, typename Self, typename V>
@@ -3571,7 +3567,7 @@ public:
     For expecteds, the visitor function can consider any combination of the result type
     and/or enumerated error types.  If the result type is `void`, then the visitor will
     be invoked with an argument of type `std::nullopt_t` instead.  Otherwise, it will be
-    invoked with the normal output from `.result()`. */
+    invoked with the normal output from `.value()`. */
     template <typename F, typename Self, typename... Args>
         requires (meta::visitor<F, Self, Args...>)
     constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
@@ -4548,7 +4544,7 @@ namespace std {
         if (result.has_error()) {
             throw std::move(result).error();
         }
-        return (std::move(result).result());
+        return (std::move(result).value());
     }
 
     /* Non-member `std::get<T>(union)` returns a reference (possibly rvalue) and throws
@@ -4561,7 +4557,7 @@ namespace std {
         if (result.has_error()) {
             throw std::move(result).error();
         }
-        return (std::move(result).result());
+        return (std::move(result).value());
     }
 
     /* Non-member `std::get_if<I>(union)` returns a pointer to the value if the index
