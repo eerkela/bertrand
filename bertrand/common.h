@@ -507,7 +507,7 @@ namespace meta {
         constexpr bool unique = true;
         template <typename T, typename... Ts>
         constexpr bool unique<T, Ts...> =
-            (!::std::same_as<T, Ts> && ...) && unique<Ts...>;
+            (!::std::same_as<T, Ts> && ... && unique<Ts...>);
 
         template <typename out, typename...>
         struct to_unique { using type = out; };
@@ -525,7 +525,7 @@ namespace meta {
         constexpr bool consolidated = true;
         template <typename T, typename... Ts>
         constexpr bool consolidated<T, Ts...> =
-            (!is<T, Ts> && ...) && consolidated<Ts...>;
+            (!meta::is<T, Ts> && ...) && consolidated<Ts...>;
 
         template <typename out, typename...>
         struct consolidate { using type = out; };
@@ -534,12 +534,12 @@ namespace meta {
             using type = consolidate<pack<out...>, Us...>::type;
         };
         template <typename... out, typename U, typename... Us>
-            requires ((!is<U, out> && ...) && (!is<U, Us> && ...))
+            requires ((!meta::is<U, out> && ...) && (!meta::is<U, Us> && ...))
         struct consolidate<pack<out...>, U, Us...> {
             using type = consolidate<pack<out..., U>, Us...>::type;
         };
         template <typename... out, typename U, typename... Us>
-        requires ((!is<U, out> && ...) && (is<U, Us> || ...))
+        requires ((!meta::is<U, out> && ...) && (meta::is<U, Us> || ...))
         struct consolidate<pack<out...>, U, Us...> {
             using type = consolidate<pack<out..., unqualify<U>>, Us...>::type;
         };
@@ -1696,13 +1696,24 @@ namespace meta {
     ////    STRUCTURED BINDINGS    ////
     ///////////////////////////////////
 
-    /// TODO: continue trying to simplify error messages by pulling noisy traits into
-    /// detail:: namespaces, but only where doing so would not leave out important
-    /// information.
+    namespace detail {
 
-    /// TODO: also, I'm not entirely sure if I'm checking for ADL get() correctly.
-    /// I might need to explicitly pull std::get() into context, and then eliminate
-    /// the `has_std_get` concept.
+        namespace adl {
+            using std::get;
+
+            template <typename T, auto... I>
+            concept has_get = requires(T t) { get<I...>(t); };
+
+            template <typename T, auto... I>
+            concept nothrow_has_get =
+                has_get<T, I...> && noexcept(get<I...>(::std::declval<T>()));
+
+            template <typename T, auto... I> requires (has_get<T, I...>)
+            using get_type = decltype(get<I...>(::std::declval<T>()));
+
+        }
+
+    }
 
     template <typename T, auto... I>
     concept has_member_get = requires(T t) {
@@ -1717,26 +1728,14 @@ namespace meta {
         has_member_get<T, I...> && convertible_to<member_get_type<T, I...>, Ret>;
 
     template <typename T, auto... I>
-    concept has_adl_get = requires(T t) { get<I...>(t); };
+    concept has_adl_get = detail::adl::has_get<T, I...>;
 
     template <typename T, auto... I> requires (has_adl_get<T, I...>)
-    using adl_get_type = decltype(get<I...>(::std::declval<T>()));
+    using adl_get_type = detail::adl::get_type<T, I...>;
 
     template <typename Ret, typename T, auto... I>
     concept adl_get_returns =
         has_adl_get<T, I...> && convertible_to<adl_get_type<T, I...>, Ret>;
-
-    template <typename T, auto... I>
-    concept has_std_get = requires(T t) {
-        ::std::get<I...>(t);
-    };
-
-    template <typename T, auto... I> requires (has_std_get<T, I...>)
-    using std_get_type = decltype(::std::get<I...>(::std::declval<T>()));
-
-    template <typename Ret, typename T, auto... I>
-    concept std_get_returns =
-        has_std_get<T, I...> && convertible_to<std_get_type<T, I...>, Ret>;
 
     namespace nothrow {
 
@@ -1745,36 +1744,25 @@ namespace meta {
             meta::has_member_get<T, I...> &&
             noexcept(::std::declval<T>().template get<I...>());
 
-        template <typename T, auto... I> requires (has_member_get<T, I...>)
+        template <typename T, auto... I> requires (nothrow::has_member_get<T, I...>)
         using member_get_type = meta::member_get_type<T, I...>;
 
         template <typename Ret, typename T, auto... I>
         concept member_get_returns =
-            has_member_get<T, I...> && convertible_to<member_get_type<T, I...>, Ret>;
+            nothrow::has_member_get<T, I...> &&
+            nothrow::convertible_to<nothrow::member_get_type<T, I...>, Ret>;
 
         template <typename T, auto... I>
         concept has_adl_get =
-            meta::has_adl_get<T, I...> &&
-            noexcept(get<I...>(::std::declval<T>()));
+            meta::has_adl_get<T, I...> && detail::adl::nothrow_has_get<T, I...>;
 
-        template <typename T, auto... I> requires (has_adl_get<T, I...>)
+        template <typename T, auto... I> requires (nothrow::has_adl_get<T, I...>)
         using adl_get_type = meta::adl_get_type<T, I...>;
 
         template <typename Ret, typename T, auto... I>
         concept adl_get_returns =
-            has_adl_get<T, I...> && convertible_to<adl_get_type<T, I...>, Ret>;
-
-        template <typename T, auto... I>
-        concept has_std_get =
-            meta::has_std_get<T, I...> &&
-            noexcept(::std::get<I...>(::std::declval<T>()));
-
-        template <typename T, auto... I> requires (has_std_get<T, I...>)
-        using std_get_type = meta::std_get_type<T, I...>;
-
-        template <typename Ret, typename T, auto... I>
-        concept std_get_returns =
-            has_std_get<T, I...> && convertible_to<std_get_type<T, I...>, Ret>;
+            nothrow::has_adl_get<T, I...> &&
+            nothrow::convertible_to<nothrow::adl_get_type<T, I...>, Ret>;
 
     }
 
@@ -1782,23 +1770,14 @@ namespace meta {
 
         template <typename T, auto... I>
         struct get_type { using type = member_get_type<T, I...>; };
-        template <typename T, auto... I> requires (
-            !meta::has_member_get<T, I...> &&
-            meta::has_adl_get<T, I...>
-        )
-        struct get_type<T, I...> { using type = adl_get_type<T, I...>; };
-        template <typename T, auto... I> requires (
-            !meta::has_member_get<T, I...> &&
-            !meta::has_adl_get<T, I...> &&
-            meta::has_std_get<T, I...>
-        )
-        struct get_type<T, I...> { using type = std_get_type<T, I...>; };
+        template <typename T, auto... I>
+            requires (!meta::has_member_get<T, I...> && meta::has_adl_get<T, I...>)
+        struct get_type<T, I...> { using type = meta::adl_get_type<T, I...>; };
 
     }
 
     template <typename T, auto... I>
-    concept has_get =
-        has_member_get<T, I...> || has_adl_get<T, I...> || has_std_get<T, I...>;
+    concept has_get = has_member_get<T, I...> || has_adl_get<T, I...>;
 
     template <typename T, auto... I> requires (has_get<T, I...>)
     using get_type = typename detail::get_type<T, I...>::type;
@@ -1810,45 +1789,39 @@ namespace meta {
 
         template <typename T, auto... I>
         concept has_get = meta::has_get<T, I...> && (
-            meta::has_member_get<T, I...> ||
-            meta::has_adl_get<T, I...> ||
-            meta::has_std_get<T, I...>
+            nothrow::has_member_get<T, I...> ||
+            nothrow::has_adl_get<T, I...>
         );
 
-        template <typename T, auto... I> requires (has_get<T, I...>)
+        template <typename T, auto... I> requires (nothrow::has_get<T, I...>)
         using get_type = meta::get_type<T, I...>;
 
         template <typename Ret, typename T, auto... I>
         concept get_returns =
-            has_get<T, I...> && convertible_to<get_type<T, I...>, Ret>;
+            nothrow::has_get<T, I...> &&
+            nothrow::convertible_to<nothrow::get_type<T, I...>, Ret>;
 
     }
 
     namespace detail {
 
-        template <typename T, size_t N>
-        struct structured {
-            template <size_t I, typename Dummy = void>
-            static constexpr bool _value = meta::has_get<T, I - 1> && _value<I - 1>;
-            template <typename Dummy>
-            static constexpr bool _value<0, Dummy> = true;
-            static constexpr bool value = _value<N>;
-        };
+        template <typename T, size_t... I>
+        constexpr bool structured(std::index_sequence<I...>) {
+            return (meta::has_get<T, I> && ...);
+        }
 
     }
 
     template <typename T, size_t N>
     concept structured =
-        ::std::tuple_size<unqualify<T>>::value == N && detail::structured<T, N>::value;
+        ::std::tuple_size<unqualify<T>>::value == N &&
+        detail::structured<T>(std::make_index_sequence<N>{});
 
     template <typename T>
     concept tuple_like = structured<T, ::std::tuple_size<unqualify<T>>::value>;
 
     template <tuple_like T>
     constexpr size_t tuple_size = ::std::tuple_size<unqualify<T>>::value;
-
-    template <typename T>
-    concept pair = structured<T, 2>;
 
     namespace detail {
 
@@ -1883,9 +1856,6 @@ namespace meta {
     concept structured_with =
         structured<T, sizeof...(Ts)> && detail::structured_with<T, Ts...>::value;
 
-    template <typename T, typename First, typename Second>
-    concept pair_with = structured_with<T, First, Second>;
-
     /* Do an integer-based `get<I>()` access on a tuple-like type by first checking for
     a `t.get<I>()` member method. */
     template <size_t I, tuple_like T>
@@ -1907,23 +1877,9 @@ namespace meta {
         return (get<I>(::std::forward<T>(t)));
     }
 
-    /* If no `get<I>(t)` ADL method is found, attempt `std::get<I>(t)`. */
-    template <size_t I, tuple_like T>
-    constexpr decltype(auto) tuple_get(T&& t)
-        noexcept(nothrow::has_get<T, I>)
-        requires(!has_member_get<T, I> && !has_adl_get<T, I> && has_std_get<T, I>)
-    {
-        return (::std::get<I>(::std::forward<T>(t)));
-    }
-
     /////////////////////////
     ////    ITERATION    ////
     /////////////////////////
-
-    /// TODO: for instance, do NOT condense these concepts, as that would make
-    /// debugging user-defined iterators much more difficult.  I do still need to
-    /// clarify the nothrow paths though, and make sure everything is properly
-    /// scoped to the nothrow:: namespace.
 
     template <typename T>
     concept iterator = ::std::input_or_output_iterator<T>;
@@ -1972,7 +1928,7 @@ namespace meta {
             meta::has_begin<T> &&
             noexcept(::std::ranges::begin(::std::declval<as_lvalue<T>>()));
 
-        template <has_begin T>
+        template <nothrow::has_begin T>
         using begin_type = meta::begin_type<T>;
 
         template <typename T>
@@ -1980,7 +1936,7 @@ namespace meta {
             meta::has_cbegin<T> &&
             noexcept(::std::ranges::cbegin(::std::declval<as_lvalue<T>>()));
 
-        template <has_cbegin T>
+        template <nothrow::has_cbegin T>
         using cbegin_type = meta::cbegin_type<T>;
 
     }
@@ -2004,7 +1960,7 @@ namespace meta {
             meta::has_end<T> &&
             noexcept(::std::ranges::end(::std::declval<as_lvalue<T>>()));
 
-        template <has_end T>
+        template <nothrow::has_end T>
         using end_type = meta::end_type<T>;
 
         template <typename T>
@@ -2012,7 +1968,7 @@ namespace meta {
             meta::has_cend<T> &&
             noexcept(::std::ranges::cend(::std::declval<as_lvalue<T>>()));
 
-        template <has_cend T>
+        template <nothrow::has_cend T>
         using cend_type = meta::cend_type<T>;
 
     }
@@ -2036,7 +1992,7 @@ namespace meta {
             meta::has_rbegin<T> &&
             noexcept(::std::ranges::rbegin(::std::declval<as_lvalue<T>>()));
 
-        template <has_rbegin T>
+        template <nothrow::has_rbegin T>
         using rbegin_type = meta::rbegin_type<T>;
 
         template <typename T>
@@ -2044,7 +2000,7 @@ namespace meta {
             meta::has_crbegin<T> &&
             noexcept(::std::ranges::crbegin(::std::declval<as_lvalue<T>>()));
 
-        template <has_crbegin T>
+        template <nothrow::has_crbegin T>
         using crbegin_type = meta::crbegin_type<T>;
 
     }
@@ -2068,7 +2024,7 @@ namespace meta {
             meta::has_rend<T> &&
             noexcept(::std::ranges::rend(::std::declval<as_lvalue<T>>()));
 
-        template <has_rend T>
+        template <nothrow::has_rend T>
         using rend_type = meta::rend_type<T>;
 
         template <typename T>
@@ -2076,7 +2032,7 @@ namespace meta {
             meta::has_crend<T> &&
             noexcept(::std::ranges::crend(::std::declval<as_lvalue<T>>()));
 
-        template <has_crend T>
+        template <nothrow::has_crend T>
         using crend_type = meta::crend_type<T>;
 
     }
@@ -2098,13 +2054,15 @@ namespace meta {
 
         template <typename T>
         concept iterable =
-            meta::iterable<T> && has_begin<T> && has_end<T>;
+            meta::iterable<T> && nothrow::has_begin<T> && nothrow::has_end<T>;
 
-        template <iterable T>
+        template <nothrow::iterable T>
         using yield_type = meta::yield_type<T>;
 
         template <typename T, typename Ret>
-        concept yields = iterable<T> && convertible_to<yield_type<T>, Ret>;
+        concept yields =
+            nothrow::iterable<T> &&
+            nothrow::convertible_to<nothrow::yield_type<T>, Ret>;
 
     }
 
@@ -2126,14 +2084,15 @@ namespace meta {
 
         template <typename T>
         concept const_iterable =
-            meta::const_iterable<T> && has_cbegin<T> && has_cend<T>;
+            meta::const_iterable<T> && nothrow::has_cbegin<T> && nothrow::has_cend<T>;
 
-        template <const_iterable T>
+        template <nothrow::const_iterable T>
         using const_yield_type = meta::const_yield_type<T>;
 
         template <typename T, typename Ret>
         concept const_yields =
-            const_iterable<T> && convertible_to<const_yield_type<T>, Ret>;
+            nothrow::const_iterable<T> &&
+            nothrow::convertible_to<nothrow::const_yield_type<T>, Ret>;
 
     }
 
@@ -2155,14 +2114,15 @@ namespace meta {
 
         template <typename T>
         concept reverse_iterable =
-            meta::reverse_iterable<T> && has_rbegin<T> && has_rend<T>;
+            meta::reverse_iterable<T> && nothrow::has_rbegin<T> && nothrow::has_rend<T>;
 
-        template <reverse_iterable T>
+        template <nothrow::reverse_iterable T>
         using reverse_yield_type = meta::reverse_yield_type<T>;
 
         template <typename T, typename Ret>
         concept reverse_yields =
-            reverse_iterable<T> && convertible_to<reverse_yield_type<T>, Ret>;
+            nothrow::reverse_iterable<T> &&
+            nothrow::convertible_to<nothrow::reverse_yield_type<T>, Ret>;
 
     }
 
@@ -2184,40 +2144,43 @@ namespace meta {
 
         template <typename T>
         concept const_reverse_iterable =
-            meta::const_reverse_iterable<T> && has_crbegin<T> && has_crend<T>;
+            meta::const_reverse_iterable<T> && nothrow::has_crbegin<T> && nothrow::has_crend<T>;
 
-        template <const_reverse_iterable T>
+        template <nothrow::const_reverse_iterable T>
         using const_reverse_yield_type = meta::const_reverse_yield_type<T>;
 
         template <typename T, typename Ret>
         concept const_reverse_yields =
-            const_reverse_iterable<T> && convertible_to<const_reverse_yield_type<T>, Ret>;
+            nothrow::const_reverse_iterable<T> &&
+            nothrow::convertible_to<nothrow::const_reverse_yield_type<T>, Ret>;
 
     }
 
-    template <typename T>
-    concept has_at = requires (T t, ssize_t i) {
+    template <typename T, typename Idx = ssize_t>
+    concept has_at = requires (T t, Idx i) {
         { t.at(i) } -> meta::iterator;
     };
 
-    template <has_at T>
-    using at_type = decltype(::std::declval<T>().at(::std::declval<ssize_t>()));
+    template <typename T, typename Idx = ssize_t> requires (has_at<T, Idx>)
+    using at_type = decltype(::std::declval<T>().at(::std::declval<Idx>()));
 
-    template <typename T, typename Ret>
-    concept at_returns = has_at<T> && convertible_to<at_type<T>, Ret>;
+    template <typename Ret, typename T, typename Idx = ssize_t>
+    concept at_returns = has_at<T, Idx> && convertible_to<at_type<T, Idx>, Ret>;
 
     namespace nothrow {
 
-        template <typename T>
+        template <typename T, typename Idx = ssize_t>
         concept has_at =
-            meta::has_at<T> &&
-            noexcept(::std::declval<T>().at(::std::declval<ssize_t>()));
+            meta::has_at<T, Idx> &&
+            noexcept(::std::declval<T>().at(::std::declval<Idx>()));
 
-        template <has_at T>
-        using at_type = meta::at_type<T>;
+        template <typename T, typename Idx = ssize_t> requires (nothrow::has_at<T, Idx>)
+        using at_type = meta::at_type<T, Idx>;
 
-        template <typename T, typename Ret>
-        concept at_returns = has_at<T> && convertible_to<at_type<T>, Ret>;
+        template <typename Ret, typename T, typename Idx = ssize_t>
+        concept at_returns =
+            nothrow::has_at<T, Idx> &&
+            nothrow::convertible_to<nothrow::at_type<T, Idx>, Ret>;
 
     }
 
@@ -2244,12 +2207,13 @@ namespace meta {
             meta::indexable<T, Key...> &&
             noexcept(::std::declval<T>()[::std::declval<Key>()...]);
 
-        template <typename T, typename... Key> requires (indexable<T, Key...>)
+        template <typename T, typename... Key> requires (nothrow::indexable<T, Key...>)
         using index_type = meta::index_type<T, Key...>;
 
         template <typename Ret, typename T, typename... Key>
         concept index_returns =
-            indexable<T, Key...> && convertible_to<index_type<T, Key...>, Ret>;
+            nothrow::indexable<T, Key...> &&
+            nothrow::convertible_to<nothrow::index_type<T, Key...>, Ret>;
 
     }
 
@@ -2278,13 +2242,13 @@ namespace meta {
             noexcept(::std::declval<T>()[::std::declval<Key>()...] = ::std::declval<Value>());
 
         template <typename T, typename Value, typename... Key>
-            requires (index_assignable<T, Value, Key...>)
+            requires (nothrow::index_assignable<T, Value, Key...>)
         using index_assign_type = meta::index_assign_type<T, Value, Key...>;
 
         template <typename Ret, typename T, typename Value, typename... Key>
         concept index_assign_returns =
-            index_assignable<T, Value, Key...> &&
-            convertible_to<index_assign_type<T, Value, Key...>, Ret>;
+            nothrow::index_assignable<T, Value, Key...> &&
+            nothrow::convertible_to<nothrow::index_assign_type<T, Value, Key...>, Ret>;
 
     }
 
@@ -2307,54 +2271,56 @@ namespace meta {
     }
 
     template <typename T>
-    concept addressable = requires(T t) {
+    concept has_address = requires(T t) {
         { &t } -> ::std::convertible_to<as_pointer<T>>;
     };
 
-    template <addressable T>
+    template <has_address T>
     using address_type = decltype(&::std::declval<T>());
 
-    template <typename T, typename Ret>
+    template <typename Ret, typename T>
     concept address_returns =
-        addressable<T> && convertible_to<address_type<T>, Ret>;
+        has_address<T> && convertible_to<address_type<T>, Ret>;
 
     namespace nothrow {
 
         template <typename T>
-        concept addressable = meta::addressable<T> && noexcept(&::std::declval<T>());
+        concept has_address = meta::has_address<T> && noexcept(&::std::declval<T>());
 
-        template <addressable T>
+        template <nothrow::has_address T>
         using address_type = meta::address_type<T>;
 
-        template <typename T, typename Ret>
+        template <typename Ret, typename T>
         concept address_returns =
-            addressable<T> && convertible_to<address_type<T>, Ret>;
+            nothrow::has_address<T> &&
+            nothrow::convertible_to<nothrow::address_type<T>, Ret>;
 
     }
 
     template <typename T>
-    concept dereferenceable = requires(T t) { *t; };
+    concept has_dereference = requires(T t) { *t; };
 
-    template <dereferenceable T>
+    template <has_dereference T>
     using dereference_type = decltype((*::std::declval<T>()));
 
-    template <typename T, typename Ret>
-    concept dereferences_to =
-        dereferenceable<T> && convertible_to<dereference_type<T>, Ret>;
+    template <typename Ret, typename T>
+    concept dereference_returns =
+        has_dereference<T> && convertible_to<dereference_type<T>, Ret>;
 
     namespace nothrow {
 
         template <typename T>
-        concept dereferenceable =
-            meta::dereferenceable<T> &&
+        concept has_dereference =
+            meta::has_dereference<T> &&
             noexcept((*::std::declval<T>()));
 
-        template <dereferenceable T>
+        template <nothrow::has_dereference T>
         using dereference_type = meta::dereference_type<T>;
 
-        template <typename T, typename Ret>
-        concept dereferences_to =
-            dereferenceable<T> && convertible_to<dereference_type<T>, Ret>;
+        template <typename Ret, typename T>
+        concept dereference_returns =
+            nothrow::has_dereference<T> &&
+            nothrow::convertible_to<nothrow::dereference_type<T>, Ret>;
 
     }
 
@@ -2366,7 +2332,7 @@ namespace meta {
     template <has_arrow T>
     using arrow_type = decltype((::std::declval<T>().operator->()));
 
-    template <typename T, typename Ret>
+    template <typename Ret, typename T>
     concept arrow_returns = has_arrow<T> && convertible_to<arrow_type<T>, Ret>;
 
     namespace nothrow {
@@ -2375,12 +2341,13 @@ namespace meta {
         concept has_arrow =
             meta::has_arrow<T> && noexcept(::std::declval<T>().operator->());
 
-        template <has_arrow T>
+        template <nothrow::has_arrow T>
         using arrow_type = meta::arrow_type<T>;
 
-        template <typename T, typename Ret>
+        template <typename Ret, typename T>
         concept arrow_returns =
-            has_arrow<T> && convertible_to<arrow_type<T>, Ret>;
+            nothrow::has_arrow<T> &&
+            nothrow::convertible_to<nothrow::arrow_type<T>, Ret>;
 
     }
 
@@ -2401,36 +2368,39 @@ namespace meta {
             meta::has_arrow_dereference<L, R> &&
             noexcept(::std::declval<L>()->*::std::declval<R>());
 
-        template <typename L, typename R> requires (has_arrow_dereference<L, R>)
+        template <typename L, typename R> requires (nothrow::has_arrow_dereference<L, R>)
         using arrow_dereference_type = meta::arrow_dereference_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept arrow_dereference_returns =
-            has_arrow_dereference<L, R> &&
-            convertible_to<arrow_dereference_type<L, R>, Ret>;
+            nothrow::has_arrow_dereference<L, R> &&
+            nothrow::convertible_to<nothrow::arrow_dereference_type<L, R>, Ret>;
 
     }
 
     template <typename T>
-    concept has_invert = requires(T t) { ~t; };
+    concept has_bitwise_not = requires(T t) { ~t; };
 
-    template <has_invert T>
-    using invert_type = decltype((~::std::declval<T>()));
+    template <has_bitwise_not T>
+    using bitwise_not_type = decltype((~::std::declval<T>()));
 
     template <typename Ret, typename T>
-    concept invert_returns = has_invert<T> && convertible_to<invert_type<T>, Ret>;
+    concept bitwise_not_returns =
+        has_bitwise_not<T> && convertible_to<bitwise_not_type<T>, Ret>;
 
     namespace nothrow {
 
         template <typename T>
-        concept has_invert =
-            meta::has_invert<T> && noexcept((~::std::declval<T>()));
+        concept has_bitwise_not =
+            meta::has_bitwise_not<T> && noexcept((~::std::declval<T>()));
 
-        template <has_invert T>
-        using invert_type = meta::invert_type<T>;
+        template <nothrow::has_bitwise_not T>
+        using bitwise_not_type = meta::bitwise_not_type<T>;
 
         template <typename Ret, typename T>
-        concept invert_returns = has_invert<T> && convertible_to<invert_type<T>, Ret>;
+        concept bitwise_not_returns =
+            nothrow::has_bitwise_not<T> &&
+            nothrow::convertible_to<nothrow::bitwise_not_type<T>, Ret>;
 
     }
 
@@ -2449,11 +2419,13 @@ namespace meta {
         concept has_pos =
             meta::has_pos<T> && noexcept((+::std::declval<T>()));
 
-        template <has_pos T>
+        template <nothrow::has_pos T>
         using pos_type = meta::pos_type<T>;
 
         template <typename Ret, typename T>
-        concept pos_returns = has_pos<T> && convertible_to<pos_type<T>, Ret>;
+        concept pos_returns =
+            nothrow::has_pos<T> &&
+            nothrow::convertible_to<nothrow::pos_type<T>, Ret>;
 
     }
 
@@ -2472,11 +2444,12 @@ namespace meta {
         concept has_neg =
             meta::has_neg<T> && noexcept((-::std::declval<T>()));
 
-        template <has_neg T>
+        template <nothrow::has_neg T>
         using neg_type = meta::neg_type<T>;
 
         template <typename Ret, typename T>
-        concept neg_returns = has_neg<T> && convertible_to<neg_type<T>, Ret>;
+        concept neg_returns =
+            nothrow::has_neg<T> && nothrow::convertible_to<nothrow::neg_type<T>, Ret>;
 
     }
 
@@ -2496,12 +2469,13 @@ namespace meta {
         concept has_preincrement =
             meta::has_preincrement<T> && noexcept((++::std::declval<T>()));
 
-        template <has_preincrement T>
+        template <nothrow::has_preincrement T>
         using preincrement_type = meta::preincrement_type<T>;
 
         template <typename Ret, typename T>
         concept preincrement_returns =
-            has_preincrement<T> && convertible_to<preincrement_type<T>, Ret>;
+            nothrow::has_preincrement<T> &&
+            nothrow::convertible_to<nothrow::preincrement_type<T>, Ret>;
 
     }
 
@@ -2521,12 +2495,13 @@ namespace meta {
         concept has_postincrement =
             meta::has_postincrement<T> && noexcept((::std::declval<T>()++));
 
-        template <has_postincrement T>
+        template <nothrow::has_postincrement T>
         using postincrement_type = meta::postincrement_type<T>;
 
         template <typename Ret, typename T>
         concept postincrement_returns =
-            has_postincrement<T> && convertible_to<postincrement_type<T>, Ret>;
+            nothrow::has_postincrement<T> &&
+            nothrow::convertible_to<nothrow::postincrement_type<T>, Ret>;
 
     }
 
@@ -2546,12 +2521,13 @@ namespace meta {
         concept has_predecrement =
             meta::has_predecrement<T> && noexcept((--::std::declval<T>()));
 
-        template <has_predecrement T>
+        template <nothrow::has_predecrement T>
         using predecrement_type = meta::predecrement_type<T>;
 
         template <typename Ret, typename T>
         concept predecrement_returns =
-            has_predecrement<T> && convertible_to<predecrement_type<T>, Ret>;
+            nothrow::has_predecrement<T> &&
+            nothrow::convertible_to<nothrow::predecrement_type<T>, Ret>;
 
     }
 
@@ -2571,12 +2547,13 @@ namespace meta {
         concept has_postdecrement =
             meta::has_postdecrement<T> && noexcept((::std::declval<T>()--));
 
-        template <has_postdecrement T>
+        template <nothrow::has_postdecrement T>
         using postdecrement_type = meta::postdecrement_type<T>;
 
         template <typename Ret, typename T>
         concept postdecrement_returns =
-            has_postdecrement<T> && convertible_to<postdecrement_type<T>, Ret>;
+            nothrow::has_postdecrement<T> &&
+            nothrow::convertible_to<nothrow::postdecrement_type<T>, Ret>;
 
     }
 
@@ -2595,11 +2572,13 @@ namespace meta {
         concept has_lt =
             meta::has_lt<L, R> && noexcept((::std::declval<L>() < ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_lt<L, R>)
+        template <typename L, typename R> requires (nothrow::has_lt<L, R>)
         using lt_type = meta::lt_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept lt_returns = has_lt<L, R> && convertible_to<lt_type<L, R>, Ret>;
+        concept lt_returns =
+            nothrow::has_lt<L, R> &&
+            nothrow::convertible_to<nothrow::lt_type<L, R>, Ret>;
 
     }
 
@@ -2618,11 +2597,13 @@ namespace meta {
         concept has_le =
             meta::has_le<L, R> && noexcept((::std::declval<L>() <= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_le<L, R>)
+        template <typename L, typename R> requires (nothrow::has_le<L, R>)
         using le_type = meta::le_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept le_returns = has_le<L, R> && convertible_to<le_type<L, R>, Ret>;
+        concept le_returns =
+            nothrow::has_le<L, R> &&
+            nothrow::convertible_to<nothrow::le_type<L, R>, Ret>;
 
     }
 
@@ -2641,11 +2622,13 @@ namespace meta {
         concept has_eq =
             meta::has_eq<L, R> && noexcept((::std::declval<L>() == ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_eq<L, R>)
+        template <typename L, typename R> requires (nothrow::has_eq<L, R>)
         using eq_type = meta::eq_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept eq_returns = has_eq<L, R> && convertible_to<eq_type<L, R>, Ret>;
+        concept eq_returns =
+            nothrow::has_eq<L, R> &&
+            nothrow::convertible_to<nothrow::eq_type<L, R>, Ret>;
 
     }
 
@@ -2664,11 +2647,13 @@ namespace meta {
         concept has_ne =
             meta::has_ne<L, R> && noexcept((::std::declval<L>() != ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_ne<L, R>)
+        template <typename L, typename R> requires (nothrow::has_ne<L, R>)
         using ne_type = meta::ne_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept ne_returns = has_ne<L, R> && convertible_to<ne_type<L, R>, Ret>;
+        concept ne_returns =
+            nothrow::has_ne<L, R> &&
+            nothrow::convertible_to<nothrow::ne_type<L, R>, Ret>;
 
     }
 
@@ -2687,11 +2672,13 @@ namespace meta {
         concept has_ge =
             meta::has_ge<L, R> && noexcept((::std::declval<L>() >= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_ge<L, R>)
+        template <typename L, typename R> requires (nothrow::has_ge<L, R>)
         using ge_type = meta::ge_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept ge_returns = has_ge<L, R> && convertible_to<ge_type<L, R>, Ret>;
+        concept ge_returns =
+            nothrow::has_ge<L, R> &&
+            nothrow::convertible_to<nothrow::ge_type<L, R>, Ret>;
 
     }
 
@@ -2710,11 +2697,13 @@ namespace meta {
         concept has_gt =
             meta::has_gt<L, R> && noexcept((::std::declval<L>() > ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_gt<L, R>)
+        template <typename L, typename R> requires (nothrow::has_gt<L, R>)
         using gt_type = meta::gt_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept gt_returns = has_gt<L, R> && convertible_to<gt_type<L, R>, Ret>;
+        concept gt_returns =
+            nothrow::has_gt<L, R> &&
+            nothrow::convertible_to<nothrow::gt_type<L, R>, Ret>;
 
     }
 
@@ -2736,12 +2725,13 @@ namespace meta {
             meta::has_spaceship<L, R> &&
             noexcept((::std::declval<L>() <=> ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_spaceship<L, R>)
+        template <typename L, typename R> requires (nothrow::has_spaceship<L, R>)
         using spaceship_type = meta::spaceship_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept spaceship_returns =
-            has_spaceship<L, R> && convertible_to<spaceship_type<L, R>, Ret>;
+            nothrow::has_spaceship<L, R> &&
+            nothrow::convertible_to<nothrow::spaceship_type<L, R>, Ret>;
 
     }
 
@@ -2760,11 +2750,13 @@ namespace meta {
         concept has_add =
             meta::has_add<L, R> && noexcept((::std::declval<L>() + ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_add<L, R>)
+        template <typename L, typename R> requires (nothrow::has_add<L, R>)
         using add_type = meta::add_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept add_returns = has_add<L, R> && convertible_to<add_type<L, R>, Ret>;
+        concept add_returns =
+            nothrow::has_add<L, R> &&
+            nothrow::convertible_to<nothrow::add_type<L, R>, Ret>;
 
     }
 
@@ -2783,12 +2775,13 @@ namespace meta {
         concept has_iadd =
             meta::has_iadd<L, R> && noexcept((::std::declval<L&>() += ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_iadd<L, R>)
+        template <typename L, typename R> requires (nothrow::has_iadd<L, R>)
         using iadd_type = meta::iadd_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept iadd_returns =
-            has_iadd<L, R> && convertible_to<iadd_type<L, R>, Ret>;
+            nothrow::has_iadd<L, R> &&
+            nothrow::convertible_to<nothrow::iadd_type<L, R>, Ret>;
 
     }
 
@@ -2807,11 +2800,13 @@ namespace meta {
         concept has_sub =
             meta::has_sub<L, R> && noexcept((::std::declval<L>() - ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_sub<L, R>)
+        template <typename L, typename R> requires (nothrow::has_sub<L, R>)
         using sub_type = meta::sub_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept sub_returns = has_sub<L, R> && convertible_to<sub_type<L, R>, Ret>;
+        concept sub_returns =
+            nothrow::has_sub<L, R> &&
+            nothrow::convertible_to<nothrow::sub_type<L, R>, Ret>;
 
     }
 
@@ -2830,12 +2825,13 @@ namespace meta {
         concept has_isub =
             meta::has_isub<L, R> && noexcept((::std::declval<L&>() -= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_isub<L, R>)
+        template <typename L, typename R> requires (nothrow::has_isub<L, R>)
         using isub_type = meta::isub_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept isub_returns =
-            has_isub<L, R> && convertible_to<isub_type<L, R>, Ret>;
+            nothrow::has_isub<L, R> &&
+            nothrow::convertible_to<nothrow::isub_type<L, R>, Ret>;
 
     }
 
@@ -2854,11 +2850,13 @@ namespace meta {
         concept has_mul =
             meta::has_mul<L, R> && noexcept((::std::declval<L>() * ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_mul<L, R>)
+        template <typename L, typename R> requires (nothrow::has_mul<L, R>)
         using mul_type = meta::mul_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept mul_returns = has_mul<L, R> && convertible_to<mul_type<L, R>, Ret>;
+        concept mul_returns =
+            nothrow::has_mul<L, R> &&
+            nothrow::convertible_to<nothrow::mul_type<L, R>, Ret>;
 
     }
 
@@ -2877,12 +2875,13 @@ namespace meta {
         concept has_imul =
             meta::has_imul<L, R> && noexcept((::std::declval<L&>() *= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_imul<L, R>)
+        template <typename L, typename R> requires (nothrow::has_imul<L, R>)
         using imul_type = meta::imul_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept imul_returns =
-            has_imul<L, R> && convertible_to<imul_type<L, R>, Ret>;
+            nothrow::has_imul<L, R> &&
+            nothrow::convertible_to<nothrow::imul_type<L, R>, Ret>;
 
     }
 
@@ -2902,12 +2901,13 @@ namespace meta {
         concept has_div =
             meta::has_div<L, R> && noexcept((::std::declval<L>() / ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_div<L, R>)
+        template <typename L, typename R> requires (nothrow::has_div<L, R>)
         using div_type = meta::div_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept div_returns =
-            has_div<L, R> && convertible_to<div_type<L, R>, Ret>;
+            nothrow::has_div<L, R> &&
+            nothrow::convertible_to<nothrow::div_type<L, R>, Ret>;
 
     }
 
@@ -2927,12 +2927,13 @@ namespace meta {
         concept has_idiv =
             meta::has_idiv<L, R> && noexcept((::std::declval<L&>() /= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_idiv<L, R>)
+        template <typename L, typename R> requires (nothrow::has_idiv<L, R>)
         using idiv_type = meta::idiv_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept idiv_returns =
-            has_idiv<L, R> && convertible_to<idiv_type<L, R>, Ret>;
+            nothrow::has_idiv<L, R> &&
+            nothrow::convertible_to<nothrow::idiv_type<L, R>, Ret>;
 
     }
 
@@ -2951,11 +2952,13 @@ namespace meta {
         concept has_mod =
             meta::has_mod<L, R> && noexcept((::std::declval<L>() % ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_mod<L, R>)
+        template <typename L, typename R> requires (nothrow::has_mod<L, R>)
         using mod_type = meta::mod_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept mod_returns = has_mod<L, R> && convertible_to<mod_type<L, R>, Ret>;
+        concept mod_returns =
+            nothrow::has_mod<L, R> &&
+            nothrow::convertible_to<nothrow::mod_type<L, R>, Ret>;
 
     }
 
@@ -2975,12 +2978,13 @@ namespace meta {
         concept has_imod =
             meta::has_imod<L, R> && noexcept((::std::declval<L&>() %= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_imod<L, R>)
+        template <typename L, typename R> requires (nothrow::has_imod<L, R>)
         using imod_type = meta::imod_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept imod_returns =
-            has_imod<L, R> && convertible_to<imod_type<L, R>, Ret>;
+            nothrow::has_imod<L, R> &&
+            nothrow::convertible_to<nothrow::imod_type<L, R>, Ret>;
 
     }
 
@@ -3000,12 +3004,13 @@ namespace meta {
         concept has_lshift =
             meta::has_lshift<L, R> && noexcept((::std::declval<L>() << ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_lshift<L, R>)
+        template <typename L, typename R> requires (nothrow::has_lshift<L, R>)
         using lshift_type = meta::lshift_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept lshift_returns =
-            has_lshift<L, R> && convertible_to<lshift_type<L, R>, Ret>;
+            nothrow::has_lshift<L, R> &&
+            nothrow::convertible_to<nothrow::lshift_type<L, R>, Ret>;
 
     }
 
@@ -3026,12 +3031,13 @@ namespace meta {
             meta::has_ilshift<L, R> &&
             noexcept((::std::declval<L&>() <<= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_ilshift<L, R>)
+        template <typename L, typename R> requires (nothrow::has_ilshift<L, R>)
         using ilshift_type = meta::ilshift_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept ilshift_returns =
-            has_ilshift<L, R> && convertible_to<ilshift_type<L, R>, Ret>;
+            nothrow::has_ilshift<L, R> &&
+            nothrow::convertible_to<nothrow::ilshift_type<L, R>, Ret>;
 
     }
 
@@ -3051,12 +3057,13 @@ namespace meta {
         concept has_rshift =
             meta::has_rshift<L, R> && noexcept((::std::declval<L>() >> ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_rshift<L, R>)
+        template <typename L, typename R> requires (nothrow::has_rshift<L, R>)
         using rshift_type = meta::rshift_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept rshift_returns =
-            has_rshift<L, R> && convertible_to<rshift_type<L, R>, Ret>;
+            nothrow::has_rshift<L, R> &&
+            nothrow::convertible_to<nothrow::rshift_type<L, R>, Ret>;
 
     }
 
@@ -3077,12 +3084,13 @@ namespace meta {
             meta::has_irshift<L, R> &&
             noexcept((::std::declval<L&>() >>= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_irshift<L, R>)
+        template <typename L, typename R> requires (nothrow::has_irshift<L, R>)
         using irshift_type = meta::irshift_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept irshift_returns =
-            has_irshift<L, R> && convertible_to<irshift_type<L, R>, Ret>;
+            nothrow::has_irshift<L, R> &&
+            nothrow::convertible_to<nothrow::irshift_type<L, R>, Ret>;
 
     }
 
@@ -3101,12 +3109,13 @@ namespace meta {
         concept has_and =
             meta::has_and<L, R> && noexcept((::std::declval<L>() & ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_and<L, R>)
+        template <typename L, typename R> requires (nothrow::has_and<L, R>)
         using and_type = meta::and_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept and_returns =
-            has_and<L, R> && convertible_to<and_type<L, R>, Ret>;
+            nothrow::has_and<L, R> &&
+            nothrow::convertible_to<nothrow::and_type<L, R>, Ret>;
 
     }
 
@@ -3125,12 +3134,13 @@ namespace meta {
         concept has_iand =
             meta::has_iand<L, R> && noexcept((::std::declval<L&>() &= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_iand<L, R>)
+        template <typename L, typename R> requires (nothrow::has_iand<L, R>)
         using iand_type = meta::iand_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept iand_returns =
-            has_iand<L, R> && convertible_to<iand_type<L, R>, Ret>;
+            nothrow::has_iand<L, R> &&
+            nothrow::convertible_to<nothrow::iand_type<L, R>, Ret>;
 
     }
 
@@ -3149,11 +3159,13 @@ namespace meta {
         concept has_or =
             meta::has_or<L, R> && noexcept((::std::declval<L>() | ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_or<L, R>)
+        template <typename L, typename R> requires (nothrow::has_or<L, R>)
         using or_type = meta::or_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept or_returns = has_or<L, R> && convertible_to<or_type<L, R>, Ret>;
+        concept or_returns =
+            nothrow::has_or<L, R> &&
+            nothrow::convertible_to<nothrow::or_type<L, R>, Ret>;
 
     }
 
@@ -3172,12 +3184,13 @@ namespace meta {
         concept has_ior =
             meta::has_ior<L, R> && noexcept((::std::declval<L&>() |= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_ior<L, R>)
+        template <typename L, typename R> requires (nothrow::has_ior<L, R>)
         using ior_type = meta::ior_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept ior_returns =
-            has_ior<L, R> && convertible_to<ior_type<L, R>, Ret>;
+            nothrow::has_ior<L, R> &&
+            nothrow::convertible_to<nothrow::ior_type<L, R>, Ret>;
 
     }
 
@@ -3196,12 +3209,13 @@ namespace meta {
         concept has_xor =
             meta::has_xor<L, R> && noexcept((::std::declval<L>() ^ ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_xor<L, R>)
+        template <typename L, typename R> requires (nothrow::has_xor<L, R>)
         using xor_type = meta::xor_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept xor_returns =
-            has_xor<L, R> && convertible_to<xor_type<L, R>, Ret>;
+            nothrow::has_xor<L, R> &&
+            nothrow::convertible_to<nothrow::xor_type<L, R>, Ret>;
 
     }
 
@@ -3220,12 +3234,13 @@ namespace meta {
         concept has_ixor =
             meta::has_ixor<L, R> && noexcept((::std::declval<L&>() ^= ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_ixor<L, R>)
+        template <typename L, typename R> requires (nothrow::has_ixor<L, R>)
         using ixor_type = meta::ixor_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept ixor_returns =
-            has_ixor<L, R> && convertible_to<ixor_type<L, R>, Ret>;
+            nothrow::has_ixor<L, R> &&
+            nothrow::convertible_to<nothrow::ixor_type<L, R>, Ret>;
 
     }
 
@@ -3246,12 +3261,13 @@ namespace meta {
             meta::has_logical_and<L, R> &&
             noexcept((::std::declval<L&>() && ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_logical_and<L, R>)
+        template <typename L, typename R> requires (nothrow::has_logical_and<L, R>)
         using logical_and_type = meta::logical_and_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept logical_and_returns =
-            has_logical_and<L, R> && convertible_to<logical_and_type<L, R>, Ret>;
+            nothrow::has_logical_and<L, R> &&
+            nothrow::convertible_to<nothrow::logical_and_type<L, R>, Ret>;
 
     }
 
@@ -3272,12 +3288,13 @@ namespace meta {
             meta::has_logical_or<L, R> &&
             noexcept((::std::declval<L&>() || ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_logical_or<L, R>)
+        template <typename L, typename R> requires (nothrow::has_logical_or<L, R>)
         using logical_or_type = meta::logical_or_type<L, R>;
 
         template <typename Ret, typename L, typename R>
         concept logical_or_returns =
-            has_logical_or<L, R> && convertible_to<logical_or_type<L, R>, Ret>;
+            nothrow::has_logical_or<L, R> &&
+            nothrow::convertible_to<nothrow::logical_or_type<L, R>, Ret>;
 
     }
 
@@ -3297,12 +3314,13 @@ namespace meta {
         concept has_logical_not =
             meta::has_logical_not<T> && noexcept((!::std::declval<T>()));
 
-        template <typename T> requires (has_logical_not<T>)
+        template <typename T> requires (nothrow::has_logical_not<T>)
         using logical_not_type = meta::logical_not_type<T>;
 
         template <typename Ret, typename T>
         concept logical_not_returns =
-            has_logical_not<T> && convertible_to<logical_not_type<T>, Ret>;
+            nothrow::has_logical_not<T> &&
+            nothrow::convertible_to<nothrow::logical_not_type<T>, Ret>;
 
     }
 
@@ -3326,11 +3344,13 @@ namespace meta {
             meta::has_data<T> &&
             noexcept(::std::ranges::data(::std::declval<T>()));
 
-        template <has_data T>
+        template <nothrow::has_data T>
         using data_type = meta::data_type<T>;
 
         template <typename Ret, typename T>
-        concept data_returns = has_data<T> && convertible_to<data_type<T>, Ret>;
+        concept data_returns =
+            nothrow::has_data<T> &&
+            nothrow::convertible_to<nothrow::data_type<T>, Ret>;
 
     }
 
@@ -3350,11 +3370,13 @@ namespace meta {
             meta::has_size<T> &&
             noexcept(::std::ranges::size(::std::declval<T>()));
 
-        template <has_size T>
+        template <nothrow::has_size T>
         using size_type = meta::size_type<T>;
 
         template <typename Ret, typename T>
-        concept size_returns = has_size<T> && convertible_to<size_type<T>, Ret>;
+        concept size_returns =
+            nothrow::has_size<T> &&
+            nothrow::convertible_to<nothrow::size_type<T>, Ret>;
 
     }
 
@@ -3388,11 +3410,13 @@ namespace meta {
             meta::has_capacity<T> &&
             noexcept(::std::declval<T>().capacity());
 
-        template <has_capacity T>
+        template <nothrow::has_capacity T>
         using capacity_type = meta::capacity_type<T>;
 
         template <typename Ret, typename T>
-        concept capacity_returns = has_capacity<T> && convertible_to<capacity_type<T>, Ret>;
+        concept capacity_returns =
+            nothrow::has_capacity<T> &&
+            nothrow::convertible_to<nothrow::capacity_type<T>, Ret>;
 
     }
 
@@ -3412,11 +3436,13 @@ namespace meta {
             meta::has_reserve<T> &&
             noexcept(::std::declval<T>().reserve(::std::declval<size_t>()));
 
-        template <has_reserve T>
+        template <nothrow::has_reserve T>
         using reserve_type = meta::reserve_type<T>;
 
         template <typename Ret, typename T>
-        concept reserve_returns = has_reserve<T> && convertible_to<reserve_type<T>, Ret>;
+        concept reserve_returns =
+            nothrow::has_reserve<T> &&
+            nothrow::convertible_to<nothrow::reserve_type<T>, Ret>;
 
     }
 
@@ -3437,12 +3463,13 @@ namespace meta {
             meta::has_contains<T, Key> &&
             noexcept(::std::declval<T>().contains(::std::declval<Key>()));
 
-        template <typename T, typename Key> requires (has_contains<T, Key>)
+        template <typename T, typename Key> requires (nothrow::has_contains<T, Key>)
         using contains_type = meta::contains_type<T, Key>;
 
         template <typename Ret, typename T, typename Key>
         concept contains_returns =
-            has_contains<T, Key> && convertible_to<contains_type<T, Key>, Ret>;
+            nothrow::has_contains<T, Key> &&
+            nothrow::convertible_to<nothrow::contains_type<T, Key>, Ret>;
 
     }
 
@@ -3474,7 +3501,7 @@ namespace meta {
             meta::has_keys<T> &&
             noexcept(::std::declval<T>().keys());
 
-        template <has_keys T>
+        template <nothrow::has_keys T>
         using keys_type = meta::keys_type<T>;
 
     }
@@ -3494,7 +3521,7 @@ namespace meta {
             meta::has_values<T> &&
             noexcept(::std::declval<T>().values());
 
-        template <has_values T>
+        template <nothrow::has_values T>
         using values_type = meta::values_type<T>;
 
     }
@@ -3502,7 +3529,7 @@ namespace meta {
     template <typename T>
     concept has_items =
         requires(T t) { { t.items() } -> iterable; } &&
-        pair_with<
+        structured_with<
             yield_type<decltype(::std::declval<T>().items())>,
             typename unqualify<T>::key_type,
             typename unqualify<T>::mapped_type
@@ -3518,7 +3545,7 @@ namespace meta {
             meta::has_items<T> &&
             noexcept(::std::declval<T>().items());
 
-        template <has_items T>
+        template <nothrow::has_items T>
         using items_type = meta::items_type<T>;
 
     }
@@ -3539,11 +3566,13 @@ namespace meta {
             meta::hashable<T> &&
             noexcept(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
 
-        template <hashable T>
+        template <nothrow::hashable T>
         using hash_type = meta::hash_type<T>;
 
         template <typename Ret, typename T>
-        concept hash_returns = hashable<T> && convertible_to<hash_type<T>, Ret>;
+        concept hash_returns =
+            nothrow::hashable<T> &&
+            nothrow::convertible_to<nothrow::hash_type<T>, Ret>;
 
     }
 
@@ -3577,11 +3606,13 @@ namespace meta {
             meta::has_real<T> &&
             noexcept(::std::declval<T>().real());
 
-        template <has_real T>
+        template <nothrow::has_real T>
         using real_type = meta::real_type<T>;
 
         template <typename Ret, typename T>
-        concept real_returns = has_real<T> && convertible_to<real_type<T>, Ret>;
+        concept real_returns =
+            nothrow::has_real<T> &&
+            nothrow::convertible_to<nothrow::real_type<T>, Ret>;
 
     }
 
@@ -3601,16 +3632,23 @@ namespace meta {
             meta::has_imag<T> &&
             noexcept(::std::declval<T>().imag());
 
-        template <has_imag T>
+        template <nothrow::has_imag T>
         using imag_type = meta::imag_type<T>;
 
         template <typename Ret, typename T>
-        concept imag_returns = has_imag<T> && convertible_to<imag_type<T>, Ret>;
+        concept imag_returns =
+            nothrow::has_imag<T> &&
+            nothrow::convertible_to<nothrow::imag_type<T>, Ret>;
 
     }
 
     template <typename T>
     concept complex = real_returns<double, T> && imag_returns<double, T>;
+
+
+
+    /// TODO: has_abs and has_pow should be redirected to the generic math operators
+    /// I am implementing in math.h
 
     template <typename T>
     concept has_abs = requires(T t) { ::std::abs(t); };
@@ -3628,11 +3666,13 @@ namespace meta {
             meta::has_abs<T> &&
             noexcept(::std::abs(::std::declval<T>()));
 
-        template <has_abs T>
+        template <nothrow::has_abs T>
         using abs_type = meta::abs_type<T>;
 
         template <typename Ret, typename T>
-        concept abs_returns = has_abs<T> && convertible_to<abs_type<T>, Ret>;
+        concept abs_returns =
+            nothrow::has_abs<T> &&
+            nothrow::convertible_to<nothrow::abs_type<T>, Ret>;
 
     }
 
@@ -3652,11 +3692,13 @@ namespace meta {
             meta::has_pow<L, R> &&
             noexcept(::std::pow(::std::declval<L>(), ::std::declval<R>()));
 
-        template <typename L, typename R> requires (has_pow<L, R>)
+        template <typename L, typename R> requires (nothrow::has_pow<L, R>)
         using pow_type = meta::pow_type<L, R>;
 
         template <typename Ret, typename L, typename R>
-        concept pow_returns = has_pow<L, R> && convertible_to<pow_type<L, R>, Ret>;
+        concept pow_returns =
+            nothrow::has_pow<L, R> &&
+            nothrow::convertible_to<nothrow::pow_type<L, R>, Ret>;
 
     }
 
@@ -4646,18 +4688,18 @@ namespace impl {
     };
 
     struct AddressOf {
-        template <meta::addressable T>
+        template <meta::has_address T>
         static constexpr decltype(auto) operator()(T&& value)
-            noexcept(meta::nothrow::addressable<T>)
+            noexcept(meta::nothrow::has_address<T>)
         {
             return (&std::forward<T>(value));
         }
     };
 
     struct Dereference {
-        template <meta::dereferenceable T>
+        template <meta::has_dereference T>
         static constexpr decltype(auto) operator()(T&& value)
-            noexcept(meta::nothrow::dereferenceable<T>)
+            noexcept(meta::nothrow::has_dereference<T>)
         {
             return (*std::forward<T>(value));
         }
@@ -4970,9 +5012,9 @@ namespace impl {
     };
 
     struct BitwiseNot {
-        template <meta::has_invert T>
+        template <meta::has_bitwise_not T>
         static constexpr decltype(auto) operator()(T&& value)
-            noexcept(meta::nothrow::has_invert<T>)
+            noexcept(meta::nothrow::has_bitwise_not<T>)
         {
             return (~std::forward<T>(value));
         }

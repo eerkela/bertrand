@@ -225,15 +225,15 @@ namespace impl {
             {}
 
             [[nodiscard]] constexpr decltype(auto) operator*()
-                noexcept(meta::nothrow::dereferenceable<T>)
-                requires(meta::dereferenceable<T>)
+                noexcept(meta::nothrow::has_dereference<T>)
+                requires(meta::has_dereference<T>)
             {
                 return (*iter);
             }
 
             [[nodiscard]] constexpr decltype(auto) operator*() const
-                noexcept(meta::nothrow::dereferenceable<const T>)
-                requires(meta::dereferenceable<const T>)
+                noexcept(meta::nothrow::has_dereference<const T>)
+                requires(meta::has_dereference<const T>)
             {
                 return (*iter);
             }
@@ -3320,191 +3320,6 @@ constexpr void sort(Begin&& begin, End&& end)
     )))
 {
     impl::powersort{}(std::forward<Begin>(begin), std::forward<End>(end), Less{});
-}
-
-
-/* Produce a sorted version of a container with the specified less-than comparison
-function.  If no explicit comparison function is given, it will default to a
-transparent `<` operator for each element.  This operator must be explicitly enabled
-for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-with an appropriate `::type` alias that injects the comparison function into the
-container configuration.
-
-This overload directly copies or moves the contents of a previous, unsorted container,
-and returns a new container of a corresponding type.  It returns the input as-is if the
-container is already equivalent to its sorted type. */
-template <meta::unqualified Less = impl::Less, typename T>
-[[nodiscard]] decltype(auto) sorted(T&& container)
-    noexcept(
-        meta::is<typename meta::detail::sorted<Less, meta::unqualify<T>>::type, T> ||
-        noexcept(typename meta::detail::sorted<Less, meta::unqualify<T>>::type(
-            std::forward<T>(container)
-        ))
-    )
-    requires(
-        meta::is<
-            T,
-            typename meta::detail::sorted<Less, meta::unqualify<T>>::type
-        > ||
-        meta::constructible_from<
-            typename meta::detail::sorted<Less, meta::unqualify<T>>::type,
-            T
-        >
-    )
-{
-    using sorted_type = meta::detail::sorted<Less, meta::unqualify<T>>::type;
-    if constexpr (meta::is<sorted_type, T>) {
-        return std::forward<T>(container);
-    } else {
-        return sorted_type(std::forward<T>(container));
-    }
-}
-
-
-/* Produce a sorted version of a container with the specified less-than comparison
-function.  If no explicit comparison function is given, it will default to a
-transparent `<` operator for each element.  This operator must be explicitly enabled
-for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-with an appropriate `::type` alias that injects the comparison function into the
-container configuration.
-
-This overload expects the user to provide the container type as an explicit template
-parameter, possibly along with a custom comparison function.  All arguments will be
-passed to the constructor for the container's sorted type. */
-template <meta::unqualified T, meta::unqualified Less = impl::Less, typename... Args>
-[[nodiscard]] meta::detail::sorted<Less, T>::type sorted(Args&&... args)
-    noexcept(noexcept(
-        typename meta::detail::sorted<Less, T>::type(std::forward<Args>(args)...)
-    ))
-    requires(meta::constructible_from<
-        typename meta::detail::sorted<Less, T>::type,
-        Args...
-    >)
-{
-    using sorted_type = meta::detail::sorted<Less, T>::type;
-    return sorted_type(std::forward<Args>(args)...);
-}
-
-
-/* Produce a sorted version of a container with the specified less-than comparison
-function.  If no explicit comparison function is given, it will default to a
-transparent `<` operator for each element.  This operator must be explicitly enabled
-for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-with an appropriate `::type` alias that injects the comparison function into the
-container configuration.
-
-This overload expects the user to provide an unspecialized template class as the first
-template parameter, possibly along with a custom comparison function.  The arguments
-will be used to specialize the container type using CTAD, as if it were being
-constructed with the given arguments. */
-template <
-    template <typename...> class Container,
-    meta::unqualified Less = impl::Less,
-    typename... Args
->
-[[nodiscard]] auto sorted(Args&&... args)
-    noexcept(noexcept(typename meta::detail::sorted<
-        Less,
-        decltype(Container(std::forward<Args>(args)...))
-    >::type(std::forward<Args>(args)...)))
-    requires(requires{
-        Container(std::forward<Args>(args)...);
-        typename meta::detail::sorted<
-            Less,
-            decltype(Container(std::forward<Args>(args)...))
-        >::type;
-        typename meta::detail::sorted<
-            Less,
-            decltype(Container(std::forward<Args>(args)...))
-        >::type(std::forward<Args>(args)...);
-    })
-{
-    using deduced_type = decltype(Container(std::forward<Args>(args)...));
-    using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
-    return sorted_type(std::forward<Args>(args)...);
-}
-
-
-/* Produce a sorted version of a container with the specified less-than comparison
-function.  If no explicit comparison function is given, it will default to a
-transparent `<` operator for each element.  This operator must be explicitly enabled
-for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-with an appropriate `::type` alias that injects the comparison function into the
-container configuration.
-
-This overload expects the user to provide an unspecialized template class as the first
-template parameter, possibly along with a custom comparison function.  The arguments
-will be used to specialize the container type using CTAD, as if it were being
-constructed with the given arguments. */
-template <
-    template <typename T, impl::capacity<T>, typename...> class Container,
-    meta::unqualified Less = impl::Less,
-    typename... Args
->
-[[nodiscard]] auto sorted(Args&&... args)
-    noexcept(noexcept(typename meta::detail::sorted<
-        Less,
-        decltype(Container(std::forward<Args>(args)...))
-    >::type(std::forward<Args>(args)...)))
-    requires(requires{
-        Container(std::forward<Args>(args)...);
-        typename meta::detail::sorted<
-            Less,
-            decltype(Container(std::forward<Args>(args)...))
-        >::type;
-        typename meta::detail::sorted<
-            Less,
-            decltype(Container(std::forward<Args>(args)...))
-        >::type(std::forward<Args>(args)...);
-    })
-{
-    using deduced_type = decltype(Container(std::forward<Args>(args)...));
-    using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
-    return sorted_type(std::forward<Args>(args)...);
-}
-
-
-/* Produce a sorted version of a container with the specified less-than comparison
-function.  If no explicit comparison function is given, it will default to a
-transparent `<` operator for each element.  This operator must be explicitly enabled
-for a given container type by specializing the `meta::detail::sorted<Less, T>` struct
-with an appropriate `::type` alias that injects the comparison function into the
-container configuration.
-
-This overload expects the user to provide an unspecialized template class as the first
-template parameter, possibly along with a custom comparison function.  The arguments
-will be used to specialize the container type using CTAD, as if it were being
-constructed with the given arguments. */
-template <
-    template <
-        typename K,
-        typename V,
-        impl::capacity<std::pair<K, V>>,
-        typename...
-    > class Container,
-    meta::unqualified Less = impl::Less,
-    typename... Args
->
-[[nodiscard]] auto sorted(Args&&... args)
-    noexcept(noexcept(typename meta::detail::sorted<
-        Less,
-        decltype(Container(std::forward<Args>(args)...))
-    >::type(std::forward<Args>(args)...)))
-    requires(requires{
-        Container(std::forward<Args>(args)...);
-        typename meta::detail::sorted<
-            Less,
-            decltype(Container(std::forward<Args>(args)...))
-        >::type;
-        typename meta::detail::sorted<
-            Less,
-            decltype(Container(std::forward<Args>(args)...))
-        >::type(std::forward<Args>(args)...);
-    })
-{
-    using deduced_type = decltype(Container(std::forward<Args>(args)...));
-    using sorted_type = meta::detail::sorted<Less, deduced_type>::type;
-    return sorted_type(std::forward<Args>(args)...);
 }
 
 

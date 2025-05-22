@@ -2864,18 +2864,14 @@ private:
         requires (
             !meta::monad<From> &&
             meta::lvalue<value_type> &&
-            meta::addressable<value_type> &&
-            meta::convertible_to<meta::address_type<value_type>, pointer>
+            meta::address_returns<pointer, value_type>
         )
     struct ConvertFrom<From> {
         static constexpr storage<T> operator()(pointer value) noexcept {
             return {value};
         }
         static constexpr storage<T> operator()(value_type value)
-            noexcept(
-                meta::nothrow::addressable<value_type> &&
-                meta::nothrow::convertible_to<meta::address_type<value_type>, pointer>
-            )
+            noexcept(meta::nothrow::address_returns<pointer, value_type>)
         {
             return {&value};
         }
@@ -2936,15 +2932,8 @@ public:
     /* Implicit conversion from references to optional references, bypassing
     visitors. */
     [[nodiscard]] constexpr Optional(value_type v)
-        noexcept(
-            meta::nothrow::addressable<value_type> &&
-            meta::nothrow::convertible_to<meta::address_type<value_type>, pointer>
-        )
-        requires(
-            meta::lvalue<value_type> &&
-            meta::addressable<value_type> &&
-            meta::convertible_to<meta::address_type<value_type>, pointer>
-        )
+        noexcept(meta::nothrow::address_returns<pointer, value_type>)
+        requires(meta::lvalue<value_type> && meta::address_returns<pointer, value_type>)
     :
         m_storage(&v)
     {}
@@ -3010,13 +2999,13 @@ public:
     template <typename Self, typename V>
         requires (
             meta::lvalue<value_type> &&
-            meta::convertible_to<meta::address_type<access<Self>>, V> &&
+            meta::address_returns<V, access<Self>> &&
             meta::convertible_to<std::nullptr_t, V> &&
             !meta::convertible_to<access<Self>, V> &&
             !meta::convertible_to<NoneType, V>
         )
     [[nodiscard]] constexpr operator V(this Self&& self) noexcept(
-        meta::nothrow::convertible_to<meta::address_type<access<Self>>, V> &&
+        meta::nothrow::address_returns<V, access<Self>> &&
         meta::nothrow::convertible_to<std::nullptr_t, V>
     ) {
         if (self.has_value()) {

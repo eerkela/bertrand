@@ -11,6 +11,10 @@
 namespace bertrand {
 
 
+/// TODO: msb_is_set() should just be an msb() method on the bitset itself, with an
+/// lsb() equivalent for completeness.
+
+
 /* A simple bitset that stores up to `N` boolean flags as a compressed array of machine
 words.  Allows a wider range of operations than `std::bitset<N>`, including full,
 bigint-style unsigned arithmetic, lexicographic comparisons, one-hot decomposition,
@@ -271,16 +275,6 @@ namespace meta {
         constexpr size_t float_mantissa_size<T> = meta::unqualify<T>::mantissa_size;
         template <meta::floating T> requires (meta::Float<T>)
         constexpr size_t float_exponent_size<T> = meta::unqualify<T>::exponent_size;
-        /// TODO: idk what I was trying to do here, or if it's necessary.  It might be
-        /// nice to have some way in metaprogramming to get a floating point type that
-        /// is guaranteed to be able to exactly represent all values of a given
-        /// integer, and vice versa, and that's kind of the intent here, but that's
-        /// probably unnecessarily complicated.
-        // template <meta::Float T>
-        // struct as_integer<T> {
-        //     static constexpr bool enable = true;
-        //     using type = bertrand::Int<float_mantissa_size<T> + float_exponent_size<T>>;
-        // };
         template <meta::Float T>
         constexpr bool prefer_constructor<T> = true;
     }
