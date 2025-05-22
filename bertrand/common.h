@@ -728,6 +728,15 @@ namespace meta {
         };
     }
 
+    /// TODO: may not need as_integer or as_float, unless they can detect the minimum
+    /// size needed to exactly represent the value.  So `as_float<uint64> -> float128`
+    /// `as_float<int32> -> float64`, `as_signed<float16> -> int16`,
+    /// `as_signed<float32> -> int128`, `as_signed<float64> -> Int<1024>`.
+
+    /// TODO: this blows up pretty fast, so maybe a better way is just to expand to the
+    /// mantissa length, not the maximum exponent, and then overflow if necessary.  Or
+    /// just leave this up to code that needs it.
+
     template <typename T> requires (detail::as_integer<T>::enable)
     using as_integer = qualify<typename detail::as_integer<unqualify<T>>::type, T>;
 
@@ -888,6 +897,15 @@ namespace meta {
         };
         template <typename T>
         constexpr size_t string_literal_size = sizeof(T) - 1;
+
+        template <typename T>
+        struct format_string { static constexpr bool enable = false; };
+        template <typename Char, typename... Args>
+        struct format_string<::std::basic_format_string<Char, Args...>> {
+            static constexpr bool enable = true;
+            using char_type = Char;
+            using args_type = pack<Args...>;
+        };
     }
 
     template <typename T>
@@ -895,6 +913,15 @@ namespace meta {
 
     template <string_literal T>
     constexpr size_t string_literal_size = detail::string_literal_size<T>;
+
+    template <typename T>
+    concept format_string = detail::format_string<unqualify<T>>::enable;
+
+    template <format_string T>
+    using format_string_char = detail::format_string<unqualify<T>>::char_type;
+
+    template <format_string T>
+    using format_string_args = detail::format_string<unqualify<T>>::args_type;
 
     template <typename T>
     concept raw_array = std::is_array_v<remove_reference<T>>;

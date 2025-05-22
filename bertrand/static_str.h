@@ -5,8 +5,10 @@
 #include "bertrand/iter.h"
 
 
-// avoid conflict with deprecated isascii() from <ctype.h>
+// avoid conflict with deprecated isascii() macro from <ctype.h> and assert() from
+// <cassert>
 #undef isascii
+#undef assert
 
 
 namespace bertrand {
@@ -219,6 +221,15 @@ struct static_str : impl::static_str_tag {
     using slice = impl::slice<iterator>;
     using const_slice = impl::slice<const_iterator>;
 
+private:
+    template <size_t M>
+    friend struct bertrand::static_str;
+    template <bertrand::static_str self>
+    friend struct bertrand::string_wrapper;
+
+    constexpr static_str() = default;
+
+public:
     char buffer[N + 1];  // +1 for null terminator
 
     explicit constexpr static_str(char c) noexcept requires (N == 1) {
@@ -231,27 +242,10 @@ struct static_str : impl::static_str_tag {
         buffer[N] = '\0';
     }
 
-    /* Swap the contents of two static strings. */
-    constexpr void swap(static_str& other) noexcept {
-        if (this != &other) {
-            std::swap_ranges(buffer, buffer + N + 1, other.buffer);
-        }
-    }
-
-private:
-    constexpr static_str() = default;
-
-    template <size_t M>
-    friend struct bertrand::static_str;
-    template <bertrand::static_str self>
-    friend struct bertrand::string_wrapper;
-
-    template <typename T>
-    static constexpr bool is_format_string = false;
-    template <typename... Args>
-    static constexpr bool is_format_string<std::basic_format_string<char, Args...>> = true;
-
-public:
+    /// TODO: from_int<> and from_float<> should probably be functions like everything
+    /// else, and should account for arbitrary-precision integers and floats from
+    /// bits.h.  That's going to be a challenge due to the circular dependency between
+    /// them, though.
 
     /* Convert an integer into a string at compile time using the specified base. */
     template <long long num, size_type base = 10> requires (base >= 2 && base <= 36)
@@ -266,9 +260,16 @@ public:
         return impl::float_to_static_string<num, precision>;
     }();
 
+    /* Swap the contents of two static strings. */
+    constexpr void swap(static_str& other) noexcept {
+        if (this != &other) {
+            std::swap_ranges(buffer, buffer + N + 1, other.buffer);
+        }
+    }
+
     /* Implicitly convert a static string to any other standard string type. */
     template <typename T>
-        requires (!is_format_string<T> && (
+        requires (!meta::format_string<T> && (
             meta::convertible_to<std::string_view, T> ||
             meta::convertible_to<std::string, T> ||
             meta::convertible_to<const char(&)[N + 1], T>
@@ -297,10 +298,18 @@ public:
     [[nodiscard]] constexpr iterator cbegin() const noexcept { return {buffer}; }
     [[nodiscard]] constexpr iterator end() const noexcept { return {buffer + size()}; }
     [[nodiscard]] constexpr iterator cend() const noexcept { return {buffer + size()}; }
-    [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept { return {end()}; }
-    [[nodiscard]] constexpr reverse_iterator crbegin() const noexcept { return {cend()}; }
-    [[nodiscard]] constexpr reverse_iterator rend() const noexcept { return {begin()}; }
-    [[nodiscard]] constexpr reverse_iterator crend() const noexcept { return {cbegin()}; }
+    [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
+        return reverse_iterator{end()};
+    }
+    [[nodiscard]] constexpr reverse_iterator crbegin() const noexcept {
+        return reverse_iterator{cend()};
+    }
+    [[nodiscard]] constexpr reverse_iterator rend() const noexcept {
+        return reverse_iterator{begin()};
+    }
+    [[nodiscard]] constexpr reverse_iterator crend() const noexcept {
+        return reverse_iterator{cbegin()};
+    }
 
     /* Get the character at index `I`, where `I` is known at compile time.  Applies
     Python-style wraparound for negative indices, and fails to compile if the index is
@@ -422,9 +431,10 @@ public:
     /// NOTE: due to language limitations, the * operator cannot return another
     /// static_str instance, so it returns a std::string instead.  This is not ideal,
     /// but there is currently no way to inform the compiler that the other operand
-    /// must be a compile-time constant, and can therefore be used to determine the
-    /// size of the resulting string.  The `repeat<self, reps>()` method is a
-    /// workaround that encodes the repetitions as a template parameter.
+    /// is a compile-time constant, and can therefore be used to determine the size of
+    /// the resulting string.  The `repeat<self, reps>()` method is a workaround that
+    /// encodes the repetitions as a template parameter.  Perhaps this could be the
+    /// subject of a future standards proposal, but for now, this is the best we can do.
 
     /* Repeat a string a given number of times at runtime. */
     [[nodiscard]] friend constexpr std::string operator*(
@@ -476,31 +486,41 @@ public:
     }
 
     /* Lexicographically compare a static string against a string literal. */
-    template <auto M>
     [[nodiscard]] friend constexpr auto operator<=>(
         const static_str& self,
-        const char(&other)[M]
+        const char* other
     ) noexcept {
-        return std::lexicographical_compare_three_way(
-            self.buffer,
-            self.buffer + N,
-            other,
-            other + M - 1
-        );
+        size_type i = 0;
+        while (*other != '\0' && i < self.size()) {
+            if (auto cmp = self.buffer[i] <=> *other; cmp != 0) {
+                return cmp;
+            }
+            ++other;
+            ++i;
+        }
+        return
+            i < self.size() ?   std::strong_ordering::greater :
+            *other != '\0'  ?   std::strong_ordering::less :
+                                std::strong_ordering::equal;
     }
 
     /* Lexicographically compare a static string against a string literal. */
-    template <auto M>
     [[nodiscard]] friend constexpr auto operator<=>(
-        const char(&other)[M],
+        const char* other,
         const static_str& self
     ) noexcept {
-        return std::lexicographical_compare_three_way(
-            other,
-            other + M - 1,
-            self.buffer,
-            self.buffer + N
-        );
+        size_type i = 0;
+        while (*other != '\0' && i < self.size()) {
+            if (auto cmp = *other <= self.buffer[i]; cmp != 0) {
+                return cmp;
+            }
+            ++other;
+            ++i;
+        }
+        return
+            *other != '\0'  ?   std::strong_ordering::greater :
+            i < self.size() ?   std::strong_ordering::less :
+                                std::strong_ordering::equal;
     }
 
     /* Lexicographically compare a static string against a string view. */
@@ -541,39 +561,35 @@ public:
     }
 
     /* Check for lexicographic equality between a static string and a string literal. */
-    template <auto M>
     [[nodiscard]] friend constexpr bool operator==(
         const static_str& self,
-        const char(&other)[M]
+        const char* other
     ) noexcept {
-        if constexpr (N == (M - 1)) {
-            return std::lexicographical_compare_three_way(
-                self.buffer,
-                self.buffer + N,
-                other,
-                other + N
-            ) == 0;
-        } else {
-            return false;
+        size_type i = 0;
+        while (*other != '\0' && i < self.size()) {
+            if (*other != self.buffer[i]) {
+                return false;
+            }
+            ++other;
+            ++i;
         }
+        return *other == '\0' && i == self.size();
     }
 
     /* Check for lexicographic equality between a static string and a string literal. */
-    template <auto M>
     [[nodiscard]] friend constexpr bool operator==(
-        const char(&other)[M],
+        const char* other,
         const static_str& self
     ) noexcept {
-        if constexpr (N == (M - 1)) {
-            return std::lexicographical_compare_three_way(
-                other,
-                other + N,
-                self.buffer,
-                self.buffer + N
-            ) == 0;
-        } else {
-            return false;
+        size_type i = 0;
+        while (*other != '\0' && i < self.size()) {
+            if (*other != self.buffer[i]) {
+                return false;
+            }
+            ++other;
+            ++i;
         }
+        return *other == '\0' && i == self.size();
     }
 
     /* Check for lexicographic equality between a static string and a string view. */
@@ -593,17 +609,6 @@ public:
     }
 
 private:
-
-    /* Repeat a string a given number of times at compile time. */
-    template <bertrand::static_str self, size_type reps>
-    [[nodiscard]] static constexpr auto repeat() noexcept {
-        static_str<self.size() * reps> result;
-        for (size_type i = 0; i < reps; ++i) {
-            std::copy_n(self.buffer, self.size(), result.buffer + (self.size() * i));
-        }
-        result.buffer[self.size() * reps] = '\0';
-        return result;
-    }
 
     template <bertrand::static_str self, bertrand::static_str chars>
     static constexpr index_type first_non_stripped() noexcept {
@@ -636,6 +641,17 @@ private:
             }
         }
         return -1;
+    }
+
+    /* Repeat a string a given number of times at compile time. */
+    template <bertrand::static_str self, size_type reps>
+    [[nodiscard]] static constexpr auto repeat() noexcept {
+        static_str<self.size() * reps> result;
+        for (size_type i = 0; i < reps; ++i) {
+            std::copy_n(self.buffer, self.size(), result.buffer + (self.size() * i));
+        }
+        result.buffer[self.size() * reps] = '\0';
+        return result;
     }
 
     /// NOTE: Because it is impossible to reference data from `this` within a
@@ -929,10 +945,11 @@ private:
     /* Equivalent to Python `str.partition(sep)`. */
     template <bertrand::static_str self, bertrand::static_str sep>
     [[nodiscard]] static constexpr auto partition() noexcept {
-        constexpr size_type index = find<self, sep>();
-        if constexpr (index < 0) {
+        constexpr auto it = find<self, sep>();
+        if constexpr (it == self.end()) {
             return string_list<self, "", "">{};
         } else {
+            constexpr size_type index = it - self.begin();
             constexpr size_type offset = index + sep.size();
             constexpr size_type remaining = self.size() - offset;
             return string_list<
@@ -1056,10 +1073,11 @@ private:
     /* Equivalent to Python `str.rpartition(sep)`. */
     template <bertrand::static_str self, bertrand::static_str sep>
     [[nodiscard]] static constexpr auto rpartition() noexcept {
-        constexpr size_type index = rfind<self, sep>();
-        if constexpr (index < 0) {
+        constexpr auto it = rfind<self, sep>();
+        if constexpr (it == self.end()) {
             return string_list<self, "", "">{};
         } else {
+            constexpr size_type index = it - self.begin();
             constexpr size_type offset = index + sep.size();
             constexpr size_type remaining = self.size() - offset;
             return string_list<
@@ -1420,7 +1438,7 @@ public:
     /* Check whether a given substring is present within the string. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
     [[nodiscard]] static constexpr bool contains() noexcept {
-        return find<sub, start, stop>().has_value();
+        return find<sub, start, stop>() != self.end();
     }
 
     /* Get the character at index `I`, where `I` is known at compile time.  Applies
@@ -1653,8 +1671,9 @@ public:
         return string_wrapper<self.template expandtabs<self, tabsize>()>{};
     }
 
-    /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns -1 if the
-    substring is not found. */
+    /* Equivalent to Python `str.find(sub[, start[, stop]])`, except that it returns an
+    iterator to the start of the substring, or an end iterator if the substring was not
+    found. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
     [[nodiscard]] static constexpr auto find() noexcept {
         return self.template find<self, sub, start, stop>();
@@ -1665,7 +1684,7 @@ public:
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
         requires (contains<sub, start, stop>())
     [[nodiscard]] static constexpr auto index() noexcept {
-        return find<sub, start, stop>();
+        return find<sub, start, stop>() - self.begin();
     }
 
     /* Equivalent to Python `str.isalpha()`. */
@@ -1761,8 +1780,9 @@ public:
         return string_wrapper<self.template replace<self, sub, repl, max_count>()>{};
     }
 
-    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns -1 if the
-    substring is not found. */
+    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, except that it returns
+    an iterator to the start of the substring, or an end iterator if the substring was
+    not found. */
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
     [[nodiscard]] static constexpr auto rfind() noexcept {
         return self.template rfind<self, sub, start, stop>();
@@ -1773,7 +1793,7 @@ public:
     template <static_str sub, index_type start = 0, index_type stop = self.size()>
         requires (contains<sub, start, stop>())
     [[nodiscard]] static constexpr auto rindex() noexcept {
-        return rfind<sub, start, stop>();
+        return rfind<sub, start, stop>() - self.begin();
     }
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
@@ -2481,6 +2501,15 @@ struct string_list : impl::string_list_tag {
         return ((Key == Strings) || ...);
     }
 
+    /* Check whether the list contains an arbitrary string. */
+    template <typename T>
+    [[nodiscard]] static constexpr bool contains(T&& key)
+        noexcept((meta::nothrow::has_eq<T, decltype(Strings)> && ...))
+        requires((meta::has_eq<T, decltype(Strings)> && ...))
+    {
+        return ((key == Strings) || ...);
+    }
+
     /* Count the number of occurrences of a particular string within the list. */
     template <static_str Key>
     [[nodiscard]] static constexpr size_type count() noexcept {
@@ -2488,58 +2517,13 @@ struct string_list : impl::string_list_tag {
     }
 
     /* Count the number of occurrences of a particular string within the list. */
-    template <size_t N>
-    [[nodiscard]] static constexpr size_type count(const char(&str)[N]) noexcept {
-        return ((size_type(0) + ... + (str == Strings)));
-    }
-
-    /* Count the number of occurrences of a particular string within the list. */
-    template <meta::static_str Key>
-    [[nodiscard]] static constexpr size_type count(const Key& key) noexcept {
+    template <typename T>
+    [[nodiscard]] static constexpr size_type count(const T& key)
+        noexcept((meta::nothrow::has_eq<T, decltype(Strings)> && ...))
+        requires((meta::has_eq<T, decltype(Strings)> && ...))
+    {
         return ((size_type(0) + ... + (key == Strings)));
     }
-
-    /* Count the number of occurrences of a particular string within the list. */
-    template <meta::convertible_to<const char*> T>
-        requires (!meta::string_literal<T> && !meta::static_str<T>)
-    [[nodiscard]] static constexpr size_type count(T&& key) noexcept(
-        noexcept(std::string_view(static_cast<const char*>(std::forward<T>(key))))
-    ) {
-        const char* s = std::forward<T>(key);
-        std::string_view str = s;
-        return ((size_type(0) + ... + (str == Strings)));
-    }
-
-    /* Count the number of occurrences of a particular string within the list. */
-    template <meta::convertible_to<std::string_view> T>
-        requires (
-            !meta::string_literal<T> &&
-            !meta::static_str<T> &&
-            !meta::convertible_to<T, const char*>
-        )
-    [[nodiscard]] static constexpr size_type count(T&& key) noexcept(
-        noexcept(std::string_view(std::forward<T>(key)))
-    ) {
-        std::string_view str = std::forward<T>(key);
-        return ((size_type(0) + ... + (str == Strings)));
-    }
-
-    /* Count the number of occurrences of a particular string within the list. */
-    template <meta::convertible_to<std::string> T>
-        requires (
-            !meta::string_literal<T> &&
-            !meta::static_str<T> &&
-            !meta::convertible_to<T, const char*> &&
-            !meta::convertible_to<T, std::string_view>
-        )
-    [[nodiscard]] static constexpr size_type count(T&& key) noexcept(
-        noexcept(std::string(std::forward<T>(key)))
-    ) {
-        std::string str = std::forward<T>(key);
-        return ((size_type(0) + ... + (str == Strings)));
-    }
-
-    /// TODO: index() should return Optional<index_type> instead of -1 on error.
 
     /* Get the index of the first occurrence of a string within the list.  Fails to
     compile if the string is not present. */
@@ -2554,115 +2538,41 @@ struct string_list : impl::string_list_tag {
         }();
     }
 
-    /// TODO: why can't I just mandate that the incoming type is comparable with
-    /// static_str, and enforce it at that level?
-
-    /* Get the index of the first occurrence of a string within the list.  Returns -1
-    if the string is not present in the list. */
-    template <size_t N>
-    [[nodiscard]] static constexpr index_type index(const char(&str)[N]) noexcept {
-        return []<index_type I = 0>(this auto&& self, const char(&str)[N]) -> index_type {
-            if constexpr (I < ssize()) {
-                if (str == meta::unpack_string<I, Strings...>) {
-                    return I;
-                }
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(str);
-            } else {
-                return -1;
-            }
-        }(str);
-    }
-
-    /* Get the index of the first occurrence of a string within the list.  Returns -1
-    if the string is not present in the list. */
-    template <meta::static_str T>
-    [[nodiscard]] static constexpr index_type index(const T& key) noexcept {
-        return []<index_type I = 0>(this auto&& self, const T& key) -> index_type {
+    /* Get the index of the first occurrence of a string within the list.  Returns an
+    empty optional if the string is not present in the list. */
+    template <typename T>
+    [[nodiscard]] static constexpr Optional<index_type> index(const T& key)
+        noexcept((meta::nothrow::has_eq<T, decltype(Strings)> && ...))
+        requires((meta::has_eq<T, decltype(Strings)> && ...))
+    {
+        return []<index_type I = 0>(this auto&& self, const T& key) -> Optional<index_type> {
             if constexpr (I < ssize()) {
                 if (key == meta::unpack_string<I, Strings...>) {
                     return I;
                 }
                 return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
             } else {
-                return -1;
+                return None;
             }
         }(key);
     }
 
-    /* Get the index of the first occurrence of a string within the list.  Returns -1
-    if the string is not present in the list. */
-    template <meta::convertible_to<const char*> T>
-        requires (!meta::string_literal<T> && !meta::static_str<T>)
-    [[nodiscard]] static constexpr index_type index(T&& key) noexcept(
-        noexcept(std::string_view(static_cast<const char*>(std::forward<T>(key))))
-    ) {
-        const char* str = std::forward<T>(key);
-        return []<index_type I = 0>(this auto&& self, std::string_view key) -> index_type {
-            if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
-                    return I;
-                }
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
-            } else {
-                return -1;
-            }
-        }(str);
+    /* Get an iterator to the first occurrence of a string within the list.  Returns
+    an `end()` iterator if the string is not present. */
+    template <static_str Key> requires (contains<Key>())
+    [[nodiscard]] static constexpr iterator find() noexcept {
+        return at<index<Key>()>();
     }
 
-    /* Get the index of the first occurrence of a string within the list.  Returns -1
-    if the string is not present in the list. */
-    template <meta::convertible_to<std::string_view> T>
-        requires (
-            !meta::string_literal<T> &&
-            !meta::static_str<T> &&
-            !meta::convertible_to<T, const char*>
-        )
-    [[nodiscard]] static constexpr index_type index(T&& key) noexcept(
-        noexcept(std::string_view(std::forward<T>(key)))
-    ) {
-        return []<index_type I = 0>(this auto&& self, std::string_view key) -> index_type {
-            if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
-                    return I;
-                }
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
-            } else {
-                return -1;
-            }
-        }(std::forward<T>(key));
-    }
-
-    /* Get the index of the first occurrence of a string within the list.  Returns -1
-    if the string is not present in the list. */
-    template <meta::convertible_to<std::string> T>
-        requires (
-            !meta::string_literal<T> &&
-            !meta::static_str<T> &&
-            !meta::convertible_to<T, const char*> &&
-            !meta::convertible_to<T, std::string_view>
-        )
-    [[nodiscard]] static constexpr index_type index(T&& key) noexcept(
-        noexcept(std::string(std::forward<T>(key)))
-    ) {
-        std::string str = std::forward<T>(key);
-        return []<index_type I = 0>(this auto&& self, std::string_view key) -> index_type {
-            if constexpr (I < ssize()) {
-                if (key == meta::unpack_string<I, Strings...>) {
-                    return I;
-                }
-                return std::forward<decltype(self)>(self).template operator()<I + 1>(key);
-            } else {
-                return -1;
-            }
-        }(str);
-    }
-
-    /* Check whether the list contains an arbitrary string. */
-    template <typename T> requires (requires(T t) {index(std::forward<T>(t));})
-    [[nodiscard]] static constexpr bool contains(T&& key) noexcept(
-        noexcept(index(std::forward<T>(key)))
-    ) {
-        return index(std::forward<T>(key)) >= 0;
+    /* Get an iterator to the first occurrence of a string within the list.  Returns
+    an `end()` iterator if the string is not present. */
+    template <typename T>
+    [[nodiscard]] static constexpr iterator find(T&& key)
+        noexcept(noexcept(index(std::forward<T>(key))))
+        requires(requires{index(std::forward<T>(key));})
+    {
+        auto idx = index(std::forward<T>(key));
+        return idx.has_value() ? at(idx.value()) : end();
     }
 
     /* Get the string at index I, where `I` is known at compile time.  Applies
@@ -2718,21 +2628,6 @@ struct string_list : impl::string_list_tag {
             return end();
         }
         return {data() + index};
-    }
-
-    /* Get an iterator to the first occurrence of a string within the list.  Returns
-    an `end()` iterator if the string is not present. */
-    template <static_str Key> requires (contains<Key>())
-    [[nodiscard]] static constexpr iterator find() noexcept {
-        return at<index<Key>()>();
-    }
-
-    /* Get an iterator to the first occurrence of a string within the list.  Returns
-    an `end()` iterator if the string is not present. */
-    template <typename T> requires (requires(T t) {index(std::forward<T>(t));})
-    [[nodiscard]] static constexpr iterator find(T&& key) noexcept {
-        index_type idx = index(std::forward<T>(key));
-        return idx >= 0 ? at(idx) : end();
     }
 
 private:
@@ -3177,32 +3072,24 @@ public:
         return lookup(std::forward<K>(key)) >= 0;
     }
 
-    /// TODO: index() should return Optional<index_type> instead of -1 on error.
-
     /* Get the index of a string within the set.  Fails to compile if the string is not
     present. */
-    template <static_str Key>
+    template <static_str Key> requires (contains<Key>())
     [[nodiscard]] static constexpr index_type index() noexcept {
-        if constexpr (Key.size() < hasher::min_length || Key.size() > hasher::max_length) {
-            return -1;
-        } else {
-            constexpr size_t idx = pack_index[hasher{}(Key) % size()];
-            if constexpr (Key == meta::unpack_string<idx, Keys...>) {
-                return idx;
-            } else {
-                return -1;
-            }
-        }
+        return index_type(pack_index[hasher{}(Key) % size()]);
     }
 
     /* Get the index of a string within the set.  Returns -1 if the string is not
     present in the set. */
     template <typename K> requires (hashable<K>)
-    [[nodiscard]] static constexpr index_type index(K&& key) noexcept(
-        noexcept(lookup(std::forward<K>(key)))
-    ) {
+    [[nodiscard]] static constexpr Optional<index_type> index(K&& key)
+        noexcept(noexcept(lookup(std::forward<K>(key))))
+    {
         index_type idx = lookup(std::forward<K>(key));
-        return idx < 0 ? idx : index_type(pack_index[idx]);
+        if (idx < 0) {
+            return None;
+        }
+        return index_type(pack_index[idx]);
     }
 
     /* Get the string at index I, where `I` is known at compile time.  Applies
@@ -3842,32 +3729,24 @@ public:
         return lookup(std::forward<K>(key)) >= 0;
     }
 
-    /// TODO: index() should return Optional<index_type> instead of -1 on error.
-
     /* Get the index of a string within the set.  Fails to compile if the string is not
     present. */
-    template <static_str Key>
+    template <static_str Key> requires (contains<Key>())
     [[nodiscard]] static constexpr index_type index() noexcept {
-        if constexpr (Key.size() < hasher::min_length || Key.size() > hasher::max_length) {
-            return -1;
-        } else {
-            constexpr size_t idx = pack_index[hasher{}(Key) % size()];
-            if constexpr (Key == meta::unpack_string<idx, Keys...>) {
-                return idx;
-            } else {
-                return -1;
-            }
-        }
+        return index_type(pack_index[hasher{}(Key) % size()]);
     }
 
     /* Get the index of a string within the set.  Returns -1 if the string is not
     present in the set. */
     template <typename K> requires (hashable<K>)
-    [[nodiscard]] constexpr index_type index(K&& key) const noexcept(
-        noexcept(lookup(std::forward<K>(key)))
-    ) {
+    [[nodiscard]] constexpr Optional<index_type> index(K&& key) const
+        noexcept(noexcept(lookup(std::forward<K>(key))))
+    {
         index_type idx = lookup(std::forward<K>(key));
-        return idx < 0 ? idx : index_type(pack_index[idx]);
+        if (idx < 0) {
+            return None;
+        }
+        return index_type(pack_index[idx]);
     }
 
     /* Get the value for a specific key within the table, where the key is known at
@@ -5179,14 +5058,21 @@ equivalent to Python's `repr()` function, but extended to work for all C++ types
 will attempt the following, in order of precedence:
 
     1.  A `std::format()` call using a registered `std::formatter<>` specialization.
+        Note that no options will be provided to the formatter in this case - use
+        `bertrand::format()` to customize the output.
     2.  An explicit conversion to `std::basic_string<Char>`.
-    3.  A stream insertion operator (`<<`).
+    3.  A stream insertion operator (`<<`) without any modifiers.
     4.  A generic identifier based on the demangled type name and memory address,
         similar to Python.
 
-If you'd like to customize the output of `repr()` for a specific type, the best way to
-do this is to implement a `std::formatter<>` specialization for that type, which also
-enables Python-style format strings. */
+Additionally, note that this function automatically visits any union types that are
+provided as arguments, so you can safely use it with `bertrand::Union`,
+`bertrand::Optional`, and `bertrand::Expected`, as well as any of their STL
+counterparts.
+
+If you'd like to extend `repr()` for a specific type, the best way to is to implement a
+`std::formatter<T, Char>` specialization for that type, which allows Python-style
+format strings in C++, whose semantics will be reflected in Python itself. */
 template <typename Char = char, typename T>
 [[nodiscard]] constexpr std::basic_string<Char> repr(T&& obj)
     noexcept(meta::nothrow::visit<impl::Repr<Char>, T>)
@@ -5303,19 +5189,94 @@ constexpr void println(T&& obj)
 }
 
 
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
-`assert()` macro in that this is implemented as a normal inline function that accepts
-a format string and arguments (which are automatically passed through `repr()`), and
-results in a `bertrand::AssertionError` with a coherent traceback, which can be
-seamlessly passed up to Python.  It is thus possible to implement pytest-style unit
-tests using this function just as in native Python. */
-template <typename... Args> requires (DEBUG)
-[[gnu::always_inline]] void assert_(
+/* A python-style `assert` statement in C++, which is only available in debug mode, and
+throws an `AssertionError` rather than immediately terminating the program.
+
+Attempting to call this function in a release build will result in a compilation
+(static assert) failure, enforcing strict discipline at compile time.  Practically
+speaking, this requires all assertions to be guarded as follows:
+
+    ```
+    if constexpr (DEBUG) {
+        assert(cnd, "assertion failed: {}", cnd);
+    }
+    ```
+
+Or be omitted entirely in release builds.
+
+NOTE: Because this function throws an `AssertionError` that can be translated up to
+Python as an equivalent exception, and bindings will be automatically generated for
+all exported entities, it is possible to use this function to define pytest-style unit
+tests directly in C++ that can be run from Python without any special handling.  For
+example:
+
+    ```
+    export module my_tests;
+
+    export void test_foo() requires (DEBUG) {
+        assert(foo() == 42, "foo() should return 42");
+    }
+    ```
+
+When the program is compiled, a Python module named `my_tests` will be created that
+exposes the `test_foo()` function.  Pytest should be able to automatically discover
+this function and run it as part of the test suite.  This is a powerful feature that
+greatly simplifies the process of writing unit tests in C++ and allows for
+seamless integration with existing Python test suites.
+
+NOTE: Due to the spelling of this function, conflicts may arise with the C-style
+`assert()` macro from `<cassert>`.  This was considered during the design of this
+function, and the conflict was deemed acceptable for the following reasons:
+
+    1.  C assertions are defined as macros, and thus cannot be exported from a module
+        interface unit.
+    2.  Because C assertions are macros, they do not permit commas in the assertion
+        condition, which can cause problems when the condition is a template
+        expression, which frequently contain commas.  This also prevents the assertion
+        from being able to accept multiple arguments, which precludes the use of
+        format strings in the assertion message (which must itself not contain commas).
+    3.  Macros (including C assertions) do not respect namespace boundaries, and thus
+        cannot be isolated from other code that may use the same name, regardless of
+        scope.
+    4.  On failure, C assertions will issue an abort signal, which can cause problems
+        in a multi-threaded environment, since the signal will not be contained to the
+        originating thread and cannot be caught by the user.  This also means that
+        the assertion message cannot be passed up to Python, and will not retain a
+        coherent stack trace to the point of failure.
+    5.  An alternative spelling would add noise to the call site and break continuity
+        with Python, which does not have this problem.  By keeping the spelling the
+        same, it becomes much easier to parse the code and write pytest-style unit
+        tests using this function, which is a significant advantage.
+
+For these reasons, the C-style `assert()` macro is considered to be deprecated by
+Bertrand, and should not be used in new code.  This function is intended to replace it
+in all cases, and should always be preferred.  The only downside is that it is possible
+for the C `assert()` macro to be reintroduced by a legacy header file, which may
+include `<cassert>` somewhere in its dependency chain, thereby polluting the global
+namespace.  This can be avoided by exclusively using C++20 modules to handle
+dependencies (which Bertrand is set up to do by default) or manually undefining the
+macro immediately before importing bertrand, like so:
+
+    ```
+    #include <legacy_header.h>
+
+    #undef assert
+    import bertrand;
+
+    // bertrand::assert() is now available
+    using bertrand::assert;  // if you'd like to alias the typical C-style assert()
+    ```
+
+If you fail to undefine the C assert() macro, then it will silently override this
+function, regardless of namespace or scope.  This viral behavior is yet another reason
+to deprecate the C-style `assert()` macro, and to avoid it at all costs. */
+template <typename... Args>
+[[gnu::always_inline]] void assert(
     bool cnd,
     impl::format_repr<char, Args...> msg = "",
     Args&&... args
 ) {
+    static_assert(DEBUG, "assertions are only available in debug mode");
     if (!cnd) {
         throw AssertionError(std::format(
             msg,
@@ -5325,30 +5286,94 @@ template <typename... Args> requires (DEBUG)
 }
 
 
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
-`assert()` macro in that this is implemented as a normal inline function that accepts
-an arbitrary value (which is automatically passed through `repr()`), and results in a
-`bertrand::AssertionError` with a coherent traceback, which can be seamlessly passed up
-to Python.  It is thus possible to implement pytest-style unit tests using this
-function just as in native Python. */
-template <typename T> requires (DEBUG)
-[[gnu::always_inline]] void assert_(bool cnd, T&& obj) {
+/* A python-style `assert` statement in C++, which is only available in debug mode, and
+throws an `AssertionError` rather than immediately terminating the program.
+
+Attempting to call this function in a release build will result in a compilation
+(static assert) failure, enforcing strict discipline at compile time.  Practically
+speaking, this requires all assertions to be guarded as follows:
+
+    ```
+    if constexpr (DEBUG) {
+        assert(cnd, "assertion failed: {}", cnd);
+    }
+    ```
+
+Or be omitted entirely in release builds.
+
+NOTE: Because this function throws an `AssertionError` that can be translated up to
+Python as an equivalent exception, and bindings will be automatically generated for
+all exported entities, it is possible to use this function to define pytest-style unit
+tests directly in C++ that can be run from Python without any special handling.  For
+example:
+
+    ```
+    export module my_tests;
+
+    export void test_foo() requires (DEBUG) {
+        assert(foo() == 42, "foo() should return 42");
+    }
+    ```
+
+When the program is compiled, a Python module named `my_tests` will be created that
+exposes the `test_foo()` function.  Pytest should be able to automatically discover
+this function and run it as part of the test suite.  This is a powerful feature that
+greatly simplifies the process of writing unit tests in C++ and allows for
+seamless integration with existing Python test suites.
+
+NOTE: Due to the spelling of this function, conflicts may arise with the C-style
+`assert()` macro from `<cassert>`.  This was considered during the design of this
+function, and the conflict was deemed acceptable for the following reasons:
+
+    1.  C assertions are defined as macros, and thus cannot be exported from a module
+        interface unit.
+    2.  Because C assertions are macros, they do not permit commas in the assertion
+        condition, which can cause problems when the condition is a template
+        expression, which frequently contain commas.  This also prevents the assertion
+        from being able to accept multiple arguments, which precludes the use of
+        format strings in the assertion message (which must itself not contain commas).
+    3.  Macros (including C assertions) do not respect namespace boundaries, and thus
+        cannot be isolated from other code that may use the same name, regardless of
+        scope.
+    4.  On failure, C assertions will issue an abort signal, which can cause problems
+        in a multi-threaded environment, since the signal will not be contained to the
+        originating thread and cannot be caught by the user.  This also means that
+        the assertion message cannot be passed up to Python, and will not retain a
+        coherent stack trace to the point of failure.
+    5.  An alternative spelling would add noise to the call site and break continuity
+        with Python, which does not have this problem.  By keeping the spelling the
+        same, it becomes much easier to parse the code and write pytest-style unit
+        tests using this function, which is a significant advantage.
+
+For these reasons, the C-style `assert()` macro is considered to be deprecated by
+Bertrand, and should not be used in new code.  This function is intended to replace it
+in all cases, and should always be preferred.  The only downside is that it is possible
+for the C `assert()` macro to be reintroduced by a legacy header file, which may
+include `<cassert>` somewhere in its dependency chain, thereby polluting the global
+namespace.  This can be avoided by exclusively using C++20 modules to handle
+dependencies (which Bertrand is set up to do by default) or manually undefining the
+macro immediately before importing bertrand, like so:
+
+    ```
+    #include <legacy_header.h>
+
+    #undef assert
+    import bertrand;
+
+    // bertrand::assert() is now available
+    using bertrand::assert;  // if you'd like to alias the typical C-style assert()
+    ```
+
+If you fail to undefine the C assert() macro, then it will silently override this
+function, regardless of namespace or scope.  This viral behavior is yet another reason
+to deprecate the C-style `assert()` macro, and to avoid it at all costs. */
+template <typename T>
+[[gnu::always_inline]] void assert(bool cnd, T&& obj) {
+    static_assert(DEBUG, "assertions are only available in debug mode");
     if (!cnd) {
         throw AssertionError(repr(std::forward<T>(obj)));
     }
 }
-
-
-/* A python-style `assert` statement in C++, which is optimized away if built with
-`bertrand::DEBUG == false` (release mode).  This differs from the built-in C++
-`assert()` macro in that this is implemented as a normal inline function that accepts
-a format string and arguments (which are automatically passed through `repr()`), and
-results in a `bertrand::AssertionError` with a coherent traceback, which can be
-seamlessly passed up to Python.  It is thus possible to implement pytest-style unit
-tests using this function just as in native Python. */
-template <typename... Args> requires (!DEBUG)
-[[gnu::always_inline]] void assert_(Args&&... args) noexcept {}
 
 
 }  // namespace bertrand
@@ -5480,6 +5505,40 @@ namespace std {
     {
         return map.template get<Key>();
     }
+
+}
+
+
+namespace bertrand {
+
+    inline void test() {
+        static constexpr static_str str = "Hello, world!";
+        static constexpr static_str str2 = "Hello, world!";
+        static constexpr const char* str3 = "Hello, world!";
+        static constexpr std::string str4 = "Hello, world!";
+        static constexpr std::string_view str5 = "Hello, world!";
+        static_assert(string_wrapper<str>::index<"w">() == 7);
+
+        static constexpr string_list<"foo", "bar", "baz"> list;
+        static_assert(list.index("bar").value() == 1);
+
+        static_assert(meta::has_eq<decltype(str5), decltype(str)>);
+
+        
+        static_assert(str2 <= str5);
+        if (str3 == str) {
+            println("Hello, world!");
+        }
+
+
+        static constexpr string_set<"foo", "bar", "baz"> set;
+        static_assert(set.index("bar").value() == 1);
+
+        if constexpr (DEBUG) {
+            assert(str == str2, "str == str2");
+        }
+    }
+
 
 }
 
