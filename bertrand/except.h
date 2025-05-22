@@ -10,6 +10,7 @@ namespace bertrand {
 
 
 namespace impl {
+    struct Exception_tag {};
 
     /* In the event of a syscall error, get an explanatory error message in a
     thread-safe way. */
@@ -27,6 +28,14 @@ namespace impl {
             return "Unknown OS error";
         #endif
     }
+
+}
+
+
+namespace meta {
+
+    template <typename T>
+    concept Exception = meta::inherits<T, impl::Exception_tag>;
 
 }
 
@@ -580,6 +589,21 @@ public:
 
     /* Catch an exception from Python, re-throwing it as an equivalent C++ error. */
     [[noreturn]] static void from_python();
+
+    /* Print the exception to an output stream without its traceback. */
+    template <meta::Exception T>
+    friend constexpr std::ostream& operator<<(
+        std::ostream& os,
+        const T& exc
+    ) {
+        os << demangle<T>();
+        std::string_view msg = exc.message();
+        if (msg.empty()) {
+            return os;
+        }
+        os << ": " << msg;
+        return os;
+    }
 };
 
 
@@ -968,6 +992,30 @@ public:
     {}
 };
 
+
+}
+
+
+namespace std {
+
+    /// TODO: this seems to be broken in practice, but there doesn't seem to be a good
+    /// reason as to why.  There is active work being done to fix formatting in
+    /// general, so this might be resolved in a future libc++ update.
+
+    template <bertrand::meta::Exception T>
+    struct formatter<T> : public formatter<string> {
+        using const_reference = bertrand::meta::as_const<T>;
+
+        constexpr auto format(const_reference exc, format_context& ctx) const {
+            string temp;
+            std::format_to(std::back_inserter(temp), "{}", bertrand::demangle<T>());
+            string_view msg = exc.message();
+            if (!msg.empty()) {
+                std::format_to(std::back_inserter(temp), ": {}", msg);
+            }
+            return formatter<string>::format(temp, ctx);
+        }
+    };
 
 }
 

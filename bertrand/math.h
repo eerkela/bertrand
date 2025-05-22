@@ -335,7 +335,7 @@ namespace impl {
         struct true_ {
             static constexpr decltype(auto) operator()(const L& lhs, const R& rhs)
                 noexcept(noexcept(lhs / rhs))
-                requires(requires{ lhs / rhs;})
+                requires(requires{lhs / rhs;})
             {
                 return lhs / rhs;
             }

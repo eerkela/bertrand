@@ -312,9 +312,9 @@ public:
 
     /* Get a slice from the string at compile time.  Takes an explicitly-initialized
     `bertrand::slice` pack describing the start, stop, and step indices.  Each index
-    can be omitted by initializing it to std::nullopt, which is equivalent to an empty
-    slice index in Python.  Applies Python-style wraparound to both `start` and
-    `stop`. */
+    can be omitted by initializing it to `bertrand::None` (aka `std::nullopt`), which
+    is equivalent to an empty slice index in Python.  Applies Python-style wraparound
+    to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] constexpr auto get() const noexcept {
         constexpr auto indices = s.normalize(ssize());
@@ -337,8 +337,9 @@ public:
 
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
     describing the start, stop, and step indices.  Each index can be omitted by
-    initializing it to `std::nullopt`, which is equivalent to an empty slice index in
-    Python.  Applies Python-style wraparound to both `start` and `stop`. */
+    initializing it to `bertrand::None` (aka `std::nullopt`), which is equivalent to an
+    empty slice index in Python.  Applies Python-style wraparound to both `start` and
+    `stop`. */
     [[nodiscard]] constexpr slice operator[](bertrand::slice s) const noexcept(
         noexcept(slice{*this, s.normalize(ssize())})
     ) {
@@ -737,28 +738,26 @@ private:
         return result;
     }
 
-    /// TODO: find() should return an iterator rather than an optional, in accordance
-    /// with the indexing API for all other containers.
-
-    /* Equivalent to Python `str.find(sub[, start[, stop]])`.  Returns an empty
-    optional if the substring is not found. */
+    /* Equivalent to Python `str.find(sub[, start[, stop]])`, except that it returns an
+    iterator to the start of the substring, or an end iterator if the substring was not
+    found. */
     template <
         bertrand::static_str self,
         bertrand::static_str sub,
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static constexpr Optional<index_type> find() noexcept {
+    [[nodiscard]] static constexpr auto find() noexcept {
         constexpr index_type nstart =
             impl::truncate_index(self.size(), start).first;
         constexpr index_type nstop =
             impl::truncate_index(self.size(), stop).first;
         for (index_type i = nstart; i < nstop; ++i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
-                return i;
+                return self.begin() + i;
             }
         }
-        return std::nullopt;
+        return self.end();
     }
 
     /* Equivalent to Python `str.isalpha()`. */
@@ -1010,27 +1009,26 @@ private:
         return result;
     }
 
-    /// TODO: rfind() should also return an iterator rather than an optional index.
-
-    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`.  Returns an empty
-    optional if the substring is not found. */
+    /* Equivalent to Python `str.rfind(sub[, start[, stop]])`, except that it returns
+    an iterator to the start of the substring, or an end iterator if the substring was
+    not found. */
     template <
         bertrand::static_str self,
         bertrand::static_str sub,
         index_type start = 0,
         index_type stop = self.size()
     >
-    [[nodiscard]] static constexpr Optional<index_type> rfind() noexcept {
+    [[nodiscard]] static constexpr auto rfind() noexcept {
         constexpr index_type nstart =
             impl::truncate_index(self.size(), stop).first - 1;
         constexpr index_type nstop =
             impl::truncate_index(self.size(), start).first - 1;
         for (index_type i = nstart; i > nstop; --i) {
             if (std::equal(sub.buffer, sub.buffer + sub.size(), self.buffer + i)) {
-                return i;
+                return self.begin() + i;
             }
         }
-        return std::nullopt;
+        return self.end();
     }
 
     /* Equivalent to Python `str.rjust(width[, fillchar])`. */
@@ -1435,9 +1433,9 @@ public:
 
     /* Get a slice from the string at compile time.  Takes an explicitly-initialized
     `bertrand::slice` pack describing the start, stop, and step indices.  Each index
-    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
-    empty slice index in Python.  Applies Python-style wraparound to both `start` and
-    `stop`. */
+    can be omitted by initializing it to `bertrand::None` (aka `std::nullopt`), which
+    is equivalent to an empty slice index in Python.  Applies Python-style wraparound
+    to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] static constexpr auto get() noexcept {
         return string_wrapper<self.template get<s>()>{};
@@ -1453,8 +1451,8 @@ public:
     }
 
     /* Slice operator utilizing an initializer list.  Up to 3 (possibly negative)
-    indices may be supplied according to Python semantics, with `std::nullopt` equating
-    to `None`. */
+    indices may be supplied according to Python semantics, with `bertrand::None` (aka
+    `std::nullopt`) equating to an empty slice index in Python. */
     [[nodiscard]] static constexpr decltype(auto) operator[](bertrand::slice s) noexcept(
         noexcept(self[s])
     ) {
@@ -2556,6 +2554,9 @@ struct string_list : impl::string_list_tag {
         }();
     }
 
+    /// TODO: why can't I just mandate that the incoming type is comparable with
+    /// static_str, and enforce it at that level?
+
     /* Get the index of the first occurrence of a string within the list.  Returns -1
     if the string is not present in the list. */
     template <size_t N>
@@ -2675,9 +2676,9 @@ struct string_list : impl::string_list_tag {
 
     /* Get a slice from the list at compile time.  Takes an explicitly-initialized
     `bertrand::slice` pack describing the start, stop, and step indices.  Each index
-    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
-    empty slice index in Python.  Applies Python-style wraparound to both `start` and
-    `stop`. */
+    can be omitted by initializing it to `bertrand::None` (aka `std::nullopt`), which
+    is equivalent to an empty slice index in Python.  Applies Python-style wraparound
+    to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] static constexpr auto get() noexcept {
         static constexpr auto indices = s.normalize(ssize());
@@ -2700,8 +2701,8 @@ struct string_list : impl::string_list_tag {
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
     describing the start, stop, and step indices, and returns a slice object containing
     the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
+    `bertrand::None` (aka `std::nullopt`), which is equivalent to an empty slice index
+    in Python.  Applies Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr slice operator[](bertrand::slice s) const
         noexcept(noexcept(slice{*this, s.normalize(ssize())}))
     {
@@ -2867,9 +2868,9 @@ public:
 
     /* Remove a slice from the list, returning a new list without the sliced elements.
     Takes an explicitly-initialized `bertrand::slice` pack describing the start, stop,
-    and step indices.  Each index can be omitted by initializing it to `std::nullopt`,
-    which is equivalent to an empty slice index in Python.  Applies Python-style
-    wraparound to both `start` and `stop`. */
+    and step indices.  Each index can be omitted by initializing it to `bertrand::None`
+    (aka `std::nullopt`), which is equivalent to an empty slice index in Python.
+    Applies Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] static constexpr auto remove() noexcept {
         static constexpr auto indices = s.normalize(ssize());
@@ -3215,9 +3216,9 @@ public:
 
     /* Get a slice from the set at compile time.  Takes an explicitly-initialized
     `bertrand::slice` pack describing the start, stop, and step indices.  Each index
-    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
-    empty slice index in Python.  Applies Python-style wraparound to both `start` and
-    `stop`. */
+    can be omitted by initializing it to `bertrand::None` (aka `std::nullopt`), which
+    is equivalent to an empty slice index in Python.  Applies Python-style wraparound
+    to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] static constexpr auto get() noexcept {
         static constexpr auto indices = s.normalize(ssize());
@@ -3240,8 +3241,8 @@ public:
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
     describing the start, stop, and step indices, and returns a slice object containing
     the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
+    `bertrand::None` (aka `std::nullopt`), which is equivalent to an empty slice index
+    in Python.  Applies Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr slice operator[](bertrand::slice s) const
         noexcept(noexcept(slice{*this, s.normalize(ssize())}))
     {
@@ -3419,9 +3420,9 @@ public:
 
     /* Remove a slice from the set, returning a new set without the sliced elements.
     Takes an explicitly-initialized `bertrand::slice` pack describing the start, stop,
-    and step indices.  Each index can be omitted by initializing it to `std::nullopt`,
-    which is equivalent to an empty slice index in Python.  Applies Python-style
-    wraparound to both `start` and `stop`. */
+    and step indices.  Each index can be omitted by initializing it to `bertrand::None`
+    (aka `std::nullopt`), which is equivalent to an empty slice index in Python.
+    Applies Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] static constexpr auto remove() noexcept {
         static constexpr auto indices = s.normalize(ssize());
@@ -3930,9 +3931,9 @@ public:
 
     /* Get a slice from the map at compile time.  Takes an explicitly-initialized
     `bertrand::slice` pack describing the start, stop, and step indices.  Each index
-    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
-    empty slice index in Python.  Applies Python-style wraparound to both `start` and
-    `stop`. */
+    can be omitted by initializing it to `bertrand::None` (aka `std::nullopt`), which
+    is equivalent to an empty slice index in Python.  Applies Python-style wraparound
+    to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] constexpr auto get() const noexcept(meta::nothrow::copyable<mapped_type>) {
         static constexpr auto indices = s.normalize(ssize());
@@ -3946,9 +3947,9 @@ public:
 
     /* Get a slice from the map at compile time.  Takes an explicitly-initialized
     `bertrand::slice` pack describing the start, stop, and step indices.  Each index
-    can be omitted by initializing it to `std::nullopt`, which is equivalent to an
-    empty slice index in Python.  Applies Python-style wraparound to both `start` and
-    `stop`. */
+    can be omitted by initializing it to `bertrand::None` (aka `std::nullopt`), which
+    is equivalent to an empty slice index in Python.  Applies Python-style wraparound
+    to both `start` and `stop`. */
     template <bertrand::slice s>
     [[nodiscard]] constexpr auto get() && noexcept(meta::nothrow::movable<mapped_type>) {
         static constexpr auto indices = s.normalize(ssize());
@@ -4029,8 +4030,8 @@ public:
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
     describing the start, stop, and step indices, and returns a slice object containing
     the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
+    `bertrand::None` (aka `std::nullopt`), which is equivalent to an empty slice index
+    in Python.  Applies Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr slice operator[](bertrand::slice s) noexcept(
         noexcept(slice{*this, s.normalize(ssize())})
     ) {
@@ -4040,8 +4041,8 @@ public:
     /* Slice operator.  Takes an explicitly-initialized `bertrand::slice` pack
     describing the start, stop, and step indices, and returns a slice object containing
     the strings within the slice.  Each index can be omitted by initializing it to
-    `std::nullopt`, which is equivalent to an empty slice index in Python.  Applies
-    Python-style wraparound to both `start` and `stop`. */
+    `bertrand::None` (aka `std::nullopt`), which is equivalent to an empty slice index
+    in Python.  Applies Python-style wraparound to both `start` and `stop`. */
     [[nodiscard]] constexpr const_slice operator[](bertrand::slice s) const noexcept(
         noexcept(const_slice{*this, s.normalize(ssize())})
     ) {
@@ -4504,9 +4505,9 @@ public:
 
     /* Remove a slice from the set, returning a new set without the sliced elements.
     Takes an explicitly-initialized `bertrand::slice` pack describing the start, stop,
-    and step indices.  Each index can be omitted by initializing it to `std::nullopt`,
-    which is equivalent to an empty slice index in Python.  Applies Python-style
-    wraparound to both `start` and `stop`. */
+    and step indices.  Each index can be omitted by initializing it to `bertrand::None`
+    (aka `std::nullopt`), which is equivalent to an empty slice index in Python.
+    Applies Python-style wraparound to both `start` and `stop`. */
     template <bertrand::slice s, typename Self>
     [[nodiscard]] constexpr auto remove(this Self&& self) noexcept(
         noexcept(forward_remove<
@@ -5153,7 +5154,7 @@ namespace impl {
         template <typename T>
         [[nodiscard]] static constexpr type operator()(const T& obj)
             noexcept(noexcept(
-                "<" + type_name<T> + " at " +
+                "<" + demangle<T>() + " at " +
                 std::to_string(reinterpret_cast<uintptr_t>(&obj)) + ">"
             ))
             requires(
@@ -5163,7 +5164,7 @@ namespace impl {
                 meta::has_stream_insertion<uintptr_t, Char>
             )
         {
-            static constexpr static_str prefix = "<" + type_name<T> + " at ";
+            static constexpr static_str prefix = "<" + demangle<T>() + " at ";
             std::basic_ostringstream<Char> stream;
             stream << prefix << reinterpret_cast<uintptr_t>(&obj) << ">";
             return stream.str();
@@ -5188,8 +5189,8 @@ do this is to implement a `std::formatter<>` specialization for that type, which
 enables Python-style format strings. */
 template <typename Char = char, typename T>
 [[nodiscard]] constexpr std::basic_string<Char> repr(T&& obj)
-    noexcept(meta::nothrow::visitor<impl::Repr<Char>, T>)
-    requires(meta::visitor<impl::Repr<Char>, T>)
+    noexcept(meta::nothrow::visit<impl::Repr<Char>, T>)
+    requires(meta::visit<impl::Repr<Char>, T>)
 {
     return visit(impl::Repr<Char>{}, std::forward<T>(obj));
 }
@@ -5242,7 +5243,7 @@ constexpr std::string format(impl::format_repr<Char, Args...> fmt, Args&&... arg
         fmt,
         impl::to_format_repr<Char>(std::forward<Args>(args))...
     )))
-    requires(meta::visitor<impl::Repr<Char>, Args...>)
+    requires(meta::visit<impl::Repr<Char>, Args...>)
 {
     return std::format(fmt, impl::to_format_repr<Char>(std::forward<Args>(args))...);
 }
@@ -5257,7 +5258,7 @@ constexpr void print(impl::format_repr<Char, Args...> fmt, Args&&... args)
         fmt,
         impl::to_format_repr<Char>(std::forward<Args>(args))...
     )))
-    requires(meta::visitor<impl::Repr<Char>, Args...>)
+    requires(meta::visit<impl::Repr<Char>, Args...>)
 {
     std::print(fmt, impl::to_format_repr<Char>(std::forward<Args>(args))...);
 }
@@ -5269,7 +5270,7 @@ obtain a universal representation. */
 template <typename Char = char, typename T>
 constexpr void print(T&& obj)
     noexcept(noexcept(std::cout << repr<Char>(std::forward<T>(obj))))
-    requires(meta::visitor<impl::Repr<Char>, T>)
+    requires(meta::visit<impl::Repr<Char>, T>)
 {
     std::cout << repr<Char>(std::forward<T>(obj));
 }
@@ -5284,7 +5285,7 @@ constexpr void println(impl::format_repr<Char, Args...> fmt, Args&&... args)
         fmt,
         impl::to_format_repr<Char>(std::forward<Args>(args))...
     )))
-    requires(meta::visitor<impl::Repr<Char>, Args...>)
+    requires(meta::visit<impl::Repr<Char>, Args...>)
 {
     std::println(fmt, impl::to_format_repr<Char>(std::forward<Args>(args))...);
 }
@@ -5296,7 +5297,7 @@ to obtain a universal representation. */
 template <typename Char = char, typename T>
 constexpr void println(T&& obj)
     noexcept(noexcept(std::cout << repr<Char>(std::forward<T>(obj)) << "\n"))
-    requires(meta::visitor<impl::Repr<Char>, T>)
+    requires(meta::visit<impl::Repr<Char>, T>)
 {
     std::cout << repr<Char>(std::forward<T>(obj)) << "\n";
 }

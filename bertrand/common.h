@@ -1655,7 +1655,6 @@ namespace meta {
             static constexpr bool _value = meta::has_get<T, I - 1> && _value<I - 1>;
             template <typename Dummy>
             static constexpr bool _value<0, Dummy> = true;
-
             static constexpr bool value = _value<N>;
         };
 
@@ -1738,228 +1737,6 @@ namespace meta {
         requires(!has_member_get<T, I> && !has_adl_get<T, I> && has_std_get<T, I>)
     {
         return (std::get<I>(std::forward<T>(t)));
-    }
-
-    namespace detail {
-
-        template <typename...>
-        struct apply_func {
-            static constexpr bool enable = false;
-            static constexpr bool nothrow = false;
-            using type = void;
-        };
-        template <typename F, typename... out> requires (meta::invocable<F, out...>)
-        struct apply_func<F, meta::pack<out...>> {
-            static constexpr bool enable = true;
-            static constexpr bool nothrow = meta::nothrow::invocable<F, out...>;
-            using type = meta::invoke_type<F, out...>;
-        };
-        template <typename F, typename... out, typename T, typename... Ts>
-            requires (!meta::tuple_like<T>)
-        struct apply_func<F, meta::pack<out...>, T, Ts...> {
-            using result = apply_func<F, meta::pack<out..., T>, Ts...>;
-            static constexpr bool enable = result::enable;
-            static constexpr bool nothrow = result::nothrow;
-            using type = result::type;
-        };
-        template <typename F, typename... out, meta::tuple_like T, typename... Ts>
-        struct apply_func<F, meta::pack<out...>, T, Ts...> {
-            using result = apply_func<
-                F,
-                meta::concat<meta::pack<out...>, meta::tuple_types<T>>,
-                Ts...
-            >;
-            static constexpr bool enable = result::enable;
-            static constexpr bool nothrow = result::nothrow;
-            using type = result::type;
-        };
-
-        // base case: all tuples have been exhausted
-        template <size_t count, typename F, typename... Ts>
-        struct apply {
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
-            static constexpr decltype(auto) operator()(
-                std::index_sequence<prev...>,
-                std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(nothrow::invocable<G, A...>)
-                requires(invocable<G, A...>)
-            {
-                static_assert(count == sizeof...(A));
-                static_assert(sizeof...(prev) == sizeof...(A));
-                static_assert(sizeof...(next) == 0);
-                return (std::forward<G>(func)(std::forward<A>(args)...));
-            }
-        };
-
-        // recursive case: unpack all elements of current tuple
-        template <size_t count, typename F, tuple_like T, typename... Ts>
-        struct apply<count, F, T, Ts...> {
-            // If the current tuple is empty, skip it without unpacking any arguments
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
-                requires (tuple_size<T> == 0)
-            static constexpr decltype(auto) operator()(
-                std::index_sequence<prev...>,
-                std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(apply<count, F, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev)>{},
-                    std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    std::forward<G>(func),
-                    unpack_arg<prev>(std::forward<A>(args)...)...,
-                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                )))
-            {
-                return (apply<count, F, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev)>{},
-                    std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    std::forward<G>(func),
-                    unpack_arg<prev>(std::forward<A>(args)...)...,
-                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                ));
-            }
-
-            // Otherwise, if there are remaining tuple elements after this one, then
-            // unpack the current element and carry the tuple forward
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
-                requires ((sizeof...(prev) - count + 1) < tuple_size<T>)
-            static constexpr decltype(auto) operator()(
-                std::index_sequence<prev...>,
-                std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(apply<count, F, T, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev) + 1>{},
-                    std::make_index_sequence<sizeof...(A) - (sizeof...(prev) + 1)>{},
-                    std::forward<G>(func),
-                    unpack_arg<prev>(std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
-                    ),
-                    unpack_arg<sizeof...(prev)>(std::forward<A>(args)...),  // carry
-                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                )))
-            {
-                return (apply<count, F, T, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev) + 1>{},
-                    std::make_index_sequence<sizeof...(A) - (sizeof...(prev) + 1)>{},
-                    std::forward<G>(func),
-                    unpack_arg<prev>(std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
-                    ),
-                    unpack_arg<sizeof...(prev)>(std::forward<A>(args)...),  // carry
-                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                ));
-            }
-
-            // Otherwise, if the current tuple is exhausted, unpack the last element
-            // and discard it
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
-                requires ((sizeof...(prev) - count + 1) == tuple_size<T>)
-            static constexpr decltype(auto) operator()(
-                std::index_sequence<prev...>,
-                std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(apply<count + tuple_size<T>, F, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev) + 1>{},
-                    std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    std::forward<G>(func),
-                    unpack_arg<prev>(std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
-                    ),
-                    // discard tuple
-                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                )))
-            {
-                return (apply<count + tuple_size<T>, F, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev) + 1>{},
-                    std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    std::forward<G>(func),
-                    unpack_arg<prev>(std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(std::forward<A>(args)...)
-                    ),
-                    // discard tuple
-                    unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                ));
-            }
-        };
-
-        // recursive case: ignore non-tuple arguments and continue unpacking
-        template <size_t count, typename F, typename T, typename... Ts>
-        struct apply<count, F, T, Ts...> {
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
-            static constexpr decltype(auto) operator()(
-                std::index_sequence<prev...>,
-                std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(apply<count + 1, F, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev) + 1>{},
-                    std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    std::forward<G>(func),
-                    std::forward<A>(args)...
-                )))
-            {
-                return (apply<count + 1, F, Ts...>{}(
-                    std::make_index_sequence<sizeof...(prev) + 1>{},
-                    std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    std::forward<G>(func),
-                    std::forward<A>(args)...
-                ));
-            }
-        };
-
-    }
-
-    /// TODO: apply_func -> apply<F, Ts...>, and also maybe it's only defined after
-    /// visit(), and includes that logic internally, such that `apply(t)` will act as a
-    /// union visitor for all alternatives of `t`, unpacking any tuples it finds.
-
-    template <typename F, typename... Ts>
-    concept apply_func = detail::apply_func<F, meta::pack<>, Ts...>::enable;
-
-    template <typename F, typename... Ts> requires (apply_func<F, Ts...>)
-    using apply_type = detail::apply_func<F, meta::pack<>, Ts...>::type;
-
-    template <typename Ret, typename F, typename... Ts>
-    concept apply_returns =
-        apply_func<F, Ts...> && convertible_to<apply_type<F, Ts...>, Ret>;
-
-    namespace nothrow {
-
-        template <typename F, typename... Ts>
-        concept apply_func = detail::apply_func<F, meta::pack<>, Ts...>::nothrow;
-
-        template <typename F, typename... Ts> requires (apply_func<F, Ts...>)
-        using apply_type = detail::apply_func<F, meta::pack<>, Ts...>::type;
-
-        template <typename Ret, typename F, typename... Ts>
-        concept apply_returns =
-            apply_func<F, Ts...> && convertible_to<apply_type<F, Ts...>, Ret>;
-
     }
 
     /////////////////////////
@@ -3867,45 +3644,6 @@ namespace meta {
 }
 
 
-
-
-
-
-/// TODO: elaborate docs for apply(), since it is now a standard library feature.
-
-
-
-
-
-/* Invoke a function with the given arguments, unpacking tuple-like types into
-their individual elements and interleaving with non-tuple types.  For example:
-
-```
-    std::pair<int, std::string> p{2, "hello"};
-    assert(apply(
-        [](int i, const std::string& s, double d) { return i + s.size() + d; },
-        p,
-        3.25
-    ) == 10.25);
-```
-
-This is essentially equivalent to unpacking the tuples using structured bindings,
-and then perfectly forwarding them as arguments to the function.  Non-tuple types
-are perfectly forwarded as-is. */
-template <typename F, typename... Ts>
-constexpr decltype(auto) apply(F&& func, Ts&&... args)
-    noexcept(meta::nothrow::apply_func<F, Ts...>)
-    requires(meta::apply_func<F, Ts...>)
-{
-    return (meta::detail::apply<0, F, Ts...>{}(
-        std::make_index_sequence<0>{},
-        std::make_index_sequence<sizeof...(Ts) - (sizeof...(Ts) > 0)>{},
-        std::forward<F>(func),
-        std::forward<Ts>(args)...
-    ));
-}
-
-
 namespace impl {
 
     /* A helper type that simplifies friend declarations for wrapper types.  Every
@@ -3966,6 +3704,12 @@ namespace meta {
 
 
 namespace impl {
+
+
+    /// TODO: delete `wrapper`.  It just complicates the interface without providing any
+    /// value.  I should try to design everything such that this is not needed.
+
+
 
     /* A smart reference class that perfectly forwards every operator except
     assignment, unary `&`, `*`, `->`, and `->*` to the result of a private `getter()`
@@ -4579,12 +4323,6 @@ namespace impl {
             );
         }
 
-        /// TODO: ADL get() version?  This would require some kind of customization
-        /// point that always triggers ADL, but the problem with that is that it
-        /// prevents me from explicitly providing template arguments, unless you do
-        /// something like meta::get<...>{}(self, args...) which is a bit clunky,
-        /// especially without universal template parameters.
-
         template <auto... I, typename S, typename... A>
             requires (!requires(S self, A... args) {
                 meta::unwrap(std::forward<S>(self)).template get<I...>(
@@ -5092,6 +4830,9 @@ namespace impl {
 }
 
 
+/// TODO: static_str -> StaticStr?
+
+
 /* A compile-time string literal type that can be used as a non-type template
 parameter.
 
@@ -5114,6 +4855,9 @@ struct static_str;
 
 namespace impl {
     struct static_str_tag {};
+
+    /// TODO: float_to_string and int_to_string may need to account for the new,
+    /// arbitrary-precision numeric types in bits.h
 
     template <typename T>
     struct bit_view;
@@ -5306,10 +5050,18 @@ namespace meta {
 }
 
 
-/* Gets a C++ type name as a fully-qualified, demangled string computed entirely
-at compile time.  The underlying buffer is baked directly into the final binary. */
+/* Mangle an object according to the compiler's implementation-defined behavior. */
 template <typename T>
-constexpr auto type_name = impl::type_name_impl<T>();
+constexpr std::string_view mangle(T&& value) noexcept {
+    return typeid(T).name();
+}
+
+
+/* Mangle a type according to the compiler's implementation-defined behavior. */
+template <typename T>
+constexpr std::string_view mangle() noexcept {
+    return typeid(T).name();
+}
 
 
 /* Demangle a runtime string using the compiler's intrinsics. */
@@ -5341,6 +5093,14 @@ constexpr std::string demangle(const char* name) {
     #else
         return name; // fallback: no demangling
     #endif
+}
+
+
+/* Gets a C++ type name as a fully-qualified, demangled string computed entirely
+at compile time.  The underlying buffer is baked directly into the final binary. */
+template <typename T>
+constexpr auto demangle() noexcept(noexcept(impl::type_name_impl<T>())) {
+    return impl::type_name_impl<T>();
 }
 
 

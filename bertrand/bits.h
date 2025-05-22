@@ -1537,7 +1537,7 @@ namespace impl {
             // exponent infinite or > # of available bits
             if (exp >= max) {
                 static constexpr static_str message =
-                    type_name<From> + " -> " + type_name<To> +
+                    demangle<From>() + " -> " + demangle<To>() +
                     " conversion exceeds representable range";
                 if consteval {
                     throw OverflowError(message);
@@ -1550,7 +1550,7 @@ namespace impl {
             if constexpr (meta::unsigned_integer<To>) {
                 if (self.bits.msb_is_set()) {
                     static constexpr static_str message =
-                        type_name<From> + " -> " + type_name<To> +
+                        demangle<From>() + " -> " + demangle<To>() +
                         " conversion results in negative value";
                     if consteval {
                         throw OverflowError(message);
@@ -2856,7 +2856,7 @@ private:
                 return index_type(word_size * i + j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     constexpr Optional<index_type> slice_last_one(const Bits& mask) const noexcept {
@@ -2868,7 +2868,7 @@ private:
                 return index_type(word_size * i + word_size - 1 - j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     constexpr Optional<index_type> slice_first_zero(const Bits& mask) const noexcept {
@@ -2880,7 +2880,7 @@ private:
                 return index_type(word_size * i + j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     constexpr Optional<index_type> slice_last_zero(const Bits& mask) const noexcept {
@@ -2892,7 +2892,7 @@ private:
                 return index_type(word_size * i + word_size - 1 - j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     constexpr auto _mul(const Bits& other) const noexcept {
@@ -2927,9 +2927,9 @@ private:
         using normalized = bertrand::slice::normalized;
 
         [[no_unique_address]] union storage {
-            [[no_unique_address]] std::nullopt_t borrow;
+            [[no_unique_address]] NoneType borrow;
             [[no_unique_address]] Bits own;
-            constexpr storage() noexcept : borrow(std::nullopt) {}
+            constexpr storage() noexcept : borrow(None) {}
             constexpr storage(Bits&& val) noexcept : own(std::move(val)) {}
             constexpr ~storage() noexcept {
                 /// NOTE: since `Bits` are trivially-destructible, we don't actually
@@ -3372,9 +3372,9 @@ public:
         using normalized = bertrand::slice::normalized;
 
         [[no_unique_address]] union storage {
-            [[no_unique_address]] std::nullopt_t borrow;
+            [[no_unique_address]] NoneType borrow;
             [[no_unique_address]] Bits own;
-            constexpr storage() noexcept : borrow(std::nullopt) {}
+            constexpr storage() noexcept : borrow(None) {}
             constexpr storage(Bits&& val) noexcept : own(std::move(val)) {}
             constexpr ~storage() noexcept {
                 /// NOTE: since `Bits` are trivially-destructible, we don't actually
@@ -3847,9 +3847,9 @@ public:
         using normalized = bertrand::slice::normalized;
 
         [[no_unique_address]] union storage {
-            [[no_unique_address]] std::nullopt_t borrow;
+            [[no_unique_address]] NoneType borrow;
             [[no_unique_address]] Bits own;
-            constexpr storage() noexcept : borrow(std::nullopt) {}
+            constexpr storage() noexcept : borrow(None) {}
             constexpr storage(Bits&& val) noexcept : own(std::move(val)) {}
             constexpr ~storage() noexcept {
                 /// NOTE: since `Bits` are trivially-destructible, we don't actually
@@ -4320,9 +4320,9 @@ public:
 
     Step sizes equal to zero are invalid, and will result in a `ValueError`. */
     [[nodiscard]] static constexpr Bits mask(
-        const Optional<index_type>& start = std::nullopt,
-        const Optional<index_type>& stop = std::nullopt,
-        const Optional<index_type>& step = std::nullopt
+        const Optional<index_type>& start = None,
+        const Optional<index_type>& stop = None,
+        const Optional<index_type>& step = None
     )
         noexcept(noexcept(
             _mask(bertrand::slice{start, stop, step}.normalize(ssize()))
@@ -4864,7 +4864,7 @@ public:
                 return index_type(word_size * i  + j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     /* Return the index of the last bit that is set, or an empty optional if no bits
@@ -4876,7 +4876,7 @@ public:
                 return index_type(word_size * i + word_size - 1 - j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     /* Return the index of the first bit that is not set, or an empty optional if all
@@ -4888,7 +4888,7 @@ public:
                 return index_type(word_size * i + j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     /* Return the index of the last bit that is not set, or an empty optional if all
@@ -4908,7 +4908,7 @@ public:
                 return index_type(word_size * i + word_size - 1 - j);
             }
         }
-        return std::nullopt;
+        return None;
     }
 
     /* Distribute the bits within this bitset over an arbitrary mask, such that the
@@ -9191,7 +9191,7 @@ namespace std {
 //             static constexpr Bits extracted = Bits{"0101"}[slice{0, 2}];
 //             static constexpr UInt extracted2 = Bits{"0101"}[slice{0, 2}];
 //             static constexpr Int extracted3 = Bits{"0101"}[slice{0, 2}];
-//             static_assert(Bits{"0101"}[slice{-2, std::nullopt, -2}].any());
+//             static_assert(Bits{"0101"}[slice{-2, None, -2}].any());
 //             static_assert(extracted == Bits{"01"});
 
 //             // for (auto x : Bits{"0101"}[slice{0, 2}]) {
@@ -9205,31 +9205,15 @@ namespace std {
 //         }
 
 //         {
-//             static constexpr Bits alt = Bits<8>::mask(
-//                 std::nullopt,
-//                 std::nullopt,
-//                 2
-//             );
+//             static constexpr Bits alt = Bits<8>::mask(None, None, 2);
 //             static_assert(alt == Bits{"01010101"});
 //             static constexpr Bits alt2 = Bits<8>::mask(1, -1, 2);
 //             static_assert(alt2 == Bits{"00101010"});
-//             static constexpr Bits alt3 = Bits<8>::mask(
-//                 std::nullopt,
-//                 std::nullopt,
-//                 3
-//             );
+//             static constexpr Bits alt3 = Bits<8>::mask(None, None, 3);
 //             static_assert(alt3 == Bits{"01001001"});
-//             static constexpr Bits alt4 = Bits<8>::mask(
-//                 std::nullopt,
-//                 std::nullopt,
-//                 4
-//             );
+//             static constexpr Bits alt4 = Bits<8>::mask(None, None, 4);
 //             static_assert(alt4 == Bits{"00010001"});
-//             static constexpr Bits alt5 = Bits<8>::mask(
-//                 std::nullopt,
-//                 std::nullopt,
-//                 5
-//             );
+//             static constexpr Bits alt5 = Bits<8>::mask(None, None, 5);
 //             static_assert(alt5 == Bits{"00100001"});
 
 //             static constexpr Bits x = [] {
@@ -9241,11 +9225,7 @@ namespace std {
 //             auto y = double(Int<72>::max());
 //             // double z = alt;
 
-//             static constexpr Bits alt6 = Bits<72>::mask(
-//                 std::nullopt,
-//                 std::nullopt,
-//                 3
-//             );
+//             static constexpr Bits alt6 = Bits<72>::mask(None, None, 3);
 //             static_assert(alt6 == Bits{"001001001001001001001001001001001001001001001001001001001001001001001001"});
 
 //             static constexpr auto alt7 = [] {

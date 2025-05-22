@@ -25,9 +25,9 @@ public:
     ssize_t step;
 
     [[nodiscard]] explicit constexpr slice(
-        const Optional<ssize_t>& start = std::nullopt,
-        const Optional<ssize_t>& stop = std::nullopt,
-        const Optional<ssize_t>& step = std::nullopt
+        const Optional<ssize_t>& start = None,
+        const Optional<ssize_t>& stop = None,
+        const Optional<ssize_t>& step = None
     ) :
         start(start.value_or(missing)),
         stop(stop.value_or(missing)),
@@ -1496,12 +1496,12 @@ these requirements are not met. */
 template <meta::default_constructible F, meta::tuple_like T>
     requires (meta::tuple_size<T> > 0)
 [[nodiscard]] constexpr decltype(auto) fold_left(T&& t)
-    noexcept(meta::nothrow::apply_func<
+    noexcept(meta::nothrow::apply<
         typename meta::tuple_types<T>::template eval<impl::_fold_left>,
         F,
         T
     >)
-    requires(meta::apply_func<
+    requires(meta::apply<
         typename meta::tuple_types<T>::template eval<impl::_fold_left>,
         F,
         T
@@ -1572,7 +1572,7 @@ template <meta::default_constructible F, meta::iterable T>
     auto it = std::ranges::begin(r);
     auto end = std::ranges::end(r);
     if (it == end) {
-        return std::nullopt;
+        return None;
     }
     return [](auto&& init, auto& it, auto& end) {
         ++it;
@@ -1624,12 +1624,12 @@ these requirements are not met. */
 template <meta::default_constructible F, meta::tuple_like T>
     requires (meta::tuple_size<T> > 0)
 [[nodiscard]] constexpr decltype(auto) fold_right(T&& t)
-    noexcept(meta::nothrow::apply_func<
+    noexcept(meta::nothrow::apply<
         typename meta::tuple_types<T>::template eval<impl::_fold_right>,
         F,
         T
     >)
-    requires(meta::apply_func<
+    requires(meta::apply<
         typename meta::tuple_types<T>::template eval<impl::_fold_right>,
         F,
         T
@@ -1702,7 +1702,7 @@ template <meta::default_constructible F, meta::tuple_like T>
         auto it = std::ranges::begin(r);
         auto end = std::ranges::end(r);
         if (it == end) {
-            return std::nullopt;
+            return None;
         }
         return [](auto&& init, auto& it, auto& end) {
             ++it;
@@ -1753,12 +1753,12 @@ requirements are not met. */
 template <meta::default_constructible F = impl::Less, meta::tuple_like T>
     requires (meta::tuple_size<T> > 0)
 [[nodiscard]] constexpr decltype(auto) min(T&& t)
-    noexcept(meta::nothrow::apply_func<
+    noexcept(meta::nothrow::apply<
         typename meta::tuple_types<T>::template eval<impl::_min>,
         F,
         T
     >)
-    requires(meta::apply_func<
+    requires(meta::apply<
         typename meta::tuple_types<T>::template eval<impl::_min>,
         F,
         T
@@ -1801,7 +1801,7 @@ template <meta::default_constructible F = impl::Less, meta::iterable T>
     })
 {
     if (std::ranges::empty(r)) {
-        return std::nullopt;
+        return None;
     }
     return std::ranges::min(std::forward<T>(r), F{});
 }
@@ -1842,12 +1842,12 @@ requirements are not met. */
 template <meta::default_constructible F = impl::Less, meta::tuple_like T>
     requires (meta::tuple_size<T> > 0)
 [[nodiscard]] constexpr decltype(auto) max(T&& t)
-    noexcept(meta::nothrow::apply_func<
+    noexcept(meta::nothrow::apply<
         typename meta::tuple_types<T>::template eval<impl::_max>,
         F,
         T
     >)
-    requires(meta::apply_func<
+    requires(meta::apply<
         typename meta::tuple_types<T>::template eval<impl::_max>,
         F,
         T
@@ -1890,7 +1890,7 @@ template <meta::default_constructible F = impl::Less, meta::iterable T>
     })
 {
     if (std::ranges::empty(r)) {
-        return std::nullopt;
+        return None;
     }
     return std::ranges::max(std::forward<T>(r), F{});
 }
@@ -1938,12 +1938,12 @@ requirements are not met. */
 template <meta::default_constructible F = impl::Less, meta::tuple_like T>
     requires (meta::tuple_size<T> > 0)
 [[nodiscard]] constexpr decltype(auto) minmax(T&& t)
-    noexcept(meta::nothrow::apply_func<
+    noexcept(meta::nothrow::apply<
         typename meta::tuple_types<T>::template eval<impl::minmax_helper>,
         F,
         T
     >)
-    requires(meta::apply_func<
+    requires(meta::apply<
         typename meta::tuple_types<T>::template eval<impl::minmax_helper>,
         F,
         T
@@ -1988,7 +1988,7 @@ template <meta::default_constructible F = impl::Less, meta::iterable T>
     })
 {
     if (std::ranges::empty(r)) {
-        return std::nullopt;
+        return None;
     }
     return std::ranges::minmax(std::forward<T>(r), F{});
 }

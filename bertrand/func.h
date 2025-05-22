@@ -753,8 +753,8 @@ namespace impl {
                     }
                 } else {
                     throw TypeError(
-                        "cannot convert '" + type_name<V> + "' to '" +
-                        type_name<T> + "'"
+                        "cannot convert '" + demangle<V>() + "' to '" +
+                        demangle<T>() + "'"
                     );
                 }
             })
@@ -801,7 +801,7 @@ namespace impl {
                     return *static_cast<V*>(m_value);
                 }
                 throw TypeError(
-                    "requested type '" + type_name<V> + "', but found '" +
+                    "requested type '" + demangle<V>() + "', but found '" +
                     demangle(m_type.name()) + "'"
                 );   
             } else {
@@ -818,7 +818,7 @@ namespace impl {
                     return *static_cast<V*>(m_value);
                 }
                 throw TypeError(
-                    "requested type '" + type_name<V> + "', but found '" +
+                    "requested type '" + demangle<V>() + "', but found '" +
                     demangle(m_type.name()) + "'"
                 );
             } else {
@@ -908,7 +908,7 @@ namespace impl {
                     return *static_cast<V*>(m_value);
                 }
                 throw TypeError(
-                    "requested type '" + type_name<V> + "', but found '" +
+                    "requested type '" + demangle<V>() + "', but found '" +
                     demangle(m_type.name()) + "'"
                 );
             } else {
@@ -925,7 +925,7 @@ namespace impl {
                     return *static_cast<V*>(m_value);
                 }
                 throw TypeError(
-                    "requested type '" + type_name<V> + "', but found '" +
+                    "requested type '" + demangle<V>() + "', but found '" +
                     demangle(m_type.name()) + "'"
                 );
             } else {
@@ -5672,7 +5672,7 @@ namespace impl {
                         components.emplace_back(std::string(meta::arg_traits<T>::name));
                     }
                     components.emplace_back(
-                        std::string(type_name<typename meta::arg_traits<T>::type>)
+                        std::string(demangle<typename meta::arg_traits<T>::type>())
                     );
                     if constexpr (meta::arg_traits<T>::opt()) {
                         components.emplace_back("...");
@@ -5689,7 +5689,7 @@ namespace impl {
             if constexpr (meta::is_void<Return>) {
                 components.emplace_back("None");
             } else {
-                components.emplace_back(std::string(type_name<Return>));
+                components.emplace_back(std::string(demangle<Return>()));
             }
 
             return impl::format_signature(
@@ -5740,7 +5740,7 @@ namespace impl {
                         components.emplace_back(std::string(meta::arg_traits<T>::name));
                     }
                     components.emplace_back(
-                        std::string(type_name<typename meta::arg_traits<T>::type>)
+                        std::string(demangle<typename meta::arg_traits<T>::type>())
                     );
                     if constexpr (meta::arg_traits<T>::opt()) {
                         components.emplace_back(repr(
@@ -5759,7 +5759,7 @@ namespace impl {
             if constexpr (meta::is_void<Return>) {
                 components.emplace_back("None");
             } else {
-                components.emplace_back(std::string(type_name<Return>));
+                components.emplace_back(std::string(demangle<Return>()));
             }
 
             return impl::format_signature(
