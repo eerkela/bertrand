@@ -269,7 +269,7 @@ public:
 
     /* Implicitly convert a static string to any other standard string type. */
     template <typename T>
-        requires (!meta::format_string<T> && (
+        requires (!meta::std::format_string<T> && (
             meta::convertible_to<std::string_view, T> ||
             meta::convertible_to<std::string, T> ||
             meta::convertible_to<const char(&)[N + 1], T>

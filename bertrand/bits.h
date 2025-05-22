@@ -297,6 +297,8 @@ namespace impl {
         /// TODO: extend log2_table to 256 bits, so that any bitset can be encoded as an
         /// ASCII string, and vice versa.  Maybe `to_ascii()` and `from_ascii()` can even
         /// be standard methods
+        /// -> What would be even better is if I could just calculate the log2 on the
+        /// fly.  That would imply a math library function that works at compile time.
 
         inline constexpr std::array<double, 64> log2_table {
             0,

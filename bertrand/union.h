@@ -756,7 +756,7 @@ namespace meta {
         // base case: all arguments have been exhausted
         template <size_t count, typename F, typename... Ts>
         struct do_apply {
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
             static constexpr decltype(auto) operator()(
                 ::std::index_sequence<prev...>,
                 ::std::index_sequence<next...>,
@@ -777,7 +777,7 @@ namespace meta {
         template <size_t count, typename F, tuple_like T, typename... Ts>
         struct do_apply<count, F, T, Ts...> {
             // If the current tuple is empty, skip it without unpacking any arguments
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
                 requires (tuple_size<T> == 0)
             static constexpr decltype(auto) operator()(
                 ::std::index_sequence<prev...>,
@@ -808,7 +808,7 @@ namespace meta {
 
             // Otherwise, if there are remaining tuple elements after this one, then
             // unpack the current element and carry the tuple forward
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
                 requires ((sizeof...(prev) - count + 1) < tuple_size<T>)
             static constexpr decltype(auto) operator()(
                 ::std::index_sequence<prev...>,
@@ -843,7 +843,7 @@ namespace meta {
 
             // Otherwise, if the current tuple is exhausted, unpack the last element
             // and discard it
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
                 requires ((sizeof...(prev) - count + 1) == tuple_size<T>)
             static constexpr decltype(auto) operator()(
                 ::std::index_sequence<prev...>,
@@ -884,7 +884,7 @@ namespace meta {
         // recursive case: ignore non-tuple arguments and continue unpacking
         template <size_t count, typename F, typename T, typename... Ts>
         struct do_apply<count, F, T, Ts...> {
-            template <size_t... prev, size_t... next, is<F> G, typename... A>
+            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
             static constexpr decltype(auto) operator()(
                 ::std::index_sequence<prev...>,
                 ::std::index_sequence<next...>,

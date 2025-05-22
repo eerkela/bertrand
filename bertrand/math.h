@@ -8,6 +8,49 @@
 namespace bertrand {
 
 
+/// TODO: eventually, delete the `wrapper` type in common.h, which removes all
+/// the unwrap() calls here.  Then, I should move the Bits<N>, UInt<N>, Int<N>, and
+/// Float<E, M> types into common.h, along with their respective concepts, and
+/// specialize the math operators on that basis, delegating to equivalent methods.
+/// on the underlying types.
+
+
+
+/// TODO: maybe all of this should be in a math:: namespace, and impl::math:: holds
+/// the customization points.  So:
+
+/// math::abs(x)
+/// math::pow(x, y)
+/// math::pow(x, y, mod)
+/// math::mul(x, y)
+/// math::mul(x, y, mod)
+/// math::log<b>(x)
+/// math::root<b>(x)
+/// math::prime::check()
+/// math::prime::next()
+/// math::prime::prev()
+/// math::div(x, y, math::real)
+/// math::div(x, y, math::floor)
+/// math::div(x, y, math::ceil)
+/// math::div(x, y, math::down)
+/// math::div(x, y, math::up)
+/// math::div(x, y, math::half_floor)
+/// math::div(x, y, math::half_ceil)
+/// math::div(x, y, math::half_down)
+/// math::div(x, y, math::half_up)
+/// math::div(x, y, math::half_even)
+/// math::div(x, y, math::half_odd)
+/// etc. for math::mod(), math::divmod(), math::round()
+
+
+/// impl::math::abs<T>{}
+/// impl::math::pow<L, R>{}
+/// impl::math::pow<L, R, M>{}
+/// impl::math::div<L, R, math::real>{}
+/// etc.
+
+
+
 namespace impl {
 
     template <typename T>
@@ -41,6 +84,29 @@ namespace impl {
 
     template <typename T> requires (!_check_for_negative_exponent<T>)
     constexpr void check_for_negative_exponent(const T& rhs) noexcept {}
+
+    /// TODO: to fit in with the rest of the operator function objects:
+    /// TODO: abs<T> -> Abs<T>
+    /// TODO: pow<T> -> Pow<T>
+    /// TODO: divide::true_<T> -> Divide::True<T>
+    /// TODO: divide::cpp<T> -> Divide::Cpp<T>
+    /// TODO: divide::floor<T> -> Divide::Floor<T>
+    /// etc.
+    /// TODO: Log<L, R>
+    /// TODO: Root<L, R>
+
+    /// TODO: note that the other function objects do not have template arguments, and
+    /// so these should not either.  That means the customization points either need to
+    /// be separate structs, or I have to allow overloading of the operators themselves,
+    /// which can become a real problem.  Using separate structs is probably preferable,
+    /// but that means I need to think about how best to separate them such that
+    /// specializations are easily registered.
+
+    /// TODO: maybe the solution here is to put the customization points in the
+    /// namespaces alongside the function objects?  That would make sense for
+    /// division, but likely not for the others.
+
+
 
     template <typename T>
     struct abs {
@@ -219,6 +285,9 @@ namespace impl {
         return a & (b - 1);
     }
 
+    /// TODO: maybe if I have adequate constexpr math functions, I can use a
+    /// probabilistic Miller-Rabin test that adapts to arbitrary-precision arithmetic.
+
     /* Deterministic Miller-Rabin primality test with a fixed set of bases valid for
     n < 2^64.  Can be computed at compile time, and guaranteed not to produce false
     positives. */
@@ -275,6 +344,9 @@ namespace impl {
         }
         return 2;  // only returned for n < 2
     }
+
+    /// TODO: this can be internal to Bits<N>, which is a generalization of helpers
+    /// like these.
 
     /* Reverse the order of bits in a byte. */
     template <meta::unsigned_integer T> requires (sizeof(T) == 1)
@@ -720,6 +792,70 @@ namespace impl {
 }  // namespace impl
 
 
+namespace math {
+
+
+    template <meta::integer T>
+    [[nodiscard]] constexpr decltype(auto) abs(T&& i) noexcept {
+        if constexpr (meta::signed_integer<T>) {
+            /// TODO: specialization for Int<N>, which can simply check msb_is_set(), and
+            /// possibly negate the value in-place if the argument is an rvalue.
+            return (i < 0 ? -i : i);
+        } else {
+            return (std::forward<T>(i));
+        }
+    }
+
+    template <meta::floating T>
+    [[nodiscard]] constexpr decltype(auto) abs(T&& f)
+        noexcept(noexcept(std::abs(std::forward<T>(f))))
+        requires(requires{std::abs(std::forward<T>(f));})
+    {
+        /// TODO: a separate specialization for Float<E, M>, which calls .abs() 
+        return (std::abs(std::forward<T>(f)));
+    }
+
+
+    /// TODO: not sure the best way to handle binary operators in order to prevent
+    /// combinatoric template bloat.  One way to keep everything sane is to force the
+    /// use of a helper struct, which mandates shared template constraints, like
+    /// impl::math::pow<meta::numeric, meta::numeric, meta::numeric || void>.  Then,
+    /// when you specialize it, it would fail to compile for any type that does not
+    /// satisfy meta::numeric, and you would have to specify that explicitly when you
+    /// specialize it.
+
+
+
+    template <meta::numeric L, meta::numeric R>
+    [[nodiscard]] constexpr decltype(auto) mul(L&& lhs, R&& rhs)
+        noexcept(noexcept(std::forward<L>(lhs) * std::forward<R>(rhs)))
+        requires(requires{std::forward<L>(lhs) * std::forward<R>(rhs);})
+    {
+        return (std::forward<L>(lhs) * std::forward<R>(rhs));
+    }
+
+
+    template <meta::numeric L, meta::numeric R, meta::integer M>
+    [[nodiscard]] constexpr decltype(auto) mul(
+        L&& lhs,
+        R&& rhs,
+        M&& mod
+    ) noexcept(noexcept(std::forward<L>(lhs) * std::forward<R>(rhs) % std::forward<M>(mod)))
+        requires(requires{std::forward<L>(lhs) * std::forward<R>(rhs) % std::forward<M>(mod);})
+    {
+        return (std::forward<L>(lhs) * std::forward<R>(rhs) % std::forward<M>(mod));
+    }
+
+
+
+}
+
+
+
+
+
+
+
 /* A generalized absolute value operator.  The behavior of this operator is controlled
 by the `impl::abs<T>` control struct, which is always specialized for integer and
 floating point types at a minimum. */
@@ -796,6 +932,21 @@ template <typename Base, typename Exp, typename Mod>
         meta::unqualify<meta::unwrap_type<Mod>>
     >{}(base, exp, mod);
 }
+
+
+/// TODO: log<b>()
+/// TODO: root<b>()
+/// TODO: prime::check()
+/// TODO: prime::next()
+/// TODO: prime::prev()
+
+/// TODO: factors, gcd, lcm, etc.
+
+
+/// TODO: a generalized way to do this would be very helpful for the numeric types in
+/// bits.h, since they require logarithms to calculate required digits, and sqrt for
+/// implementing soft float division.
+
 
 
 /* A family of division operators with different rounding strategies, in order to
