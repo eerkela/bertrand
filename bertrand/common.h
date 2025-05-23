@@ -1806,7 +1806,7 @@ namespace meta {
     namespace detail {
 
         template <typename T, size_t... I>
-        constexpr bool structured(std::index_sequence<I...>) {
+        constexpr bool structured(std::index_sequence<I...>) noexcept {
             return (meta::has_get<T, I> && ...);
         }
 
@@ -3355,13 +3355,31 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_size = requires(T t) { ::std::ranges::size(t); };
+    concept has_size = requires(T t) {
+        { ::std::ranges::size(t) } -> unsigned_integer;
+    };
 
     template <has_size T>
     using size_type = decltype(::std::ranges::size(::std::declval<T>()));
 
     template <typename Ret, typename T>
     concept size_returns = has_size<T> && convertible_to<size_type<T>, Ret>;
+
+    template <typename T>
+    concept has_ssize = requires(T t) {
+        { ::std::ranges::ssize(t) } -> signed_integer;
+    };
+
+    template <has_ssize T>
+    using ssize_type = decltype(::std::ranges::ssize(::std::declval<T>()));
+
+    template <typename Ret, typename T>
+    concept ssize_returns = has_ssize<T> && convertible_to<ssize_type<T>, Ret>;
+
+    template <typename T>
+    concept has_empty = requires(T t) {
+        { ::std::ranges::empty(t) } -> convertible_to<bool>;
+    };
 
     namespace nothrow {
 
@@ -3378,14 +3396,18 @@ namespace meta {
             nothrow::has_size<T> &&
             nothrow::convertible_to<nothrow::size_type<T>, Ret>;
 
-    }
+        template <typename T>
+        concept has_ssize =
+            meta::has_ssize<T> &&
+            noexcept(::std::ranges::ssize(::std::declval<T>()));
 
-    template <typename T>
-    concept has_empty = requires(T t) {
-        { ::std::ranges::empty(t) } -> convertible_to<bool>;
-    };
+        template <nothrow::has_ssize T>
+        using ssize_type = meta::ssize_type<T>;
 
-    namespace nothrow {
+        template <typename Ret, typename T>
+        concept ssize_returns =
+            nothrow::has_ssize<T> &&
+            nothrow::convertible_to<nothrow::ssize_type<T>, Ret>;
 
         template <typename T>
         concept has_empty =

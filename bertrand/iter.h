@@ -1140,19 +1140,23 @@ namespace impl {
 }
 
 
+/// TODO: if the object has an ssize() method, call that instead of std::ranges::ssize().
+/// Same with an adl ssize() method
+
+
 /* Get the length of an arbitrary sequence in constant time as a signed integer.
 Equivalent to calling `std::ranges::ssize(range)`. */
-template <meta::has_size Range>
+template <meta::has_ssize Range>
 [[nodiscard]] constexpr decltype(auto) len(Range&& r)
-    noexcept(noexcept(std::ranges::ssize(r)))
+    noexcept(meta::nothrow::has_ssize<Range>)
 {
-    return (std::ranges::ssize(r));
+    return (std::ranges::ssize(std::forward<Range>(r)));
 }
 
 
 /* Get the length of a tuple-like container as a compile-time constant signed integer.
 Equivalent to evaluating `meta::tuple_size<T>` on the given type `T`. */
-template <meta::tuple_like T> requires (!meta::has_size<T>)
+template <meta::tuple_like T> requires (!meta::has_ssize<T>)
 [[nodiscard]] constexpr ssize_t len(T&& r) noexcept {
     return ssize_t(meta::tuple_size<T>);
 }
@@ -1163,9 +1167,15 @@ template <meta::tuple_like T> requires (!meta::has_size<T>)
 not support constant-time distance measurements. */
 template <meta::iterator Begin, meta::sentinel_for<Begin> End>
 [[nodiscard]] constexpr decltype(auto) len(Begin&& begin, End&& end)
-    noexcept(noexcept(std::ranges::distance(begin, end)))
+    noexcept(noexcept(std::ranges::distance(
+        std::forward<Begin>(begin),
+        std::forward<End>(end)
+    )))
 {
-    return (std::ranges::distance(begin, end));
+    return (std::ranges::distance(
+        std::forward<Begin>(begin),
+        std::forward<End>(end)
+    ));
 }
 
 

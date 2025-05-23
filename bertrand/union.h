@@ -51,8 +51,25 @@ would allow this is P2998 (https://open-std.org/jtc1/sc22/wg21/docs/papers/2024/
 which would get around this by using alias deduction guides at a language level.  Until
 that paper or a similar proposal is standardized, an explicit `visitor` constructor is
 unavoidable. */
-template <typename... Funcs>
-struct visitor : public Funcs... { using Funcs::operator()...; };
+template <meta::unqualified... Fs> requires (!meta::is_void<Fs> && ...)
+struct visitor : public Fs... {
+    /* Records the type of each function, in the same order they were given. */
+    using types = meta::pack<Fs...>;
+
+    /* Get the function at index I, perfectly forwarding it according to the pack's
+    current cvref qualifications. */
+    template <size_t I, typename Self> requires (I < types::size)
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+        return (std::forward<meta::qualify<meta::unpack_type<I, Fs...>, Self>>(self));
+    }
+
+    /* Visitors inherit the call operators of each function, forming an overload set. */
+    using Fs::operator()...;
+};
+
+
+template <typename... Fs>
+visitor(Fs...) -> visitor<Fs...>;
 
 
 namespace impl {
@@ -73,6 +90,15 @@ namespace impl {
 
 namespace meta {
 
+    namespace detail {
+
+        template <typename T>
+        constexpr bool visitor = false;
+        template <typename... Fs>
+        constexpr bool visitor<bertrand::visitor<Fs...>> = true;
+
+    }
+
     template <typename T>
     concept visitable = impl::visitable<T>::enable;
 
@@ -90,6 +116,9 @@ namespace meta {
 
     template <typename T>
     concept None = meta::is<T, NoneType>;
+
+    template <typename T>
+    concept visitor = detail::visitor<meta::unqualify<T>>;
 
 }
 
@@ -4844,6 +4873,31 @@ namespace std {
     constexpr auto* get_if(U&& u) noexcept(noexcept(u.template get_if<T>())) {
         auto result = u.template get_if<T>();  // as lvalue
         return result.has_value() ? &result.value() : nullptr;
+    }
+
+    /* Specializing `std::tuple_size<visitor>` allows `bertrand::visitor{}` objects to
+    be decomposed into their individual overloads via structured bindings. */
+    template <bertrand::meta::visitor T>
+    struct tuple_size<T> :
+        std::integral_constant<size_t, std::remove_cvref_t<T>::types::size>
+    {};
+
+    /* Specializing `std::tuple_element<visitor>` allows `bertrand::visitor{}` objects to
+    be decomposed into their individual overloads via structured bindings. */
+    template <size_t I, bertrand::meta::visitor T>
+        requires (I < tuple_size<T>::value)
+    struct tuple_element<I, T> {
+        using type = typename std::remove_cvref_t<T>::types::template at<I>;
+    };
+
+    /* Non-member `std::get<I>(visitor)` returns a reference (possibly rvalue) to the
+    I-th overload of the visitor, similar to `std::get<I>(variant)` and different from
+    `visitor.get<I>()`, which returns an expected according to the monadic interface. */
+    template <size_t I, bertrand::meta::visitor T> requires (I < tuple_size<T>::value)
+    constexpr decltype(auto) get(T&& v)
+        noexcept(noexcept(std::forward<T>(v).template get<I>()))
+    {
+        return (std::forward<T>(v).template get<I>());
     }
 
 }
