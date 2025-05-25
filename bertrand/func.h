@@ -9,7 +9,6 @@
 #include "bertrand/static_str.h"
 #include "bertrand/bits.h"
 
-#include <ranges>
 #include <unordered_map>
 
 
@@ -45,10 +44,16 @@ static_assert(MAX_OVERLOADS > 0, "`BERTRAND_MAX_OVERLOADS` must be positive.");
 static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.");
 
 
+/// TODO: signature<overloads...> accepts several different overloads, and allow
+/// dispatching between them.  Essentially, all I need is a separate specialization
+/// for a single overload vs several, and the latter can recur over the former and
+/// reuse as much logic as possible.
+
+
 /* Introspect an annotated C++ function signature to extract compile-time type
 information and allow matching functions to be called using Python-style conventions.
 Also defines supporting data structures to allow for partial function application. */
-template <typename T>
+template <typename... overloads>
 struct signature { static constexpr bool enable = false; };
 
 
@@ -239,28 +244,23 @@ args(As&&...) -> args<As...>;
 
 
 namespace impl {
-    struct Auto_tag { constexpr Auto_tag() = delete; };
-
-    template <typename T>
-    struct arg_traits;
-
-    template <typename Arg, typename... Ts>
-    struct bound_arg;
+    struct arg_tag {};
+    struct template_arg_tag : arg_tag {};
 
     /* A compact bitset describing the kind (positional, keyword, optional, and/or
     variadic) of an argument within a C++ parameter list. */
     struct arg_kind {
         enum Flags : uint8_t {
             /// NOTE: the relative ordering of these flags is significant, as it
-            /// dictates the order in which edges are stored within overload tries
-            /// for the `bertrand::Function` class.  The order should always be such
-            /// that POS < OPT POS < VAR POS < KW < OPT KW < VAR KW (repeated for
-            /// generic arguments) to ensure a stable traversal order.
-            OPT                 = 0b1,
+            /// dictates the order in which edges are stored within overload tries for
+            /// the `py::Function` class.  The order should always be such that
+            /// POS < BOUND POS < VAR POS < KW < BOUND KW < VAR KW (repeated for
+            /// untyped arguments) to ensure a stable traversal order.
+            BOUND               = 0b1,
             VAR                 = 0b10,
             POS                 = 0b100,
             KW                  = 0b1000,
-            GENERIC             = 0b10000,  // TODO: rename to AUTO
+            UNTYPED             = 0b10000,
         } flags;
 
         [[nodiscard]] constexpr arg_kind(uint8_t flags = 0) noexcept :
@@ -272,7 +272,7 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool posonly() const noexcept {
-            return (flags & ~OPT) == POS;
+            return (flags & (VAR | POS | KW)) == POS;
         }
 
         [[nodiscard]] constexpr bool pos() const noexcept {
@@ -280,11 +280,11 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool args() const noexcept {
-            return flags == (VAR | POS);
+            return (flags & (VAR | POS | KW)) == (VAR | POS);
         }
 
         [[nodiscard]] constexpr bool kwonly() const noexcept {
-            return (flags & ~OPT) == KW;
+            return (flags & (VAR | POS | KW)) == KW;
         }
 
         [[nodiscard]] constexpr bool kw() const noexcept {
@@ -292,19 +292,23 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool kwargs() const noexcept {
-            return flags == (VAR | KW);
-        }
-
-        [[nodiscard]] constexpr bool generic() const noexcept {
-            return flags & GENERIC;
-        }
-
-        [[nodiscard]] constexpr bool opt() const noexcept {
-            return flags & OPT;
+            return (flags & (VAR | POS | KW)) == (VAR | KW);
         }
 
         [[nodiscard]] constexpr bool variadic() const noexcept {
             return flags & VAR;
+        }
+
+        [[nodiscard]] constexpr bool typed() const noexcept {
+            return !(flags & UNTYPED);
+        }
+
+        [[nodiscard]] constexpr bool bound() const noexcept {
+            return flags & BOUND;
+        }
+
+        [[nodiscard]] constexpr bool sentinel() const noexcept {
+            return flags == 0;
         }
     };
 
@@ -314,96 +318,202 @@ namespace impl {
 namespace meta {
 
     template <typename T>
-    concept Auto = inherits<T, impl::Auto_tag>;
-
-    /// TODO: not sure if these are necessary, but we'll get to it eventually
-
-    template <Auto T>
-    using Auto_type = qualify<typename meta::unqualify<T>::type, T>;
+    concept arg = inherits<T, impl::arg_tag>;
 
     template <typename T>
-    concept Auto_has_default = Auto<T> && is<Auto_type<T>, impl::Auto_tag>;
+    concept template_arg = inherits<T, impl::template_arg_tag>;
 
     namespace detail {
-        /* Args are identified via SFINAE rather than base classes to avoid interfering
-        with aggregate initialization and therefore lifetime extension. */
-        template <typename, typename = void>
-        struct detect_arg { static constexpr bool value = false; };
-        template <typename T>
-        struct detect_arg<T, ::std::void_t<typename T::_detect_arg>> {
-            static constexpr bool value = true;
-        };
 
         /* Argument names must only consist of alphanumerics and underscores, following
-        the leading character. */
-        template <const auto& /* static_str */ Name, size_t... Is>
+        the leading character(s). */
+        template <const auto& /* static_str */ name, size_t... Is>
         constexpr bool validate_arg_name(size_t offset, ::std::index_sequence<Is...>)
             noexcept
         {
             return ((
-                impl::char_isalnum(Name[offset + Is]) ||
-                Name[offset + Is] == '_'
+                impl::char_isalnum(name[offset + Is]) ||
+                name[offset + Is] == '_'
             ) && ...);
         }
 
         /* Normal args cannot have numerics as a first character. */
-        template <const auto& /* static_str */ Name>
-        constexpr bool arg_name =
-            !Name.empty() &&
-            (impl::char_isalpha(Name[0]) || Name[0] == '_') &&
-            validate_arg_name<Name>(1, ::std::make_index_sequence<Name.size() - 1>());
+        template <const auto& /* static_str */ name>
+        constexpr bool valid_arg_name = false;
+        template <const auto& /* static_str */ name> requires (name.size() > 0)
+        constexpr bool valid_arg_name<name> =
+            (impl::char_isalpha(name[0]) || name[0] == '_') &&
+            validate_arg_name<name>(1, ::std::make_index_sequence<name.size() - 1>());
 
         /* Variadic positional args must have a single asterisk followed by a
         non-numeric. */
-        template <const auto& /* static_str */ Name>
-        constexpr bool variadic_args_name =
-            Name.size() > 1 &&
-            Name[0] == '*' &&
-            (impl::char_isalpha(Name[1]) || Name[1] == '_') &&
-            validate_arg_name<Name>(2, ::std::make_index_sequence<Name.size() - 2>());
+        template <const auto& /* static_str */ name>
+        constexpr bool valid_args_name = false;
+        template <const auto& /* static_str */ name> requires (name.size() > 1)
+        constexpr bool valid_args_name<name> =
+            name[0] == '*' &&
+            (impl::char_isalpha(name[1]) || name[1] == '_') &&
+            validate_arg_name<name>(2, ::std::make_index_sequence<name.size() - 2>());
 
         /* Variadic keyword args must have a double asterisk followed by a
         non-numeric. */
-        template <const auto& /* static_str */ Name>
-        constexpr bool variadic_kwargs_name =
-            Name.size() > 2 &&
-            Name[0] == '*' &&
-            Name[1] == '*' &&
-            (impl::char_isalpha(Name[2]) || Name[2] == '_') &&
-            validate_arg_name<Name>(3, ::std::make_index_sequence<Name.size() - 3>());
+        template <const auto& /* static_str */ name>
+        constexpr bool valid_kwargs_name = false;
+        template <const auto& /* static_str */ name> requires (name.size() > 2)
+        constexpr bool valid_kwargs_name<name> =
+            name[0] == '*' &&
+            name[1] == '*' &&
+            (impl::char_isalpha(name[2]) || name[2] == '_') &&
+            validate_arg_name<name>(3, ::std::make_index_sequence<name.size() - 3>());
+
+        /* A special '/' separator is  */
+        template <const auto& /* static_str */ name>
+        constexpr bool valid_posonly_separator = false;
+        template <const auto& /* static_str */ name> requires (name.size() == 1)
+        constexpr bool valid_posonly_separator<name> = name[0] == '/';
+
+        template <const auto& /* static_str */ name>
+        constexpr bool valid_kwonly_separator = false;
+        template <const auto& /* static_str */ name> requires (name.size() == 1)
+        constexpr bool valid_kwonly_separator<name> = name[0] == '*';
+
     }
 
-    template <typename T>
-    concept arg = detail::detect_arg<meta::unqualify<T>>::value;
+    template <bertrand::static_str name>
+    concept valid_arg_name = detail::valid_arg_name<name>;
+
+    template <bertrand::static_str name>
+    concept valid_args_name = detail::valid_args_name<name>;
+
+    template <bertrand::static_str name>
+    concept valid_kwargs_name = detail::valid_kwargs_name<name>;
+
+    template <bertrand::static_str name>
+    concept valid_posonly_separator = detail::valid_posonly_separator<name>;
+
+    template <bertrand::static_str name>
+    concept valid_kwonly_separator = detail::valid_kwonly_separator<name>;
+
+    template <bertrand::static_str name>
+    concept valid_arg =
+        valid_arg_name<name> ||
+        valid_args_name<name> ||
+        valid_kwargs_name<name> ||
+        valid_posonly_separator<name> ||
+        valid_kwonly_separator<name>;
+
+    template <arg T>
+    constexpr const auto& arg_name = meta::unqualify<T>::name;
+
+    template <arg T>
+    constexpr impl::arg_kind arg_kind = meta::unqualify<T>::kind;
 
     template <typename T>
-    concept positional_only = arg<T> && impl::arg_traits<T>::posonly();
+    concept pos = arg<T> && meta::unqualify<T>::kind.pos();
 
     template <typename T>
-    concept positional_or_keyword = arg<T> && impl::arg_traits<T>::pos_or_kw();
+    concept kw = arg<T> && meta::unqualify<T>::kind.kw();
 
     template <typename T>
-    concept keyword_only = arg<T> && impl::arg_traits<T>::kwonly();
+    concept pos_or_kw = pos<T> && kw<T>;
 
     template <typename T>
-    concept variadic_positional = arg<T> && impl::arg_traits<T>::var_pos();
+    concept posonly = pos<T> && meta::unqualify<T>::kind.posonly();
 
     template <typename T>
-    concept variadic_keyword = arg<T> && impl::arg_traits<T>::var_kw();
+    concept kwonly = kw<T> && meta::unqualify<T>::kind.kwonly();
 
-    /// TODO: meta::arg_name should get the name from the arg_traits, and a separate
-    /// meta::valid_arg_name
-    /// meta::valid_variadic_positional_name
-    /// meta::valid_variadic_keyword_name
+    template <typename T>
+    concept variadic_positional = arg<T> && meta::unqualify<T>::kind.args();
 
-    template <bertrand::static_str Name>
-    concept arg_name = detail::arg_name<Name>;
+    template <typename T>
+    concept variadic_keyword = arg<T> && meta::unqualify<T>::kind.kwargs();
 
-    template <bertrand::static_str Name>
-    concept variadic_args_name = detail::variadic_args_name<Name>;
+    template <typename T>
+    concept posonly_separator =
+        arg<T> &&
+        meta::unqualify<T>::kind.sentinel() &&
+        detail::valid_posonly_separator<meta::arg_name<T>>;
 
-    template <bertrand::static_str Name>
-    concept variadic_kwargs_name = detail::variadic_kwargs_name<Name>;
+    template <typename T>
+    concept kwonly_separator =
+        arg<T> &&
+        meta::unqualify<T>::kind.sentinel() &&
+        detail::valid_kwonly_separator<meta::arg_name<T>>;
+
+    template <typename T>
+    concept arg_has_type =
+        meta::arg<T> && meta::not_void<typename meta::unqualify<T>::type>;
+
+    template <arg_has_type T>
+    using arg_type = meta::unqualify<T>::type;
+
+    template <typename T>
+    concept arg_has_value = meta::arg<T> && requires(T&& t) {
+        { ::std::forward<T>(t).value() } -> meta::not_void;
+    };
+
+    template <arg_has_value T>
+    using arg_value_type = decltype(::std::declval<T>().value());
+
+    namespace detail {
+
+        template <typename...>
+        constexpr bool arg_bind = false;
+
+        /* positional-only. */
+        template <meta::posonly T, typename V> requires (meta::arg_has_type<T> && !meta::arg<V>)
+        constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
+        template <meta::posonly T, typename V> requires (!meta::arg_has_type<T> && !meta::arg<V>)
+        constexpr bool arg_bind<T, V> = meta::not_void<V>;
+
+        /* positional-or-keyword */
+        template <meta::pos_or_kw T, typename V>
+            requires(meta::arg_has_type<T> && !meta::arg<V>)
+        constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
+        template <meta::pos_or_kw T, meta::kw V>
+            requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
+        constexpr bool arg_bind<T, V> =
+            meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
+        template <meta::pos_or_kw T, typename V>
+            requires (!meta::arg_has_type<T> && !meta::arg<V>)
+        constexpr bool arg_bind<T, V> = meta::not_void<V>;
+        template <meta::pos_or_kw T, meta::kw V>
+            requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
+        constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
+
+        /* keyword-only. */
+        template <meta::kwonly T, meta::kw V>
+            requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
+        constexpr bool arg_bind<T, V> =
+            meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
+        template <meta::kwonly T, meta::kw V>
+            requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
+        constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
+
+        /* variadic positional. */
+        template <meta::variadic_positional T, typename... Vs>
+            requires (meta::arg_has_type<T> && ... && !meta::arg<Vs>)
+        constexpr bool arg_bind<T, Vs...> =
+            (meta::convertible_to<Vs, meta::arg_type<T>> && ...);
+        template <meta::variadic_positional T, typename... Vs>
+            requires (!meta::arg_has_type<T> && ... && !meta::arg<Vs>)
+        constexpr bool arg_bind<T, Vs...> = (meta::not_void<Vs> && ...);
+
+        /* variadic keyword. */
+        template <meta::variadic_keyword T, meta::kw... Vs>
+            requires (meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
+        constexpr bool arg_bind<T, Vs...> =
+            (meta::convertible_to<meta::arg_value_type<Vs>, meta::arg_type<T>> && ...);
+        template <meta::variadic_keyword T, meta::kw... Vs>
+            requires (!meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
+        constexpr bool arg_bind<T, Vs...> =
+            (meta::not_void<meta::arg_value_type<Vs>> && ...);
+
+    }
+
+    template <typename T, typename... Ts>
+    concept arg_bind = meta::arg<T> && detail::arg_bind<T, Ts...>;
 
     namespace detail {
 
@@ -473,7 +583,464 @@ namespace meta {
         detail::kwarg_keys_and_lookup<T>
     );
 
+};
+
+
+/// TODO: there should maybe be a special case of Argument with an empty name, which
+/// cannot be produced normally, but is used internally to represent anonymous
+/// arguments?
+
+
+/* An annotation representing a runtime function argument in a Python-style function
+declaration. */
+template <static_str Name, typename T = void, typename V = void>
+    requires (meta::valid_arg<Name>)
+struct Arg;
+
+
+/* A specialization of `Arg` representing a normal positional or keyword argument.
+Such arguments can be explicitly typed and bound accordingly. */
+template <static_str Name, typename T>
+    requires (meta::valid_arg<Name> && meta::valid_arg_name<Name>)
+struct Arg<Name, T, void> : impl::arg_tag {
+    using type = T;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        impl::arg_kind::POS | impl::arg_kind::KW |
+        (impl::arg_kind::UNTYPED * meta::is_void<T>);
+
+    /* Indexing the argument sets its `type`. */
+    template <meta::not_void V> requires (meta::is_void<T>)
+    constexpr auto operator[](std::type_identity<V> type) && noexcept {
+        return Arg<Name, meta::remove_rvalue<V>, void>{};
+    }
+
+    /* Assigning to the argument binds a value to it, which is interpreted as either
+    a default value if the assignment is done in the function signature, or as a
+    keyword argument if done at the call site.  For arguments without an explicit
+    type, the value is unconstrained, and can take any type. */
+    template <typename V> requires (meta::is_void<T>)
+    constexpr auto operator=(V&& val) &&
+        noexcept(noexcept(Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+        requires(requires{Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
+    {
+        return Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+    }
+
+    /* Assigning to the argument binds a value to it, which is interpreted as either
+    a default value if the assignment is done in the function signature, or as a
+    keyword argument if done at the call site.  If the argument has an explicit type,
+    then the value must be convertible to that type, or be a materialization function
+    of zero arguments that returns a convertible result. */
+    template <typename V>  requires (meta::not_void<T>)
+    constexpr auto operator=(V&& val) &&
+        noexcept(noexcept(Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+        requires(meta::convertible_to<V, T> && requires{
+            Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+        })
+    {
+        return Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+    }
+
+    /* Assigning to the argument binds a value to it, which is interpreted as either
+    a default value if the assignment is done in the function signature, or as a
+    keyword argument if done at the call site.  If the argument has an explicit type,
+    then the value must be convertible to that type, or be a materialization function
+    of zero arguments that returns a convertible result. */
+    template <typename V>  requires (meta::not_void<T>)
+    constexpr auto operator=(V&& val) &&
+        noexcept(noexcept(Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+        requires(
+            !meta::convertible_to<V, T> &&
+            meta::invoke_returns<T, V> &&
+            requires{Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
+        )
+    {
+        return Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+    }
+
+    /* Calling the argument is identical to assignment, as a workaround for core
+    language limitations in both Python and C++ when it comes to template parameter
+    syntax. */
+    template <typename V>
+    constexpr auto operator()(V&& val) &&
+        noexcept(operator=(std::forward<V>(val)))
+        requires(requires{operator=(std::forward<V>(val));})
+    {
+        return operator=(std::forward<V>(val));
+    }
+};
+
+
+/* A specialization of `Arg` representing a variadic argument.  Such arguments can be
+typed, but cannot be bound. */
+template <static_str Name, typename T>
+    requires (meta::valid_arg<Name> && (
+        meta::valid_args_name<Name> || meta::valid_kwargs_name<Name>
+    ))
+struct Arg<Name, T, void> : impl::arg_tag {
+    using type = T;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        impl::arg_kind::VAR |
+        (impl::arg_kind::POS * meta::valid_args_name<Name>) |
+        (impl::arg_kind::KW * meta::valid_kwargs_name<Name>) |
+        (impl::arg_kind::UNTYPED * meta::is_void<T>);
+
+    /* Indexing the argument sets its `type`. */
+    template <meta::not_void V> requires (meta::is_void<T>)
+    constexpr auto operator[](std::type_identity<V> type) && noexcept {
+        return Arg<Name, meta::remove_rvalue<V>, void>{};
+    }
+};
+
+
+/* A specialization of `Arg` representing a positional-only or keyword-only separator.
+Such arguments cannot be typed and cannot be bound. */
+template <static_str Name>
+    requires (meta::valid_arg<Name> && (
+        meta::valid_posonly_separator<Name> || meta::valid_kwonly_separator<Name>
+    ))
+struct Arg<Name, void, void> : impl::arg_tag {
+    using type = void;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind;  // null
+};
+
+
+/// TODO: I may want to allow reassignment from a bound argument, as that might be
+/// how default values are overridden behind the scenes.  Basically, the call logic
+/// would attempt to bind all arguments, and if any of them are unbound afterwards,
+/// then the call is ill-formed, and is missing a required argument.  Since bound
+/// arguments can be reassigned, then the initial binding phase would simply replace
+/// any default values if new ones are provided, and everything would work out as
+/// planned, possibly with some special handling for variadic arguments, which I
+/// will largely need anyways.
+
+
+/* A specialization of `Arg` for arguments that have been bound to a value, but
+otherwise have no explicit type.  Most call-site arguments fall into this category. */
+template <static_str Name, meta::not_void V> requires (meta::valid_arg<Name>)
+struct Arg<Name, void, V> : impl::arg_tag {
+    using type = void;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        Arg<Name, void, void>::kind | impl::arg_kind::BOUND;
+
+    [[no_unique_address]] V m_value;
+
+    template <meta::is<V> U>
+    [[nodiscard]] constexpr Arg(U&& value) :
+        m_value(std::forward<U>(value))
+    {}
+
+    /* Unconstrained arguments never invoke materialization functions. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept
+        requires(!requires{std::forward<Self>(self).m_value();})
+    {
+        return (std::forward<Self>(self).m_value);
+    }
+};
+
+
+/* A specialization of `Arg` for arguments that have both an explicit type and have
+been bound to a value.  Most signature arguments that have a default value fall into
+this category. */
+template <static_str Name, meta::not_void T, meta::not_void V> requires (meta::valid_arg<Name>)
+struct Arg<Name, T, V> : impl::arg_tag {
+    using type = T;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        Arg<Name, T, void>::kind | impl::arg_kind::BOUND;
+
+    [[no_unique_address]] V m_value;
+
+    template <meta::is<V> U>
+    [[nodiscard]] constexpr Arg(U&& value) :
+        m_value(std::forward<U>(value))
+    {}
+
+    /* If the argument is explicitly typed and the value is convertible, prefer
+    implicit conversions. */
+    template <typename Self>
+    [[nodiscard]] constexpr T value(this Self&& self)
+        noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value)))
+        requires(requires{
+            { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
+        })
+    {
+        return std::forward<Self>(self).m_value;
+    }
+
+    /* If the argument is explicitly typed and the value is not immediately convertible
+    to that type, then it must be a materialization function that must be invoked. */
+    template <typename Self>
+    [[nodiscard]] constexpr T value(this Self&& self)
+        noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value())))
+        requires(!requires{
+            { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
+        } && requires{
+            { std::forward<Self>(self).m_value() } -> meta::convertible_to<T>;
+        })
+    {
+        return std::forward<Self>(self).m_value();
+    }
+};
+
+
+/* An annotation representing an explicit template argument in a Python-style function
+declaration. */
+template <static_str Name, typename T = void, typename V = void>
+    requires (meta::valid_arg<Name>)
+struct TemplateArg;
+
+
+/* A specialization of `TemplateArg` representing a normal positional or keyword
+argument.  Such arguments can be explicitly typed and bound accordingly. */
+template <static_str Name, typename T>
+    requires (meta::valid_arg<Name> && meta::valid_arg_name<Name>)
+struct TemplateArg<Name, T, void> : impl::template_arg_tag {
+    using type = T;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        impl::arg_kind::POS | impl::arg_kind::KW |
+        (impl::arg_kind::UNTYPED * meta::is_void<T>);
+
+    /* Indexing the argument sets its `type`. */
+    template <meta::not_void V> requires (meta::is_void<T>)
+    constexpr auto operator[](std::type_identity<V> type) && noexcept {
+        return TemplateArg<Name, meta::remove_rvalue<V>, void>{};
+    }
+
+    /* Assigning to the argument binds a value to it, which is interpreted as either
+    a default value if the assignment is done in the function signature, or as a
+    keyword argument if done at the call site.  For arguments without an explicit
+    type, the value is unconstrained, and can take any type. */
+    template <typename V> requires (meta::is_void<T>)
+    constexpr auto operator=(V&& val) &&
+        noexcept(noexcept(TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+        requires(requires{TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
+    {
+        return TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+    }
+
+    /* Assigning to the argument binds a value to it, which is interpreted as either
+    a default value if the assignment is done in the function signature, or as a
+    keyword argument if done at the call site.  If the argument has an explicit type,
+    then the value must be convertible to that type, or be a materialization function
+    of zero arguments that returns a convertible result. */
+    template <typename V>  requires (meta::not_void<T>)
+    constexpr auto operator=(V&& val) &&
+        noexcept(noexcept(
+            TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}
+        ))
+        requires(meta::convertible_to<V, T> && requires{
+            TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+        })
+    {
+        return TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+    }
+
+    /* Assigning to the argument binds a value to it, which is interpreted as either
+    a default value if the assignment is done in the function signature, or as a
+    keyword argument if done at the call site.  If the argument has an explicit type,
+    then the value must be convertible to that type, or be a materialization function
+    of zero arguments that returns a convertible result. */
+    template <typename V>  requires (meta::not_void<T>)
+    constexpr auto operator=(V&& val) &&
+        noexcept(noexcept(TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+        requires(
+            !meta::convertible_to<V, T> &&
+            meta::invoke_returns<T, V> &&
+            requires{TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
+        )
+    {
+        return TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+    }
+
+    /* Calling the argument is identical to assignment, as a workaround for core
+    language limitations in both Python and C++ when it comes to template parameter
+    syntax. */
+    template <typename V>
+    constexpr auto operator()(V&& val) &&
+        noexcept(operator=(std::forward<V>(val)))
+        requires(requires{operator=(std::forward<V>(val));})
+    {
+        return operator=(std::forward<V>(val));
+    }
+};
+
+
+/* A specialization of `TemplateArg` representing a variadic argument.  Such arguments
+can be typed, but cannot be bound to default values or used as keywords. */
+template <static_str Name, typename T>
+    requires (meta::valid_arg<Name> && (
+        meta::valid_args_name<Name> || meta::valid_kwargs_name<Name>
+    ))
+struct TemplateArg<Name, T, void> : impl::template_arg_tag {
+    using type = T;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        impl::arg_kind::VAR |
+        (impl::arg_kind::POS * meta::valid_args_name<Name>) |
+        (impl::arg_kind::KW * meta::valid_kwargs_name<Name>) |
+        (impl::arg_kind::UNTYPED * meta::is_void<T>);
+
+    /* Indexing the argument sets its `type`. */
+    template <meta::not_void V> requires (meta::is_void<T>)
+    constexpr auto operator[](std::type_identity<V> type) && noexcept {
+        return TemplateArg<Name, meta::remove_rvalue<V>, void>{};
+    }
+};
+
+
+/* A specialization of `TemplateArg` representing a positional-only or keyword-only
+separator.  Such arguments cannot be typed and cannot be bound. */
+template <static_str Name>
+    requires (meta::valid_arg<Name> && (
+        meta::valid_posonly_separator<Name> || meta::valid_kwonly_separator<Name>
+    ))
+struct TemplateArg<Name, void, void> : impl::template_arg_tag {
+    using type = void;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind;  // null
+};
+
+
+/* A specialization of `TemplateArg` for arguments that have been bound to a value, but
+otherwise have no explicit type.  Most call-site arguments fall into this category. */
+template <static_str Name, meta::not_void V> requires (meta::valid_arg<Name>)
+struct TemplateArg<Name, void, V> : impl::template_arg_tag {
+    using type = void;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        TemplateArg<Name, void, void>::kind | impl::arg_kind::BOUND;
+
+    [[no_unique_address]] V m_value;
+
+    template <meta::is<V> U>
+    [[nodiscard]] constexpr TemplateArg(U&& value) :
+        m_value(std::forward<U>(value))
+    {}
+
+    /* Unconstrained arguments never invoke materialization functions. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept
+        requires(!requires{std::forward<Self>(self).m_value();})
+    {
+        return (std::forward<Self>(self).m_value);
+    }
+};
+
+
+/* A specialization of `TemplateArg` for arguments that have both an explicit type and
+have been bound to a value.  Most signature arguments that have a default value fall
+into this category. */
+template <static_str Name, meta::not_void T, meta::not_void V> requires (meta::valid_arg<Name>)
+struct TemplateArg<Name, T, V> : impl::template_arg_tag {
+    using type = T;
+    static constexpr const auto& name = Name;
+    static constexpr impl::arg_kind kind =
+        TemplateArg<Name, T, void>::kind | impl::arg_kind::BOUND;
+
+    [[no_unique_address]] V m_value;
+
+    template <meta::is<V> U>
+    [[nodiscard]] constexpr TemplateArg(U&& value) :
+        m_value(std::forward<U>(value))
+    {}
+
+    /* If the argument is explicitly typed and the value is convertible, prefer
+    implicit conversions. */
+    template <typename Self>
+    [[nodiscard]] constexpr T value(this Self&& self)
+        noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value)))
+        requires(requires{
+            { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
+        })
+    {
+        return std::forward<Self>(self).m_value;
+    }
+
+    /* If the argument is explicitly typed and the value is not immediately convertible
+    to that type, then it must be a materialization function that must be invoked. */
+    template <typename Self>
+    [[nodiscard]] constexpr T value(this Self&& self)
+        noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value())))
+        requires(!requires{
+            { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
+        } && requires{
+            { std::forward<Self>(self).m_value() } -> meta::convertible_to<T>;
+        })
+    {
+        return std::forward<Self>(self).m_value();
+    }
+};
+
+
+/* Trampoline operator.
+
+This is a user-defined string literal operator that serves as an entry point for
+Python-style calling semantics in C++.  It returns a compile-time `Arg` construct with
+a miniature DSL for defining function arguments according to Python semantics.
+Typically, these are used in combination with the `def()` operator to inform the
+compiler of a function's expected signature, like so:
+
+    ```
+    constexpr auto func = def<"I"_t, "obj"_>([]<size_t I>(const auto& obj) {
+        return std::get<I>(obj);
+    });
+
+    static_assert(func.call<1>(std::array{1, 2, 3}) == 2);
+    static_assert(func.call<"I"_ = 1>(std::array{1, 2, 3}) == 2);
+    static_assert(func.call<1>("obj"_ = std::array{1, 2, 3}) == 2);
+    static_assert(func.call<"I"_ = 1>("obj"_ = std::array{1, 2, 3}) == 2);
+    ```
+
+This is a minimal example, but the syntax can be extended to support arbitrary calling
+conventions and argument types.  See `bertrand::Arg` for more details on the argument
+DSL, and `bertrand::def()` for how to use it when defining functions. */
+template <static_str Name> requires (meta::valid_arg<Name>)
+[[nodiscard]] constexpr auto operator""_() noexcept {
+    return Arg<Name>{};
 }
+
+
+/* Trampoline operator for explicit template parameters.
+
+This is a user-defined string literal operator that serves as an entry point for
+Python-style calling semantics in C++.  It returns a compile-time `TemplateArg`
+construct with a miniature DSL for defining function arguments according to Python
+semantics.  Typically, these are used in combination with the `def()` operator to
+inform the compiler of a function's expected signature, like so:
+
+    ```
+    constexpr auto func = def<"I"_t, "obj"_>([]<size_t I>(const auto& obj) {
+        return std::get<I>(obj);
+    });
+
+    static_assert(func.call<1>(std::array{1, 2, 3}) == 2);
+    static_assert(func.call<"I"_ = 1>(std::array{1, 2, 3}) == 2);
+    static_assert(func.call<1>("obj"_ = std::array{1, 2, 3}) == 2);
+    static_assert(func.call<"I"_ = 1>("obj"_ = std::array{1, 2, 3}) == 2);
+    ```
+
+This is a minimal example, but the syntax can be extended to support arbitrary calling
+conventions and argument types.  See `bertrand::TemplateArg` for more details on the
+argument DSL, and `bertrand::def()` for how to use it when defining functions. */
+template <static_str Name> requires (meta::valid_arg<Name>)
+[[nodiscard]] constexpr auto operator""_t() noexcept {
+    return TemplateArg<Name>{};
+}
+
+
+/* A simple helper to make it slightly easier to define `std::type_identity` objects
+for a given type annotation.  Eventually, this will be deprecated in favor of static
+reflection info, which should allow me to model template template parameters, concepts,
+etc. */
+template <meta::not_void T>
+constexpr std::type_identity<T> type;
 
 
 namespace impl {
@@ -680,36 +1247,20 @@ namespace impl {
         ));
     }
 
-    /* A keyword parameter pack obtained by double-dereferencing a mapping-like container
-    within a Python-style function call. */
+    /* A keyword parameter pack obtained by double-dereferencing a mapping-like
+    container within a Python-style function call.  The template machinery recognizes
+    this as if it were an `"*<anonymous>"_(container)` argument defined in the
+    signature, if such an expression were well-formed.  Because that is outlawed by the
+    DSL syntax and cannot appear at the call site, this class fills that gap and allows
+    the same internals to be reused.  */
     template <meta::unpack_to_kwargs T>
-    struct kwarg_pack {
-    private:
-        template <typename, typename>
-        friend struct meta::detail::detect_arg;
-        using _detect_arg = void;
-
-    public:
+    struct kwarg_pack : impl::arg_tag {
         using key_type = meta::unqualify<T>::key_type;
         using mapped_type = meta::unqualify<T>::mapped_type;
-
-        /* Bindings for impl::arg_traits<kwarg_pack>, which treats it similar to a
-        variadic keyword argument in the function signature itself. */
+        using type = mapped_type;
         static constexpr static_str name = "";
         static constexpr impl::arg_kind kind = impl::arg_kind::VAR | impl::arg_kind::KW;
-        using type = mapped_type;
-        template <typename... Vs>
-        using bind = kwarg_pack;
-        using bound_to = meta::pack<>;
-        using unbind = kwarg_pack;
-        template <static_str N>
-        using with_name = kwarg_pack;
-        template <typename V>
-        using with_type = kwarg_pack;
 
-        /* Underlying container has its lifetime extended via aggregate initialization,
-        just like all other argument types.  This means `T` can safely be a reference
-        type without any undefined behavior at the call site. */
         meta::remove_rvalue<T> container;
 
         [[nodiscard]] constexpr auto size() const
@@ -746,27 +1297,20 @@ namespace impl {
     template <meta::unpack_to_kwargs T>
     kwarg_pack(T&&) -> kwarg_pack<T>;
 
-    /* A positional parameter pack obtained by dereferencing an iterable container within
-    a Python-style function call. */
+    /* A positional parameter pack obtained by dereferencing an iterable container
+    within a Python-style function call.  The template machinery recognizes this as if
+    it were an "**<anonymous>"_(container) argument defined in the signature, if such
+    an expression were well-formed.  Because that is outlawed by the DSL syntax and
+    cannot appear at the call site, this class fills the gap and allows the same
+    internals to be reused.
+    
+    Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
+    double unpack operator. */
     template <meta::iterable T> requires (meta::has_size<T>)
-    struct arg_pack {
-    private:
-        template <typename, typename>
-        friend struct meta::detail::detect_arg;
-        using _detect_arg = void;
-
-    public:
+    struct arg_pack : impl::arg_tag {
+        using type = meta::yield_type<T>;
         static constexpr static_str name = "";
         static constexpr impl::arg_kind kind = impl::arg_kind::VAR | impl::arg_kind::POS;
-        using type = meta::yield_type<T>;
-        template <typename... Vs>
-        using bind = arg_pack;
-        using bound_to = meta::pack<>;
-        using unbind = arg_pack;
-        template <static_str N>
-        using with_name = arg_pack;
-        template <typename V>
-        using with_type = arg_pack;
 
         meta::remove_rvalue<T> container;
 
@@ -813,19 +1357,22 @@ namespace impl {
         }
 
         /* Dereference a positional pack to promote it to a key/value pack.  This
-        allows Python-style double unpack operators when calling supported functions,
-        e.g.:
+        allows Python-style double unpack operators to be used with supported
+        containers when calling `def` statements, e.g.:
 
             ```
-            def func([](Arg<"**kwargs", int> kwargs) {
-                return Map{kwargs};
+            auto func = def<"**kwargs"_[type<int>]>([](auto&& kwargs) {
+                std::cout << kwargs["a"] << ", " << kwargs["b"] << '\n';
+                return Map{std::forward<decltype(kwargs)>(kwargs)};
             })
 
             Map<std::string, int> in {{"a", 1}, {"b", 2}};
-            Map out = func(**in);
+            Map out = func(**in);  // prints "1, 2"
             assert(in == out);
             ```
-        */
+
+        Enabling this operator must be done explicitly, by specializing the
+        `meta::detail::unpack<T>` flag for a given container. */
         template <typename Self> requires (meta::unpack_to_kwargs<T>)
         [[nodiscard]] constexpr kwarg_pack<T> operator*(this Self&& self)
             noexcept(noexcept(kwarg_pack<T>(std::forward<Self>(self).container)))
@@ -841,354 +1388,120 @@ namespace impl {
 }
 
 
-/// TODO: update docs to reflect name change
+
+/// TODO: at this point, all I really need is a way to annotate the arguments that are
+/// provided to a signature, and arrange them into a list that forms the basis of
+/// `bertrand::signature`.  Also eventually I'll need to tackle the question of how
+/// variadic arguments will be passed into the function, since I kind of want to
+/// support both C++-style variadic packs and Python-style containers.  This will
+/// only apply to variadic positional arguments, and only if the function does not
+/// accept any arguments after the variadic pack, including the positional-only
+/// separator, which is used to define C++-style positional-only signatures.  If
+/// the signature does not accept keyword-only or variadic keyword arguments, then
+/// an argument pack will expand into the full signature like a C++ parameter pack.
+/// That behavior can be manually turned off by adding a keyword-only separator
+/// immediately after the variadic positional argument, or adding a keyword-only
+/// argument of any kind (including positional-or-variadic arguments that occur after
+/// a positional-only separator).  It's unclear exactly how the parameter will be
+/// passed in, and it's possible I'll just pass the raw storage container.
 
 
-/* A placeholder for a C++ template that can be used as a return and/or argument type
-in a `bertrand::signature` or `bertrand::def` statement.  Users can add custom
-predicates by inheriting from this class and overriding the `::enable` field to model
-arbitrary C++ constraints as well as specialize the `::Return` alias to pipe type
-information from the argument list into the return type.  This allows Python-style
-functions to reflect arbitrary C++ templates in a way that is minimally invasive to
-existing C++ code.
+/// TODO: Annotating the arguments happens by inheriting from the signature argument
+/// and modifying the `kind` field with the context of the rest of the signature.
+/// The assignment operator will then be turned into a template this operator that
+/// checks against the `meta::arg_bind<>` concept, which takes the kind into account,
+/// and must also account for materialization functions, which are encoded into
+/// the `meta::arg_bind<>` concept as well.  Together with allowing rebinding of
+/// bound arguments, this makes the binding pass super simple, since it can just check
+/// whether any non-variadic arguments are left unbound, which would indicate a missing
+/// required argument.
 
-Generally speaking, each C++ template function would be associated with a separate
-subclass of `generic`, which would then be used to annotate the arguments and/or return
-type of an equivalent Python-style function.  For example:
+/// TODO: the value that gets passed into the `*args` and `**kwargs` arguments are
+/// the raw storage containers, which use the opaque type to store polymorphic
+/// arguments, and can be unpacked again at the call site, iterated over, or queried
+/// for specific values.  The `arg_bind` logic should cover this case automatically,
+/// so that I don't need any special-casing.  I may need to rethink the binding
+/// logic for them, however.
 
-    template <std::integral T = int>
-    constexpr T add_one(T value = 0) {
-        return value + 1;
-    }
 
-    template <typename T = bertrand::impl::generic_tag>
-    struct constraint : generic<T> {
-    private:
-        template <typename... Args>
-        struct helper { static constexpr bool enable = false; };
-        template <std::integral U>
-        struct helper<U> {
-            static constexpr bool enable = true;
-            using type = U;
-        };
-
-    public:
-        template <typename... Args>
-        static constexpr bool enable = helper<Args...>::enable;
-
-        template <typename... Args> requires (enable<Args...>)
-        using Return = helper<Args...>::type;
-    };
-
-    using sig = constraint<>(bertrand::Arg<"value", constraint<int>>::opt);
-    constexpr auto wrapper = bertrand::make_def<sig>(
-        { arg<"value"> = 0 },
-        [](auto&& value) {
-            return add_one(std::forward<decltype(value)>(value));
-        }
-    );
-
-    static_assert(wrapper() == 1);
-    static_assert(wrapper(1) == 2);
-    static_assert(wrapper(arg<"value"> = 2) == 3);
-    // static_assert(wrapper("not an integer"));  // fails to compile
-    static_assert(std::same_as<
-        bertrand::signature<sig>::Return,
-        constraint<>
-    >);
-    static_assert(std::same_as<
-        bertrand::signature<sig>::template Bind<>::Return,
-        int
-    >);
-    static_assert(std::same_as<
-        bertrand::signature<sig>::template Bind<short>::Return,
-        short
-    >);
-    static_assert(std::same_as<
-        bertrand::signature<sig>::template Bind<typename Arg<"value", long>::kw>::Return,
-        long
-    >);
-
-Note that subclasses must accept a single, unqualified template parameter that defaults
-to `bertrand::impl::generic_tag`, which represents the observed type of the generic
-placeholder (i.e. the `T` in a standard template declaration).  If defined in advance,
-it dictates a fallback type that is used if no other override is found, similar to a
-default in a C++ template.  The base value of `bertrand::impl::generic_tag` signifies
-an unconstrained template with no default type, similar to a blank `typename`/`class`
-keyword in standard C++.  Just like C++, such an argument cannot be marked as optional.
-
-The inner type within a `generic` wrapper must never contain cvref qualifications, such
-that expressions of the form `generic<const T&>` (or any other qualified `T`) are not
-allowed.  Such qualifications may, however, be applied to the `generic` type as a whole
-(e.g. `const generic<T>&`), in which case they are treated as if the `generic` wrapper
-did not exist.  In other words, `const generic<T>&` is expression-equivalent to
-`const T&` in normal C++ usage, and will be passed as such to the `::enable` predicate
-and `::Return` alias, which can parse them just as they would in standard C++.  Note
-that this includes the same caveats as C++ templates, meaning that annotations of the
-form `generic<T>&&` represent forwarding references that can bind to both lvalues and
-rvalues alike (NOT just rvalues).  If you want to bind to rvalues only, you must
-implement that within the constraint predicate using `std::is_rvalue_reference_v<T>` or
-a similar mechanism, just as you would in typical C++.  This is done to keep the
-semantics of `generic` as close to C++ as possible, such that existing template
-constraints can be transferred 1:1 into the `::enable` predicate and `::Return` alias,
-without changing their behavior. */
-template <meta::unqualified T = impl::Auto_tag>
-struct Auto : impl::Auto_tag {
-    /* The observed type for this generic placeholder. */
-    using type = T;
-
-    /* Template constraint predicate.  This must return either true or false based on
-    whether a completed argument list (contained in `Args...`) satisfies the generic's
-    constraints.  Note that only completed signatures will be passed to this predicate
-    (sans any non-generic parameters), such that the generic type can consider the full
-    context of the function signature when making its decision.  The default behavior
-    is to always return true, mirroring an unconstrained template function at the C++
-    level.
-
-    Constraints of this form are automatically evaluated whenever
-    `bertrand::signature<F>::Bind<Args...>` is requested, which checks the validity of
-    the arguments given at a function's call site.  Multiple arguments can be marked as
-    generic within a single signature, but they must all share the same generic class
-    for consistency, as well as to avoid ambiguities in return type/enabled status. */
-    template <typename... Args>
-    static constexpr bool enable = true;
-
-    /* Specifies the return type of an enabled generic signature.  Note that this only
-    applies if the return type of the generic function is also marked as generic.  In
-    that case, this alias allows template information from the argument list to be
-    piped into to the return type, which can be specialized accordingly. */
-    template <typename... Args> requires (enable<Args...>)
-    using Return = impl::Auto_tag;
-};
 
 
 namespace impl {
 
-    /* A `std::any`-like wrapper for an opaque value of arbitrary type.  The only
-    differences are that this type does not require heap allocation, instead relying on
-    the user to manually manage the lifetime of the underlying value, and it stores a
-    conversion function pointer, which allows polymorphic conversion to the templated
-    type, and to any other type that may be convertible from that by extension.  The
-    conversion may involve a move from the underlying value, so the internal pointer is
-    always cleared immediately afterwards for safety. */
-    template <typename T = void>
+    /* A type-erased placeholder for a value of arbitrary, non-void type.  This is
+    essentially just a void pointer along with an implicit conversion function that
+    will be invoked to convert the value to the templated type.  This allows us to
+    forget the exact type of the value, while remembering how to convert it back to the
+    templated type when needed.  The conversion may involve a move from the referenced
+    value, so the internal pointer is always cleared immediately afterwards for safety,
+    consuming the reference.  Note that no attempt is made to extend the lifetime of
+    the value, so it is up to the caller to ensure that it remains valid until the
+    wrapper is consumed. */
+    template <meta::not_void T>
     struct opaque {
     private:
         void* m_value = nullptr;
-        std::type_index m_type = typeid(opaque);
         T(*m_convert)(void*) = nullptr;
 
     public:
         /* Construct the `opaque` wrapper in an uninitialized state. */
-        opaque() noexcept = default;
+        constexpr opaque() noexcept = default;
 
         /* Construct the `opaque` wrapper with a particular value, whose lifetime must
         be managed externally. */
-        template <typename V>
-        opaque(V&& value) noexcept :
+        template <meta::address_returns<void*> V>
+        constexpr opaque(V&& value) noexcept :
             m_value(&value),
-            m_type(typeid(std::remove_cvref_t<V>)),
             m_convert([](void* value) -> T {
                 if constexpr (meta::convertible_to<V, T>) {
                     if constexpr (meta::lvalue<V>) {
-                        return *static_cast<std::remove_cvref_t<V>*>(value);
+                        return *static_cast<meta::unqualify<V>*>(value);
                     } else {
-                        return std::move(*static_cast<std::remove_cvref_t<V>*>(value));
+                        return std::move(*static_cast<meta::unqualify<V>*>(value));
                     }
                 } else {
-                    throw TypeError(
+                    static constexpr static_str message =
                         "cannot convert '" + demangle<V>() + "' to '" +
-                        demangle<T>() + "'"
-                    );
+                        demangle<T>() + "'";
+                    throw TypeError(message);
                 }
             })
         {}
 
-        opaque(const opaque&) = delete;
-        opaque& operator=(const opaque&) = delete;
+        constexpr opaque(const opaque&) = delete;
+        constexpr opaque& operator=(const opaque&) = delete;
 
-        opaque(opaque&& other) :
+        constexpr opaque(opaque&& other) :
             m_value(other.m_value),
-            m_type(other.m_type),
             m_convert(other.m_convert)
         {
             other.m_value = nullptr;
         }
 
-        opaque& operator=(opaque&& other) {
+        constexpr opaque& operator=(opaque&& other) {
             if (&other != this) {
                 m_value = other.m_value;
-                m_type = other.m_type;
                 m_convert = other.m_convert;
                 other.m_value = nullptr;
             }
             return *this;
         }
 
-        /* Indicates whether the `any` wrapper currently holds a value. */
-        [[nodiscard]] explicit operator bool() const noexcept { return m_value; }
-
-        /* Returns an indicator for the type of value currently held by the `any`
-        wrapper. */
-        [[nodiscard]] std::type_index type() const noexcept { return m_type; }
-
-        /* Returns true if the `any` wrapper holds a value of the given type. */
-        template <meta::unqualified V>
-        [[nodiscard]] bool holds() const noexcept { return m_type == typeid(V); }
-
-        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
-        a `TypeError`. */
-        template <meta::unqualified V>
-        [[nodiscard]] V& get() {
-            if (m_value) {
-                if (holds<V>()) {
-                    return *static_cast<V*>(m_value);
-                }
-                throw TypeError(
-                    "requested type '" + demangle<V>() + "', but found '" +
-                    demangle(m_type.name()) + "'"
-                );   
-            } else {
-                throw TypeError("value has already been consumed");
-            }
+        /* Indicates whether the `opaque` wrapper currently holds a value. */
+        [[nodiscard]] explicit constexpr operator bool() const noexcept {
+            return m_value;
         }
 
-        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
-        a `TypeError`. */
-        template <meta::unqualified V>
-        [[nodiscard]] const V& get() const {
-            if (m_value) {
-                if (holds<V>()) {
-                    return *static_cast<V*>(m_value);
-                }
-                throw TypeError(
-                    "requested type '" + demangle<V>() + "', but found '" +
-                    demangle(m_type.name()) + "'"
-                );
-            } else {
-                throw TypeError("value has already been consumed");
-            }
-        }
-
-        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
-        null. */
-        template <meta::unqualified V>
-        [[nodiscard]] V* get_if() noexcept {
-            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
-        }
-
-        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
-        null. */
-        template <meta::unqualified V>
-        [[nodiscard]] const V* get_if() const noexcept {
-            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
-        }
-
-        /* Apply the stored conversion.  This can only be done on an rvalue wrapper. */
+        /* Apply the stored conversion.  This can only be done on an rvalue wrapper, to
+        make the semantics explicit. */
         template <typename To> requires (meta::convertible_to<T, To>)
-        [[nodiscard]] operator To() && {
+        [[nodiscard]] constexpr operator To() && {
+            if constexpr (DEBUG) {
+                assert(m_value != nullptr, "value has already been consumed");
+            }
             To result = m_convert(m_value);
             m_value = nullptr;
             return result;
-        }
-    };
-
-    /* Specialization of `opaque` that omits the extra conversion logic, forcing
-    `std::any`-like access patterns. */
-    template <meta::is_void T>
-    struct opaque<T> {
-    private:
-        void* m_value = nullptr;
-        std::type_index m_type = typeid(opaque);
-
-    public:
-        /* Construct the `any` wrapper in an uninitialized state. */
-        opaque() noexcept = default;
-
-        /* Construct the `any` wrapper with a particular value, whose lifetime must be
-        managed externally. */
-        template <typename V>
-        opaque(V&& value) noexcept :
-            m_value(&value),
-            m_type(typeid(std::remove_cvref_t<V>))
-        {}
-
-        opaque(const opaque&) = delete;
-        opaque& operator=(const opaque&) = delete;
-
-        opaque(opaque&& other) :
-            m_value(other.m_value),
-            m_type(other.m_type)
-        {
-            other.m_value = nullptr;
-        }
-
-        opaque& operator=(opaque&& other) {
-            if (&other != this) {
-                m_value = other.m_value;
-                m_type = other.m_type;
-                other.m_value = nullptr;
-            }
-            return *this;
-        }
-
-        /* Indicates whether the `any` wrapper currently holds a value. */
-        [[nodiscard]] explicit operator bool() const noexcept { return m_value; }
-
-        /* Returns an indicator for the type of value currently held by the `any`
-        wrapper. */
-        [[nodiscard]] std::type_index type() const noexcept { return m_type; }
-
-        /* Returns true if the `any` wrapper holds a value of the given type. */
-        template <meta::unqualified V>
-        [[nodiscard]] bool holds() const noexcept { return m_type == typeid(V); }
-
-        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
-        a `TypeError`. */
-        template <meta::unqualified V>
-        [[nodiscard]] V& get() {
-            if (m_value) {
-                if (holds<V>()) {
-                    return *static_cast<V*>(m_value);
-                }
-                throw TypeError(
-                    "requested type '" + demangle<V>() + "', but found '" +
-                    demangle(m_type.name()) + "'"
-                );
-            } else {
-                throw TypeError("value has already been consumed");
-            }
-        }
-
-        /* Gets a reference to the value if it holds the given type.  Otherwise, throws
-        a `TypeError`. */
-        template <meta::unqualified V>
-        [[nodiscard]] const V& get() const {
-            if (m_value) {
-                if (holds<V>()) {
-                    return *static_cast<V*>(m_value);
-                }
-                throw TypeError(
-                    "requested type '" + demangle<V>() + "', but found '" +
-                    demangle(m_type.name()) + "'"
-                );
-            } else {
-                throw TypeError("value has already been consumed");
-            }
-        }
-
-        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
-        null. */
-        template <meta::unqualified V>
-        [[nodiscard]] V* get_if() noexcept {
-            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
-        }
-
-        /* Gets a pointer to the value if it holds the given type.  Otherwise, returns
-        null. */
-        template <meta::unqualified V>
-        [[nodiscard]] const V* get_if() const noexcept {
-            return holds<V>() ? static_cast<V*>(m_value) : nullptr;
         }
     };
 
@@ -1206,260 +1519,187 @@ namespace impl {
         /// allows the argument annotation to accept arbitrary types, generate the
         /// necessary conversion, and then convert to an opaque, homogenous type.
 
-        /* When an `Auto` annotation is used for a variadic positional or keyword
-        argument, there is no specific type to convert to.  If Python is loaded, then
-        we can have this default to `py::Object`, which is fully dynamic.  Otherwise,
-        it defaults to `void`, which disables implicit conversions (making the
-        interface significantly less safe). */
+        /* Virtual base reference stored by a variadic positional parameter. */
         template <typename T>
-        struct auto_type { using type = void; };
+        struct variadic_positional_storage {
+            using value_type = any<T>;
+            using size_type = size_t;
+            using difference_type = ptrdiff_t;
+            using reference = any<T>&;
+            using const_reference = const any<T>&;
+            using pointer = any<T>*;
+            using const_pointer = const any<T>*;
+            using iterator = std::array<any<T>, 0>::iterator;
+            using const_iterator = std::array<any<T>, 0>::const_iterator;
+            using reverse_iterator = std::array<any<T>, 0>::reverse_iterator;
+            using const_reverse_iterator = std::array<any<T>, 0>::const_reverse_iterator;
 
-        /// TODO: eventually, add the specialization for `py::Object` here.  Just
-        /// specialize for `Auto` to replace the default specialization.
+            virtual ~variadic_positional_storage() = default;
 
-        /* Non-auto types are forwarded without replacement. */
-        template <typename T> requires (!meta::Auto<T>)
-        struct auto_type<T> { using type = T; };
+            [[nodiscard]] bool empty() const noexcept { return !size(); }
+            [[nodiscard]] explicit operator bool() const noexcept { return size(); }
 
-    }
+            [[nodiscard]] virtual size_type size() const noexcept = 0;
+            [[nodiscard]] virtual reference operator[](size_t i) = 0;
+            [[nodiscard]] virtual const_reference operator[](size_t i) const = 0;
+            [[nodiscard]] virtual iterator begin() noexcept = 0;
+            [[nodiscard]] virtual const_iterator begin() const noexcept = 0;
+            [[nodiscard]] virtual const_iterator cbegin() const noexcept = 0;
+            [[nodiscard]] virtual iterator end() noexcept = 0;
+            [[nodiscard]] virtual const_iterator end() const noexcept = 0;
+            [[nodiscard]] virtual const_iterator cend() const noexcept = 0;
+            [[nodiscard]] virtual reverse_iterator rbegin() noexcept = 0;
+            [[nodiscard]] virtual const_reverse_iterator rbegin() const noexcept = 0;
+            [[nodiscard]] virtual const_reverse_iterator crbegin() const noexcept = 0;
+            [[nodiscard]] virtual reverse_iterator rend() noexcept = 0;
+            [[nodiscard]] virtual const_reverse_iterator rend() const noexcept = 0;
+            [[nodiscard]] virtual const_reverse_iterator crend() const noexcept = 0;
+        };
 
-
-    /// TODO: any -> opaque
-
-    template <typename U>
-    struct _unwrap_generic { using type = U; };
-    template <meta::generic U>
-    struct _unwrap_generic<U> { using type = meta::generic_type<U>; };
-    template <typename U>
-    using unwrap_generic = _unwrap_generic<U>::type;
-
-
-
-    /* Virtual base reference stored by a variadic positional parameter. */
-    template <typename T>
-    struct variadic_positional_storage {
-        using value_type = any<T>;
-        using size_type = size_t;
-        using difference_type = ptrdiff_t;
-        using reference = any<T>&;
-        using const_reference = const any<T>&;
-        using pointer = any<T>*;
-        using const_pointer = const any<T>*;
-        using iterator = std::array<any<T>, 0>::iterator;
-        using const_iterator = std::array<any<T>, 0>::const_iterator;
-        using reverse_iterator = std::array<any<T>, 0>::reverse_iterator;
-        using const_reverse_iterator = std::array<any<T>, 0>::const_reverse_iterator;
-
-        virtual ~variadic_positional_storage() = default;
-
-        [[nodiscard]] bool empty() const noexcept { return !size(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return size(); }
-
-        [[nodiscard]] virtual size_type size() const noexcept = 0;
-        [[nodiscard]] virtual reference operator[](size_t i) = 0;
-        [[nodiscard]] virtual const_reference operator[](size_t i) const = 0;
-        [[nodiscard]] virtual iterator begin() noexcept = 0;
-        [[nodiscard]] virtual const_iterator begin() const noexcept = 0;
-        [[nodiscard]] virtual const_iterator cbegin() const noexcept = 0;
-        [[nodiscard]] virtual iterator end() noexcept = 0;
-        [[nodiscard]] virtual const_iterator end() const noexcept = 0;
-        [[nodiscard]] virtual const_iterator cend() const noexcept = 0;
-        [[nodiscard]] virtual reverse_iterator rbegin() noexcept = 0;
-        [[nodiscard]] virtual const_reverse_iterator rbegin() const noexcept = 0;
-        [[nodiscard]] virtual const_reverse_iterator crbegin() const noexcept = 0;
-        [[nodiscard]] virtual reverse_iterator rend() noexcept = 0;
-        [[nodiscard]] virtual const_reverse_iterator rend() const noexcept = 0;
-        [[nodiscard]] virtual const_reverse_iterator crend() const noexcept = 0;
-    };
-
-    /* Concrete type that is initialized during call logic, stored entirely on the
-    stack. */
-    template <typename T, size_t N> requires (N <= MAX_ARGS)
-    struct concrete_variadic_positional_storage : variadic_positional_storage<T> {
-    private:
-        using base = variadic_positional_storage<T>;
-
-    public:
-        using value_type = base::value_type;
-        using size_type = base::size_type;
-        using difference_type = base::difference_type;
-        using reference = base::reference;
-        using const_reference = base::const_reference;
-        using iterator = base::iterator;
-        using const_iterator = base::const_iterator;
-        using reverse_iterator = base::reverse_iterator;
-        using const_reverse_iterator = base::const_reverse_iterator;
-
-        std::array<any<T>, N> pack;
-        size_t length;
-
-        reference operator[](size_t i) override {
-            if (i < length) {
-                return pack[i];
-            }
-            throw IndexError(std::to_string(i));
-        }
-
-        const_reference operator[](size_t i) const override {
-            if (i < length) {
-                return pack[i];
-            }
-            throw IndexError(std::to_string(i));
-        }
-
-        size_type size() const noexcept override { return length; }
-        iterator begin() { return pack.begin(); }
-        const_iterator begin() const { return pack.begin(); }
-        const_iterator cbegin() const { return pack.cbegin(); }
-        iterator end() { return pack.begin() + length; }
-        const_iterator end() const { return pack.begin() + length; }
-        const_iterator cend() const { return pack.cbegin() + length; }
-        reverse_iterator rbegin() { return pack.rbegin() + (N - length); }
-        const_reverse_iterator rbegin() const { return pack.rbegin() + (N - length); }
-        const_reverse_iterator crbegin() const { return pack.crbegin() + (N - length); }
-        reverse_iterator rend() { return pack.rend(); }
-        const_reverse_iterator rend() const { return pack.rend(); }
-        const_reverse_iterator crend() const { return pack.crend(); }
-    };
-
-    /* Virtual base reference stored by a variadic keyword parameter. */
-    template <typename T>
-    struct variadic_keyword_storage {
-        using key_type = std::string_view;
-        using mapped_type = any<T>;
-        using value_type = std::pair<std::string_view, any<T>>;
-        using size_type = size_t;
-        using difference_type = ptrdiff_t;
-        using reference = value_type&;
-        using const_reference = const value_type&;
-        using pointer = value_type*;
-        using const_pointer = const value_type*;
-
-        struct iterator {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = std::ptrdiff_t;
-            using value_type = std::pair<const std::string_view, any<T>&>;
-            using pointer = value_type*;
-            using reference = value_type&;
-
+        /* Concrete type that is initialized during call logic, stored entirely on the
+        stack. */
+        template <typename T, size_t N> requires (N <= MAX_ARGS)
+        struct concrete_variadic_positional_storage : variadic_positional_storage<T> {
         private:
-            using static_iter = static_map<any<T>>::iterator;
-
-            /* If the argument names are known ahead of time, then we store them in a
-            minimal perfect hash table, and use its iterators directly. */
-            struct iter_pair {
-                static_iter begin;
-                static_iter end;
-            };
-
-            /* Otherwise, we store the arguments in an overallocated hash table with
-            ordinary hashing and simple linear probing. */
-            struct array_traverse {
-                std::array<std::pair<std::string, any<T>>, MAX_ARGS>* array;
-                size_t index;
-            };
-
-            /* Current value is stored in a buffer to allow for pointer indirection. */
-            alignas(value_type) unsigned char m_current[sizeof(value_type)];
-
-            /* The same type-erased iterator class serves both cases. */
-            union {
-                iter_pair m_static;
-                array_traverse m_dynamic;
-            };
-
-            /* Iterator state is encoded into union tag to save memory. */
-            enum : uint8_t {
-                STATIC      = 0b1,  // m_static is initialized
-                DYNAMIC     = 0b10,  // m_dynamic is initialized
-                END         = 0b1000  // m_current is not initialized (end of range)
-            } m_state;
+            using base = variadic_positional_storage<T>;
 
         public:
-            /* Default iterator constructor needed to model std::ranges::range. */
-            iterator() : m_state(END) {}
+            using value_type = base::value_type;
+            using size_type = base::size_type;
+            using difference_type = base::difference_type;
+            using reference = base::reference;
+            using const_reference = base::const_reference;
+            using iterator = base::iterator;
+            using const_iterator = base::const_iterator;
+            using reverse_iterator = base::reverse_iterator;
+            using const_reverse_iterator = base::const_reverse_iterator;
 
-            /* Constructor for the minimal perfect hash table case. */
-            iterator(static_iter&& begin, static_iter&& end) noexcept :
-                m_static(std::move(begin), std::move(end)),
-                m_state(STATIC)
-            {
-                if (m_static.begin != m_static.end) {
-                    new (m_current) value_type{
-                        m_static.begin->first,
-                        m_static.begin->second
-                    };
-                } else {
-                    m_state |= END;
+            std::array<any<T>, N> pack;
+            size_t length;
+
+            reference operator[](size_t i) override {
+                if (i < length) {
+                    return pack[i];
                 }
+                throw IndexError(std::to_string(i));
             }
 
-            /* Constructor for the simple hash table case. */
-            iterator(
-                std::array<std::pair<std::string, any<T>>, MAX_ARGS>& array,
-                size_t length
-            ) noexcept :
-                m_dynamic(&array, 0),
-                m_state(DYNAMIC | END)
-            {
-                if (length) {
-                    while (m_dynamic.index < array.size()) {
-                        auto& pair = array[m_dynamic.index];
-                        if (!pair.first.empty()) {
-                            new (m_current) value_type{pair.first, pair.second};
-                            m_state &= ~END;
-                            break;
+            const_reference operator[](size_t i) const override {
+                if (i < length) {
+                    return pack[i];
+                }
+                throw IndexError(std::to_string(i));
+            }
+
+            size_type size() const noexcept override { return length; }
+            iterator begin() { return pack.begin(); }
+            const_iterator begin() const { return pack.begin(); }
+            const_iterator cbegin() const { return pack.cbegin(); }
+            iterator end() { return pack.begin() + length; }
+            const_iterator end() const { return pack.begin() + length; }
+            const_iterator cend() const { return pack.cbegin() + length; }
+            reverse_iterator rbegin() { return pack.rbegin() + (N - length); }
+            const_reverse_iterator rbegin() const { return pack.rbegin() + (N - length); }
+            const_reverse_iterator crbegin() const { return pack.crbegin() + (N - length); }
+            reverse_iterator rend() { return pack.rend(); }
+            const_reverse_iterator rend() const { return pack.rend(); }
+            const_reverse_iterator crend() const { return pack.crend(); }
+        };
+
+        /* Virtual base reference stored by a variadic keyword parameter. */
+        template <typename T>
+        struct variadic_keyword_storage {
+            using key_type = std::string_view;
+            using mapped_type = any<T>;
+            using value_type = std::pair<std::string_view, any<T>>;
+            using size_type = size_t;
+            using difference_type = ptrdiff_t;
+            using reference = value_type&;
+            using const_reference = const value_type&;
+            using pointer = value_type*;
+            using const_pointer = const value_type*;
+
+            struct iterator {
+                using iterator_category = std::input_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using value_type = std::pair<const std::string_view, any<T>&>;
+                using pointer = value_type*;
+                using reference = value_type&;
+
+            private:
+                using static_iter = static_map<any<T>>::iterator;
+
+                /* If the argument names are known ahead of time, then we store them in a
+                minimal perfect hash table, and use its iterators directly. */
+                struct iter_pair {
+                    static_iter begin;
+                    static_iter end;
+                };
+
+                /* Otherwise, we store the arguments in an overallocated hash table with
+                ordinary hashing and simple linear probing. */
+                struct array_traverse {
+                    std::array<std::pair<std::string, any<T>>, MAX_ARGS>* array;
+                    size_t index;
+                };
+
+                /* Current value is stored in a buffer to allow for pointer indirection. */
+                alignas(value_type) unsigned char m_current[sizeof(value_type)];
+
+                /* The same type-erased iterator class serves both cases. */
+                union {
+                    iter_pair m_static;
+                    array_traverse m_dynamic;
+                };
+
+                /* Iterator state is encoded into union tag to save memory. */
+                enum : uint8_t {
+                    STATIC      = 0b1,  // m_static is initialized
+                    DYNAMIC     = 0b10,  // m_dynamic is initialized
+                    END         = 0b1000  // m_current is not initialized (end of range)
+                } m_state;
+
+            public:
+                /* Default iterator constructor needed to model std::ranges::range. */
+                iterator() : m_state(END) {}
+
+                /* Constructor for the minimal perfect hash table case. */
+                iterator(static_iter&& begin, static_iter&& end) noexcept :
+                    m_static(std::move(begin), std::move(end)),
+                    m_state(STATIC)
+                {
+                    if (m_static.begin != m_static.end) {
+                        new (m_current) value_type{
+                            m_static.begin->first,
+                            m_static.begin->second
+                        };
+                    } else {
+                        m_state |= END;
+                    }
+                }
+
+                /* Constructor for the simple hash table case. */
+                iterator(
+                    std::array<std::pair<std::string, any<T>>, MAX_ARGS>& array,
+                    size_t length
+                ) noexcept :
+                    m_dynamic(&array, 0),
+                    m_state(DYNAMIC | END)
+                {
+                    if (length) {
+                        while (m_dynamic.index < array.size()) {
+                            auto& pair = array[m_dynamic.index];
+                            if (!pair.first.empty()) {
+                                new (m_current) value_type{pair.first, pair.second};
+                                m_state &= ~END;
+                                break;
+                            }
+                            ++m_dynamic.index;
                         }
-                        ++m_dynamic.index;
                     }
                 }
-            }
 
-            iterator(const iterator& other) noexcept : m_state(other.m_state) {
-                if (!(m_state & END)) {
-                    new (m_current) value_type{*other};
-                    if (m_state & DYNAMIC) {
-                        new (&m_dynamic) array_traverse{
-                            other.m_dynamic.array,
-                            other.m_dynamic.index
-                        };
-                    } else if (m_state & STATIC) {
-                        new (&m_static) iter_pair{
-                            other.m_static.begin,
-                            other.m_static.end
-                        };
-                    }
-                }
-            }
-
-            iterator(iterator&& other) noexcept : m_state(other.m_state) {
-                if (!(m_state & END)) {
-                    new (m_current) value_type{std::move(*other)};
-                    if (m_state & DYNAMIC) {
-                        new (&m_dynamic) array_traverse{
-                            std::move(other.m_dynamic.array),
-                            std::move(other.m_dynamic.index)
-                        };
-                    } else if (m_state & STATIC) {
-                        new (&m_static) iter_pair{
-                            std::move(other.m_static.begin),
-                            std::move(other.m_static.end)
-                        };
-                    }
-                }
-            }
-
-            iterator& operator=(const iterator& other) noexcept {
-                if (this != &other) {
-                    if (!(m_state & END)) {
-                        (*this)->~value_type();
-                    }
-                    if (m_state & DYNAMIC) {
-                        m_dynamic.~array_traverse();
-                    } else if (m_state & STATIC) {
-                        m_static.~iter_pair();
-                    }
-                    m_state = other.m_state;
+                iterator(const iterator& other) noexcept : m_state(other.m_state) {
                     if (!(m_state & END)) {
                         new (m_current) value_type{*other};
                         if (m_state & DYNAMIC) {
@@ -1475,20 +1715,8 @@ namespace impl {
                         }
                     }
                 }
-                return *this;
-            }
 
-            iterator& operator=(iterator&& other) noexcept {
-                if (&other != this) {
-                    if (!(m_state & END)) {
-                        (*this)->~value_type();
-                    }
-                    if (m_state & DYNAMIC) {
-                        m_dynamic.~array_traverse();
-                    } else if (m_state & STATIC) {
-                        m_static.~iter_pair();
-                    }
-                    m_state = other.m_state;
+                iterator(iterator&& other) noexcept : m_state(other.m_state) {
                     if (!(m_state & END)) {
                         new (m_current) value_type{std::move(*other)};
                         if (m_state & DYNAMIC) {
@@ -1504,209 +1732,66 @@ namespace impl {
                         }
                     }
                 }
-                return *this;
-            }
 
-            ~iterator() noexcept {
-                if (!(m_state & END)) {
-                    (*this)->~value_type();
-                }
-                if (m_state & DYNAMIC) {
-                    m_dynamic.~array_traverse();
-                } else if (m_state & STATIC) {
-                    m_static.~iter_pair();
-                }
-            }
-
-            [[nodiscard]] value_type& operator*() noexcept {
-                return reinterpret_cast<value_type&>(m_current);
-            }
-
-            [[nodiscard]] const value_type& operator*() const noexcept {
-                return reinterpret_cast<const value_type&>(m_current);
-            }
-
-            [[nodiscard]] value_type* operator->() noexcept {
-                return &**this;
-            }
-
-            [[nodiscard]] const value_type* operator->() const noexcept {
-                return &**this;
-            }
-
-            iterator& operator++() noexcept {
-                (*this)->~value_type();
-                if (m_state & DYNAMIC) {
-                    while (++m_dynamic.index < m_dynamic.array->size()) {
-                        auto& pair = (*m_dynamic.array)[m_dynamic.index];
-                        if (!pair.first.empty()) {
-                            new (m_current) value_type{pair.first, pair.second};
-                            return *this;
+                iterator& operator=(const iterator& other) noexcept {
+                    if (this != &other) {
+                        if (!(m_state & END)) {
+                            (*this)->~value_type();
+                        }
+                        if (m_state & DYNAMIC) {
+                            m_dynamic.~array_traverse();
+                        } else if (m_state & STATIC) {
+                            m_static.~iter_pair();
+                        }
+                        m_state = other.m_state;
+                        if (!(m_state & END)) {
+                            new (m_current) value_type{*other};
+                            if (m_state & DYNAMIC) {
+                                new (&m_dynamic) array_traverse{
+                                    other.m_dynamic.array,
+                                    other.m_dynamic.index
+                                };
+                            } else if (m_state & STATIC) {
+                                new (&m_static) iter_pair{
+                                    other.m_static.begin,
+                                    other.m_static.end
+                                };
+                            }
                         }
                     }
-                    
-                } else if (++m_static.begin != m_static.end) {
-                    new (m_current) value_type{
-                        m_static.begin->first,
-                        m_static.begin->second
-                    };
                     return *this;
                 }
-                m_state |= END;
-                return *this;
-            }
 
-            [[nodiscard]] iterator operator++(int) noexcept {
-                iterator copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            [[nodiscard]] friend bool operator==(
-                const iterator& lhs,
-                sentinel
-            ) noexcept {
-                return lhs.m_state & END;
-            }
-
-            [[nodiscard]] friend bool operator==(
-                sentinel,
-                const iterator& rhs
-            ) noexcept {
-                return rhs.m_state & END;
-            }
-
-            [[nodiscard]] friend bool operator!=(
-                const iterator& lhs,
-                sentinel
-            ) noexcept {
-                return !(lhs.m_state & END);
-            }
-
-            [[nodiscard]] friend bool operator!=(
-                sentinel,
-                const iterator& rhs
-            ) noexcept {
-                return !(rhs.m_state & END);
-            }
-        };
-
-        struct const_iterator {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = std::ptrdiff_t;
-            using value_type = std::pair<const std::string_view, const any<T>&>;
-            using pointer = value_type*;
-            using reference = value_type&;
-
-        private:
-            using static_iter = static_map<any<T>>::const_iterator;
-
-            /* If the argument names are known ahead of time, then we store them in a
-            minimal perfect hash table, and use its iterators directly. */
-            struct iter_pair {
-                static_iter begin;
-                static_iter end;
-            };
-
-            /* Otherwise, we store the arguments in an overallocated hash table with
-            ordinary hashing and simple linear probing. */
-            struct array_traverse {
-                const std::array<std::pair<std::string, any<T>>, MAX_ARGS>* array;
-                size_t index;
-            };
-
-            /* Current value is stored in a buffer to allow for pointer indirection. */
-            alignas(value_type) unsigned char m_current[sizeof(value_type)];
-
-            /* The same type-erased iterator class serves both cases. */
-            union {
-                iter_pair m_static;
-                array_traverse m_dynamic;
-            };
-
-            /* Iterator state is encoded into union tag to save memory. */
-            enum : uint8_t {
-                STATIC      = 0b1,  // m_static is initialized
-                DYNAMIC     = 0b10,  // m_dynamic is initialized
-                END         = 0b1000  // m_current is not initialized (end of range)
-            } m_state;
-
-        public:
-            /* Default iterator constructor needed to model std::ranges::range. */
-            const_iterator() : m_state(END) {}
-
-            /* Constructor for the perfect hash table case. */
-            const_iterator(static_iter&& begin, static_iter&& end) noexcept :
-                m_static(std::move(begin), std::move(end)),
-                m_state(STATIC)
-            {
-                if (m_static.begin != m_static.end) {
-                    new (m_current) value_type{
-                        m_static.begin->first,
-                        m_static.begin->second
-                    };
-                } else {
-                    m_state |= END;
-                }
-            }
-
-            /* Constructor for the simple hash table case. */
-            const_iterator(
-                std::array<std::pair<std::string, any<T>>, MAX_ARGS>& array,
-                size_t length
-            ) noexcept :
-                m_dynamic(&array, 0),
-                m_state(DYNAMIC | END)
-            {
-                if (length) {
-                    while (m_dynamic.index < array.size()) {
-                        auto& pair = array[m_dynamic.index];
-                        if (!pair.first.empty()) {
-                            new (m_current) value_type{pair.first, pair.second};
-                            m_state &= ~END;
-                            break;
+                iterator& operator=(iterator&& other) noexcept {
+                    if (&other != this) {
+                        if (!(m_state & END)) {
+                            (*this)->~value_type();
                         }
-                        ++m_dynamic.index;
+                        if (m_state & DYNAMIC) {
+                            m_dynamic.~array_traverse();
+                        } else if (m_state & STATIC) {
+                            m_static.~iter_pair();
+                        }
+                        m_state = other.m_state;
+                        if (!(m_state & END)) {
+                            new (m_current) value_type{std::move(*other)};
+                            if (m_state & DYNAMIC) {
+                                new (&m_dynamic) array_traverse{
+                                    std::move(other.m_dynamic.array),
+                                    std::move(other.m_dynamic.index)
+                                };
+                            } else if (m_state & STATIC) {
+                                new (&m_static) iter_pair{
+                                    std::move(other.m_static.begin),
+                                    std::move(other.m_static.end)
+                                };
+                            }
+                        }
                     }
+                    return *this;
                 }
-            }
 
-            const_iterator(const const_iterator& other) noexcept : m_state(other.m_state) {
-                if (!(m_state & END)) {
-                    new (m_current) value_type(*other);
-                    if (m_state & DYNAMIC) {
-                        new (&m_dynamic) array_traverse{
-                            other.m_dynamic.array,
-                            other.m_dynamic.index
-                        };
-                    } else if (m_state & STATIC) {
-                        new (&m_static) iter_pair{
-                            other.m_static.begin,
-                            other.m_static.end
-                        };
-                    }
-                }
-            }
-
-            const_iterator(const_iterator&& other) noexcept : m_state(other.m_state) {
-                if (!(m_state & END)) {
-                    new (m_current) value_type(std::move(*other));
-                    if (m_state & DYNAMIC) {
-                        new (&m_dynamic) array_traverse{
-                            std::move(other.m_dynamic.array),
-                            std::move(other.m_dynamic.index)
-                        };
-                    } else if (m_state & STATIC) {
-                        new (&m_static) iter_pair{
-                            std::move(other.m_static.begin),
-                            std::move(other.m_static.end)
-                        };
-                    }
-                }
-            }
-
-            const_iterator& operator=(const const_iterator& other) noexcept {
-                if (this != &other) {
+                ~iterator() noexcept {
                     if (!(m_state & END)) {
                         (*this)->~value_type();
                     }
@@ -1715,7 +1800,162 @@ namespace impl {
                     } else if (m_state & STATIC) {
                         m_static.~iter_pair();
                     }
-                    m_state = other.m_state;
+                }
+
+                [[nodiscard]] value_type& operator*() noexcept {
+                    return reinterpret_cast<value_type&>(m_current);
+                }
+
+                [[nodiscard]] const value_type& operator*() const noexcept {
+                    return reinterpret_cast<const value_type&>(m_current);
+                }
+
+                [[nodiscard]] value_type* operator->() noexcept {
+                    return &**this;
+                }
+
+                [[nodiscard]] const value_type* operator->() const noexcept {
+                    return &**this;
+                }
+
+                iterator& operator++() noexcept {
+                    (*this)->~value_type();
+                    if (m_state & DYNAMIC) {
+                        while (++m_dynamic.index < m_dynamic.array->size()) {
+                            auto& pair = (*m_dynamic.array)[m_dynamic.index];
+                            if (!pair.first.empty()) {
+                                new (m_current) value_type{pair.first, pair.second};
+                                return *this;
+                            }
+                        }
+                        
+                    } else if (++m_static.begin != m_static.end) {
+                        new (m_current) value_type{
+                            m_static.begin->first,
+                            m_static.begin->second
+                        };
+                        return *this;
+                    }
+                    m_state |= END;
+                    return *this;
+                }
+
+                [[nodiscard]] iterator operator++(int) noexcept {
+                    iterator copy = *this;
+                    ++(*this);
+                    return copy;
+                }
+
+                [[nodiscard]] friend bool operator==(
+                    const iterator& lhs,
+                    sentinel
+                ) noexcept {
+                    return lhs.m_state & END;
+                }
+
+                [[nodiscard]] friend bool operator==(
+                    sentinel,
+                    const iterator& rhs
+                ) noexcept {
+                    return rhs.m_state & END;
+                }
+
+                [[nodiscard]] friend bool operator!=(
+                    const iterator& lhs,
+                    sentinel
+                ) noexcept {
+                    return !(lhs.m_state & END);
+                }
+
+                [[nodiscard]] friend bool operator!=(
+                    sentinel,
+                    const iterator& rhs
+                ) noexcept {
+                    return !(rhs.m_state & END);
+                }
+            };
+
+            struct const_iterator {
+                using iterator_category = std::input_iterator_tag;
+                using difference_type = std::ptrdiff_t;
+                using value_type = std::pair<const std::string_view, const any<T>&>;
+                using pointer = value_type*;
+                using reference = value_type&;
+
+            private:
+                using static_iter = static_map<any<T>>::const_iterator;
+
+                /* If the argument names are known ahead of time, then we store them in a
+                minimal perfect hash table, and use its iterators directly. */
+                struct iter_pair {
+                    static_iter begin;
+                    static_iter end;
+                };
+
+                /* Otherwise, we store the arguments in an overallocated hash table with
+                ordinary hashing and simple linear probing. */
+                struct array_traverse {
+                    const std::array<std::pair<std::string, any<T>>, MAX_ARGS>* array;
+                    size_t index;
+                };
+
+                /* Current value is stored in a buffer to allow for pointer indirection. */
+                alignas(value_type) unsigned char m_current[sizeof(value_type)];
+
+                /* The same type-erased iterator class serves both cases. */
+                union {
+                    iter_pair m_static;
+                    array_traverse m_dynamic;
+                };
+
+                /* Iterator state is encoded into union tag to save memory. */
+                enum : uint8_t {
+                    STATIC      = 0b1,  // m_static is initialized
+                    DYNAMIC     = 0b10,  // m_dynamic is initialized
+                    END         = 0b1000  // m_current is not initialized (end of range)
+                } m_state;
+
+            public:
+                /* Default iterator constructor needed to model std::ranges::range. */
+                const_iterator() : m_state(END) {}
+
+                /* Constructor for the perfect hash table case. */
+                const_iterator(static_iter&& begin, static_iter&& end) noexcept :
+                    m_static(std::move(begin), std::move(end)),
+                    m_state(STATIC)
+                {
+                    if (m_static.begin != m_static.end) {
+                        new (m_current) value_type{
+                            m_static.begin->first,
+                            m_static.begin->second
+                        };
+                    } else {
+                        m_state |= END;
+                    }
+                }
+
+                /* Constructor for the simple hash table case. */
+                const_iterator(
+                    std::array<std::pair<std::string, any<T>>, MAX_ARGS>& array,
+                    size_t length
+                ) noexcept :
+                    m_dynamic(&array, 0),
+                    m_state(DYNAMIC | END)
+                {
+                    if (length) {
+                        while (m_dynamic.index < array.size()) {
+                            auto& pair = array[m_dynamic.index];
+                            if (!pair.first.empty()) {
+                                new (m_current) value_type{pair.first, pair.second};
+                                m_state &= ~END;
+                                break;
+                            }
+                            ++m_dynamic.index;
+                        }
+                    }
+                }
+
+                const_iterator(const const_iterator& other) noexcept : m_state(other.m_state) {
                     if (!(m_state & END)) {
                         new (m_current) value_type(*other);
                         if (m_state & DYNAMIC) {
@@ -1731,20 +1971,8 @@ namespace impl {
                         }
                     }
                 }
-                return *this;
-            }
 
-            const_iterator& operator=(const_iterator&& other) noexcept {
-                if (&other != this) {
-                    if (!(m_state & END)) {
-                        (*this)->~value_type();
-                    }
-                    if (m_state & DYNAMIC) {
-                        m_dynamic.~array_traverse();
-                    } else if (m_state & STATIC) {
-                        m_static.~iter_pair();
-                    }
-                    m_state = other.m_state;
+                const_iterator(const_iterator&& other) noexcept : m_state(other.m_state) {
                     if (!(m_state & END)) {
                         new (m_current) value_type(std::move(*other));
                         if (m_state & DYNAMIC) {
@@ -1760,321 +1988,379 @@ namespace impl {
                         }
                     }
                 }
-                return *this;
-            }
 
-            ~const_iterator() noexcept {
-                if (!(m_state & END)) {
-                    (*this)->~value_type();
-                }
-                if (m_state & DYNAMIC) {
-                    m_dynamic.~array_traverse();
-                } else if (m_state & STATIC) {
-                    m_static.~iter_pair();
-                }
-            }
-
-            [[nodiscard]] value_type& operator*() noexcept {
-                return reinterpret_cast<value_type&>(m_current);
-            }
-
-            [[nodiscard]] const value_type& operator*() const noexcept {
-                return reinterpret_cast<const value_type&>(m_current);
-            }
-
-            [[nodiscard]] value_type* operator->() noexcept {
-                return &**this;
-            }
-
-            [[nodiscard]] const value_type* operator->() const noexcept {
-                return &**this;
-            }
-
-            const_iterator& operator++() noexcept {
-                (*this)->~value_type();
-                if (m_state & DYNAMIC) {
-                    while (++m_dynamic.index < m_dynamic.array->size()) {
-                        auto& pair = (*m_dynamic.array)[m_dynamic.index];
-                        if (!pair.first.empty()) {
-                            new (m_current) value_type{pair.first, pair.second};
-                            return *this;
+                const_iterator& operator=(const const_iterator& other) noexcept {
+                    if (this != &other) {
+                        if (!(m_state & END)) {
+                            (*this)->~value_type();
+                        }
+                        if (m_state & DYNAMIC) {
+                            m_dynamic.~array_traverse();
+                        } else if (m_state & STATIC) {
+                            m_static.~iter_pair();
+                        }
+                        m_state = other.m_state;
+                        if (!(m_state & END)) {
+                            new (m_current) value_type(*other);
+                            if (m_state & DYNAMIC) {
+                                new (&m_dynamic) array_traverse{
+                                    other.m_dynamic.array,
+                                    other.m_dynamic.index
+                                };
+                            } else if (m_state & STATIC) {
+                                new (&m_static) iter_pair{
+                                    other.m_static.begin,
+                                    other.m_static.end
+                                };
+                            }
                         }
                     }
-                } else if (++m_static.begin != m_static.end) {
-                    new (m_current) value_type{
-                        m_static.begin->first,
-                        m_static.begin->second
-                    };
                     return *this;
                 }
-                m_state |= END;
-                return *this;
+
+                const_iterator& operator=(const_iterator&& other) noexcept {
+                    if (&other != this) {
+                        if (!(m_state & END)) {
+                            (*this)->~value_type();
+                        }
+                        if (m_state & DYNAMIC) {
+                            m_dynamic.~array_traverse();
+                        } else if (m_state & STATIC) {
+                            m_static.~iter_pair();
+                        }
+                        m_state = other.m_state;
+                        if (!(m_state & END)) {
+                            new (m_current) value_type(std::move(*other));
+                            if (m_state & DYNAMIC) {
+                                new (&m_dynamic) array_traverse{
+                                    std::move(other.m_dynamic.array),
+                                    std::move(other.m_dynamic.index)
+                                };
+                            } else if (m_state & STATIC) {
+                                new (&m_static) iter_pair{
+                                    std::move(other.m_static.begin),
+                                    std::move(other.m_static.end)
+                                };
+                            }
+                        }
+                    }
+                    return *this;
+                }
+
+                ~const_iterator() noexcept {
+                    if (!(m_state & END)) {
+                        (*this)->~value_type();
+                    }
+                    if (m_state & DYNAMIC) {
+                        m_dynamic.~array_traverse();
+                    } else if (m_state & STATIC) {
+                        m_static.~iter_pair();
+                    }
+                }
+
+                [[nodiscard]] value_type& operator*() noexcept {
+                    return reinterpret_cast<value_type&>(m_current);
+                }
+
+                [[nodiscard]] const value_type& operator*() const noexcept {
+                    return reinterpret_cast<const value_type&>(m_current);
+                }
+
+                [[nodiscard]] value_type* operator->() noexcept {
+                    return &**this;
+                }
+
+                [[nodiscard]] const value_type* operator->() const noexcept {
+                    return &**this;
+                }
+
+                const_iterator& operator++() noexcept {
+                    (*this)->~value_type();
+                    if (m_state & DYNAMIC) {
+                        while (++m_dynamic.index < m_dynamic.array->size()) {
+                            auto& pair = (*m_dynamic.array)[m_dynamic.index];
+                            if (!pair.first.empty()) {
+                                new (m_current) value_type{pair.first, pair.second};
+                                return *this;
+                            }
+                        }
+                    } else if (++m_static.begin != m_static.end) {
+                        new (m_current) value_type{
+                            m_static.begin->first,
+                            m_static.begin->second
+                        };
+                        return *this;
+                    }
+                    m_state |= END;
+                    return *this;
+                }
+
+                [[nodiscard]] const_iterator operator++(int) noexcept {
+                    const_iterator copy = *this;
+                    ++(*this);
+                    return copy;
+                }
+
+                [[nodiscard]] friend bool operator==(
+                    const const_iterator& lhs,
+                    sentinel
+                ) noexcept {
+                    return lhs.m_state & END;
+                }
+
+                [[nodiscard]] friend bool operator==(
+                    sentinel,
+                    const const_iterator& rhs
+                ) noexcept {
+                    return rhs.m_state & END;
+                }
+
+                [[nodiscard]] friend bool operator!=(
+                    const const_iterator& lhs,
+                    sentinel
+                ) noexcept {
+                    return !(lhs.m_state & END);
+                }
+
+                [[nodiscard]] friend bool operator!=(
+                    sentinel,
+                    const const_iterator& rhs
+                ) noexcept {
+                    return !(rhs.m_state & END);
+                }
+            };
+
+            virtual ~variadic_keyword_storage() noexcept = default;
+
+            [[nodiscard]] bool empty() const noexcept { return !size(); }
+            [[nodiscard]] explicit operator bool() const noexcept { return size(); }
+
+            [[nodiscard]] virtual any<T>& operator[](const char* name) = 0;
+            [[nodiscard]] virtual any<T>& operator[](std::string_view name) = 0;
+            [[nodiscard]] virtual const any<T>& operator[](const char* name) const = 0;
+            [[nodiscard]] virtual const any<T>& operator[](std::string_view name) const = 0;
+            [[nodiscard]] virtual bool contains(const char* name) const noexcept = 0;
+            [[nodiscard]] virtual bool contains(std::string_view name) const noexcept = 0;
+            [[nodiscard]] virtual size_t size() const noexcept = 0;
+            [[nodiscard]] virtual iterator begin() noexcept = 0;
+            [[nodiscard]] virtual const_iterator begin() const noexcept = 0;
+            [[nodiscard]] virtual const_iterator cbegin() const noexcept = 0;
+            [[nodiscard]] sentinel end() const noexcept { return {}; };
+            [[nodiscard]] sentinel cend() const noexcept { return {}; };
+        };
+
+        /* Concrete type that is initialized during call logic, stored entirely on the
+        stack and using a compile-time perfect hash table formed from the given strings. */
+        template <typename T, static_str... Names>
+        struct concrete_static_variadic_keyword_storage : variadic_keyword_storage<T> {
+        private:
+            using base = variadic_keyword_storage<T>;
+
+        public:
+            using key_type = base::key_type;
+            using mapped_type = base::mapped_type;
+            using value_type = base::value_type;
+            using size_type = base::size_type;
+            using difference_type = base::difference_type;
+            using reference = base::reference;
+            using const_reference = base::const_reference;
+            using pointer = base::pointer;
+            using const_pointer = base::const_pointer;
+            using iterator = base::iterator;
+            using const_iterator = base::const_iterator;
+
+            static_map<any<T>, Names...> m_table;
+
+            any<T>& operator[](const char* name) override {
+                if (auto* value = m_table[name]) {
+                    return *value;
+                }
+                throw KeyError(name);
             }
 
-            [[nodiscard]] const_iterator operator++(int) noexcept {
-                const_iterator copy = *this;
-                ++(*this);
-                return copy;
+            any<T>& operator[](std::string_view name) override {
+                if (auto* value = m_table[name]) {
+                    return *value;
+                }
+                throw KeyError(name);
             }
 
-            [[nodiscard]] friend bool operator==(
-                const const_iterator& lhs,
-                sentinel
-            ) noexcept {
-                return lhs.m_state & END;
+            const any<T>& operator[](const char* name) const override {
+                if (auto* value = m_table[name]) {
+                    return *value;
+                }
+                throw KeyError(name);
             }
 
-            [[nodiscard]] friend bool operator==(
-                sentinel,
-                const const_iterator& rhs
-            ) noexcept {
-                return rhs.m_state & END;
+            const any<T>& operator[](std::string_view name) const override {
+                if (auto* value = m_table[name]) {
+                    return *value;
+                }
+                throw KeyError(name);
             }
 
-            [[nodiscard]] friend bool operator!=(
-                const const_iterator& lhs,
-                sentinel
-            ) noexcept {
-                return !(lhs.m_state & END);
+            bool contains(const char* name) const noexcept override {
+                return m_table.contains(name);
             }
 
-            [[nodiscard]] friend bool operator!=(
-                sentinel,
-                const const_iterator& rhs
-            ) noexcept {
-                return !(rhs.m_state & END);
+            bool contains(std::string_view name) const noexcept override {
+                return m_table.contains(name);
+            }
+
+            size_t size() const noexcept override {
+                return m_table.size();
+            }
+
+            iterator begin() noexcept override {
+                return {m_table.begin(), m_table.end()};
+            }
+
+            const_iterator begin() const noexcept override {
+                return {m_table.begin(), m_table.end()};
+            }
+
+            const_iterator cbegin() const noexcept override {
+                return {m_table.cbegin(), m_table.end()};
             }
         };
 
-        virtual ~variadic_keyword_storage() noexcept = default;
+        /* Specialization of concrete keyword storage that doesn't use compile-time perfect
+        hash tables, for use in situations where the exact set of keyword names is not
+        known at compile time. */
+        template <typename T>
+        struct concrete_dynamic_variadic_keyword_storage : variadic_keyword_storage<T> {
+        private:
+            using base = variadic_keyword_storage<T>;
 
-        [[nodiscard]] bool empty() const noexcept { return !size(); }
-        [[nodiscard]] explicit operator bool() const noexcept { return size(); }
-
-        [[nodiscard]] virtual any<T>& operator[](const char* name) = 0;
-        [[nodiscard]] virtual any<T>& operator[](std::string_view name) = 0;
-        [[nodiscard]] virtual const any<T>& operator[](const char* name) const = 0;
-        [[nodiscard]] virtual const any<T>& operator[](std::string_view name) const = 0;
-        [[nodiscard]] virtual bool contains(const char* name) const noexcept = 0;
-        [[nodiscard]] virtual bool contains(std::string_view name) const noexcept = 0;
-        [[nodiscard]] virtual size_t size() const noexcept = 0;
-        [[nodiscard]] virtual iterator begin() noexcept = 0;
-        [[nodiscard]] virtual const_iterator begin() const noexcept = 0;
-        [[nodiscard]] virtual const_iterator cbegin() const noexcept = 0;
-        [[nodiscard]] sentinel end() const noexcept { return {}; };
-        [[nodiscard]] sentinel cend() const noexcept { return {}; };
-    };
-
-    /* Concrete type that is initialized during call logic, stored entirely on the
-    stack and using a compile-time perfect hash table formed from the given strings. */
-    template <typename T, static_str... Names>
-    struct concrete_static_variadic_keyword_storage : variadic_keyword_storage<T> {
-    private:
-        using base = variadic_keyword_storage<T>;
-
-    public:
-        using key_type = base::key_type;
-        using mapped_type = base::mapped_type;
-        using value_type = base::value_type;
-        using size_type = base::size_type;
-        using difference_type = base::difference_type;
-        using reference = base::reference;
-        using const_reference = base::const_reference;
-        using pointer = base::pointer;
-        using const_pointer = base::const_pointer;
-        using iterator = base::iterator;
-        using const_iterator = base::const_iterator;
-
-        static_map<any<T>, Names...> m_table;
-
-        any<T>& operator[](const char* name) override {
-            if (auto* value = m_table[name]) {
-                return *value;
+            size_t start(std::string_view name) const noexcept {
+                return std::hash<std::string_view>{}(name) % m_table.size();
             }
-            throw KeyError(name);
-        }
 
-        any<T>& operator[](std::string_view name) override {
-            if (auto* value = m_table[name]) {
-                return *value;
-            }
-            throw KeyError(name);
-        }
-
-        const any<T>& operator[](const char* name) const override {
-            if (auto* value = m_table[name]) {
-                return *value;
-            }
-            throw KeyError(name);
-        }
-
-        const any<T>& operator[](std::string_view name) const override {
-            if (auto* value = m_table[name]) {
-                return *value;
-            }
-            throw KeyError(name);
-        }
-
-        bool contains(const char* name) const noexcept override {
-            return m_table.contains(name);
-        }
-
-        bool contains(std::string_view name) const noexcept override {
-            return m_table.contains(name);
-        }
-
-        size_t size() const noexcept override {
-            return m_table.size();
-        }
-
-        iterator begin() noexcept override {
-            return {m_table.begin(), m_table.end()};
-        }
-
-        const_iterator begin() const noexcept override {
-            return {m_table.begin(), m_table.end()};
-        }
-
-        const_iterator cbegin() const noexcept override {
-            return {m_table.cbegin(), m_table.end()};
-        }
-    };
-
-    /* Specialization of concrete keyword storage that doesn't use compile-time perfect
-    hash tables, for use in situations where the exact set of keyword names is not
-    known at compile time. */
-    template <typename T>
-    struct concrete_dynamic_variadic_keyword_storage : variadic_keyword_storage<T> {
-    private:
-        using base = variadic_keyword_storage<T>;
-
-        size_t start(std::string_view name) const noexcept {
-            return std::hash<std::string_view>{}(name) % m_table.size();
-        }
-
-        any<T>* search(std::string_view name) {
-            size_t idx = start(name);
-            while (true) {
-                std::pair<std::string, any<T>>& pair = m_table[idx];
-                if (pair.first.empty()) {
-                    break;  // no deletions, so no tombstones
+            any<T>* search(std::string_view name) {
+                size_t idx = start(name);
+                while (true) {
+                    std::pair<std::string, any<T>>& pair = m_table[idx];
+                    if (pair.first.empty()) {
+                        break;  // no deletions, so no tombstones
+                    }
+                    if (std::string_view(pair.first) == name) {
+                        return &pair.second;
+                    }
+                    ++idx;  // guaranteed to find a match or empty slot eventually
+                    if (idx == m_table.size()) {
+                        idx = 0;
+                    }
                 }
-                if (std::string_view(pair.first) == name) {
-                    return &pair.second;
-                }
-                ++idx;  // guaranteed to find a match or empty slot eventually
-                if (idx == m_table.size()) {
-                    idx = 0;
-                }
+                return nullptr;
             }
-            return nullptr;
-        }
 
-        const any<T>* search(std::string_view name) const {
-            size_t idx = start(name);
-            while (true) {
-                const std::pair<std::string, any<T>>& pair = m_table[idx];
-                if (pair.first.empty()) {
-                    break;  // no deletions, so no tombstones
+            const any<T>* search(std::string_view name) const {
+                size_t idx = start(name);
+                while (true) {
+                    const std::pair<std::string, any<T>>& pair = m_table[idx];
+                    if (pair.first.empty()) {
+                        break;  // no deletions, so no tombstones
+                    }
+                    if (std::string_view(pair.first) == name) {
+                        return &pair.second;
+                    }
+                    ++idx;  // guaranteed to find a match or empty slot eventually
+                    if (idx == m_table.size()) {
+                        idx = 0;
+                    }
                 }
-                if (std::string_view(pair.first) == name) {
-                    return &pair.second;
+                return nullptr;
+            }
+
+        public:
+            using key_type = base::key_type;
+            using mapped_type = base::mapped_type;
+            using value_type = base::value_type;
+            using size_type = base::size_type;
+            using difference_type = base::difference_type;
+            using reference = base::reference;
+            using const_reference = base::const_reference;
+            using pointer = base::pointer;
+            using const_pointer = base::const_pointer;
+            using iterator = base::iterator;
+            using const_iterator = base::const_iterator;
+
+            std::array<std::pair<std::string, any<T>>, MAX_ARGS> m_table;
+            size_t length = 0;
+
+            void insert(std::string&& name, any<T>&& value) {
+                size_t idx = start(name);
+                while (true) {
+                    std::pair<std::string, any<T>>& pair = m_table[idx];
+                    if (pair.first.empty()) {
+                        break;  // no deletions, so no tombstones
+                    }
+                    if (pair.first == name) {
+                        throw KeyError("key already exists: " + name);
+                    }
+                    ++idx;  // guaranteed to find an empty slot eventually
+                    if (idx == m_table.size()) {
+                        idx = 0;
+                    }
                 }
-                ++idx;  // guaranteed to find a match or empty slot eventually
-                if (idx == m_table.size()) {
-                    idx = 0;
+                m_table[idx] = {std::move(name), std::move(value)};
+                ++length;
+            }
+
+            any<T>& operator[](const char* name) override {
+                if (any<T>* value = search(name)) {
+                    return *value;
                 }
+                throw KeyError(name);
             }
-            return nullptr;
-        }
 
-    public:
-        using key_type = base::key_type;
-        using mapped_type = base::mapped_type;
-        using value_type = base::value_type;
-        using size_type = base::size_type;
-        using difference_type = base::difference_type;
-        using reference = base::reference;
-        using const_reference = base::const_reference;
-        using pointer = base::pointer;
-        using const_pointer = base::const_pointer;
-        using iterator = base::iterator;
-        using const_iterator = base::const_iterator;
-
-        std::array<std::pair<std::string, any<T>>, MAX_ARGS> m_table;
-        size_t length = 0;
-
-        void insert(std::string&& name, any<T>&& value) {
-            size_t idx = start(name);
-            while (true) {
-                std::pair<std::string, any<T>>& pair = m_table[idx];
-                if (pair.first.empty()) {
-                    break;  // no deletions, so no tombstones
+            any<T>& operator[](std::string_view name) override {
+                if (any<T>* value = search(name)) {
+                    return *value;
                 }
-                if (pair.first == name) {
-                    throw KeyError("key already exists: " + name);
+                throw KeyError(name);
+            }
+
+            const any<T>& operator[](const char* name) const override {
+                if (const any<T>* value = search(name)) {
+                    return *value;
                 }
-                ++idx;  // guaranteed to find an empty slot eventually
-                if (idx == m_table.size()) {
-                    idx = 0;
+                throw KeyError(name);
+            }
+
+            const any<T>& operator[](std::string_view name) const override {
+                if (const any<T>* value = search(name)) {
+                    return *value;
                 }
+                throw KeyError(name);
             }
-            m_table[idx] = {std::move(name), std::move(value)};
-            ++length;
-        }
 
-        any<T>& operator[](const char* name) override {
-            if (any<T>* value = search(name)) {
-                return *value;
+            bool contains(const char* name) const noexcept override {
+                return search(name);
             }
-            throw KeyError(name);
-        }
 
-        any<T>& operator[](std::string_view name) override {
-            if (any<T>* value = search(name)) {
-                return *value;
+            bool contains(std::string_view name) const noexcept override {
+                return search(name);
             }
-            throw KeyError(name);
-        }
 
-        const any<T>& operator[](const char* name) const override {
-            if (const any<T>* value = search(name)) {
-                return *value;
+            size_t size() const noexcept override {
+                return length;
             }
-            throw KeyError(name);
-        }
 
-        const any<T>& operator[](std::string_view name) const override {
-            if (const any<T>* value = search(name)) {
-                return *value;
+            iterator begin() noexcept override {
+                return {m_table, length};
             }
-            throw KeyError(name);
-        }
 
-        bool contains(const char* name) const noexcept override {
-            return search(name);
-        }
+            const_iterator begin() const noexcept override {
+                return {m_table, length};
+            }
 
-        bool contains(std::string_view name) const noexcept override {
-            return search(name);
-        }
+            const_iterator cbegin() const noexcept override {
+                return {m_table, length};
+            }
+        };
 
-        size_t size() const noexcept override {
-            return length;
-        }
-
-        iterator begin() noexcept override {
-            return {m_table, length};
-        }
-
-        const_iterator begin() const noexcept override {
-            return {m_table, length};
-        }
-
-        const_iterator cbegin() const noexcept override {
-            return {m_table, length};
-        }
-    };
+    }
 
     /* Base class for argument annotations, which centralizes the stored value,
     pointer-like access, and implicit conversions. */
@@ -2145,6 +2431,7 @@ namespace meta {
 }
 
 
+
 /// NOTE: there's a lot of intentional code duplication here in order to maximize the
 /// clarity of error messages, restrict the ways in which annotations can be combined,
 /// allow for generics, and support aggregate initialization to correctly handle
@@ -2155,17 +2442,14 @@ namespace meta {
 
 /* A family of compile-time argument annotations that represent positional and/or
 keyword arguments to a Python-style function.  Modifiers can be added to an argument
-to indicate its kind, such as positional-only, keyword-only, optional, bound to a
-partial value, or variadic (inferred from the argument name via leading `*` or `**`
-prefixes).  The default (without any modifiers) is positional-or-keyword, unbound, and
-required, similar to Python.
+to indicate its kind, such as positional-only, keyword-only, or optional.  The default
+(without any modifiers) is positional-or-keyword and required, similar to Python.
 
 Note that this class makes careful use of aggregate initialization to extend the
 lifetime of temporaries, meaning that it is safe to use with arbitrarily-qualified
-reference types.  Such references are guaranteed to remain valid for their full,
-natural lifespan, as if they were declared without the enclosing `Arg<>` wrapper.  In
-particular, that allows `Arg<>` annotations to be freely declared as function
-arguments without interfering with existing C++ parameter passing semantics. */
+types, including references.  By exploiting aggregate initialization, the C++ standard
+guarantees that references will remain valid for the full duration of the function
+call, as if they were declared without the enclosing `Arg<>` wrapper. */
 template <static_str Name, meta::valid_argument_type T>
     requires (
         meta::arg_name<Name> ||
@@ -2301,8 +2585,8 @@ struct Arg<Name, T> : impl::ArgBase<Name, T> {
 };
 
 
-/* Specialization for standard, generic args with no default type.  Such arguments
-cannot be marked as optional. */
+/* Specialization for standard, auto args with no default type.  Such arguments cannot
+be marked as optional. */
 template <static_str Name, meta::valid_argument_type T>
     requires (meta::arg_name<Name> && meta::generic<T> && !meta::generic_has_default<T>)
 struct Arg<Name, T> : impl::ArgBase<Name, T> {
@@ -2746,11 +3030,27 @@ namespace meta {
 /* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
 instances of this class can be used to provide an even more Pythonic syntax:
 
+    ```
     constexpr auto x = arg<"x">;
     my_func(x = 42);
+    ```
 */
 template <static_str name> requires (meta::arg_name<name>)
 constexpr impl::ArgFactory<name> arg;
+
+
+/// TODO: maybe _kw fully replaces arg<>, to prevent confusion with Arg<>?
+
+
+/* A user-defined literal that provides a bracket-free alternative to
+`arg<"name"> = ...`.  Operates exactly the same under the hood, but may be easier to
+type and read depending on context. */
+template <static_str name> requires (meta::arg_name<name>)
+constexpr operator ""_kw() noexcept { return impl::ArgFactory<name>{}; }
+
+
+inline constexpr auto x = func("x"_kw = 42);
+
 
 
 /////////////////////////
@@ -2825,6 +3125,8 @@ namespace meta {
 
 
 namespace impl {
+
+    /// TODO: chuck all of this into a signature:: namespace
 
     template <typename...>
     constexpr size_t n_posonly = 0;
@@ -6596,6 +6898,11 @@ namespace meta {
 ///////////////////
 ////    DEF    ////
 ///////////////////
+
+
+/// TODO: def() becomes a function that returns an impl::def object, which takes an
+/// explicit signature, possibly encoding the partial arguments at the same time, so
+/// that the implementation is just impl::def<sig, F>, which is as simple as it gets.
 
 
 /* Invoke a C++ function with Python-style calling conventions, including keyword

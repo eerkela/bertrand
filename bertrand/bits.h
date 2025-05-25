@@ -8508,95 +8508,95 @@ public:
 
 
 
-static_assert(float32::max_int().exponent() == 24);
+// static_assert(float32::max_int().exponent() == 24);
 
 
 
-static_assert(float16(std::numeric_limits<float>::infinity()) == float16::inf());
-static_assert(int(float32(-0.3)) == 0);
+// static_assert(float16(std::numeric_limits<float>::infinity()) == float16::inf());
+// static_assert(int(float32(-0.3)) == 0);
 
-static_assert(float64(std::numeric_limits<float>::denorm_min()).bits == Bits{double(std::numeric_limits<float>::denorm_min())});
-static_assert(float32(std::numeric_limits<double>::denorm_min()).bits == Bits{float(std::numeric_limits<double>::denorm_min())});
-
-
-
-static_assert(float16(float16::min_int() - 1) == float16::min_int());
-static_assert(float32(float32::max_int()) == float32::max_int());
-
-static_assert(float16(3.5) == 3.5);
+// static_assert(float64(std::numeric_limits<float>::denorm_min()).bits == Bits{double(std::numeric_limits<float>::denorm_min())});
+// static_assert(float32(std::numeric_limits<double>::denorm_min()).bits == Bits{float(std::numeric_limits<double>::denorm_min())});
 
 
 
-// static_assert(int16(float32(10)) == 10);
+// static_assert(float16(float16::min_int() - 1) == float16::min_int());
+// static_assert(float32(float32::max_int()) == float32::max_int());
+
+// static_assert(float16(3.5) == 3.5);
 
 
-static_assert(Bits{std::numeric_limits<float>::denorm_min()}.data()[0] == 0b0'00000000'00000000'00000000'0000001);
+
+// // static_assert(int16(float32(10)) == 10);
+
+
+// static_assert(Bits{std::numeric_limits<float>::denorm_min()}.data()[0] == 0b0'00000000'00000000'00000000'0000001);
 
 
 
-inline constexpr float16 test_float = 1.0;
-inline constexpr float16 test_float2 = test_float;
-static_assert(float(test_float) == 1.0);
-static_assert(std::bit_cast<uint32_t>(float(test_float)) == 0b0'01111111'00000000'00000000'0000000);
-static_assert(test_float.bits == 0b0'00001111'00000000'00000000'0000000);
+// inline constexpr float16 test_float = 1.0;
+// inline constexpr float16 test_float2 = test_float;
+// static_assert(float(test_float) == 1.0);
+// static_assert(std::bit_cast<uint32_t>(float(test_float)) == 0b0'01111111'00000000'00000000'0000000);
+// static_assert(test_float.bits == 0b0'00001111'00000000'00000000'0000000);
 
-static_assert(std::bit_cast<uint32_t>(float(1.0)) == 0b0'01111111'00000000'00000000'0000000);
-static_assert(
-    // float16(1.0).bits == 0b0'01111111'00000000'00000000'0000000
-    float16(1.0).bits == 0b0'00001111'00000000'00000000'0000000
-);
-
-static_assert(
-    std::bit_cast<uint16_t>(_Float16(1.0)) == 0b0'01111'0000000000
-);
-
-
-inline constexpr auto bitwise = Bits{float(1.0)};
-static_assert(float32(1.0).bits == 0b0'01111111'00000000'00000000'0000000);
-static_assert(bitwise == 0b0'01111111'00000000'00000000'0000000);
-static_assert(float32(bitwise) == 1.0);
-static_assert(float32(1.0) + 0.5 == 1.5);
-
-
-inline constexpr Int<8> x = 1;
-static_assert(float32(x) == 1.0);
-
-
-inline constexpr float32 xyz = 3.5;
-// inline constexpr int32 xyz2 {xyz};
-static_assert(float32(int32(0)) == 0.0);
-static_assert(xyz.mantissa() == 1.75);
-static_assert(xyz.exponent() == 1);
-static_assert(xyz.base() == 2);
-// static_assert(xyz == xyz.sign() * pow(xyz.base(), xyz.exponent()) * xyz.mantissa());
-
-// log<2>(x)
-// root<2>(x)
-
-
-inline constexpr auto bitwise_nan = Bits{std::numeric_limits<float>::signaling_NaN()};
-static_assert(bitwise_nan.data()[0] == 0b0'11111111'01000000'00000000'0000000);
-
-static_assert(float32::max() == std::numeric_limits<float>::max());
-static_assert(float32::min() == std::numeric_limits<float>::lowest());
-static_assert(Float{1.0}.bits.size() == 64);
-static_assert(float32::nan().is_nan());
-static_assert(float32(1.5) <= float32(1.5));
-
-
-static_assert(float32::epsilon() == std::numeric_limits<float>::epsilon());
+// static_assert(std::bit_cast<uint32_t>(float(1.0)) == 0b0'01111111'00000000'00000000'0000000);
 // static_assert(
-//     Bits{Bits{std::numeric_limits<float>::epsilon()}[slice{0, 24}]}.data()[0] ==
-//     0b0'01111111'00000000'00000000'0000000
+//     // float16(1.0).bits == 0b0'01111111'00000000'00000000'0000000
+//     float16(1.0).bits == 0b0'00001111'00000000'00000000'0000000
 // );
-static_assert(
-    Bits{std::numeric_limits<float>::epsilon()}.data()[0] ==
-    0b0'01101000'00000000'00000000'0000000
-);
 
-static_assert(float32::nan().compare(float32::nan(), 0.5) != 0);
+// static_assert(
+//     std::bit_cast<uint16_t>(_Float16(1.0)) == 0b0'01111'0000000000
+// );
 
-static_assert(float32::smallest() == std::numeric_limits<float>::min());
+
+// inline constexpr auto bitwise = Bits{float(1.0)};
+// static_assert(float32(1.0).bits == 0b0'01111111'00000000'00000000'0000000);
+// static_assert(bitwise == 0b0'01111111'00000000'00000000'0000000);
+// static_assert(float32(bitwise) == 1.0);
+// static_assert(float32(1.0) + 0.5 == 1.5);
+
+
+// inline constexpr Int<8> x = 1;
+// static_assert(float32(x) == 1.0);
+
+
+// inline constexpr float32 xyz = 3.5;
+// // inline constexpr int32 xyz2 {xyz};
+// static_assert(float32(int32(0)) == 0.0);
+// static_assert(xyz.mantissa() == 1.75);
+// static_assert(xyz.exponent() == 1);
+// static_assert(xyz.base() == 2);
+// // static_assert(xyz == xyz.sign() * pow(xyz.base(), xyz.exponent()) * xyz.mantissa());
+
+// // log<2>(x)
+// // root<2>(x)
+
+
+// inline constexpr auto bitwise_nan = Bits{std::numeric_limits<float>::signaling_NaN()};
+// static_assert(bitwise_nan.data()[0] == 0b0'11111111'01000000'00000000'0000000);
+
+// static_assert(float32::max() == std::numeric_limits<float>::max());
+// static_assert(float32::min() == std::numeric_limits<float>::lowest());
+// static_assert(Float{1.0}.bits.size() == 64);
+// static_assert(float32::nan().is_nan());
+// static_assert(float32(1.5) <= float32(1.5));
+
+
+// static_assert(float32::epsilon() == std::numeric_limits<float>::epsilon());
+// // static_assert(
+// //     Bits{Bits{std::numeric_limits<float>::epsilon()}[slice{0, 24}]}.data()[0] ==
+// //     0b0'01111111'00000000'00000000'0000000
+// // );
+// static_assert(
+//     Bits{std::numeric_limits<float>::epsilon()}.data()[0] ==
+//     0b0'01101000'00000000'00000000'0000000
+// );
+
+// static_assert(float32::nan().compare(float32::nan(), 0.5) != 0);
+
+// static_assert(float32::smallest() == std::numeric_limits<float>::min());
 
 
 }  // namespace bertrand

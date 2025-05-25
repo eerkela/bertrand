@@ -225,6 +225,9 @@ namespace meta {
     >;
 
     template <typename T>
+    using as_const_ref = as_const<as_lvalue<T>>;
+
+    template <typename T>
     concept is_volatile = detail::is_volatile<T>;
 
     template <typename T>
@@ -1425,6 +1428,9 @@ namespace meta {
             ::std::is_function_v<remove_pointer<unqualify<T>>>;
 
         template <typename F, typename... A>
+        constexpr bool invocable = ::std::invocable<F, A...>;
+
+        template <typename F, typename... A>
         constexpr bool nothrow_invocable = ::std::is_nothrow_invocable_v<F, A...>;
 
     }
@@ -1439,7 +1445,7 @@ namespace meta {
     concept has_call_operator = requires() { &unqualify<T>::operator(); };
 
     template <typename F, typename... A>
-    concept invocable = ::std::invocable<F, A...>;
+    concept invocable = detail::invocable<F, A...>;
 
     template <typename F, typename... A> requires (invocable<F, A...>)
     using invoke_type = ::std::invoke_result_t<F, A...>;
