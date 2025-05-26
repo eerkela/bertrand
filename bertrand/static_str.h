@@ -205,7 +205,7 @@ namespace meta {
 
 
 template <size_t N>
-struct static_str : impl::static_str_tag {
+struct static_str {
     using value_type = const char;
     using reference = value_type&;
     using const_reference = reference;
@@ -1393,7 +1393,7 @@ private:
 
 
 template <static_str self>
-struct string_wrapper : impl::static_str_tag {
+struct string_wrapper {
 private:
     using string_type = static_str<self.size()>;
 

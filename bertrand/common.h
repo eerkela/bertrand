@@ -5129,7 +5129,6 @@ struct static_str;
 
 
 namespace impl {
-    struct static_str_tag {};
 
     /// TODO: float_to_string and int_to_string may need to account for the new,
     /// arbitrary-precision numeric types in bits.h
@@ -5319,8 +5318,18 @@ namespace impl {
 
 namespace meta {
 
+    namespace detail {
+
+        template <typename T>
+        constexpr bool static_str = false;
+        template <size_t N>
+        constexpr bool static_str<bertrand::static_str<N>> = true;
+
+
+    }
+
     template <typename T>
-    concept static_str = inherits<T, impl::static_str_tag>;
+    concept static_str = detail::static_str<T>;
 
 }
 
