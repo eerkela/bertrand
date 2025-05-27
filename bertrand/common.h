@@ -1702,110 +1702,200 @@ namespace meta {
     ////    STRUCTURED BINDINGS    ////
     ///////////////////////////////////
 
+    /// TODO: include typed_get concepts, as well as get_if() support, then generalize
+    /// tuple_get() for both cases?  This becomes dramatically simpler if/when
+    /// universal template parameters become available.
+
     namespace detail {
 
         namespace adl {
             using std::get;
+            using std::get_if;
 
-            template <typename T, auto... I>
-            concept has_get = requires(T t) { get<I...>(t); };
+            template <typename T, auto... A>
+            concept has_get = requires(T t) { get<A...>(t); };
 
-            template <typename T, auto... I>
-            concept nothrow_has_get =
-                has_get<T, I...> && noexcept(get<I...>(::std::declval<T>()));
+            template <typename T, auto... A>
+            concept nothrow_has_get = requires(T t) { {get<A...>(t)} noexcept; };
 
-            template <typename T, auto... I> requires (has_get<T, I...>)
-            using get_type = decltype(get<I...>(::std::declval<T>()));
+            template <typename T, auto... A> requires (has_get<T, A...>)
+            using get_type = decltype(get<A...>(::std::declval<T>()));
+
+            template <typename T, auto... A>
+            concept has_get_if = requires(T t) { get_if<A...>(t); };
+
+            template <typename T, auto... A>
+            concept nothrow_has_get_if = requires(T t) { {get_if<A...>(t)} noexcept; };
+
+            template <typename T, auto... A> requires (has_get_if<T, A...>)
+            using get_if_type = decltype(get_if<A...>(::std::declval<T>()));
 
         }
 
     }
 
-    template <typename T, auto... I>
+    template <typename T, auto... A>
     concept has_member_get = requires(T t) {
-        t.template get<I...>();
+        t.template get<A...>();
     };
 
-    template <typename T, auto... I> requires (has_member_get<T, I...>)
-    using member_get_type = decltype(::std::declval<T>().template get<I...>());
+    template <typename T, auto... A> requires (has_member_get<T, A...>)
+    using member_get_type = decltype(::std::declval<T>().template get<A...>());
 
-    template <typename Ret, typename T, auto... I>
+    template <typename Ret, typename T, auto... A>
     concept member_get_returns =
-        has_member_get<T, I...> && convertible_to<member_get_type<T, I...>, Ret>;
+        has_member_get<T, A...> && convertible_to<member_get_type<T, A...>, Ret>;
 
-    template <typename T, auto... I>
-    concept has_adl_get = detail::adl::has_get<T, I...>;
+    template <typename T, auto... A>
+    concept has_member_get_if = requires(T t) {
+        t.template get_if<A...>();
+    };
 
-    template <typename T, auto... I> requires (has_adl_get<T, I...>)
-    using adl_get_type = detail::adl::get_type<T, I...>;
+    template <typename T, auto... A> requires (has_member_get_if<T, A...>)
+    using member_get_if_type = decltype(::std::declval<T>().template get_if<A...>());
 
-    template <typename Ret, typename T, auto... I>
+    template <typename Ret, typename T, auto... A>
+    concept member_get_if_returns =
+        has_member_get_if<T, A...> && convertible_to<member_get_if_type<T, A...>, Ret>;
+
+    template <typename T, auto... A>
+    concept has_adl_get = detail::adl::has_get<T, A...>;
+
+    template <typename T, auto... A> requires (has_adl_get<T, A...>)
+    using adl_get_type = detail::adl::get_type<T, A...>;
+
+    template <typename Ret, typename T, auto... A>
     concept adl_get_returns =
-        has_adl_get<T, I...> && convertible_to<adl_get_type<T, I...>, Ret>;
+        has_adl_get<T, A...> && convertible_to<adl_get_type<T, A...>, Ret>;
+
+    template <typename T, auto... A>
+    concept has_adl_get_if = detail::adl::has_get_if<T, A...>;
+
+    template <typename T, auto... A> requires (has_adl_get_if<T, A...>)
+    using adl_get_if_type = detail::adl::get_if_type<T, A...>;
+
+    template <typename Ret, typename T, auto... A>
+    concept adl_get_if_returns =
+        has_adl_get_if<T, A...> && convertible_to<adl_get_if_type<T, A...>, Ret>;
 
     namespace nothrow {
 
-        template <typename T, auto... I>
+        template <typename T, auto... A>
         concept has_member_get =
-            meta::has_member_get<T, I...> &&
-            noexcept(::std::declval<T>().template get<I...>());
+            meta::has_member_get<T, A...> &&
+            requires(T t) { {t.template get<A...>()} noexcept; };
 
-        template <typename T, auto... I> requires (nothrow::has_member_get<T, I...>)
-        using member_get_type = meta::member_get_type<T, I...>;
+        template <typename T, auto... A> requires (nothrow::has_member_get<T, A...>)
+        using member_get_type = meta::member_get_type<T, A...>;
 
-        template <typename Ret, typename T, auto... I>
+        template <typename Ret, typename T, auto... A>
         concept member_get_returns =
-            nothrow::has_member_get<T, I...> &&
-            nothrow::convertible_to<nothrow::member_get_type<T, I...>, Ret>;
+            nothrow::has_member_get<T, A...> &&
+            nothrow::convertible_to<nothrow::member_get_type<T, A...>, Ret>;
 
-        template <typename T, auto... I>
+        template <typename T, auto... A>
+        concept has_member_get_if =
+            meta::has_member_get_if<T, A...> &&
+            requires(T t) { {t.template get_if<A...>()} noexcept; };
+
+        template <typename T, auto... A> requires (nothrow::has_member_get_if<T, A...>)
+        using member_get_if_type = meta::member_get_if_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept member_get_if_returns =
+            nothrow::has_member_get_if<T, A...> &&
+            nothrow::convertible_to<nothrow::member_get_if_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
         concept has_adl_get =
-            meta::has_adl_get<T, I...> && detail::adl::nothrow_has_get<T, I...>;
+            meta::has_adl_get<T, A...> && detail::adl::nothrow_has_get<T, A...>;
 
-        template <typename T, auto... I> requires (nothrow::has_adl_get<T, I...>)
-        using adl_get_type = meta::adl_get_type<T, I...>;
+        template <typename T, auto... A> requires (nothrow::has_adl_get<T, A...>)
+        using adl_get_type = meta::adl_get_type<T, A...>;
 
-        template <typename Ret, typename T, auto... I>
+        template <typename Ret, typename T, auto... A>
         concept adl_get_returns =
-            nothrow::has_adl_get<T, I...> &&
-            nothrow::convertible_to<nothrow::adl_get_type<T, I...>, Ret>;
+            nothrow::has_adl_get<T, A...> &&
+            nothrow::convertible_to<nothrow::adl_get_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
+        concept has_adl_get_if =
+            meta::has_adl_get_if<T, A...> && detail::adl::nothrow_has_get_if<T, A...>;
+
+        template <typename T, auto... A> requires (nothrow::has_adl_get_if<T, A...>)
+        using adl_get_if_type = meta::adl_get_if_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept adl_get_if_returns =
+            nothrow::has_adl_get_if<T, A...> &&
+            nothrow::convertible_to<nothrow::adl_get_if_type<T, A...>, Ret>;
 
     }
 
     namespace detail {
 
-        template <typename T, auto... I>
-        struct get_type { using type = member_get_type<T, I...>; };
-        template <typename T, auto... I>
-            requires (!meta::has_member_get<T, I...> && meta::has_adl_get<T, I...>)
-        struct get_type<T, I...> { using type = meta::adl_get_type<T, I...>; };
+        template <typename T, auto... A>
+        struct get_type { using type = member_get_type<T, A...>; };
+        template <typename T, auto... A>
+            requires (!meta::has_member_get<T, A...> && meta::has_adl_get<T, A...>)
+        struct get_type<T, A...> { using type = meta::adl_get_type<T, A...>; };
+
+        template <typename T, auto... A>
+        struct get_if_type { using type = member_get_if_type<T, A...>; };
+        template <typename T, auto... A>
+            requires (!meta::has_member_get_if<T, A...> && meta::has_adl_get_if<T, A...>)
+        struct get_if_type<T, A...> { using type = meta::adl_get_if_type<T, A...>; };
 
     }
 
-    template <typename T, auto... I>
-    concept has_get = has_member_get<T, I...> || has_adl_get<T, I...>;
+    template <typename T, auto... A>
+    concept has_get = has_member_get<T, A...> || has_adl_get<T, A...>;
 
-    template <typename T, auto... I> requires (has_get<T, I...>)
-    using get_type = typename detail::get_type<T, I...>::type;
+    template <typename T, auto... A> requires (has_get<T, A...>)
+    using get_type = typename detail::get_type<T, A...>::type;
 
-    template <typename Ret, typename T, auto... I>
-    concept get_returns = has_get<T, I...> && convertible_to<get_type<T, I...>, Ret>;
+    template <typename Ret, typename T, auto... A>
+    concept get_returns = has_get<T, A...> && convertible_to<get_type<T, A...>, Ret>;
+
+    template <typename T, auto... A>
+    concept has_get_if = has_member_get_if<T, A...> || has_adl_get_if<T, A...>;
+
+    template <typename T, auto... A> requires (has_get_if<T, A...>)
+    using get_if_type = typename detail::get_if_type<T, A...>::type;
+
+    template <typename Ret, typename T, auto... A>
+    concept get_if_returns =
+        has_get_if<T, A...> && convertible_to<get_if_type<T, A...>, Ret>;
 
     namespace nothrow {
 
-        template <typename T, auto... I>
-        concept has_get = meta::has_get<T, I...> && (
-            nothrow::has_member_get<T, I...> ||
-            nothrow::has_adl_get<T, I...>
+        template <typename T, auto... A>
+        concept has_get = meta::has_get<T, A...> && (
+            nothrow::has_member_get<T, A...> ||
+            nothrow::has_adl_get<T, A...>
         );
 
-        template <typename T, auto... I> requires (nothrow::has_get<T, I...>)
-        using get_type = meta::get_type<T, I...>;
+        template <typename T, auto... A> requires (nothrow::has_get<T, A...>)
+        using get_type = meta::get_type<T, A...>;
 
-        template <typename Ret, typename T, auto... I>
+        template <typename Ret, typename T, auto... A>
         concept get_returns =
-            nothrow::has_get<T, I...> &&
-            nothrow::convertible_to<nothrow::get_type<T, I...>, Ret>;
+            nothrow::has_get<T, A...> &&
+            nothrow::convertible_to<nothrow::get_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
+        concept has_get_if = meta::has_get_if<T, A...> && (
+            nothrow::has_member_get_if<T, A...> ||
+            nothrow::has_adl_get_if<T, A...>
+        );
+
+        template <typename T, auto... A> requires (nothrow::has_get_if<T, A...>)
+        using get_if_type = meta::get_if_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept get_if_returns =
+            nothrow::has_get_if<T, A...> &&
+            nothrow::convertible_to<nothrow::get_if_type<T, A...>, Ret>;
 
     }
 

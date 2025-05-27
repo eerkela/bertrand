@@ -65,6 +65,27 @@ signature(const T&) -> signature<typename signature<T>::type>;
 ////////////////////////////////////
 
 
+/// TODO: I need some way to annotate an argument with context from the rest of the
+/// signature, probably by inheriting from it and modifying the `kind` field.  Then,
+/// the assignment operator should be a template this method that consults
+/// meta::arg_bind<> to ensure correctness.  Additionally, variadic arguments should
+/// be bindable, but only to arguments of their respective category and/or unpacking
+/// operators.  In general, tailoring the binding logic to the call site analysis is
+/// probably the best way to do this, since it's more likely that you'll be interacting
+/// with that side of the interface.
+
+/// TODO: also, when annotating, I probably need a way of representing partial
+/// arguments above and beyond the bindings on the argument itself.  The only way to
+/// do this properly is to apply that at the same time as modifying the kind, and
+/// disabling the binding logic for any such argument.
+
+/// TODO: I might also be able to support a "->"_[^T] return type annotation.  This
+/// is not strictly needed, since the return type can be inferred from the call site,
+/// but it helps for consistency with Python and might make it easier to auto-generate
+/// .pyi files for C++ functions.  It always has to be the last argument in the
+/// list.
+
+
 namespace impl {
     struct arg_tag {};
     struct template_arg_tag : arg_tag {};
@@ -339,74 +360,6 @@ namespace meta {
     template <typename T, typename... Ts>
     concept arg_bind = meta::arg<T> && detail::arg_bind<T, Ts...>;
 
-    namespace detail {
-
-        template <typename T>
-        concept kwarg_like =
-            meta::mapping_like<T> &&
-            meta::has_size<T> &&
-            meta::convertible_to<typename meta::unqualify<T>::key_type, ::std::string>;
-
-        template <typename T>
-        concept kwarg_yield = kwarg_like<T> && (
-            meta::iterable<T> &&
-            meta::structured_with<
-                meta::yield_type<T>,
-                typename meta::unqualify<T>::key_type,
-                typename meta::unqualify<T>::mapped_type
-            >
-        );
-
-        template <typename T>
-        concept kwarg_items = kwarg_like<T> && (
-            meta::has_items<meta::items_type<T>> &&
-            meta::structured_with<
-                meta::items_type<T>,
-                typename meta::unqualify<T>::key_type,
-                typename meta::unqualify<T>::mapped_type
-            >
-        );
-
-        template <typename T>
-        concept kwarg_keys_and_values = kwarg_like<T> && (
-            meta::has_keys<T> &&
-            meta::has_values<T> &&
-            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
-            meta::yields<meta::values_type<T>, typename meta::unqualify<T>::mapped_type>
-        );
-
-        template <typename T>
-        concept kwarg_yield_and_lookup = kwarg_like<T> && (
-            meta::yields<T, typename meta::unqualify<T>::key_type> &&
-            meta::index_returns<
-                typename meta::unqualify<T>::mapped_type,
-                T,
-                meta::yield_type<T>
-            >
-        );
-
-        template <typename T>
-        concept kwarg_keys_and_lookup = kwarg_like<T> && (
-            meta::has_keys<T> &&
-            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
-            meta::index_returns<
-                typename meta::unqualify<T>::mapped_type,
-                T,
-                meta::yield_type<meta::keys_type<T>>
-            >
-        );
-
-    }
-
-    template <typename T>
-    concept unpack_to_kwargs = detail::kwarg_like<T> && (
-        detail::kwarg_yield<T> ||
-        detail::kwarg_items<T> ||
-        detail::kwarg_keys_and_values<T> ||
-        detail::kwarg_yield_and_lookup<T> ||
-        detail::kwarg_keys_and_lookup<T>
-    );
-
 };
 
 
@@ -416,13 +369,13 @@ namespace impl {
     declaration. */
     template <static_str Name, typename T = void, typename V = void>
         requires (meta::valid_arg<Name>)
-    struct Arg;
+    struct arg;
 
     /* A specialization of `Arg` representing a normal positional or keyword argument.
     Such arguments can be explicitly typed and bound accordingly. */
     template <static_str Name, typename T>
         requires (meta::valid_arg<Name> && meta::valid_arg_name<Name>)
-    struct Arg<Name, T, void> : impl::arg_tag {
+    struct arg<Name, T, void> : impl::arg_tag {
         using type = T;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
@@ -432,7 +385,7 @@ namespace impl {
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return Arg<Name, meta::remove_rvalue<V>, void>{};
+            return arg<Name, meta::remove_rvalue<V>, void>{};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -441,10 +394,10 @@ namespace impl {
         type, the value is unconstrained, and can take any type. */
         template <typename V> requires (meta::is_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
-            requires(requires{Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
+            noexcept(noexcept(arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            requires(requires{arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
         {
-            return Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -454,12 +407,12 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            noexcept(noexcept(arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
             requires(meta::convertible_to<V, T> && requires{
-                Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+                arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
             })
         {
-            return Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -469,14 +422,14 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            noexcept(noexcept(arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
             requires(
                 !meta::convertible_to<V, T> &&
                 meta::invoke_returns<T, V> &&
-                requires{Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
+                requires{arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
             )
         {
-            return Arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
         /* Calling the argument is identical to assignment, as a workaround for core
@@ -491,13 +444,13 @@ namespace impl {
         }
     };
 
-    /* A specialization of `Arg` representing a variadic argument.  Such arguments can be
+    /* A specialization of `arg` representing a variadic argument.  Such arguments can be
     typed, but cannot be bound. */
     template <static_str Name, typename T>
         requires (meta::valid_arg<Name> && (
             meta::valid_args_name<Name> || meta::valid_kwargs_name<Name>
         ))
-    struct Arg<Name, T, void> : impl::arg_tag {
+    struct arg<Name, T, void> : impl::arg_tag {
         using type = T;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
@@ -509,17 +462,17 @@ namespace impl {
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return Arg<Name, meta::remove_rvalue<V>, void>{};
+            return arg<Name, meta::remove_rvalue<V>, void>{};
         }
     };
 
-    /* A specialization of `Arg` representing a positional-only or keyword-only separator.
+    /* A specialization of `arg` representing a positional-only or keyword-only separator.
     Such arguments cannot be typed and cannot be bound. */
     template <static_str Name>
         requires (meta::valid_arg<Name> && (
             meta::valid_posonly_separator<Name> || meta::valid_kwonly_separator<Name>
         ))
-    struct Arg<Name, void, void> : impl::arg_tag {
+    struct arg<Name, void, void> : impl::arg_tag {
         using type = void;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind;  // null
@@ -534,19 +487,19 @@ namespace impl {
     /// planned, possibly with some special handling for variadic arguments, which I
     /// will largely need anyways.
 
-    /* A specialization of `Arg` for arguments that have been bound to a value, but
+    /* A specialization of `arg` for arguments that have been bound to a value, but
     otherwise have no explicit type.  Most call-site arguments fall into this category. */
     template <static_str Name, meta::not_void V> requires (meta::valid_arg<Name>)
-    struct Arg<Name, void, V> : impl::arg_tag {
+    struct arg<Name, void, V> : impl::arg_tag {
         using type = void;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
-            Arg<Name, void, void>::kind | impl::arg_kind::BOUND;
+            arg<Name, void, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
         template <meta::is<V> U>
-        [[nodiscard]] constexpr Arg(U&& value) :
+        [[nodiscard]] constexpr arg(U&& value) :
             m_value(std::forward<U>(value))
         {}
 
@@ -559,20 +512,20 @@ namespace impl {
         }
     };
 
-    /* A specialization of `Arg` for arguments that have both an explicit type and have
+    /* A specialization of `arg` for arguments that have both an explicit type and have
     been bound to a value.  Most signature arguments that have a default value fall into
     this category. */
     template <static_str Name, meta::not_void T, meta::not_void V> requires (meta::valid_arg<Name>)
-    struct Arg<Name, T, V> : impl::arg_tag {
+    struct arg<Name, T, V> : impl::arg_tag {
         using type = T;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
-            Arg<Name, T, void>::kind | impl::arg_kind::BOUND;
+            arg<Name, T, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
         template <meta::is<V> U>
-        [[nodiscard]] constexpr Arg(U&& value) :
+        [[nodiscard]] constexpr arg(U&& value) :
             m_value(std::forward<U>(value))
         {}
 
@@ -607,13 +560,13 @@ namespace impl {
     declaration. */
     template <static_str Name, typename T = void, typename V = void>
         requires (meta::valid_arg<Name>)
-    struct TemplateArg;
+    struct template_arg;
 
-    /* A specialization of `TemplateArg` representing a normal positional or keyword
+    /* A specialization of `template_arg` representing a normal positional or keyword
     argument.  Such arguments can be explicitly typed and bound accordingly. */
     template <static_str Name, typename T>
         requires (meta::valid_arg<Name> && meta::valid_arg_name<Name>)
-    struct TemplateArg<Name, T, void> : impl::template_arg_tag {
+    struct template_arg<Name, T, void> : impl::template_arg_tag {
         using type = T;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
@@ -623,7 +576,7 @@ namespace impl {
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return TemplateArg<Name, meta::remove_rvalue<V>, void>{};
+            return template_arg<Name, meta::remove_rvalue<V>, void>{};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -632,10 +585,10 @@ namespace impl {
         type, the value is unconstrained, and can take any type. */
         template <typename V> requires (meta::is_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
-            requires(requires{TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
+            noexcept(noexcept(template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            requires(requires{template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
         {
-            return TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -646,13 +599,13 @@ namespace impl {
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
             noexcept(noexcept(
-                TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}
+                template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}
             ))
             requires(meta::convertible_to<V, T> && requires{
-                TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+                template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
             })
         {
-            return TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -662,14 +615,14 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            noexcept(noexcept(template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
             requires(
                 !meta::convertible_to<V, T> &&
                 meta::invoke_returns<T, V> &&
-                requires{TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
+                requires{template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
             )
         {
-            return TemplateArg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return template_arg<Name, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
         /* Calling the argument is identical to assignment, as a workaround for core
@@ -684,13 +637,13 @@ namespace impl {
         }
     };
 
-    /* A specialization of `TemplateArg` representing a variadic argument.  Such arguments
+    /* A specialization of `template_arg` representing a variadic argument.  Such arguments
     can be typed, but cannot be bound to default values or used as keywords. */
     template <static_str Name, typename T>
         requires (meta::valid_arg<Name> && (
             meta::valid_args_name<Name> || meta::valid_kwargs_name<Name>
         ))
-    struct TemplateArg<Name, T, void> : impl::template_arg_tag {
+    struct template_arg<Name, T, void> : impl::template_arg_tag {
         using type = T;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
@@ -702,35 +655,35 @@ namespace impl {
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return TemplateArg<Name, meta::remove_rvalue<V>, void>{};
+            return template_arg<Name, meta::remove_rvalue<V>, void>{};
         }
     };
 
-    /* A specialization of `TemplateArg` representing a positional-only or keyword-only
+    /* A specialization of `template_arg` representing a positional-only or keyword-only
     separator.  Such arguments cannot be typed and cannot be bound. */
     template <static_str Name>
         requires (meta::valid_arg<Name> && (
             meta::valid_posonly_separator<Name> || meta::valid_kwonly_separator<Name>
         ))
-    struct TemplateArg<Name, void, void> : impl::template_arg_tag {
+    struct template_arg<Name, void, void> : impl::template_arg_tag {
         using type = void;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind;  // null
     };
 
-    /* A specialization of `TemplateArg` for arguments that have been bound to a value, but
+    /* A specialization of `template_arg` for arguments that have been bound to a value, but
     otherwise have no explicit type.  Most call-site arguments fall into this category. */
     template <static_str Name, meta::not_void V> requires (meta::valid_arg<Name>)
-    struct TemplateArg<Name, void, V> : impl::template_arg_tag {
+    struct template_arg<Name, void, V> : impl::template_arg_tag {
         using type = void;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
-            TemplateArg<Name, void, void>::kind | impl::arg_kind::BOUND;
+            template_arg<Name, void, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
         template <meta::is<V> U>
-        [[nodiscard]] constexpr TemplateArg(U&& value) :
+        [[nodiscard]] constexpr template_arg(U&& value) :
             m_value(std::forward<U>(value))
         {}
 
@@ -743,20 +696,20 @@ namespace impl {
         }
     };
 
-    /* A specialization of `TemplateArg` for arguments that have both an explicit type and
+    /* A specialization of `template_arg` for arguments that have both an explicit type and
     have been bound to a value.  Most signature arguments that have a default value fall
     into this category. */
     template <static_str Name, meta::not_void T, meta::not_void V> requires (meta::valid_arg<Name>)
-    struct TemplateArg<Name, T, V> : impl::template_arg_tag {
+    struct template_arg<Name, T, V> : impl::template_arg_tag {
         using type = T;
         static constexpr const auto& name = Name;
         static constexpr impl::arg_kind kind =
-            TemplateArg<Name, T, void>::kind | impl::arg_kind::BOUND;
+            template_arg<Name, T, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
         template <meta::is<V> U>
-        [[nodiscard]] constexpr TemplateArg(U&& value) :
+        [[nodiscard]] constexpr template_arg(U&& value) :
             m_value(std::forward<U>(value))
         {}
 
@@ -814,14 +767,14 @@ conventions and argument types.  See `bertrand::Arg` for more details on the arg
 DSL, and `bertrand::def()` for how to use it when defining functions. */
 template <static_str Name> requires (meta::valid_arg<Name>)
 [[nodiscard]] constexpr auto operator""_() noexcept {
-    return impl::Arg<Name>{};
+    return impl::arg<Name>{};
 }
 
 
 /* Trampoline operator for explicit template parameters.
 
 This is a user-defined string literal operator that serves as an entry point for
-Python-style calling semantics in C++.  It returns a compile-time `TemplateArg`
+Python-style calling semantics in C++.  It returns a compile-time `template_arg`
 construct with a miniature DSL for defining function arguments according to Python
 semantics.  Typically, these are used in combination with the `def()` operator to
 inform the compiler of a function's expected signature, like so:
@@ -838,11 +791,11 @@ inform the compiler of a function's expected signature, like so:
     ```
 
 This is a minimal example, but the syntax can be extended to support arbitrary calling
-conventions and argument types.  See `bertrand::TemplateArg` for more details on the
+conventions and argument types.  See `bertrand::template_arg` for more details on the
 argument DSL, and `bertrand::def()` for how to use it when defining functions. */
 template <static_str Name> requires (meta::valid_arg<Name>)
 [[nodiscard]] constexpr auto operator""_t() noexcept {
-    return impl::TemplateArg<Name>{};
+    return impl::template_arg<Name>{};
 }
 
 
@@ -857,6 +810,23 @@ constexpr std::type_identity<T> type;
 //////////////////////////////
 ////    ARGUMENT PACKS    ////
 //////////////////////////////
+
+
+/// TODO: note that a keyword-unpacking operator *must* build a temporary dictionary
+/// in order to account for arguments which may be partially consumed before getting
+/// dumped into an `args{}` pack.  The logic written here will mostly translate in
+/// that case, but will require changes to the `impl::kwarg_pack` type, which will
+/// likely require the containers refactor to be done first, as it would ideally store
+/// a `bertrand::Map<std::string, T>`, which I control, and which can be made to
+/// support all the required operations.  That means the kwarg_pack no longer depends
+/// on the interface of the original container in a strong way.  Something similar
+/// should be done for the `args` pack, which should just store a pair of iterators
+/// over the original container, and consume them as arguments are requested.
+/// Promoting the pack to a kwarg pack would exhaust them to produce the temporary map,
+/// which is then destructively searched within the call logic.
+/// -> For now, the current logic is sufficient.  I'll just have to revisit the kwarg
+/// case later, once Map<> has been implemented, which will be a fair while given the
+/// complexity standing between here and there.
 
 
 namespace impl {
@@ -940,7 +910,71 @@ namespace meta {
         template <typename... Ts>
         concept nested_args = args_spec<Ts...> && (meta::args<Ts> || ...);
 
+        template <typename T>
+        concept kwarg_like =
+            meta::mapping_like<T> &&
+            meta::has_size<T> &&
+            meta::convertible_to<typename meta::unqualify<T>::key_type, ::std::string>;
+
+        template <typename T>
+        concept kwarg_yield = kwarg_like<T> && (
+            meta::iterable<T> &&
+            meta::structured_with<
+                meta::yield_type<T>,
+                typename meta::unqualify<T>::key_type,
+                typename meta::unqualify<T>::mapped_type
+            >
+        );
+
+        template <typename T>
+        concept kwarg_items = kwarg_like<T> && (
+            meta::has_items<meta::items_type<T>> &&
+            meta::structured_with<
+                meta::items_type<T>,
+                typename meta::unqualify<T>::key_type,
+                typename meta::unqualify<T>::mapped_type
+            >
+        );
+
+        template <typename T>
+        concept kwarg_keys_and_values = kwarg_like<T> && (
+            meta::has_keys<T> &&
+            meta::has_values<T> &&
+            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
+            meta::yields<meta::values_type<T>, typename meta::unqualify<T>::mapped_type>
+        );
+
+        template <typename T>
+        concept kwarg_yield_and_lookup = kwarg_like<T> && (
+            meta::yields<T, typename meta::unqualify<T>::key_type> &&
+            meta::index_returns<
+                typename meta::unqualify<T>::mapped_type,
+                T,
+                meta::yield_type<T>
+            >
+        );
+
+        template <typename T>
+        concept kwarg_keys_and_lookup = kwarg_like<T> && (
+            meta::has_keys<T> &&
+            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
+            meta::index_returns<
+                typename meta::unqualify<T>::mapped_type,
+                T,
+                meta::yield_type<meta::keys_type<T>>
+            >
+        );
+
     }
+
+    template <typename T>
+    concept unpack_to_kwargs = detail::kwarg_like<T> && (
+        detail::kwarg_yield<T> ||
+        detail::kwarg_items<T> ||
+        detail::kwarg_keys_and_values<T> ||
+        detail::kwarg_yield_and_lookup<T> ||
+        detail::kwarg_keys_and_lookup<T>
+    );
 
 }
 
@@ -1084,6 +1118,17 @@ struct args : impl::args<Ts...> {
 private:
     using base = impl::args<Ts...>;
 
+    template <typename T>
+    struct convert {
+        template <typename... A>
+        [[nodiscard]] constexpr T operator()(A&&... args)
+            noexcept(noexcept(T{std::forward<A>(args)...}))
+            requires(requires{T{std::forward<A>(args)...};})
+        {
+            return T{std::forward<A>(args)...};
+        }
+    };
+
 public:
     /* A nested type listing the precise types that were used to build this parameter
     pack, for posterity.  These are reported as a `meta::pack<...>` type, which
@@ -1109,25 +1154,6 @@ public:
         return (sizeof...(Ts) == 0);
     }
 
-    /* Check to see whether the argument pack contains a named keyword argument. */
-    template <static_str name> requires (meta::valid_arg_name<name>)
-    [[nodiscard]] static constexpr bool contains() noexcept {
-        return names.template contains<name>();
-    }
-
-    /* Check to see whether the argument pack contains a named keyword argument. */
-    [[nodiscard]] static constexpr bool contains(std::string_view name) noexcept {
-        if (name.empty()) {
-            return false;  // empty names are never valid
-        }
-        if constexpr (!names.template contains<"">()) {
-            return names.contains(name);
-        } else {  // may need to check for a runtime-only name
-            return names.contains(name) || names.template get<"">().contains(name);
-        }
-    }
-
-
     /* CTAD Constructor saves a pack of arguments for later use, retaining proper
     lvalue/rvalue categories and cv qualifiers in the template signature.  If another
     pack is present in the arguments, then it will be automatically flattened, such
@@ -1148,6 +1174,9 @@ public:
     constexpr args& operator=(const args&) = delete;
     constexpr args& operator=(args&&) = delete;
 
+    /// TODO: if the storage backend for kwargs packs are fixed, then this could
+    /// probably be a lot simpler.
+
     /* Get the argument at index I, perfectly forwarding it according to the pack's
     current cvref qualifications.  This means that if the pack is supplied as an
     lvalue, then all arguments will be forwarded as lvalues, regardless of their
@@ -1166,61 +1195,175 @@ public:
     arguments will be perfectly forwarded according to their original categories.  If
     the pack is cv qualified, then the result will be forwarded with those same
     qualifiers.
-    
-    If the name can be statically resolved, then it will be, and the argument will be
-    returned with zero overhead.  Otherwise, if the argument pack contains runtime-only
-    keyword arguments (e.g. the contents of a keyword unpacking operator), then the
-    resolution will be delayed until runtime, and may throw an exception if the
-    argument is not found.  The `contains()` method can be used to check for this
-    ahead of time, and `get_if()` can be used to avoid an extra lookup if both must
-    be performed. */
-    template <static_str name, typename Self>
-        requires (
-            meta::valid_arg_name<name> &&
-            names.template contains<name>() ||
-            names.template contains<"">()
-        )
+
+    This overload applies when the argument name can be statically resolved, and the
+    entire lookup can be optimized away at compile time. */
+    template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-        noexcept(names.template contains<name>())
+        noexcept(requires{{
+            base::template get<names.template get<name>()>(
+                std::forward<Self>(self)
+            ).value()} noexcept;
+        })
+        requires(names.template contains<name>() && requires{
+            base::template get<names.template get<name>()>(
+                std::forward<Self>(self)
+            ).value();
+        })
     {
-        if constexpr (names.template contains<name>()) {
-            return (base::template get<names.template get<name>()>(
+        return (base::template get<names.template get<name>()>(
+            std::forward<Self>(self)
+        ).value());
+    }
+
+    /* Get a keyword argument with a particular name, perfectly forwarding it according
+    to the pack's current cvref qualifications.  This means that if the pack is
+    supplied as an lvalue, then all arguments will be forwarded as lvalues, regardless
+    of their status in the template signature.  If the pack is an rvalue, then the
+    arguments will be perfectly forwarded according to their original categories.  If
+    the pack is cv qualified, then the result will be forwarded with those same
+    qualifiers.
+
+    This overload applies when the argument name cannot be statically resolved, which
+    occurs when the pack contains runtime-only keyword arguments (e.g. the contents
+    of a keyword unpacking operator).  In this case, the underlying container for the
+    runtime arguments will be subscripted with the given name, and may throw an
+    exception if the argument is not found, though the exact behavior is dependent on
+    the container itself.  The keyword unpacking operator ensures that an operator of
+    this form is available and returns an appropriate value type, but does not specify
+    any other behavior. */
+    template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+        noexcept(requires{{
+            base::template get<names.template get<"">()>(
                 std::forward<Self>(self)
-            ).value());
-        } else {
-            if (auto val = base::template get<names.template get<"">()>(
+            )[name]} noexcept;
+        })
+        requires(
+            !names.template contains<name>() &&
+            names.template contains<"">() &&
+            requires{base::template get<names.template get<"">()>(
                 std::forward<Self>(self)
-            ).template get_if<name>(); val.has_value()) {
-                return (std::move(val).value().value());
-            }
-            throw KeyError(name);
-        }
+            )[name];}
+        )
+    {
+        return (base::template get<names.template get<"">()>(
+            std::forward<Self>(self)
+        )[name]);
     }
 
     /* Get a keyword argument with a particular name, if it is present in the argument
-    pack.  The result is a `bertrand::Optional`, which is always valid if the argument
-    name can be statically resolved.  Otherwise, if the argument pack contains
-    runtime-only keyword arguments (e.g. the contents of a keyword unpacking operator),
-    then the resolution will be delayed until runtime, and may return an empty
-    optional if the argument is not found. */
-    template <static_str name, typename Self>
-        requires (
-            meta::valid_arg_name<name> &&
-            names.template contains<name>() ||
-            names.template contains<"">()
-        )
-    [[nodiscard]] constexpr auto get_if(this Self&& self) noexcept {
-        if constexpr (names.template contains<name>()) {
-            return Optional{base::template get<names.template index<name>()>(
+    pack.  If available, a method of this form may be cheaper than separate
+    `contains()` and `get()` calls, since it fuses the lookups.
+
+    This overload applies when the argument name can be statically resolved, in which
+    case this method is always valid and returns a `bertrand::Optional` that holds the
+    perfectly-forwarded result.  The optional will never be in the empty state in this
+    case; it is provided as an optional for consistency with the runtime case. */
+    template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] constexpr auto get_if(this Self&& self)
+        noexcept(requires{{
+            Optional{base::template get<names.template index<name>()>(
+                std::forward<Self>(self)
+            ).value()}} noexcept;
+        })
+        requires(names.template contains<name>() && requires{
+            Optional{base::template get<names.template index<name>()>(
                 std::forward<Self>(self)
             ).value()};
-        } else {
-            return base::template get<names.template get<"">()>(
+        })
+    {
+        return Optional{base::template get<names.template index<name>()>(
+            std::forward<Self>(self)
+        ).value()};
+    }
+
+    /* Get a keyword argument with a particular name, if it is present in the argument
+    pack.  If available, a method of this form may be cheaper than separate
+    `contains()` and `get()` calls, since it fuses the lookups.
+
+    This overload applies when the argument name cannot be statically resolved, and the
+    argument pack permits runtime-only keyword arguments (e.g. the contents of a
+    keyword unpacking operator), and the underlying container supports a matching
+    `get_if()` method.  In this case, the return type will match that of the
+    underlying container, which may be an `Optional`, `std::optional`, or any other
+    type. */
+    template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] constexpr decltype(auto) get_if(this Self&& self)
+        noexcept(requires{{
+            base::template get<names.template get<"">()>(
                 std::forward<Self>(self)
-            ).template get_if<name>().visit([](auto&& val) {
-                return std::forward<decltype(val)>(val).value();
-            });
-        }
+            ).template get_if<name>()} noexcept;
+        })
+        requires(
+            !names.template contains<name>() &&
+            names.template contains<"">() &&
+            requires{base::template get<names.template get<"">()>(
+                std::forward<Self>(self)
+            ).template get_if<name>();}
+        )
+    {
+        return (base::template get<names.template get<"">()>(
+            std::forward<Self>(self)
+        ).template get_if<name>());
+    }
+
+    /* Check to see whether the argument pack contains a named keyword argument.  This
+    overload applies when the argument name is known at compile time and can be
+    statically resolved. */
+    template <static_str name> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] constexpr bool contains() const noexcept
+        requires(names.template contains<name>())
+    {
+        return names.template contains<name>();
+    }
+
+    /* Check to see whether the argument pack contains a named keyword argument.  This
+    overload applies when the argument name is known at compile time, but cannot be
+    statically resolved, and the pack permits runtime-only keyword arguments (e.g.
+    the contents of a keyword unpacking operator), and the underlying container
+    supports a matching `contains()` method. */
+    template <static_str name> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] constexpr bool contains() const
+        noexcept(requires{{
+            get<names.template get<"">()>().contains(name)
+        } noexcept -> meta::nothrow::convertible_to<bool>;})
+        requires(
+            !names.template contains<name>() &&
+            names.template contains<"">() &&
+            requires{{
+                get<names.template get<"">()>().contains(name)
+            } -> meta::convertible_to<bool>;}
+        )
+    {
+        return get<names.template get<"">()>().contains(name);
+    }
+
+    /* Check to see whether the argument pack contains a named keyword argument.  This
+    overload applies when the argument name is only known at runtime, but can otherwise
+    be statically resolved. */
+    [[nodiscard]] constexpr bool contains(std::string_view name) const noexcept
+        requires(!names.template contains<"">())
+    {
+        return names.contains(name);
+    }
+
+    /* Check to see whether the argument pack contains a named keyword argument.  This
+    overload applies when the argument name is only known at runtime, and cannot be
+    statically resolved, but the pack permits runtime-only keyword arguments (e.g. the
+    contents of a keyword unpacking operator), and the underlying container supports a
+    matching `contains()` method. */
+    [[nodiscard]] constexpr bool contains(std::string_view name) const
+        noexcept(requires{{
+            get<names.template get<"">()>().contains(name)
+        } noexcept -> meta::nothrow::convertible_to<bool>;})
+        requires(names.template contains<"">() && requires{{
+            get<names.template get<"">()>().contains(name)
+        } -> meta::convertible_to<bool>;})
+    {
+        return
+            (!name.empty() && names.contains(name)) ||
+            get<names.template get<"">()>().contains(name);
     }
 
     /* Invoking a pack will perfectly forward the saved arguments to a target function
@@ -1232,10 +1375,43 @@ public:
     those same qualifiers. */
     template <typename Self, typename F>
     constexpr decltype(auto) operator()(this Self&& self, F&& f)
-        noexcept(meta::nothrow::invocable<base, Self, F>)
-        requires(meta::invocable<base, Self, F>)
+        noexcept(noexcept(base::operator()(
+            std::forward<Self>(self),
+            std::forward<F>(f)
+        )))
+        requires(requires{base::operator()(
+            std::forward<Self>(self),
+            std::forward<F>(f)
+        );})
     {
         return (base::operator()(std::forward<Self>(self), std::forward<F>(f)));
+    }
+
+    /* Implicitly convert the `args` pack to any container that can be constructed by
+    forwarding the arguments within the pack.  When used in combination with a variadic
+    positional or keyword argument, an operator of this form allows the user to
+    customize the storage interface for the arguments, like so:
+    
+        ```
+        constexpr auto func = def<"*args"_[^int]>([](std::array<int, 3> args) {
+            return args[1];
+        });
+
+        static_assert(func(1, 2, 3) == 2);  // fine, implicit conversion is allowed
+        // static_assert(func(1, 2, 3, 4) == 2);  <- ill-formed, since the function
+        //                                           expects exactly 3 variadic arguments
+        ```
+
+    Note that such a conversion is not strictly required, and if omitted, the `args`
+    pack will simply be forwarded directly.  This can be more efficient for basic
+    usage, but if the conversion would have been required anyways, then doing it in the
+    signature as shown is by far the most expressive. */
+    template <typename T, typename Self>
+    [[nodiscard]] constexpr operator T(this Self&& self)
+        noexcept(noexcept(std::forward<Self>(self)(convert<T>{})))
+        requires(requires{std::forward<Self>(self)(convert<T>{});})
+    {
+        return std::forward<Self>(self)(convert<T>{});
     }
 };
 
@@ -1532,12 +1708,6 @@ namespace impl {
         ));
     }
 
-    /// TODO: allow the underlying container to be accessed directly, which is what
-    /// would back the runtime-only keyword case in args<>.  It would always point to
-    /// an instance of this type, which allows transparent access to the underlying
-    /// container, so that I don't even end up doing any extra copies.  The only real
-    /// challenge is in accounting for all the various access patterns.
-
     /* A keyword parameter pack obtained by double-dereferencing a mapping-like
     container within a Python-style function call.  The template machinery recognizes
     this as if it were an `"*<anonymous>"_(container)` argument defined in the
@@ -1552,37 +1722,108 @@ namespace impl {
         static constexpr static_str name = "";
         static constexpr impl::arg_kind kind = impl::arg_kind::VAR | impl::arg_kind::KW;
 
-        meta::remove_rvalue<T> container;
+        /// TODO: the logic necessary to convert an arg_pack&& into a kwarg_pack is
+        /// implemented in the `storage` constructor, but that type can't be fully
+        /// defined until after `bertrand::Map` is serviceable, and will require some
+        /// detailed thinking.  It should reuse the same iterators as the args pack
+        /// if possible, or pass the container through make_kwarg_iterator() to obtain
+        /// a key-value iterator with which to populate the storage map.
 
-        [[nodiscard]] constexpr auto size() const
-            noexcept(meta::nothrow::has_size<T>)
-            requires(meta::has_size<T>)
-        {
-            return std::ranges::size(container);
+        /* A temporary mapping that gets destructively searched as arguments are
+        consumed from the pack. */
+        struct storage;  // forward declaration filled in after `bertrand::Map` is defined
+        storage m_storage;
+
+        [[nodiscard]] constexpr auto size() const noexcept {
+            return m_storage.size();
         }
 
-        [[nodiscard]] constexpr auto ssize() const
-            noexcept(meta::nothrow::has_ssize<T>)
-            requires(meta::has_ssize<T>)
-        {
-            return std::ranges::ssize(container);
+        [[nodiscard]] constexpr auto ssize() const noexcept {
+            return m_storage.ssize();
         }
 
-        [[nodiscard]] constexpr auto begin()
-            noexcept(noexcept(make_kwarg_iterator(container)))
-            requires(requires{make_kwarg_iterator(container);})
-        {
-            return make_kwarg_iterator(container);
+        [[nodiscard]] constexpr bool empty() const noexcept {
+            return m_storage.empty();
         }
 
-        [[nodiscard]] constexpr auto begin() const
-            noexcept(noexcept(make_kwarg_iterator(container)))
-            requires(requires{make_kwarg_iterator(container);})
-        {
-            return make_kwarg_iterator(container);
+        [[nodiscard]] constexpr auto begin() noexcept {
+            return m_storage.begin();
         }
 
-        [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
+        [[nodiscard]] constexpr auto begin() const noexcept {
+            return m_storage.begin();
+        }
+
+        [[nodiscard]] constexpr auto end() noexcept {
+            return m_storage.end();
+        }
+
+        [[nodiscard]] constexpr auto end() const noexcept {
+            return m_storage.end();
+        }
+
+        [[nodiscard]] constexpr bool contains(std::string_view key) const noexcept {
+            return m_storage.contains(key);
+        }
+
+        template <static_str name, typename Self>
+        [[nodiscard]] constexpr decltype(auto) pop(this Self&& self)
+            noexcept(noexcept(std::forward<Self>(self).m_storage.template pop<name>()))
+            requires(requires{std::forward<Self>(self).m_storage.template pop<name>();})
+        {
+            return (std::forward<Self>(self).m_storage.template pop<name>());
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) pop(this Self&& self, std::string_view key)
+            noexcept(noexcept(std::forward<Self>(self).m_storage.pop(key)))
+            requires(requires{std::forward<Self>(self).m_storage.pop(key);})
+        {
+            return (std::forward<Self>(self).m_storage.template pop<name>());
+        }
+
+        template <static_str name, typename Self>
+        [[nodiscard]] constexpr auto get(this Self&& self)
+            noexcept(noexcept(std::forward<Self>(self).m_storage.template get<name>()))
+            requires(requires{std::forward<Self>(self).m_storage.template get<name>();})
+        {
+            return (std::forward<Self>(self).m_storage.template get<name>());
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto get(this Self&& self, std::string_view key)
+            noexcept(noexcept(std::forward<Self>(self).m_storage.get(key)))
+            requires(requires{std::forward<Self>(self).m_storage.get(key);})
+        {
+            return (std::forward<Self>(self).m_storage.get(key));
+        }
+
+        template <static_str name, typename Self>
+        [[nodiscard]] constexpr auto get_if(this Self&& self)
+            noexcept(noexcept(std::forward<Self>(self).m_storage.template get_if<name>()))
+            requires(requires{std::forward<Self>(self).m_storage.template get_if<name>();})
+        {
+            return (std::forward<Self>(self).m_storage.template get_if<name>());
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto get_if(this Self&& self, std::string_view key)
+            noexcept(noexcept(std::forward<Self>(self).m_storage.get_if(key)))
+            requires(requires{std::forward<Self>(self).m_storage.get_if(key);})
+        {
+            return (std::forward<Self>(self).m_storage.get_if(key));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](
+            this Self&& self,
+            std::string_view key
+        )
+            noexcept(noexcept(std::forward<Self>(self).m_storage[key]))
+            requires(requires{std::forward<Self>(self).m_storage[key];})
+        {
+            return (std::forward<Self>(self).m_storage[key]);
+        }
     };
 
     template <meta::unpack_to_kwargs T>
@@ -1597,54 +1838,45 @@ namespace impl {
     
     Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
     double unpack operator. */
-    template <meta::iterable T> requires (meta::has_size<T>)
+    template <meta::iterable T>
     struct arg_pack : impl::arg_tag {
+        using container_type = meta::remove_rvalue<T>;
+        using begin_type = meta::begin_type<container_type>;
+        using end_type = meta::end_type<container_type>;
         using type = meta::yield_type<T>;
         static constexpr static_str name = "";
         static constexpr impl::arg_kind kind = impl::arg_kind::VAR | impl::arg_kind::POS;
 
-        meta::remove_rvalue<T> container;
+    private:
+        container_type m_data;
+        begin_type m_begin;
+        end_type m_end;
 
-        [[nodiscard]] constexpr auto size() const
-            noexcept(noexcept(std::ranges::size(container)))
-            requires(requires{std::ranges::size(container);})
-        {
-            return std::ranges::size(container);
+    public:
+        constexpr arg_pack(T data) :
+            m_data(std::forward<T>(data)),
+            m_begin(std::ranges::begin(m_data)),
+            m_end(std::ranges::end(m_data))
+        {}
+
+        [[nodiscard]] constexpr container_type& data() noexcept {
+            return m_data;
         }
 
-        [[nodiscard]] constexpr auto ssize() const
-            noexcept(noexcept(std::ranges::ssize(container)))
-            requires(requires{std::ranges::ssize(container);})
-        {
-            return std::ranges::ssize(container);
+        [[nodiscard]] constexpr const container_type& data() const noexcept {
+            return m_data;
         }
 
-        [[nodiscard]] constexpr auto begin()
-            noexcept(noexcept(std::ranges::begin(container)))
-            requires(requires{std::ranges::begin(container);})
-        {
-            return std::ranges::begin(container);
+        [[nodiscard]] constexpr bool empty() const noexcept(noexcept(m_begin == m_end)) {
+            return m_begin == m_end;
         }
 
-        [[nodiscard]] constexpr auto begin() const
-            noexcept(noexcept(std::ranges::begin(container)))
-            requires(requires{std::ranges::begin(container);})
-        {
-            return std::ranges::begin(container);
+        [[nodiscard]] constexpr begin_type& begin() noexcept {
+            return m_begin;
         }
 
-        [[nodiscard]] constexpr auto end()
-            noexcept(noexcept(std::ranges::end(container)))
-            requires(requires{std::ranges::end(container);})
-        {
-            return std::ranges::end(container);
-        }
-
-        [[nodiscard]] constexpr auto end() const
-            noexcept(noexcept(std::ranges::end(container)))
-            requires(requires{std::ranges::end(container);})
-        {
-            return std::ranges::end(container);
+        [[nodiscard]] constexpr end_type& end() noexcept {
+            return m_end;
         }
 
         /* Dereference a positional pack to promote it to a key/value pack.  This
@@ -1664,753 +1896,21 @@ namespace impl {
 
         Enabling this operator must be done explicitly, by specializing the
         `meta::detail::unpack<T>` flag for a given container. */
-        template <typename Self> requires (meta::unpack_to_kwargs<T>)
-        [[nodiscard]] constexpr kwarg_pack<T> operator*(this Self&& self)
-            noexcept(noexcept(kwarg_pack<T>(std::forward<Self>(self).container)))
-            requires(requires{kwarg_pack<T>(std::forward<Self>(self).container);})
+        [[nodiscard]] constexpr auto operator*() &&
+            noexcept(requires{{kwarg_pack<T>{std::move(*this)}} noexcept;})
+            requires(
+                meta::unpack_to_kwargs<T> &&
+                requires{kwarg_pack<T>{std::move(*this)};}
+            )
         {
-            return {std::forward<Self>(self).container};
+            return kwarg_pack<T>{std::move(*this)};
         }
     };
 
-    template <meta::iterable T> requires (meta::has_size<T>)
+    template <meta::iterable T>
     arg_pack(T&&) -> arg_pack<T>;
 
 }
-
-
-
-
-
-
-/// TODO: at this point, all I really need is a way to annotate the arguments that are
-/// provided to a signature, and arrange them into a list that forms the basis of
-/// `bertrand::signature`.  Also eventually I'll need to tackle the question of how
-/// variadic arguments will be passed into the function, since I kind of want to
-/// support both C++-style variadic packs and Python-style containers.  This will
-/// only apply to variadic positional arguments, and only if the function does not
-/// accept any arguments after the variadic pack, including the positional-only
-/// separator, which is used to define C++-style positional-only signatures.  If
-/// the signature does not accept keyword-only or variadic keyword arguments, then
-/// an argument pack will expand into the full signature like a C++ parameter pack.
-/// That behavior can be manually turned off by adding a keyword-only separator
-/// immediately after the variadic positional argument, or adding a keyword-only
-/// argument of any kind (including positional-or-variadic arguments that occur after
-/// a positional-only separator).  It's unclear exactly how the parameter will be
-/// passed in, and it's possible I'll just pass the raw storage container.
-
-
-/// TODO: Annotating the arguments happens by inheriting from the signature argument
-/// and modifying the `kind` field with the context of the rest of the signature.
-/// The assignment operator will then be turned into a template this operator that
-/// checks against the `meta::arg_bind<>` concept, which takes the kind into account,
-/// and must also account for materialization functions, which are encoded into
-/// the `meta::arg_bind<>` concept as well.  Together with allowing rebinding of
-/// bound arguments, this makes the binding pass super simple, since it can just check
-/// whether any non-variadic arguments are left unbound, which would indicate a missing
-/// required argument.
-
-/// TODO: the value that gets passed into the `*args` and `**kwargs` arguments are
-/// the raw storage containers, which use the opaque type to store polymorphic
-/// arguments, and can be unpacked again at the call site, iterated over, or queried
-/// for specific values.  The `arg_bind` logic should cover this case automatically,
-/// so that I don't need any special-casing.  I may need to rethink the binding
-/// logic for them, however.
-
-/// TODO: I might also be able to support a "->"_[^T] return type annotation.  This
-/// is not strictly needed, since the return type can be inferred from the call site,
-/// but it helps for consistency with Python and might make it easier to auto-generate
-/// .pyi files for C++ functions.  It always has to be the last argument in the
-/// list.
-
-
-namespace impl {
-
-    /* Base class for argument annotations, which centralizes the stored value,
-    pointer-like access, and implicit conversions. */
-    template <static_str Name, typename T>
-    struct ArgBase {
-    private:
-        template <typename, typename>
-        friend struct meta::detail::detect_arg;
-        using _detect_arg = void;
-
-        using type = impl::unwrap_generic<T>;
-        using reference = std::add_lvalue_reference_t<type>;
-        using pointer = std::add_pointer_t<type>;
-
-    public:
-        /* Non-generic arguments directly store a value of the templated type and use
-        trivial constructors to extend the lifetime of temporary references. */
-        type value;
-
-        [[nodiscard]] constexpr type operator*() && { std::forward<type>(value); }
-        [[nodiscard]] constexpr reference operator*() & noexcept { return value; }
-        [[nodiscard]] constexpr const reference operator*() const & noexcept { return value; }
-        [[nodiscard]] constexpr pointer operator->() noexcept { return &value; }
-        [[nodiscard]] constexpr const pointer operator->() const noexcept { return &value; }
-
-        /* Rvalue arguments are normally generated whenever a function is called.  Making
-        them convertible to the underlying type means they can be used to call external
-        C++ functions that are not aware of Python-style argument annotations, in a way
-        that conforms to traits like `std::invocable<>`, etc. */
-        template <typename U> requires (meta::convertible_to<type, U>)
-        [[nodiscard]] constexpr operator U() && {
-            return std::forward<type>(value);
-        }
-
-        /* Rvalue arguments are also convertible to other annotated argument types, in
-        order to simplify metaprogramming requirements.  This effectively means that all
-        trailing annotation types are mutually interconvertible. */
-        template <meta::arg U>
-            requires (
-                !meta::is_qualified<U> &&
-                !meta::arg_traits<U>::variadic() &&
-                meta::arg_traits<U>::name == Name &&
-                meta::convertible_to<type, typename meta::arg_traits<U>::type>
-        )
-        [[nodiscard]] constexpr operator U() && {
-            return {std::forward<type>(value)};
-        }
-    };
-
-}
-
-
-namespace meta {
-
-    namespace detail {
-
-        template <typename T>
-        constexpr bool enable_unpack_operator<impl::variadic_positional_storage<T>> = true;
-        template <typename T>
-        constexpr bool enable_unpack_operator<impl::variadic_keyword_storage<T>> = true;
-
-    }
-
-    template <typename T>
-    concept valid_argument_type =
-        !meta::is_void<T> && (!meta::generic<T> || !meta::is_void<meta::generic_type<T>>);
-
-}
-
-
-
-/// NOTE: there's a lot of intentional code duplication here in order to maximize the
-/// clarity of error messages, restrict the ways in which annotations can be combined,
-/// allow for generics, and support aggregate initialization to correctly handle
-/// reference types.  The alternative would be macros, complex template helpers, or
-/// inheritance, all of which obfuscate errors, are inflexible, or interfere with
-/// aggregate initialization in some way.
-
-
-/* A family of compile-time argument annotations that represent positional and/or
-keyword arguments to a Python-style function.  Modifiers can be added to an argument
-to indicate its kind, such as positional-only, keyword-only, or optional.  The default
-(without any modifiers) is positional-or-keyword and required, similar to Python.
-
-Note that this class makes careful use of aggregate initialization to extend the
-lifetime of temporaries, meaning that it is safe to use with arbitrarily-qualified
-types, including references.  By exploiting aggregate initialization, the C++ standard
-guarantees that references will remain valid for the full duration of the function
-call, as if they were declared without the enclosing `Arg<>` wrapper. */
-template <static_str Name, meta::valid_argument_type T>
-    requires (
-        meta::arg_name<Name> ||
-        meta::variadic_args_name<Name> ||
-        meta::variadic_kwargs_name<Name>
-    )
-struct Arg;
-
-
-/* Specialization for standard args, with typical alphanumeric + underscore names. */
-template <static_str Name, meta::valid_argument_type T>
-    requires (meta::arg_name<Name>)
-struct Arg<Name, T> : impl::ArgBase<Name, T> {
-    static constexpr static_str name                = Name;
-    static constexpr impl::ArgKind kind             =
-        impl::ArgKind::POS | impl::ArgKind::KW |
-        (meta::generic<T> ? impl::ArgKind::GENERIC : 0);
-    using type                                      = impl::unwrap_generic<T>;
-    using bound_to                                  = bertrand::args<>;
-    using unbind                                    = Arg;
-    template <static_str N> requires (meta::arg_name<N>)
-    using with_name                                 = Arg<N, T>;
-    template <meta::valid_argument_type V>
-    using with_type                                 = Arg<Name, V>;
-    template <typename... Vs>
-    static constexpr bool can_bind                  = false;
-    template <typename V> requires (meta::generic<T> || meta::convertible_to<V, type>)
-    static constexpr bool can_bind<V>               =
-        !meta::arg_traits<V>::generic() && (
-            meta::arg_traits<V>::name.empty() ||
-            (
-                !meta::arg_traits<V>::opt() &&
-                meta::arg_traits<V>::kwonly() &&
-                meta::arg_traits<V>::name == Name
-            )
-        );
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                      = impl::BoundArg<unbind, Vs...>;
-
-    /* Marks the argument as optional. */
-    struct opt : impl::ArgBase<Name, T> {
-        static constexpr static_str name            = Arg::name;
-        static constexpr impl::ArgKind kind         = Arg::kind | impl::ArgKind::OPT;
-        using type                                  = Arg::type;
-        using bound_to                              = Arg::bound_to;
-        using unbind                                = Arg::opt;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             = Arg<N, T>::opt;
-        template <meta::valid_argument_type V>
-        using with_type                             = Arg<Name, V>::opt;
-        template <typename... Vs>
-        static constexpr bool can_bind              = Arg::template can_bind<Vs...>;
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = impl::BoundArg<unbind, Vs...>;
-    };
-
-    /* Marks the argument as positional-only. */
-    struct pos : impl::ArgBase<Name, T> {
-        static constexpr static_str name            = Arg::name;
-        static constexpr impl::ArgKind kind         = Arg::kind & ~impl::ArgKind::KW;
-        using type                                  = Arg::type;
-        using bound_to                              = Arg::bound_to;
-        using unbind                                = Arg::pos;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             = Arg<N, T>::pos;
-        template <meta::valid_argument_type V>
-        using with_type                             = Arg<Name, V>::pos;
-        template <typename... Vs>
-        static constexpr bool can_bind              = false;
-        template <typename V> requires (meta::generic<T> || meta::convertible_to<V, type>)
-        static constexpr bool can_bind<V>           =
-            !meta::arg_traits<V>::generic() && meta::arg_traits<V>::name.empty();
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = impl::BoundArg<unbind, Vs...>;
-
-        /* Marks the argument as positional-only and optional. */
-        struct opt : impl::ArgBase<Name, T> {
-            static constexpr static_str name        = Arg::pos::name;
-            static constexpr impl::ArgKind kind     = Arg::pos::kind | impl::ArgKind::OPT;
-            using type                              = Arg::pos::type;
-            using bound_to                          = Arg::pos::bound_to;
-            using unbind                            = Arg::pos::opt;
-            template <static_str N> requires (meta::arg_name<N>)
-            using with_name                         = Arg<N, T>::pos::opt;
-            template <meta::valid_argument_type V>
-            using with_type                         = Arg<Name, V>::pos::opt;
-            template <typename... Vs>
-            static constexpr bool can_bind          = Arg::pos::template can_bind<Vs...>;
-            template <typename... Vs> requires (can_bind<Vs...>)
-            using bind                              = impl::BoundArg<unbind, Vs...>;
-        };
-    };
-
-    /* Marks the argument as keyword-only. */
-    struct kw : impl::ArgBase<Name, T> {
-        static constexpr static_str name            = Arg::name;
-        static constexpr impl::ArgKind kind         = Arg::kind & ~impl::ArgKind::POS;
-        using type                                  = Arg::type;
-        using bound_to                              = Arg::bound_to;
-        using unbind                                = Arg::kw;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             = Arg<N, T>::kw;
-        template <meta::valid_argument_type V>
-        using with_type                             = Arg<Name, V>::kw;
-        template <typename... Vs>
-        static constexpr bool can_bind              = false;
-        template <typename V> requires (meta::generic<T> || meta::convertible_to<V, type>)
-        static constexpr bool can_bind<V>           =
-            !meta::arg_traits<V>::generic() &&
-            !meta::arg_traits<V>::opt() &&
-            meta::arg_traits<V>::kwonly() &&
-            meta::arg_traits<V>::name == name;
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = impl::BoundArg<unbind, Vs...>;
-
-        /* Marks the argument as keyword-only and optional. */
-        struct opt : impl::ArgBase<Name, T> {
-            static constexpr static_str name        = Arg::kw::name;
-            static constexpr impl::ArgKind kind     = Arg::kw::kind | impl::ArgKind::OPT;
-            using type                              = Arg::kw::type;
-            using bound_to                          = Arg::kw::bound_to;
-            using unbind                            = Arg::kw::opt;
-            template <static_str N> requires (meta::arg_name<N>)
-            using with_name                         = Arg<N, T>::kw::opt;
-            template <meta::valid_argument_type V>
-            using with_type                         = Arg<Name, V>::kw::opt;
-            template <typename... Vs>
-            static constexpr bool can_bind          = Arg::kw::template can_bind<Vs...>;
-            template <typename... Vs> requires (can_bind<Vs...>)
-            using bind                              = impl::BoundArg<unbind, Vs...>;
-        };
-    };
-};
-
-
-/* Specialization for standard, auto args with no default type.  Such arguments cannot
-be marked as optional. */
-template <static_str Name, meta::valid_argument_type T>
-    requires (meta::arg_name<Name> && meta::generic<T> && !meta::generic_has_default<T>)
-struct Arg<Name, T> : impl::ArgBase<Name, T> {
-    static constexpr static_str name                = Name;
-    static constexpr impl::ArgKind kind             =
-        impl::ArgKind::POS | impl::ArgKind::KW | impl::ArgKind::GENERIC;
-    using type                                      = impl::unwrap_generic<T>;
-    using bound_to                                  = bertrand::args<>;
-    using unbind                                    = Arg;
-    template <static_str N> requires (meta::arg_name<N>)
-    using with_name                                 = Arg<N, T>;
-    template <meta::valid_argument_type V>
-    using with_type                                 = Arg<Name, V>;
-    template <typename... Vs>
-    static constexpr bool can_bind                  = false;
-    template <typename V> requires (meta::generic<T> || meta::convertible_to<V, type>)
-    static constexpr bool can_bind<V>               =
-        !meta::arg_traits<V>::generic() && (
-            meta::arg_traits<V>::name.empty() ||
-            (
-                !meta::arg_traits<V>::opt() &&
-                meta::arg_traits<V>::kwonly() &&
-                meta::arg_traits<V>::name == Name
-            )
-        );
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                      = impl::BoundArg<unbind, Vs...>;
-
-    struct pos : impl::ArgBase<Name, T> {
-        static constexpr static_str name            = Arg::name;
-        static constexpr impl::ArgKind kind         = Arg::kind & ~impl::ArgKind::KW;
-        using type                                  = Arg::type;
-        using bound_to                              = Arg::bound_to;
-        using unbind                                = Arg::pos;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             = Arg<N, T>::pos;
-        template <meta::valid_argument_type V>
-        using with_type                             = Arg<Name, V>::pos;
-        template <typename... Vs>
-        static constexpr bool can_bind              = false;
-        template <typename V> requires (meta::generic<T> || meta::convertible_to<V, type>)
-        static constexpr bool can_bind<V>           =
-            !meta::arg_traits<V>::generic() && meta::arg_traits<V>::name.empty();
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = impl::BoundArg<unbind, Vs...>;
-    };
-
-    struct kw : impl::ArgBase<Name, T> {
-        static constexpr static_str name            = Arg::name;
-        static constexpr impl::ArgKind kind         = Arg::kind & ~impl::ArgKind::POS;
-        using type                                  = Arg::type;
-        using bound_to                              = Arg::bound_to;
-        using unbind                                = Arg::kw;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             = Arg<N, T>::kw;
-        template <meta::valid_argument_type V>
-        using with_type                             = Arg<Name, V>::kw;
-        template <typename... Vs>
-        static constexpr bool can_bind              = false;
-        template <typename V> requires (meta::generic<T> || meta::convertible_to<V, type>)
-        static constexpr bool can_bind<V>           =
-            !meta::arg_traits<V>::generic() &&
-            !meta::arg_traits<V>::opt() &&
-            meta::arg_traits<V>::kwonly() &&
-            meta::arg_traits<V>::name == name;
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = impl::BoundArg<unbind, Vs...>;
-    };
-};
-
-
-/* Specialization for variadic positional args, whose names are prefixed by a leading
-asterisk. */
-template <static_str Name, meta::valid_argument_type T>
-    requires (meta::variadic_args_name<Name>)
-struct Arg<Name, T> {
-private:
-    template <typename, typename>
-    friend struct meta::detail::detect_arg;
-    using _detect_arg = void;
-
-    using storage =
-        impl::variadic_positional_storage<typename impl::target_any_type<T>::type>;
-
-public:
-    static constexpr static_str name                =
-        static_str<>::removeprefix<Name, "*">();
-    static constexpr impl::ArgKind kind             =
-        impl::ArgKind::VAR | impl::ArgKind::POS |
-        (meta::generic<T> ? impl::ArgKind::GENERIC : 0);
-    using type                                      = impl::unwrap_generic<T>;
-    using bound_to                                  = bertrand::args<>;
-    using unbind                                    = Arg;
-    template <static_str N> requires (meta::arg_name<N>)
-    using with_name                                 = Arg<"*" + N, T>;
-    template <meta::valid_argument_type V>
-    using with_type                                 = Arg<Name, V>;
-    template <typename... Vs>
-    static constexpr bool can_bind                  = false;
-    template <typename... Vs>
-        requires (meta::generic<T> || (meta::convertible_to<Vs, T> && ...))
-    static constexpr bool can_bind<Vs...>           =
-        ((!meta::arg_traits<Vs>::generic() && meta::arg_traits<Vs>::name.empty()) && ...);
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind = impl::BoundArg<Arg, Vs...>;
-
-    storage& value;
-
-    [[nodiscard]] constexpr storage&& operator*() && { return std::move(value); }
-    [[nodiscard]] constexpr storage& operator*() & { return value; }
-    [[nodiscard]] constexpr const storage& operator*() const & { return value; }
-    [[nodiscard]] constexpr storage* operator->() { return &value; }
-    [[nodiscard]] constexpr const storage* operator->() const { return &value; }
-
-    template <typename U> requires (meta::convertible_to<storage&&, U>)
-    [[nodiscard]] constexpr operator U() && { return std::move(value); }
-
-    template <typename... Us>
-    [[nodiscard]] constexpr operator bind<Us...>() && {
-        return {std::forward<type>(value)};
-    }
-};
-
-
-/* Specialization for variadic keyword args, whose names are prefixed by 2 leading
-asterisks. */
-template <static_str Name, meta::valid_argument_type T>
-    requires (meta::variadic_kwargs_name<Name>)
-struct Arg<Name, T> {
-private:
-    template <typename, typename>
-    friend struct meta::detail::detect_arg;
-    using _detect_arg = void;
-
-    using storage =
-        impl::variadic_keyword_storage<typename impl::target_any_type<T>::type>;
-
-public:
-    static constexpr static_str name                =
-        static_str<>::removeprefix<Name, "**">();
-    static constexpr impl::ArgKind kind             =
-        impl::ArgKind::VAR | impl::ArgKind::KW |
-        (meta::generic<T> ? impl::ArgKind::GENERIC : 0);
-    using type                                      = impl::unwrap_generic<T>;
-    using bound_to                                  = bertrand::args<>;
-    using unbind                                    = Arg;
-    template <static_str N> requires (meta::arg_name<N>)
-    using with_name                                 = Arg<"**" + N, T>;
-    template <meta::valid_argument_type V>
-    using with_type                                 = Arg<Name, V>;
-    template <typename... Vs>
-    static constexpr bool can_bind                  = false;
-    template <typename... Vs>
-        requires (meta::generic<T> || (meta::convertible_to<Vs, T> && ...))
-    static constexpr bool can_bind<Vs...>           =
-        meta::strings_are_unique<meta::arg_traits<Vs>::name...> &&
-        (
-            (
-                !meta::arg_traits<Vs>::generic() &&
-                !meta::arg_traits<Vs>::opt() &&
-                meta::arg_traits<Vs>::kwonly()
-            ) && ...
-        );
-    template <typename... Vs> requires (can_bind<Vs...>)
-    using bind                                      = impl::BoundArg<Arg, Vs...>;
-
-    storage& value;
-
-    [[nodiscard]] constexpr storage&& operator*() && { return std::move(value); }
-    [[nodiscard]] constexpr storage& operator*() & { return value; }
-    [[nodiscard]] constexpr const storage& operator*() const & { return value; }
-    [[nodiscard]] constexpr storage* operator->() { return &value; }
-    [[nodiscard]] constexpr const storage* operator->() const { return &value; }
-
-    template <typename U> requires (meta::convertible_to<storage&&, U>)
-    [[nodiscard]] constexpr operator U() && { return std::move(value); }
-
-    template <typename... Us>
-    [[nodiscard]] constexpr operator bind<Us...>() && {
-        return {std::forward<type>(value)};
-    }
-};
-
-
-namespace impl {
-
-    template <typename Arg, typename T> requires (!meta::arg_traits<Arg>::variadic())
-    struct BoundArg<Arg, T> : impl::ArgBase<
-        meta::arg_traits<Arg>::name,
-        typename meta::arg_traits<Arg>::type
-    > {
-        static constexpr static_str name            = meta::arg_traits<Arg>::name;
-        static constexpr impl::ArgKind kind         = meta::arg_traits<Arg>::kind;
-        using type                                  = meta::arg_traits<Arg>::type;
-        using bound_to                              = bertrand::args<T>;
-        using unbind                                = Arg;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             =
-            BoundArg<typename meta::arg_traits<Arg>::template with_name<N>, T>;
-        template <meta::valid_argument_type V>
-        using with_type                             =
-            BoundArg<typename meta::arg_traits<Arg>::template with_type<V>, T>;
-        template <typename... Vs>
-        static constexpr bool can_bind              = meta::arg_traits<Arg>::template can_bind<Vs...>;
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = meta::arg_traits<Arg>::template bind<Vs...>;
-    };
-
-    template <typename Arg, typename... Ts>
-        requires (meta::arg_traits<Arg>::args() && sizeof...(Ts) > 0)
-    struct BoundArg<Arg, Ts...> : Arg {
-    private:
-        template <typename, typename...>
-        struct rebind;
-        template <typename... curr, typename... Vs>
-        struct rebind<bertrand::args<curr...>, Vs...> {
-            static constexpr bool value             =
-                meta::arg_traits<Arg>::template can_bind<curr..., Vs...>;
-            using type                              =
-                meta::arg_traits<Arg>::template bind<curr..., Vs...>;
-        };
-
-    public:
-        using bound_to                              = bertrand::args<Ts...>;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             =
-            BoundArg<typename meta::arg_traits<Arg>::template with_name<N>, Ts...>;
-        template <meta::valid_argument_type V>
-        using with_type                             =
-            BoundArg<typename meta::arg_traits<Arg>::template with_type<V>, Ts...>;
-        template <typename... Vs>
-        static constexpr bool can_bind              = rebind<bound_to, Vs...>::value;
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = rebind<bound_to, Vs...>::type;
-    };
-
-    template <typename Arg, typename... Ts>
-        requires (meta::arg_traits<Arg>::kwargs() && sizeof...(Ts) > 0)
-    struct BoundArg<Arg, Ts...> : Arg {
-    private:
-        template <typename, typename...>
-        struct rebind;
-        template <typename... curr, typename... Vs>
-        struct rebind<bertrand::args<curr...>, Vs...> {
-            static constexpr bool value             =
-                meta::arg_traits<Arg>::template can_bind<curr..., Vs...>;
-            using type                              =
-                meta::arg_traits<Arg>::template bind<curr..., Vs...>;
-        };
-
-    public:
-        using bound_to                              = bertrand::args<Ts...>;
-        template <static_str N> requires (meta::arg_name<N>)
-        using with_name                             =
-            BoundArg<typename meta::arg_traits<Arg>::template with_name<N>, Ts...>;
-        template <meta::valid_argument_type V>
-        using with_type                             =
-            BoundArg<typename meta::arg_traits<Arg>::template with_type<V>, Ts...>;
-        template <typename... Vs>
-        static constexpr bool can_bind              = rebind<bound_to, Vs...>::value;
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = rebind<bound_to, Vs...>::type;
-    };
-
-    /* A singleton argument factory that allows keyword arguments to be constructed via
-    familiar assignment syntax, which extends the lifetime of temporaries. */
-    template <static_str Name>
-    struct ArgFactory {
-        template <typename T>
-        constexpr Arg<Name, T>::kw operator=(T&& value) const {
-            return {std::forward<T>(value)};
-        }
-    };
-
-    /// TODO: if the function being invoked in the Bind<> infrastructure is a
-    /// make_def<> wrapper, then avoid constructing type-erased *args/**kwargs
-    /// containers and just pass the arguments directly to the function, assuming it
-    /// is templated to accept them.  Since the argument annotations are directly
-    /// convertible as if they were the underlying type, this will just work, even
-    /// if the function accepts non-template parameters.
-    /// -> This fails to account for unpacking operators at the C++ level, which I
-    /// might be able to account for with a bit of template magic.  Basically, I would
-    /// just recur out to MAX_ARGS and unpack each argument into a separate
-    /// instantiation, which basically amounts to an unrolled loop?
-    /// -> In all cases, just pass the value of the argument, not the argument
-    /// itself.  That way, I don't interfere with template constraints at the C++
-    /// level.  If all works as expected, then I should be able to avoid any need for
-    /// JITing at the C++ level, and the arguments will be passed through like normal,
-    /// just using the Python calling convention as a compile-time guide allowing
-    /// for keyword arguments, unpacking, etc.
-
-    template <typename Sig, typename F>
-    struct make_def {
-        meta::remove_rvalue<F> func;
-
-        template <typename Self, typename... Args>
-            requires (std::invocable<meta::qualify<F, Self>, Args...>)
-        constexpr decltype(auto) operator()(this Self&& self, Args&&... args) {
-            return std::forward<Self>(self).func(std::forward<Args>(args)...);
-        }
-    };
-
-}
-
-
-namespace meta {
-
-    namespace detail {
-
-        template <meta::generic T, typename U>
-        struct respec_generic {
-            template <typename>
-            struct helper;
-            template <template <typename> class constraint, typename V>
-            struct helper<constraint<V>> { using type = qualify<constraint<U>, T>; };
-            using type = helper<std::remove_cvref_t<T>>::type;
-        };
-
-        template <typename T>
-        struct make_def { static constexpr bool enable = false; };
-        template <typename Sig, typename F>
-        struct make_def<impl::make_def<Sig, F>> {
-            static constexpr bool enable = true;
-            using type = bertrand::signature<Sig>;
-        };
-
-    }
-
-    template <meta::generic T, typename U>
-    using respec_generic = detail::respec_generic<T, U>::type;
-
-    /* Manipulate a C++ argument annotation at compile time.  Unannotated types are
-    treated as anonymous, positional-only, and required in order to preserve C++ style. */
-    template <typename T>
-    struct arg_traits {
-    private:
-        template <bertrand::static_str N>
-        struct _with_name { using type = Arg<N, T>::pos; };
-        template <bertrand::static_str N> requires (N.empty())
-        struct _with_name<N> { using type = T; };
-
-        template <typename U, typename V>
-        struct _respec_generic { using type = U; };
-        template <meta::generic U, typename V>
-        struct _respec_generic<U, V> { using type = meta::respec_generic<U, V>; };
-
-    public:
-        using type                                  = T;
-        static constexpr bertrand::static_str name  = "";
-        static constexpr impl::ArgKind kind         =
-            impl::ArgKind::POS | (meta::generic<T> ? impl::ArgKind::GENERIC : 0);
-        static constexpr bool posonly() noexcept    { return kind.posonly(); }
-        static constexpr bool pos() noexcept        { return kind.pos(); }
-        static constexpr bool args() noexcept       { return kind.args(); }
-        static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-        static constexpr bool kw() noexcept         { return kind.kw(); }
-        static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-        static constexpr bool generic() noexcept    { return kind.generic(); }
-        static constexpr bool bound() noexcept      { return bound_to::size() > 0; }
-        static constexpr bool opt() noexcept        { return kind.opt(); }
-        static constexpr bool variadic() noexcept   { return kind.variadic(); }
-
-        template <typename... Vs>
-        static constexpr bool can_bind = false;
-        template <meta::convertible_to<type> V>
-        static constexpr bool can_bind<V> =
-            arg_traits<V>::posonly() &&
-            !arg_traits<V>::opt() &&
-            !arg_traits<V>::variadic() &&
-            (arg_traits<V>::name.empty() || arg_traits<V>::name == name);
-
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = impl::BoundArg<T, Vs...>;
-        using bound_to                              = bertrand::args<>;
-        using unbind                                = T;
-        template <bertrand::static_str N> requires (N.empty() || meta::arg_name<N>)
-        using with_name                             = _with_name<N>::type;
-        template <typename V> requires (!meta::is_void<V>)
-        using with_type                             = V;
-        template <typename V> requires (!meta::is_void<V>)
-        using respec_generic                        = _respec_generic<T, V>::type;
-    };
-
-    /* Manipulate a C++ argument annotation at compile time.  Forwards to the annotated
-    type's interface where possible. */
-    template <meta::arg T>
-    struct arg_traits<T> {
-    private:
-        using T2 = std::remove_cvref_t<T>;
-
-        template <bertrand::static_str N>
-        struct _with_name { using type = T2::template with_name<N>; };
-        template <bertrand::static_str N> requires (N.empty())
-        struct _with_name<N> { using type = T2::type; };
-
-        template <typename U, typename V>
-        struct _respec_generic { using type = U; };
-        template <meta::generic U, typename V>
-        struct _respec_generic<U, V> { using type = meta::respec_generic<U, V>; };
-
-    public:
-        using type                                  = T2::type;
-        static constexpr bertrand::static_str name  = T2::name;
-        static constexpr impl::ArgKind kind         = T2::kind;
-        static constexpr bool posonly() noexcept    { return kind.posonly(); }
-        static constexpr bool pos() noexcept        { return kind.pos(); }
-        static constexpr bool args() noexcept       { return kind.args(); }
-        static constexpr bool kwonly() noexcept     { return kind.kwonly(); }
-        static constexpr bool kw() noexcept         { return kind.kw(); }
-        static constexpr bool kwargs() noexcept     { return kind.kwargs(); }
-        static constexpr bool generic() noexcept    { return kind.generic(); }
-        static constexpr bool bound() noexcept      { return bound_to::size() > 0; }
-        static constexpr bool opt() noexcept        { return kind.opt(); }
-        static constexpr bool variadic() noexcept   { return kind.variadic(); }
-
-        template <typename... Vs>
-        static constexpr bool can_bind = T2::template can_bind<Vs...>;
-
-        template <typename... Vs> requires (can_bind<Vs...>)
-        using bind                                  = T2::template bind<Vs...>;
-        using unbind                                = T2::unbind;
-        using bound_to                              = T2::bound_to;
-        template <bertrand::static_str N> requires (N.empty() || meta::arg_name<N>)
-        using with_name                             = _with_name<N>::type;
-        template <typename V> requires (!meta::is_void<V>)
-        using with_type                             = T2::template with_type<V>;
-        template <typename V> requires (!meta::is_void<V>)
-        using respec_generic                        = T2::template with_type<
-            typename _respec_generic<T, V>::type
-        >;
-    };
-
-    template <typename T>
-    concept make_def = detail::make_def<std::remove_cvref_t<T>>::enable;
-    template <make_def T>
-    using make_def_signature = detail::make_def<std::remove_cvref_t<T>>::type;
-
-}
-
-
-/* A compile-time factory for binding keyword arguments with Python syntax.  constexpr
-instances of this class can be used to provide an even more Pythonic syntax:
-
-    ```
-    constexpr auto x = arg<"x">;
-    my_func(x = 42);
-    ```
-*/
-template <static_str name> requires (meta::arg_name<name>)
-constexpr impl::ArgFactory<name> arg;
-
-
-/// TODO: maybe _kw fully replaces arg<>, to prevent confusion with Arg<>?
-
-
-/* A user-defined literal that provides a bracket-free alternative to
-`arg<"name"> = ...`.  Operates exactly the same under the hood, but may be easier to
-type and read depending on context. */
-template <static_str name> requires (meta::arg_name<name>)
-constexpr operator ""_kw() noexcept { return impl::ArgFactory<name>{}; }
 
 
 /////////////////////////
