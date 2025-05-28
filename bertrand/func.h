@@ -89,70 +89,16 @@ signature(const T&) -> signature<typename signature<T>::type>;
 namespace impl {
     struct arg_tag {};
     struct template_arg_tag : arg_tag {};
+    struct arg_pack_tag : arg_tag {};
+    struct kwarg_pack_tag : arg_tag {};
+    struct partial_tag {};
 
-    /* A compact bitset describing the kind (positional, keyword, optional, and/or
-    variadic) of an argument within a C++ parameter list. */
-    struct arg_kind {
-        enum Flags : uint8_t {
-            /// NOTE: the relative ordering of these flags is significant, as it
-            /// dictates the order in which edges are stored within overload tries for
-            /// the `py::Function` class.  The order should always be such that
-            /// POS < BOUND POS < VAR POS < KW < BOUND KW < VAR KW (repeated for
-            /// untyped arguments) to ensure a stable traversal order.
-            BOUND               = 0b1,
-            VAR                 = 0b10,
-            POS                 = 0b100,
-            KW                  = 0b1000,
-            UNTYPED             = 0b10000,
-        } flags;
-
-        [[nodiscard]] constexpr arg_kind(uint8_t flags = 0) noexcept :
-            flags(static_cast<Flags>(flags))
-        {}
-
-        [[nodiscard]] constexpr operator uint8_t() const noexcept {
-            return flags;
-        }
-
-        [[nodiscard]] constexpr bool posonly() const noexcept {
-            return (flags & (VAR | POS | KW)) == POS;
-        }
-
-        [[nodiscard]] constexpr bool pos() const noexcept {
-            return (flags & (VAR | POS)) == POS;
-        }
-
-        [[nodiscard]] constexpr bool args() const noexcept {
-            return (flags & (VAR | POS | KW)) == (VAR | POS);
-        }
-
-        [[nodiscard]] constexpr bool kwonly() const noexcept {
-            return (flags & (VAR | POS | KW)) == KW;
-        }
-
-        [[nodiscard]] constexpr bool kw() const noexcept {
-            return (flags & (VAR | KW)) == KW;
-        }
-
-        [[nodiscard]] constexpr bool kwargs() const noexcept {
-            return (flags & (VAR | POS | KW)) == (VAR | KW);
-        }
-
-        [[nodiscard]] constexpr bool variadic() const noexcept {
-            return flags & VAR;
-        }
-
-        [[nodiscard]] constexpr bool typed() const noexcept {
-            return !(flags & UNTYPED);
-        }
-
-        [[nodiscard]] constexpr bool bound() const noexcept {
-            return flags & BOUND;
-        }
-
-        [[nodiscard]] constexpr bool sentinel() const noexcept {
-            return flags == 0;
-        }
+    /* A simple wrapper tag for a bound argument value that marks it as a partial
+    application rather than a default value.  This prevents it from being reassigned
+    during function argument binding. */
+    template <meta::not_void T>
+    struct partial : partial_tag {
+        T value;
     };
 
 }
@@ -220,6 +166,11 @@ namespace meta {
         template <const auto& /* static_str */ name> requires (name.size() == 1)
         constexpr bool valid_kwonly_separator<name> = name[0] == '*';
 
+        template <const auto& /* static_str */ name>
+        constexpr bool valid_return_annotation = false;
+        template <const auto& /* static_str */ name> requires (name.size() == 2)
+        constexpr bool valid_return_annotation<name> = name[0] == '-' && name[1] == '>';
+
     }
 
     template <bertrand::static_str name>
@@ -238,132 +189,106 @@ namespace meta {
     concept valid_kwonly_separator = detail::valid_kwonly_separator<name>;
 
     template <bertrand::static_str name>
+    concept valid_return_annotation = detail::valid_return_annotation<name>;
+
+    template <bertrand::static_str name>
     concept valid_arg =
         valid_arg_name<name> ||
         valid_args_name<name> ||
         valid_kwargs_name<name> ||
         valid_posonly_separator<name> ||
-        valid_kwonly_separator<name>;
-
-    template <arg T>
-    constexpr const auto& arg_name = meta::unqualify<T>::name;
-
-    template <arg T>
-    constexpr impl::arg_kind arg_kind = meta::unqualify<T>::kind;
-
-    template <typename T>
-    concept positional = arg<T> && meta::unqualify<T>::kind.pos();
-
-    template <typename T>
-    concept keyword = arg<T> && meta::unqualify<T>::kind.kw();
-
-    template <typename T>
-    concept positional_or_keyword = positional<T> && keyword<T>;
-
-    template <typename T>
-    concept positional_only = positional<T> && meta::unqualify<T>::kind.posonly();
-
-    template <typename T>
-    concept keyword_only = keyword<T> && meta::unqualify<T>::kind.kwonly();
-
-    template <typename T>
-    concept variadic_positional = arg<T> && meta::unqualify<T>::kind.args();
-
-    template <typename T>
-    concept variadic_keyword = arg<T> && meta::unqualify<T>::kind.kwargs();
-
-    template <typename T>
-    concept positional_only_separator =
-        arg<T> &&
-        meta::unqualify<T>::kind.sentinel() &&
-        detail::valid_posonly_separator<meta::arg_name<T>>;
-
-    template <typename T>
-    concept keyword_only_separator =
-        arg<T> &&
-        meta::unqualify<T>::kind.sentinel() &&
-        detail::valid_kwonly_separator<meta::arg_name<T>>;
-
-    template <typename T>
-    concept arg_has_type =
-        meta::arg<T> && meta::not_void<typename meta::unqualify<T>::type>;
-
-    template <arg_has_type T>
-    using arg_type = meta::unqualify<T>::type;
-
-    template <typename T>
-    concept arg_has_value = meta::arg<T> && requires(T&& t) {
-        { ::std::forward<T>(t).value() } -> meta::not_void;
-    };
-
-    template <arg_has_value T>
-    using arg_value_type = decltype(::std::declval<T>().value());
+        valid_kwonly_separator<name> ||
+        valid_return_annotation<name>;
 
     namespace detail {
 
-        template <typename...>
-        constexpr bool arg_bind = false;
-
-        /* positional-only. */
-        template <meta::positional_only T, typename V>
-            requires (meta::arg_has_type<T> && !meta::arg<V>)
-        constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
-        template <meta::positional_only T, typename V>
-            requires (!meta::arg_has_type<T> && !meta::arg<V>)
-        constexpr bool arg_bind<T, V> = meta::not_void<V>;
-
-        /* positional-or-keyword */
-        template <meta::positional_or_keyword T, typename V>
-            requires(meta::arg_has_type<T> && !meta::arg<V>)
-        constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
-        template <meta::positional_or_keyword T, meta::keyword V>
-            requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
-        constexpr bool arg_bind<T, V> =
-            meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
-        template <meta::positional_or_keyword T, typename V>
-            requires (!meta::arg_has_type<T> && !meta::arg<V>)
-        constexpr bool arg_bind<T, V> = meta::not_void<V>;
-        template <meta::positional_or_keyword T, meta::keyword V>
-            requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
-        constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
-
-        /* keyword-only. */
-        template <meta::keyword_only T, meta::keyword V>
-            requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
-        constexpr bool arg_bind<T, V> =
-            meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
-        template <meta::keyword_only T, meta::keyword V>
-            requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
-        constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
-
-        /* variadic positional. */
-        template <meta::variadic_positional T, typename... Vs>
-            requires (meta::arg_has_type<T> && ... && !meta::arg<Vs>)
-        constexpr bool arg_bind<T, Vs...> =
-            (meta::convertible_to<Vs, meta::arg_type<T>> && ...);
-        template <meta::variadic_positional T, typename... Vs>
-            requires (!meta::arg_has_type<T> && ... && !meta::arg<Vs>)
-        constexpr bool arg_bind<T, Vs...> = (meta::not_void<Vs> && ...);
-
-        /* variadic keyword. */
-        template <meta::variadic_keyword T, meta::keyword... Vs>
-            requires (meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
-        constexpr bool arg_bind<T, Vs...> =
-            (meta::convertible_to<meta::arg_value_type<Vs>, meta::arg_type<T>> && ...);
-        template <meta::variadic_keyword T, meta::keyword... Vs>
-            requires (!meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
-        constexpr bool arg_bind<T, Vs...> =
-            (meta::not_void<meta::arg_value_type<Vs>> && ...);
+        template <typename T>
+        struct arg_name { static constexpr bertrand::static_str name = ""; };
+        template <meta::arg T>
+        struct arg_name<T> {
+            static constexpr const auto& name = meta::unqualify<T>::name;
+        };
 
     }
 
-    template <typename T, typename... Ts>
-    concept arg_bind = meta::arg<T> && detail::arg_bind<T, Ts...>;
+    template <typename T>
+    constexpr const auto& arg_name = detail::arg_name<T>::name;
+
+    template <typename T>
+    concept standard_arg = arg<T> && detail::valid_arg_name<arg_name<T>>;
+
+    template <typename T>
+    concept variadic_positional = arg<T> && (
+        detail::valid_args_name<arg_name<T>> ||
+        inherits<T, impl::arg_pack_tag>
+    );
+
+    template <typename T>
+    concept variadic_keyword = arg<T> && (
+        detail::valid_kwargs_name<arg_name<T>> ||
+        inherits<T, impl::kwarg_pack_tag>
+    );
+
+    template <typename T>
+    concept positional_only_separator =
+        arg<T> && detail::valid_posonly_separator<arg_name<T>>;
+
+    template <typename T>
+    concept keyword_only_separator =
+        arg<T> && detail::valid_kwonly_separator<arg_name<T>>;
+
+    template <typename T>
+    concept return_annotation =
+        arg<T> && detail::valid_return_annotation<arg_name<T>>;
+
+    template <typename T>
+    concept typed_arg =
+        meta::arg<T> && meta::not_void<typename meta::unqualify<T>::type>;
+
+    template <typed_arg T>
+    using arg_type = meta::unqualify<T>::type;
+
+    template <typename T>
+    concept bound_arg = meta::arg<T> && requires(T&& t) {
+        ::std::forward<T>(t).value();
+    };
+
+    template <bound_arg T>
+    using arg_value = decltype(::std::declval<T>().value());
+
+    template <typename T>
+    concept partial_arg =
+        bound_arg<T> &&
+        inherits<typename unqualify<T>::value_type, impl::partial_tag>;
+
+    template <typename T>
+    concept optional_arg = bound_arg<T> && !partial_arg<T>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept bound_arg = meta::bound_arg<T> && requires(T&& t) {
+            { ::std::forward<T>(t).value() } noexcept;
+        };
+
+        template <nothrow::bound_arg T>
+        using arg_value = decltype(::std::declval<T>().value());
+
+        template <typename T>
+        concept partial_arg = meta::partial_arg<T> && nothrow::bound_arg<T>;
+
+        template <typename T>
+        concept optional_arg = meta::optional_arg<T> && nothrow::bound_arg<T>;
+
+    }
 
 };
 
 
 namespace impl {
+
+    /// TODO: partial arguments are always functions?  That cuts one .value() overload
+    /// here.
 
     /* An annotation representing a runtime function argument in a Python-style function
     declaration. */
@@ -377,10 +302,8 @@ namespace impl {
         requires (meta::valid_arg<Name> && meta::valid_arg_name<Name>)
     struct arg<Name, T, void> : impl::arg_tag {
         using type = T;
+        using value_type = void;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            impl::arg_kind::POS | impl::arg_kind::KW |
-            (impl::arg_kind::UNTYPED * meta::is_void<T>);
 
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
@@ -444,20 +367,18 @@ namespace impl {
         }
     };
 
-    /* A specialization of `arg` representing a variadic argument.  Such arguments can be
-    typed, but cannot be bound. */
+    /* A specialization of `arg` representing a variadic argument or return annotation.
+    Such arguments can be typed, but cannot be bound. */
     template <static_str Name, typename T>
         requires (meta::valid_arg<Name> && (
-            meta::valid_args_name<Name> || meta::valid_kwargs_name<Name>
+            meta::valid_args_name<Name> ||
+            meta::valid_kwargs_name<Name> ||
+            meta::valid_return_annotation<Name>
         ))
     struct arg<Name, T, void> : impl::arg_tag {
         using type = T;
+        using value_type = void;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            impl::arg_kind::VAR |
-            (impl::arg_kind::POS * meta::valid_args_name<Name>) |
-            (impl::arg_kind::KW * meta::valid_kwargs_name<Name>) |
-            (impl::arg_kind::UNTYPED * meta::is_void<T>);
 
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
@@ -466,16 +387,17 @@ namespace impl {
         }
     };
 
-    /* A specialization of `arg` representing a positional-only or keyword-only separator.
-    Such arguments cannot be typed and cannot be bound. */
+    /* A specialization of `arg` representing a positional-only or keyword-only
+    separator.  Such arguments cannot be typed and cannot be bound. */
     template <static_str Name>
         requires (meta::valid_arg<Name> && (
-            meta::valid_posonly_separator<Name> || meta::valid_kwonly_separator<Name>
+            meta::valid_posonly_separator<Name> ||
+            meta::valid_kwonly_separator<Name>
         ))
     struct arg<Name, void, void> : impl::arg_tag {
         using type = void;
+        using value_type = void;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind;  // null
     };
 
     /// TODO: I may want to allow reassignment from a bound argument, as that might be
@@ -492,23 +414,22 @@ namespace impl {
     template <static_str Name, meta::not_void V> requires (meta::valid_arg<Name>)
     struct arg<Name, void, V> : impl::arg_tag {
         using type = void;
+        using value_type = V;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            arg<Name, void, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
         template <meta::is<V> U>
-        [[nodiscard]] constexpr arg(U&& value) :
-            m_value(std::forward<U>(value))
-        {}
+        [[nodiscard]] constexpr arg(U&& value) : m_value(std::forward<U>(value)) {}
 
         /* Unconstrained arguments never invoke materialization functions. */
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept
-            requires(!requires{std::forward<Self>(self).m_value();})
-        {
-            return (std::forward<Self>(self).m_value);
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            if constexpr (meta::inherits<V, impl::partial_tag>) {
+                return (std::forward<Self>(self).m_value.value);
+            } else {
+                return (std::forward<Self>(self).m_value);
+            }
         }
     };
 
@@ -518,22 +439,21 @@ namespace impl {
     template <static_str Name, meta::not_void T, meta::not_void V> requires (meta::valid_arg<Name>)
     struct arg<Name, T, V> : impl::arg_tag {
         using type = T;
+        using value_type = V;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            arg<Name, T, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
         template <meta::is<V> U>
-        [[nodiscard]] constexpr arg(U&& value) :
-            m_value(std::forward<U>(value))
-        {}
+        [[nodiscard]] constexpr arg(U&& value) : m_value(std::forward<U>(value)) {}
 
         /* If the argument is explicitly typed and the value is convertible, prefer
         implicit conversions. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
-            noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value)))
+            noexcept(requires{
+                { std::forward<Self>(self).m_value } -> meta::nothrow::convertible_to<T>;
+            })
             requires(requires{
                 { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
             })
@@ -541,11 +461,31 @@ namespace impl {
             return std::forward<Self>(self).m_value;
         }
 
+        /* If the argument is explicitly typed and the value is convertible, prefer
+        implicit conversions. */
+        template <typename Self>
+        [[nodiscard]] constexpr T value(this Self&& self)
+            noexcept(requires{
+                {
+                    std::forward<Self>(self).m_value.value
+                } -> meta::nothrow::convertible_to<T>;
+            })
+            requires(meta::inherits<V, impl::partial_tag> && requires{
+                { std::forward<Self>(self).m_value.value } -> meta::convertible_to<T>;
+            })
+        {
+            return std::forward<Self>(self).m_value.value;
+        }
+
         /* If the argument is explicitly typed and the value is not immediately convertible
         to that type, then it must be a materialization function that must be invoked. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
-            noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value())))
+            noexcept(requires{
+                {
+                    std::forward<Self>(self).m_value()
+                } noexcept -> meta::nothrow::convertible_to<T>;
+            })
             requires(!requires{
                 { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
             } && requires{
@@ -553,6 +493,24 @@ namespace impl {
             })
         {
             return std::forward<Self>(self).m_value();
+        }
+
+        /* If the argument is explicitly typed and the value is not immediately convertible
+        to that type, then it must be a materialization function that must be invoked. */
+        template <typename Self>
+        [[nodiscard]] constexpr T value(this Self&& self)
+            noexcept(requires{
+                {
+                    std::forward<Self>(self).m_value.value()
+                } noexcept -> meta::nothrow::convertible_to<T>;
+            })
+            requires(!requires{
+                { std::forward<Self>(self).m_value.value() } -> meta::convertible_to<T>;
+            } && meta::inherits<V, impl::partial_tag> && requires{
+                { std::forward<Self>(self).m_value.value() } -> meta::convertible_to<T>;
+            })
+        {
+            return std::forward<Self>(self).m_value.value();
         }
     };
 
@@ -568,10 +526,8 @@ namespace impl {
         requires (meta::valid_arg<Name> && meta::valid_arg_name<Name>)
     struct template_arg<Name, T, void> : impl::template_arg_tag {
         using type = T;
+        using value_type = void;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            impl::arg_kind::POS | impl::arg_kind::KW |
-            (impl::arg_kind::UNTYPED * meta::is_void<T>);
 
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
@@ -637,20 +593,19 @@ namespace impl {
         }
     };
 
-    /* A specialization of `template_arg` representing a variadic argument.  Such arguments
-    can be typed, but cannot be bound to default values or used as keywords. */
+    /* A specialization of `template_arg` representing a variadic argument or return
+    annotation.  Such arguments can be typed, but cannot be bound to default values or
+    used as keywords. */
     template <static_str Name, typename T>
         requires (meta::valid_arg<Name> && (
-            meta::valid_args_name<Name> || meta::valid_kwargs_name<Name>
+            meta::valid_args_name<Name> ||
+            meta::valid_kwargs_name<Name> ||
+            meta::valid_return_annotation<Name>
         ))
     struct template_arg<Name, T, void> : impl::template_arg_tag {
         using type = T;
+        using value_type = void;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            impl::arg_kind::VAR |
-            (impl::arg_kind::POS * meta::valid_args_name<Name>) |
-            (impl::arg_kind::KW * meta::valid_kwargs_name<Name>) |
-            (impl::arg_kind::UNTYPED * meta::is_void<T>);
 
         /* Indexing the argument sets its `type`. */
         template <meta::not_void V> requires (meta::is_void<T>)
@@ -663,12 +618,13 @@ namespace impl {
     separator.  Such arguments cannot be typed and cannot be bound. */
     template <static_str Name>
         requires (meta::valid_arg<Name> && (
-            meta::valid_posonly_separator<Name> || meta::valid_kwonly_separator<Name>
+            meta::valid_posonly_separator<Name> ||
+            meta::valid_kwonly_separator<Name>
         ))
     struct template_arg<Name, void, void> : impl::template_arg_tag {
         using type = void;
+        using value_type = void;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind;  // null
     };
 
     /* A specialization of `template_arg` for arguments that have been bound to a value, but
@@ -676,9 +632,8 @@ namespace impl {
     template <static_str Name, meta::not_void V> requires (meta::valid_arg<Name>)
     struct template_arg<Name, void, V> : impl::template_arg_tag {
         using type = void;
+        using value_type = V;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            template_arg<Name, void, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
@@ -689,10 +644,12 @@ namespace impl {
 
         /* Unconstrained arguments never invoke materialization functions. */
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept
-            requires(!requires{std::forward<Self>(self).m_value();})
-        {
-            return (std::forward<Self>(self).m_value);
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            if constexpr (meta::inherits<V, impl::partial_tag>) {
+                return (std::forward<Self>(self).m_value.value);
+            } else {
+                return (std::forward<Self>(self).m_value);
+            }
         }
     };
 
@@ -702,9 +659,8 @@ namespace impl {
     template <static_str Name, meta::not_void T, meta::not_void V> requires (meta::valid_arg<Name>)
     struct template_arg<Name, T, V> : impl::template_arg_tag {
         using type = T;
+        using value_type = V;
         static constexpr const auto& name = Name;
-        static constexpr impl::arg_kind kind =
-            template_arg<Name, T, void>::kind | impl::arg_kind::BOUND;
 
         [[no_unique_address]] V m_value;
 
@@ -717,7 +673,9 @@ namespace impl {
         implicit conversions. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
-            noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value)))
+            noexcept(requires{
+                { std::forward<Self>(self).m_value } -> meta::nothrow::convertible_to<T>;
+            })
             requires(requires{
                 { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
             })
@@ -725,11 +683,29 @@ namespace impl {
             return std::forward<Self>(self).m_value;
         }
 
+        /* If the argument is explicitly typed and the value is convertible, prefer
+        implicit conversions. */
+        template <typename Self>
+        [[nodiscard]] constexpr T value(this Self&& self)
+            noexcept(requires{
+                { std::forward<Self>(self).m_value.value } -> meta::nothrow::convertible_to<T>;
+            })
+            requires(meta::inherits<V, impl::partial_tag> && requires{
+                { std::forward<Self>(self).m_value.value } -> meta::convertible_to<T>;
+            })
+        {
+            return std::forward<Self>(self).m_value.value;
+        }
+
         /* If the argument is explicitly typed and the value is not immediately convertible
         to that type, then it must be a materialization function that must be invoked. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
-            noexcept(noexcept(meta::implicit_cast<T>(std::forward<Self>(self).m_value())))
+            noexcept(requires{
+                {
+                    std::forward<Self>(self).m_value()
+                } noexcept -> meta::nothrow::convertible_to<T>;
+            })
             requires(!requires{
                 { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
             } && requires{
@@ -737,6 +713,24 @@ namespace impl {
             })
         {
             return std::forward<Self>(self).m_value();
+        }
+
+        /* If the argument is explicitly typed and the value is not immediately convertible
+        to that type, then it must be a materialization function that must be invoked. */
+        template <typename Self>
+        [[nodiscard]] constexpr T value(this Self&& self)
+            noexcept(requires{
+                {
+                    std::forward<Self>(self).m_value.value()
+                } noexcept -> meta::nothrow::convertible_to<T>;
+            })
+            requires(!requires{
+                { std::forward<Self>(self).m_value.value } -> meta::convertible_to<T>;
+            } && meta::inherits<V, impl::partial_tag> && requires{
+                { std::forward<Self>(self).m_value.value() } -> meta::convertible_to<T>;
+            })
+        {
+            return std::forward<Self>(self).m_value.value();
         }
     };
 
@@ -857,7 +851,7 @@ namespace meta {
             static constexpr bertrand::string_map<size_t, out...> value {Is...};
         };
         template <size_t I, size_t... Is, auto... out, typename T, typename... Ts>
-            requires (!meta::keyword<T> && !meta::variadic_keyword<T>)
+            requires (!meta::standard_arg<T> && !meta::variadic_keyword<T>)
         struct _extract_keywords<
             I,
             ::std::index_sequence<Is...>,
@@ -875,7 +869,7 @@ namespace meta {
             static constexpr auto value = result::value;
         };
         template <size_t I, size_t... Is, auto... out, typename T, typename... Ts>
-            requires (meta::keyword<T> || meta::variadic_keyword<T>)
+            requires (meta::standard_arg<T> || meta::variadic_keyword<T>)
         struct _extract_keywords<
             I,
             ::std::index_sequence<Is...>,
@@ -1506,6 +1500,10 @@ args(As&&...) -> args<As...>;
 
 namespace impl {
 
+    /// TODO: revisit all of this when Map<> is sufficiently implemented, so that the
+    /// kwarg pack is destructively searched over the course of the call, and whatever
+    /// is left at the end gets inserted into an args{} pack.
+
     template <typename View>
     struct kwarg_iterator {
     private:
@@ -1715,12 +1713,11 @@ namespace impl {
     DSL syntax and cannot appear at the call site, this class fills that gap and allows
     the same internals to be reused.  */
     template <meta::unpack_to_kwargs T>
-    struct kwarg_pack : impl::arg_tag {
+    struct kwarg_pack : impl::kwarg_pack_tag {
         using key_type = meta::unqualify<T>::key_type;
         using mapped_type = meta::unqualify<T>::mapped_type;
         using type = mapped_type;
         static constexpr static_str name = "";
-        static constexpr impl::arg_kind kind = impl::arg_kind::VAR | impl::arg_kind::KW;
 
         /// TODO: the logic necessary to convert an arg_pack&& into a kwarg_pack is
         /// implemented in the `storage` constructor, but that type can't be fully
@@ -1839,13 +1836,12 @@ namespace impl {
     Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
     double unpack operator. */
     template <meta::iterable T>
-    struct arg_pack : impl::arg_tag {
+    struct arg_pack : impl::arg_pack_tag {
         using container_type = meta::remove_rvalue<T>;
         using begin_type = meta::begin_type<container_type>;
         using end_type = meta::end_type<container_type>;
         using type = meta::yield_type<T>;
         static constexpr static_str name = "";
-        static constexpr impl::arg_kind kind = impl::arg_kind::VAR | impl::arg_kind::POS;
 
     private:
         container_type m_data;
@@ -1919,41 +1915,82 @@ namespace impl {
 
 
 namespace impl {
-    struct Chain_tag {};
-    struct Comprehension_tag {};
     struct signature_tag {};
     struct signature_defaults_tag {};
     struct signature_partial_tag {};
     struct signature_bind_tag {};
     struct signature_vectorcall_tag {};
     struct signature_overloads_tag {};
-    struct def_tag {};
+
+    /* A compact bitset describing the kind (positional, keyword, optional, and/or
+    variadic) of an argument within a C++ parameter list. */
+    struct arg_kind {
+        enum Flags : uint8_t {
+            /// NOTE: the relative ordering of these flags is significant, as it
+            /// dictates the order in which edges are stored within overload tries for
+            /// the `py::Function` class.  The order should always be such that
+            /// POS < OPT POS < VAR POS < KW < OPT KW < VAR KW (repeated for untyped
+            /// arguments) to ensure a stable traversal order.
+            OPT                 = 0b1,
+            VAR                 = 0b10,
+            POS                 = 0b100,
+            KW                  = 0b1000,
+            UNTYPED             = 0b10000,
+        } flags;
+
+        [[nodiscard]] constexpr arg_kind(uint8_t flags = 0) noexcept :
+            flags(static_cast<Flags>(flags))
+        {}
+
+        [[nodiscard]] constexpr operator uint8_t() const noexcept {
+            return flags;
+        }
+
+        [[nodiscard]] constexpr bool sentinel() const noexcept {
+            return (flags & ~UNTYPED) == 0;
+        }
+
+        [[nodiscard]] constexpr bool optional() const noexcept {
+            return flags & OPT;
+        }
+
+        [[nodiscard]] constexpr bool variadic() const noexcept {
+            return flags & VAR;
+        }
+
+        [[nodiscard]] constexpr bool typed() const noexcept {
+            return !(flags & UNTYPED);
+        }
+
+        [[nodiscard]] constexpr bool posonly() const noexcept {
+            return (flags & (VAR | POS | KW)) == POS;
+        }
+
+        [[nodiscard]] constexpr bool pos() const noexcept {
+            return (flags & (VAR | POS)) == POS;
+        }
+
+        [[nodiscard]] constexpr bool args() const noexcept {
+            return (flags & (VAR | POS | KW)) == (VAR | POS);
+        }
+
+        [[nodiscard]] constexpr bool kwonly() const noexcept {
+            return (flags & (VAR | POS | KW)) == KW;
+        }
+
+        [[nodiscard]] constexpr bool kw() const noexcept {
+            return (flags & (VAR | KW)) == KW;
+        }
+
+        [[nodiscard]] constexpr bool kwargs() const noexcept {
+            return (flags & (VAR | POS | KW)) == (VAR | KW);
+        }
+    };
+
 }
 
 
 namespace meta {
-
-    /// TODO: these concepts should be placed later in the file.
-
-    /// TODO: unpack_operator and comprehension_operator should be handled differently
-    /// to make the customization point more accessible.
-
-    template <typename T>
-    concept unpack_operator = detail::enable_unpack_operator<meta::unqualify<T>>;
-
-    template <typename T>
-    concept comprehension_operator =
-        detail::enable_comprehension_operator<meta::unqualify<T>>;
-
-    /// TODO: not entirely sure if viewable and transformable are necessary.
-
-    template <typename Range, typename View>
-    concept viewable = requires(Range r, View v) { ::std::views::all(r) | v; };
-
-    template <typename Range, typename Func>
-    concept transformable = !viewable<Range, Func> && requires(Range r, Func f) {
-        ::std::views::transform(r, f);
-    };
 
     template <typename T>
     concept signature = inherits<T, impl::signature_tag>;
@@ -1972,27 +2009,385 @@ namespace meta {
         bertrand::signature<F>::enable &&
         ::std::same_as<meta::unqualify<F>, typename bertrand::signature<F>::type>;
 
-    template <typename T>
-    concept def = inherits<T, impl::def_tag>;
+    /// TODO: arg_bind needs to be rethought given the change in how arg_kind is
+    /// implemented.  Maybe I can pass in the kind ahead of time, and switch on that.
+    /// This will require some thought
 
-    template <typename T>
-    concept Chain = inherits<T, impl::Chain_tag>;
+    // namespace detail {
 
-    template <typename T>
-    concept Comprehension = inherits<T, impl::Comprehension_tag>;
+    //     template <typename...>
+    //     constexpr bool arg_bind = false;
+
+    //     /* positional-only. */
+    //     template <meta::positional_only T, typename V>
+    //         requires (meta::arg_has_type<T> && !meta::arg<V>)
+    //     constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
+    //     template <meta::positional_only T, typename V>
+    //         requires (!meta::arg_has_type<T> && !meta::arg<V>)
+    //     constexpr bool arg_bind<T, V> = meta::not_void<V>;
+
+    //     /* positional-or-keyword */
+    //     template <meta::positional_or_keyword T, typename V>
+    //         requires(meta::arg_has_type<T> && !meta::arg<V>)
+    //     constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
+    //     template <meta::positional_or_keyword T, meta::keyword V>
+    //         requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
+    //     constexpr bool arg_bind<T, V> =
+    //         meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
+    //     template <meta::positional_or_keyword T, typename V>
+    //         requires (!meta::arg_has_type<T> && !meta::arg<V>)
+    //     constexpr bool arg_bind<T, V> = meta::not_void<V>;
+    //     template <meta::positional_or_keyword T, meta::keyword V>
+    //         requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
+    //     constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
+
+    //     /* keyword-only. */
+    //     template <meta::keyword_only T, meta::keyword V>
+    //         requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
+    //     constexpr bool arg_bind<T, V> =
+    //         meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
+    //     template <meta::keyword_only T, meta::keyword V>
+    //         requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
+    //     constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
+
+    //     /* variadic positional. */
+    //     template <meta::variadic_positional T, typename... Vs>
+    //         requires (meta::arg_has_type<T> && ... && !meta::arg<Vs>)
+    //     constexpr bool arg_bind<T, Vs...> =
+    //         (meta::convertible_to<Vs, meta::arg_type<T>> && ...);
+    //     template <meta::variadic_positional T, typename... Vs>
+    //         requires (!meta::arg_has_type<T> && ... && !meta::arg<Vs>)
+    //     constexpr bool arg_bind<T, Vs...> = (meta::not_void<Vs> && ...);
+
+    //     /* variadic keyword. */
+    //     template <meta::variadic_keyword T, meta::keyword... Vs>
+    //         requires (meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
+    //     constexpr bool arg_bind<T, Vs...> =
+    //         (meta::convertible_to<meta::arg_value_type<Vs>, meta::arg_type<T>> && ...);
+    //     template <meta::variadic_keyword T, meta::keyword... Vs>
+    //         requires (!meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
+    //     constexpr bool arg_bind<T, Vs...> =
+    //         (meta::not_void<meta::arg_value_type<Vs>> && ...);
+
+    // }
+
+    // template <typename T, typename... Ts>
+    // concept arg_bind = meta::arg<T> && detail::arg_bind<T, Ts...>;
 
 }
 
 
 namespace impl {
 
-    /// TODO: chuck all of this into a signature:: namespace
+    template <const auto& A> requires (meta::arg<decltype(A)>)
+    static constexpr auto display_arg = A.name;
+    template <const auto& A> requires (meta::bound_arg<decltype(A)>)
+    static constexpr auto display_arg<A> = A.name + " = ..."; 
+
+    template <const auto&... Args> requires (meta::arg<decltype(Args)> && ...)
+    struct signature_info {
+    private:
+
+        template <size_t... Is>
+        static constexpr auto _ctx_arrow(std::index_sequence<Is...>) noexcept {
+            return (
+                static_str<4>{' '} +
+                ... +
+                static_str<
+                    impl::display_arg<meta::unpack_value<Is, Args...>>.size() + 2
+                >{' '}
+            ) + "^";
+        }
+
+    public:
+        static constexpr size_t N = sizeof...(Args);
+
+        /* Indentation used for displaying contextual error messages. */
+        static constexpr static_str<4> indent {' '};
+
+        /// TODO: return annotations would need special handling when creating a
+        /// context string.  Also, this utility that produces context strings will
+        /// need to be generalized at some point to write proper .pyi files.
+
+        /* A context string to be included in error messages, to assist with
+        debugging.  Consists only of names and default value placeholders. */
+        static constexpr static_str ctx_str =
+            "def(" + string_wrapper<", ">::join<impl::display_arg<Args>...>() + ")";
+
+        /* An arrow to a particular index of the string, to be included one line below
+        `ctx_str` in error messages, to assist with debugging. */
+        template <size_t I>
+        static constexpr static_str ctx_arrow = _ctx_arrow(std::make_index_sequence<I>{});
+
+        /* A packed array of kinds for each argument, given context from the rest of
+        the signature. */
+        std::array<impl::arg_kind, N> kinds;
+
+        /* A bitset with a 1 in the location of all required arguments and zero
+        everywhere else. */
+        Bits<N> required;
+
+        /* [1] positional-only */
+        struct {
+            size_t idx = N;  // start index.  N = missing.  Otherwise always 0.
+            size_t n = 0;  // # of positional-only args.  Separator occurs at this index.
+        } posonly;
+
+        /* [2] variadic positional */
+        struct {
+            size_t idx = N;  // N = missing
+        } args;
+
+        /* [3] positional-or-keyword */
+        struct {
+            size_t idx = 0;  // start index.  Incremented after parsing posonly separator
+            size_t n = 0;  // # of positional-or-keyword arguments
+        } pos_or_kw;
+
+        /* [4] keyword-only */
+        struct {
+            size_t idx = N;  // start index.  N = missing.  Otherwise separator is at idx - 1.
+            size_t n = 0;  // # of keyword-only arguments
+        } kwonly;
+
+        /* [5] variadic keyword */
+        struct {
+            size_t idx = N;  // N = missing
+        } kwargs;
+
+        /* [6] return annotation */
+        struct {
+            size_t idx = N;  // N = missing
+        } ret;
+
+        template <size_t... Is> requires (sizeof...(Is) == N)
+        constexpr signature_info(std::index_sequence<Is...>) { (parse<Is>(Args), ...); }
+
+    private:
+        template <size_t... Is>
+        static constexpr bool required_after_optional(std::index_sequence<Is...>) noexcept {
+            return (meta::optional_arg<decltype(meta::unpack_value<Is, Args...>)> || ...);
+        }
+
+        template <size_t... Is>
+        static constexpr bool template_after_runtime(std::index_sequence<Is...>) noexcept {
+            return (meta::template_arg<decltype(meta::unpack_value<Is, Args...>)> || ...);
+        }
+
+        /* [1] standard arguments */
+        template <size_t I, meta::arg A>
+        constexpr void parse(const A& arg) noexcept {
+            if constexpr (
+                !meta::template_arg<A> &&
+                template_after_runtime(std::make_index_sequence<I>{})
+            ) {
+                static constexpr static_str msg =
+                    "template arguments cannot follow runtime arguments\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (ret.idx < N) {
+                static constexpr static_str msg =
+                    "arguments cannot follow return annotation\n\n" + indent +
+                    ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (kwargs.idx < N) {
+                static constexpr static_str msg =
+                    "arguments cannot follow variadic keyword pack\n\n" + indent +
+                    ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+
+            // if the argument comes after '*', then it is keyword-only
+            if (args.idx < N || kwonly.sep < N) {
+                ++kwonly.n;
+                kinds[I] = impl::arg_kind::KW;
+                if constexpr (meta::optional_arg<A>) {
+                    kinds[I] |= impl::arg_kind::OPT;
+                } else {
+                    required[I] = true;
+                }
+
+            // otherwise, parse it as positional or keyword.  If a positional-only
+            // separator is encountered later, then this will be moved to the posonly
+            // section instead.
+            } else {
+                ++pos_or_kw.n;
+                kinds[I] = impl::arg_kind::POS | impl::arg_kind::KW;
+                if constexpr (meta::optional_arg<A>) {
+                    kinds[I] |= impl::arg_kind::OPT;
+                } else if constexpr (meta::partial_arg<A>) {
+                    required[I] = true;
+                } else {
+                    if constexpr (required_after_optional(std::make_index_sequence<I>{})) {
+                        static constexpr static_str msg =
+                            "required arguments cannot follow optional ones\n\n" +
+                            indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                        throw SyntaxError(msg);
+                    }
+                    required[I] = true;
+                }
+            }
+        }
+
+        /* [2] positional-only separator ("/") */
+        template <size_t I, meta::positional_only_separator A>
+        constexpr void parse(const A& arg) noexcept {
+            if constexpr (
+                !meta::template_arg<A> &&
+                template_after_runtime(std::make_index_sequence<I>{})
+            ) {
+                static constexpr static_str msg =
+                    "template arguments cannot follow runtime arguments\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (ret.idx < N) {
+                static constexpr static_str msg =
+                    "positional-only separator cannot follow return annotation\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (kwonly.sep < N || args.idx < N || kwargs.idx < N) {
+                static constexpr static_str msg =
+                    "positional-only separator '/' must be ahead of '*'\n\n" + indent +
+                    ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (posonly.sep < N) {
+                static constexpr static_str msg =
+                    "signature cannot contain more than one positional-only separator "
+                    "'/'\n\n" + indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+
+            // pos_or_kw -> posonly
+            posonly.idx = 0;
+            posonly.n = pos_or_kw.n;
+            pos_or_kw.idx = I + 1;
+            pos_or_kw.n = 0;
+
+            // previous kinds strip kw flag
+            kinds[I] = 0;
+            for (size_t i = 0; i < I; ++i) {
+                kinds[i] = kinds[i] & ~impl::arg_kind::KW;
+            }
+        }
+
+        /* [3] keyword-only separator ("*") or variadic positional ("*args"). */
+        template <size_t I, typename A>
+            requires (meta::keyword_only_separator<A> || meta::variadic_positional<A>)
+        constexpr void parse(const A& arg) noexcept {
+            if constexpr (
+                !meta::template_arg<A> &&
+                template_after_runtime(std::make_index_sequence<I>{})
+            ) {
+                static constexpr static_str msg =
+                    "template arguments cannot follow runtime arguments\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (ret.idx < N) {
+                static constexpr static_str msg =
+                    "'*' cannot follow return annotation\n\n" + indent + ctx_str +
+                    "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (kwargs.idx < N) {
+                static constexpr static_str msg =
+                    "'*' must be ahead of '**'\n\n" + indent + ctx_str + "\n" +
+                    indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (kwonly.sep < N || args.idx < N) {
+                static constexpr static_str msg =
+                    "signature cannot contain more than one '*'\n\n" + indent +
+                    ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+
+            // subsequent arguments populate the keyword-only section
+            kwonly.idx = I + 1;
+            if constexpr (meta::keyword_only_separator<A>) {
+                kinds[I] = 0;
+            } else {
+                args.idx = I;
+                kinds[I] = impl::arg_kind::VAR | impl::arg_kind::POS;
+            }
+        }
+
+        /* [4] variadic keyword arguments ("**kwargs") */
+        template <size_t I, meta::variadic_keyword A>
+        constexpr void parse(const A& arg) noexcept {
+            if constexpr (
+                !meta::template_arg<A> &&
+                template_after_runtime(std::make_index_sequence<I>{})
+            ) {
+                static constexpr static_str msg =
+                    "template arguments cannot follow runtime arguments\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (ret.idx < N) {
+                static constexpr static_str msg =
+                    "variadic keyword pack cannot follow return annotation\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (kwargs.idx < N) {
+                static constexpr static_str msg =
+                    "signature cannot contain more than one variadic keyword pack "
+                    "'**'\n\n" + indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+
+            kwargs.idx = I;
+            kinds[I] = impl::arg_kind::VAR | impl::arg_kind::KW;
+        }
+
+        /* [5] return annotations ("->") */
+        template <size_t I, meta::return_annotation A>
+        constexpr void parse(const A& arg) noexcept {
+            if constexpr (
+                !meta::template_arg<A> &&
+                template_after_runtime(std::make_index_sequence<I>{})
+            ) {
+                static constexpr static_str msg =
+                    "template arguments cannot follow runtime arguments\n\n" +
+                    indent + ctx_str + "\n" + indent + ctx_arrow<I>;
+                throw SyntaxError(msg);
+            }
+            if (ret.idx < N) {
+                throw SyntaxError(
+                    "signature cannot contain more than one return annotation"
+                );
+            }
+
+            // return annotations are meaningless unless they are typed
+            if constexpr (meta::typed_arg<A>) {
+                ret.idx = I;
+            } else {
+                throw SyntaxError("return annotation must be typed");
+            }
+        }
+    };
+
+
+
+
+
+
+
 
     template <typename...>
     constexpr size_t n_posonly = 0;
     template <typename T, typename... Ts>
     constexpr size_t n_posonly<T, Ts...> =
         n_posonly<Ts...> + meta::arg_traits<T>::posonly();
+
+
+
 
     template <typename...>
     constexpr size_t n_opt_posonly = 0;
@@ -5399,6 +5794,42 @@ struct signature<T> : signature<
 /////////////////////////////////////
 
 
+namespace impl {
+    struct Chain_tag {};
+    struct Comprehension_tag {};
+}
+
+
+namespace meta {
+
+    template <typename T>
+    concept Chain = inherits<T, impl::Chain_tag>;
+
+    template <typename T>
+    concept Comprehension = inherits<T, impl::Comprehension_tag>;
+
+    template <typename T>
+    concept unpack_operator = detail::enable_unpack_operator<meta::unqualify<T>>;
+
+    template <typename T>
+    concept comprehension_operator =
+        detail::enable_comprehension_operator<meta::unqualify<T>>;
+
+    /// TODO: not entirely sure if viewable and transformable are necessary.
+
+    template <typename Range, typename View>
+    concept viewable = requires(Range r, View v) { ::std::views::all(r) | v; };
+
+    template <typename Range, typename Func>
+    concept transformable = !viewable<Range, Func> && requires(Range r, Func f) {
+        ::std::views::transform(r, f);
+    };
+
+}
+
+
+
+
 /* A range adaptor returned by the `->*` operator, which allows for Python-style
 iterator comprehensions in C++.  This is essentially equivalent to a
 `std::views::transform_view`, but with the caveat that any function which returns
@@ -5758,6 +6189,19 @@ namespace meta {
 ///////////////////
 ////    DEF    ////
 ///////////////////
+
+
+namespace impl {
+    struct def_tag {};
+}
+
+
+namespace meta {
+
+    template <typename T>
+    concept def = inherits<T, impl::def_tag>;
+
+}
 
 
 /// TODO: def() becomes a function that returns an impl::def object, which takes an

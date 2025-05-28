@@ -232,9 +232,9 @@ private:
 public:
     char buffer[N + 1];  // +1 for null terminator
 
-    explicit constexpr static_str(char c) noexcept requires (N == 1) {
-        buffer[0] = c;
-        buffer[1] = '\0';
+    explicit constexpr static_str(char c) noexcept {
+        std::fill_n(buffer, N, c);
+        buffer[N] = '\0';
     }
 
     constexpr static_str(const char* arr) noexcept {
@@ -865,6 +865,12 @@ private:
             }
         }
         return self.size() > 0;
+    }
+
+    /* Equivalent to Python `str.join()`. */
+    template <bertrand::static_str self>
+    [[nodiscard]] static constexpr static_str<0> join() noexcept {
+        return {};
     }
 
     /* Equivalent to Python `str.join(strings...)`. */
@@ -1728,9 +1734,9 @@ public:
     }
 
     /* Equivalent to Python `str.join(strings...)`. */
-    template <static_str first, static_str... rest>
+    template <static_str... strs>
     [[nodiscard]] static constexpr auto join() noexcept {
-        return string_wrapper<self.template join<self, first, rest...>()>{};
+        return string_wrapper<self.template join<self, strs...>()>{};
     }
 
     /* Equivalent to Python `str.ljust(width[, fillchar])`. */

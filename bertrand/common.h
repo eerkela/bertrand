@@ -374,10 +374,10 @@ namespace meta {
         template <typename T, typename... Ts>
         struct unpack_type<0, T, Ts...> { using type = T; };
 
-        template <size_t I, auto V, auto... Vs>
-        constexpr auto unpack_value = unpack_value<I - 1, Vs...>;
-        template <auto V, auto... Vs>
-        constexpr auto unpack_value<0, V, Vs...> = V;
+        template <size_t I, const auto& V, const auto&... Vs>
+        constexpr const auto& unpack_value = unpack_value<I - 1, Vs...>;
+        template <auto V, const auto&... Vs>
+        constexpr const auto& unpack_value<0, V, Vs...> = V;
 
         template <typename out, typename...>
         struct concat { using type = out; };
@@ -570,8 +570,8 @@ namespace meta {
 
     /* Unpack the non-type template parameter at a particular index of a parameter
     pack.  This is superceded by the C++26 pack indexing language feature. */
-    template <size_t I, auto... Vs> requires (I < sizeof...(Vs))
-    constexpr auto unpack_value = detail::unpack_value<I, Vs...>;
+    template <size_t I, const auto&... Vs> requires (I < sizeof...(Vs))
+    constexpr const auto& unpack_value = detail::unpack_value<I, Vs...>;
 
     /* Index into a parameter pack and perfectly forward a single item.  This is
     superceded by the C++26 pack indexing language feature. */
