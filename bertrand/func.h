@@ -41,19 +41,6 @@ static_assert(MAX_OVERLOADS > 0, "`BERTRAND_MAX_OVERLOADS` must be positive.");
 static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.");
 
 
-/* Introspect an annotated C++ function signature to extract compile-time type
-information and allow matching functions to be called using Python-style conventions.
-Also defines supporting data structures to allow for partial function application. */
-template <typename... overloads>
-struct signature { static constexpr bool enable = false; };
-
-
-/* CTAD guide to simplify signature introspection.  Uses a dummy constructor, meaning
-no work is done at runtime. */
-template <typename T> requires (signature<T>::enable)
-signature(const T&) -> signature<typename signature<T>::type>;
-
-
 ////////////////////////////////////
 ////    ARGUMENT ANNOTATIONS    ////
 ////////////////////////////////////
@@ -65,6 +52,14 @@ namespace impl {
     struct arg_pack_tag : arg_tag {};
     struct kwarg_pack_tag : arg_tag {};
     struct partial_tag {};
+
+    /// TODO: partial arguments cannot be encoded at compile time the same way as
+    /// defaults, so they need some special handling.  The only real option is to
+    /// store them in the signature itself, and then conditionally move them when the
+    /// function is called.  That can perhaps be signaled by setting the value to
+    /// impl::partial{}, but impl::partial{} should not actually store a value.
+    /// instead, it tells the function binding logic to go retrieve the value from
+    /// the signature itself.
 
     /* A simple wrapper tag for a bound argument value that marks it as a partial
     application rather than a default value.  This prevents it from being reassigned
@@ -774,28 +769,10 @@ constexpr std::type_identity<T> type;
 //////////////////////////////
 
 
-/// TODO: note that a keyword-unpacking operator *must* build a temporary dictionary
-/// in order to account for arguments which may be partially consumed before getting
-/// dumped into an `args{}` pack.  The logic written here will mostly translate in
-/// that case, but will require changes to the `impl::kwarg_pack` type, which will
-/// likely require the containers refactor to be done first, as it would ideally store
-/// a `bertrand::Map<std::string, T>`, which I control, and which can be made to
-/// support all the required operations.  That means the kwarg_pack no longer depends
-/// on the interface of the original container in a strong way.  Something similar
-/// should be done for the `args` pack, which should just store a pair of iterators
-/// over the original container, and consume them as arguments are requested.
-/// Promoting the pack to a kwarg pack would exhaust them to produce the temporary map,
-/// which is then destructively searched within the call logic.
-/// -> For now, the current logic is sufficient.  I'll just have to revisit the kwarg
-/// case later, once Map<> has been implemented, which will be a fair while given the
-/// complexity standing between here and there.
-
-
 /// TODO: also, I either need to make it such that you can only supply one keyword
 /// unpacking operator to args{}, or I need to write logic to merge the packs together,
 /// which is super hard.  The former is probably always a better option, but I need to
 /// think about this interaction a bit more.
-
 
 
 namespace impl {
@@ -879,71 +856,7 @@ namespace meta {
         template <typename... Ts>
         concept nested_args = args_spec<Ts...> && (meta::args<Ts> || ...);
 
-        template <typename T>
-        concept kwarg_like =
-            meta::mapping_like<T> &&
-            meta::has_size<T> &&
-            meta::convertible_to<typename meta::unqualify<T>::key_type, ::std::string>;
-
-        template <typename T>
-        concept kwarg_yield = kwarg_like<T> && (
-            meta::iterable<T> &&
-            meta::structured_with<
-                meta::yield_type<T>,
-                typename meta::unqualify<T>::key_type,
-                typename meta::unqualify<T>::mapped_type
-            >
-        );
-
-        template <typename T>
-        concept kwarg_items = kwarg_like<T> && (
-            meta::has_items<meta::items_type<T>> &&
-            meta::structured_with<
-                meta::items_type<T>,
-                typename meta::unqualify<T>::key_type,
-                typename meta::unqualify<T>::mapped_type
-            >
-        );
-
-        template <typename T>
-        concept kwarg_keys_and_values = kwarg_like<T> && (
-            meta::has_keys<T> &&
-            meta::has_values<T> &&
-            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
-            meta::yields<meta::values_type<T>, typename meta::unqualify<T>::mapped_type>
-        );
-
-        template <typename T>
-        concept kwarg_yield_and_lookup = kwarg_like<T> && (
-            meta::yields<T, typename meta::unqualify<T>::key_type> &&
-            meta::index_returns<
-                typename meta::unqualify<T>::mapped_type,
-                T,
-                meta::yield_type<T>
-            >
-        );
-
-        template <typename T>
-        concept kwarg_keys_and_lookup = kwarg_like<T> && (
-            meta::has_keys<T> &&
-            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
-            meta::index_returns<
-                typename meta::unqualify<T>::mapped_type,
-                T,
-                meta::yield_type<meta::keys_type<T>>
-            >
-        );
-
     }
-
-    template <typename T>
-    concept unpack_to_kwargs = detail::kwarg_like<T> && (
-        detail::kwarg_yield<T> ||
-        detail::kwarg_items<T> ||
-        detail::kwarg_keys_and_values<T> ||
-        detail::kwarg_yield_and_lookup<T> ||
-        detail::kwarg_keys_and_lookup<T>
-    );
 
 }
 
@@ -1143,9 +1056,6 @@ public:
     constexpr args& operator=(const args&) = delete;
     constexpr args& operator=(args&&) = delete;
 
-    /// TODO: if the storage backend for kwargs packs are fixed, then this could
-    /// probably be a lot simpler.
-
     /* Get the argument at index I, perfectly forwarding it according to the pack's
     current cvref qualifications.  This means that if the pack is supplied as an
     lvalue, then all arguments will be forwarded as lvalues, regardless of their
@@ -1206,19 +1116,13 @@ public:
         noexcept(requires{{
             base::template get<names.template get<"">()>(
                 std::forward<Self>(self)
-            )[name]} noexcept;
+            ).template get<name>()} noexcept;
         })
-        requires(
-            !names.template contains<name>() &&
-            names.template contains<"">() &&
-            requires{base::template get<names.template get<"">()>(
-                std::forward<Self>(self)
-            )[name];}
-        )
+        requires(!names.template contains<name>() && names.template contains<"">())
     {
         return (base::template get<names.template get<"">()>(
             std::forward<Self>(self)
-        )[name]);
+        ).template get<name>());
     }
 
     /* Get a keyword argument with a particular name, if it is present in the argument
@@ -1264,13 +1168,7 @@ public:
                 std::forward<Self>(self)
             ).template get_if<name>()} noexcept;
         })
-        requires(
-            !names.template contains<name>() &&
-            names.template contains<"">() &&
-            requires{base::template get<names.template get<"">()>(
-                std::forward<Self>(self)
-            ).template get_if<name>();}
-        )
+        requires(!names.template contains<name>() && names.template contains<"">())
     {
         return (base::template get<names.template get<"">()>(
             std::forward<Self>(self)
@@ -1294,45 +1192,10 @@ public:
     supports a matching `contains()` method. */
     template <static_str name> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr bool contains() const
-        noexcept(requires{{
-            get<names.template get<"">()>().contains(name)
-        } noexcept -> meta::nothrow::convertible_to<bool>;})
-        requires(
-            !names.template contains<name>() &&
-            names.template contains<"">() &&
-            requires{{
-                get<names.template get<"">()>().contains(name)
-            } -> meta::convertible_to<bool>;}
-        )
+        noexcept(noexcept(get<names.template get<"">()>().template contains<name>()))
+        requires(!names.template contains<name>() && names.template contains<"">())
     {
-        return get<names.template get<"">()>().contains(name);
-    }
-
-    /* Check to see whether the argument pack contains a named keyword argument.  This
-    overload applies when the argument name is only known at runtime, but can otherwise
-    be statically resolved. */
-    [[nodiscard]] constexpr bool contains(std::string_view name) const noexcept
-        requires(!names.template contains<"">())
-    {
-        return names.contains(name);
-    }
-
-    /* Check to see whether the argument pack contains a named keyword argument.  This
-    overload applies when the argument name is only known at runtime, and cannot be
-    statically resolved, but the pack permits runtime-only keyword arguments (e.g. the
-    contents of a keyword unpacking operator), and the underlying container supports a
-    matching `contains()` method. */
-    [[nodiscard]] constexpr bool contains(std::string_view name) const
-        noexcept(requires{{
-            get<names.template get<"">()>().contains(name)
-        } noexcept -> meta::nothrow::convertible_to<bool>;})
-        requires(names.template contains<"">() && requires{{
-            get<names.template get<"">()>().contains(name)
-        } -> meta::convertible_to<bool>;})
-    {
-        return
-            (!name.empty() && names.contains(name)) ||
-            get<names.template get<"">()>().contains(name);
+        return get<names.template get<"">()>().template contains<name>();
     }
 
     /* Invoking a pack will perfectly forward the saved arguments to a target function
@@ -1473,221 +1336,80 @@ template <typename... As> requires (meta::detail::args_spec<As...>)
 args(As&&...) -> args<As...>;
 
 
-namespace impl {
+namespace meta {
 
-    /// TODO: revisit all of this when Map<> is sufficiently implemented, so that the
-    /// kwarg pack is destructively searched over the course of the call, and whatever
-    /// is left at the end gets inserted into an args{} pack.
+    namespace detail {
 
-    /// TODO: there may be no need to produce a separate kwarg_iterator.  That logic
-    /// is only needed in the constructor for kwarg_pack, which must convert an
-    /// arg_pack into a key-value map that can be destructively searched.  For now,
-    /// I should implement this as an unordered map just to have a complete
-    /// implementation, and then eventually upgrade it to a Map<> when that is
-    /// available.
+        template <typename T>
+        concept kwarg_like =
+            meta::mapping_like<T> &&
+            meta::has_size<T> &&
+            meta::convertible_to<typename meta::unqualify<T>::key_type, ::std::string>;
 
+        template <typename T>
+        concept kwarg_yield = kwarg_like<T> && (
+            meta::iterable<T> &&
+            meta::structured_with<
+                meta::yield_type<T>,
+                typename meta::unqualify<T>::key_type,
+                typename meta::unqualify<T>::mapped_type
+            >
+        );
 
-    template <typename View>
-    struct kwarg_iterator {
-    private:
-        using Begin = meta::begin_type<View>;
-        using End = meta::end_type<View>;
+        template <typename T>
+        concept kwarg_items = kwarg_like<T> && (
+            meta::has_items<meta::items_type<T>> &&
+            meta::structured_with<
+                meta::items_type<T>,
+                typename meta::unqualify<T>::key_type,
+                typename meta::unqualify<T>::mapped_type
+            >
+        );
 
-    public:
-        using iterator_category = std::input_iterator_tag;
-        using difference_type = std::iterator_traits<Begin>::difference_type;
-        using value_type = std::iterator_traits<Begin>::value_type;
-        using pointer = std::iterator_traits<Begin>::pointer;
-        using reference = std::iterator_traits<Begin>::reference;
+        template <typename T>
+        concept kwarg_keys_and_values = kwarg_like<T> && (
+            meta::has_keys<T> &&
+            meta::has_values<T> &&
+            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
+            meta::yields<meta::values_type<T>, typename meta::unqualify<T>::mapped_type>
+        );
 
-        View view;
-        Begin begin;
-        End end;
+        template <typename T>
+        concept kwarg_yield_and_lookup = kwarg_like<T> && (
+            meta::yields<T, typename meta::unqualify<T>::key_type> &&
+            meta::index_returns<
+                typename meta::unqualify<T>::mapped_type,
+                T,
+                meta::yield_type<T>
+            >
+        );
 
-        constexpr kwarg_iterator(View&& view)
-            noexcept(
-                noexcept(View(std::move(view))) &&
-                noexcept(std::ranges::begin(this->view)) &&
-                noexcept(std::ranges::end(this->view))
-            )
-        :
-            view(std::move(view)),
-            begin(std::ranges::begin(this->view)),
-            end(std::ranges::end(this->view))
-        {}
+        template <typename T>
+        concept kwarg_keys_and_lookup = kwarg_like<T> && (
+            meta::has_keys<T> &&
+            meta::yields<meta::keys_type<T>, typename meta::unqualify<T>::key_type> &&
+            meta::index_returns<
+                typename meta::unqualify<T>::mapped_type,
+                T,
+                meta::yield_type<meta::keys_type<T>>
+            >
+        );
 
-        [[nodiscard]] constexpr decltype(auto) operator*()
-            noexcept(noexcept(*begin))
-        {
-            return (*begin);
-        }
-
-        [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept(noexcept(*begin))
-        {
-            return (*begin);
-        }
-
-        [[nodiscard]] constexpr decltype(auto) operator->()
-            noexcept(noexcept(begin.operator->()))
-            requires(requires{begin.operator->();})
-        {
-            return begin.operator->();
-        }
-
-        [[nodiscard]] constexpr decltype(auto) operator->() const
-            noexcept(noexcept(begin.operator->()))
-            requires(requires{begin.operator->();})
-        {
-            return begin.operator->();
-        }
-
-        constexpr kwarg_iterator& operator++()
-            noexcept(noexcept(++begin))
-        {
-            ++begin;
-            return *this;
-        }
-
-        [[nodiscard]] kwarg_iterator operator++(int)
-            noexcept(meta::nothrow::copyable<kwarg_iterator> && noexcept(++begin))
-            requires(meta::copyable<kwarg_iterator>)
-        {
-            kwarg_iterator copy = *this;
-            ++begin;
-            return copy;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const kwarg_iterator& self,
-            impl::sentinel
-        ) {
-            return self.begin == self.end;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            impl::sentinel,
-            const kwarg_iterator& self
-        ) {
-            return self.begin == self.end;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const kwarg_iterator& self,
-            impl::sentinel
-        ) {
-            return !(self.begin == self.end);
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            impl::sentinel,
-            const kwarg_iterator& self
-        ) {
-            return !(self.begin == self.end);
-        }
-    };
+    }
 
     template <typename T>
-    kwarg_iterator(T) -> kwarg_iterator<T>;
+    concept unpack_to_kwargs = detail::kwarg_like<T> && (
+        detail::kwarg_yield<T> ||
+        detail::kwarg_items<T> ||
+        detail::kwarg_keys_and_values<T> ||
+        detail::kwarg_yield_and_lookup<T> ||
+        detail::kwarg_keys_and_lookup<T>
+    );
 
-    /* (1) If the container yields key-value pairs directly, return a transparent
-    view. */
-    template <meta::unpack_to_kwargs T>
-    constexpr auto make_kwarg_iterator(T& container)
-        noexcept(noexcept(kwarg_iterator(std::ranges::views::all(container))))
-        requires(meta::detail::kwarg_yield<T>)
-    {
-        return kwarg_iterator(std::ranges::views::all(container));
-    }
+}
 
-    /* (2) If the container has a suitable `.items()` proxy, use it. */
-    template <meta::unpack_to_kwargs T>
-    constexpr auto make_kwarg_iterator(T& container)
-        noexcept(noexcept(kwarg_iterator(container.items())))
-        requires(
-            !meta::detail::kwarg_yield<T> &&
-            meta::detail::kwarg_items<T>
-        )
-    {
-        return kwarg_iterator(container.items());
-    }
 
-    /* (3) If the container has suitable `.keys()` and `.values()` proxies, combine
-    them. */
-    template <meta::unpack_to_kwargs T>
-    constexpr auto make_kwarg_iterator(T& container)
-        noexcept(noexcept(kwarg_iterator(
-            std::ranges::views::zip(container.keys(), container.values())
-        )))
-        requires(
-            !meta::detail::kwarg_yield<T> &&
-            !meta::detail::kwarg_items<T> &&
-            meta::detail::kwarg_keys_and_values<T>
-        )
-    {
-        return kwarg_iterator(
-            std::ranges::views::zip(container.keys(), container.values())
-        );
-    }
-
-    /* (4) If the container yields keys that can be used to subscript the container,
-    do that for every key. */
-    template <meta::unpack_to_kwargs T>
-    constexpr auto make_kwarg_iterator(T& container)
-        noexcept(noexcept(kwarg_iterator(std::ranges::views::transform(
-            std::views::all(container),
-            [&container](const auto& key)
-                noexcept(noexcept(std::make_pair(key, container[key])))
-            {
-                return std::make_pair(key, container[key]);
-            }
-        ))))
-        requires(
-            !meta::detail::kwarg_yield<T> &&
-            !meta::detail::kwarg_items<T> &&
-            !meta::detail::kwarg_keys_and_values<T> &&
-            meta::detail::kwarg_yield_and_lookup<T>
-        )
-    {
-        return kwarg_iterator(std::ranges::views::transform(
-            std::views::all(container),
-            [&container](const auto& key)
-                noexcept(noexcept(std::make_pair(key, container[key])))
-            {
-                return std::make_pair(key, container[key]);
-            }
-        ));
-    }
-
-    /* (5) If the container has a suitable `.keys()` proxy yielding keys that can be
-    used to subscript the container, do that for every one. */
-    template <meta::unpack_to_kwargs T>
-    constexpr auto make_kwarg_iterator(T& container)
-        noexcept(noexcept(kwarg_iterator(std::ranges::views::transform(
-            container.keys(),
-            [&container](const auto& key)
-                noexcept(noexcept(std::make_pair(key, container[key])))
-            {
-                return std::make_pair(key, container[key]);
-            }
-        ))))
-        requires(
-            !meta::detail::kwarg_yield<T> &&
-            !meta::detail::kwarg_items<T> &&
-            !meta::detail::kwarg_keys_and_values<T> &&
-            !meta::detail::kwarg_yield_and_lookup<T> &&
-            meta::detail::kwarg_keys_and_lookup<T>
-        )
-    {
-        return kwarg_iterator(std::ranges::views::transform(
-            container.keys(),
-            [&container](const auto& key)
-                noexcept(noexcept(std::make_pair(key, container[key])))
-            {
-                return std::make_pair(key, container[key]);
-            }
-        ));
-    }
+namespace impl {
 
     /* A keyword parameter pack obtained by double-dereferencing a mapping-like
     container within a Python-style function call.  The template machinery recognizes
@@ -1702,107 +1424,177 @@ namespace impl {
         using type = mapped_type;
         static constexpr static_str id = "";
 
-        /// TODO: the logic necessary to convert an arg_pack&& into a kwarg_pack is
-        /// implemented in the `storage` constructor, but that type can't be fully
-        /// defined until after `bertrand::Map` is serviceable, and will require some
-        /// detailed thinking.  It should reuse the same iterators as the args pack
-        /// if possible, or pass the container through make_kwarg_iterator() to obtain
-        /// a key-value iterator with which to populate the storage map.
+    private:
+        struct hash {
+            using is_transparent = void;
+            static constexpr size_t operator()(std::string_view str)
+                noexcept(noexcept(bertrand::hash(str)))
+            {
+                return bertrand::hash(str);
+            }
+        };
 
-        /* A temporary mapping that gets destructively searched as arguments are
-        consumed from the pack. */
-        struct storage;  // forward declaration filled in after `bertrand::Map` is defined
-        storage m_storage;
+        struct equal {
+            using is_transparent = void;
+            static constexpr bool operator()(
+                std::string_view lhs,
+                std::string_view rhs
+            ) noexcept(noexcept(lhs == rhs)) {
+                return lhs == rhs;
+            }
+        };
+
+        /// TODO: eventually, I should try to replace the `unordered_map` with a
+        /// `Map<...>` type under my control for consistency.
+
+        using Map = std::unordered_map<std::string, mapped_type, hash, equal>;
+        Map m_data;
+
+    public:
+        template <meta::is<T> C>
+        constexpr kwarg_pack(C&& container) {
+            if constexpr (meta::has_size<C>) {
+                m_data.reserve(std::ranges::size(container));
+            }
+            if constexpr (meta::detail::kwarg_yield<C>) {
+                for (auto&& [key, value] : std::forward<C>(container)) {
+                    m_data.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                }
+
+            } else if constexpr (meta::detail::kwarg_items<C>) {
+                for (auto&& [key, value] : std::forward<C>(container).items()) {
+                    m_data.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                }
+
+            } else if constexpr (meta::detail::kwarg_keys_and_values<C>) {
+                for (auto&& [key, value] : zip(container.keys(), container.values())) {
+                    m_data.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                }
+
+            } else if constexpr (meta::detail::kwarg_yield_and_lookup<C>) {
+                for (auto& key : container) {
+                    m_data.emplace(key, container[key]);
+                }
+
+            } else {
+                for (auto& key : container.keys()) {
+                    m_data.emplace(key, container[key]);
+                }
+            }
+        }
 
         [[nodiscard]] constexpr auto size() const noexcept {
-            return m_storage.size();
+            return m_data.size();
         }
 
         [[nodiscard]] constexpr auto ssize() const noexcept {
-            return m_storage.ssize();
+            return std::ranges::ssize(m_data);
         }
 
         [[nodiscard]] constexpr bool empty() const noexcept {
-            return m_storage.empty();
+            return m_data.empty();
         }
 
         [[nodiscard]] constexpr auto begin() noexcept {
-            return m_storage.begin();
+            return m_data.begin();
         }
 
         [[nodiscard]] constexpr auto begin() const noexcept {
-            return m_storage.begin();
+            return m_data.begin();
         }
 
         [[nodiscard]] constexpr auto end() noexcept {
-            return m_storage.end();
+            return m_data.end();
         }
 
         [[nodiscard]] constexpr auto end() const noexcept {
-            return m_storage.end();
+            return m_data.end();
         }
 
-        [[nodiscard]] constexpr bool contains(std::string_view key) const noexcept {
-            return m_storage.contains(key);
+        template <static_str key>
+        [[nodiscard]] constexpr Optional<mapped_type> pop() {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                return None;
+            }
+            Optional<mapped_type> result{std::move(it->second)};
+            m_data.erase(it);
+            return result;
         }
 
-        template <static_str name, typename Self>
-        [[nodiscard]] constexpr decltype(auto) pop(this Self&& self)
-            noexcept(noexcept(std::forward<Self>(self).m_storage.template pop<name>()))
-            requires(requires{std::forward<Self>(self).m_storage.template pop<name>();})
+        constexpr void validate() {
+            if (!empty()) {
+                if consteval {
+                    static constexpr static_str msg = "unexpected keyword arguments";
+                    throw TypeError(msg);
+                } else {
+                    auto it = m_data.begin();
+                    auto end = m_data.end();
+                    std::string message = "unexpected keyword arguments: ['";
+                    message += repr(it->first);
+                    while (++it != end) {
+                        message += "', '" + repr(it->first);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
+        }
+
+        template <static_str key>
+        [[nodiscard]] constexpr bool contains() const
+            noexcept(noexcept(m_data.contains(key)))
         {
-            return (std::forward<Self>(self).m_storage.template pop<name>());
+            return m_data.contains(key);
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) pop(this Self&& self, std::string_view key)
-            noexcept(noexcept(std::forward<Self>(self).m_storage.pop(key)))
-            requires(requires{std::forward<Self>(self).m_storage.pop(key);})
-        {
-            return (std::forward<Self>(self).m_storage.template pop(key));
+        template <static_str key>
+        [[nodiscard]] constexpr auto& get() {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                static constexpr static_str msg =
+                    "missing keyword argument: '" + key + "'";
+                throw KeyError(msg);
+            }
+            return it->second;
         }
 
-        template <static_str name, typename Self>
-        [[nodiscard]] constexpr auto get(this Self&& self)
-            noexcept(noexcept(std::forward<Self>(self).m_storage.template get<name>()))
-            requires(requires{std::forward<Self>(self).m_storage.template get<name>();})
-        {
-            return (std::forward<Self>(self).m_storage.template get<name>());
+        template <static_str key>
+        [[nodiscard]] constexpr const auto& get() const {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                static constexpr static_str msg =
+                    "missing keyword argument: '" + key + "'";
+                throw KeyError(msg);
+            }
+            return it->second;
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr auto get(this Self&& self, std::string_view key)
-            noexcept(noexcept(std::forward<Self>(self).m_storage.get(key)))
-            requires(requires{std::forward<Self>(self).m_storage.get(key);})
-        {
-            return (std::forward<Self>(self).m_storage.get(key));
+        template <static_str key>
+        [[nodiscard]] constexpr Optional<meta::as_lvalue<mapped_type>> get_if() {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                return None;
+            }
+            return {it->second};
         }
 
-        template <static_str name, typename Self>
-        [[nodiscard]] constexpr auto get_if(this Self&& self)
-            noexcept(noexcept(std::forward<Self>(self).m_storage.template get_if<name>()))
-            requires(requires{std::forward<Self>(self).m_storage.template get_if<name>();})
-        {
-            return (std::forward<Self>(self).m_storage.template get_if<name>());
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr auto get_if(this Self&& self, std::string_view key)
-            noexcept(noexcept(std::forward<Self>(self).m_storage.get_if(key)))
-            requires(requires{std::forward<Self>(self).m_storage.get_if(key);})
-        {
-            return (std::forward<Self>(self).m_storage.get_if(key));
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](
-            this Self&& self,
-            std::string_view key
-        )
-            noexcept(noexcept(std::forward<Self>(self).m_storage[key]))
-            requires(requires{std::forward<Self>(self).m_storage[key];})
-        {
-            return (std::forward<Self>(self).m_storage[key]);
+        template <static_str key>
+        [[nodiscard]] constexpr Optional<meta::as_const_ref<mapped_type>> get_if() const {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                return None;
+            }
+            return {it->second};
         }
     };
 
@@ -1832,30 +1624,43 @@ namespace impl {
         end_type m_end;
 
     public:
-        constexpr arg_pack(T data) :
-            m_data(std::forward<T>(data)),
+        template <meta::is<T> C>
+        constexpr arg_pack(C&& data) :
+            m_data(std::forward<C>(data)),
             m_begin(std::ranges::begin(m_data)),
             m_end(std::ranges::end(m_data))
         {}
 
-        [[nodiscard]] constexpr container_type& data() noexcept {
-            return m_data;
-        }
-
-        [[nodiscard]] constexpr const container_type& data() const noexcept {
-            return m_data;
-        }
+        [[nodiscard]] constexpr begin_type& begin() noexcept { return m_begin; }
+        [[nodiscard]] constexpr end_type& end() noexcept { return m_end; }
 
         [[nodiscard]] constexpr bool empty() const noexcept(noexcept(m_begin == m_end)) {
             return m_begin == m_end;
         }
 
-        [[nodiscard]] constexpr begin_type& begin() noexcept {
-            return m_begin;
+        [[nodiscard]] constexpr decltype(auto) next() noexcept {
+            decltype(auto) value = *m_begin;
+            ++m_begin;
+            return value;
         }
 
-        [[nodiscard]] constexpr end_type& end() noexcept {
-            return m_end;
+        void constexpr validate() {
+            if (!empty()) {
+                if consteval {
+                    static constexpr static_str msg =
+                        "too many arguments in positional parameter pack";
+                    throw TypeError(msg);
+                } else {
+                    std::string message =
+                        "too many arguments in positional parameter pack: ['" +
+                        repr(*m_begin);
+                    while (++m_begin != m_end) {
+                        message += "', '" + repr(*m_begin);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
         }
 
         /* Dereference a positional pack to promote it to a key/value pack.  This
@@ -1876,13 +1681,15 @@ namespace impl {
         Enabling this operator must be done explicitly, by specializing the
         `meta::detail::unpack<T>` flag for a given container. */
         [[nodiscard]] constexpr auto operator*() &&
-            noexcept(requires{{kwarg_pack<T>{std::move(*this)}} noexcept;})
+            noexcept(requires{{kwarg_pack<T>{
+                std::forward<container_type>(m_data)
+            }} noexcept;})
             requires(
                 meta::unpack_to_kwargs<T> &&
-                requires{kwarg_pack<T>{std::move(*this)};}
+                requires{kwarg_pack<T>{std::forward<container_type>(m_data)};}
             )
         {
-            return kwarg_pack<T>{std::move(*this)};
+            return kwarg_pack<T>{std::forward<container_type>(m_data)};
         }
     };
 
@@ -1899,11 +1706,7 @@ namespace impl {
 
 namespace impl {
     struct signature_tag {};
-    struct signature_defaults_tag {};
-    struct signature_partial_tag {};
     struct signature_bind_tag {};
-    struct signature_vectorcall_tag {};
-    struct signature_overloads_tag {};
 
     /* A compact bitset describing the kind (positional, keyword, optional, and/or
     variadic) of an argument within a C++ parameter list. */
@@ -2030,13 +1833,19 @@ namespace impl {
         template <size_t I>
         static constexpr static_str ctx_arrow = _ctx_arrow(std::make_index_sequence<I>{});
 
-        /* A packed array of kinds for each argument, incorporating context from the
-        rest of the signature. */
-        std::array<impl::arg_kind, N> kinds;
+        /* A simple struct describing a single parameter in a signature in type-erased
+        form. */
+        struct param {
+            std::string_view name;
+            size_t idx;
+            impl::arg_kind kind;
 
-        /* A bitset with a 1 in the location of all required arguments and zero
-        everywhere else. */
-        Bits<N> required;
+            /// TODO: in C++26, this could also include a std::meta_info field for the
+            /// type.
+
+            /// TODO: hide these fields as private members, and then provide accessors
+            /// that abstract away the kind, etc.
+        };
 
         /* [1] positional-only */
         struct {
@@ -2070,6 +1879,14 @@ namespace impl {
         struct {
             size_t idx = N;  // N = missing
         } ret;
+
+        /* A packed array of kinds for each argument, incorporating context from the
+        rest of the signature. */
+        std::array<param, N> params;
+
+        /* A bitset with a 1 in the location of all required arguments and zero
+        everywhere else. */
+        Bits<N> required;
 
         template <size_t... Is> requires (sizeof...(Is) == N)
         consteval signature_info(std::index_sequence<Is...>) { (parse<Is>(Args), ...); }
@@ -2132,11 +1949,11 @@ namespace impl {
             }
 
             // if the argument comes after '*', then it is keyword-only
-            if (args.idx < N || kwonly.sep < N) {
+            if (args.idx < N || kwonly.idx < N) {
                 ++kwonly.n;
-                kinds[I] = impl::arg_kind::KW;
+                params[I].kind = impl::arg_kind::KW;
                 if constexpr (meta::optional_arg<A>) {
-                    kinds[I] |= impl::arg_kind::OPT;
+                    params[I].kind = params[I].kind | impl::arg_kind::OPT;
                 } else {
                     required[I] = true;
                 }
@@ -2146,9 +1963,9 @@ namespace impl {
             // section instead.
             } else {
                 ++pos_or_kw.n;
-                kinds[I] = impl::arg_kind::POS | impl::arg_kind::KW;
+                params[I].kind = impl::arg_kind::POS | impl::arg_kind::KW;
                 if constexpr (meta::optional_arg<A>) {
-                    kinds[I] |= impl::arg_kind::OPT;
+                    params[I].kind = params[I].kind | impl::arg_kind::OPT;
                 } else if constexpr (meta::partial_arg<A>) {
                     required[I] = true;
                 } else {
@@ -2156,6 +1973,9 @@ namespace impl {
                     required[I] = true;
                 }
             }
+
+            params[I].name = meta::arg_name<A>;
+            params[I].idx = I;
         }
 
         /* [2] positional-only separator ("/") */
@@ -2171,7 +1991,7 @@ namespace impl {
                     indent + ctx_str + "\n" + indent + ctx_arrow<I>;
                 throw SyntaxError(msg);
             }
-            if (kwonly.sep < N || args.idx < N || kwargs.idx < N) {
+            if (kwonly.idx < N || args.idx < N || kwargs.idx < N) {
                 static constexpr static_str msg =
                     "positional-only separator '/' must be ahead of '*'\n\n" + indent +
                     ctx_str + "\n" + indent + ctx_arrow<I>;
@@ -2179,7 +1999,7 @@ namespace impl {
             }
 
             // there can only be one positional-only separator
-            if (posonly.sep < N) {
+            if (posonly.idx < N) {
                 static constexpr static_str msg =
                     "signature cannot contain more than one positional-only separator "
                     "'/'\n\n" + indent + ctx_str + "\n" + indent + ctx_arrow<I>;
@@ -2193,9 +2013,11 @@ namespace impl {
             pos_or_kw.n = 0;
 
             // previous kinds strip kw flag
-            kinds[I] = 0;
+            params[I].name = meta::arg_name<A>;
+            params[I].idx = I;
+            params[I].kind = 0;
             for (size_t i = 0; i < I; ++i) {
-                kinds[i] = kinds[i] & ~impl::arg_kind::KW;
+                params[i].kind = params[i].kind & ~impl::arg_kind::KW;
             }
         }
 
@@ -2222,7 +2044,7 @@ namespace impl {
             }
 
             // there can only be one keyword-only separator or variadic positional pack
-            if (kwonly.sep < N || args.idx < N) {
+            if (kwonly.idx < N || args.idx < N) {
                 static constexpr static_str msg =
                     "signature cannot contain more than one '*'\n\n" + indent +
                     ctx_str + "\n" + indent + ctx_arrow<I>;
@@ -2232,11 +2054,14 @@ namespace impl {
             // subsequent arguments populate the keyword-only section
             kwonly.idx = I + 1;
             if constexpr (meta::keyword_only_separator<A>) {
-                kinds[I] = 0;
+                params[I].kind = 0;
             } else {
                 args.idx = I;
-                kinds[I] = impl::arg_kind::VAR | impl::arg_kind::POS;
+                params[I].kind = impl::arg_kind::VAR | impl::arg_kind::POS;
             }
+
+            params[I].name = meta::arg_name<A>;
+            params[I].idx = I;
         }
 
         /* [4] variadic keyword arguments ("**kwargs") */
@@ -2262,7 +2087,9 @@ namespace impl {
             }
 
             kwargs.idx = I;
-            kinds[I] = impl::arg_kind::VAR | impl::arg_kind::KW;
+            params[I].name = meta::arg_name<A>;
+            params[I].idx = I;
+            params[I].kind = impl::arg_kind::VAR | impl::arg_kind::KW;
         }
 
         /* [5] return annotations ("->") */
@@ -2284,10 +2111,55 @@ namespace impl {
             } else {
                 throw SyntaxError("return annotation must be typed");
             }
+
+            params[I].name = meta::arg_name<A>;
+            params[I].idx = I;
+            params[I].kind = 0;
         }
     };
 
 }
+
+
+/* Deduce the signature of an arbitrary function type `F`, generating an equivalent
+signature consisting of Python-style argument annotations.
+
+Users can specialize this class to allow custom signatures to be deduced automatically
+by the `def()` operator when no explicit signature is given.  If specialized, the
+signature must inherit from `impl::signature<args...>`, where `args...` is a valid
+signature in Python syntax, e.g.:
+
+    ```
+    template <meta::is<my_function> F>
+    struct signature<F> : impl::signature<"a"_[^int], "/"_, "b"_[^float](2.5), "**kwargs"_> {
+        /// nothing needed here, as `impl::signature` handles everything.
+    };
+
+    auto func = def(my_function{});  // deduces the signature automatically
+    ```
+
+Note that for all specialized types, if an explicit signature is provided that is
+incompatible with the signature deduced by this class, then a compilation error will be
+issued, so that no ambiguities can arise. */
+template <typename F>
+struct signature : impl::signature_tag {
+    static constexpr bool enable = false;  // default to disabled
+};
+
+
+/* CTAD constructor allows enabled signatures to be inferred from a simple initializer.
+The constructor itself is a no-op at run time; it simply exposes the information the
+compiler is using to dispatch calls to that function. */
+template <typename F> requires (signature<F>::enable)
+signature(F&&) -> signature<meta::remove_rvalue<F>>;
+
+
+/// TODO: a specialization of signature<F> for meta::has_call_operator, which would
+/// ensure that any type with a trivially-inspectable call operator can have its
+/// signature deduced automatically.  When C++26 reflection lands, this could probably
+/// simply reflect the type's call operator and deduce the signature directly from
+/// that.  The only real trick here is ensuring that an explicit signature does not
+/// conflict with the deduced signature.
 
 
 namespace meta {
@@ -2295,19 +2167,13 @@ namespace meta {
     template <typename T>
     concept signature = inherits<T, impl::signature_tag>;
 
-    template <typename T>
-    concept signature_defaults = inherits<T, impl::signature_defaults_tag>;
+    // template <typename T>
+    // concept signature_bind = inherits<T, impl::signature_bind_tag>;
 
-    template <typename T>
-    concept signature_partial = inherits<T, impl::signature_partial_tag>;
-
-    template <typename T>
-    concept signature_bind = inherits<T, impl::signature_bind_tag>;
-
-    template <typename F>
-    concept normalized_signature =
-        bertrand::signature<F>::enable &&
-        ::std::same_as<meta::unqualify<F>, typename bertrand::signature<F>::type>;
+    // template <typename F>
+    // concept normalized_signature =
+    //     bertrand::signature<F>::enable &&
+    //     ::std::same_as<meta::unqualify<F>, typename bertrand::signature<F>::type>;
 
     /// TODO: arg_bind needs to be rethought given the change in how arg_kind is
     /// implemented.  Maybe I can pass in the kind ahead of time, and switch on that.
@@ -2379,7 +2245,186 @@ namespace meta {
 
 namespace impl {
 
+    /// TODO: the public signature class would be templated to take a function type
+    /// and then infer the proper impl::signature from it.  That enables CTAD
+    /// introspection for arbitrary function types, and allows for extensions as well,
+    /// if you want to customize the output of the `def()` statement for a given
+    /// function type.
 
+    /// auto func = def([](int x, int y) { return x + y; });
+
+
+    /* Represents a completed Python-like signature composed of the templated argument
+    annotations.  The public `bertrand::signature<F>` class  */
+    template <meta::arg auto... Args>
+    struct signature : signature_tag {
+        static constexpr bool enable = true;
+        using size_type = size_t;
+        using index_type = ssize_t;
+
+        [[nodiscard]] static constexpr size_type size() noexcept {
+            return sizeof...(Args);
+        }
+
+        [[nodiscard]] static constexpr index_type ssize() noexcept {
+            return index_type(size());
+        }
+
+        [[nodiscard]] static constexpr bool empty() noexcept {
+            return size() == 0;
+        }
+
+    private:
+        using info_type = impl::signature_info<Args...>;
+        static constexpr info_type info {std::make_index_sequence<size()>{}};
+
+        static constexpr auto names = []<
+            size_type... posonly,
+            size_type... pos_or_kw,
+            size_type... kwonly,
+            size_type... args,
+            size_type... kwargs
+        >(
+            std::index_sequence<posonly...>,
+            std::index_sequence<pos_or_kw...>,
+            std::index_sequence<kwonly...>,
+            std::index_sequence<args...>,
+            std::index_sequence<kwargs...>
+        ) {
+            return string_map<
+                size_type,
+                meta::arg_name<decltype(meta::unpack_value<
+                    info.posonly.idx + posonly,
+                    Args...
+                >)>...,
+                meta::arg_name<decltype(meta::unpack_value<
+                    info.pos_or_kw.idx + pos_or_kw,
+                    Args...
+                >)>...,
+                meta::arg_name<decltype(meta::unpack_value<
+                    info.kwonly.idx + kwonly,
+                    Args...
+                >)>...,
+                meta::arg_name<decltype(meta::unpack_value<
+                    info.args.idx + args,
+                    Args...
+                >)>...,
+                meta::arg_name<decltype(meta::unpack_value<
+                    info.kwargs.idx + kwargs,
+                    Args...
+                >)>...
+            >{
+                (info.posonly.idx + posonly)...,
+                (info.pos_or_kw.idx + pos_or_kw)...,
+                (info.kwonly.idx + kwonly)...,
+                (info.args.idx + args)...,
+                (info.kwargs.idx + kwargs)...
+            };
+        }(
+            std::make_index_sequence<info.posonly.n>{},
+            std::make_index_sequence<info.pos_or_kw.n>{},
+            std::make_index_sequence<info.kwonly.n>{},
+            std::make_index_sequence<info.args.idx < size()>{},
+            std::make_index_sequence<info.kwargs.idx < size()>{}
+        );
+
+    public:
+        using param = info_type::param;
+
+        [[nodiscard]] static constexpr auto data() noexcept {
+            return info.params.data();
+        }
+        [[nodiscard]] static constexpr auto begin() noexcept {
+            return info.params.begin();
+        }
+        [[nodiscard]] static constexpr auto cbegin() noexcept {
+            return info.params.cbegin();
+        }
+        [[nodiscard]] static constexpr auto end() noexcept {
+            return info.params.end();
+        }
+        [[nodiscard]] static constexpr auto cend() noexcept {
+            return info.params.cend();
+        }
+        [[nodiscard]] static constexpr auto rbegin() noexcept {
+            return info.params.rbegin();
+        }
+        [[nodiscard]] static constexpr auto crbegin() noexcept {
+            return info.params.crbegin();
+        }
+        [[nodiscard]] static constexpr auto rend() noexcept {
+            return info.params.rend();
+        }
+        [[nodiscard]] static constexpr auto crend() noexcept {
+            return info.params.crend();
+        }
+
+        /* Check whether the signature contains a given argument by name. */
+        template <static_str kw>
+        [[nodiscard]] static constexpr bool contains() noexcept {
+            return names.template contains<kw>();
+        }
+
+        /* Check whether the signature contains a given argument by name. */
+        [[nodiscard]] static constexpr bool contains(std::string_view kw) noexcept {
+            return names.contains(kw);
+        }
+
+        /// TODO: get<...>(), get(...), get_if<...>(), get_if(...), find(), and at()
+
+        /* Search the signature for an argument with the given name, returning a
+        parameter descriptor that includes its index in the signature and kind
+        (positional-or-keyword or keyword-only). */
+        [[nodiscard]] static constexpr const param& operator[](
+            std::string_view kw
+        ) noexcept(noexcept(info.params[names[kw]])) {
+            return info.params[names[kw]];
+        }
+
+        /* Index into the signature, returning a parameter descriptor that includes
+        its name and kind (positional-only, variadic, a separator, return annotation,
+        etc.). */
+        [[nodiscard]] static constexpr const param& operator[](index_type idx)
+            noexcept(noexcept(info.params[impl::normalize_index(ssize(), idx)]))
+        {
+            return info.params[impl::normalize_index(ssize(), idx)];
+        }
+
+        /* A bitset with the same length as the signature with a 1 in the location of
+        all required arguments, and zero everywhere else.  A bitset of this form is
+        used during argument binding to ensure that all required arguments have been
+        accounted for. */
+        [[nodiscard]] static constexpr const auto& required() noexcept {
+            return info.required;
+        }
+
+
+        /// TODO: add a CTAD-enabled constructor that takes any function whose
+        /// signature deduces to a subclass of this type.  Then, all subclasses have
+        /// to do to make a new function signature deducible is to specialize
+        /// `bertrand::signature<F>` and inherit from the right
+        /// `impl::signature<args...>`, and then `signature{F}` will allow
+        /// introspection of the function's signature at compile time.
+
+
+
+        /// TODO: bind(), which produces a partial signature, and the call operator
+        /// that takes a matching function, plus some arguments, and invokes it
+        /// according to the signature's semantics.  Also, perhaps call site validation
+        /// should be done using the same constexpr exception mechanism as the
+        /// signature declaration itself, so that I can include a contextual message
+        /// that shows exactly what went wrong.
+
+
+        /// TODO: to_string(), which should be able to produce strings in many forms.
+
+    };
+
+
+    inline constexpr signature<"x"_, "/"_, "y"_, "*args"_, "z"_> sig;
+    inline constexpr auto x = sig["args"];
+    // static_assert(sig.info.kinds[4].kwonly());
+    static_assert(sig["x"].idx == 0);
 
 
 
@@ -3086,6 +3131,9 @@ namespace impl {
     };
     template <typename... A>
     using partial_tuple = _partial_tuple<std::tuple<>, 0, A...>::type;
+
+    /// TODO: format_signature is a monster, and should be simplified and possibly
+    /// incorporated into the signature class itself.
 
     inline std::string format_signature(
         const std::string& prefix,
