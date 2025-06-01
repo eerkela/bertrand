@@ -49,6 +49,7 @@ static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.")
 namespace impl {
     struct arg_tag {};
     struct partial_tag {};
+    // struct variadic_tag {};  <- TODO: faster way to identify variadic args, rather than scanning the name
     struct template_arg_tag : arg_tag {};
     struct arg_pack_tag : arg_tag {};
     struct kwarg_pack_tag : arg_tag {};
@@ -177,6 +178,9 @@ namespace meta {
     );
 
     template <typename T>
+    concept variadic = variadic_positional<T> || variadic_keyword<T>;
+
+    template <typename T>
     concept positional_only_separator = arg<T> && detail::valid_posonly_separator<arg_id<T>>;
 
     template <typename T>
@@ -197,7 +201,7 @@ namespace meta {
     template <bound_arg T>
     using arg_value = decltype(::std::declval<T>().value());
 
-    template <partial_arg T>
+    template <arg T>
     using partial_types = meta::unqualify<T>::partial_types;
 
     namespace nothrow {
@@ -235,53 +239,6 @@ namespace meta {
 
 namespace impl {
 
-    /* A subclass of `Arg` that categorizes it as having one or more partially-applied
-    values when stored within an `impl::signature` object.  This changes nothing about
-    the argument itself, but triggers the function call machinery to always insert a
-    particular value that may only be known at runtime, and is stored within the
-    signature itself.  Calling a signature's `.bind()` method equates to marking one or
-    more of its arguments with this type, and `.clear()` strips all such wrappers from
-    the signature's arguments. */
-    template <meta::unqualified Arg, meta::not_void... Ts> requires (meta::arg<Arg>)
-    struct partial : Arg, impl::partial_tag {
-        using arg_type = Arg;
-        using partial_types = meta::pack<Ts...>;
-    };
-
-    template <meta::arg Arg, typename... Ts>
-    constexpr auto make_partial(Arg&& arg, Ts&&... ts)
-        noexcept(requires{{partial<meta::unqualify<Arg>, Ts...>{
-            std::forward<Arg>(arg)
-        }} noexcept;})
-    {
-        return partial<meta::unqualify<Arg>, Ts...>{std::forward<Arg>(arg)};
-    }
-
-    template <meta::template_arg Arg, typename... Ts>
-    constexpr auto make_partial(Arg&& arg, Ts&&... values)
-        noexcept(requires{{partial<meta::unqualify<Arg>, Ts...>{
-            std::forward<Arg>(arg),
-            std::forward<Ts>(values)...
-        }} noexcept;})
-    {
-        return partial<meta::unqualify<Arg>, Ts...>{
-            std::forward<Arg>(arg),
-            std::forward<Ts>(values)...
-        };
-    }
-
-    template <meta::arg Arg>
-    constexpr decltype(auto) remove_partial(Arg&& arg) noexcept {
-        if constexpr (meta::partial_arg<Arg>) {
-            return (std::forward<
-                meta::qualify<typename meta::unqualify<Arg>::arg_type, Arg>
-            >(arg));
-        } else {
-            return (std::forward<Arg>(arg));
-        }
-    }
-
-
     /* An annotation representing a runtime function argument in a Python-style function
     declaration. */
     template <static_str ID, typename T = void, typename V = void>
@@ -295,6 +252,7 @@ namespace impl {
     struct arg<ID, T, void> : impl::arg_tag {
         using type = T;
         using value_type = void;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -370,6 +328,7 @@ namespace impl {
     struct arg<ID, T, void> : impl::arg_tag {
         using type = T;
         using value_type = void;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -389,6 +348,7 @@ namespace impl {
     struct arg<ID, void, void> : impl::arg_tag {
         using type = void;
         using value_type = void;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
     };
 
@@ -398,6 +358,7 @@ namespace impl {
     struct arg<ID, void, V> : impl::arg_tag {
         using type = void;
         using value_type = V;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
@@ -419,6 +380,7 @@ namespace impl {
     struct arg<ID, T, V> : impl::arg_tag {
         using type = T;
         using value_type = V;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
@@ -472,6 +434,7 @@ namespace impl {
     struct template_arg<ID, T, void> : impl::template_arg_tag {
         using type = T;
         using value_type = void;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -550,6 +513,7 @@ namespace impl {
     struct template_arg<ID, T, void> : impl::template_arg_tag {
         using type = T;
         using value_type = void;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -569,6 +533,7 @@ namespace impl {
     struct template_arg<ID, void, void> : impl::template_arg_tag {
         using type = void;
         using value_type = void;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
     };
 
@@ -578,6 +543,7 @@ namespace impl {
     struct template_arg<ID, void, V> : impl::template_arg_tag {
         using type = void;
         using value_type = V;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
@@ -601,6 +567,7 @@ namespace impl {
     struct template_arg<ID, T, V> : impl::template_arg_tag {
         using type = T;
         using value_type = V;
+        using partial_types = meta::pack<>;
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
@@ -870,8 +837,15 @@ namespace impl {
             value(std::forward<A>(curr))
         {}
 
+        /// TODO: if args{} are stored in every signature, and a signature is stored in
+        /// every function, then non-copyability means that functions are move-only.  I'm
+        /// not sure if that's desirable, but right now it's the case.
+        /// TODO: I need to also allow assignment to make signatures (and therefore defs)
+        /// assignable.  That probably means lvalues need to be promoted to pointers,
+        /// so that I can reassign them.
+
         constexpr args(args&& other) = default;
-        constexpr args(const args&) = delete;
+        constexpr args(const args&) = default;
         constexpr args& operator=(const args&) = delete;
         constexpr args& operator=(args&&) = delete;
 
@@ -991,16 +965,6 @@ public:
     :
         base(std::forward<As>(args)...)
     {}
-
-    /// TODO: if args{} are stored in every signature, and a signature is stored in
-    /// every function, then non-copyability means that functions are move-only.  I'm
-    /// not sure if that's desirable, but right now it's the case.
-
-    /* Argument packs are move constructible, but not copyable or assignable */
-    constexpr args(args&&) = default;
-    constexpr args(const args&) = delete;
-    constexpr args& operator=(const args&) = delete;
-    constexpr args& operator=(args&&) = delete;
 
     /* Get the argument at index I, perfectly forwarding it according to the pack's
     current cvref qualifications.  This means that if the pack is supplied as an
@@ -1357,6 +1321,18 @@ namespace meta {
 
 namespace impl {
 
+    /* A positional parameter pack obtained by dereferencing an iterable container
+    within a Python-style function call.  The template machinery recognizes this as if
+    it were an "**<anonymous>"_(container) argument defined in the signature, if such
+    an expression were well-formed.  Because that is outlawed by the DSL syntax and
+    cannot appear at the call site, this class fills the gap and allows the same
+    internals to be reused.
+
+    Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
+    double unpack operator. */
+    template <meta::iterable T>
+    struct arg_pack;
+
     /* A keyword parameter pack obtained by double-dereferencing a mapping-like
     container within a Python-style function call.  The template machinery recognizes
     this as if it were an `"*<anonymous>"_(container)` argument defined in the
@@ -1398,7 +1374,7 @@ namespace impl {
 
     public:
         template <meta::is<T> C>
-        constexpr kwarg_pack(C&& container) {
+        explicit constexpr kwarg_pack(C&& container) {
             if constexpr (meta::has_size<C>) {
                 m_data.reserve(std::ranges::size(container));
             }
@@ -1525,6 +1501,8 @@ namespace impl {
             return it->second;
         }
 
+        /// TODO: get_if() can be conditionally noexcept
+
         template <static_str key>
         [[nodiscard]] constexpr Optional<meta::as_lvalue<mapped_type>> get_if() {
             auto it = m_data.find(key);
@@ -1547,15 +1525,6 @@ namespace impl {
     template <meta::unpack_to_kwargs T>
     kwarg_pack(T&&) -> kwarg_pack<T>;
 
-    /* A positional parameter pack obtained by dereferencing an iterable container
-    within a Python-style function call.  The template machinery recognizes this as if
-    it were an "**<anonymous>"_(container) argument defined in the signature, if such
-    an expression were well-formed.  Because that is outlawed by the DSL syntax and
-    cannot appear at the call site, this class fills the gap and allows the same
-    internals to be reused.
-    
-    Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
-    double unpack operator. */
     template <meta::iterable T>
     struct arg_pack : impl::arg_pack_tag {
         using container_type = meta::remove_rvalue<T>;
@@ -1571,14 +1540,18 @@ namespace impl {
 
     public:
         template <meta::is<T> C>
-        constexpr arg_pack(C&& data) :
+        explicit constexpr arg_pack(C&& data) :
             m_data(std::forward<C>(data)),
             m_begin(std::ranges::begin(m_data)),
             m_end(std::ranges::end(m_data))
         {}
 
+        [[nodiscard]] constexpr container_type& data() noexcept { return m_data; }
+        [[nodiscard]] constexpr const container_type& data() const noexcept { return m_data; }
         [[nodiscard]] constexpr begin_type& begin() noexcept { return m_begin; }
+        [[nodiscard]] constexpr begin_type begin() const noexcept { return m_begin; }
         [[nodiscard]] constexpr end_type& end() noexcept { return m_end; }
+        [[nodiscard]] constexpr end_type end() const noexcept { return m_end; }
 
         [[nodiscard]] constexpr bool empty() const noexcept(noexcept(m_begin == m_end)) {
             return m_begin == m_end;
@@ -1652,7 +1625,6 @@ namespace impl {
 
 namespace impl {
     struct signature_tag {};
-    struct signature_bind_tag {};
 
     /* A compact bitset describing the kind (positional, keyword, optional, and/or
     variadic) of an argument within a C++ parameter list. */
@@ -1663,12 +1635,12 @@ namespace impl {
             /// the `py::Function` class.  The order should always be such that
             /// POS < OPT POS < VAR POS < KW < OPT KW < VAR KW (repeated for untyped
             /// arguments) to ensure a stable traversal order.
-            OPT                 = 0b1,
-            VAR                 = 0b10,
-            POS                 = 0b100,
-            KW                  = 0b1000,
-            UNTYPED             = 0b10000,
-            RUNTIME             = 0b100000,
+            OPT                 = 0b10,
+            VAR                 = 0b100,
+            POS                 = 0b1000,
+            KW                  = 0b10000,
+            UNTYPED             = 0b100000,
+            RUNTIME             = 0b1000000,
         } flags;
 
         [[nodiscard]] constexpr arg_kind(uint8_t flags = 0) noexcept :
@@ -1687,20 +1659,20 @@ namespace impl {
             return flags & VAR;
         }
 
-        [[nodiscard]] constexpr bool untyped() const noexcept {
-            return flags & UNTYPED;
-        }
-
         [[nodiscard]] constexpr bool typed() const noexcept {
             return !(flags & UNTYPED);
         }
 
-        [[nodiscard]] constexpr bool run_time() const noexcept {
-            return flags & RUNTIME;
+        [[nodiscard]] constexpr bool untyped() const noexcept {
+            return flags & UNTYPED;
         }
 
         [[nodiscard]] constexpr bool compile_time() const noexcept {
             return !(flags & RUNTIME);
+        }
+
+        [[nodiscard]] constexpr bool run_time() const noexcept {
+            return flags & RUNTIME;
         }
 
         [[nodiscard]] constexpr bool posonly() const noexcept {
@@ -1802,14 +1774,12 @@ namespace impl {
         form. */
         struct param {
             std::string_view name;
-            size_t idx;
+            size_t index;
+            size_t partial;
             impl::arg_kind kind;
 
             /// TODO: in C++26, this could also include a std::meta_info field for the
             /// type.
-
-            /// TODO: hide these fields as private members, and then provide accessors
-            /// that abstract away the kind, etc.
         };
 
         /* Signatures consist of 2 sections, the first for explicit template arguments
@@ -1959,7 +1929,8 @@ namespace impl {
 
             ++sec.n;
             params[I].name = meta::arg_name<A>;
-            params[I].idx = I;
+            params[I].index = I;
+            params[I].partial = meta::partial_types<A>::size;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
@@ -2001,7 +1972,8 @@ namespace impl {
 
             ++sec.n;
             params[I].name = meta::arg_name<A>;
-            params[I].idx = I;
+            params[I].index = I;
+            params[I].partial = meta::partial_types<A>::size;
             params[I].kind = 0;
             size_t start = 0;
             if constexpr (!meta::typed_arg<A>) {
@@ -2059,7 +2031,8 @@ namespace impl {
 
             ++sec.n;
             params[I].name = meta::arg_name<A>;
-            params[I].idx = I;
+            params[I].index = I;
+            params[I].partial = meta::partial_types<A>::size;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
@@ -2089,7 +2062,8 @@ namespace impl {
             ++sec.n;
             sec.kwargs.offset = I;
             params[I].name = meta::arg_name<A>;
-            params[I].idx = I;
+            params[I].index = I;
+            params[I].partial = meta::partial_types<A>::size;
             params[I].kind = impl::arg_kind::VAR | impl::arg_kind::KW;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
@@ -2121,7 +2095,8 @@ namespace impl {
             }
 
             params[I].name = meta::arg_name<A>;
-            params[I].idx = I;
+            params[I].index = I;
+            params[I].partial = meta::partial_types<A>::size;
             params[I].kind = 0;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = impl::arg_kind::UNTYPED;
@@ -2132,26 +2107,50 @@ namespace impl {
         }
     };
 
-    /* Extract the partial argument markers in a signature into an equivalent
-    `bertrand::args{}` container, for use later in signature binding logic. */
-    template <typename out, const auto&...>
-    struct _partial_args { using type = out::template eval<bertrand::args>; };
-    template <typename out, const auto& A, const auto&... Args>
-        requires (meta::partial_arg<decltype(A)>)
-    struct _partial_args<out, A, Args...> {
-        using type = _partial_args<
-            typename out::template concat<meta::partial_types<decltype(A)>>,
-            Args...
-        >::type;
-    };
-    template <typename out, const auto& A, const auto&... Args>
-        requires (!meta::partial_arg<decltype(A)>)
-    struct _partial_args<out, A, Args...> {
-        using type = _partial_args<out, Args...>::type;
-    };
-    template <const auto&... Args> requires (meta::arg<decltype(Args)> && ...)
-    using partial_args = _partial_args<meta::pack<>, Args...>::type;
+    /* A collection of arguments representing the arguments provided to the call site
+    for a Python-style function.  This will analyze the arguments upon construction and
+    throw a compile-time `SyntaxError` if the arguments are malformed in any of the
+    following ways:
+    
+        -   Duplicate argument names.
+        -   Improper ordering of positional and keyword arguments.
+        -   More than one positional or keyword parameter pack.
+        -   Positional or keyword packs used at compile time.
+        -   Any arguments other than raw values, standard keyword arguments with a bound
+            value, or the results of unpacking operators.
 
+    If no errors are encountered, then the resulting `call_info` object will contain
+    the following information:
+
+        -   The index of positional/keyword parameter packs, if any.
+
+    Note that further checks are performed when the binding logic is invoked, which
+    checks for missing/extra arguments, conflicting values for the same argument,
+    convertibility to the expected type, and so on.  This class simply ensures that
+    the arguments will not interfere with the binding logic, and yields simpler error
+    messages than if these cases were to be handled at the binding stage. */
+    template <const auto&... Args>
+    struct call_info {
+        /// TODO: largely similar to the `signature_info` class, and should record
+        /// the indices of the parameter packs, so that empty positional packs can be
+        /// filtered out ahead of the binding logic.
+
+        /// TODO: also, this probably requires the runtime arguments to be provided
+        /// to the constructor, so that they are included in the analysis along with
+        /// the template parameters?
+
+
+        /// TODO: may not need to store the pack indices if the logic is restored
+        /// to its previous state of just dropping the pack if it is empty and then
+        /// recurring within the binding logic itself.  
+    };
+
+}
+
+
+namespace meta {
+    template <typename T>
+    concept signature = inherits<T, impl::signature_tag>;
 }
 
 
@@ -2188,6 +2187,7 @@ template <typename F> requires (signature<F>::enable)
 signature(F&&) -> signature<meta::remove_rvalue<F>>;
 
 
+
 /// TODO: a specialization of signature<F> for meta::has_call_operator, which would
 /// ensure that any type with a trivially-inspectable call operator can have its
 /// signature deduced automatically.  When C++26 reflection lands, this could probably
@@ -2196,97 +2196,166 @@ signature(F&&) -> signature<meta::remove_rvalue<F>>;
 /// conflict with the deduced signature.
 
 
-namespace meta {
+/// TODO: the public signature class would be templated to take a function type
+/// and then infer the proper impl::signature from it.  That enables CTAD
+/// introspection for arbitrary function types, and allows for extensions as well,
+/// if you want to customize the output of the `def()` statement for a given
+/// function type.
 
-    template <typename T>
-    concept signature = inherits<T, impl::signature_tag>;
-
-    // template <typename T>
-    // concept signature_bind = inherits<T, impl::signature_bind_tag>;
-
-    // template <typename F>
-    // concept normalized_signature =
-    //     bertrand::signature<F>::enable &&
-    //     ::std::same_as<meta::unqualify<F>, typename bertrand::signature<F>::type>;
-
-    /// TODO: arg_bind needs to be rethought given the change in how arg_kind is
-    /// implemented.  Maybe I can pass in the kind ahead of time, and switch on that.
-    /// This will require some thought
-
-    // namespace detail {
-
-    //     template <typename...>
-    //     constexpr bool arg_bind = false;
-
-    //     /* positional-only. */
-    //     template <meta::positional_only T, typename V>
-    //         requires (meta::arg_has_type<T> && !meta::arg<V>)
-    //     constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
-    //     template <meta::positional_only T, typename V>
-    //         requires (!meta::arg_has_type<T> && !meta::arg<V>)
-    //     constexpr bool arg_bind<T, V> = meta::not_void<V>;
-
-    //     /* positional-or-keyword */
-    //     template <meta::positional_or_keyword T, typename V>
-    //         requires(meta::arg_has_type<T> && !meta::arg<V>)
-    //     constexpr bool arg_bind<T, V> = meta::convertible_to<V, meta::arg_type<T>>;
-    //     template <meta::positional_or_keyword T, meta::keyword V>
-    //         requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
-    //     constexpr bool arg_bind<T, V> =
-    //         meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
-    //     template <meta::positional_or_keyword T, typename V>
-    //         requires (!meta::arg_has_type<T> && !meta::arg<V>)
-    //     constexpr bool arg_bind<T, V> = meta::not_void<V>;
-    //     template <meta::positional_or_keyword T, meta::keyword V>
-    //         requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
-    //     constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
-
-    //     /* keyword-only. */
-    //     template <meta::keyword_only T, meta::keyword V>
-    //         requires (meta::arg_has_type<T> && meta::arg_has_value<V>)
-    //     constexpr bool arg_bind<T, V> =
-    //         meta::convertible_to<meta::arg_value_type<V>, meta::arg_type<T>>;
-    //     template <meta::keyword_only T, meta::keyword V>
-    //         requires (!meta::arg_has_type<T> && meta::arg_has_value<V>)
-    //     constexpr bool arg_bind<T, V> = meta::not_void<meta::arg_value_type<V>>;
-
-    //     /* variadic positional. */
-    //     template <meta::variadic_positional T, typename... Vs>
-    //         requires (meta::arg_has_type<T> && ... && !meta::arg<Vs>)
-    //     constexpr bool arg_bind<T, Vs...> =
-    //         (meta::convertible_to<Vs, meta::arg_type<T>> && ...);
-    //     template <meta::variadic_positional T, typename... Vs>
-    //         requires (!meta::arg_has_type<T> && ... && !meta::arg<Vs>)
-    //     constexpr bool arg_bind<T, Vs...> = (meta::not_void<Vs> && ...);
-
-    //     /* variadic keyword. */
-    //     template <meta::variadic_keyword T, meta::keyword... Vs>
-    //         requires (meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
-    //     constexpr bool arg_bind<T, Vs...> =
-    //         (meta::convertible_to<meta::arg_value_type<Vs>, meta::arg_type<T>> && ...);
-    //     template <meta::variadic_keyword T, meta::keyword... Vs>
-    //         requires (!meta::arg_has_type<T> && ... && meta::arg_has_value<Vs>)
-    //     constexpr bool arg_bind<T, Vs...> =
-    //         (meta::not_void<meta::arg_value_type<Vs>> && ...);
-
-    // }
-
-    // template <typename T, typename... Ts>
-    // concept arg_bind = meta::arg<T> && detail::arg_bind<T, Ts...>;
-
-}
+/// auto func = def([](int x, int y) { return x + y; });
 
 
 namespace impl {
 
-    /// TODO: the public signature class would be templated to take a function type
-    /// and then infer the proper impl::signature from it.  That enables CTAD
-    /// introspection for arbitrary function types, and allows for extensions as well,
-    /// if you want to customize the output of the `def()` statement for a given
-    /// function type.
+    /* A subclass of `Arg` that categorizes it as having one or more partially-applied
+    values when stored within an `impl::signature` object.  This changes nothing about
+    the argument itself, but triggers the function call machinery to always insert a
+    particular value that may only be known at runtime, and is stored within the
+    signature itself.  Calling a signature's `.bind()` method equates to marking one or
+    more of its arguments with this type, and `.clear()` strips all such wrappers from
+    the signature's arguments. */
+    template <meta::unqualified Arg, typename... Ts> requires (meta::arg<Arg>)
+    struct partial : Arg, impl::partial_tag {
+        using arg_type = Arg;
+        using partial_types = meta::pack<Ts...>;
+    };
 
-    /// auto func = def([](int x, int y) { return x + y; });
+    /* Template arguments must store partial values internally in order to ensure they
+    are encoded at compile time. */
+    template <meta::unqualified Arg, typename... Ts> requires (meta::template_arg<Arg>)
+    struct partial<Arg, Ts...> : Arg, impl::partial_tag {
+        using arg_type = Arg;
+        using partial_types = meta::pack<Ts...>;
+        bertrand::args<Ts...> partial_values;
+    };
 
+    template <typename...>
+    struct _make_partial;
+    template <meta::arg A, typename... Ps, typename... Ts>
+    struct _make_partial<A, meta::pack<Ps...>, Ts...> {
+        using type = partial<A, Ps..., Ts...>;
+    };
+
+    /* Mark a runtime argument as a partial, which will store a list of types inside
+    the signature, to be used at runtime for binding.  If the argument already has
+    partial values, then the argument list will be extended with the new values. */
+    template <typename... Ts, meta::arg Arg>
+    constexpr auto make_partial(Arg&& arg)
+        noexcept(requires{{typename _make_partial<
+            meta::unqualify<Arg>,
+            meta::partial_types<Arg>,
+            Ts...
+        >::type{std::forward<Arg>(arg)}} noexcept;})
+        requires(requires{
+            typename _make_partial<
+                meta::unqualify<Arg>,
+                meta::partial_types<Arg>,
+                Ts...
+            >::type{std::forward<Arg>(arg)};
+        })
+    {
+        return typename _make_partial<
+            meta::unqualify<Arg>,
+            meta::partial_types<Arg>,
+            Ts...
+        >::type{std::forward<Arg>(arg)};
+    }
+
+    /* Mark a template argument as a partial, which will store a list of values inside
+    the signature, to be used at compile time for binding.  If the argument already has
+    partial values, then the argument list will be extended with the new values. */
+    template <meta::template_arg Arg, typename... Ts>
+    constexpr auto make_partial(Arg&& arg, Ts&&... ts)
+        noexcept(requires{{typename _make_partial<
+            meta::unqualify<Arg>,
+            meta::partial_types<Arg>,
+            Ts...
+        >::type{
+            std::forward<Arg>(arg),
+            bertrand::args{std::forward<Ts>(ts)...}
+        }} noexcept;})
+        requires(requires{
+            typename _make_partial<
+                meta::unqualify<Arg>,
+                meta::partial_types<Arg>,
+                Ts...
+            >::type{
+                std::forward<Arg>(arg),
+                bertrand::args{std::forward<Ts>(ts)...}
+            };
+        })
+    {
+        return typename _make_partial<
+            meta::unqualify<Arg>,
+            meta::partial_types<Arg>,
+            Ts...
+        >::type{std::forward<Arg>(arg), bertrand::args{std::forward<Ts>(ts)...}};
+    }
+
+    /* Form a partial from an argument and a list of values.  If the argument already
+    has partial values, then the argument list will be extended with the new values. */
+    template <meta::template_arg Arg, typename... Ts> requires (meta::partial_arg<Arg>)
+    constexpr auto make_partial(Arg&& arg, Ts&&... ts)
+        noexcept(requires{{typename _make_partial<
+            meta::unqualify<Arg>,
+            meta::partial_types<Arg>,
+            Ts...
+        >::type{
+            std::forward<Arg>(arg),
+            bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
+        }} noexcept;})
+        requires(requires{
+            typename _make_partial<
+                meta::unqualify<Arg>,
+                meta::partial_types<Arg>,
+                Ts...
+            >::type{
+                std::forward<Arg>(arg),
+                bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
+            };
+        })
+    {
+        return typename _make_partial<
+            meta::unqualify<Arg>,
+            meta::partial_types<Arg>,
+            Ts...
+        >::type{
+            std::forward<Arg>(arg),
+            bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
+        };
+    }
+
+    /* Strip any partial values from an argument. */
+    template <meta::arg Arg>
+    constexpr decltype(auto) remove_partial(Arg&& arg) noexcept {
+        if constexpr (meta::partial_arg<Arg>) {
+            return (std::forward<
+                meta::qualify<typename meta::unqualify<Arg>::arg_type, Arg>
+            >(arg));
+        } else {
+            return (std::forward<Arg>(arg));
+        }
+    }
+
+    /* Form a `bertrand::args{}` container to back the runtime partial arguments, for
+    later use in signature binding logic. */
+    template <typename out, const auto&...>
+    struct _extract_partial { using type = out::template eval<bertrand::args>; };
+    template <typename out, const auto& A, const auto&... Args>
+        requires (meta::partial_arg<decltype(A)>)
+    struct _extract_partial<out, A, Args...> {
+        using type = _extract_partial<
+            typename out::template concat<meta::partial_types<decltype(A)>>,
+            Args...
+        >::type;
+    };
+    template <typename out, const auto& A, const auto&... Args>
+        requires (!meta::partial_arg<decltype(A)>)
+    struct _extract_partial<out, A, Args...> {
+        using type = _extract_partial<out, Args...>::type;
+    };
+    template <const auto&... Args> requires (meta::arg<decltype(Args)> && ...)
+    using extract_partial = _extract_partial<meta::pack<>, Args...>::type;
 
     /* Represents a completed Python-like signature composed of the templated argument
     annotations.  An enabled `bertrand::signature<F>` class always inherits from this
@@ -2307,6 +2376,10 @@ namespace impl {
 
         [[nodiscard]] static constexpr bool empty() noexcept {
             return size() == 0;
+        }
+
+        [[nodiscard]] static constexpr size_type n_bound() noexcept {
+            return (meta::partial_types<decltype(Args)>::size + ... + 0);
         }
 
     private:
@@ -2398,8 +2471,66 @@ namespace impl {
             std::make_index_sequence<info.run_time.kwargs.offset < size()>{}
         );
 
+        using partial_type = impl::extract_partial<Args...>;
+        partial_type m_partial;
+
+        template <size_type I> requires (I >= info.compile_time.n)
+        static constexpr size_type partial_idx() noexcept {
+            size_type result = 0;
+            for (size_type i = info.comile_time.n; i < I; ++i) {
+                result += info.params[i].partial;
+            }
+            return result;
+        }
+
+        template <typename Self, index_type I>
+        struct param {};  // never actually returned to the user, but must be defined
+        template <typename Self, index_type I> requires (impl::valid_index<ssize(), I>)
+        struct param<Self, I> {
+            static constexpr size_type index =
+                size_type(impl::normalize_index<ssize(), I>());
+
+        private:
+            static constexpr const auto& arg =
+                meta::unpack_value<index, Args...>;
+
+        public:
+            static constexpr const auto& name = meta::arg_name<decltype(arg)>;
+            static constexpr size_type partial = meta::partial_types<decltype(arg)>::size;
+            static constexpr impl::arg_kind kind = info.params[index].kind;
+            meta::remove_rvalue<Self> signature;
+
+            static constexpr bool has_value() noexcept {
+                return
+                    meta::partial_arg<decltype(arg)> ||
+                    meta::bound_arg<decltype(arg)>;
+            }
+
+            template <typename S>
+            constexpr decltype(auto) value(this S&& self) noexcept
+                requires(has_value() && meta::partial_arg<decltype(arg)>)
+            {
+                if constexpr (meta::template_arg<decltype(arg)>) {
+                    return (arg.partial_values);
+                } else {
+                    return (std::forward<S>(self).signature.m_partial.template get<
+                        partial_idx<index>()
+                    >());
+                }
+            }
+
+            static constexpr decltype(auto) value()
+                noexcept(requires{{arg.value()} noexcept;})
+                requires(has_value() && !meta::partial_arg<decltype(arg)>)
+            {
+                return arg.value();
+            }
+        };
+
     public:
-        using param = info_type::param;
+        using value_type = info_type::param;
+        using reference = info_type::params_t::reference;
+        using const_reference = info_type::params_t::const_reference;
         using pointer = info_type::params_t::const_pointer;
         using const_pointer = info_type::params_t::const_pointer;
         using iterator = info_type::params_t::const_iterator;
@@ -2409,9 +2540,6 @@ namespace impl {
         using slice = impl::slice<iterator>;
         using const_slice = impl::slice<const_iterator>;
 
-        using partial_type = impl::partial_args<Args...>;
-        partial_type partial;
-
         /* Construct a signature with a given set of partial arguments.  The arguments
         must exactly match the specification given in the template list. */
         template <typename... Ts>
@@ -2419,7 +2547,7 @@ namespace impl {
             noexcept(noexcept(partial_type(std::forward<Ts>(partial)...)))
             requires(requires{partial_type(std::forward<Ts>(partial)...);})
         :
-            partial(std::forward<Ts>(partial)...)
+            m_partial(std::forward<Ts>(partial)...)
         {}
 
         /* CTAD constructor, which allows the signature to be deduced from an
@@ -2430,7 +2558,7 @@ namespace impl {
             noexcept(noexcept(partial_type(std::forward<Ts>(partial)...)))
             requires(requires{partial_type(std::forward<Ts>(partial)...);})
         :
-            partial(std::forward<Ts>(partial)...)
+            m_partial(std::forward<Ts>(partial)...)
         {}
 
         [[nodiscard]] static constexpr pointer data() noexcept {
@@ -2475,7 +2603,7 @@ namespace impl {
         /* Search the signature for an argument with the given name.  Returns an
         iterator to that argument if it is present, or an `end()` iterator otherwise. */
         template <static_str kw>
-        [[nodiscard]] static constexpr auto find() noexcept {
+        [[nodiscard]] static constexpr iterator find() noexcept {
             if constexpr (contains<kw>()) {
                 return info.params.begin() + names.template get<kw>();
             } else {
@@ -2485,7 +2613,7 @@ namespace impl {
 
         /* Search the signature for an argument with the given name.  Returns an
         iterator to that argument if it is present, or an `end()` iterator otherwise. */
-        [[nodiscard]] static constexpr auto find(std::string_view kw) noexcept {
+        [[nodiscard]] static constexpr iterator find(std::string_view kw) noexcept {
             if (const auto it = names.find(kw); it != names.end()) {
                 return info.params.begin() + it->second;
             } else {
@@ -2493,25 +2621,205 @@ namespace impl {
             }
         }
 
-        /// TODO: get<...>(), get(...), get_if<...>(), get_if(...)
-        /// -> get() and co could return the actual argument annotations, rather than
-        /// a param descriptor, which would likely allow me to rebind them to the
-        /// correct partial values if they have any.
+        /* Return a parameter descriptor for the parameter at index I, applying
+        Python-style wraparound for negative indices.  Fails to compile if the index
+        would be out of range after normalization.  Note that the parameter descriptor
+        returned by this method differs from that of simple indexing or iteration in
+        that it also encodes the true partial or default value with the proper type,
+        if the argument has such a value. */
+        template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
+        [[nodiscard]] constexpr auto get(this Self&& self)
+            noexcept(requires{{param<Self, I>{std::forward<Self>(self)}} noexcept;})
+            requires(requires{param<Self, I>{std::forward<Self>(self)};})
+        {
+            return param<Self, I>{std::forward<Self>(self)};
+        }
 
-        /* Search the signature for an argument with the given name.  Returns a
-        parameter descriptor that includes its name, index in the signature and
-        kind.  May throw a `KeyError` if the keyword name is not present.  Use `get()`
-        and `get_if()` to avoid the error. */
-        [[nodiscard]] static constexpr const param& operator[](
-            std::string_view kw
-        ) noexcept(noexcept(info.params[names[kw]])) {
-            return info.params[names[kw]];
+        /* Return a parameter descriptor for a named argument, assuming it is present
+        in the signature.  Fails to compile otherwise.  Note that the parameter
+        descriptor returned by this method differs from that of simple indexing or
+        iteration in that it also encodes the true partial or default value with the
+        proper type, if the argument has such a value. */
+        template <static_str name, typename Self> requires (contains<name>())
+        [[nodiscard]] constexpr auto get(this Self&& self)
+            noexcept(requires{{param<Self, index_type(names.template get<name>())>{
+                std::forward<Self>(self)
+            }} noexcept;})
+            requires(requires{param<Self, index_type(names.template get<name>())>{
+                std::forward<Self>(self)
+            };})
+        {
+            return param<Self, index_type(names.template get<name>())>{
+                std::forward<Self>(self)
+            };
+        }
+
+        /// TODO: what I should do instead is have names.get() also return an expected,
+        /// and then simply transform the result by looking up the index in the
+        /// parameter map.  That's easier to write.
+
+        /* Index into the signature, returning an `Expected<T, IndexError>`, where `T`
+        is a parameter descriptor that includes its name, index in the signature, and
+        kind. */
+        [[nodiscard]] static constexpr auto get(index_type idx)
+            noexcept(requires{
+                {Expected<const typename info_type::param&, IndexError>{
+                    info.params[idx + (ssize() * (idx < 0))]
+                }} noexcept;
+                {Expected<const typename info_type::param&, IndexError>{
+                    IndexError()
+                }} noexcept;
+            })
+            -> Expected<const typename info_type::param&, IndexError>
+            requires(requires{
+                Expected<const typename info_type::param&, IndexError>{
+                    info.params[idx + (ssize() * (idx < 0))]
+                };
+                Expected<const typename info_type::param&, IndexError>{
+                    IndexError()
+                };
+            })
+        {
+            index_type i = idx + (ssize() * (idx < 0));
+            if (i < 0 || i >= ssize()) {
+                if consteval {
+                    return IndexError();
+                } else {
+                    return IndexError(std::to_string(idx));
+                }
+            } else {
+                return {info.params[i]};
+            }
+        }
+
+        /* Search the signature for an argument with the given name.  Returns an
+        `Expected<T, KeyError>`, where `T` is a parameter descriptor that includes the
+        argument's name, index in the signature, and kind. */
+        [[nodiscard]] static constexpr auto get(std::string_view name)
+            noexcept(requires{
+                {Expected<const typename info_type::param&, KeyError>{
+                    info.params[names[name]]
+                }} noexcept;
+                {Expected<const typename info_type::param&, KeyError>{
+                    KeyError(name)
+                }} noexcept;
+            })
+            -> Expected<const typename info_type::param&, KeyError>
+            requires(requires{
+                Expected<const typename info_type::param&, KeyError>{
+                    info.params[names[name]]
+                };
+                Expected<const typename info_type::param&, KeyError>{
+                    KeyError(name)
+                };
+            })
+        {
+            if (const auto it = names.find(name); it != names.end()) {
+                return {info.params[it->second]};
+            } else {
+                return KeyError(name);
+            }
+        }
+
+        /* Index into the signature, returning an `Optional<T>`, where `T` is the
+        same parameter descriptor returned by `get<I>()`.  Instead of failing to
+        compile if the index is out of bounds after normalization, this method returns
+        an empty optional. */
+        template <index_type I, typename Self>
+        [[nodiscard]] constexpr auto get_if(this Self&& self)
+            noexcept(!impl::valid_index<ssize(), I> || requires{
+                {Optional<param<Self, I>>{param<Self, I>{std::forward<Self>(self)}}} noexcept;
+            })
+            -> Optional<param<Self, I>>
+            requires(!impl::valid_index<ssize(), I> || requires{
+                Optional<param<Self, I>>{param<Self, I>{std::forward<Self>(self)}};
+            })
+        {
+            if constexpr (impl::valid_index<ssize(), I>) {
+                return param<Self, I>{std::forward<Self>(self)};
+            } else {
+                return None;
+            }
+        }
+
+        /* Search the signature for an argument with the given name.  Returns an
+        `Optional<T>`, where `T` is the same parameter descriptor returned by
+        `get<name>()`.  Instead of failing to compile if the name is not present, this
+        method returns an empty optional. */
+        template <static_str name, typename Self> requires (contains<name>())
+        [[nodiscard]] constexpr auto get_if(this Self&& self)
+            noexcept(requires{
+                {Optional<param<Self, names.template get<name>()>>{
+                    std::forward<Self>(self)
+                }} noexcept;
+            })
+            -> Optional<param<Self, names.template get<name>()>>
+            requires(requires{
+                Optional<param<Self, names.template get<name>()>>{
+                    std::forward<Self>(self)
+                };
+            })
+        {
+            return param<Self, names.template get<name>()>{std::forward<Self>(self)};
+        }
+
+        /* Search the signature for an argument with the given name.  Returns an
+        `Optional<T>`, where `T` is the same parameter descriptor returned by
+        `get<name>()`.  Instead of failing to compile if the name is not present, this
+        method returns an empty optional. */
+        template <static_str name, typename Self> requires (!contains<name>())
+        [[nodiscard]] constexpr auto get_if(this Self&& self) noexcept
+            -> Optional<param<Self, size()>>
+        {
+            return None;
+        }
+
+        /* Index into the signature, returning an `Optional<T>`, where `T` is a
+        parameter descriptor that includes its name, index in the signature, and kind.
+        The empty state indicates that the index was out of range after
+        normalization. */
+        [[nodiscard]] static constexpr auto get_if(index_type idx)
+            noexcept(requires{{Optional<const typename info_type::param&>{
+                info.params[idx + (ssize() * (idx < 0))]
+            }} noexcept;})
+            -> Optional<const typename info_type::param&>
+            requires(requires{Optional<const typename info_type::param&>{
+                info.params[idx + (ssize() * (idx < 0))]
+            };})
+        {
+            index_type i = idx + (ssize() * (idx < 0));
+            if (i < 0 || i >= ssize()) {
+                return None;
+            } else {
+                return {info.params[i]};
+            }
+        }
+
+        /* Search the signature for an argument with the given name.  Returns an
+        `Optional<T>`, where `T` is a parameter descriptor that includes the argument's
+        name, index in the signature, and kind.  The empty state indicates that the
+        argument name is not present in the signature. */
+        [[nodiscard]] static constexpr auto get_if(std::string_view name)
+            noexcept(requires{{Optional<const typename info_type::param&>{
+                info.params[names[name]]
+            }} noexcept;})
+            -> Optional<const typename info_type::param&>
+            requires(requires{Optional<const typename info_type::param&>{
+                info.params[names[name]]
+            };})
+        {
+            if (const auto it = names.find(name); it != names.end()) {
+                return {info.params[it->second]};
+            } else {
+                return None;
+            }
         }
 
         /* Index into the signature, returning a parameter descriptor that includes
-        its name and kind (positional-only, variadic, a separator, return annotation,
-        etc.). */
-        [[nodiscard]] static constexpr const param& operator[](index_type idx)
+        its name, index in the signature, and kind.  May throw an `IndexError` if the
+        index is out of bounds after normalization.  Use `get()` and `get_if()` to
+        avoid the error. */
+        [[nodiscard]] static constexpr const auto& operator[](index_type idx)
             noexcept(noexcept(info.params[impl::normalize_index(ssize(), idx)]))
         {
             return info.params[impl::normalize_index(ssize(), idx)];
@@ -2525,10 +2833,20 @@ namespace impl {
             return {*this, s.normalize(ssize())};
         }
 
+        /* Search the signature for an argument with the given name.  Returns a
+        parameter descriptor that includes its name, index in the signature, and
+        kind.  May throw a `KeyError` if the keyword name is not present.  Use `get()`
+        and `get_if()` to avoid the error. */
+        [[nodiscard]] static constexpr const auto& operator[](
+            std::string_view kw
+        ) noexcept(noexcept(info.params[names[kw]])) {
+            return info.params[names[kw]];
+        }
+
         /* Return an iterator to the specified index of the signature, applying
         Python-style wraparound if necessary.  If the index is out of range after
         normalizing, then an `end()` iterator will be returned instead. */
-        [[nodiscard]] static constexpr auto at(index_type idx) noexcept {
+        [[nodiscard]] static constexpr iterator at(index_type idx) noexcept {
             index_type i = idx + (ssize() * (idx < 0));
             return (i < 0 || i >= ssize()) ? end() : info.params.begin() + i;
         }
@@ -2542,8 +2860,10 @@ namespace impl {
         }
 
         /* Strip all partial arguments from the signature. */
-        [[nodiscard]] static constexpr auto clear() noexcept {
-            return signature<impl::remove_partial(Args)...>{};
+        [[nodiscard]] static constexpr auto clear() noexcept
+            -> signature<impl::remove_partial(Args)...>
+        {
+            return {};
         }
 
         /* Bind a set of partial arguments to this signature, returning a new signature
@@ -2553,36 +2873,11 @@ namespace impl {
         template <auto... T, typename Self, typename... A>
         [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
             noexcept(requires{{invoke<Args...>::template bind<T...>(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(T) - 1>{},
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
         {
             return (invoke<Args...>::template bind<T...>(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(T) - 1>{},
-                std::forward<Self>(self).partial,
-                std::forward<A>(args)...
-            ));
-        }
-
-        /* Bind a set of partial arguments to this signature, returning a new signature
-        that concatenates the new partial arguments with any existing ones.  All
-        arguments will be perfectly forwarded if possible, allowing this method to
-        be efficiently chained without intermediate copies. */
-        template <typename Self, typename... A>
-        [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
-            noexcept(requires{{invoke<Args...>::bind(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(A) ? sizeof...(A) - 1 : 0>{},
-                std::forward<Self>(self).partial,
-                std::forward<A>(args)...
-            )} noexcept;})
-        {
-            return (invoke<Args...>::bind(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(A) ? sizeof...(A) - 1 : 0>{},
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             ));
@@ -2598,42 +2893,12 @@ namespace impl {
             A&&... args
         )
             noexcept(requires{{invoke<Args...>::template operator()<T...>(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(T) - 1>{},
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
             )} noexcept;})
         {
             return (invoke<Args...>::template operator()<T...>(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(T) - 1>{},
-                std::forward<Self>(self).partial,
-                std::forward<F>(func),
-                std::forward<A>(args)...
-            ));
-        }
-
-        /* Invoke a function with the partial arguments stored in this signature,
-        merged with any explicit template or runtime arguments provided at the call
-        site. */
-        template <typename Self, typename F, typename... A>
-        [[nodiscard]] constexpr decltype(auto) operator()(
-            this Self&& self,
-            F&& func,
-            A&&... args
-        )
-            noexcept(requires{{invoke<Args...>::operator()(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(A) ? sizeof...(A) - 1 : 0>{},
-                std::forward<Self>(self).partial,
-                std::forward<F>(func),
-                std::forward<A>(args)...
-            )} noexcept;})
-        {
-            return (invoke<Args...>::operator()(
-                std::make_index_sequence<0>{},
-                std::make_index_sequence<sizeof...(A) ? sizeof...(A) - 1 : 0>{},
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
@@ -2646,85 +2911,127 @@ namespace impl {
 
     private:
 
-        /// TODO: the previous binding logic used separate I, J, and K indices to
-        /// track the position in the signature.
-        ///     I - current target argument
-        ///     J - current source argument
-        ///     K - current partial argument
-        /// Right now, I can easily recover `I` from the invoke<> argument list, and
-        /// J from the index sequences that are provided at each call, but there's
-        /// no tracking for the partial arguments.  I may not need them, since I could
-        /// possibly recover it by counting how many partial arguments occur to the
-        /// left of the current argument, or I could pass it in as an extra template
-        /// parameter to invoke<K, Args...>.
+        /// TODO: Validation has to be done via something like the signature_info
+        /// class, which needs to do many of the same things, but directed at the call
+        /// site rather than the signature itself.  It would probably be best to
+        /// reimplement it just below signature_info, call it `call_info`, and only
+        /// retain the minimum logic necessary to validate correct ordering and
+        /// outlawing separators, duplicate names, variadic names, etc.  I then
+        /// construct one as a static constexpr member of the signature class, and
+        /// use that to surface compile time errors.
 
         template <const auto&...>
         struct invoke {
             template <auto... T, typename P, typename... A>
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                noexcept(requires{{
-                    signature<T...>{std::forward<A>(args)...}
-                } noexcept;})
+                requires(sizeof...(T) > size())
             {
-                static_assert(([] consteval {
-                    if constexpr (sizeof...(T) > size()) {
-                        static constexpr static_str msg =
-                            "Too many template parameters for partial application";
-                        /// TODO: provide a detailed error message
-                        throw TypeError(msg);
-                    }
-                    if constexpr (sizeof...(A) > 0 /* The total number of partial arguments */) {
-                        static constexpr static_str msg =
-                            "Too many runtime arguments for partial application";
-                        /// TODO: provide a detailed error message
-                        throw TypeError(msg);
-                    }
-                }(), true));
+                static constexpr static_str msg =
+                    "Too many template parameters for partial application";
+                /// TODO: provide a detailed error message
+                static_assert(([] consteval { throw TypeError(msg); }(), true));
+            }
+
+            template <auto... T, typename P, typename... A>
+            static constexpr decltype(auto) bind(P&& partial, A&&... args)
+                requires(
+                    sizeof...(T) == size() &&
+                    sizeof...(A) > n_bound() &&
+                    meta::variadic<meta::unpack_type<n_bound(), A...>>
+                )
+            {
+                meta::unpack_arg<n_bound()>(args...).validate();
+                /// TODO: drop the pack and recur
+            }
+
+            template <auto... T, typename P, typename... A>
+            static constexpr decltype(auto) bind(P&& partial, A&&... args)
+                requires(
+                    sizeof...(T) == size() &&
+                    sizeof...(A) > n_bound() &&
+                    !meta::variadic<meta::unpack_type<n_bound(), A...>>
+                )
+            {
+                static constexpr static_str msg =
+                    "Too many runtime arguments for partial application";
+                /// TODO: provide a detailed error message
+                static_assert(([] consteval { throw TypeError(msg); }(), true));
+            }
+
+            template <auto... T, typename P, typename... A>
+            static constexpr decltype(auto) bind(P&& partial, A&&... args)
+                noexcept(requires{{signature<T...>{std::forward<A>(args)...}} noexcept;})
+                requires(sizeof...(T) == size() && sizeof...(A) == n_bound())
+            {
                 return (signature<T...>{std::forward<A>(args)...});
             }
+
+            template <auto... T, typename P, typename F, typename... A>
+            static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
+                requires(sizeof...(T) > size())
+            {
+                static constexpr static_str msg =
+                    "Too many template parameters for function";
+                /// TODO: provide a detailed error message
+                static_assert(([] consteval { throw TypeError(msg); }(), true));
+            }
+
+            template <auto... T, typename P, typename F, typename... A>
+            static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
+                requires(
+                    sizeof...(T) == size() &&
+                    sizeof...(A) > n_bound() &&
+                    meta::variadic<meta::unpack_type<n_bound(), A...>>
+                )
+            {
+                meta::unpack_arg<n_bound()>(args...).validate();
+                /// TODO: drop the pack and recur
+            }
+
+            template <auto... T, typename P, typename F, typename... A>
+            static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
+                requires(
+                    sizeof...(T) == size() &&
+                    sizeof...(A) > n_bound() &&
+                    !meta::variadic<meta::unpack_type<n_bound(), A...>>
+                )
+            {
+                static constexpr static_str msg =
+                    "Too many runtime arguments for function";
+                /// TODO: provide a detailed error message
+                static_assert(([] consteval { throw TypeError(msg); }(), true));
+            }
+
 
             template <auto... T, typename P, typename F, typename... A>
             static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
                 noexcept(requires{{std::forward<F>(func).template operator()<T...>(
                     std::forward<A>(args)...
                 )} noexcept;})
+                requires(sizeof...(T) == size() && sizeof...(A) == n_bound())
             {
-                static_assert(([] consteval {
-                    if constexpr (sizeof...(T) > info.compile_time.n) {
-                        static constexpr static_str msg =
-                            "Too many template parameters for function";
-                        /// TODO: provide a detailed error message
-                        throw TypeError(msg);
-                    }
-                    if constexpr (sizeof...(A) > info.run_time.n) {
-                        static constexpr static_str msg =
-                            "Too many runtime arguments for function";
-                        /// TODO: provide a detailed error message
-                        throw TypeError(msg);
-                    }
-                }(), true));
-                return (std::forward<F>(func).template operator()<T...>(
+                if constexpr (requires{std::forward<F>(func).template operator()<T...>(
                     std::forward<A>(args)...
-                ));
+                );}) {
+                    return (std::forward<F>(func).template operator()<T...>(
+                        std::forward<A>(args)...
+                    ));
+                } else {
+                    static constexpr static_str msg =
+                        "underlying function is not callable with the given arguments";
+                    /// TODO: provide a detailed error message
+                    static_assert(([] consteval { throw TypeError(msg); }, true));
+                }
             }
         };
 
-        /// TODO: there probably does need to be a preliminary pass over the input
-        /// arguments to make sure that they are given in the proper order, do not
-        /// contain duplicate names, contain only one of each argument pack, and filter
-        /// out any empty packs ahead of time, so that the forward_from_pack method
-        /// can greedily extract a value, and then discard the pack if that was the
-        /// last value.
-        /// -> the preliminary pass needs to ensure proper argument order and no
-        /// duplicate args, but we should be able to handle everything else as the
-        /// binding logic is invoked.  Also check to make sure sentinel values and
-        /// variadic parameters are not given at the call site, unless the variadic
-        /// parameters inherit from the unpacking operator tag.
-        /// -> Also, all arguments must be bound standard args or unpack operator views,
-        /// or not arguments at all.
-
         /// TODO: unpacking operators are not allowed as template parameters.
         /// TODO: also, bind() never accepts positional or keyword unpacking operators
+
+        /// TODO: it might be better to use a tracking index rather than iterating
+        /// over the arguments one at a time, since it might simplify the implementation
+        /// of the call operator.  That said, it may not actually matter, and if it
+        /// doesn't, then this is simpler and likely faster to compile.
 
         template <const auto& curr, const auto&... rest>
             requires (meta::template_arg<decltype(curr)>)
@@ -2807,15 +3114,15 @@ namespace impl {
                 noexcept(requires{{
                     invoke<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
-                        impl::make_partial(curr, meta::unpack_value<sizeof...(prev), T...>),
-                        meta::unpack_value<(sizeof...(prev) + 1) + next, T...>...
+                        impl::make_partial(curr, meta::unpack_value<I, T...>),
+                        meta::unpack_value<I + 1 + next, T...>...
                     >(std::forward<P>(partial), std::forward<A>(args)...)
                 } noexcept;})
             {
                 return (invoke<rest...>::template bind<
                     meta::unpack_value<prev, T...>...,
-                    impl::make_partial(curr, meta::unpack_value<sizeof...(prev), T...>),
-                    meta::unpack_value<(sizeof...(prev) + 1) + next, T...>...
+                    impl::make_partial(curr, meta::unpack_value<I, T...>),
+                    meta::unpack_value<I + 1 + next, T...>...
                 >(std::forward<P>(partial), std::forward<A>(args)...));
             }
 
@@ -2898,7 +3205,6 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     ));
-
                 } else if constexpr (!typed || meta::convertible_to<
                     decltype(meta::unpack_value<I, T...>),
                     meta::arg_type<decltype(curr)>
@@ -2909,7 +3215,6 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     ));
-
                 } else {
                     static constexpr static_str msg =
                         "cannot convert template parameter of type '" +
@@ -3066,7 +3371,6 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     ));
-
                 } else if constexpr (!typed || meta::convertible_to<
                     meta::arg_value<decltype(meta::unpack_value<
                         consume_keyword<T...>,
@@ -3081,7 +3385,6 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     ));
-
                 } else {
                     static constexpr static_str msg =
                         "cannot convert template parameter of type '" +
@@ -3093,6 +3396,10 @@ namespace impl {
                     std::unreachable();
                 }
             }
+
+            /// TODO: basically, these should scan all arguments to the right of `I`
+            /// and consume those of the same class.  Type checks are done and
+            /// static errors are thrown if the types are incompatible.
 
             template <auto... T, typename P, typename... A> requires (param.args())
             static constexpr decltype(auto) bind(P&& partial, A&&... args) {
@@ -3106,6 +3413,23 @@ namespace impl {
             template <auto... T, typename P, typename... A> requires (param.kwargs())
             static constexpr decltype(auto) bind(P&& partial, A&&... args) {
                 /// TODO: make sure to concatenate existing partial args
+            }
+
+            template <auto... T, typename P, typename... A> requires (param.sentinel())
+            static constexpr decltype(auto) bind(P&& partial, A&&... args)
+                noexcept(requires{{bind_forward<T...>(
+                    std::make_index_sequence<I>{},
+                    std::make_index_sequence<sizeof...(T) - I>{},
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                )} noexcept;})
+            {
+                return (bind_forward<T...>(
+                    std::make_index_sequence<I>{},
+                    std::make_index_sequence<sizeof...(T) - I>{},
+                    std::forward<P>(partial),
+                    std::forward<A>(args)...
+                ));
             }
 
         private:
@@ -3184,7 +3508,20 @@ namespace impl {
             static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args) {
                 
             }
+
+            template <auto... T, typename P, typename F, typename... A> requires (param.sentinel())
+            static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args) {
+
+            }
         };
+
+
+        /// TODO: calculating the index in the partial tuple means counting the number
+        /// of partial types that occur to the left of the current parameter within the
+        /// runtime section.  When indexing for a variadic positional or keyword
+        /// argument, we know the length of the arguments we want to extract, so we can
+        /// extract precisely that many and keep the math totally consistent.
+        /// -> impl::partial_idx<I, Args...>
 
         template <const auto& curr, const auto&... rest>
             requires (!meta::template_arg<decltype(curr)>)
@@ -3235,6 +3572,10 @@ namespace impl {
 
 
 
+
+
+
+
     static constexpr auto x = "x"_;
     static constexpr auto z = "z"_(2);
     static constexpr auto p1 = impl::partial<meta::unqualify<decltype(x)>, int>{x};
@@ -3242,8 +3583,14 @@ namespace impl {
 
 
     inline constexpr signature<p1, "/"_, "y"_, "*args"_, p2> sig{1, "z"_ = 2};
-    static_assert(sig["x"].idx == 0);
-    static_assert(sig.clear().partial.size() == 0);
+    inline constexpr auto param = sig["x"];
+    static_assert(sig["x"].index == 0);
+    static_assert(sig.n_bound() == 2);
+    static_assert(sig.clear().n_bound() == 0);
+    static_assert(sig.get<-1>().has_value());
+    static_assert(sig.get(-1).value().name == "z");
+    static_assert(sig.get("x").value().kind.posonly());
+    static_assert(sig.get_if<"x">().has_value());
 
 
 
