@@ -4,7 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/union.h"
-#include "bertrand/iter.h"
+#include "bertrand/iter.h"  // TODO: can possibly remove this dependency if I forward declare in common.h
 #include "bertrand/static_str.h"
 
 #include <unordered_map>
@@ -190,20 +190,14 @@ namespace meta {
         valid_kwonly_separator<name> ||
         valid_return_annotation<name>;
 
-    template <meta::arg T>
-    constexpr const auto& arg_id = unqualify<T>::id;
+    template <typename T>
+    concept typed_arg = arg<T> && not_void<typename meta::unqualify<T>::type>;
 
     template <arg T>
-    using partial_types = meta::unqualify<T>::partial_types;
+    using arg_type = unqualify<T>::type;
 
     template <typename T>
-    concept typed_arg = meta::arg<T> && meta::not_void<typename meta::unqualify<T>::type>;
-
-    template <arg T>
-    using arg_type = meta::unqualify<T>::type;
-
-    template <typename T>
-    concept bound_arg = meta::arg<T> && requires(T&& t) { ::std::forward<T>(t).value(); };
+    concept bound_arg = arg<T> && requires(T&& t) { ::std::forward<T>(t).value(); };
 
     template <bound_arg T>
     using arg_value = decltype(::std::declval<T>().value());
@@ -220,7 +214,28 @@ namespace meta {
 
     }
 
+    template <meta::arg T>
+    constexpr const auto& arg_id = unqualify<T>::id;
+
+    template <arg T>
+    using partials = meta::unqualify<T>::partials;
+
     namespace detail {
+
+        template <typename T>
+        constexpr bertrand::static_str arg_prefix = "";
+        template <meta::return_annotation T>
+        constexpr bertrand::static_str arg_prefix<T> = meta::arg_id<T>;
+        template <meta::positional_only_separator T>
+        constexpr bertrand::static_str arg_prefix<T> = meta::arg_id<T>;
+        template <meta::keyword_only_separator T>
+        constexpr bertrand::static_str arg_prefix<T> = meta::arg_id<T>;
+        template <meta::variadic_positional T>
+        constexpr bertrand::static_str arg_prefix<T> =
+            meta::arg_id<T>.template get<bertrand::slice{0, 1}>();
+        template <meta::variadic_keyword T>
+        constexpr bertrand::static_str arg_prefix<T> =
+            meta::arg_id<T>.template get<bertrand::slice{0, 2}>();
 
         template <typename T>
         constexpr bertrand::static_str arg_name = "";
@@ -236,7 +251,66 @@ namespace meta {
     }
 
     template <typename T>
+    constexpr bertrand::static_str arg_prefix = detail::arg_prefix<T>;
+
+    template <typename T>
     constexpr bertrand::static_str arg_name = detail::arg_name<T>;
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool unbound_arg = meta::arg<T> && !(
+            meta::bound_arg<T> || meta::arg_pack<T> || meta::kwarg_pack<T>
+        );
+
+        template <typename... Ts>
+        constexpr bool proper_arg_order = true;
+        template <typename T, typename... Ts>
+        constexpr bool proper_arg_order<T, Ts...> = proper_arg_order<Ts...>;
+        template <meta::arg_pack T, typename... Ts>
+        constexpr bool proper_arg_order<T, Ts...> = (
+            (meta::standard_arg<Ts> || meta::kwarg_pack<Ts>) &&
+            ... &&
+            proper_arg_order<Ts...>
+        );
+        template <meta::standard_arg T, typename... Ts>
+        constexpr bool proper_arg_order<T, Ts...> = (
+            (meta::standard_arg<Ts> || meta::kwarg_pack<Ts>) &&
+            ... &&
+            proper_arg_order<Ts...>
+        );
+        template <meta::kwarg_pack T, typename... Ts>
+        constexpr bool proper_arg_order<T, Ts...> = sizeof...(Ts) == 0;
+
+        template <typename... Ts>
+        constexpr bool no_duplicate_names = true;
+        template <typename T, typename... Ts>
+        constexpr bool no_duplicate_names<T, Ts...> = (meta::arg_name<T>.empty() || (
+            (meta::arg_name<T> != meta::arg_name<Ts>) && ...
+        )) && no_duplicate_names<Ts...>;
+
+    }
+
+    template <typename... Ts>
+    concept no_unbound_args = (!detail::unbound_arg<Ts> && ...);
+
+    template <typename... Ts>
+    concept proper_arg_order = detail::proper_arg_order<Ts...>;
+
+    template <typename... Ts>
+    concept no_duplicate_packs =
+        (arg_pack<Ts> + ... + 0) <= 1 || (kwarg_pack<Ts> + ... + 0) <= 1;
+
+    template <typename... Ts>
+    concept no_duplicate_names = detail::no_duplicate_names<Ts...>;
+
+    template <typename... Ts>
+    concept source_args =
+        (not_void<Ts> && ...) &&
+        no_unbound_args<Ts...> &&
+        proper_arg_order<Ts...> &&
+        no_duplicate_packs<Ts...> &&
+        no_duplicate_names<Ts...>;
 
 };
 
@@ -256,7 +330,7 @@ namespace impl {
     struct arg<ID, T, void> : impl::standard_arg_tag {
         using type = T;
         using value_type = void;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -328,7 +402,7 @@ namespace impl {
     struct arg<ID, T, void> : impl::var_args_tag {
         using type = T;
         using value_type = void;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -345,7 +419,7 @@ namespace impl {
     struct arg<ID, T, void> : impl::var_kwargs_tag {
         using type = T;
         using value_type = void;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -362,7 +436,7 @@ namespace impl {
     struct arg<ID, void, void> : impl::posonly_sep_tag {
         using type = void;
         using value_type = void;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
     };
 
@@ -373,7 +447,7 @@ namespace impl {
     struct arg<ID, void, void> : impl::kwonly_sep_tag {
         using type = void;
         using value_type = void;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
     };
 
@@ -384,7 +458,7 @@ namespace impl {
     struct arg<ID, T, void> : impl::return_annotation_tag {
         using type = T;
         using value_type = void;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
@@ -418,7 +492,7 @@ namespace impl {
     struct arg<ID, void, V> : choose_arg_base<arg<ID, void, void>>::type {
         using type = void;
         using value_type = V;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
@@ -440,7 +514,7 @@ namespace impl {
     struct arg<ID, T, V> : choose_arg_base<arg<ID, T, void>>::type {
         using type = T;
         using value_type = V;
-        using partial_types = meta::pack<>;
+        using partials = meta::pack<>;
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
@@ -525,12 +599,6 @@ constexpr std::type_identity<T> type;
 //////////////////////////////
 
 
-/// TODO: also, I either need to make it such that you can only supply one keyword
-/// unpacking operator to args{}, or I need to write logic to merge the packs together,
-/// which is super hard.  The former is probably always a better option, but I need to
-/// think about this interaction a bit more.
-
-
 namespace impl {
     struct args_tag {};
 }
@@ -602,17 +670,16 @@ namespace meta {
             Ts...
         >;
 
-        template <typename... Ts>
-        concept args_spec = ((
-            meta::not_void<Ts> &&
-            meta::convertible_to<Ts, meta::remove_rvalue<Ts>> &&
-            extract_keywords<Ts...>::hashable
-        ) && ...);
-
-        template <typename... Ts>
-        concept nested_args = args_spec<Ts...> && (meta::args<Ts> || ...);
-
     }
+
+    template <typename... Ts>
+    concept args_spec = ((
+        source_args<Ts...> &&
+        detail::extract_keywords<Ts...>::hashable
+    ) && ... && convertible_to<Ts, meta::remove_rvalue<Ts>>);
+
+    template <typename... Ts>
+    concept nested_args = args_spec<Ts...> && (args<Ts> || ...);
 
 }
 
@@ -649,8 +716,12 @@ or in a downstream one where all of the objects are still in scope, as a way of
 enforcing a certain order of operations.  Note that this guidance does not apply to
 rvalues, which are stored directly within the pack, therefore extending their
 lifetimes. */
-template <typename... Ts> requires (meta::detail::args_spec<Ts...>)
+template <typename... Ts> requires (meta::args_spec<Ts...>)
 struct args;
+
+
+template <typename... As> requires (meta::args_spec<As...>)
+args(As&&...) -> args<As...>;
 
 
 namespace impl {
@@ -672,29 +743,6 @@ namespace impl {
     protected:
         using type = meta::remove_rvalue<T>;
         type value;
-
-        template <typename A, typename... As>
-        constexpr args(A&& curr, As&&... rest)
-            noexcept(
-                meta::nothrow::convertible_to<A, type> &&
-                meta::nothrow::constructible_from<args<Ts...>, As...>
-            )
-        :
-            args<Ts...>(std::forward<As>(rest)...),
-            value(std::forward<A>(curr))
-        {}
-
-        /// TODO: if args{} are stored in every signature, and a signature is stored in
-        /// every function, then non-copyability means that functions are move-only.  I'm
-        /// not sure if that's desirable, but right now it's the case.
-        /// TODO: I need to also allow assignment to make signatures (and therefore defs)
-        /// assignable.  That probably means lvalues need to be promoted to pointers,
-        /// so that I can reassign them.
-
-        constexpr args(args&& other) = default;
-        constexpr args(const args&) = default;
-        constexpr args& operator=(const args&) = delete;
-        constexpr args& operator=(args&&) = delete;
 
         template <size_t I, typename S>
         static constexpr decltype(auto) get(S&& s) noexcept {
@@ -727,6 +775,38 @@ namespace impl {
                 std::forward<meta::qualify<args, S>>(s).value
             ));
         }
+
+    public:
+        template <typename A, typename... As>
+        constexpr args(A&& curr, As&&... rest)
+            noexcept(
+                meta::nothrow::convertible_to<A, type> &&
+                meta::nothrow::constructible_from<args<Ts...>, As...>
+            )
+        :
+            args<Ts...>(std::forward<As>(rest)...),
+            value(std::forward<A>(curr))
+        {}
+
+        /// TODO: if args{} are stored in every signature, and a signature is stored in
+        /// every function, then non-copyability means that functions are move-only.  I'm
+        /// not sure if that's desirable, but right now it's the case.
+        /// TODO: I need to also allow assignment to make signatures (and therefore defs)
+        /// assignable.  That probably means lvalues need to be promoted to pointers,
+        /// so that I can reassign them.
+        /// -> Possibly what I could do for assignment is destroy the current pack and
+        /// create a new one with the same arguments, or do a copy and swap.  That also
+        /// means I should overload swap() for args{} as well.  If each argument is
+        /// noexcept destructible and copy/move constructible, then the swap can be
+        /// optimized out.  That could possibly be done internally here by storing the
+        /// reference within a struct that I can separately destroy and reconstruct.
+        /// That would be the best, since then no one ever really needs to think about
+        /// how it works internally.
+
+        constexpr args(args&& other) = default;
+        constexpr args(const args&) = default;
+        constexpr args& operator=(const args&) = delete;
+        constexpr args& operator=(args&&) = delete;
     };
 
     template <typename...>
@@ -758,7 +838,7 @@ namespace impl {
 }
 
 
-template <typename... Ts> requires (meta::detail::args_spec<Ts...>)
+template <typename... Ts> requires (meta::args_spec<Ts...>)
 struct args : impl::args<Ts...> {
 private:
     using base = impl::args<Ts...>;
@@ -806,11 +886,10 @@ public:
     argument packs can never be directly nested.  If this behavior is needed for some
     reason, it can be disabled by encapsulating the arguments in another type, making
     it inaccessible in deduction. */
-    template <meta::is<Ts>... As>
-    [[nodiscard]] constexpr args(As&&... args)
-        noexcept(meta::nothrow::constructible_from<base, As...>)
+    [[nodiscard]] constexpr args(Ts... args)
+        noexcept(noexcept(base(std::forward<Ts>(args)...)))
     :
-        base(std::forward<As>(args)...)
+        base(std::forward<Ts>(args)...)
     {}
 
     /* Get the argument at index I, perfectly forwarding it according to the pack's
@@ -1005,7 +1084,7 @@ public:
 };
 
 
-template <typename... Ts> requires (meta::detail::nested_args<Ts...>)
+template <typename... Ts> requires (meta::nested_args<Ts...>)
 struct args<Ts...> : impl::flatten_args<Ts...> {
 private:
     using base = impl::flatten_args<Ts...>;
@@ -1087,10 +1166,6 @@ public:
         base(flatten<0>(std::forward<As>(args)...))
     {}
 };
-
-
-template <typename... As> requires (meta::detail::args_spec<As...>)
-args(As&&...) -> args<As...>;
 
 
 namespace meta {
@@ -1473,17 +1548,6 @@ namespace impl {
 namespace impl {
     struct signature_tag {};
 
-    /// TODO: maybe nothing actually changes with respect to how signatures are
-    /// handled internally, and templates{} simply makes it easier to define template
-    /// arguments in the DSL, but they get expanded out by the time we get to the
-    /// impl::signature class.  That would mean the signature_info class would not
-    /// need to correct for template arguments.  Maybe impl::signature can accept
-    /// templates{}, but inherits from a base class that automatically unpacks the
-    /// template parameters.
-    /// TODO: It would probably be better if the signature just worked with
-    /// a templates{} parameter directly, since users are eventually going to have to
-    /// list these themselves anyway.
-
     /* A wrapper that identifies the arguments stored in a templates{} helper, so that
     downstream analysis can specialize accordingly.  No behavior is changed. */
     template <meta::arg Arg> requires (!meta::template_arg<Arg>)
@@ -1500,14 +1564,7 @@ namespace impl {
     template <meta::arg... Args>
     struct templates : as_template_arg<Args>::type... {
         static constexpr size_t size = sizeof...(Args);
-        static constexpr size_t n_partial = (meta::partial_types<Args>::size + ... + 0);
-
-        /// TODO: anything else that might need to be declared to make working with
-        /// these easy within signature<> and signature_info<>.  Possibly a
-        /// remove_partial method that returns a new templates<> with all partials
-        /// stripped out.
-
-
+        static constexpr size_t n_partial = (meta::partials<Args>::size + ... + 0);
         template <size_t I> requires (I < size)
         [[nodiscard]] constexpr const auto& get() const noexcept {
             using type = TemplateArg<meta::unpack_type<I, Args...>>;
@@ -1525,7 +1582,7 @@ namespace impl {
     template <meta::unqualified Arg, typename... Ts> requires (meta::arg<Arg>)
     struct partial : Arg, impl::partial_tag {
         using arg_type = Arg;
-        using partial_types = meta::pack<Ts...>;
+        using partials = meta::pack<Ts...>;
     };
 
     /* Template arguments must store partial values internally in order to ensure they
@@ -1533,7 +1590,7 @@ namespace impl {
     template <meta::unqualified Arg, typename... Ts> requires (meta::template_arg<Arg>)
     struct partial<Arg, Ts...> : Arg, impl::partial_tag {
         using arg_type = Arg;
-        using partial_types = meta::pack<Ts...>;
+        using partials = meta::pack<Ts...>;
         bertrand::args<Ts...> partial_values;
     };
 
@@ -1551,20 +1608,20 @@ namespace impl {
     constexpr auto make_partial(Arg&& arg)
         noexcept(requires{{typename _make_partial<
             meta::unqualify<Arg>,
-            meta::partial_types<Arg>,
+            meta::partials<Arg>,
             Ts...
         >::type{std::forward<Arg>(arg)}} noexcept;})
         requires(requires{
             typename _make_partial<
                 meta::unqualify<Arg>,
-                meta::partial_types<Arg>,
+                meta::partials<Arg>,
                 Ts...
             >::type{std::forward<Arg>(arg)};
         })
     {
         return typename _make_partial<
             meta::unqualify<Arg>,
-            meta::partial_types<Arg>,
+            meta::partials<Arg>,
             Ts...
         >::type{std::forward<Arg>(arg)};
     }
@@ -1576,7 +1633,7 @@ namespace impl {
     constexpr auto make_partial(Arg&& arg, Ts&&... ts)
         noexcept(requires{{typename _make_partial<
             meta::unqualify<Arg>,
-            meta::partial_types<Arg>,
+            meta::partials<Arg>,
             Ts...
         >::type{
             std::forward<Arg>(arg),
@@ -1585,7 +1642,7 @@ namespace impl {
         requires(requires{
             typename _make_partial<
                 meta::unqualify<Arg>,
-                meta::partial_types<Arg>,
+                meta::partials<Arg>,
                 Ts...
             >::type{
                 std::forward<Arg>(arg),
@@ -1595,7 +1652,7 @@ namespace impl {
     {
         return typename _make_partial<
             meta::unqualify<Arg>,
-            meta::partial_types<Arg>,
+            meta::partials<Arg>,
             Ts...
         >::type{std::forward<Arg>(arg), bertrand::args{std::forward<Ts>(ts)...}};
     }
@@ -1606,7 +1663,7 @@ namespace impl {
     constexpr auto make_partial(Arg&& arg, Ts&&... ts)
         noexcept(requires{{typename _make_partial<
             meta::unqualify<Arg>,
-            meta::partial_types<Arg>,
+            meta::partials<Arg>,
             Ts...
         >::type{
             std::forward<Arg>(arg),
@@ -1615,7 +1672,7 @@ namespace impl {
         requires(requires{
             typename _make_partial<
                 meta::unqualify<Arg>,
-                meta::partial_types<Arg>,
+                meta::partials<Arg>,
                 Ts...
             >::type{
                 std::forward<Arg>(arg),
@@ -1625,7 +1682,7 @@ namespace impl {
     {
         return typename _make_partial<
             meta::unqualify<Arg>,
-            meta::partial_types<Arg>,
+            meta::partials<Arg>,
             Ts...
         >::type{
             std::forward<Arg>(arg),
@@ -1653,7 +1710,7 @@ namespace impl {
         requires (meta::partial_arg<decltype(A)>)
     struct _extract_partial<out, A, Args...> {
         using type = _extract_partial<
-            typename out::template concat<meta::partial_types<decltype(A)>>,
+            typename out::template concat<meta::partials<decltype(A)>>,
             Args...
         >::type;
     };
@@ -1708,6 +1765,18 @@ signature(F&&) -> signature<meta::remove_rvalue<F>>;
 
 
 
+/// TODO: It probably doesn't make sense to implement `signature<F>` as a public
+/// type, since the default specialization would have to be enabled with a fully
+/// generic signature.  Instead, I should have an impl::detect_signature<F>, which
+/// lists an impl::signature<...> as a ::type alias, and has a call operator that
+/// produces a wrapper function that can be used to call the downstream function
+/// with proper semantics.  This basically equates to just concatenating the
+/// argument packs and forwarding them to the target function.  Possibly the
+/// default specialization only allows positional arguments, according to C++
+/// semantics.
+
+
+
 /// TODO: a specialization of signature<F> for meta::has_call_operator, which would
 /// ensure that any type with a trivially-inspectable call operator can have its
 /// signature deduced automatically.  When C++26 reflection lands, this could probably
@@ -1726,8 +1795,6 @@ signature(F&&) -> signature<meta::remove_rvalue<F>>;
 
 
 namespace impl {
-
-
 
     /* A compact bitset describing the kind (positional, keyword, optional, and/or
     variadic) of an argument within a C++ parameter list. */
@@ -1819,7 +1886,6 @@ namespace impl {
 
         -   Duplicate argument names.
         -   Required positional arguments after optional.
-        -   Template arguments after runtime arguments.
         -   Proper ordering of positional-only and keyword-only separators, variadic
             arguments, and return annotations.
         -   Duplicate separators, variadic arguments, or return annotations.
@@ -1829,12 +1895,9 @@ namespace impl {
     contain the following information:
 
         -   The starting index and number of each category of argument.
-        -   An array of `arg_kind` aligned to the argument list, which compactly
-            describes the status of each argument in the signature, for use during
-            argument binding.
-        -   A `required` bitset that indicates which arguments are required, which can
-            be compared against an equivalent bitset constructed at the call site to
-            determine whether any arguments are missing.
+        -   An array of `param` structs aligned to the argument list, which compactly
+            describe the status of each argument in the signature, for use during
+            argument binding and signature indexing/iteration.
     */
     template <const auto& Spec, const auto&... Args>
     struct signature_info {
@@ -1916,8 +1979,6 @@ namespace impl {
         /* Signatures consist of 2 sections, the first for explicit template arguments
         and the second for runtime arguments. */
         struct list {
-            size_t n = 0;  // total number of arguments in this section
-
             /* [1] positional-only */
             struct {
                 size_t offset = N;  // start index relative to start of section.  N = missing
@@ -1947,8 +2008,8 @@ namespace impl {
             } kwargs;
         };
 
-        list compile_time {.n = Spec.size};
-        list run_time {.n = sizeof...(Args)};
+        list compile_time;
+        list run_time;
 
         /* [6] return annotation */
         struct {
@@ -2041,7 +2102,7 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partial_types<A>::size;
+            params[I].partial = meta::partials<A>::size;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
@@ -2082,15 +2143,15 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partial_types<A>::size;
+            params[I].partial = meta::partials<A>::size;
             params[I].kind = 0;
             size_t start = 0;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = impl::arg_kind::UNTYPED;
             }
             if constexpr (I >= Spec.size) {
-                sec.pos_or_kw.offset -= compile_time.n;
-                start = compile_time.n;
+                sec.pos_or_kw.offset -= Spec.size;
+                start = Spec.size;
                 params[I].kind = impl::arg_kind::RUNTIME;
             }
 
@@ -2132,19 +2193,19 @@ namespace impl {
             } else {
                 sec.args.offset = I;
                 if constexpr (I >= Spec.size) {
-                    sec.args.offset -= compile_time.n;
+                    sec.args.offset -= Spec.size;
                 }
                 params[I].kind = impl::arg_kind::VAR | impl::arg_kind::POS;
             }
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partial_types<A>::size;
+            params[I].partial = meta::partials<A>::size;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
             if constexpr (I >= Spec.size) {
-                sec.kwonly.offset -= compile_time.n;
+                sec.kwonly.offset -= Spec.size;
                 params[I].kind = params[I].kind | impl::arg_kind::RUNTIME;
             }
         }
@@ -2168,13 +2229,13 @@ namespace impl {
             sec.kwargs.offset = I;
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partial_types<A>::size;
+            params[I].partial = meta::partials<A>::size;
             params[I].kind = impl::arg_kind::VAR | impl::arg_kind::KW;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
             if constexpr (I >= Spec.size) {
-                sec.kwargs.offset -= compile_time.n;
+                sec.kwargs.offset -= Spec.size;
                 params[I].kind = params[I].kind | impl::arg_kind::RUNTIME;
             }
         }
@@ -2208,54 +2269,10 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partial_types<A>::size;
+            params[I].partial = meta::partials<A>::size;
             params[I].kind = impl::arg_kind::RUNTIME;
         }
     };
-
-    /// TODO: call_info should be deleted in favor of SFINAE-friendly concepts at the
-    /// call site.
-
-    /* A collection of arguments representing the arguments provided to the call site
-    for a Python-style function.  This will analyze the arguments upon construction and
-    throw a compile-time `SyntaxError` if the arguments are malformed in any of the
-    following ways:
-    
-        -   Duplicate argument names.
-        -   Improper ordering of positional and keyword arguments.
-        -   More than one positional or keyword parameter pack.
-        -   Positional or keyword packs used at compile time.
-        -   Any arguments other than raw values, standard keyword arguments with a bound
-            value, or the results of unpacking operators.
-
-    If no errors are encountered, then the resulting `call_info` object will contain
-    the following information:
-
-        -   The index of positional/keyword parameter packs, if any.
-
-    Note that further checks are performed when the binding logic is invoked, which
-    checks for missing/extra arguments, conflicting values for the same argument,
-    convertibility to the expected type, and so on.  This class simply ensures that
-    the arguments will not interfere with the binding logic, and yields simpler error
-    messages than if these cases were to be handled at the binding stage. */
-    template <const auto&... Args>
-    struct call_info {
-        /// TODO: largely similar to the `signature_info` class, and should record
-        /// the indices of the parameter packs, so that empty positional packs can be
-        /// filtered out ahead of the binding logic.
-
-        /// TODO: also, this probably requires the runtime arguments to be provided
-        /// to the constructor, so that they are included in the analysis along with
-        /// the template parameters?
-
-
-        /// TODO: may not need to store the pack indices if the logic is restored
-        /// to its previous state of just dropping the pack if it is empty and then
-        /// recurring within the binding logic itself.  
-    };
-
-    /// TODO: signature<> needs to be updated to account for template arguments being
-    /// provided as a braced initializer.
 
     /* Represents a completed Python-like signature composed of the templated argument
     annotations.  An enabled `bertrand::signature<F>` class always inherits from this
@@ -2279,16 +2296,16 @@ namespace impl {
         }
 
         [[nodiscard]] static constexpr size_type n_partial() noexcept {
-            return (Spec.n_partial + ... + meta::partial_types<decltype(Args)>::size);
+            return (Spec.n_partial + ... + meta::partials<decltype(Args)>::size);
         }
 
     private:
-        using template_indices = std::make_index_sequence<Spec.size>;
         using info_type = impl::signature_info<Spec, Args...>;
         static constexpr info_type info {std::make_index_sequence<size()>{}};
 
-        /// TODO: names will have to include the template arguments, and gather the
-        /// right names on that basis.
+        template <typename>
+        struct _expand_templates;
+        using expand_templates = _expand_templates<std::make_index_sequence<Spec.size>>;
 
         static constexpr auto names = []<
             size_type... c_posonly,
@@ -2397,7 +2414,7 @@ namespace impl {
 
         public:
             static constexpr const auto& name = meta::arg_name<decltype(arg)>;
-            static constexpr size_type partial = meta::partial_types<decltype(arg)>::size;
+            static constexpr size_type partial = meta::partials<decltype(arg)>::size;
             static constexpr impl::arg_kind kind = info.params[index].kind;
             meta::remove_rvalue<Self> signature;
 
@@ -2633,16 +2650,39 @@ namespace impl {
             return typename expand_templates::clear{};
         }
 
+        /// TODO: with concepts enforcing the signature invariants, the actual invoke<>
+        /// logic should be slightly easier to write.  The only extra restriction
+        /// needed here is to outlaw unpacking operators within T...
+
+        /// TODO: these also need to be visitors.  Maybe that's a good reason to
+        /// have call<> process the template arguments separately, so that the base
+        /// specialization is a simple visitor that can be fed to meta::visit<>.  That
+        /// also probably means that template arguments cannot be monads, which is
+        /// already the case since they are not aggregates.
+
+        /// TODO: the tricky thing to keep in mind here is that doing a meta::source_args<>
+        /// check is fine, but checking for convertibility to the specified type must
+        /// be done within the visitor context, and not outside it in order to accurately
+        /// reflect the intended semantics.  So type checks should be applied at the
+        /// level of the recursive constraint.  Also I may end up centralizing the
+        /// overloads for this reason, and the delegating to less restrictive overloads
+        /// once the intended checks have been performed.
+
         /* Bind a set of partial arguments to this signature, returning a new signature
         that concatenates the new partial arguments with any existing ones.  All
         arguments will be perfectly forwarded if possible, allowing this method to
         be efficiently chained without intermediate copies. */
         template <auto... T, typename Self, typename... A>
+            requires (meta::source_args<decltype(T)...> && meta::source_args<A...>)
         [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
             noexcept(requires{{expand_templates::invoke::template bind<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
+            requires(requires{expand_templates::invoke::template bind<T...>(
+                std::forward<Self>(self).partial,
+                std::forward<A>(args)...
+            );})
         {
             return (expand_templates::invoke::template bind<T...>(
                 std::forward<Self>(self).partial,
@@ -2654,6 +2694,7 @@ namespace impl {
         merged with any explicit template or runtime arguments provided at the call
         site. */
         template <auto... T, typename Self, typename F, typename... A>
+            requires (meta::source_args<decltype(T)...> && meta::source_args<A...>)
         [[nodiscard]] constexpr decltype(auto) operator()(
             this Self&& self,
             F&& func,
@@ -2664,6 +2705,11 @@ namespace impl {
                 std::forward<F>(func),
                 std::forward<A>(args)...
             )} noexcept;})
+            requires(requires{expand_templates::invoke::template operator()<T...>(
+                std::forward<Self>(self).partial,
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );})
         {
             return (expand_templates::invoke::template operator()<T...>(
                 std::forward<Self>(self).partial,
@@ -2678,14 +2724,14 @@ namespace impl {
 
     private:
 
-        /// TODO: Validation has to be done via something like the signature_info
-        /// class, which needs to do many of the same things, but directed at the call
-        /// site rather than the signature itself.  It would probably be best to
-        /// reimplement it just below signature_info, call it `call_info`, and only
-        /// retain the minimum logic necessary to validate correct ordering and
-        /// outlawing separators, duplicate names, variadic names, etc.  I then
-        /// construct one as a static constexpr member of the signature class, and
-        /// use that to surface compile time errors.
+        /// TODO: all possible compile-time errors should be promoted to template
+        /// constraints, in order to comply with SFINAE.  This probably means lifting
+        /// many of the error conditions into constexpr booleans that mirror the
+        /// structure of the bind or call operator.  Then, every step of the algorithm
+        /// should be enabled only if the next step is valid, which propagates back up
+        /// to the user and properly trips SFINAE checks.
+
+        /// TODO: rename invoke<> -> call<>
 
         template <const auto&...>
         struct invoke {
@@ -3393,8 +3439,6 @@ namespace impl {
 
         };
 
-        template <typename>
-        struct _expand_templates;
         template <size_type... Is>
         struct _expand_templates<std::index_sequence<Is...>> {
             using clear = signature<
@@ -3403,8 +3447,6 @@ namespace impl {
             >;
             using invoke = invoke<Spec.template get<Is>()..., Args...>;
         };
-        using expand_templates = _expand_templates<template_indices>;
-
     };
 
 

@@ -113,6 +113,12 @@ namespace impl {
 
 namespace meta {
 
+    /// NOTE: many of these concepts delegate immediately to a constexpr bool flag
+    /// behind the detail:: namespace.  This is intentional, in order to allow for
+    /// possible specialization and to limit the depth of template error messages as
+    /// much as possible.  This is only done where it would not destroy useful context,
+    /// in order to reduce visual noise during debugging.
+
     /////////////////////////////
     ////    QUALIFICATION    ////
     /////////////////////////////
@@ -128,8 +134,13 @@ namespace meta {
         template <typename L, typename R>
         constexpr bool is = ::std::same_as<unqualify<L>, unqualify<R>>;
 
+        /// NOTE: this forces `std::derived_from` to not be instantiated if is<L, R>
+        /// is true, which prevents issues when inherits<> is used within an incomplete
+        /// class, such as a mixin.
         template <typename L, typename R>
         constexpr bool inherits = ::std::derived_from<unqualify<L>, unqualify<R>>;
+        template <typename L, typename R> requires (is<L, R>)
+        constexpr bool inherits<L, R> = true;
 
     }
 
@@ -137,7 +148,7 @@ namespace meta {
     concept is = detail::is<L, R>;
 
     template <typename L, typename R>
-    concept inherits = is<L, R> || detail::inherits<L, R>;
+    concept inherits = detail::inherits<L, R>;
 
     namespace detail {
 
