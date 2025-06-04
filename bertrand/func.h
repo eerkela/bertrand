@@ -970,6 +970,28 @@ private:
         }
     };
 
+    template <bertrand::slice::normalized indices>
+    struct get_slice {
+        template <typename Self, size_t... Is>
+        [[nodiscard]] static constexpr auto operator()(
+            Self&& self,
+            std::index_sequence<Is...> = std::make_index_sequence<indices.length>{}
+        )
+            noexcept (requires{{
+                bertrand::args{std::forward<Self>(self).template get<
+                    indices.start + Is * indices.step
+                >()...}
+            } noexcept;})
+            requires (requires{bertrand::args{std::forward<Self>(self).template get<
+                indices.start + Is * indices.step
+            >()...};})
+        {
+            return bertrand::args{std::forward<Self>(self).template get<
+                indices.start + Is * indices.step
+            >()...};
+        }
+    };
+
 public:
     /* A nested type listing the precise types that were used to build this parameter
     pack, for posterity.  These are reported as a `meta::pack<...>` type, which
@@ -1065,6 +1087,23 @@ public:
     template <size_t I, typename Self> requires (I < types::size)
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
         return (base::template get<I>(std::forward<Self>(self)));
+    }
+
+    /* Slice the argument pack at compile time, returning a new pack with only the
+    included indices.  The stored values will be perfectly forwarded if possible,
+    according to the cvref qualifications of the current pack. */
+    template <bertrand::slice slice, typename Self>
+    [[nodiscard]] constexpr auto get(this Self&& self)
+        noexcept (requires{{get_slice<slice.normalize(ssize())>::operator()(
+            std::forward<Self>(self)
+        )} noexcept;})
+        requires (requires{get_slice<slice.normalize(ssize())>::operator()(
+            std::forward<Self>(self)
+        );})
+    {
+        return get_slice<slice.normalize(ssize())>::operator()(
+            std::forward<Self>(self)
+        );
     }
 
     /* Get a keyword argument with a particular name, perfectly forwarding it according
