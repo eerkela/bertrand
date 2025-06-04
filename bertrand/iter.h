@@ -5,7 +5,6 @@
 #include "bertrand/except.h"
 #include "bertrand/union.h"
 #include "bertrand/math.h"
-#include "bertrand/allocate.h"
 
 
 namespace bertrand {

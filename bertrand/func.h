@@ -345,8 +345,8 @@ namespace impl {
         type, the value is unconstrained, and can take any type. */
         template <typename V> requires (meta::is_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
-            requires(requires{arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
+            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            requires (requires{arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
         {
             return arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
@@ -358,8 +358,8 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
-            requires(meta::convertible_to<V, T> && requires{
+            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            requires (meta::convertible_to<V, T> && requires{
                 arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
             })
         {
@@ -373,8 +373,8 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept(noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
-            requires(
+            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            requires (
                 !meta::convertible_to<V, T> &&
                 meta::invoke_returns<T, V> &&
                 requires{arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
@@ -388,8 +388,8 @@ namespace impl {
         syntax. */
         template <typename V>
         constexpr auto operator()(V&& val) &&
-            noexcept(noexcept(std::move(*this) = std::forward<V>(val)))
-            requires(requires{std::move(*this) = std::forward<V>(val);})
+            noexcept (noexcept(std::move(*this) = std::forward<V>(val)))
+            requires (requires{std::move(*this) = std::forward<V>(val);})
         {
             return std::move(*this) = std::forward<V>(val);
         }
@@ -398,7 +398,7 @@ namespace impl {
     /* A specialization of `Arg` representing a variadic positional argument.  Such
     arguments can be typed, but cannot be bound. */
     template <static_str ID, typename T>
-        requires(meta::valid_arg<ID> && meta::valid_args_name<ID>)
+        requires (meta::valid_arg<ID> && meta::valid_args_name<ID>)
     struct arg<ID, T, void> : impl::var_args_tag {
         using type = T;
         using value_type = void;
@@ -415,7 +415,7 @@ namespace impl {
     /* A specialization of `Arg` representing a variadic keyword argument.  Such
     arguments can be typed, but cannot be bound. */
     template <static_str ID, typename T>
-        requires(meta::valid_arg<ID> && meta::valid_kwargs_name<ID>)
+        requires (meta::valid_arg<ID> && meta::valid_kwargs_name<ID>)
     struct arg<ID, T, void> : impl::var_kwargs_tag {
         using type = T;
         using value_type = void;
@@ -454,7 +454,7 @@ namespace impl {
     /* A specialization of `Arg` representing a return type annotation.  Such arguments
     can be typed, but cannot be bound. */
     template <static_str ID, typename T>
-        requires(meta::valid_arg<ID> && meta::valid_return_annotation<ID>)
+        requires (meta::valid_arg<ID> && meta::valid_return_annotation<ID>)
     struct arg<ID, T, void> : impl::return_annotation_tag {
         using type = T;
         using value_type = void;
@@ -526,10 +526,10 @@ namespace impl {
         implicit conversions. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
-            noexcept(requires{
+            noexcept (requires{
                 { std::forward<Self>(self).m_value } -> meta::nothrow::convertible_to<T>;
             })
-            requires(requires{
+            requires (requires{
                 { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
             })
         {
@@ -540,12 +540,12 @@ namespace impl {
         to that type, then it must be a materialization function that must be invoked. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
-            noexcept(requires{
+            noexcept (requires{
                 {
                     std::forward<Self>(self).m_value()
                 } noexcept -> meta::nothrow::convertible_to<T>;
             })
-            requires(!requires{
+            requires (!requires{
                 { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
             } && requires{
                 { std::forward<Self>(self).m_value() } -> meta::convertible_to<T>;
@@ -592,6 +592,9 @@ reflection info, which should allow me to model template template parameters, co
 etc. */
 template <meta::not_void T>
 constexpr std::type_identity<T> type;
+
+
+/// TODO: swap() for bound argument annotations?
 
 
 //////////////////////////////
@@ -685,43 +688,53 @@ namespace meta {
 
 
 /* Save a set of function arguments for later use.  Returns an `args` container, which
-stores the arguments similar to a `std::tuple`, except that it is move-only and capable
-of storing references.  Invoking the args pack with an input function will call that
-function using the stored arguments, maintaining their original value categories along
-with those of the pack itself: lvalue packs always produce (possibly const) lvalue
-arguments, while rvalue packs perfectly forward.
+stores the arguments similar to a `std::tuple`, except that it is capable of storing
+arbitrarily-qualified types, including references.  Invoking the args pack with an
+input function will call that function using the stored arguments, maintaining their
+original value categories merged with those of the pack itself: lvalue packs always
+produce lvalue arguments, while rvalue packs perfectly forward.
 
 Containers of this form are used to store bound arguments for partial functions, and
 will be passed as inputs to functions that define an `"*args"_` or `"**kwargs"_`
-parameter, with the same template serving both cases.  The CTAD constructor allows
-multiple packs to be easily concatenated, and the pack itself can either be queried for
-specific values (obeying the same perfect forwarding semantics) or used to invoke a
-downstream function, in Pythonic fashion.
+parameter, with the same basic template serving both cases.  The CTAD constructor
+allows multiple packs to be easily concatenated, and the pack itself can either be
+queried for specific values (obeying the same perfect forwarding semantics) or used to
+invoke a downstream function, in Pythonic fashion.
 
 NOTE: in most implementations, the C++ standard does not strictly define the order of
 evaluation for function arguments, which can lead to surprising behavior if the
 arguments have side effects, or depend on each other in some way.  However, this
 restriction is lifted in the case of class constructors and initializer lists, which
-are guaranteed to evaluate from left to right.  This class can be used to exploit that
-loophole by storing the arguments in a pack and immediately consuming them, without
-any additional overhead besides a possible move in and out of the argument pack.
+are guaranteed to evaluate from left to right.  This class can therefore be used to
+exploit that loophole by storing the arguments in a pack and immediately consuming
+them, without any additional overhead besides a possible move in and out of the
+argument pack (which can be optimized out in many cases due to copy elision).
 
-WARNING: undefined behavior can occur if an lvalue is bound that falls out of scope
+WARNING: undefined behavior may occur if an lvalue is bound that falls out of scope
 before the pack is consumed.  Such values will not have their lifetimes extended by
 this class in any way, and it is the user's responsibility to ensure that proper
 reference semantics are observed at all times.  Generally speaking, ensuring that no
 packs are returned out of a local context is enough to satisfy this guarantee.
-Typically, this class will be consumed within the same context in which it was created,
-or in a downstream one where all of the objects are still in scope, as a way of
+Typically, this class will be consumed within the same context in which it was created
+(or a downstream one where all of the objects are still in scope), as a way of
 enforcing a certain order of operations.  Note that this guidance does not apply to
-rvalues, which are stored directly within the pack, therefore extending their
-lifetimes. */
+rvalues, which are stored directly within the pack, extending their lifetimes. */
 template <typename... Ts> requires (meta::args_spec<Ts...>)
 struct args;
 
 
-template <typename... As> requires (meta::args_spec<As...>)
-args(As&&...) -> args<As...>;
+template <typename... Ts> requires (meta::args_spec<Ts...>)
+args(Ts&&...) -> args<Ts...>;
+
+
+/* ADL `swap()` operator for `args{}` instances. */
+template <typename... Ts>
+constexpr void swap(args<Ts...>& a, args<Ts...>& b)
+    noexcept (requires{{a.swap(b)} noexcept;})
+    requires (requires{a.swap(b);})
+{
+    a.swap(b);
+}
 
 
 namespace impl {
@@ -731,23 +744,28 @@ namespace impl {
     protected:
         template <typename S, typename F, typename... A>
         static constexpr decltype(auto) operator()(S&&, F&& f, A&&... a)
-            noexcept(meta::nothrow::invocable<F, A...>)
-            requires(meta::invocable<F, A...>)
+            noexcept (meta::nothrow::invocable<F, A...>)
+            requires (meta::invocable<F, A...>)
         {
             return (std::forward<F>(f)(std::forward<A>(a)...));
         }
+
+    public:
+        constexpr void swap(args& other) noexcept {}
     };
 
     template <typename T, typename... Ts>
     struct args<T, Ts...> : args<Ts...> {
     protected:
         using type = meta::remove_rvalue<T>;
-        type value;
+        struct storage {
+            type value;
+        } m_storage;
 
         template <size_t I, typename S>
         static constexpr decltype(auto) get(S&& s) noexcept {
             if constexpr (I == 0) {
-                return (std::forward<meta::qualify<args, S>>(s).value);
+                return (std::forward<meta::qualify<args, S>>(s).m_storage.value);
             } else {
                 return (args<Ts...>::template get<I - 1>(std::forward<S>(s)));
             }
@@ -755,58 +773,101 @@ namespace impl {
 
         template <typename S, typename F, typename... A>
         static constexpr decltype(auto) operator()(S&& s, F&& f, A&&... a)
-            noexcept(noexcept(args<Ts...>::operator()(
+            noexcept (noexcept(args<Ts...>::operator()(
                 std::forward<S>(s),
                 std::forward<F>(f),
                 std::forward<A>(a)...,
-                std::forward<meta::qualify<args, S>>(s).value
+                std::forward<meta::qualify<args, S>>(s).m_storage.value
             )))
-            requires(requires{args<Ts...>::operator()(
+            requires (requires{args<Ts...>::operator()(
                 std::forward<S>(s),
                 std::forward<F>(f),
                 std::forward<A>(a)...,
-                std::forward<meta::qualify<args, S>>(s).value
+                std::forward<meta::qualify<args, S>>(s).m_storage.value
             );})
         {
             return (args<Ts...>::operator()(
                 std::forward<S>(s),
                 std::forward<F>(f),
                 std::forward<A>(a)...,
-                std::forward<meta::qualify<args, S>>(s).value
+                std::forward<meta::qualify<args, S>>(s).m_storage.value
             ));
         }
 
     public:
         template <typename A, typename... As>
         constexpr args(A&& curr, As&&... rest)
-            noexcept(
+            noexcept (
                 meta::nothrow::convertible_to<A, type> &&
                 meta::nothrow::constructible_from<args<Ts...>, As...>
             )
         :
             args<Ts...>(std::forward<As>(rest)...),
-            value(std::forward<A>(curr))
+            m_storage(std::forward<A>(curr))
         {}
-
-        /// TODO: if args{} are stored in every signature, and a signature is stored in
-        /// every function, then non-copyability means that functions are move-only.  I'm
-        /// not sure if that's desirable, but right now it's the case.
-        /// TODO: I need to also allow assignment to make signatures (and therefore defs)
-        /// assignable.  That probably means lvalues need to be promoted to pointers,
-        /// so that I can reassign them.
-        /// -> Possibly what I could do for assignment is destroy the current pack and
-        /// create a new one with the same arguments, or do a copy and swap.  That also
-        /// means I should overload swap() for args{} as well.  If each argument is
-        /// noexcept destructible and copy/move constructible, then the swap can be
-        /// optimized out.  That could possibly be done internally here by storing the
-        /// reference within a struct that I can separately destroy and reconstruct.
-        /// That would be the best, since then no one ever really needs to think about
-        /// how it works internally.
 
         constexpr args(args&& other) = default;
         constexpr args(const args&) = default;
-        constexpr args& operator=(const args&) = delete;
-        constexpr args& operator=(args&&) = delete;
+
+        constexpr args& operator=(const args& other)
+            noexcept (meta::nothrow::copy_assignable<args<Ts...>> && (
+                meta::lvalue<T> || meta::nothrow::copy_assignable<T> || (
+                    meta::nothrow::copyable<T> && meta::nothrow::swappable<T>
+                )
+            ))
+            requires (meta::copy_assignable<args<Ts...>> && (
+                meta::lvalue<T> || meta::copy_assignable<T> || (
+                    meta::copyable<T> && meta::swappable<T>
+                )
+            ))
+        {
+            args<Ts...>::operator=(other);
+
+            if constexpr (meta::lvalue<T>) {
+                std::construct_at(&m_storage, other.m_storage);
+
+            } else if constexpr (meta::copy_assignable<T>) {
+                m_storage.value = other.m_storage.value;
+
+            } else {
+                args temp(other);
+                swap(temp);
+            }
+
+            return *this;
+        }
+
+        constexpr args& operator=(args&& other)
+            noexcept (meta::nothrow::move_assignable<args<Ts...>> && (
+                meta::lvalue<T> || meta::nothrow::move_assignable<T> ||
+                meta::nothrow::swappable<T>
+            ))
+            requires (meta::move_assignable<args<Ts...>> && (
+                meta::lvalue<T> || meta::move_assignable<T> || meta::swappable<T>
+            ))
+        {
+            args<Ts...>::operator=(std::move(other));
+
+            if constexpr (meta::lvalue<T>) {
+                std::construct_at(&m_storage, other.m_storage);
+
+            } else if constexpr (meta::move_assignable<T>) {
+                m_storage.value = std::move(other.m_storage.value);
+
+            } else {
+                swap(other);
+            }
+
+            return *this;
+        }
+
+        constexpr void swap(args& other)
+            noexcept (meta::nothrow::swappable<args<Ts...>> && meta::nothrow::swappable<T>)
+            requires (meta::swappable<args<Ts...>> && meta::swappable<T>)
+        {
+            args<Ts...>::swap(other);
+            std::ranges::swap(m_storage.value, other.m_storage.value);
+        }
     };
 
     template <typename...>
@@ -847,8 +908,8 @@ private:
     struct convert {
         template <typename... A>
         [[nodiscard]] constexpr T operator()(A&&... args)
-            noexcept(noexcept(T{std::forward<A>(args)...}))
-            requires(requires{T{std::forward<A>(args)...};})
+            noexcept (noexcept(T{std::forward<A>(args)...}))
+            requires (requires{T{std::forward<A>(args)...};})
         {
             return T{std::forward<A>(args)...};
         }
@@ -887,10 +948,58 @@ public:
     reason, it can be disabled by encapsulating the arguments in another type, making
     it inaccessible in deduction. */
     [[nodiscard]] constexpr args(Ts... args)
-        noexcept(noexcept(base(std::forward<Ts>(args)...)))
+        noexcept (noexcept(base(std::forward<Ts>(args)...)))
     :
         base(std::forward<Ts>(args)...)
     {}
+
+    /* Copying an `args{}` container will copy all of its contents.  Note that lvalues
+    are trivially copied, meaning the new container will reference the exact same
+    objects as the original, and will not extend their lifetimes in any way. */
+    [[nodiscard]] constexpr args(const args& other) = default;
+
+    /* Moving an `args{}` container will transfer all of its contents.  Note that
+    lvalues are trivially moved, meaning the new container will reference the exact
+    same objects as the original, and will not extend their lifetimes in any way. */
+    [[nodiscard]] constexpr args(args&& other) = default;
+
+    /* Copy assigning to an `args{}` container will reassign all of its contents to
+    copies of the invoming values.  Note that lvalues will be trivially rebound,
+    meaning no changes will occur to the referenced data.  Instead, the reference
+    address may change to reflect the assignment. */
+    constexpr args& operator=(const args& other)
+        noexcept (meta::nothrow::copy_assignable<base>)
+        requires (meta::copy_assignable<base>)
+    {
+        if (&other != this) {
+            base::operator=(other);
+        }
+        return *this;
+    }
+
+    /* Move assigning to an `args{}` container will reassign all of its contents to
+    the incoming values.  Note that lvalues will be trivially rebound, meaning no
+    changes will occur to the referenced data.  Instead, the reference address may
+    change to reflect the assignment. */
+    constexpr args& operator=(args&& other)
+        noexcept (meta::nothrow::move_assignable<base>)
+        requires (meta::move_assignable<base>)
+    {
+        if (&other != this) {
+            base::operator=(std::move(other));
+        }
+        return *this;
+    }
+
+    /* STL-compatible swap() method for args{} instances. */ 
+    constexpr void swap(args& other)
+        noexcept (meta::nothrow::swappable<base>)
+        requires (meta::swappable<base>)
+    {
+        if (&other != this) {
+            base::swap(other);
+        }
+    }
 
     /* Get the argument at index I, perfectly forwarding it according to the pack's
     current cvref qualifications.  This means that if the pack is supplied as an
@@ -915,12 +1024,12 @@ public:
     entire lookup can be optimized away at compile time. */
     template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-        noexcept(requires{{
+        noexcept (requires{{
             base::template get<names.template get<name>()>(
                 std::forward<Self>(self)
             ).value()} noexcept;
         })
-        requires(names.template contains<name>() && requires{
+        requires (names.template contains<name>() && requires{
             base::template get<names.template get<name>()>(
                 std::forward<Self>(self)
             ).value();
@@ -949,12 +1058,12 @@ public:
     any other behavior. */
     template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-        noexcept(requires{{
+        noexcept (requires{{
             base::template get<names.template get<"">()>(
                 std::forward<Self>(self)
             ).template get<name>()} noexcept;
         })
-        requires(!names.template contains<name>() && names.template contains<"">())
+        requires (!names.template contains<name>() && names.template contains<"">())
     {
         return (base::template get<names.template get<"">()>(
             std::forward<Self>(self)
@@ -971,12 +1080,12 @@ public:
     case; it is provided as an optional for consistency with the runtime case. */
     template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr auto get_if(this Self&& self)
-        noexcept(requires{{
+        noexcept (requires{{
             Optional{base::template get<names.template index<name>()>(
                 std::forward<Self>(self)
             ).value()}} noexcept;
         })
-        requires(names.template contains<name>() && requires{
+        requires (names.template contains<name>() && requires{
             Optional{base::template get<names.template index<name>()>(
                 std::forward<Self>(self)
             ).value()};
@@ -999,12 +1108,12 @@ public:
     type. */
     template <static_str name, typename Self> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr decltype(auto) get_if(this Self&& self)
-        noexcept(requires{{
+        noexcept (requires{{
             base::template get<names.template get<"">()>(
                 std::forward<Self>(self)
             ).template get_if<name>()} noexcept;
         })
-        requires(!names.template contains<name>() && names.template contains<"">())
+        requires (!names.template contains<name>() && names.template contains<"">())
     {
         return (base::template get<names.template get<"">()>(
             std::forward<Self>(self)
@@ -1016,7 +1125,7 @@ public:
     statically resolved. */
     template <static_str name> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr bool contains() const noexcept
-        requires(names.template contains<name>())
+        requires (names.template contains<name>())
     {
         return names.template contains<name>();
     }
@@ -1028,8 +1137,8 @@ public:
     supports a matching `contains()` method. */
     template <static_str name> requires (meta::valid_arg_name<name>)
     [[nodiscard]] constexpr bool contains() const
-        noexcept(noexcept(get<names.template get<"">()>().template contains<name>()))
-        requires(!names.template contains<name>() && names.template contains<"">())
+        noexcept (noexcept(get<names.template get<"">()>().template contains<name>()))
+        requires (!names.template contains<name>() && names.template contains<"">())
     {
         return get<names.template get<"">()>().template contains<name>();
     }
@@ -1043,11 +1152,11 @@ public:
     those same qualifiers. */
     template <typename Self, typename F>
     constexpr decltype(auto) operator()(this Self&& self, F&& f)
-        noexcept(noexcept(base::operator()(
+        noexcept (noexcept(base::operator()(
             std::forward<Self>(self),
             std::forward<F>(f)
         )))
-        requires(requires{base::operator()(
+        requires (requires{base::operator()(
             std::forward<Self>(self),
             std::forward<F>(f)
         );})
@@ -1076,8 +1185,8 @@ public:
     signature as shown is by far the most expressive. */
     template <typename T, typename Self>
     [[nodiscard]] constexpr operator T(this Self&& self)
-        noexcept(noexcept(std::forward<Self>(self)(convert<T>{})))
-        requires(requires{std::forward<Self>(self)(convert<T>{});})
+        noexcept (noexcept(std::forward<Self>(self)(convert<T>{})))
+        requires (requires{std::forward<Self>(self)(convert<T>{});})
     {
         return std::forward<Self>(self)(convert<T>{});
     }
@@ -1092,7 +1201,7 @@ private:
     /* When the argument list is complete, use it to initialize the parent class. */
     template <size_t I, typename... As> requires (I >= sizeof...(As))
     static constexpr base flatten(As&&... args)
-        noexcept(meta::nothrow::constructible_from<base, As...>)
+        noexcept (meta::nothrow::constructible_from<base, As...>)
     {
         return {std::forward<As>(args)...};
     }
@@ -1101,7 +1210,7 @@ private:
     template <size_t I, typename... As>
         requires (I < sizeof...(As) && !meta::args<meta::unpack_type<I, As...>>)
     static constexpr base flatten(As&&... args)
-        noexcept(noexcept(flatten<I + 1>(std::forward<As>(args)...)))
+        noexcept (noexcept(flatten<I + 1>(std::forward<As>(args)...)))
     {
         return flatten<I + 1>(std::forward<As>(args)...);
     }
@@ -1115,7 +1224,7 @@ private:
         std::index_sequence<next...>,
         As&&... args
     )
-        noexcept(noexcept(flatten<sizeof...(prev) + sizeof...(curr)>(
+        noexcept (noexcept(flatten<sizeof...(prev) + sizeof...(curr)>(
             meta::unpack_arg<prev>(std::forward<As>(args)...)...,
             meta::unpack_arg<sizeof...(prev)>(
                 std::forward<As>(args)...
@@ -1136,7 +1245,7 @@ private:
     template <size_t I, typename... As>
         requires (I < sizeof...(As) && meta::args<meta::unpack_type<I, As...>>)
     static constexpr base flatten(As&&... args)
-        noexcept(noexcept(_flatten(
+        noexcept (noexcept(_flatten(
             std::make_index_sequence<I>(),
             std::make_index_sequence<meta::unqualify<meta::unpack_type<I, As...>>::size()>(),
             std::make_index_sequence<sizeof...(As) - (I + 1)>(),
@@ -1161,7 +1270,7 @@ public:
     it inaccessible in deduction. */
     template <typename... As>
     constexpr args(As&&... args)
-        noexcept(noexcept(base(flatten<0>(std::forward<As>(args)...))))
+        noexcept (noexcept(base(flatten<0>(std::forward<As>(args)...))))
     :
         base(flatten<0>(std::forward<As>(args)...))
     {}
@@ -1272,7 +1381,7 @@ namespace impl {
         struct hash {
             using is_transparent = void;
             static constexpr size_t operator()(std::string_view str)
-                noexcept(noexcept(bertrand::hash(str)))
+                noexcept (noexcept(bertrand::hash(str)))
             {
                 return bertrand::hash(str);
             }
@@ -1283,7 +1392,7 @@ namespace impl {
             static constexpr bool operator()(
                 std::string_view lhs,
                 std::string_view rhs
-            ) noexcept(noexcept(lhs == rhs)) {
+            ) noexcept (noexcept(lhs == rhs)) {
                 return lhs == rhs;
             }
         };
@@ -1396,7 +1505,7 @@ namespace impl {
 
         template <static_str key>
         [[nodiscard]] constexpr bool contains() const
-            noexcept(noexcept(m_data.contains(key)))
+            noexcept (noexcept(m_data.contains(key)))
         {
             return m_data.contains(key);
         }
@@ -1475,7 +1584,7 @@ namespace impl {
         [[nodiscard]] constexpr end_type& end() noexcept { return m_end; }
         [[nodiscard]] constexpr end_type end() const noexcept { return m_end; }
 
-        [[nodiscard]] constexpr bool empty() const noexcept(noexcept(m_begin == m_end)) {
+        [[nodiscard]] constexpr bool empty() const noexcept (noexcept(m_begin == m_end)) {
             return m_begin == m_end;
         }
 
@@ -1522,10 +1631,10 @@ namespace impl {
         Enabling this operator must be done explicitly, by specializing the
         `meta::detail::unpack<T>` flag for a given container. */
         [[nodiscard]] constexpr auto operator*() &&
-            noexcept(requires{{kwarg_pack<T>{
+            noexcept (requires{{kwarg_pack<T>{
                 std::forward<container_type>(m_data)
             }} noexcept;})
-            requires(
+            requires (
                 meta::unpack_to_kwargs<T> &&
                 requires{kwarg_pack<T>{std::forward<container_type>(m_data)};}
             )
@@ -1565,12 +1674,16 @@ namespace impl {
     struct templates : as_template_arg<Args>::type... {
         static constexpr size_t size = sizeof...(Args);
         static constexpr size_t n_partial = (meta::partials<Args>::size + ... + 0);
+
         template <size_t I> requires (I < size)
         [[nodiscard]] constexpr const auto& get() const noexcept {
             using type = TemplateArg<meta::unpack_type<I, Args...>>;
             return static_cast<meta::as_const_ref<type>>(*this);
         }
     };
+
+    template <meta::arg... Args>
+    templates(Args&&...) -> templates<meta::unqualify<Args>...>;
 
     /* A subclass of `Arg` that categorizes it as having one or more partially-applied
     values when stored within an `impl::signature` object.  This changes nothing about
@@ -1606,12 +1719,12 @@ namespace impl {
     partial values, then the argument list will be extended with the new values. */
     template <typename... Ts, meta::arg Arg>
     constexpr auto make_partial(Arg&& arg)
-        noexcept(requires{{typename _make_partial<
+        noexcept (requires{{typename _make_partial<
             meta::unqualify<Arg>,
             meta::partials<Arg>,
             Ts...
         >::type{std::forward<Arg>(arg)}} noexcept;})
-        requires(requires{
+        requires (requires{
             typename _make_partial<
                 meta::unqualify<Arg>,
                 meta::partials<Arg>,
@@ -1631,7 +1744,7 @@ namespace impl {
     partial values, then the argument list will be extended with the new values. */
     template <meta::template_arg Arg, typename... Ts>
     constexpr auto make_partial(Arg&& arg, Ts&&... ts)
-        noexcept(requires{{typename _make_partial<
+        noexcept (requires{{typename _make_partial<
             meta::unqualify<Arg>,
             meta::partials<Arg>,
             Ts...
@@ -1639,7 +1752,7 @@ namespace impl {
             std::forward<Arg>(arg),
             bertrand::args{std::forward<Ts>(ts)...}
         }} noexcept;})
-        requires(requires{
+        requires (requires{
             typename _make_partial<
                 meta::unqualify<Arg>,
                 meta::partials<Arg>,
@@ -1661,7 +1774,7 @@ namespace impl {
     has partial values, then the argument list will be extended with the new values. */
     template <meta::template_arg Arg, typename... Ts> requires (meta::partial_arg<Arg>)
     constexpr auto make_partial(Arg&& arg, Ts&&... ts)
-        noexcept(requires{{typename _make_partial<
+        noexcept (requires{{typename _make_partial<
             meta::unqualify<Arg>,
             meta::partials<Arg>,
             Ts...
@@ -1669,7 +1782,7 @@ namespace impl {
             std::forward<Arg>(arg),
             bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
         }} noexcept;})
-        requires(requires{
+        requires (requires{
             typename _make_partial<
                 meta::unqualify<Arg>,
                 meta::partials<Arg>,
@@ -1729,69 +1842,6 @@ namespace meta {
     template <typename T>
     concept signature = inherits<T, impl::signature_tag>;
 }
-
-
-/* Deduce the signature of an arbitrary function type `F`, generating an equivalent
-signature consisting of Python-style argument annotations.
-
-Users can specialize this class to allow custom signatures to be deduced automatically
-by the `def()` operator when no explicit signature is given.  If specialized, the
-signature must inherit from `impl::signature<args...>`, where `args...` is a valid
-signature in Python syntax, e.g.:
-
-    ```
-    template <meta::is<my_function> F>
-    struct signature<F> : impl::signature<"a"_[^int], "/"_, "b"_[^float](2.5), "**kwargs"_> {
-        /// nothing needed here, as `impl::signature` handles everything.
-    };
-
-    auto func = def(my_function{});  // deduces the signature automatically
-    ```
-
-Note that for all specialized types, if an explicit signature is provided that is
-incompatible with the signature deduced by this class, then a compilation error will be
-issued, so that no ambiguities can arise. */
-template <typename F>
-struct signature : impl::signature_tag {
-    static constexpr bool enable = false;  // default to disabled
-};
-
-
-/* CTAD constructor allows enabled signatures to be inferred from a simple initializer.
-The constructor itself is a no-op at run time; it simply exposes the information the
-compiler is using to dispatch calls to that function. */
-template <typename F> requires (signature<F>::enable)
-signature(F&&) -> signature<meta::remove_rvalue<F>>;
-
-
-
-/// TODO: It probably doesn't make sense to implement `signature<F>` as a public
-/// type, since the default specialization would have to be enabled with a fully
-/// generic signature.  Instead, I should have an impl::detect_signature<F>, which
-/// lists an impl::signature<...> as a ::type alias, and has a call operator that
-/// produces a wrapper function that can be used to call the downstream function
-/// with proper semantics.  This basically equates to just concatenating the
-/// argument packs and forwarding them to the target function.  Possibly the
-/// default specialization only allows positional arguments, according to C++
-/// semantics.
-
-
-
-/// TODO: a specialization of signature<F> for meta::has_call_operator, which would
-/// ensure that any type with a trivially-inspectable call operator can have its
-/// signature deduced automatically.  When C++26 reflection lands, this could probably
-/// simply reflect the type's call operator and deduce the signature directly from
-/// that.  The only real trick here is ensuring that an explicit signature does not
-/// conflict with the deduced signature.
-
-
-/// TODO: the public signature class would be templated to take a function type
-/// and then infer the proper impl::signature from it.  That enables CTAD
-/// introspection for arbitrary function types, and allows for extensions as well,
-/// if you want to customize the output of the `def()` statement for a given
-/// function type.
-
-/// auto func = def([](int x, int y) { return x + y; });
 
 
 namespace impl {
@@ -2426,7 +2476,7 @@ namespace impl {
 
             template <typename S>
             constexpr decltype(auto) value(this S&& self) noexcept
-                requires(has_value() && meta::partial_arg<decltype(arg)>)
+                requires (has_value() && meta::partial_arg<decltype(arg)>)
             {
                 if constexpr (meta::template_arg<decltype(arg)>) {
                     return (arg.partial_values);
@@ -2438,8 +2488,8 @@ namespace impl {
             }
 
             static constexpr decltype(auto) value()
-                noexcept(requires{{arg.value()} noexcept;})
-                requires(has_value() && !meta::partial_arg<decltype(arg)>)
+                noexcept (requires{{arg.value()} noexcept;})
+                requires (has_value() && !meta::partial_arg<decltype(arg)>)
             {
                 return arg.value();
             }
@@ -2464,19 +2514,8 @@ namespace impl {
         must exactly match the specification given in the template list. */
         template <typename... Ts>
         [[nodiscard]] constexpr signature(Ts&&... partial)
-            noexcept(noexcept(partial_type(std::forward<Ts>(partial)...)))
-            requires(requires{partial_type(std::forward<Ts>(partial)...);})
-        :
-            m_partial(std::forward<Ts>(partial)...)
-        {}
-
-        /* CTAD constructor, which allows the signature to be deduced from an
-        initializer plus possible partial arguments. */
-        template <typename F, typename... Ts>
-            requires (meta::inherits<bertrand::signature<F>, signature>)
-        [[nodiscard]] constexpr signature(F&&, Ts&&... partial)
-            noexcept(noexcept(partial_type(std::forward<Ts>(partial)...)))
-            requires(requires{partial_type(std::forward<Ts>(partial)...);})
+            noexcept (noexcept(partial_type(std::forward<Ts>(partial)...)))
+            requires (requires{partial_type(std::forward<Ts>(partial)...);})
         :
             m_partial(std::forward<Ts>(partial)...)
         {}
@@ -2549,8 +2588,8 @@ namespace impl {
         if the argument has such a value. */
         template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
         [[nodiscard]] constexpr auto get(this Self&& self)
-            noexcept(requires{{param<Self, I>{std::forward<Self>(self)}} noexcept;})
-            requires(requires{param<Self, I>{std::forward<Self>(self)};})
+            noexcept (requires{{param<Self, I>{std::forward<Self>(self)}} noexcept;})
+            requires (requires{param<Self, I>{std::forward<Self>(self)};})
         {
             return param<Self, I>{std::forward<Self>(self)};
         }
@@ -2562,10 +2601,10 @@ namespace impl {
         proper type, if the argument has such a value. */
         template <static_str name, typename Self> requires (contains<name>())
         [[nodiscard]] constexpr auto get(this Self&& self)
-            noexcept(requires{{param<Self, index_type(names.template get<name>())>{
+            noexcept (requires{{param<Self, index_type(names.template get<name>())>{
                 std::forward<Self>(self)
             }} noexcept;})
-            requires(requires{param<Self, index_type(names.template get<name>())>{
+            requires (requires{param<Self, index_type(names.template get<name>())>{
                 std::forward<Self>(self)
             };})
         {
@@ -2579,10 +2618,10 @@ namespace impl {
         The empty state indicates that the index was out of range after
         normalization. */
         [[nodiscard]] static constexpr Optional<reference> get(index_type idx)
-            noexcept(requires{{Optional<reference>{
+            noexcept (requires{{Optional<reference>{
                 info.params[idx + (ssize() * (idx < 0))]
             }} noexcept;})
-            requires(requires{Optional<reference>{
+            requires (requires{Optional<reference>{
                 info.params[idx + (ssize() * (idx < 0))]
             };})
         {
@@ -2599,8 +2638,8 @@ namespace impl {
         name, index in the signature, and kind.  The empty state indicates that the
         argument name is not present in the signature. */
         [[nodiscard]] static constexpr Optional<reference> get(std::string_view name)
-            noexcept(requires{{Optional<reference>{info.params[names[name]]}} noexcept;})
-            requires(requires{Optional<reference>{info.params[names[name]]};})
+            noexcept (requires{{Optional<reference>{info.params[names[name]]}} noexcept;})
+            requires (requires{Optional<reference>{info.params[names[name]]};})
         {
             if (const auto it = names.find(name); it != names.end()) {
                 return {info.params[it->second]};
@@ -2614,7 +2653,7 @@ namespace impl {
         index is out of bounds after normalization.  Use `get()` and `get_if()` to
         avoid the error. */
         [[nodiscard]] static constexpr const auto& operator[](index_type idx)
-            noexcept(noexcept(info.params[impl::normalize_index(ssize(), idx)]))
+            noexcept (noexcept(info.params[impl::normalize_index(ssize(), idx)]))
         {
             return info.params[impl::normalize_index(ssize(), idx)];
         }
@@ -2622,7 +2661,7 @@ namespace impl {
         /* Slice the signature, returning a view over a specific subset of the
         parameter list. */
         [[nodiscard]] constexpr slice operator[](bertrand::slice s)
-            noexcept(noexcept(slice{info.params, s.normalize(ssize())}))
+            noexcept (noexcept(slice{info.params, s.normalize(ssize())}))
         {
             return {*this, s.normalize(ssize())};
         }
@@ -2633,7 +2672,7 @@ namespace impl {
         and `get_if()` to avoid the error. */
         [[nodiscard]] static constexpr const auto& operator[](
             std::string_view kw
-        ) noexcept(noexcept(info.params[names[kw]])) {
+        ) noexcept (noexcept(info.params[names[kw]])) {
             return info.params[names[kw]];
         }
 
@@ -2675,11 +2714,11 @@ namespace impl {
         template <auto... T, typename Self, typename... A>
             requires (meta::source_args<decltype(T)...> && meta::source_args<A...>)
         [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
-            noexcept(requires{{expand_templates::invoke::template bind<T...>(
+            noexcept (requires{{expand_templates::invoke::template bind<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires(requires{expand_templates::invoke::template bind<T...>(
+            requires (requires{expand_templates::invoke::template bind<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             );})
@@ -2700,12 +2739,12 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(requires{{expand_templates::invoke::template operator()<T...>(
+            noexcept (requires{{expand_templates::invoke::template operator()<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
             )} noexcept;})
-            requires(requires{expand_templates::invoke::template operator()<T...>(
+            requires (requires{expand_templates::invoke::template operator()<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
@@ -2737,7 +2776,7 @@ namespace impl {
         struct invoke {
             template <auto... T, typename P, typename... A>
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                requires(sizeof...(T) > size())
+                requires (sizeof...(T) > size())
             {
                 static constexpr static_str msg =
                     "Too many template parameters for partial application";
@@ -2747,19 +2786,20 @@ namespace impl {
 
             template <auto... T, typename P, typename... A>
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                requires(
+                requires (
                     sizeof...(T) == size() &&
                     sizeof...(A) > n_partial() &&
                     meta::variadic<meta::unpack_type<n_partial(), A...>>
                 )
             {
                 meta::unpack_arg<n_partial()>(args...).validate();
+                std::vector<int> indices {1, 2, 3};
                 /// TODO: drop the pack and recur
             }
 
             template <auto... T, typename P, typename... A>
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                requires(
+                requires (
                     sizeof...(T) == size() &&
                     sizeof...(A) > n_partial() &&
                     !meta::variadic<meta::unpack_type<n_partial(), A...>>
@@ -2773,15 +2813,15 @@ namespace impl {
 
             template <auto... T, typename P, typename... A>
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                noexcept(requires{{signature<T...>{std::forward<A>(args)...}} noexcept;})
-                requires(sizeof...(T) == size() && sizeof...(A) == n_partial())
+                noexcept (requires{{signature<T...>{std::forward<A>(args)...}} noexcept;})
+                requires (sizeof...(T) == size() && sizeof...(A) == n_partial())
             {
                 return (signature<T...>{std::forward<A>(args)...});
             }
 
             template <auto... T, typename P, typename F, typename... A>
             static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
-                requires(sizeof...(T) > size())
+                requires (sizeof...(T) > size())
             {
                 static constexpr static_str msg =
                     "Too many template parameters for function";
@@ -2791,7 +2831,7 @@ namespace impl {
 
             template <auto... T, typename P, typename F, typename... A>
             static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
-                requires(
+                requires (
                     sizeof...(T) == size() &&
                     sizeof...(A) > n_partial() &&
                     meta::variadic<meta::unpack_type<n_partial(), A...>>
@@ -2803,7 +2843,7 @@ namespace impl {
 
             template <auto... T, typename P, typename F, typename... A>
             static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
-                requires(
+                requires (
                     sizeof...(T) == size() &&
                     sizeof...(A) > n_partial() &&
                     !meta::variadic<meta::unpack_type<n_partial(), A...>>
@@ -2818,10 +2858,10 @@ namespace impl {
 
             template <auto... T, typename P, typename F, typename... A>
             static constexpr decltype(auto) operator()(P&& partial, F&& func, A&&... args)
-                noexcept(requires{{std::forward<F>(func).template operator()<T...>(
+                noexcept (requires{{std::forward<F>(func).template operator()<T...>(
                     std::forward<A>(args)...
                 )} noexcept;})
-                requires(sizeof...(T) == size() && sizeof...(A) == n_partial())
+                requires (sizeof...(T) == size() && sizeof...(A) == n_partial())
             {
                 if constexpr (requires{std::forward<F>(func).template operator()<T...>(
                     std::forward<A>(args)...
@@ -2893,7 +2933,7 @@ namespace impl {
                 P&& partial,
                 A&&... args
             )
-                noexcept(requires{{
+                noexcept (requires{{
                     invoke<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         curr,
@@ -2924,7 +2964,7 @@ namespace impl {
                 P&& partial,
                 A&&... args
             )
-                noexcept(requires{{
+                noexcept (requires{{
                     invoke<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         impl::make_partial(curr, meta::unpack_value<I, T...>),
@@ -2957,7 +2997,7 @@ namespace impl {
                 P&& partial,
                 A&&... args
             )
-                noexcept(requires{{
+                noexcept (requires{{
                     invoke<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         impl::make_partial(
@@ -2998,7 +3038,7 @@ namespace impl {
                 P&& partial,
                 A&&... args
             )
-                noexcept(requires{{invoke<rest...>::template bind<
+                noexcept (requires{{invoke<rest...>::template bind<
                     meta::unpack_value<prev, T...>...,
                     impl::make_partial(
                         curr,
@@ -3039,7 +3079,7 @@ namespace impl {
         public:
             template <auto... T, typename P, typename... A> requires (param.kind.posonly())
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                noexcept((
+                noexcept ((
                     (has_partial || !consume_positional<T...>) && requires{{
                         bind_forward<T...>(
                             std::make_index_sequence<I>{},
@@ -3090,9 +3130,11 @@ namespace impl {
                 }
             }
 
+            static_assert([] noexcept { return true; });
+
             template <auto... T, typename P, typename... A> requires (param.kind.pos_or_kw())
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                noexcept((
+                noexcept ((
                     (has_partial || (
                         !consume_positional<T...> && consume_keyword<T...> == sizeof...(T)
                     )) && requires{{
@@ -3197,7 +3239,7 @@ namespace impl {
 
             template <auto... T, typename P, typename... A> requires (param.kind.kwonly())
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                noexcept((
+                noexcept ((
                     (has_partial || consume_keyword<T...> == sizeof...(T)) && requires{{
                         bind_forward<T...>(
                             std::make_index_sequence<I>{},
@@ -3291,7 +3333,7 @@ namespace impl {
 
             template <auto... T, typename P, typename... A> requires (param.kind.sentinel())
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
-                noexcept(requires{{bind_forward<T...>(
+                noexcept (requires{{bind_forward<T...>(
                     std::make_index_sequence<I>{},
                     std::make_index_sequence<sizeof...(T) - I>{},
                     std::forward<P>(partial),
@@ -3448,6 +3490,119 @@ namespace impl {
             using invoke = invoke<Spec.template get<Is>()..., Args...>;
         };
     };
+
+    /* Attempt to deduce the signature of a callable of arbitrary type.  This helper
+    allows `def()` to be used without providing an explicit signature, provided a
+    specialization of this class exists to inform the compiler of the proper signature.
+
+    Specializations must provide a `::type` alias that refers to a specialization of
+    `impl::signature<...>`, which will be treated as if it were an explicit signature
+    for functions of type `F`.  Users may also provide a call operator that accepts
+    an instance of `F` and returns a wrapper function that will be stored within the
+    `def()` as a convenience.
+
+    If no specialization is found for a given type `F`, then the default behavior is
+    to build a function that accepts arbitrary C++ positional-only arguments and
+    perfectly forwards them to the underlying function, assuming it to be a template
+    and/or overload set.  A built-in specialization exists for any `F` whose call
+    operator is trivially introspectable (meaning it has no overloads or template
+    parameters), which will mirror those arguments in the resulting signature, again
+    according to C++ positional-only syntax.  A second built-in specialization covers
+    `def()` functions themselves, whose signatures will always be implicitly propagated
+    if necessary. */
+    template <typename F>
+    struct detect_signature {
+    private:
+
+        struct wrapper {
+        private:
+
+            template <const auto& T, typename indices, typename Func>
+            struct call;
+            template <const auto& T, size_t... Is, typename Func>
+            struct call<T, std::index_sequence<Is...>, Func> {
+                meta::as_lvalue<Func> func;
+
+                constexpr decltype(auto) operator()(auto&&... args) &&
+                    noexcept (requires{
+                        {std::forward<Func>(func).template operator()<
+                            T.template get<Is>()...
+                        >(std::forward<decltype(args)>(args)...)} noexcept;
+                    })
+                    requires (requires{
+                        std::forward<Func>(func).template operator()<
+                            T.template get<Is>()...
+                        >(std::forward<decltype(args)>(args)...);
+                    })
+                {
+                    return (std::forward<Func>(func).template operator()<
+                        T.template get<Is>()...
+                    >(std::forward<decltype(args)>(args)...));
+                }
+            };
+
+        public:
+            meta::remove_rvalue<F> func;
+
+            /* If no template arguments are supplied, then we call the function
+            normally. */
+            template <meta::args auto T, typename S, meta::args A> requires (T.empty())
+            constexpr decltype(auto) operator()(this S&& self, A&& args)
+                noexcept (requires{{std::forward<A>(args)(std::forward<S>(self).func)} noexcept;})
+                requires (requires{std::forward<A>(args)(std::forward<S>(self).func);})
+            {
+                return (std::forward<A>(args)(std::forward<S>(self).func));
+            }
+
+            /* If template arguments are given, attempt to specialize the call operator
+            before calling. */
+            template <meta::args auto T, typename S, meta::args A> requires (!T.empty())
+            constexpr decltype(auto) operator()(this S&& self, A&& args)
+                noexcept (requires{{
+                    std::forward<A>(args)(call<
+                        T,
+                        std::make_index_sequence<T.size()>,
+                        decltype(std::forward<S>(self).func)
+                    >{self.func})} noexcept;
+                })
+                requires (requires{
+                    std::forward<A>(args)(call<
+                        T,
+                        std::make_index_sequence<T.size()>,
+                        decltype(std::forward<S>(self).func)
+                    >{self.func});
+                })
+            {
+                return std::forward<A>(args)(call<
+                    T,
+                    std::make_index_sequence<T.size()>,
+                    decltype(std::forward<S>(self).func)
+                >{self.func});
+            }
+        };
+
+    public:
+        /* The default signature allows any function-like object with an
+        arbitrarily-templated call operator. */
+        using type = signature<{"*t"_}, "*a"_>;
+
+        /* Produce a wrapper for a function `F` that accepts arbitrary template and
+        runtime arguments and perfectly forwards them to the wrapped function. */
+        static constexpr wrapper operator()(F func)
+            noexcept (meta::nothrow::convertible_to<F, meta::remove_rvalue<F>>)
+            requires (meta::convertible_to<F, meta::remove_rvalue<F>>)
+        {
+            return {std::forward<F>(func)};
+        }
+    };
+
+    /// TODO: another specialization of `detect_signature` for functions that have a
+    /// trivially-introspectable signature, and another for defs that perfectly
+    /// forwards that information.
+
+    /// auto f1 = def([](int x, int y) { return x + y; });
+    /// auto f2 = def(f1);
+    /// auto f3 = def(f1 >> println);
 
 
 

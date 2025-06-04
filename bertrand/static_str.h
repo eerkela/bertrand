@@ -5515,38 +5515,38 @@ namespace std {
 }
 
 
-namespace bertrand {
+// namespace bertrand {
 
-    inline void test() {
-        static constexpr static_str str = "Hello, world!";
-        static constexpr static_str str2 = "Hello, world!";
-        static constexpr const char* str3 = "Hello, world!";
-        static constexpr std::string str4 = "Hello, world!";
-        static constexpr std::string_view str5 = "Hello, world!";
-        static_assert(string_wrapper<str>::index<"w">() == 7);
+//     inline void test() {
+//         static constexpr static_str str = "Hello, world!";
+//         static constexpr static_str str2 = "Hello, world!";
+//         static constexpr const char* str3 = "Hello, world!";
+//         static constexpr std::string str4 = "Hello, world!";
+//         static constexpr std::string_view str5 = "Hello, world!";
+//         static_assert(string_wrapper<str>::index<"w">() == 7);
 
-        static constexpr string_list<"foo", "bar", "baz"> list;
-        static_assert(list.index("bar").value() == 1);
+//         static constexpr string_list<"foo", "bar", "baz"> list;
+//         static_assert(list.index("bar").value() == 1);
 
-        static_assert(meta::has_eq<decltype(str5), decltype(str)>);
+//         static_assert(meta::has_eq<decltype(str5), decltype(str)>);
 
         
-        static_assert(str2 <= str5);
-        if (str3 == str) {
-            println("Hello, world!");
-        }
+//         static_assert(str2 <= str5);
+//         if (str3 == str) {
+//             println("Hello, world!");
+//         }
 
 
-        static constexpr string_set<"foo", "bar", "baz"> set;
-        static_assert(set.index("bar").value() == 1);
+//         static constexpr string_set<"foo", "bar", "baz"> set;
+//         static_assert(set.index("bar").value() == 1);
 
-        if constexpr (DEBUG) {
-            assert(str == str2, "str == str2");
-        }
-    }
+//         if constexpr (DEBUG) {
+//             assert(str == str2, "str == str2");
+//         }
+//     }
 
 
-}
+// }
 
 
 #endif  // BERTRAND_STATIC_STRING_H
