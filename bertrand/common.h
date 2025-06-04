@@ -1444,6 +1444,297 @@ namespace meta {
         template <typename F, typename... A>
         constexpr bool nothrow_invocable = ::std::is_nothrow_invocable_v<F, A...>;
 
+        template <typename S>
+        struct call_operator { static constexpr bool enable = false; };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...)> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) volatile> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) volatile noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const volatile> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const volatile noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) &> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) & noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const &> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const & noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) volatile &> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) volatile & noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const volatile &> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const volatile & noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = true;
+            static constexpr bool is_rvalue = false;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) &&> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) && noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const &&> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const && noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = false;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) volatile &&> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) volatile && noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = false;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = true;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const volatile &&> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = false;
+        };
+        template <typename R, typename C, typename... A>
+        struct call_operator<R(C::*)(A...) const volatile && noexcept> {
+            static constexpr bool enable = true;
+            using return_type = R;
+            using args = meta::pack<A...>;
+            using class_type = C;
+            static constexpr bool is_const = true;
+            static constexpr bool is_volatile = true;
+            static constexpr bool is_lvalue = false;
+            static constexpr bool is_rvalue = true;
+            static constexpr bool is_noexcept = true;
+        };
+
     }
 
     template <typename T>
@@ -1453,7 +1744,12 @@ namespace meta {
     concept function_pointer = pointer<T> && function_signature<remove_pointer<T>>;
 
     template <typename T>
-    concept has_call_operator = requires() { &unqualify<T>::operator(); };
+    concept has_call_operator =
+        requires() { &remove_reference<T>::operator(); } &&
+        detail::call_operator<decltype(&remove_reference<T>::operator())>::enable;
+
+    template <has_call_operator T>
+    using call_operator = detail::call_operator<decltype(&remove_reference<T>::operator())>;
 
     template <typename F, typename... A>
     concept invocable = detail::invocable<F, A...>;

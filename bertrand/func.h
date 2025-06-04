@@ -345,10 +345,10 @@ namespace impl {
         type, the value is unconstrained, and can take any type. */
         template <typename V> requires (meta::is_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
-            requires (requires{arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};})
+            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)}))
+            requires (requires{arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};})
         {
-            return arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -358,12 +358,12 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)}))
             requires (meta::convertible_to<V, T> && requires{
-                arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+                arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
             })
         {
-            return arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
         }
 
         /* Assigning to the argument binds a value to it, which is interpreted as either
@@ -373,14 +373,14 @@ namespace impl {
         of zero arguments that returns a convertible result. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}))
+            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)}))
             requires (
                 !meta::convertible_to<V, T> &&
                 meta::invoke_returns<T, V> &&
-                requires{arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};}
+                requires{arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};}
             )
         {
-            return arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            return arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
         }
 
         /* Calling the argument is identical to assignment, as a workaround for core
@@ -393,6 +393,10 @@ namespace impl {
         {
             return std::move(*this) = std::forward<V>(val);
         }
+
+        /* STL-compliant `swap()` method for argument annotations.  Does nothing for
+        unbound arguments. */
+        constexpr void swap(arg&) noexcept {}
     };
 
     /* A specialization of `Arg` representing a variadic positional argument.  Such
@@ -410,6 +414,10 @@ namespace impl {
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
             return arg<ID, meta::remove_rvalue<V>, void>{};
         }
+
+        /* STL-compliant `swap()` method for argument annotations.  Does nothing for
+        unbound arguments. */
+        constexpr void swap(arg&) noexcept {}
     };
 
     /* A specialization of `Arg` representing a variadic keyword argument.  Such
@@ -427,6 +435,10 @@ namespace impl {
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
             return arg<ID, meta::remove_rvalue<V>, void>{};
         }
+
+        /* STL-compliant `swap()` method for argument annotations.  Does nothing for
+        unbound arguments. */
+        constexpr void swap(arg&) noexcept {}
     };
 
     /* A specialization of `arg` representing a positional-only separator.  Such
@@ -438,6 +450,10 @@ namespace impl {
         using value_type = void;
         using partials = meta::pack<>;
         static constexpr const auto& id = ID;
+
+        /* STL-compliant `swap()` method for argument annotations.  Does nothing for
+        unbound arguments. */
+        constexpr void swap(arg&) noexcept {}
     };
 
     /* A specialization of `arg` representing a keyword-only separator.  Such
@@ -449,6 +465,10 @@ namespace impl {
         using value_type = void;
         using partials = meta::pack<>;
         static constexpr const auto& id = ID;
+
+        /* STL-compliant `swap()` method for argument annotations.  Does nothing for
+        unbound arguments. */
+        constexpr void swap(arg&) noexcept {}
     };
 
     /* A specialization of `Arg` representing a return type annotation.  Such arguments
@@ -466,6 +486,10 @@ namespace impl {
         constexpr auto operator[](std::type_identity<V> type) && noexcept {
             return arg<ID, meta::remove_rvalue<V>, void>{};
         }
+
+        /* STL-compliant `swap()` method for argument annotations.  Does nothing for
+        unbound arguments. */
+        constexpr void swap(arg&) noexcept {}
     };
 
     template <meta::arg T>
@@ -497,13 +521,25 @@ namespace impl {
 
         [[no_unique_address]] V m_value;
 
-        template <meta::is<V> U>
-        [[nodiscard]] constexpr arg(U&& value) : m_value(std::forward<U>(value)) {}
-
         /* Unconstrained arguments never invoke materialization functions. */
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
             return (std::forward<Self>(self).m_value);
+        }
+
+        /* STL-compliant `swap()` method for argument annotations.  Defers to the
+        proper swap operator for the bound value. */
+        constexpr void swap(arg& other)
+            noexcept (meta::lvalue<V> || meta::nothrow::swappable<V>)
+            requires (meta::lvalue<V> || meta::swappable<V>)
+        {
+            if constexpr (meta::lvalue<V>) {
+                V temp = m_value;
+                std::construct_at(this, other.m_value);
+                std::construct_at(&other, temp);
+            } else {
+                std::ranges::swap(m_value, other.m_value);
+            }
         }
     };
 
@@ -518,9 +554,6 @@ namespace impl {
         static constexpr const auto& id = ID;
 
         [[no_unique_address]] V m_value;
-
-        template <meta::is<V> U>
-        [[nodiscard]] constexpr arg(U&& value) : m_value(std::forward<U>(value)) {}
 
         /* If the argument is explicitly typed and the value is convertible, prefer
         implicit conversions. */
@@ -552,6 +585,21 @@ namespace impl {
             })
         {
             return std::forward<Self>(self).m_value();
+        }
+
+        /* STL-compliant `swap()` method for argument annotations.  Defers to the
+        proper swap operator for the bound value. */
+        constexpr void swap(arg& other)
+            noexcept (meta::lvalue<V> || meta::nothrow::swappable<V>)
+            requires (meta::lvalue<V> || meta::swappable<V>)
+        {
+            if constexpr (meta::lvalue<V>) {
+                V temp = m_value;
+                std::construct_at(this, other.m_value);
+                std::construct_at(&other, temp);
+            } else {
+                std::ranges::swap(m_value, other.m_value);
+            }
         }
     };
 
@@ -594,7 +642,14 @@ template <meta::not_void T>
 constexpr std::type_identity<T> type;
 
 
-/// TODO: swap() for bound argument annotations?
+/* ADL `swap()` operator for argument annotations. */
+template <meta::arg T>
+constexpr void swap(T& a, T& b)
+    noexcept (requires{{a.swap(b)} noexcept;})
+    requires (requires{a.swap(b);})
+{
+    a.swap(b);
+}
 
 
 //////////////////////////////
@@ -1352,18 +1407,6 @@ namespace meta {
 
 namespace impl {
 
-    /* A positional parameter pack obtained by dereferencing an iterable container
-    within a Python-style function call.  The template machinery recognizes this as if
-    it were an "**<anonymous>"_(container) argument defined in the signature, if such
-    an expression were well-formed.  Because that is outlawed by the DSL syntax and
-    cannot appear at the call site, this class fills the gap and allows the same
-    internals to be reused.
-
-    Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
-    double unpack operator. */
-    template <meta::iterable T>
-    struct arg_pack;
-
     /* A keyword parameter pack obtained by double-dereferencing a mapping-like
     container within a Python-style function call.  The template machinery recognizes
     this as if it were an `"*<anonymous>"_(container)` argument defined in the
@@ -1445,33 +1488,22 @@ namespace impl {
             }
         }
 
-        [[nodiscard]] constexpr auto size() const noexcept {
-            return m_data.size();
+        constexpr void swap(kwarg_pack& other)
+            noexcept (requires{{std::ranges::swap(m_data, other.m_data)} noexcept;})
+            requires (requires{std::ranges::swap(m_data, other.m_data);})
+        {
+            std::ranges::swap(m_data, other.m_data);
         }
 
-        [[nodiscard]] constexpr auto ssize() const noexcept {
-            return std::ranges::ssize(m_data);
-        }
-
-        [[nodiscard]] constexpr bool empty() const noexcept {
-            return m_data.empty();
-        }
-
-        [[nodiscard]] constexpr auto begin() noexcept {
-            return m_data.begin();
-        }
-
-        [[nodiscard]] constexpr auto begin() const noexcept {
-            return m_data.begin();
-        }
-
-        [[nodiscard]] constexpr auto end() noexcept {
-            return m_data.end();
-        }
-
-        [[nodiscard]] constexpr auto end() const noexcept {
-            return m_data.end();
-        }
+        [[nodiscard]] constexpr auto& data() noexcept { return m_data; }
+        [[nodiscard]] constexpr const auto& data() const noexcept { return m_data; }
+        [[nodiscard]] constexpr auto size() const noexcept { return m_data.size(); }
+        [[nodiscard]] constexpr auto ssize() const noexcept { return std::ranges::ssize(m_data); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return m_data.empty(); }
+        [[nodiscard]] constexpr auto begin() noexcept { return m_data.begin(); }
+        [[nodiscard]] constexpr auto begin() const noexcept { return m_data.begin(); }
+        [[nodiscard]] constexpr auto end() noexcept { return m_data.end(); }
+        [[nodiscard]] constexpr auto end() const noexcept { return m_data.end(); }
 
         template <static_str key>
         [[nodiscard]] constexpr Optional<mapped_type> pop() {
@@ -1532,10 +1564,13 @@ namespace impl {
             return it->second;
         }
 
-        /// TODO: get_if() can be conditionally noexcept
-
         template <static_str key>
-        [[nodiscard]] constexpr Optional<meta::as_lvalue<mapped_type>> get_if() {
+        [[nodiscard]] constexpr Optional<meta::as_lvalue<mapped_type>> get_if()
+            noexcept (requires{
+                {m_data.find(key) == m_data.end()} noexcept;
+                {Optional<meta::as_lvalue<mapped_type>>{m_data.find(key)->second}} noexcept;
+            })
+        {
             auto it = m_data.find(key);
             if (it == m_data.end()) {
                 return None;
@@ -1544,7 +1579,12 @@ namespace impl {
         }
 
         template <static_str key>
-        [[nodiscard]] constexpr Optional<meta::as_const_ref<mapped_type>> get_if() const {
+        [[nodiscard]] constexpr Optional<meta::as_const_ref<mapped_type>> get_if() const
+            noexcept (requires{
+                {m_data.find(key) == m_data.end()} noexcept;
+                {Optional<meta::as_const_ref<mapped_type>>{m_data.find(key)->second}} noexcept;
+            })
+        {
             auto it = m_data.find(key);
             if (it == m_data.end()) {
                 return None;
@@ -1556,6 +1596,15 @@ namespace impl {
     template <meta::unpack_to_kwargs T>
     kwarg_pack(T&&) -> kwarg_pack<T>;
 
+    /* A positional parameter pack obtained by dereferencing an iterable container
+    within a Python-style function call.  The template machinery recognizes this as if
+    it were an "**<anonymous>"_(container) argument defined in the signature, if such
+    an expression were well-formed.  Because that is outlawed by the DSL syntax and
+    cannot appear at the call site, this class fills the gap and allows the same
+    internals to be reused.
+
+    Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
+    double unpack operator. */
     template <meta::iterable T>
     struct arg_pack : impl::arg_pack_tag {
         using container_type = meta::remove_rvalue<T>;
@@ -1576,6 +1625,23 @@ namespace impl {
             m_begin(std::ranges::begin(m_data)),
             m_end(std::ranges::end(m_data))
         {}
+
+        constexpr void swap(arg_pack& other)
+            noexcept (requires{
+                {std::ranges::swap(m_data, other.m_data)} noexcept;
+                {std::ranges::swap(m_begin, other.m_begin)} noexcept;
+                {std::ranges::swap(m_end, other.m_end)} noexcept;
+            })
+            requires (requires{
+                std::ranges::swap(m_data, other.m_data);
+                std::ranges::swap(m_begin, other.m_begin);
+                std::ranges::swap(m_end, other.m_end);
+            })
+        {
+            std::ranges::swap(m_data, other.m_data);
+            std::ranges::swap(m_begin, other.m_begin);
+            std::ranges::swap(m_end, other.m_end);
+        }
 
         [[nodiscard]] constexpr container_type& data() noexcept { return m_data; }
         [[nodiscard]] constexpr const container_type& data() const noexcept { return m_data; }
@@ -2324,6 +2390,12 @@ namespace impl {
         }
     };
 
+    /// TODO: The 2 remaining big feature pieces are comparison operators between signatures,
+    /// which will allow for topological sorting, and a way to convert the signature into a
+    /// string representation that can be used in error messages, or to generate .pyi
+    /// interface files for C++ functions.  Then, the C++ side of functions will be done,
+    /// and I can possibly convert all existing operators into `def` statements.
+
     /* Represents a completed Python-like signature composed of the templated argument
     annotations.  An enabled `bertrand::signature<F>` class always inherits from this
     type to avoid re-implementing the complex function internals. */
@@ -2714,16 +2786,16 @@ namespace impl {
         template <auto... T, typename Self, typename... A>
             requires (meta::source_args<decltype(T)...> && meta::source_args<A...>)
         [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
-            noexcept (requires{{expand_templates::invoke::template bind<T...>(
+            noexcept (requires{{expand_templates::specialize::template bind<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (requires{expand_templates::invoke::template bind<T...>(
+            requires (requires{expand_templates::specialize::template bind<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             );})
         {
-            return (expand_templates::invoke::template bind<T...>(
+            return (expand_templates::specialize::template bind<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             ));
@@ -2739,18 +2811,18 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept (requires{{expand_templates::invoke::template operator()<T...>(
+            noexcept (requires{{expand_templates::specialize::template operator()<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (requires{expand_templates::invoke::template operator()<T...>(
+            requires (requires{expand_templates::specialize::template operator()<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
             );})
         {
-            return (expand_templates::invoke::template operator()<T...>(
+            return (expand_templates::specialize::template operator()<T...>(
                 std::forward<Self>(self).partial,
                 std::forward<F>(func),
                 std::forward<A>(args)...
@@ -2770,10 +2842,8 @@ namespace impl {
         /// should be enabled only if the next step is valid, which propagates back up
         /// to the user and properly trips SFINAE checks.
 
-        /// TODO: rename invoke<> -> call<>
-
         template <const auto&...>
-        struct invoke {
+        struct specialize {
             template <auto... T, typename P, typename... A>
             static constexpr decltype(auto) bind(P&& partial, A&&... args)
                 requires (sizeof...(T) > size())
@@ -2888,7 +2958,7 @@ namespace impl {
 
         template <const auto& curr, const auto&... rest>
             requires (meta::template_arg<decltype(curr)>)
-        struct invoke<curr, rest...> {
+        struct specialize<curr, rest...> {
         private:
             static constexpr size_type I = sizeof...(Args) - (sizeof...(rest) + 1);
             static constexpr bool typed = meta::typed_arg<decltype(curr)>;
@@ -2934,14 +3004,14 @@ namespace impl {
                 A&&... args
             )
                 noexcept (requires{{
-                    invoke<rest...>::template bind<
+                    specialize<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         curr,
                         meta::unpack_value<sizeof...(prev) + next, T...>...
                     >(std::forward<P>(partial), std::forward<A>(args)...)
                 } noexcept;})
             {
-                return (invoke<rest...>::template bind<
+                return (specialize<rest...>::template bind<
                     meta::unpack_value<prev, T...>...,
                     curr,
                     meta::unpack_value<sizeof...(prev) + next, T...>...
@@ -2965,14 +3035,14 @@ namespace impl {
                 A&&... args
             )
                 noexcept (requires{{
-                    invoke<rest...>::template bind<
+                    specialize<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         impl::make_partial(curr, meta::unpack_value<I, T...>),
                         meta::unpack_value<I + 1 + next, T...>...
                     >(std::forward<P>(partial), std::forward<A>(args)...)
                 } noexcept;})
             {
-                return (invoke<rest...>::template bind<
+                return (specialize<rest...>::template bind<
                     meta::unpack_value<prev, T...>...,
                     impl::make_partial(curr, meta::unpack_value<I, T...>),
                     meta::unpack_value<I + 1 + next, T...>...
@@ -2998,7 +3068,7 @@ namespace impl {
                 A&&... args
             )
                 noexcept (requires{{
-                    invoke<rest...>::template bind<
+                    specialize<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         impl::make_partial(
                             curr,
@@ -3009,7 +3079,7 @@ namespace impl {
                     >(std::forward<P>(partial), std::forward<A>(args)...)
                 } noexcept;})
             {
-                return (invoke<rest...>::template bind<
+                return (specialize<rest...>::template bind<
                     meta::unpack_value<prev, T...>...,
                     impl::make_partial(
                         curr,
@@ -3038,7 +3108,7 @@ namespace impl {
                 P&& partial,
                 A&&... args
             )
-                noexcept (requires{{invoke<rest...>::template bind<
+                noexcept (requires{{specialize<rest...>::template bind<
                     meta::unpack_value<prev, T...>...,
                     impl::make_partial(
                         curr,
@@ -3054,7 +3124,7 @@ namespace impl {
                     decltype(meta::unpack_value<I + middle, T...>),
                     meta::arg_type<decltype(curr)>
                 > && ...)) {
-                    return (invoke<rest...>::template bind<
+                    return (specialize<rest...>::template bind<
                         meta::unpack_value<prev, T...>...,
                         impl::make_partial(
                             curr,
@@ -3439,7 +3509,7 @@ namespace impl {
 
         template <const auto& curr, const auto&... rest>
             requires (!meta::template_arg<decltype(curr)>)
-        struct invoke<curr, rest...> {
+        struct specialize<curr, rest...> {
         private:
             static constexpr size_type I = sizeof...(Args) - (sizeof...(rest) + 1);
             static constexpr bool typed = meta::typed_arg<decltype(curr)>;
@@ -3487,7 +3557,7 @@ namespace impl {
                 {impl::remove_partial(Spec.template get<Is>())...},
                 impl::remove_partial(Args)...
             >;
-            using invoke = invoke<Spec.template get<Is>()..., Args...>;
+            using specialize = specialize<Spec.template get<Is>()..., Args...>;
         };
     };
 
@@ -3596,6 +3666,33 @@ namespace impl {
         }
     };
 
+    /* Specialization for trivially-introspectable function objects, whose signatures
+    can be statically deduced. */
+    template <meta::has_call_operator F>
+    struct detect_signature<F> {
+    private:
+        using traits = meta::call_operator<F>;
+
+        template <typename... Args>
+        struct expand_arguments {
+            template <typename>
+            struct _type;
+            template <size_t... Is>
+            struct _type<std::index_sequence<Is...>> {
+                using type = signature<
+                    {},
+                    operator""_<"_" + static_str<>::from_int<Is>>()[type<Args>]...,
+                    "/"_,
+                    "->"_[type<typename traits::return_type>]
+                >;
+            };
+            using type = _type<std::index_sequence_for<Args...>>::type;
+        };
+
+    public:
+        using type = traits::args::template eval<expand_arguments>::type;
+    };
+
     /// TODO: another specialization of `detect_signature` for functions that have a
     /// trivially-introspectable signature, and another for defs that perfectly
     /// forwards that information.
@@ -3603,6 +3700,8 @@ namespace impl {
     /// auto f1 = def([](int x, int y) { return x + y; });
     /// auto f2 = def(f1);
     /// auto f3 = def(f1 >> println);
+
+
 
 
 
