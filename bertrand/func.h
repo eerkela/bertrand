@@ -2001,12 +2001,12 @@ namespace meta {
     }
 
     template <detail::bind_error E>
-    concept can_bind =
+    concept can_bind = E == detail::bind_error::none || (
         !(E == detail::bind_error::bad_type) &&
         !(E == detail::bind_error::conflicting_values) &&
         !(E == detail::bind_error::missing_required) &&
         !(E == detail::bind_error::extra_positional) &&
-        !(E == detail::bind_error::extra_keyword);
+        !(E == detail::bind_error::extra_keyword));
 
 }
 
@@ -2878,116 +2878,153 @@ namespace impl {
         /// issued by the binding logic.
 
     private:
-        /* Recur over a set of explicit template parameters that were provided at a
-        function's call site, or which are being partially applied to the function's
-        signature, represented by the member `::call` and `::bind` types, respectively.
-        Both evaluate to a properly-specialized function object that can be called with
-        additional runtime arguments to complete the specified operation. */
+        // Apply a type check against `curr` using the type at index `I` of `T...`,
+        // assuming it is in range.
+        template <auto curr, typename T>
+        static constexpr bool type_check = true;
+        template <auto curr, typename T>
+            requires (meta::typed_arg<decltype(curr)> && !meta::arg<T>)
+        static constexpr bool type_check<curr, T> =
+            meta::convertible_to<T, meta::arg_type<decltype(curr)>>;
+        template <auto curr, typename T>
+            requires (meta::typed_arg<decltype(curr)> && meta::bound_arg<T>)
+        static constexpr bool type_check<curr, T> =
+            meta::convertible_to<meta::arg_value<T>, meta::arg_type<decltype(curr)>>;
+
+        // Check to see whether any keyword arguments to the right of `I` are
+        // already contained as partial variadic keyword arguments.  If so, then
+        // a conflicting value error will occur.
+        template <auto, size_type, typename...>
+        static constexpr bool conflicts_with_partial = false;
+        template <auto curr, size_type I, typename... T>
+            requires (
+                meta::variadic_keyword<decltype(curr)> &&
+                I < meta::partials<decltype(curr)>::size
+            )
+        static constexpr bool conflicts_with_partial<curr, I, T...> =
+            partial_type::template contains<meta::arg_name<meta::unpack_type<I, T...>>>() ||
+            conflicts_with_partial<curr, I + 1, T...>;
+        template <auto curr, size_type I, typename... T>
+            requires (
+                meta::variadic_keyword<decltype(curr)> &&
+                I < meta::partials<decltype(curr)>::size &&
+                meta::template_arg<decltype(curr)>
+            )
+        static constexpr bool conflicts_with_partial<curr, I, T...> =
+            curr.partial_values.template contains<meta::arg_name<meta::unpack_type<I, T...>>>() ||
+            conflicts_with_partial<curr, I + 1, T...>;
+
+        // Count the number of positional values to the right of `I` in `T...`.
+        // Returns zero if no positional arguments remain to be bound.
+        template <size_type, typename...>
+        static constexpr size_type consume_positional = 0;
+        template <size_type I, typename... T>
+            requires (I < sizeof...(T) && !meta::arg<meta::unpack_type<I, T...>>)
+        static constexpr size_type consume_positional<I, T...> =
+            consume_positional<I + 1, T...> + 1;
+
+        // Check to see if there is a keyword with the same name as `curr` to the
+        // right of `I` in `T...`.  If such an argument exists, then returns its index
+        // in `T...`, otherwise returns `sizeof...(T)`.
+        template <auto, size_type I, typename...>
+        static constexpr size_type consume_keyword = I;
+        template <auto curr, size_type I, typename... T>
+            requires (I < sizeof...(T) && !(
+                meta::standard_arg<meta::unpack_type<I, T...>> &&
+                meta::arg_name<decltype(curr)> == meta::arg_name<meta::unpack_type<I, T...>>
+            ))
+        static constexpr size_type consume_keyword<curr, I, T...> =
+            consume_keyword<curr, I + 1, T...>;
+
+        /// TODO: call<> can probably avoid passing in a pack<...> and instead use a
+        /// simple index, similar to specialize<>.  That would maybe be slightly faster
+        /// to compile, and works because the A... parameters will be rearranged
+        /// in-place in much the same way.
+
+        /* Recursive case: iterate over a set of explicit template parameters that were
+        provided at a function's call site or `bind()` method, represented by the
+        member `::call` and `::bind` types, respectively.  Both evaluate to a
+        properly-specialized function object that can be called with additional
+        runtime arguments to complete the specified operation. */
         template <size_type I, auto... T>
         struct specialize {
         private:
             static constexpr const auto& curr = Spec.template get<I>();
             static constexpr value_type param = info.params[I];
+            static constexpr size_type consume_positional =
+                signature::consume_positional<I, decltype(T)...>;
+            static constexpr size_type consume_keyword =
+                signature::consume_keyword<curr, I, decltype(T)...>;
 
-            // Apply a type check against `curr`, assuming it is typed and the index is
-            // within range.
-            template <size_type>
-            static constexpr bool type_check = true;
-            template <size_type J>
-                requires (J < sizeof...(T) && param.kind.typed() &&
-                    !meta::arg<decltype(meta::unpack_value<J, T...>)
-                >)
-            static constexpr bool type_check<J> = meta::convertible_to<
-                decltype(meta::unpack_value<I, T...>),
-                meta::arg_type<decltype(curr)>
-            >;
-            template <size_type J>
-                requires (J < sizeof...(T) && param.kind.typed() &&
-                    meta::bound_arg<decltype(meta::unpack_value<J, T...>)>
-                )
-            static constexpr bool type_check<J> = meta::convertible_to<
-                meta::arg_value<decltype(meta::unpack_value<I, T...>)>,
-                meta::arg_type<decltype(curr)>
-            >;
-
-            // Check to see whether any keyword arguments to the right of `I` are
-            // already contained as partial variadic keyword arguments.  If so, then
-            // a conflicting value error will occur.
-            template <size_type...>
-            static constexpr bool conflicts_with_partial = false;
-            template <size_type... Is> requires (param.kind.kwargs() && param.partial > 0)
-            static constexpr bool conflicts_with_partial<Is...> = (
-                (curr.partial_values.contains<
-                    meta::arg_name<decltype(meta::unpack_value<I + Is, T...>)
-                >()) || ...
-            );
-
-            // Count the number of unprocessed template parameters in `T...` which can
-            // bind to `curr` as a positional argument.  Returns zero if no positional
-            // arguments remain to be bound.
-            template <size_type>
-            static constexpr size_type _consume_positional = 0;
-            template <size_type J> requires (J < sizeof...(T) &&
-                !meta::arg<decltype(meta::unpack_value<J, T...>)>
-            )
-            static constexpr size_type _consume_positional<J> = _consume_positional<J + 1> + 1;
-            static constexpr size_type consume_positional = _consume_positional<I>;
-
-            // Check to see if there is an unprocessed template parameter with the same
-            // name as `curr`, which can bind to it as a keyword argument.  If such an
-            // argument exists, then returns its index in the template parameter list,
-            // otherwise returns `sizeof...(T)`.
-            template <size_type J>
-            static constexpr size_type _consume_keyword = J;
-            template <size_type J> requires (J < sizeof...(T) && !(
-                meta::standard_arg<decltype(meta::unpack_value<J, T...>)> &&
-                param.name == meta::arg_name<decltype(meta::unpack_value<J, T...>)>
-            ))
-            static constexpr size_type _consume_keyword<J> =  _consume_keyword<J + 1>;
-            static constexpr size_type consume_keyword = _consume_keyword<I>;
-
-            // (1) partials and unmatched arguments are inserted as-is
-            template <typename, typename>
-            struct bind_forward;
-            template <size_type... prev, size_type... next>
-            struct bind_forward<std::index_sequence<prev...>, std::index_sequence<next...>> :
+            // (1) partials and unmatched arguments are inserted as-is.  Partial
+            // keywords are also checked for conflicts with existing values.
+            template <typename, typename, typename, typename>
+            struct bind_forward {
+                static constexpr bind_error error = bind_error::conflicting_values;
+            };
+            template <typename partial, typename runtime, size_type... prev, size_type... next>
+                requires (!param.kw() || consume_keyword == sizeof...(T))
+            struct bind_forward<
+                partial,
+                runtime,
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>
+            > :
                 specialize<
                     I + 1,
                     meta::unpack_value<prev, T...>...,
                     curr,
                     meta::unpack_value<I + next, T...>...
-                >::template bind<>
+                >::template bind<partial, runtime>
             {};
 
             // (2) matching positional arguments are bound to `curr.partial_values`
-            // and then forwarded
-            template <typename, typename>
-            struct bind_positional {  // terminate recursion
-                static constexpr bind_error error = consume_keyword < sizeof...(T) ?
-                    bind_error::conflicting_values :
-                    bind_error::bad_type;
+            // and then forwarded, after checking for a type mismatch or conflicting
+            // keyword.
+            template <typename, typename, typename, typename>
+            struct bind_positional {
+                static constexpr bind_error error =
+                    (param.kw() && consume_keyword < sizeof...(T)) ?
+                        bind_error::conflicting_values :
+                        bind_error::bad_type;
             };
-            template <size_type... prev, size_type... next>
-                requires (consume_keyword == sizeof...(T) && type_check<I>)
-            struct bind_positional<std::index_sequence<prev...>, std::index_sequence<next...>> :
+            template <typename partial, typename runtime, size_type... prev, size_type... next>
+                requires ((!param.kw() || consume_keyword == sizeof...(T)) && (
+                    !param.kind.typed() ||
+                    type_check<curr, meta::unpack_type<I, decltype(T)...>>
+                ))
+            struct bind_positional<
+                partial,
+                runtime,
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>
+            > :
                 specialize<
                     I + 1,
                     meta::unpack_value<prev, T...>...,
                     impl::make_partial(curr, meta::unpack_value<I, T...>),
                     meta::unpack_value<I + 1 + next, T...>...
-                >::template bind<>
+                >::template bind<partial, runtime>
             {};
 
             // (3) keywords must be removed from their current location, unwrapped to
             // their underlying values, bound to `curr.partial_values`, and then
             // forwarded.
-            template <typename, typename, typename>
-            struct bind_keyword {  // terminate recursion
+            template <typename, typename, typename, typename, typename>
+            struct bind_keyword {
                 static constexpr bind_error error = bind_error::bad_type;
             };
-            template <size_type... prev, size_type... middle, size_type... next>
-                requires (type_check<consume_keyword>)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... middle,
+                size_type... next
+            >
+                requires (type_check<curr, meta::unpack_type<consume_keyword, decltype(T)...>>)
             struct bind_keyword<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<middle...>,
                 std::index_sequence<next...>
@@ -2995,25 +3032,30 @@ namespace impl {
                 specialize<
                     I + 1,
                     meta::unpack_value<prev, T...>...,
-                    impl::make_partial(
-                        curr,
-                        meta::unpack_value<consume_keyword, T...>.value()
-                    ),
+                    impl::make_partial(curr, meta::unpack_value<consume_keyword, T...>.value()),
                     meta::unpack_value<sizeof...(prev) + middle, T...>...,
                     meta::unpack_value<consume_keyword + 1 + next, T...>...
-                >::template bind<>
+                >::template bind<partial, runtime>
             {};
 
             // (4) variadic positional arguments will consume all remaining positional
             // parameters, and concatenate them with any existing partial values.  The
             // result then gets inserted as a single argument.
-            template <typename, typename, typename>
+            template <typename, typename, typename, typename, typename>
             struct bind_args {
                 static constexpr bind_error error = bind_error::bad_type;
             };
-            template <size_type... prev, size_type... pos, size_type... kw>
-                requires (type_check<I + pos> && ...)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
+                requires (type_check<curr, meta::unpack_type<I + pos, decltype(T)...>> && ...)
             struct bind_args<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
@@ -3026,31 +3068,49 @@ namespace impl {
                         meta::unpack_value<I + pos, T...>...
                     ),
                     meta::unpack_value<I + sizeof...(pos) + kw, T...>...
-                >::template bind<>
+                >::template bind<partial, runtime>
             {};
 
             // (5) variadic keyword arguments will consume all remaining keyword
             // parameters, assert that they do not conflict with any existing partials,
             // and then concatenate them.  The result then gets inserted as a single
             // argument.
-            template <typename, typename, typename>
-            struct bind_kwargs {  // terminate recursion
+            template <typename, typename, typename, typename, typename>
+            struct bind_kwargs {
                 static constexpr bind_error error = bind_error::bad_type;
             };
-            template <size_type... prev, size_type... pos, size_type... kw>
-                requires (conflicts_with_partial<kw...>)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
+                requires (conflicts_with_partial<curr, I + sizeof...(pos), decltype(T)...>)
             struct bind_kwargs<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
             > {
                 static constexpr bind_error error = bind_error::conflicting_values;
             };
-            template <size_type... prev, size_type... pos, size_type... kw>
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
                 requires (
-                    !conflicts_with_partial<kw...> && ... && type_check<I + sizeof...(pos) + kw>
+                    !conflicts_with_partial<curr, I + sizeof...(pos), decltype(T)...> &&
+                    ... &&
+                    type_check<curr, meta::unpack_type<I + sizeof...(pos) + kw, decltype(T)...>>
                 )
             struct bind_kwargs<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
@@ -3063,103 +3123,134 @@ namespace impl {
                         meta::unpack_value<I + sizeof...(pos) + kw, T...>...
                     ),
                     meta::unpack_value<I + pos, T...>...
-                >::template bind<>
+                >::template bind<partial, runtime>
             {};
 
-            template <const auto& curr>
-            struct _bind : bind_forward<
+        public:
+            template <typename partial, typename runtime, auto...>
+            struct bind : bind_forward<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<sizeof...(T) - I>
             > {};
 
-            template <const auto& curr>
+            template <typename partial, typename runtime, auto... Ts>
                 requires (param.kind.pos() && param.partial == 0 && consume_positional > 0)
-            struct _bind<curr> : bind_positional<
+            struct bind<partial, runtime, Ts...> : bind_positional<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<sizeof...(T) - (I + 1)>
             > {};
 
-            template <const auto& curr>
+            template <typename partial, typename runtime, auto... Ts>
                 requires ((
                     param.kind.kwonly() ||
                     (param.kind.pos_or_kw() && consume_positional == 0)
                 ) && param.partial == 0 && consume_keyword < sizeof...(T))
-            struct _bind<curr> : bind_keyword<
+            struct bind<partial, runtime, Ts...> : bind_keyword<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<consume_keyword - I>,
                 std::make_index_sequence<sizeof...(T) - (consume_keyword + 1)>
             > {};
 
-            template <const auto& curr> requires (I < sizeof...(T) && param.kind.args())
-            struct _bind<curr> : bind_args<
+            template <typename partial, typename runtime, auto... Ts>
+                requires (param.kind.args() && I < sizeof...(T))
+            struct bind<partial, runtime, Ts...> : bind_args<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<consume_positional>,
                 std::make_index_sequence<sizeof...(T) - (I + consume_positional)>
             > {};
 
-            template <const auto& curr> requires (I < sizeof...(T) && param.kind.kwargs())
-            struct _bind<curr> : bind_kwargs<
+            template <typename partial, typename runtime, auto... Ts>
+                requires (param.kind.kwargs() && I < sizeof...(T))
+            struct bind<partial, runtime, Ts...> : bind_kwargs<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<consume_positional>,
                 std::make_index_sequence<sizeof...(T) - (I + consume_positional)>
             > {};
-
-        public:
-            /* Interpret the template arguments as a partial signature.  This will
-            recur over the current signature's explicit template parameters and form a
-            new signature which contains them as partially-applied values.  The type
-            returned by `::bind` includes a `::status` member that indicates whether
-            the binding was successful, and can be invoked to insert values for the
-            runtime portion of the function signature if so, which completes the
-            partial. */
-            template <auto... Ts> requires (sizeof...(Ts) == 0)
-            using bind = _bind<curr>;
 
         private:
-            // (1) insert partial or default value, or raise a missing required error
-            template <typename, typename>
-            struct call_default {  // terminate recursion
-                static constexpr bind_error error = bind_error::missing_required;
+            // (1) insert partial or default value, or raise a missing required error.
+            // Partial keywords are also checked for conflicts with existing values.
+            template <typename, typename, typename, typename>
+            struct call_forward {
+                static constexpr bind_error error = param.partial == 0 ?
+                    bind_error::missing_required :
+                    bind_error::conflicting_values;
             };
-            template <size_type... prev, size_type... next> requires (param.partial > 0)
-            struct call_default<std::index_sequence<prev...>, std::index_sequence<next...>> :
-                specialize<
-                    I + 1,
-                    meta::unpack_value<prev, T...>...,
-                    curr.partial_values.template get<0>(),
-                    meta::unpack_value<I + next, T...>...
-                >::call
-            {};
-            template <size_type... prev, size_type... next>
+            template <typename partial, typename runtime, size_type... prev, size_type... next>
                 requires (param.partial == 0 && param.kind.optional())
-            struct call_default<std::index_sequence<prev...>, std::index_sequence<next...>> :
+            struct call_forward<
+                partial,
+                runtime,
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>
+            > :
                 specialize<
                     I + 1,
                     meta::unpack_value<prev, T...>...,
                     curr.value(),
                     meta::unpack_value<I + next, T...>...
-                >::call
+                >::template call<partial, runtime>
+            {};
+            template <typename partial, typename runtime, size_type... prev, size_type... next>
+                requires (param.partial > 0 && (!param.kw() || consume_keyword == sizeof...(T)))
+            struct call_forward<
+                partial,
+                runtime,
+                std::index_sequence<prev...>,
+                std::index_sequence<next...>
+            > :
+                specialize<
+                    I + 1,
+                    meta::unpack_value<prev, T...>...,
+                    curr.partial_values.template get<0>(),
+                    meta::unpack_value<I + next, T...>...
+                >::template call<partial, runtime>
             {};
 
             // (2) matching positional arguments are trivially forwarded
-            template <size_type J>
-            struct call_positional {  // terminate recursion
-                static constexpr bind_error error = consume_keyword < sizeof...(T) ?
-                    bind_error::conflicting_values :
-                    bind_error::bad_type;
+            template <typename, typename>
+            struct call_positional {
+                static constexpr bind_error error =
+                    (param.kw() && consume_keyword < sizeof...(T)) ?
+                        bind_error::conflicting_values :
+                        bind_error::bad_type;
             };
-            template <size_type J> requires (consume_keyword == sizeof...(T) && type_check<J>)
-            struct call_positional<J> : specialize<I + 1, T...>::call {};  // trivially forward
+            template <typename partial, typename runtime>
+                requires ((!param.kw() || consume_keyword == sizeof...(T)) && (
+                    !param.kind.typed() ||
+                    type_check<curr, meta::unpack_type<I, decltype(T)...>>
+                ))
+            struct call_positional<partial, runtime> :
+                specialize<I + 1, T...>::template call<partial, runtime> // trivially forward
+            {};
 
             // (3) keywords must be removed from their current location, unwrapped, and
             // then inserted in the current position.
-            template <typename, typename, typename>
-            struct call_keyword {  // terminate recursion
+            template <typename, typename, typename, typename, typename>
+            struct call_keyword {
                 static constexpr bind_error error = bind_error::bad_type;
             };
-            template <size_type... prev, size_type... middle, size_type... next>
-                requires (type_check<consume_keyword>)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... middle,
+                size_type... next
+            >
+                requires (type_check<curr, meta::unpack_type<consume_keyword, decltype(T)...>>)
             struct call_keyword<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<middle...>,
                 std::index_sequence<next...>
@@ -3170,19 +3261,31 @@ namespace impl {
                     meta::unpack_value<consume_keyword, T...>.value(),
                     meta::unpack_value<I + middle, T...>...,
                     meta::unpack_value<consume_keyword + 1 + next, T...>...
-                >::call
+                >::template call<partial, runtime>
             {};
 
             // (4) variadic positional arguments will consume all remaining positional
             // parameters, and concatenate them with any existing partial values.  The
             // result then gets inserted as a single argument. 
-            template <typename, typename, typename>
-            struct call_args {  // terminate recursion
+            template <typename, typename, typename, typename, typename>
+            struct call_args {
                 static constexpr bind_error error = bind_error::bad_type;
             };
-            template <size_type... prev, size_type... pos, size_type... kw>
-                requires ((param.partial == 0) && ... && type_check<I + pos>)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
+                requires (
+                    (param.partial == 0) &&
+                    ... &&
+                    type_check<curr, meta::unpack_type<I + pos, decltype(T)...>>
+                )
             struct call_args<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
@@ -3192,11 +3295,23 @@ namespace impl {
                     meta::unpack_value<prev, T...>...,
                     bertrand::args{meta::unpack_value<I + pos, T...>...},
                     meta::unpack_value<I + sizeof...(pos) + kw, T...>...
-                >::call
+                >::template call<partial, runtime>
             {};
-            template <size_type... prev, size_type... pos, size_type... kw>
-                requires ((param.partial > 0) && ... && type_check<I + pos>)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
+                requires 
+                    ((param.partial > 0) &&
+                    ... &&
+                    type_check<curr, meta::unpack_type<I + pos, decltype(T)...>>
+                )
             struct call_args<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
@@ -3206,34 +3321,51 @@ namespace impl {
                     meta::unpack_value<prev, T...>...,
                     bertrand::args{curr.partial_values, meta::unpack_value<I + pos, T...>...},
                     meta::unpack_value<I + sizeof...(pos) + kw, T...>...
-                >::call
+                >::template call<partial, runtime>
             {};
 
             // (5) variadic keyword arguments will consume all remaining keyword
             // parameters, assert that they do not conflict with any existing partials,
             // and then concatenate them.  The result then gets inserted as a single
             // argument.
-            template <typename, typename, typename>
-            struct call_kwargs {  // terminate recursion
+            template <typename, typename, typename, typename, typename>
+            struct call_kwargs {
                 static constexpr bind_error error = bind_error::bad_type;
             };
-            template <size_type... prev, size_type... pos, size_type... kw>
-                requires (conflicts_with_partial<kw...>)
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
+                requires (conflicts_with_partial<curr, I + sizeof...(pos), decltype(T)...>)
             struct call_kwargs<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
             > {
                 static constexpr bind_error error = bind_error::conflicting_values;
             };
-            
-            template <size_type... prev, size_type... pos, size_type... kw>
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
                 requires (
-                    (param.partial == 0 && !conflicts_with_partial<kw...>) &&
-                    ... &&
-                    type_check<I + sizeof...(pos) + kw>
+                    (
+                        param.partial == 0 &&
+                        !conflicts_with_partial<curr, I + sizeof...(pos), decltype(T)...>
+                    ) && ... &&
+                    type_check<curr, meta::unpack_type<I + sizeof...(pos) + kw, decltype(T)...>>
                 )
             struct call_kwargs<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
@@ -3243,15 +3375,25 @@ namespace impl {
                     meta::unpack_value<prev, T...>...,
                     args{meta::unpack_value<I + sizeof...(pos) + kw, T...>...},
                     meta::unpack_value<I + pos, T...>...
-                >::call
+                >::template call<partial, runtime>
             {};
-            template <size_type... prev, size_type... pos, size_type... kw>
+            template <
+                typename partial,
+                typename runtime,
+                size_type... prev,
+                size_type... pos,
+                size_type... kw
+            >
                 requires (
-                    (param.partial > 0 && !conflicts_with_partial<kw...>) &&
-                    ... &&
-                    type_check<I + sizeof...(pos) + kw>
+                    (
+                        param.partial > 0 &&
+                        !conflicts_with_partial<curr, I + sizeof...(pos), decltype(T)...>
+                    ) && ... &&
+                    type_check<curr, meta::unpack_type<I + sizeof...(pos) + kw, decltype(T)...>>
                 )
             struct call_kwargs<
+                partial,
+                runtime,
                 std::index_sequence<prev...>,
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
@@ -3261,442 +3403,682 @@ namespace impl {
                     meta::unpack_value<prev, T...>...,
                     args{curr.partial_values, meta::unpack_value<I + sizeof...(pos) + kw, T...>...},
                     meta::unpack_value<I + pos, T...>...
-                >::call
+                >::template call<partial, runtime>
             {};
 
-            template <const auto& curr>
-            struct _call : call_default<
+        public:
+            template <typename partial, typename runtime, auto...>
+            struct call : call_forward<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<sizeof...(T) - I>
             > {};
 
-            template <const auto& curr>
-                requires (param.partial == 0 && consume_positional > 0 && param.kind.pos())
-            struct _call<curr> : call_positional<I> {};
+            template <typename partial, typename runtime, auto... Ts>
+                requires (param.kind.pos() && param.partial == 0 && consume_positional > 0)
+            struct call<partial, runtime, Ts...> : call_positional<partial, runtime> {};
 
-            template <const auto& curr>
-                requires (param.partial == 0 && consume_keyword < sizeof...(T) && (
+            template <typename partial, typename runtime, auto... Ts>
+                requires ((
                     param.kind.kwonly() ||
                     (param.kind.pos_or_kw() && consume_positional == 0)
-                ))
-            struct _call<curr> : call_keyword<
+                ) && param.partial == 0 && consume_keyword < sizeof...(T))
+            struct call<partial, runtime, Ts...> : call_keyword<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<consume_keyword - I>,
                 std::make_index_sequence<sizeof...(T) - (consume_keyword + 1)>
             > {};
 
-            template <const auto& curr> requires (I < sizeof...(T) && param.kind.args())
-            struct _call<curr> : call_args<
+            template <typename partial, typename runtime, auto... Ts>
+                requires (param.kind.args() && I < sizeof...(T))
+            struct call<partial, runtime, Ts...> : call_args<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<consume_positional>,
                 std::make_index_sequence<sizeof...(T) - (I + consume_positional)>
             > {};
 
-            template <const auto& curr> requires (I < sizeof...(T) && param.kind.kwargs())
-            struct _call<curr> : call_kwargs<
+            template <typename partial, typename runtime, auto... Ts>
+                requires (param.kind.kwargs() && I < sizeof...(T))
+            struct call<partial, runtime, Ts...> : call_kwargs<
+                partial,
+                runtime,
                 std::make_index_sequence<I>,
                 std::make_index_sequence<consume_positional>,
                 std::make_index_sequence<sizeof...(T) - (I + consume_positional)>
             > {};
-
-        public:
-            /* Interpret the template arguments as a call signature.  This will recur
-            over the explicit template parameters and reorder them in-place according
-            to the enclosing signature's intended semantics, including the insertion
-            of partial or default values where appropriate.  The type returned by
-            `::call` includes a `::status` member that indicates whether the binding
-            was successful, and can be invoked as a visitor to insert values for the
-            runtime portion of the function signature if so, which completes the
-            invocation. */
-            using call = _call<curr>;
         };
 
         /* By the time we reach the base case, `T...` will contain all the template
         parameters needed for the indicated operation, which are guaranteed to match
         or exceed `Spec.size`, which is the number of explicit template parameters that
         the function is defined as expecting.  If they exceed that amount, then it
-        indicates extra unmatched arguments that should be treated as an error.
-        Otherwise, `T...` holds all the context necessary to invoke the specified
+        indicates extra unmatched arguments that should be treated as an error. */
+        template <auto... T> requires (sizeof...(T) > Spec.size)
+        struct specialize<Spec.size, T...> {
+            static constexpr bind_error error =
+                !meta::arg<decltype(meta::unpack_value<Spec.size, T...>)> ?
+                    bind_error::extra_positional :
+                    bind_error::extra_keyword;
+        };
+
+        /* Otherwise, `T...` holds all the context necessary to invoke the specified
         operation, including possibly as a visitor, which allows functions to
         automatically unwrap monadic union types, as if the user had called
         `bertrand::visit()` internally. */
         template <auto... T>
         struct specialize<Spec.size, T...> {
-        private:
+            template <typename, typename, auto...>
+            struct bind;
 
-            template <typename>
-            static constexpr bind_error _error = bind_error::none;
-            template <size_type... Is> requires (sizeof...(Is) > 0)
-            static constexpr bind_error _error<std::index_sequence<Is...>> =
-                (!meta::arg<decltype(meta::unpack_value<Spec.size + Is, T...>)> || ...) ?
-                    bind_error::extra_positional :
-                    bind_error::extra_keyword;
-            static constexpr bind_error error =
-                _error<std::make_index_sequence<sizeof...(T) - Spec.size>>;
+        private:
+            template <const auto&... Ts>
+            static constexpr auto curr = meta::unpack_value<sizeof...(Ts), Args...>;
+
+            template <const auto&... Ts>
+            static constexpr size_type arg_idx =
+                impl::partial_idx<sizeof...(Ts), decltype(Ts)...>;
+
+            template <const auto&... Ts>
+            static constexpr size_type partial_idx =
+                impl::partial_idx<sizeof...(Ts), decltype(Args)...>;
+
+            template <typename, const auto&...>
+            static constexpr size_type consume_positional = 0;
+            template <typename... A, const auto&... Ts>
+            static constexpr size_type consume_positional<meta::pack<A...>, Ts...> =
+                signature::consume_positional<arg_idx<Ts...>, A...>;
+
+            template <typename, const auto&...>
+            static constexpr size_type consume_keyword = 0;
+            template <typename... A, const auto&... Ts>
+            static constexpr size_type consume_keyword<meta::pack<A...>, Ts...> =
+                signature::consume_keyword<curr<Ts...>, arg_idx<Ts...>, A...>;
+
+            /// TODO: it's probably best if I revert some of these changes to reduce
+            /// the amount of work the compiler needs to do, because apparently it's
+            /// so much that it literally crashes the OS, somehow.  What I can probably
+            /// do is make it such that I never reorder the arguments in the pack, and
+            /// actually remove them as they are parsed
+
+            // (1) unmatched arguments and partials get forwarded as-is, inserting
+            // the current partial value if applicable.  Partial keywords are also
+            // checked for conflicts with existing values.
+            template <typename, typename, typename, typename, typename, auto...>
+            struct bind_forward {
+                static constexpr bind_error error = bind_error::conflicting_values;
+            };
+            template <
+            typename P,
+                typename... A,
+                size_type... prev,
+                size_type... parts,
+                size_type... next,
+                auto... Ts
+            > requires (sizeof...(parts) == 0)
+            struct bind_forward<
+                P,
+                meta::pack<A...>,
+                std::index_sequence<prev...>,
+                std::index_sequence<parts...>,
+                std::index_sequence<next...>,
+                Ts...
+            > : bind<P, meta::pack<A...>, Ts..., curr<Ts...>> {
+                using recur = bind<P, meta::pack<A...>, Ts..., curr<Ts...>>;
+                static constexpr decltype(auto) operator()(auto&& partial, auto&&... args)
+                    noexcept (requires{{recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        std::forward<decltype(args)>(args)...
+                    )} noexcept;})
+                    requires (requires{recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        std::forward<decltype(args)>(args)...
+                    );})
+                {
+                    return (recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        std::forward<decltype(args)>(args)...
+                    ));
+                }
+            };
+            template <
+                typename P,
+                typename... A,
+                size_type... prev,
+                size_type... parts,
+                size_type... next,
+                auto... Ts
+            >
+                requires (sizeof...(parts) > 0 && (
+                    !info.params[sizeof...(Ts)].kind.kw() ||
+                    consume_keyword<meta::pack<A...>, Ts...> == sizeof...(A)
+                ))
+            struct bind_forward<
+                P,
+                meta::pack<A...>,
+                std::index_sequence<prev...>,
+                std::index_sequence<parts...>,
+                std::index_sequence<next...>,
+                Ts...
+            > : bind<
+                P,
+                meta::pack<A..., meta::get_type<P, partial_idx<Ts...>>>,
+                Ts...,
+                curr<Ts...>
+            > {
+                using recur = bind<
+                    P,
+                    meta::pack<A..., meta::get_type<P, partial_idx<Ts...>>>,
+                    Ts...,
+                    curr<Ts...>
+                >;
+                static constexpr decltype(auto) operator()(auto&& partial, auto&&... args)
+                    noexcept (requires{{recur{}(
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<decltype(args)>(args)...)...,
+                        std::forward<P>(partial).template get<partial_idx<Ts...> + parts>()...,
+                        meta::unpack_arg<sizeof...(prev) + next>(
+                            std::forward<decltype(args)>(args)...
+                        )...
+                    )} noexcept;})
+                    requires (requires{recur{}(
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<decltype(args)>(args)...)...,
+                        std::forward<P>(partial).template get<partial_idx<Ts...> + parts>()...,
+                        meta::unpack_arg<sizeof...(prev) + next>(
+                            std::forward<decltype(args)>(args)...
+                        )...
+                    );})
+                {
+                    return (recur{}(
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<decltype(args)>(args)...)...,
+                        std::forward<P>(partial).template get<partial_idx<Ts...> + parts>()...,
+                        meta::unpack_arg<sizeof...(prev) + next>(
+                            std::forward<decltype(args)>(args)...
+                        )...
+                    ));
+                }
+            };
+
+            // (2) matching positional arguments can be trivially forwarded, since
+            // they're already in the correct order, after we've checked for a type
+            // mismatch or conflicting keyword.
+            template <typename, typename, auto... Ts>
+            struct bind_positional;
+            template <typename P, typename... A, auto... Ts>
+            struct bind_positional<P, meta::pack<A...>, Ts...> {
+                static constexpr bind_error error = (
+                    info.params[sizeof...(Ts)].kind.kw() &&
+                    consume_keyword<meta::pack<A...>, Ts...> < sizeof...(A)
+                ) ?
+                    bind_error::conflicting_values :
+                    bind_error::bad_type;
+            };
+            template <typename P, typename... A, auto... Ts>
+                requires ((
+                    !info.params[sizeof...(Ts)].kind.kw() ||
+                    consume_keyword<meta::pack<A...>, Ts...> == sizeof...(A)
+                ) && (
+                    !info.params[sizeof...(Ts)].kind.typed() ||
+                    type_check<curr<Ts...>, meta::unpack_type<arg_idx<Ts...>, A...>>
+                ))
+            struct bind_positional<P, meta::pack<A...>, Ts...> : bind<
+                P,
+                meta::pack<A...>,
+                Ts...,
+                impl::make_partial<meta::unpack_type<arg_idx<Ts...>, A...>>(curr<Ts...>)
+            > {
+                using recur = bind<
+                    P,
+                    meta::pack<A...>,
+                    Ts...,
+                    impl::make_partial<meta::unpack_type<arg_idx<Ts...>, A...>>(curr<Ts...>)
+                >;
+                static constexpr decltype(auto) operator()(auto&& partial, auto&&... args)
+                    noexcept (requires{{recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        std::forward<decltype(args)>(args)...
+                    )} noexcept;})
+                    requires (requires{recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        std::forward<decltype(args)>(args)...
+                    );})
+                {
+                    return (recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        std::forward<decltype(args)>(args)...
+                    ));
+                }
+            };
+
+            // (3) keywords must be removed from their current location, unwrapped to
+            // their underlying values, marked as a partial, and then inserted into the
+            // argument list, after checking for a type mismatch.
+            template <typename, typename, typename, typename, typename, auto...>
+            struct bind_keyword {
+                static constexpr bind_error error = bind_error::bad_type;
+            };
+            template <
+                typename P,
+                typename... A,
+                size_type... prev,
+                size_type... middle,
+                size_type... next,
+                auto... Ts
+            >
+                requires (type_check<
+                    curr<Ts...>,
+                    meta::unpack_type<consume_keyword<meta::pack<A...>, Ts...>, A...>
+                >)
+            struct bind_keyword<
+                P,
+                meta::pack<A...>,
+                std::index_sequence<prev...>,
+                std::index_sequence<middle...>,
+                std::index_sequence<next...>,
+                Ts...
+            > :
+                bind<
+                    P,
+                    meta::pack<
+                        meta::unpack_type<prev, A...>...,
+                        meta::unpack_type<consume_keyword<meta::pack<A...>, Ts...>, A...>,
+                        meta::unpack_type<sizeof...(prev) + middle, A...>...,
+                        meta::unpack_type<
+                            consume_keyword<meta::pack<A...>, Ts...> + 1 + next,
+                            A...
+                        >...
+                    >,
+                    Ts...,
+                    impl::make_partial<meta::unpack_type<
+                        consume_keyword<meta::pack<A...>, Ts...>,
+                        A...
+                    >>(curr<Ts...>)
+                >
+            {
+                static constexpr size_type consume_keyword =
+                    specialize::consume_keyword<meta::pack<A...>, Ts...>;
+                using recur = bind<
+                    P,
+                    meta::pack<
+                        meta::unpack_type<prev, A...>...,
+                        meta::unpack_type<consume_keyword, A...>,
+                        meta::unpack_type<sizeof...(prev) + middle, A...>...,
+                        meta::unpack_type<consume_keyword + 1 + next, A...>...
+                    >,
+                    Ts...,
+                    impl::make_partial<meta::unpack_type<consume_keyword, A...>>(
+                        curr<Ts...>
+                    )
+                >;
+                static constexpr decltype(auto) operator()(auto&& partial, auto&&... args)
+                    noexcept (requires{{recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        meta::unpack_arg<prev>(std::forward<decltype(args)>(args)...)...,
+                        meta::unpack_arg<consume_keyword>(
+                            std::forward<decltype(args)>(args)...
+                        ).value(),
+                        meta::unpack_arg<sizeof...(prev) + middle>(
+                            std::forward<decltype(args)>(args)...
+                        )...,
+                        meta::unpack_arg<consume_keyword + 1 + next>(
+                            std::forward<decltype(args)>(args)...
+                        )...
+                    )} noexcept;})
+                    requires (requires{recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        meta::unpack_arg<prev>(std::forward<decltype(args)>(args)...)...,
+                        meta::unpack_arg<consume_keyword>(
+                            std::forward<decltype(args)>(args)...
+                        ).value(),
+                        meta::unpack_arg<sizeof...(prev) + middle>(
+                            std::forward<decltype(args)>(args)...
+                        )...,
+                        meta::unpack_arg<consume_keyword + 1 + next>(
+                            std::forward<decltype(args)>(args)...
+                        )...
+                    );})
+                {
+                    return (recur{}(
+                        std::forward<decltype(partial)>(partial),
+                        meta::unpack_arg<prev>(std::forward<decltype(args)>(args)...)...,
+                        meta::unpack_arg<consume_keyword>(
+                            std::forward<decltype(args)>(args)...
+                        ).value(),
+                        meta::unpack_arg<sizeof...(prev) + middle>(
+                            std::forward<decltype(args)>(args)...
+                        )...,
+                        meta::unpack_arg<consume_keyword + 1 + next>(
+                            std::forward<decltype(args)>(args)...
+                        )...
+                    ));
+                }
+            };
+
+            // (4) variadic positional arguments will forward any existing partial
+            // arguments, consume all remaining positional values, applying type
+            // checks, and then concatenate both sections in the final argument list.
+
+            // (5) variadic keyword arguments will forward any existing partial
+            // arguments, consume all remaining keyword values, applying type and
+            // conflicting value checks, and then concatenate both sections in the
+            // final argument list.
 
         public:
+            template <typename partial, typename runtime, auto... Ts>
+            struct bind : bind_forward<
+                partial,
+                runtime,
+                std::make_index_sequence<sizeof...(Ts)>,
+                std::make_index_sequence<
+                    meta::partials<meta::unpack_type<sizeof...(Ts), decltype(Args)...>>::size
+                >,
+                std::make_index_sequence<
+                    sizeof...(Ts) - meta::partials<
+                        meta::unpack_type<sizeof...(Ts), decltype(Args)...>
+                    >::size
+                >,
+                Ts...
+            > {};
 
-            /* A function object that completes the binding of a partial function when
-            called.  This will recur over the current signature's runtime arguments and
-            assign the given partial values to form a new partial signature, which can
-            then be used to invoke a matching function with a reduced signature. */
-            template <auto... Ts>
-            struct bind {
-            private:
-                static constexpr size_type I = sizeof...(Ts);
-                static constexpr auto curr = meta::unpack_value<I, Args...>;
-                static constexpr value_type param = info.params[Spec.size + I];
-
-                // Apply a type check against `curr`, assuming it is typed and the
-                // index is within range.
-                template <size_type, typename...>
-                static constexpr bool type_check = true;
-                template <size_type J, typename... A>
-                    requires (J < sizeof...(A) && param.kind.typed() &&
-                        !meta::arg<meta::unpack_type<J, A...>>
-                    )
-                static constexpr bool type_check<J, A...> = meta::convertible_to<
-                    meta::unpack_type<J, A...>,
-                    meta::arg_type<decltype(curr)>
-                >;
-                template <size_type J, typename... A>
-                    requires (J < sizeof...(A) && param.kind.typed() &&
-                        meta::bound_arg<meta::unpack_type<J, A...>>
-                    )
-                static constexpr bool type_check<J, A...> = meta::convertible_to<
-                    meta::arg_value<meta::unpack_type<J, A...>>,
-                    meta::arg_type<decltype(curr)>
-                >;
-
-                // Check to see whether any source keyword arguments in `A...` are
-                // already contained as partial variadic keywords.  If so, then a
-                // conflicting value error will occur.
-                template <typename... A>
-                static constexpr bool conflicts_with_partial =
-                    (partial_type::template contains<meta::arg_name<A>>() || ...);
-
-                // Count the number of unprocessed runtime arguments in `A...` which
-                // can positionally bind to the target argument at index `I`.  Returns
-                // zero if no positional arguments remain to be bound.
-                template <size_type, typename...>
-                static constexpr size_type _consume_positional = 0;
-                template <size_type J, typename... A>
-                    requires (J < sizeof...(A) && !meta::arg<meta::unpack_type<J, A...>>)
-                static constexpr size_type _consume_positional<J, A...> =
-                    _consume_positional<J + 1, A...> + 1;
-                template <typename... A>
-                static constexpr size_type consume_positional =
-                    _consume_positional<partial_idx<I, decltype(Ts)...>, A...>;
-
-                // Check to see if there is an unprocessed runtime argument with the
-                // same name as the target argument at index `I`, which can bind to it
-                // as a keyword argument.  If such an argument exists, then returns its
-                // index in the runtime argument list, otherwise returns
-                // `sizeof...(A)`.
-                template <size_type J, typename...>
-                static constexpr size_type _consume_keyword = J;
-                template <size_type J, typename... A>
-                    requires (J < sizeof...(A) && !(
-                        meta::standard_arg<meta::unpack_type<J, A...>> &&
-                        param.name == meta::arg_name<meta::unpack_type<J, A...>>
-                    ))
-                static constexpr size_type _consume_keyword<J, A...> =
-                    _consume_keyword<J + 1, A...>;
-                template <typename... A>
-                static constexpr size_type consume_keyword =
-                    _consume_keyword<partial_idx<I, decltype(Ts)...>, A...>;
-
-                // (1) partial arguments are forwarded as-is, with their current
-                // values being carried over to the new signature.
-                template <size_type... prev, size_type... next, typename P, typename... A>
-                static constexpr decltype(auto) bind_partial(
-                    std::index_sequence<prev...>,
-                    std::index_sequence<next...>,
-                    P&& partial,
-                    A&&... args
+            template <typename partial, typename runtime, auto... Ts>
+                requires (
+                    sizeof...(Ts) < sizeof...(Args) &&
+                    info.params[sizeof...(Ts)].kind.pos() &&
+                    info.params[sizeof...(Ts)].partial == 0 &&
+                    consume_positional<runtime, Ts...> > 0
                 )
-                    noexcept (requires{{bind<Ts..., meta::unpack_value<I, Args...>>{}(
-                        std::forward<P>(partial),
-                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<partial_idx<I, decltype(Args)...>>(),
-                        meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
-                    )} noexcept;})
-                    requires (requires{bind<Ts..., meta::unpack_value<I, Args...>>{}(
-                        std::forward<P>(partial),
-                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<partial_idx<I, decltype(Args)...>>(),
-                        meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
-                    );})
-                {
-                    return (bind<Ts..., meta::unpack_value<I, Args...>>{}(
-                        std::forward<P>(partial),
-                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<partial_idx<I, decltype(Args)...>>(),
-                        meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
-                    ));
-                }
+            struct bind<partial, runtime, Ts...> : bind_positional<partial, runtime, Ts...> {};
 
-                template <typename P, typename... A>
-                static constexpr decltype(auto) bind_positional(P&& partial, A&&... args)
-                    noexcept (requires{{bind<
-                        Ts...,
-                        impl::make_partial<meta::unpack_type<partial_idx<I, decltype(Ts)...>, A...>>(
-                            meta::unpack_value<I, Args...>
-                        )
-                    >{}(std::forward<P>(partial), std::forward<A>(args)...)} noexcept;})
-                    requires (requires{bind<
-                        Ts...,
-                        impl::make_partial<meta::unpack_type<partial_idx<I, decltype(Ts)...>, A...>>(
-                            meta::unpack_value<I, Args...>
-                        )
-                    >{}(std::forward<P>(partial), std::forward<A>(args)...);})
-                {
-                    return (bind<
-                        Ts...,
-                        impl::make_partial<meta::unpack_type<partial_idx<I, decltype(Ts)...>, A...>>(
-                            meta::unpack_value<I, Args...>
-                        )
-                    >{}(std::forward<P>(partial), std::forward<A>(args)...));
-                }
-
-                template <
-                    size_type... prev,
-                    size_type... middle,
-                    size_type... next,
-                    typename P,
-                    typename... A
-                >
-                static constexpr decltype(auto) bind_keyword(
-                    std::index_sequence<prev...>,
-                    std::index_sequence<middle...>,
-                    std::index_sequence<next...>,
-                    P&& partial,
-                    A&&... args
+            template <typename partial, typename runtime, auto... Ts>
+                requires (
+                    sizeof...(Ts) < sizeof...(Args) &&
+                    ((
+                        info.params[sizeof...(Ts)].kind.kwonly() ||
+                        (info.params[sizeof...(Ts)].kind.pos_or_kw() &&
+                        consume_positional<runtime, Ts...> == 0)
+                    ) && info.params[sizeof...(Ts)].partial == 0 &&
+                    consume_keyword<runtime, Ts...> < sizeof...(T))
                 )
-                    noexcept (requires{{bind<
-                        Ts...,
-                        impl::make_partial<
-                            meta::arg_value<meta::unpack_type<consume_keyword<A...>, A...>>
-                        >(meta::unpack_value<I, Args...>)
-                    >{}(
-                        std::forward<P>(partial),
-                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        meta::unpack_arg<consume_keyword<A...>>(std::forward<A>(args)...).value(),
-                        meta::unpack_arg<sizeof...(prev) + middle>(std::forward<A>(args)...)...,
-                        meta::unpack_arg<consume_keyword<A...> + 1 + next>(
-                            std::forward<A>(args)...
-                        )...
-                    )} noexcept;})
-                    requires (requires{bind<
-                        Ts...,
-                        impl::make_partial<
-                            meta::arg_value<meta::unpack_type<consume_keyword<A...>, A...>>
-                        >(meta::unpack_value<I, Args...>)
-                    >{}(
-                        std::forward<P>(partial),
-                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        meta::unpack_arg<consume_keyword<A...>>(std::forward<A>(args)...).value(),
-                        meta::unpack_arg<sizeof...(prev) + middle>(std::forward<A>(args)...)...,
-                        meta::unpack_arg<consume_keyword<A...> + 1 + next>(
-                            std::forward<A>(args)...
-                        )...
-                    );})
-                {
-                    return (bind<
-                        Ts...,
-                        impl::make_partial<
-                            meta::arg_value<meta::unpack_type<consume_keyword<A...>, A...>>
-                        >(meta::unpack_value<I, Args...>)
-                    >{}(
-                        std::forward<P>(partial),
-                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        meta::unpack_arg<consume_keyword<A...>>(std::forward<A>(args)...).value(),
-                        meta::unpack_arg<sizeof...(prev) + middle>(std::forward<A>(args)...)...,
-                        meta::unpack_arg<consume_keyword<A...> + 1 + next>(
-                            std::forward<A>(args)...
-                        )...
-                    ));
-                }
+            struct bind<partial, runtime, Ts...> : bind_keyword<
+                partial,
+                runtime,
+                std::make_index_sequence<sizeof...(Ts)>,
+                std::make_index_sequence<consume_keyword<runtime, Ts...> - sizeof...(Ts)>,
+                std::make_index_sequence<
+                    sizeof...(Ts) - (consume_keyword<runtime, Ts...> + 1)
+                >,
+                Ts...
+            > {};
 
-                /// TODO: bind_args, bind_kwargs
-
-                template <typename... A>
-                static constexpr bool dispatch_positional =
-                    param.kind.pos() && param.partial == 0 && consume_positional<A...> > 0;
-
-                template <typename... A>
-                static constexpr bool dispatch_keyword = (
-                    param.kind.kwonly() ||
-                    (param.kind.pos_or_kw() && consume_positional<A...> == 0)
-                ) && param.partial == 0 && consume_keyword<A...> < sizeof...(A);
+            /// TODO: variadic args and kwargs
 
 
-
-            public:
-                static constexpr bind_error error = specialize::error;
-
-                // [1] non-variadic partial arguments are perfectly forwarded, along
-                // with their current partial value.
-                template <typename P, typename... A>
-                    requires (!param.kind.variadic() && param.partial > 0)
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{bind_partial(
-                        std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
-                        std::make_index_sequence<sizeof...(A) - partial_idx<I, decltype(Ts)...>>{},
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    )} noexcept;})
-                    requires (requires{bind_partial(
-                        std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
-                        std::make_index_sequence<sizeof...(A) - partial_idx<I, decltype(Ts)...>>{},
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    );})
-                {
-                    return (bind_partial(
-                        std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
-                        std::make_index_sequence<sizeof...(A) - partial_idx<I, decltype(Ts)...>>{},
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    ));
-                }
-
-                // [2] matching positional arguments are marked in the final template
-                // signature and then trivially forwarded.
-                template <typename P, typename... A> requires (dispatch_positional<A...>)
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{bind_positional(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    )} noexcept;})
-                    requires (requires{bind_positional(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    );})
-                {
-                    return (bind_positional(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    ));
-                }
-
-                // [3] keywords must be removed from their current location, unwrapped
-                // to their underlying values, marked in the final template signature,
-                // and then forwarded.
-                template <typename P, typename... A> requires (dispatch_keyword<A...>)
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{bind_keyword(
-                        std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
-                        std::make_index_sequence<
-                            consume_keyword<A...> - partial_idx<I, decltype(Ts)...>
-                        >{},
-                        std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    )} noexcept;})
-                    requires (requires{bind_keyword(
-                        std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
-                        std::make_index_sequence<
-                            consume_keyword<A...> - partial_idx<I, decltype(Ts)...>
-                        >{},
-                        std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    );})
-                {
-                    return (bind_keyword(
-                        std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
-                        std::make_index_sequence<
-                            consume_keyword<A...> - partial_idx<I, decltype(Ts)...>
-                        >{},
-                        std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    ));
-                }
-
-                // [4] if no dispatch method can be chosen, then the unmatched argument
-                // will be forwarded directly, without binding it to a partial value.
-                template <typename P, typename... A>
-                    requires (
-                        !param.kind.variadic() &&
-                        param.partial == 0 &&
-                        !dispatch_positional<A...> &&
-                        !dispatch_keyword<A...>
-                    )
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{bind<Ts..., meta::unpack_value<I, Args...>>{}(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    )} noexcept;})
-                    requires (requires{bind<Ts..., meta::unpack_value<I, Args...>>{}(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    );})
-                {
-                    return (bind<Ts..., meta::unpack_value<I, Args...>>{}(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    ));
-                }
-
-
-                /// TODO: only trigger these overloads if there are A... arguments
-                /// left to be processed?
-
-                // [5] variadic positional arguments will consume all remaining
-                // positional parameters and concatenate them with any existing
-                // partial values.  The result then gets inserted as a single argument.
-                template <typename P, typename... A> requires (param.kind.args())
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args) {
-                    /// TODO: do stuff
-                }
-
-                // [6] variadic keyword arguments will consume all remaining
-                // keyword parameters, assert that they do not conflict with any
-                // existing partials, and then concatenate them.  The result then gets
-                // inserted as a single argument.
-                template <typename P, typename... A> requires (param.kind.kwargs())
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args) {
-                    /// TODO: do stuff
-                }
+            /* If all `Args...` have been processed, yet unmatched arguments remain,
+            then `bind()` will fail to compile. */
+            template <typename partial, typename... A, auto... Ts>
+                requires (sizeof...(Ts) == sizeof...(Args) && arg_idx<Ts...> < sizeof...(A))
+            struct bind<partial, meta::pack<A...>, Ts...> {
+                static constexpr bind_error error =
+                    !meta::arg<meta::unpack_type<arg_idx<Ts...>, A...>> ?
+                        bind_error::extra_positional :
+                        bind_error::extra_keyword;
+                /// TODO: in the call case, this would have to validate argument packs
+                /// and remove them from the signature and recur.
             };
 
-            /* base case: once all Args... have been bound and inserted into Ts...,
+            /* Base case: once all `Args...` have been bound and inserted into `Ts...`,
             then `A...` must represent a valid initializer for the completed partial
             signature. */
-            template <auto... Ts> requires (sizeof...(Ts) == sizeof...(Args))
-            struct bind<Ts...> {
-                template <typename P, typename... A>
-                    requires (sizeof...(A) == partial_idx<sizeof...(Ts), decltype(Ts)...>)
-                static constexpr decltype(auto) operator()(P&& partial, A&&... args)
+            template <typename partial, typename... A, auto... Ts>
+                requires (sizeof...(Ts) == sizeof...(Args) && arg_idx<Ts...> == sizeof...(A))
+            struct bind<partial, meta::pack<A...>, Ts...> {
+                static constexpr bind_error error = bind_error::none;
+                static constexpr decltype(auto) operator()(auto&&, auto&&... args)
                     noexcept (requires{{
-                        signature<{T...}, Ts...>{std::forward<A>(args)...}
+                        signature<{T...}, Ts...>{std::forward<decltype(args)>(args)...}
                     } noexcept;})
                     requires (requires{
-                        signature<{T...}, Ts...>{std::forward<A>(args)...};
+                        signature<{T...}, Ts...>{std::forward<decltype(args)>(args)...};
                     })
                 {
-                    return (signature<{T...}, Ts...>{std::forward<A>(args)...});
+                    return (signature<{T...}, Ts...>{std::forward<decltype(args)>(args)...});
                 }
             };
 
-            /// TODO: call would end up working very similarly to bind
-
-            struct call {
-            private:
 
 
 
-            public:
-                static constexpr bind_error error = specialize::error;
 
-                template <size_type I = 0, typename F, typename P, typename... A>
-                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args) {
-                    /// TODO: Note that this will need to account for missing arguments
-                    /// and argument packs in a way that ::bind will not.
-                }
-            };
+
+            // /* Runtime arguments have to go through a similar validation and reordering
+            // phase to bind appropriately, and will use recursive inheritance to
+            // terminate early if an error condition is encountered.  The first template
+            // argument is a pack describing the current argument types for the call
+            // signature, and the second is a processed annotation list, which forms the
+            // runtime portion of the partial signature. */
+            // template <typename... A, auto... Ts>
+            // struct bind<meta::pack<A...>, Ts...> {
+            // private:
+            //     static constexpr size_type I = partial_idx<sizeof...(Ts), decltype(Ts)...>;
+            //     static constexpr auto curr = meta::unpack_value<sizeof...(Ts), Args...>;
+            //     static constexpr value_type param = info.params[Spec.size + I];
+            //     static constexpr size_type consume_positional =
+            //         signature::consume_positional<I, A...>;
+            //     static constexpr size_type consume_keyword =
+            //         signature::consume_keyword<curr, I, A...>;
+
+
+
+
+            //     template <
+            //         size_type... prev,
+            //         size_type... parts,
+            //         size_type... middle,
+            //         size_type... next,
+            //         typename P,
+            //         typename... A
+            //     >
+            //     static constexpr decltype(auto) bind_variadic(
+            //         std::index_sequence<prev...>,
+            //         std::index_sequence<parts...>,
+            //         std::index_sequence<middle...>,
+            //         std::index_sequence<next...>,
+            //         P&& partial,
+            //         A&&... args
+            //     )
+            //         noexcept (requires{{bind<
+            //             Ts...,
+            //             impl::make_partial<
+            //                 meta::unpack_type<sizeof...(prev) + middle, A...>...
+            //             >(meta::unpack_value<I, Args...>)
+            //         >{}(
+            //             std::forward<P>(partial),
+            //             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+            //             std::forward<P>(partial).template get<
+            //                 partial_idx<I, decltype(Args)...> + parts
+            //             >()...,
+            //             meta::unpack_arg<sizeof...(prev) + middle>(std::forward<A>(args)...)...,
+            //             meta::unpack_arg<sizeof...(prev) + sizeof...(middle) + next>(
+            //                 std::forward<A>(args)...
+            //             )...
+            //         )} noexcept;})
+            //         requires (requires{bind<
+            //             Ts...,
+            //             impl::make_partial<
+            //                 meta::unpack_type<sizeof...(prev) + middle, A...>...
+            //             >(meta::unpack_value<I, Args...>)
+            //         >{}(
+            //             std::forward<P>(partial),
+            //             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+            //             std::forward<P>(partial).template get<
+            //                 partial_idx<I, decltype(Args)...> + parts
+            //             >()...,
+            //             meta::unpack_arg<sizeof...(prev) + middle>(std::forward<A>(args)...)...,
+            //             meta::unpack_arg<sizeof...(prev) + sizeof...(middle) + next>(
+            //                 std::forward<A>(args)...
+            //             )...
+            //         );})
+            //     {
+            //         return (bind<
+            //             Ts...,
+            //             impl::make_partial<
+            //                 meta::unpack_type<sizeof...(prev) + middle, A...>...
+            //             >(meta::unpack_value<I, Args...>)
+            //         >{}(
+            //             std::forward<P>(partial),
+            //             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+            //             std::forward<P>(partial).template get<
+            //                 partial_idx<I, decltype(Args)...> + parts
+            //             >()...,
+            //             meta::unpack_arg<sizeof...(prev) + middle>(std::forward<A>(args)...)...,
+            //             meta::unpack_arg<sizeof...(prev) + sizeof...(middle) + next>(
+            //                 std::forward<A>(args)...
+            //             )...
+            //         ));
+            //     }
+
+            //     template <typename... A>
+            //     static constexpr bool dispatch_positional =
+            //         param.kind.pos() && param.partial == 0 && consume_positional<A...> > 0;
+
+            //     template <typename... A>
+            //     static constexpr bool dispatch_keyword = (
+            //         param.kind.kwonly() ||
+            //         (param.kind.pos_or_kw() && consume_positional<A...> == 0)
+            //     ) && param.partial == 0 && consume_keyword<A...> < sizeof...(A);
+
+            //     template <typename... A>
+            //     static constexpr bool dispatch_args =
+            //         param.kind.args() && consume_positional<A...> > 0;
+
+            //     template <typename... A>
+            //     static constexpr bool dispatch_kwargs =
+            //         param.kind.kwargs() && partial_idx<I, decltype(Ts)...> < sizeof...(A);
+
+            //     /// TODO: what if one of the keywords conflicts with a 
+
+            // public:
+            //     static constexpr bind_error error = specialize::error;
+
+
+
+            //     // [1] non-variadic partial arguments are perfectly forwarded, along
+            //     // with their current partial value.
+            //     template <typename P, typename... A>
+            //         requires (
+            //             param.partial > 0 &&
+            //             !dispatch_positional<A...> &&
+            //             !dispatch_keyword<A...> &&
+            //             !dispatch_args<A...> &&
+            //             !dispatch_kwargs<A...>
+            //         )
+            //     static constexpr decltype(auto) operator()(P&& partial, A&&... args)
+            //         noexcept (requires{{bind_partial(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<param.partial>{},
+            //             std::make_index_sequence<sizeof...(A) - partial_idx<I, decltype(Ts)...>>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         )} noexcept;})
+            //         requires (requires{bind_partial(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<param.partial>{},
+            //             std::make_index_sequence<sizeof...(A) - partial_idx<I, decltype(Ts)...>>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         );})
+            //     {
+            //         return (bind_partial(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<param.partial>{},
+            //             std::make_index_sequence<sizeof...(A) - partial_idx<I, decltype(Ts)...>>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         ));
+            //     }
+
+            //     // [2] matching positional arguments are marked in the final template
+            //     // signature and then trivially forwarded.
+            //     template <typename P, typename... A> requires (dispatch_positional<A...>)
+            //     static constexpr decltype(auto) operator()(P&& partial, A&&... args)
+            //         noexcept (requires{{bind_positional(
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         )} noexcept;})
+            //         requires (requires{bind_positional(
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         );})
+            //     {
+            //         return (bind_positional(
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         ));
+            //     }
+
+            //     // [3] keywords must be removed from their current location, unwrapped
+            //     // to their underlying values, marked in the final template signature,
+            //     // and then forwarded.
+            //     template <typename P, typename... A> requires (dispatch_keyword<A...>)
+            //     static constexpr decltype(auto) operator()(P&& partial, A&&... args)
+            //         noexcept (requires{{bind_keyword(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<
+            //                 consume_keyword<A...> - partial_idx<I, decltype(Ts)...>
+            //             >{},
+            //             std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         )} noexcept;})
+            //         requires (requires{bind_keyword(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<
+            //                 consume_keyword<A...> - partial_idx<I, decltype(Ts)...>
+            //             >{},
+            //             std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         );})
+            //     {
+            //         return (bind_keyword(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<
+            //                 consume_keyword<A...> - partial_idx<I, decltype(Ts)...>
+            //             >{},
+            //             std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         ));
+            //     }
+
+            //     // [5] variadic positional arguments will consume all remaining
+            //     // positional parameters and concatenate them with any existing
+            //     // partial values.  The result then gets inserted as a single argument.
+            //     template <typename P, typename... A> requires (param.kind.args())
+            //     static constexpr decltype(auto) operator()(P&& partial, A&&... args) {
+            //         return (bind_variadic(
+            //             std::make_index_sequence<partial_idx<I, decltype(Ts)...>>{},
+            //             std::make_index_sequence<consume_positional>{},
+            //             std::forward<P>(partial),
+            //             std::forward<A>(args)...
+            //         ));
+            //     }
+
+            //     // [6] variadic keyword arguments will consume all remaining
+            //     // keyword parameters, assert that they do not conflict with any
+            //     // existing partials, and then concatenate them.  The result then gets
+            //     // inserted as a single argument.
+            //     template <typename P, typename... A> requires (param.kind.kwargs())
+            //     static constexpr decltype(auto) operator()(P&& partial, A&&... args) {
+            //         /// TODO: do stuff
+            //     }
+            // };
         };
 
         template <size_type... Is>
@@ -3728,20 +4110,31 @@ namespace impl {
                 meta::source_args<decltype(T)...> &&
                 meta::source_args<A...> &&
                 (!meta::arg_pack<A> && ...) &&
-                (!meta::kwarg_pack<A> && ...) &&
-                meta::can_bind<specialize<0, T...>::template bind<>::error>
+                (!meta::kwarg_pack<A> && ...)
             )
         [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
-            noexcept (requires{{typename specialize<0, T...>::template bind<>{}(
+            noexcept (requires{{typename specialize<0, T...>::template bind<
+                decltype(std::forward<Self>(self).m_partial),
+                meta::pack<A...>
+            >{}(
                 std::forward<Self>(self).m_partial,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (requires{typename specialize<0, T...>::template bind<>{}(
+            requires (meta::can_bind<specialize<0, T...>::template bind<
+                decltype(std::forward<Self>(self).m_partial),
+                meta::pack<A...>
+            >::error> && requires{typename specialize<0, T...>::template bind<
+                decltype(std::forward<Self>(self).m_partial),
+                meta::pack<A...>
+            >{}(
                 std::forward<Self>(self).m_partial,
                 std::forward<A>(args)...
             );})
         {
-            return (typename specialize<0, T...>::template bind<>{}(
+            return (typename specialize<0, T...>::template bind<
+                decltype(std::forward<Self>(self).m_partial),
+                meta::pack<A...>
+            >{}(
                 std::forward<Self>(self).m_partial,
                 std::forward<A>(args)...
             ));
@@ -3926,29 +4319,29 @@ namespace impl {
 
 
 
-    static constexpr auto x = "x"_;
-    static constexpr auto z = "z"_ = 2;
-    static constexpr auto p1 = impl::partial<meta::unqualify<decltype(x)>, int>{x};
-    static constexpr auto p2 = impl::partial<meta::unqualify<decltype(z)>, decltype("z"_ = 2)>{z};
+    // static constexpr auto x = "x"_;
+    // static constexpr auto z = "z"_ = 2;
+    // static constexpr auto p1 = impl::partial<meta::unqualify<decltype(x)>, int>{x};
+    // static constexpr auto p2 = impl::partial<meta::unqualify<decltype(z)>, decltype("z"_ = 2)>{z};
 
 
-    inline constexpr signature<{}, p1, "/"_, "y"_, "*args"_, p2> sig{1, "z"_ = 2};
-    inline constexpr auto param = sig["x"];
-    static_assert(sig["x"].index == 0);
-    static_assert(sig.n_partial() == 2);
-    static_assert(sig.clear().n_partial() == 0);
-    static_assert(sig.get<-1>().has_value());
-    static_assert(sig.get(-1).value().name == "z");
-    static_assert(sig.get("x").value().kind.posonly());
+    // inline constexpr signature<{}, p1, "/"_, "y"_, "*args"_, p2> sig{1, "z"_ = 2};
+    // inline constexpr auto param = sig["x"];
+    // static_assert(sig["x"].index == 0);
+    // static_assert(sig.n_partial() == 2);
+    // static_assert(sig.clear().n_partial() == 0);
+    // static_assert(sig.get<-1>().has_value());
+    // static_assert(sig.get(-1).value().name == "z");
+    // static_assert(sig.get("x").value().kind.posonly());
 
 
 
 
-    inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
-    inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
-    static_assert(sig3.n_partial() == 4);
-    static_assert(sig3.get<"z">().value() == 1);
-    static_assert(sig3.clear().n_partial() == 0);
+    // inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
+    // inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
+    // static_assert(sig3.n_partial() == 4);
+    // static_assert(sig3.get<"z">().value() == 1);
+    // static_assert(sig3.clear().n_partial() == 0);
 
 
 

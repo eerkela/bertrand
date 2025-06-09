@@ -5726,7 +5726,7 @@ namespace meta {
     }
 
     template <typename T>
-    concept static_str = detail::static_str<T>;
+    concept static_str = detail::static_str<unqualify<T>>;
 
 }
 
