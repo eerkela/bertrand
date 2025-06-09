@@ -2880,13 +2880,13 @@ namespace impl {
     private:
         // Apply a type check against `curr` using the type at index `I` of `T...`,
         // assuming it is in range.
-        template <auto curr, typename T>
+        template <const auto& curr, typename T>
         static constexpr bool type_check = true;
-        template <auto curr, typename T>
+        template <const auto& curr, typename T>
             requires (meta::typed_arg<decltype(curr)> && !meta::arg<T>)
         static constexpr bool type_check<curr, T> =
             meta::convertible_to<T, meta::arg_type<decltype(curr)>>;
-        template <auto curr, typename T>
+        template <const auto& curr, typename T>
             requires (meta::typed_arg<decltype(curr)> && meta::bound_arg<T>)
         static constexpr bool type_check<curr, T> =
             meta::convertible_to<meta::arg_value<T>, meta::arg_type<decltype(curr)>>;
@@ -2926,9 +2926,9 @@ namespace impl {
         // Check to see if there is a keyword with the same name as `curr` to the
         // right of `I` in `T...`.  If such an argument exists, then returns its index
         // in `T...`, otherwise returns `sizeof...(T)`.
-        template <auto, size_type I, typename...>
+        template <const auto&, size_type I, typename...>
         static constexpr size_type consume_keyword = I;
-        template <auto curr, size_type I, typename... T>
+        template <const auto& curr, size_type I, typename... T>
             requires (I < sizeof...(T) && !(
                 meta::standard_arg<meta::unpack_type<I, T...>> &&
                 meta::arg_name<decltype(curr)> == meta::arg_name<meta::unpack_type<I, T...>>
@@ -2955,6 +2955,7 @@ namespace impl {
             // keywords are also checked for conflicts with existing values.
             template <typename, typename>
             struct bind_forward {
+                template <typename...>
                 static constexpr bind_error error = bind_error::conflicting_values;
             };
             template <size_type... prev, size_type... next>
@@ -2973,6 +2974,7 @@ namespace impl {
             // keyword.
             template <typename, typename>
             struct bind_positional {
+                template <typename...>
                 static constexpr bind_error error =
                     (param.kw() && consume_keyword < sizeof...(T)) ?
                         bind_error::conflicting_values :
@@ -2997,6 +2999,7 @@ namespace impl {
             // forwarded.
             template <typename, typename, typename>
             struct bind_keyword {
+                template <typename...>
                 static constexpr bind_error error = bind_error::bad_type;
             };
             template <size_type... prev, size_type... middle, size_type... next>
@@ -3020,6 +3023,7 @@ namespace impl {
             // result then gets inserted as a single argument.
             template <typename, typename, typename>
             struct bind_args {
+                template <typename...>
                 static constexpr bind_error error = bind_error::bad_type;
             };
             template <size_type... prev, size_type... pos, size_type... kw>
@@ -3046,6 +3050,7 @@ namespace impl {
             // argument.
             template <typename, typename, typename>
             struct bind_kwargs {
+                template <typename...>
                 static constexpr bind_error error = bind_error::bad_type;
             };
             template <size_type... prev, size_type... pos, size_type... kw>
@@ -3055,6 +3060,7 @@ namespace impl {
                 std::index_sequence<pos...>,
                 std::index_sequence<kw...>
             > {
+                template <typename...>
                 static constexpr bind_error error = bind_error::conflicting_values;
             };
             template <size_type... prev, size_type... pos, size_type... kw>
@@ -3348,17 +3354,18 @@ namespace impl {
         template <auto... T>
         struct specialize<Spec.size, T...> {
         private:
-            template <const auto&... Ts>
+            template <auto... Ts>
             static constexpr auto curr = meta::unpack_value<sizeof...(Ts), Args...>;
 
-            template <const auto&... Ts>
+            template <auto... Ts>
             static constexpr size_type arg_idx =
                 impl::partial_idx<sizeof...(Ts), decltype(Ts)...>;
 
-            template <const auto&... Ts>
+            template <auto... Ts>
             static constexpr size_type partial_idx =
                 impl::partial_idx<sizeof...(Ts), decltype(Args)...>;
 
+        public:
             /* Runtime arguments have to go through a similar validation and reordering
             phase to bind appropriately, and will use recursive inheritance to
             terminate early if an error condition is encountered.  The first template
@@ -3625,8 +3632,33 @@ namespace impl {
                     param.kind.kwargs() && I < sizeof...(A);
 
             public:
-                // [1] non-variadic partial arguments are perfectly forwarded, along
-                // with their current partial value.
+                // [0] non-partial arguments are perfectly forwarded.
+                template <typename P, typename... A>
+                    requires (
+                        param.partial == 0 &&
+                        !dispatch_positional<A...> &&
+                        !dispatch_keyword<A...> &&
+                        !dispatch_args<A...> &&
+                        !dispatch_kwargs<A...>
+                    )
+                static constexpr decltype(auto) operator()(P&& partial, A&&... args)
+                    noexcept (requires{{bind<Ts..., curr>{}(
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{bind<Ts..., curr>{}(
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (bind<Ts..., curr>{}(
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+
+                // [1] partial arguments are perfectly forwarded, along with their
+                // current partial value(s).
                 template <typename P, typename... A>
                     requires (
                         param.partial > 0 &&
@@ -4006,11 +4038,11 @@ namespace impl {
 
 
 
-    // inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
-    // inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
-    // static_assert(sig3.n_partial() == 4);
-    // static_assert(sig3.get<"z">().value() == 1);
-    // static_assert(sig3.clear().n_partial() == 0);
+    inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
+    inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
+    static_assert(sig3.n_partial() == 4);
+    static_assert(sig3.get<"z">().value() == 1);
+    static_assert(sig3.clear().n_partial() == 0);
 
 
 
