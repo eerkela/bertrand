@@ -1850,7 +1850,7 @@ namespace impl {
     struct _make_partial;
     template <meta::arg A, typename... Ps, typename... Ts>
     struct _make_partial<A, meta::pack<Ps...>, Ts...> {
-        using type = partial<A, Ps..., Ts...>;
+        using type = partial<A, Ps..., meta::remove_rvalue<Ts>...>;
     };
 
     /* Mark a runtime argument as a partial, which will store a list of types inside
@@ -3583,9 +3583,16 @@ namespace impl {
                 static constexpr bool dispatch_kwargs =
                     curr.kind.kwargs() && I < sizeof...(A);
 
-                template <size_type... prev, size_type... next, typename P, typename... A>
+                template <
+                    size_type... prev,
+                    size_type... parts,
+                    size_type... next,
+                    typename P,
+                    typename... A
+                >
                 static constexpr decltype(auto) bind_partial(
                     std::index_sequence<prev...>,
+                    std::index_sequence<parts...>,
                     std::index_sequence<next...>,
                     P&& partial,
                     A&&... args
@@ -3593,20 +3600,20 @@ namespace impl {
                     noexcept (requires{{bind<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...>>(),
+                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     )} noexcept;})
                     requires (requires{bind<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...>>(),
+                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     );})
                 {
                     return (bind<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...>>(),
+                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     ));
                 }
@@ -4030,6 +4037,9 @@ namespace impl {
             must represent a valid call site for the underlying function `F`. */
             template <size_type I> requires (I == sizeof...(Args))
             struct call<I> {
+                /// TODO: this base case will have to validate and remove positional/keyword
+                /// packs at the same time.
+
                 // If no template arguments are supplied, then we call the function
                 // normally by perfectly forwarding.
                 template <typename F, typename P, typename... A>
@@ -4313,10 +4323,10 @@ namespace impl {
 
 
     inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
-    inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>("w"_ = 2, "z"_ = 1);
+    inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>("w"_ = 2).bind(1);
     // inline constexpr auto sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
     static_assert(sig3.n_partial() == 4);
-    // static_assert(sig3.get<"w">().value() == 1);
+    static_assert(sig3.get<"z">().value() == 1);
     // static_assert(sig3.clear().n_partial() == 0);
 
 
