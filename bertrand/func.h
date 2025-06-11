@@ -44,6 +44,11 @@ static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.")
 ////////////////////////////////////
 
 
+/// TODO: maybe placing a small bitset on the arguments themselves that describes their
+/// properties would be better than inheritance, and produce slightly better error
+/// diagnostics without as many curly braces.
+
+
 namespace impl {
     struct arg_tag {};
     struct partial_tag {};
@@ -195,6 +200,9 @@ namespace meta {
 
     template <arg T>
     using arg_type = unqualify<T>::type;
+
+    /// TODO: maybe just meta::has_value<T>, meta::value_type<T>, and meta::value_returns<R, T>,
+    /// which could be shared with monads that fit the same pattern.
 
     template <typename T>
     concept bound_arg = arg<T> && requires(T&& t) { ::std::forward<T>(t).value(); };
@@ -1634,6 +1642,22 @@ namespace impl {
     template <meta::unpack_to_kwargs T>
     kwarg_pack(T&&) -> kwarg_pack<T>;
 
+    /// TODO: arg_pack should be a trivial comprehension, which allows it to be used
+    /// as an entry point into elementwise algorithms that fuse loops through
+    /// expression templates.  A similar object should be returned by the ->* operator
+    /// for perfect symmetry.
+
+    /// bool x = List{1, 2, 3} < List{4, 5, 6};
+    /// List<bool> y = *List{1, 2, 3} < *List{4, 5, 6};
+    /// List<bool> z = List{1, 2, 3}->*[](int x) { return x + 3; } < *List{4, 5, 6};
+
+    /// TODO: these comprehensions support all the elementary math operators, and
+    /// enable them only if the yield type supports them, and only in combination with
+    /// other comprehensions that support the same operators, which prevents type
+    /// mismatches, like:
+
+    /// List<bool> y = *List{1, 2, 3} < List{4, 5, 6};  // caught by compiler
+
     /* A positional parameter pack obtained by dereferencing an iterable container
     within a Python-style function call.  The template machinery recognizes this as if
     it were an "**<anonymous>"_(container) argument defined in the signature, if such
@@ -1691,6 +1715,11 @@ namespace impl {
         [[nodiscard]] constexpr bool empty() const noexcept (noexcept(m_begin == m_end)) {
             return m_begin == m_end;
         }
+
+        /// TODO: next() is unsafe, and should be made into a private helper, along
+        /// with validate().  That would also help with the effort to make this into an
+        /// entry point for comprehensions, since the user might start interacting
+        /// with these types with some regularity.
 
         [[nodiscard]] constexpr decltype(auto) next() noexcept {
             decltype(auto) value = *m_begin;
@@ -1779,7 +1808,9 @@ namespace impl {
     struct as_template_arg<T> { using type = T; };
 
     /// TODO: using a simple container instead of inheritance is probably better here,
-    /// since it could condense template errors slightly, and reduce curly brace hell
+    /// since it could condense template errors slightly, and reduce curly brace hell.
+    /// Also, template arguments themselves could maybe be rewritten along these same
+    /// lines, more or less breaking all uses of inheritance.
 
     /* A brace-initializable container for a sequence of arguments that forms the
     explicit template signature for a function.  Arguments within this container must
@@ -1829,119 +1860,81 @@ namespace impl {
         {}
     };
 
-    template <typename Arg, typename... Ts>
+    template <typename, typename... Ts>
     constexpr bool _bind_partial = ((
         !meta::template_arg<Ts> &&
         !meta::partial_arg<Ts> &&
         !meta::arg<Ts>
     ) && ...);
-    template <meta::variadic_keyword Arg, typename... Ts>
-    constexpr bool _bind_partial<Arg, Ts...> = ((
+    template <meta::variadic_keyword A, typename... Ts>
+    constexpr bool _bind_partial<A, Ts...> = ((
         !meta::template_arg<Ts> &&
         !meta::partial_arg<Ts> &&
         meta::standard_arg<Ts> &&
         meta::bound_arg<Ts>
     ) && ...);
+    template <typename A, typename... Ts>
+    concept bind_partial = _bind_partial<A, Ts...>;
 
-    template <typename Arg, typename... Ts>
-    concept bind_partial = _bind_partial<Arg, Ts...>;
-
-    template <typename...>
-    struct _make_partial;
-    template <meta::arg A, typename... Ps, typename... Ts>
-    struct _make_partial<A, meta::pack<Ps...>, Ts...> {
+    template <typename, typename, typename...>
+    struct _as_partial;
+    template <typename A, typename... Ps, typename... Ts>
+    struct _as_partial<A, meta::pack<Ps...>, Ts...> {
         using type = partial<A, Ps..., meta::remove_rvalue<Ts>...>;
     };
+    template <meta::arg A, typename... Ts>
+    using as_partial = _as_partial<meta::unqualify<A>, meta::partials<A>, Ts...>::type;
 
     /* Mark a runtime argument as a partial, which will store a list of types inside
     the signature, to be used at runtime for binding.  If the argument already has
     partial values, then the argument list will be extended with the new values. */
-    template <typename... Ts, meta::arg Arg>
-        requires (!meta::template_arg<Arg> && bind_partial<Arg, Ts...>)
-    constexpr auto make_partial(Arg&& arg)
-        noexcept (requires{{typename _make_partial<
-            meta::unqualify<Arg>,
-            meta::partials<Arg>,
-            Ts...
-        >::type{std::forward<Arg>(arg)}} noexcept;})
-        requires (requires{
-            typename _make_partial<
-                meta::unqualify<Arg>,
-                meta::partials<Arg>,
-                Ts...
-            >::type{std::forward<Arg>(arg)};
-        })
+    template <typename... Ts, meta::arg A>
+        requires (!meta::template_arg<A> && bind_partial<A, Ts...>)
+    constexpr auto make_partial(A&& arg)
+        noexcept (requires{{as_partial<A, Ts...>{std::forward<A>(arg)}} noexcept;})
+        requires (requires{as_partial<A, Ts...>{std::forward<A>(arg)};})
     {
-        return typename _make_partial<
-            meta::unqualify<Arg>,
-            meta::partials<Arg>,
-            Ts...
-        >::type{std::forward<Arg>(arg)};
+        return as_partial<A, Ts...>{std::forward<A>(arg)};
     }
 
     /* Mark a template argument as a partial, which will store a list of values inside
     the signature, to be used at compile time for binding.  If the argument already has
     partial values, then the argument list will be extended with the new values. */
-    template <meta::template_arg Arg, typename... Ts>
-        requires (!meta::partial_arg<Arg> && bind_partial<Arg, Ts...>)
-    constexpr auto make_partial(Arg&& arg, Ts&&... ts)
-        noexcept (requires{{typename _make_partial<
-            meta::unqualify<Arg>,
-            meta::partials<Arg>,
-            Ts...
-        >::type{
-            std::forward<Arg>(arg),
+    template <meta::template_arg A, typename... Ts>
+        requires (!meta::partial_arg<A> && bind_partial<A, Ts...>)
+    constexpr auto make_partial(A&& arg, Ts&&... ts)
+        noexcept (requires{{as_partial<A, Ts...>{
+            std::forward<A>(arg),
             bertrand::args{std::forward<Ts>(ts)...}
         }} noexcept;})
-        requires (requires{
-            typename _make_partial<
-                meta::unqualify<Arg>,
-                meta::partials<Arg>,
-                Ts...
-            >::type{
-                std::forward<Arg>(arg),
-                bertrand::args{std::forward<Ts>(ts)...}
-            };
-        })
+        requires (requires{as_partial<A, Ts...>{
+            std::forward<A>(arg),
+            bertrand::args{std::forward<Ts>(ts)...}
+        };})
     {
-        return typename _make_partial<
-            meta::unqualify<Arg>,
-            meta::partials<Arg>,
-            Ts...
-        >::type{std::forward<Arg>(arg), bertrand::args{std::forward<Ts>(ts)...}};
+        return as_partial<A, Ts...>{
+            std::forward<A>(arg),
+            bertrand::args{std::forward<Ts>(ts)...}
+        };
     }
 
     /* Form a partial from an argument and a list of values.  If the argument already
     has partial values, then the argument list will be extended with the new values. */
-    template <meta::template_arg Arg, typename... Ts>
-        requires (meta::partial_arg<Arg> && bind_partial<Arg, Ts...>)
-    constexpr auto make_partial(Arg&& arg, Ts&&... ts)
-        noexcept (requires{{typename _make_partial<
-            meta::unqualify<Arg>,
-            meta::partials<Arg>,
-            Ts...
-        >::type{
-            std::forward<Arg>(arg),
-            bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
+    template <meta::template_arg A, typename... Ts>
+        requires (meta::partial_arg<A> && bind_partial<A, Ts...>)
+    constexpr auto make_partial(A&& arg, Ts&&... ts)
+        noexcept (requires{{as_partial<A, Ts...>{
+            std::forward<A>(arg),
+            bertrand::args{std::forward<A>(arg).partial_values, std::forward<Ts>(ts)...}
         }} noexcept;})
-        requires (requires{
-            typename _make_partial<
-                meta::unqualify<Arg>,
-                meta::partials<Arg>,
-                Ts...
-            >::type{
-                std::forward<Arg>(arg),
-                bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
-            };
-        })
+        requires (requires{as_partial<A, Ts...>{
+            std::forward<A>(arg),
+            bertrand::args{std::forward<A>(arg).partial_values, std::forward<Ts>(ts)...}
+        };})
     {
-        return typename _make_partial<
-            meta::unqualify<Arg>,
-            meta::partials<Arg>,
-            Ts...
-        >::type{
-            std::forward<Arg>(arg),
-            bertrand::args{std::forward<Arg>(arg).partial_values, std::forward<Ts>(ts)...}
+        return as_partial<A, Ts...>{
+            std::forward<A>(arg),
+            bertrand::args{std::forward<A>(arg).partial_values, std::forward<Ts>(ts)...}
         };
     }
 
@@ -1999,7 +1992,7 @@ namespace meta {
     namespace detail {
 
         enum class bind_error : uint8_t {
-            none,
+            ok,
             bad_type,
             conflicting_values,
             missing_required,
@@ -2010,7 +2003,7 @@ namespace meta {
     }
 
     template <detail::bind_error E>
-    concept can_bind = E == detail::bind_error::none || (
+    concept can_bind = E == detail::bind_error::ok || (
         E != detail::bind_error::bad_type &&
         E != detail::bind_error::conflicting_values &&
         E != detail::bind_error::missing_required &&
@@ -2919,9 +2912,9 @@ namespace impl {
         // Get the current `partial_type` index given an in-flight list of bound
         // arguments `args...`.  This is always equal to the sum of the partial sizes
         // for the first `sizeof...(args)` elements of `Args...`.
-        template <auto... args>
+        template <size_type I>
         static constexpr size_type target_partial =
-            impl::partial_idx<sizeof...(args), decltype(Args)...>;
+            impl::partial_idx<I, decltype(Args)...>;
 
         // Get the current source index for an in-flight list of bound arguments
         // `args...`.  This is always equal to the sum of the partial sizes for the
@@ -2986,7 +2979,7 @@ namespace impl {
         // Check to see whether an argument list `A...` satisfies some portion of the
         // signature listed as `param<I>` types.  This is a recursive algorithm with a
         // single `::error<A...>` entry point, which evaluates to a `bind_error` enum
-        // with a value of `::none` if the argument list is valid, or a specific error
+        // with a value of `::ok` if the argument list is valid, or a specific error
         // code if not.  The result is checked as a template constraint before
         // initiating the binding process, which surfaces the error at compile time in
         // a SFINAE-friendly way.
@@ -2994,7 +2987,7 @@ namespace impl {
         struct validate {
             // no arguments leftover - all good.
             template <typename...>
-            static constexpr bind_error error = bind_error::none;
+            static constexpr bind_error error = bind_error::ok;
 
             // remove positional/keyword unpacking operators if they are still present
             template <typename A, typename... As> requires (meta::arg_pack<A> || meta::kwarg_pack<A>)
@@ -3196,7 +3189,7 @@ namespace impl {
         // A non-exhaustive `validate<...>` entry point that specifically checks
         // against the  signature's explicit template parameters.
         template <typename, typename...>
-        static constexpr bind_error _bind_templates = bind_error::none;
+        static constexpr bind_error _bind_templates = bind_error::ok;
         template <size_type... Is, typename... A>
         static constexpr bind_error _bind_templates<std::index_sequence<Is...>, A...> =
             validate<false, param<Is>{}...>::template error<A...>;
@@ -3207,7 +3200,7 @@ namespace impl {
         // A non-exhaustive `validate<...>` entry point that specifically checks
         // against the signature's runtime arguments.
         template <typename, typename...>
-        static constexpr bind_error _bind_runtime = bind_error::none;
+        static constexpr bind_error _bind_runtime = bind_error::ok;
         template <size_type... Is, typename... A>
         static constexpr bind_error _bind_runtime<std::index_sequence<Is...>, A...> =
             validate<false, param<Spec.size + Is>{}...>::template error<A...>;
@@ -3218,7 +3211,7 @@ namespace impl {
         // An exhaustive `validate<...>` entry point that checks against the
         // signature's explicit template parameters.
         template <typename, typename...>
-        static constexpr bind_error _call_templates = bind_error::none;
+        static constexpr bind_error _call_templates = bind_error::ok;
         template <size_type... Is, typename... A>
         static constexpr bind_error _call_templates<std::index_sequence<Is...>, A...> =
             validate<true, param<Is>{}...>::template error<A...>;
@@ -3229,7 +3222,7 @@ namespace impl {
         // An exhaustive `validate<...>` entry point that checks against the
         // signature's runtime arguments.
         template <typename, typename...>
-        static constexpr bind_error _call_runtime = bind_error::none;
+        static constexpr bind_error _call_runtime = bind_error::ok;
         template <size_type... Is, typename... A>
         static constexpr bind_error _call_runtime<std::index_sequence<Is...>, A...> =
             validate<true, param<Spec.size + Is>{}...>::template error<A...>;
@@ -3598,20 +3591,26 @@ namespace impl {
                     noexcept (requires{{bind<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     )} noexcept;})
                     requires (requires{bind<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     );})
                 {
                     return (bind<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     ));
                 }
@@ -3714,7 +3713,9 @@ namespace impl {
                     >{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     )} noexcept;})
@@ -3724,7 +3725,9 @@ namespace impl {
                     >{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     );})
@@ -3735,7 +3738,9 @@ namespace impl {
                     >{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     ));
@@ -3767,7 +3772,9 @@ namespace impl {
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I + pos>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     )} noexcept;})
                     requires (requires{bind<
@@ -3780,7 +3787,9 @@ namespace impl {
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I + pos>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     );})
                 {
@@ -3794,7 +3803,9 @@ namespace impl {
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<I + pos>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<target_partial<Ts...> + parts>()...,
+                        std::forward<P>(partial).template get<
+                            target_partial<sizeof...(Ts)> + parts
+                        >()...,
                         meta::unpack_arg<I + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     ));
                 }
@@ -4022,11 +4033,525 @@ namespace impl {
                 static constexpr size_type consume_keyword =
                     _consume_keyword<std::make_index_sequence<sizeof...(A) - I>, A...>;
 
-                /// TODO: call operators
+                template <
+                    size_type... prev,
+                    size_type... next,
+                    typename F,
+                    typename P,
+                    typename... A
+                >
+                static constexpr decltype(auto) call_default(
+                    std::index_sequence<prev...>,
+                    std::index_sequence<next...>,
+                    F&& func,
+                    P&& partial,
+                    A&&... args
+                )
+                    noexcept (requires{{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        curr.arg.value(),
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    )} noexcept;})
+                    requires (requires{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        curr.arg.value(),
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    );})
+                {
+                    return (call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        curr.arg.value(),
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    ));
+                }
+
+                template <
+                    size_type... prev,
+                    size_type... parts,
+                    size_type... next,
+                    typename F,
+                    typename P,
+                    typename... A
+                >
+                static constexpr decltype(auto) call_partial(
+                    std::index_sequence<prev...>,
+                    std::index_sequence<parts...>,
+                    std::index_sequence<next...>,
+                    F&& func,
+                    P&& partial,
+                    A&&... args
+                )
+                    noexcept (requires{{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    )} noexcept;})
+                    requires (requires{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    );})
+                {
+                    return (call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    ));
+                }
+
+                template <
+                    size_type... prev,
+                    size_type... next,
+                    typename F,
+                    typename P,
+                    typename... A
+                >
+                static constexpr decltype(auto) call_arg_pack(
+                    std::index_sequence<prev...>,
+                    std::index_sequence<next...>,
+                    F&& func,
+                    P&& partial,
+                    A&&... args
+                )
+                    noexcept (requires{
+                        {call{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
+                        )} noexcept;
+                        {call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(std::forward<A>(args)...).next(),
+                            meta::unpack_arg<I>(std::forward<A>(args)...),
+                            meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
+                        )} noexcept;
+                    })
+                    requires (requires{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<I>(std::forward<A>(args)...).next(),
+                        meta::unpack_arg<I>(std::forward<A>(args)...),
+                        meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
+                    );})
+                {
+                    if (meta::unpack_arg<I>(std::forward<A>(args)...).empty()) {
+                        if constexpr (requires{call{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,  // drop pack
+                            meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
+                        );}) {
+                            return (call{}(
+                                std::forward<F>(func),
+                                std::forward<P>(partial),
+                                meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                                meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
+                            ));
+                        } else {
+                            static constexpr static_str msg =
+                                "No value for required positional argument '" +
+                                curr.name + "' at index " + static_str<>::from_int<I> +
+                                " (expected from positional parameter pack)";
+                            throw TypeError(msg);
+                        }
+                    } else {
+                        return (call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(std::forward<A>(args)...).next(),  // extract value
+                            meta::unpack_arg<I>(std::forward<A>(args)...),  // retain pack
+                            meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
+                        ));
+                    }
+                }
+
+                template <
+                    size_type... prev,
+                    size_type... middle,
+                    size_type... next,
+                    typename F,
+                    typename P,
+                    typename... A
+                >
+                static constexpr decltype(auto) call_keyword(
+                    std::index_sequence<prev...>,
+                    std::index_sequence<middle...>,
+                    std::index_sequence<next...>,
+                    F&& func,
+                    P&& partial,
+                    A&&... args
+                )
+                    noexcept (requires{{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<consume_keyword<A...>>(std::forward<A>(args)...).value(),
+                        meta::unpack_arg<I + middle>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<consume_keyword<A...> + 1 + next>(
+                            std::forward<A>(args)...
+                        )...
+                    )} noexcept;})
+                    requires (requires{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<consume_keyword<A...>>(std::forward<A>(args)...).value(),
+                        meta::unpack_arg<I + middle>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<consume_keyword<A...> + 1 + next>(
+                            std::forward<A>(args)...
+                        )...
+                    );})
+                {
+                    return (call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<consume_keyword<A...>>(std::forward<A>(args)...).value(),
+                        meta::unpack_arg<I + middle>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<consume_keyword<A...> + 1 + next>(
+                            std::forward<A>(args)...
+                        )...
+                    ));
+                }
+
+                template <
+                    size_type... prev,
+                    size_type... next,
+                    typename F,
+                    typename P,
+                    typename... A
+                >
+                static constexpr decltype(auto) call_kwarg_pack(
+                    std::index_sequence<prev...>,
+                    std::index_sequence<next...>,
+                    F&& func,
+                    P&& partial,
+                    A&&... args
+                )
+                    noexcept (
+                        requires{{call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).template pop<curr.name>().value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        )} noexcept;} &&
+                        requires{{call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            curr.arg.value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        )} noexcept;}
+                    )
+                    requires (
+                        curr.kind.optional() &&
+                        requires{call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            meta::unpack_arg<I>(
+                                std::forward<A>(args)...
+                            ).template pop<curr.name>().value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        );} &&
+                        requires{call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            curr.arg.value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        );}
+                    )
+                {
+                    if (auto val = meta::unpack_arg<I>(
+                        std::forward<A>(args)...
+                    ).template pop<curr.name>(); val.has_value()) {
+                        return (call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            std::move(val).value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        ));
+                    } else {
+                        return (call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            curr.arg.value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        ));
+                    }
+                }
+
+                template <
+                    size_type... prev,
+                    size_type... next,
+                    typename F,
+                    typename P,
+                    typename... A
+                >
+                static constexpr decltype(auto) call_kwargs_pack(
+                    std::index_sequence<prev...>,
+                    std::index_sequence<next...>,
+                    F&& func,
+                    P&& partial,
+                    A&&... args
+                )
+                    requires (!curr.kind.optional() && requires{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                        meta::unpack_arg<I>(
+                            std::forward<A>(args)...
+                        ).template pop<curr.name>().value(),
+                        meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                    );})
+                {
+                    if (auto val = meta::unpack_arg<I>(
+                        std::forward<A>(args)...
+                    ).template pop<curr.name>(); val.has_value()) {
+                        return (call<I + 1>{}(
+                            std::forward<F>(func),
+                            std::forward<P>(partial),
+                            meta::unpack_arg<prev>(std::forward<A>(args)...)...,
+                            std::move(val).value(),
+                            meta::unpack_arg<I + next>(std::forward<A>(args)...)...
+                        ));
+                    } else {
+                        static constexpr static_str msg =
+                            "No value for required keyword argument '" + curr.name +
+                            "' at index " + static_str<>::from_int<I> +
+                            " (expected from keyword parameter pack)";
+                        throw TypeError(msg);
+                    }
+                }
+
+
+                /// TODO: when binding a variadic positional or keyword argument,
+                /// unpacking operators of that kind will always be removed and subsumed
+                /// into the final argument list.  For positional parameter packs,
+                /// this can probably be converted into full static type info by just
+                /// doing a recursive loop up to MAX_ARGS, with a conditional empty
+                /// check at each stage, and a special error at the end if the
+                /// length of the argument pack exceeds MAX_ARGS.
+
 
             public:
+                // [0] non-partial arguments are guaranteed by validate<...> to have
+                // default values.
+                template <typename F, typename P, typename... A>
+                    requires (
+                        curr.partial == 0 &&
+                        !dispatch_positional<curr, I, A...> &&
+                        !dispatch_keyword<curr, I, A...> &&
+                        !dispatch_args<curr, I, A...> &&
+                        !dispatch_kwargs<curr, I, A...>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call_default(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call_default(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call_default(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
 
-                /// TODO: public call operators
+                // [1] partial arguments are perfectly forwarded, along with their
+                // current partial value(s).
+                template <typename F, typename P, typename... A>
+                    requires (
+                        curr.partial > 0 &&
+                        !dispatch_positional<curr, I, A...> &&
+                        !dispatch_keyword<curr, I, A...> &&
+                        !dispatch_args<curr, I, A...> &&
+                        !dispatch_kwargs<curr, I, A...>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call_partial(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<curr.partial>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call_partial(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<curr.partial>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call_partial(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<curr.partial>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+
+                // [2] matching positional arguments can be trivially forwarded or
+                // provided by a positional unpacking operator
+                template <typename F, typename P, typename... A>
+                    requires (
+                        dispatch_positional<curr, I, A...> &&
+                        !meta::arg_pack<meta::unpack_type<I, A...>>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call<I + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+                template <typename F, typename P, typename... A>
+                    requires (
+                        dispatch_positional<curr, I, A...> &&
+                        meta::arg_pack<meta::unpack_type<I, A...>>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call_positional(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I + 1>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call_positional(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I + 1>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call_positional(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I + 1>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+
+                // [3] keywords must be removed from their current location, unwrapped
+                // to their underlying values, and then forwarded.  They may also be
+                // provided by a keyword unpacking operator.
+                template <typename F, typename P, typename... A>
+                    requires (
+                        dispatch_keyword<curr, I, A...> &&
+                        !meta::kwarg_pack<meta::unpack_type<consume_keyword<A...>, A...>>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call_keyword(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<consume_keyword<A...> - I>{},
+                        std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call_keyword(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<consume_keyword<A...> - I>{},
+                        std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call_keyword(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<consume_keyword<A...> - I>{},
+                        std::make_index_sequence<sizeof...(A) - (consume_keyword<A...> + 1)>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+                template <typename F, typename P, typename... A>
+                    requires (
+                        dispatch_keyword<curr, I, A...> &&
+                        meta::kwarg_pack<meta::unpack_type<consume_keyword<A...>, A...>>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call_kwarg_pack(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call_kwarg_pack(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call_kwarg_pack(
+                        std::make_index_sequence<I>{},
+                        std::make_index_sequence<sizeof...(A) - I>{},
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+
+                /// TODO: overloads for variadic positional and keyword arguments
 
             };
 
