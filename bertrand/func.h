@@ -4713,18 +4713,21 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept (requires{{typename specialize<0, T...>::template call<>{}(
+            noexcept (requires{{bertrand::visit(
+                typename specialize<0, T...>::template call<>{},
                 std::forward<F>(func),
                 std::forward<Self>(self).m_partial,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (requires{typename specialize<0, T...>::template call<>{}(
-                std::forward<F>(func),
-                std::forward<Self>(self).m_partial,
-                std::forward<A>(args)...
-            );})
+            requires (meta::visit<
+                typename specialize<0, T...>::template call<>,
+                F,
+                decltype(std::declval<Self>().m_partial),
+                A...
+            >)
         {
-            return (typename specialize<0, T...>::template call<>{}(
+            return (bertrand::visit(
+                typename specialize<0, T...>::template call<>{},
                 std::forward<F>(func),
                 std::forward<Self>(self).m_partial,
                 std::forward<A>(args)...
@@ -4911,8 +4914,8 @@ namespace impl {
     static_assert(sig4(
         [](int x, int y) { return x - y; },
         1,
-        2
-    ) == -1);
+        Optional{2}
+    ).value() == -1);
 
 
 
