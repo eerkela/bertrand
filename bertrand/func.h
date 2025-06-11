@@ -49,6 +49,11 @@ static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.")
 /// diagnostics without as many curly braces.
 
 
+/// TODO: also, untyped arguments still need to be able to use materialization
+/// functions, otherwise there's no way to set a default value unless the default
+/// value is a constant expression.
+
+
 namespace impl {
     struct arg_tag {};
     struct partial_tag {};
@@ -3143,16 +3148,17 @@ namespace impl {
             template <typename... A>
             static constexpr bind_error unmatched = (
                 exhaustive &&
-                !(curr.kind.partial() || curr.kind.optional() || curr.kind.variadic())
+                !(curr.partial > 0 || curr.kind.optional() || curr.kind.variadic())
             ) ?
                 bind_error::missing_required :
                 bind_error::conflicting_values;
             template <typename... A>
                 requires ((
                     !exhaustive ||
-                    curr.kind.partial() ||
+                    curr.partial > 0 ||
                     curr.kind.optional() ||
-                    curr.kind.variadic()
+                    curr.kind.variadic() ||
+                    curr.kind.sentinel()
                 ) && (!curr.kind.kw() || consume_keyword<curr.name, A...> == sizeof...(A)))
             static constexpr bind_error unmatched<A...> =
                 validate<exhaustive, rest...>::template error<A...>;
@@ -3392,7 +3398,18 @@ namespace impl {
             // Partial keywords are also checked for conflicts with existing values.
             template <typename, typename>
             struct call_forward;
-            template <size_type... prev, size_type... next> requires (curr.partial == 0)
+            template <size_type... prev, size_type... next>
+                requires (curr.partial == 0 && curr.kind.sentinel())
+            struct call_forward<std::index_sequence<prev...>, std::index_sequence<next...>> :
+                specialize<
+                    I + 1,
+                    meta::unpack_value<prev, T...>...,
+                    curr.arg,
+                    meta::unpack_value<I + next, T...>...
+                >::template call<>
+            {};
+            template <size_type... prev, size_type... next>
+                requires (curr.partial == 0 && !curr.kind.sentinel())
             struct call_forward<std::index_sequence<prev...>, std::index_sequence<next...>> :
                 specialize<
                     I + 1,
@@ -4009,11 +4026,14 @@ namespace impl {
             `Args...` from left to right and updating the argument list `A...`
             in-place at every iteration, such that by the end, it represents a valid
             call site for the function `F`. */
-            template <size_type I = 0>
+            template <size_type J = 0, size_t K = 0>
             struct call {
             private:
-                static constexpr auto curr = meta::unpack_value<I, Args...>;
-                static constexpr value_type param = info.params[Spec.size + I];
+                /// NOTE: `K` is necessary to account for separators in `Args...`,
+                /// which are ignored during binding, but would otherwise cause `J` to
+                /// overestimate the current position in `A...`.
+                static constexpr size_type I = J - K;
+                static constexpr param<Spec.size + I> curr;
 
                 template <typename, typename...>
                 static constexpr size_type _consume_positional = 0;
@@ -4047,14 +4067,14 @@ namespace impl {
                     P&& partial,
                     A&&... args
                 )
-                    noexcept (requires{{call<I + 1>{}(
+                    noexcept (requires{{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         curr.arg.value(),
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{call<I + 1>{}(
+                    requires (requires{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4062,7 +4082,7 @@ namespace impl {
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     );})
                 {
-                    return (call<I + 1>{}(
+                    return (call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4087,14 +4107,14 @@ namespace impl {
                     P&& partial,
                     A&&... args
                 )
-                    noexcept (requires{{call<I + 1>{}(
+                    noexcept (requires{{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{call<I + 1>{}(
+                    requires (requires{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4102,7 +4122,7 @@ namespace impl {
                         meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                     );})
                 {
-                    return (call<I + 1>{}(
+                    return (call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4132,7 +4152,7 @@ namespace impl {
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                             meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
                         )} noexcept;
-                        {call<I + 1>{}(
+                        {call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4141,7 +4161,7 @@ namespace impl {
                             meta::unpack_arg<I + 1 + next>(std::forward<A>(args)...)...
                         )} noexcept;
                     })
-                    requires (requires{call<I + 1>{}(
+                    requires (requires{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4171,7 +4191,7 @@ namespace impl {
                             throw TypeError(msg);
                         }
                     } else {
-                        return (call<I + 1>{}(
+                        return (call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4198,7 +4218,7 @@ namespace impl {
                     P&& partial,
                     A&&... args
                 )
-                    noexcept (requires{{call<I + 1>{}(
+                    noexcept (requires{{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4208,7 +4228,7 @@ namespace impl {
                             std::forward<A>(args)...
                         )...
                     )} noexcept;})
-                    requires (requires{call<I + 1>{}(
+                    requires (requires{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4219,7 +4239,7 @@ namespace impl {
                         )...
                     );})
                 {
-                    return (call<I + 1>{}(
+                    return (call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4246,7 +4266,7 @@ namespace impl {
                     A&&... args
                 )
                     noexcept (
-                        requires{{call<I + 1>{}(
+                        requires{{call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4255,7 +4275,7 @@ namespace impl {
                             ).template pop<curr.name>().value(),
                             meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                         )} noexcept;} &&
-                        requires{{call<I + 1>{}(
+                        requires{{call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4265,7 +4285,7 @@ namespace impl {
                     )
                     requires (
                         curr.kind.optional() &&
-                        requires{call<I + 1>{}(
+                        requires{call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4274,7 +4294,7 @@ namespace impl {
                             ).template pop<curr.name>().value(),
                             meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                         );} &&
-                        requires{call<I + 1>{}(
+                        requires{call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4286,7 +4306,7 @@ namespace impl {
                     if (auto val = meta::unpack_arg<I>(
                         std::forward<A>(args)...
                     ).template pop<curr.name>(); val.has_value()) {
-                        return (call<I + 1>{}(
+                        return (call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4294,7 +4314,7 @@ namespace impl {
                             meta::unpack_arg<I + next>(std::forward<A>(args)...)...
                         ));
                     } else {
-                        return (call<I + 1>{}(
+                        return (call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4318,7 +4338,7 @@ namespace impl {
                     P&& partial,
                     A&&... args
                 )
-                    requires (!curr.kind.optional() && requires{call<I + 1>{}(
+                    requires (!curr.kind.optional() && requires{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4331,7 +4351,7 @@ namespace impl {
                     if (auto val = meta::unpack_arg<I>(
                         std::forward<A>(args)...
                     ).template pop<curr.name>(); val.has_value()) {
-                        return (call<I + 1>{}(
+                        return (call<J + 1, K>{}(
                             std::forward<F>(func),
                             std::forward<P>(partial),
                             meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4359,10 +4379,39 @@ namespace impl {
 
             public:
                 // [0] non-partial arguments are guaranteed by validate<...> to have
-                // default values.
+                // default values, or be sentinels like posonly/kwonly separators or
+                // return annotations.
                 template <typename F, typename P, typename... A>
                     requires (
                         curr.partial == 0 &&
+                        curr.kind.sentinel() &&
+                        !dispatch_positional<curr, I, A...> &&
+                        !dispatch_keyword<curr, I, A...> &&
+                        !dispatch_args<curr, I, A...> &&
+                        !dispatch_kwargs<curr, I, A...>
+                    )
+                static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{call<J + 1, K + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    )} noexcept;})
+                    requires (requires{call<J + 1, K + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
+                {
+                    return (call<J + 1, K + 1>{}(
+                        std::forward<F>(func),
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    ));
+                }
+                template <typename F, typename P, typename... A>
+                    requires (
+                        curr.partial == 0 &&
+                        !curr.kind.sentinel() &&
                         !dispatch_positional<curr, I, A...> &&
                         !dispatch_keyword<curr, I, A...> &&
                         !dispatch_args<curr, I, A...> &&
@@ -4439,18 +4488,18 @@ namespace impl {
                         !meta::arg_pack<meta::unpack_type<I, A...>>
                     )
                 static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
-                    noexcept (requires{{call<I + 1>{}(
+                    noexcept (requires{{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call<I + 1>{}(
+                    requires (requires{call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     );})
                 {
-                    return (call<I + 1>{}(
+                    return (call<J + 1, K>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
@@ -4558,8 +4607,8 @@ namespace impl {
             /* Base case: once all `Args...` have been matched and inserted into the
             runtime argument list `A...`, then the combination of `T...` and `A...`
             must represent a valid call site for the underlying function `F`. */
-            template <size_type I> requires (I == sizeof...(Args))
-            struct call<I> {
+            template <size_type J, size_type K> requires (J == sizeof...(Args))
+            struct call<J, K> {
                 /// TODO: this base case will have to validate and remove positional/keyword
                 /// packs at the same time.
 
@@ -4681,6 +4730,9 @@ namespace impl {
                 std::forward<A>(args)...
             ));
         }
+
+        /// TODO: apply(), which is just a simple wrapper around the call operator
+        /// that unpacks tuples first.
     };
 
     /* Attempt to deduce the signature of a callable of arbitrary type.  This helper
@@ -4845,12 +4897,22 @@ namespace impl {
     // static_assert(sig.get("x").value().kind.posonly());
 
 
-    inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
-    inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>("w"_ = 2).bind(1);
-    // inline constexpr auto sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
-    static_assert(sig3.n_partial() == 4);
-    static_assert(sig3.get<"z">().value() == 1);
-    static_assert(sig3.clear().n_partial() == 0);
+    // inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
+    // inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>("w"_ = 2).bind(1);
+    // // inline constexpr auto sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
+    // static_assert(sig3.n_partial() == 4);
+    // static_assert(sig3.get<"z">().value() == 1);
+    // static_assert(sig3.clear().n_partial() == 0);
+
+
+    inline constexpr signature<{}, "x"_, "y"_, "/"_> sig4;
+    static_assert(sig4.bind(1, 2).n_partial() == 2);
+    // static_assert(meta::can_bind<sig4.template test<int, int>>);
+    static_assert(sig4(
+        [](int x, int y) { return x - y; },
+        1,
+        2
+    ) == -1);
 
 
 
