@@ -2514,6 +2514,7 @@ namespace impl {
         using size_type = size_t;
         using index_type = ssize_t;
         using info_type = impl::signature_info<Spec, Args...>;
+        using partial_type = impl::extract_partial<Args...>;
         using bind_error = meta::detail::bind_error;
 
         /* Stores the validated indices and parsed kinds for each element of the
@@ -2626,9 +2627,6 @@ namespace impl {
             std::make_index_sequence<info.run_time.kwargs.offset < size()>{}
         );
 
-        using partial_type = impl::extract_partial<Args...>;
-        partial_type m_partial;
-
         template <size_type I>
         struct param {
             static constexpr auto arg = info.template get<I>();
@@ -2663,7 +2661,7 @@ namespace impl {
                         return (arg.partial_values.template get<0>());
                     }
                 } else {
-                    return (std::forward<S>(self).signature.m_partial.template get<
+                    return (std::forward<S>(self).signature.partial.template get<
                         impl::partial_idx<index - Spec.size, decltype(Args)...>
                     >());
                 }
@@ -2692,6 +2690,8 @@ namespace impl {
         using slice = impl::slice<iterator>;
         using const_slice = impl::slice<const_iterator>;
 
+        partial_type partial;
+
         /* Construct a signature with a given set of partial arguments.  The arguments
         must exactly match the specification given in the template list. */
         template <typename... Ts>
@@ -2699,7 +2699,7 @@ namespace impl {
             noexcept (noexcept(partial_type(std::forward<Ts>(partial)...)))
             requires (requires{partial_type(std::forward<Ts>(partial)...);})
         :
-            m_partial(std::forward<Ts>(partial)...)
+            partial(std::forward<Ts>(partial)...)
         {}
 
         /* A pointer to the read-only parameter array being used for indexing and
@@ -2943,20 +2943,18 @@ namespace impl {
         static constexpr size_type target_partial =
             impl::partial_idx<I - Spec.size, decltype(Args)...>;
 
-        /// TODO: source_partial should accept const references?
         // Get the current source index for an in-flight list of bound arguments
         // `args...`.  This is always equal to the sum of the partial sizes for the
         // first `sizeof...(args)` elements of `args...`, which can then be used to
         // index into an in-flight argument list for specialize<...>::bind.
-        template <auto... args>
+        template <const auto&... Ts>
         static constexpr size_type source_partial =
-            impl::partial_idx<sizeof...(args), decltype(args)...>;
+            impl::partial_idx<sizeof...(Ts), decltype(Ts)...>;
 
         // Attempt to match a positional argument to the right of `J` in `A...`,
         // assuming the target argument at index `I` allows positional binding and has
         // no partial value.
-        template <size_type I, size_type J, typename... A>
-            requires (I < size() && J <= sizeof...(A))
+        template <size_type I, size_type J, typename... A> requires (J <= sizeof...(A))
         static constexpr bool dispatch_positional =
             info.params[I].kind.pos() &&
             info.params[I].partial == 0 &&
@@ -2965,8 +2963,7 @@ namespace impl {
         // Attempt to match a keyword argument to the right of `J` in `A...`,
         // assuming the target argument at index `I` allows keyword binding, and has
         // no partial value.
-        template <size_type I, size_type J, typename... A>
-            requires (I < size() && J <= sizeof...(A))
+        template <size_type I, size_type J, typename... A> requires (J <= sizeof...(A))
         static constexpr bool dispatch_keyword =
             (
                 info.params[I].kind.kwonly() ||
@@ -2978,16 +2975,14 @@ namespace impl {
         // Attempt to match against all remaining positional arguments to the right of
         // `J` in `A...`, assuming that the target argument at index `I` allows
         // variadic positional binding.
-        template <size_type I, size_type J, typename... A>
-            requires (I < size() && J <= sizeof...(A))
+        template <size_type I, size_type J, typename... A> requires (J <= sizeof...(A))
         static constexpr bool dispatch_args =
             info.params[I].kind.args() && consume_positional<J, A...> > 0;
 
         // Attempt to match against all remaining keyword arguments to the right of
         // `J` in `A...`, assuming that the target argument at index `I` allows
         // variadic keyword binding.
-        template <size_type I, size_type J, typename... A>
-            requires (I < size() && J <= sizeof...(A))
+        template <size_type I, size_type J, typename... A> requires (J <= sizeof...(A))
         static constexpr bool dispatch_kwargs =
             info.params[I].kind.kwargs() && consume_positional<J, A...> < (sizeof...(A) - J);
 
@@ -3020,7 +3015,7 @@ namespace impl {
         };
         template <bool exhaustive, param curr, param... rest>
         struct validate<exhaustive, curr, rest...> {
-        protected:
+        private:
             // Apply a type check against `curr`, assuming it is typed.
             template <typename T>
             static constexpr bool type_check = true;
@@ -3228,15 +3223,6 @@ namespace impl {
         static constexpr bind_error _call_params<std::index_sequence<Is...>, A...> =
             validate<true, param<Spec.size + Is>{}...>::template error<A...>;
 
-        /// TODO: the outer _bind struct can do all the dispatching directly, which
-        /// would reduce the total number of template instantiations.  The only real
-        /// complication is that the base case will have to use an internal helper
-        /// to traverse the argument list, but that's not a big deal.  In fact, it
-        /// could maybe be factored into a separate helper whose empty specialization
-        /// would be a base class for the base case, and whose call operator would
-        /// recursively extend that signature as needed.  That would probably be the
-        /// absolute minimum number of template instantiations.
-
         /* Recursive case: parse an explicit template parameter list `T...` that was
         provided to the signature's `bind()` method.  Evaluates to a function object
         that can be invoked to complete the binding for a set of runtime arguments
@@ -3424,27 +3410,21 @@ namespace impl {
                     noexcept (requires{{fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
-                        meta::unpack_arg<J + next>(std::forward<A>(args)...)...
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
+                        meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
                     )} noexcept;})
                     requires (requires{fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
-                        meta::unpack_arg<J + next>(std::forward<A>(args)...)...
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
+                        meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
                     );})
                 {
                     return (fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
-                        meta::unpack_arg<J + next>(std::forward<A>(args)...)...
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
+                        meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
                     ));
                 }
 
@@ -3552,9 +3532,7 @@ namespace impl {
                     >{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     )} noexcept;})
@@ -3564,9 +3542,7 @@ namespace impl {
                     >{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     );})
@@ -3577,9 +3553,7 @@ namespace impl {
                     >{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     ));
@@ -3611,9 +3585,7 @@ namespace impl {
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     )} noexcept;})
                     requires (requires{fn<
@@ -3626,9 +3598,7 @@ namespace impl {
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     );})
                 {
@@ -3642,9 +3612,7 @@ namespace impl {
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
-                        std::forward<P>(partial).template get<
-                            target_partial<sizeof...(Ts)> + parts
-                        >()...,
+                        std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     ));
                 }
@@ -3718,10 +3686,10 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_positional(
-                        std::forward<P>(partial),
-                        std::forward<A>(args)...
-                    );})
+                    // requires (requires{bind_positional(
+                    //     std::forward<P>(partial),
+                    //     std::forward<A>(args)...
+                    // );})
                 {
                     return (bind_positional(
                         std::forward<P>(partial),
@@ -3852,10 +3820,13 @@ namespace impl {
 
         // (1) insert partial or default value, or raise a missing required error.
         // Partial keywords are also checked for conflicts with existing values.
-        template <typename, typename, typename, size_type, size_type, auto...>
+        template <typename, typename, typename, size_type, auto...>
         struct call_default;
         template <size_type... prev, size_type... parts, size_type... next, size_type I, auto... T>
-            requires (sizeof...(parts) == 0 && info.params[I].kind.sentinel())
+            requires (
+                sizeof...(parts) == 0 &&
+                (info.params[I].kind.sentinel() || info.params[I].kind.variadic())
+            )
         struct call_default<
             std::index_sequence<prev...>,
             std::index_sequence<parts...>,
@@ -3927,6 +3898,7 @@ namespace impl {
         > {
             using type = _call<
                 I + 1,
+                sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
                 meta::unpack_value<
                     consume_keyword<I, sizeof...(prev), decltype(T)...>,
@@ -3961,8 +3933,7 @@ namespace impl {
             size_type... kw,
             size_type I,
             auto... T
-        >
-            requires (sizeof...(parts) == 0)
+        > requires (sizeof...(parts) == 0)
         struct call_args<
             std::index_sequence<prev...>,
             std::index_sequence<parts...>,
@@ -3986,8 +3957,7 @@ namespace impl {
             size_type... kw,
             size_type I,
             auto... T
-        >
-            requires (sizeof...(parts) > 0)
+        > requires (sizeof...(parts) > 0)
         struct call_args<
             std::index_sequence<prev...>,
             std::index_sequence<parts...>,
@@ -4747,6 +4717,19 @@ namespace impl {
         static constexpr bind_error call_params =
             _call_params<std::make_index_sequence<sizeof...(Args)>, A...>;
 
+        /* Check to see whether the arguments can be used to invoke the underlying
+        function as a visitor. */
+        template <auto... T>
+        struct specialize {
+            template <typename Self, typename F, typename... A>
+            static constexpr bool visit = meta::visit<
+                typename _call<0, 0, T...>::template fn<>,
+                F,
+                decltype(std::declval<Self>().partial),
+                A...
+            >;
+        };
+
         /* The total number of partial arguments that are currently bound to the
         signature. */
         [[nodiscard]] static constexpr size_type n_partial() noexcept {
@@ -4775,16 +4758,16 @@ namespace impl {
             )
         [[nodiscard]] constexpr decltype(auto) bind(this Self&& self, A&&... args)
             noexcept (requires{{typename _bind<0, T...>::template fn<>{}(
-                std::forward<Self>(self).m_partial,
+                std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
             requires (requires{typename _bind<0, T...>::template fn<>{}(
-                std::forward<Self>(self).m_partial,
+                std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             );})
         {
             return (typename _bind<0, T...>::template fn<>{}(
-                std::forward<Self>(self).m_partial,
+                std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             ));
         }
@@ -4797,7 +4780,8 @@ namespace impl {
                 meta::source_args<decltype(T)...> &&
                 meta::source_args<A...> &&
                 meta::bind_error<call_templates<decltype(T)...>> &&
-                meta::bind_error<call_params<A...>>
+                meta::bind_error<call_params<A...>> &&
+                specialize<T...>::template visit<Self, F, A...>
             )
         [[nodiscard]] constexpr decltype(auto) operator()(
             this Self&& self,
@@ -4807,22 +4791,21 @@ namespace impl {
             noexcept (requires{{impl::visit(
                 typename _call<0, 0, T...>::template fn<>{},
                 std::forward<F>(func),
-                std::forward<Self>(self).m_partial,
+                std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (meta::visit<
-                typename _call<0, 0, T...>::template fn<>,
-                F,
-                decltype(std::declval<Self>().m_partial),
-                A...
-            >)
         {
             return (impl::visit(
                 typename _call<0, 0, T...>::template fn<>{},
                 std::forward<F>(func),
-                std::forward<Self>(self).m_partial,
+                std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             ));
+            // return (typename _call<0, 0, T...>::template fn<>{}(
+            //     std::forward<F>(func),
+            //     std::forward<Self>(self).partial,
+            //     std::forward<A>(args)...
+            // ));
         }
 
         /// TODO: apply(), which is just a simple wrapper around the call operator
@@ -5444,20 +5427,78 @@ namespace impl {
         signature_type signature;
         function_type func;
 
-        /// TODO: bind<T...>(args...) -> def<partial_signature, F>
+        /// TODO: document these
+
+        [[nodiscard]] static constexpr size_t n_partial() noexcept {
+            return signature_type::n_partial();
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto clear(this Self&& self)
+            noexcept (requires{{def<
+                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>,
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            >{
+                std::forward<Self>(self).signature.clear(),
+                std::forward<Self>(self).func
+            }} noexcept;})
+            requires (requires{def<
+                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>,
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            >{
+                std::forward<Self>(self).signature.clear(),
+                std::forward<Self>(self).func
+            };})
+        {
+            return def<
+                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>,
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            >{
+                std::forward<Self>(self).signature.clear(),
+                std::forward<Self>(self).func
+            };
+        }
 
         template <auto... T, typename Self, typename... A>
             requires (
                 meta::source_args<decltype(T)...> &&
                 meta::source_args<A...> &&
+                (!meta::arg_pack<decltype(T)> && ...) &&
+                (!meta::kwarg_pack<decltype(T)> && ...) &&
                 (!meta::arg_pack<A> && ...) &&
                 (!meta::kwarg_pack<A> && ...) &&
                 meta::bind_error<Sig::template bind_templates<decltype(T)...>> &&
                 meta::bind_error<Sig::template bind_params<A...>>
             )
-        constexpr decltype(auto) bind(this Self&& self, A&&... args)
+        [[nodiscard]] constexpr auto bind(this Self&& self, A&&... args)
+            noexcept (requires{{def<
+                meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
+                    std::forward<A>(args)...
+                ))>,
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            >{
+                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...),
+                std::forward<Self>(self).func
+            }} noexcept;})
+            requires (requires{def<
+                meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
+                    std::forward<A>(args)...
+                ))>,
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            >{
+                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...),
+                std::forward<Self>(self).func
+            };})
         {
-            // return (std::forward<Self>(self).signature.template bind<T...>())
+            return def<
+                meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
+                    std::forward<A>(args)...
+                ))>,
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            >{
+                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...),
+                std::forward<Self>(self).func
+            };
         }
 
         template <auto... T, typename Self, typename... A>
@@ -5472,10 +5513,35 @@ namespace impl {
                 std::forward<Self>(self).func,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (requires{std::forward<Self>(self).signature.template operator()<T...>(
+            requires (signature_type::template specialize<T...>::template visit<
+                decltype(std::forward<Self>(self).signature),
+                decltype(std::forward<Self>(self).func),
+                A...
+            >)
+        {
+            return (std::forward<Self>(self).signature.template operator()<T...>(
                 std::forward<Self>(self).func,
                 std::forward<A>(args)...
-            );})
+            ));
+        }
+
+        template <auto... T, typename Self, typename... A>
+            requires (
+                meta::source_args<decltype(T)...> &&
+                meta::source_args<A...> &&
+                meta::bind_error<Sig::template call_templates<decltype(T)...>> &&
+                meta::bind_error<Sig::template call_params<A...>>
+            )
+        constexpr decltype(auto) call(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).signature.template operator()<T...>(
+                std::forward<Self>(self).func,
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (signature_type::template specialize<T...>::template visit<
+                decltype(std::forward<Self>(self).signature),
+                decltype(std::forward<Self>(self).func),
+                A...
+            >)
         {
             return (std::forward<Self>(self).signature.template operator()<T...>(
                 std::forward<Self>(self).func,
@@ -5498,6 +5564,7 @@ namespace impl {
 }
 
 
+/// TODO: document each overload.
 
 
 template <meta::arg auto... A, typename F>
@@ -5518,7 +5585,7 @@ template <meta::arg auto... A, typename F>
 }
 
 
-template <impl::templates T, meta::arg auto... A, typename F> requires (!T.empty())
+template <impl::templates T, meta::arg auto... A, typename F> requires (T.size > 0)
 [[nodiscard]] constexpr auto def(F&& f)
     noexcept (requires{{impl::make_def<F, T, A...>{
         impl::make_signature<F, T, A...>{},
@@ -5555,7 +5622,7 @@ template <meta::arg auto... A, typename... F> requires (sizeof...(F) > 1)
 
 
 template <impl::templates T, meta::arg auto... A, typename... F>
-    requires (!T.empty() && sizeof...(F) > 1)
+    requires (T.size > 0 && sizeof...(F) > 1)
 [[nodiscard]] constexpr auto def(F&&... fs)
     noexcept (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
         impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{},
@@ -5576,9 +5643,15 @@ template <impl::templates T, meta::arg auto... A, typename... F>
 
 
 // inline constexpr auto f = def(
-//     [](int x, int y) { return x + y; }
+//     [](int x, int y) { return x + y; },
+//     [](double x, double y) { return x - y; }
 // );
-// static_assert(f(1, 2) == 3);
+// static_assert(f(1.0, 2.0) == -1.0);
+
+inline constexpr auto f2 = def<{"z"_ = 1}, "x"_, "y"_>([]<int z>(int x, int y) {
+    return x + y + z;
+});
+static_assert(f2.bind("y"_ = 1).call<("z"_ = 2)>(2) == 5);
 
 
 
