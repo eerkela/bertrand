@@ -227,10 +227,10 @@ private:
     template <bertrand::static_str self>
     friend struct bertrand::string_wrapper;
 
-    constexpr static_str() = default;
-
 public:
     char buffer[N + 1];  // +1 for null terminator
+
+    constexpr static_str() = default;
 
     explicit constexpr static_str(char c) noexcept {
         std::fill_n(buffer, N, c);

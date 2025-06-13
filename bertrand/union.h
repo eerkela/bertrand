@@ -17,61 +17,6 @@ using NoneType = std::nullopt_t;
 static constexpr NoneType None = std::nullopt;
 
 
-/* A simple convenience struct implementing the overload pattern for `visit()`-style
-functions.
-
-The intended use of this type is more or less as follows:
-
-    Union<int, std::string> u = "hello, world!";
-    u.visit(visitor{
-        [](int i) { return print(i); },
-        [](const std::string& s) { return print(s); }
-    });
-
-Without the `visitor{}` wrapper, one would need to use a generic lambda or write their
-own elaborated visitor class to handle the various types in the union, which is much
-more verbose.  The `visitor{}` wrapper allows each case to be clearly enumerated and
-handled directly at the call site using lambdas, which may be passed in from elsewhere
-as an expression of the strategy pattern.
-
-Ideally, the `visitor` type could be omitted entirely, yielding a syntax like:
-
-    Union<int, std::string> u = "hello, world!";
-    u.visit({
-        [](int i) { return print(i); },
-        [](const std::string& s) { return print(s); }
-    });
-
-... But this is not currently possible in C++ due to limitations around class template
-argument deduction (CTAD) for function arguments.  Currently, the only workaround is
-to explicitly specify the `visitor` type during the invocation of `visit()`, as shown
-in the first example.  This restriction may be lifted in a future version of C++,
-at which point the second syntax could be standardized as well.  One proposal that
-would allow this is P2998 (https://open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2998r0.html),
-which would get around this by using alias deduction guides at a language level.  Until
-that paper or a similar proposal is standardized, an explicit `visitor` constructor is
-unavoidable. */
-template <meta::unqualified... Fs> requires (!meta::is_void<Fs> && ...)
-struct visitor : public Fs... {
-    /* Records the type of each function, in the same order they were given. */
-    using types = meta::pack<Fs...>;
-
-    /* Get the function at index I, perfectly forwarding it according to the pack's
-    current cvref qualifications. */
-    template <size_t I, typename Self> requires (I < types::size)
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        return (std::forward<meta::qualify<meta::unpack_type<I, Fs...>, Self>>(self));
-    }
-
-    /* Visitors inherit the call operators of each function, forming an overload set. */
-    using Fs::operator()...;
-};
-
-
-template <typename... Fs>
-visitor(Fs...) -> visitor<Fs...>;
-
-
 namespace impl {
     struct union_tag {};
     struct optional_tag {};
@@ -90,15 +35,6 @@ namespace impl {
 
 namespace meta {
 
-    namespace detail {
-
-        template <typename T>
-        constexpr bool visitor = false;
-        template <typename... Fs>
-        constexpr bool visitor<bertrand::visitor<Fs...>> = true;
-
-    }
-
     template <typename T>
     concept visitable = impl::visitable<T>::enable;
 
@@ -116,9 +52,6 @@ namespace meta {
 
     template <typename T>
     concept None = meta::is<T, NoneType>;
-
-    template <typename T>
-    concept visitor = detail::visitor<meta::unqualify<T>>;
 
 }
 
@@ -747,6 +680,9 @@ namespace meta {
             visit<F, Args...> && detail::visit<F, Args...>::template nothrow_returns<Ret>;
 
     }
+
+    /// TODO: apply() no longer exists, and is completely replaced by def() functions
+    /// and Python-style unpacking operators.
 
     namespace detail {
 
@@ -1852,99 +1788,98 @@ namespace impl {
     template <size_t N> requires (N <= std::numeric_limits<size_t>::max())
     using union_index_type = _union_index_type<N>::type;
 
-}
+    /* Invoke a function with the given arguments, unwrapping any sum types in the process.
+    This is similar to `std::visit()`, but with greatly expanded metaprogramming
+    capabilities.
 
+    The visitor is constructed from either a single function or a set of functions defined
+    using `bertrand::visitor` or a similar overload set.  The subsequent arguments will be
+    passed to the visitor in the order they are defined, with each union being unwrapped to
+    its actual type within the visitor context.  A compilation error will occur if the
+    visitor is not callable with all nontrivial permutations of the unwrapped values.
 
-/* Invoke a function with the given arguments, unwrapping any sum types in the process.
-This is similar to `std::visit()`, but with greatly expanded metaprogramming
-capabilities.
+    Note that the visitor does not need to be exhaustive over all possible permutations;
+    only the valid ones.  Practically speaking, this means that the visitor is free to
+    ignore the empty states of optionals and error states of expected inputs, which will be
+    implicitly propagated to the return type if left unhandled.  On the other hand, union
+    states and non-empty/result states of optionals and expecteds must be explicitly
+    handled, else a compilation error will occur.  This equates to adding implicit
+    overloads to the visitor that trivially forward these states without any modifications,
+    allowing visitors to treat optional and expected types as if they were always in the
+    valid state.  The `bertrand::meta::exhaustive<F, Args...>` concept can be used to
+    selectively forbid these cases at compile time, which returns the semantics to those of
+    `std::visit()` with respect to visitor exhaustiveness.
 
-The visitor is constructed from either a single function or a set of functions defined
-using `bertrand::visitor` or a similar overload set.  The subsequent arguments will be
-passed to the visitor in the order they are defined, with each union being unwrapped to
-its actual type within the visitor context.  A compilation error will occur if the
-visitor is not callable with all nontrivial permutations of the unwrapped values.
+    Similarly, unlike `std::visit()`, the visitor is not constrained to return a single
+    consistent type for all permutations.  If it does not, then the return type `R` will
+    deduce to `bertrand::Union<Rs...>`, where `Rs...` are the unique return types for all
+    valid permutations.  Otherwise, if all permutations return the same type, then `R` will
+    simply be that type.  If some permutations return `void` and others return non-`void`,
+    then `R` will be wrapped in an `Optional`, where the empty state indicates a void
+    return type at runtime.  If `R` is itself an optional type, then the empty states will
+    be merged so as to avoid nested optionals.  Similar to above, the
+    `bertrand::meta::consistent<F, Args...>` concept can be used to selectively forbid
+    these cases at compile time.  Applying that concept in combination with
+    `bertrand::meta::exhaustive<F, Args...>` will yield the same visitor semantics as
+    `std::visit()`.
 
-Note that the visitor does not need to be exhaustive over all possible permutations;
-only the valid ones.  Practically speaking, this means that the visitor is free to
-ignore the empty states of optionals and error states of expected inputs, which will be
-implicitly propagated to the return type if left unhandled.  On the other hand, union
-states and non-empty/result states of optionals and expecteds must be explicitly
-handled, else a compilation error will occur.  This equates to adding implicit
-overloads to the visitor that trivially forward these states without any modifications,
-allowing visitors to treat optional and expected types as if they were always in the
-valid state.  The `bertrand::meta::exhaustive<F, Args...>` concept can be used to
-selectively forbid these cases at compile time, which returns the semantics to those of
-`std::visit()` with respect to visitor exhaustiveness.
+    If both of the above features are enabled (the default), then a worst-case,
+    inconsistent visitor applied to an `Expected<Union<Ts...>, Es...>` input, where some
+    permutations of `Ts...` return void and others do not, can potentially yield a return
+    type of the form `Expected<Optional<Union<Rs...>>, Es...>`, where `Rs...` are the
+    non-void return types for the valid permutations, `Optional` signifies that the return
+    type may be void, and `Es...` are the original error types that were implicitly
+    propagated from the input.  If the visitor exhaustively handles the error states, then
+    the return type will reduce to `Optional<Union<Rs...>>`.  If the visitor never returns
+    void, then the return type will further reduce to `Union<Rs...>`, and if it returns a
+    single consistent type, then `R` will collapse to just that type, in which case the
+    semantics are identical to `std::visit()`.
 
-Similarly, unlike `std::visit()`, the visitor is not constrained to return a single
-consistent type for all permutations.  If it does not, then the return type `R` will
-deduce to `bertrand::Union<Rs...>`, where `Rs...` are the unique return types for all
-valid permutations.  Otherwise, if all permutations return the same type, then `R` will
-simply be that type.  If some permutations return `void` and others return non-`void`,
-then `R` will be wrapped in an `Optional`, where the empty state indicates a void
-return type at runtime.  If `R` is itself an optional type, then the empty states will
-be merged so as to avoid nested optionals.  Similar to above, the
-`bertrand::meta::consistent<F, Args...>` concept can be used to selectively forbid
-these cases at compile time.  Applying that concept in combination with
-`bertrand::meta::exhaustive<F, Args...>` will yield the same visitor semantics as
-`std::visit()`.
+    Finally, note that the arguments are fully generic, and not strictly limited to union
+    types, in contrast to `std::visit()`.  If no unions are present, then `visit()`
+    devolves to invoking the visitor normally, without any special handling.  Otherwise,
+    the component unions are expanded according to the rules laid out in
+    `bertrand::impl::visitable`, which describes how to register custom visitable types
+    for use with this function.  Built-in specializations exist for `Union`, `Optional`,
+    and `Expected`, as well as `std::variant`, `std::optional`, and `std::expected`, each
+    of which can be passed to `visit()` according to the described semantics. */
+    template <typename F, typename... Args> requires (meta::visit<F, Args...>)
+    constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
+        noexcept(meta::nothrow::visit<F, Args...>)
+    {
+        // only generate a vtable if unions are present in the signature
+        if constexpr ((meta::visitable<Args> || ...)) {
+            using R = meta::visit_type<F, Args...>;
+            using T = meta::unpack_type<0, Args...>;
 
-If both of the above features are enabled (the default), then a worst-case,
-inconsistent visitor applied to an `Expected<Union<Ts...>, Es...>` input, where some
-permutations of `Ts...` return void and others do not, can potentially yield a return
-type of the form `Expected<Optional<Union<Rs...>>, Es...>`, where `Rs...` are the
-non-void return types for the valid permutations, `Optional` signifies that the return
-type may be void, and `Es...` are the original error types that were implicitly
-propagated from the input.  If the visitor exhaustively handles the error states, then
-the return type will reduce to `Optional<Union<Rs...>>`.  If the visitor never returns
-void, then the return type will further reduce to `Union<Rs...>`, and if it returns a
-single consistent type, then `R` will collapse to just that type, in which case the
-semantics are identical to `std::visit()`.
+            // flat vtable encodes all permutations simultaneously, minimizing binary size
+            // and compile-time/runtime overhead by only doing a single array lookup.
+            static constexpr auto vtable =
+                []<size_t... Is>(std::index_sequence<Is...>) noexcept {
+                    return std::array{
+                        +[](meta::as_lvalue<F> f, meta::as_lvalue<Args>... args)
+                            noexcept(meta::nothrow::visit<F, Args...>) -> R
+                        {
+                            return impl::visitable<T>::template dispatch<R, Is>(
+                                std::make_index_sequence<0>{},
+                                std::make_index_sequence<sizeof...(Args) - 1>{},
+                                std::forward<F>(f),
+                                std::forward<Args>(args)...
+                            );
+                        }...
+                    };
+                }(std::make_index_sequence<impl::vtable_size<Args...>>{});
 
-Finally, note that the arguments are fully generic, and not strictly limited to union
-types, in contrast to `std::visit()`.  If no unions are present, then `visit()`
-devolves to invoking the visitor normally, without any special handling.  Otherwise,
-the component unions are expanded according to the rules laid out in
-`bertrand::impl::visitable`, which describes how to register custom visitable types
-for use with this function.  Built-in specializations exist for `Union`, `Optional`,
-and `Expected`, as well as `std::variant`, `std::optional`, and `std::expected`, each
-of which can be passed to `visit()` according to the described semantics. */
-template <typename F, typename... Args> requires (meta::visit<F, Args...>)
-constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
-    noexcept(meta::nothrow::visit<F, Args...>)
-{
-    // only generate a vtable if unions are present in the signature
-    if constexpr ((meta::visitable<Args> || ...)) {
-        using R = meta::visit_type<F, Args...>;
-        using T = meta::unpack_type<0, Args...>;
+            // `impl::vtable_index()` produces an index into the flat vtable with the
+            // appropriate scaling.
+            return vtable[impl::vtable_index(0, args...)](f, args...);
 
-        // flat vtable encodes all permutations simultaneously, minimizing binary size
-        // and compile-time/runtime overhead by only doing a single array lookup.
-        static constexpr auto vtable =
-            []<size_t... Is>(std::index_sequence<Is...>) noexcept {
-                return std::array{
-                    +[](meta::as_lvalue<F> f, meta::as_lvalue<Args>... args)
-                        noexcept(meta::nothrow::visit<F, Args...>) -> R
-                    {
-                        return impl::visitable<T>::template dispatch<R, Is>(
-                            std::make_index_sequence<0>{},
-                            std::make_index_sequence<sizeof...(Args) - 1>{},
-                            std::forward<F>(f),
-                            std::forward<Args>(args)...
-                        );
-                    }...
-                };
-            }(std::make_index_sequence<impl::vtable_size<Args...>>{});
-
-        // `impl::vtable_index()` produces an index into the flat vtable with the
-        // appropriate scaling.
-        return vtable[impl::vtable_index(0, args...)](f, args...);
-
-    // otherwise, call the function directly
-    } else {
-        return std::forward<F>(f)(std::forward<Args>(args)...);
+        // otherwise, call the function directly
+        } else {
+            return std::forward<F>(f)(std::forward<Args>(args)...);
+        }
     }
+
 }
 
 
@@ -2495,7 +2430,7 @@ public:
     [[nodiscard]] constexpr Union(T&& v)
         noexcept(meta::nothrow::exhaustive<ConvertFrom<T>, T>)
     :
-        m_storage(bertrand::visit(ConvertFrom<T>{}, std::forward<T>(v)))
+        m_storage(impl::visit(ConvertFrom<T>{}, std::forward<T>(v)))
     {}
 
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
@@ -2513,7 +2448,7 @@ public:
     [[nodiscard]] constexpr explicit Union(Args&&... args)
         noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
-        m_storage(bertrand::visit(ConstructFrom{}, std::forward<Args>(args)...))
+        m_storage(impl::visit(ConstructFrom{}, std::forward<Args>(args)...))
     {}
 
     /* Copy constructor.  The resulting union will have the same index as the input
@@ -2607,10 +2542,7 @@ public:
         noexcept(meta::nothrow::exhaustive<impl::ConvertTo<T>, Self>)
         requires(meta::exhaustive<impl::ConvertTo<T>, Self>)
     {
-        return bertrand::visit(
-            impl::ConvertTo<T>{},
-            std::forward<Self>(self)
-        );
+        return impl::visit(impl::ConvertTo<T>{}, std::forward<Self>(self));
     }
 
     /* Explicit conversion operator allows functional-style conversions toward any type
@@ -2625,10 +2557,7 @@ public:
             meta::exhaustive<impl::ExplicitConvertTo<T>, Self>
         )
     {
-        return bertrand::visit(
-            impl::ExplicitConvertTo<T>{},
-            std::forward<Self>(self)
-        );
+        return impl::visit(impl::ExplicitConvertTo<T>{}, std::forward<Self>(self));
     }
 
     /* Swap the contents of two unions as efficiently as possible.  This will use
@@ -2743,6 +2672,11 @@ public:
         >();
     }
 
+    /// TODO: maybe the member visit() method is also deleted, since def() functions
+    /// are trivial to write and should better cover this case.  Also, update all
+    /// references to visit() or bertrand::visit() in the documentation to reflect
+    /// unification with def()
+
     /* A member equivalent for `bertrand::visit()`, which always inserts this union as
     the first argument, for chaining purposes.  See `bertrand::visit()` for more
     details. */
@@ -2751,7 +2685,7 @@ public:
         noexcept(meta::nothrow::visit<F, Self, Args...>)
         requires(meta::visit<F, Self, Args...>)
     {
-        return (bertrand::visit(
+        return (impl::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -2770,7 +2704,7 @@ public:
             meta::consistent<Flatten<Self>, Self>
         )
     {
-        return (bertrand::visit(Flatten<Self>{}, std::forward<Self>(self)));
+        return (impl::visit(Flatten<Self>{}, std::forward<Self>(self)));
     }
 
     /* Monadic call operator.  If any of the union types are function-like objects that
@@ -2786,7 +2720,7 @@ public:
         noexcept(meta::nothrow::visit<impl::Call, Self, Args...>)
         requires(meta::visit<impl::Call, Self, Args...>)
     {
-        return (bertrand::visit(
+        return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -2805,7 +2739,7 @@ public:
         noexcept(meta::nothrow::visit<impl::Subscript, Self, Key...>)
         requires(meta::visit<impl::Subscript, Self, Key...>)
     {
-        return (bertrand::visit(
+        return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
@@ -2987,7 +2921,7 @@ public:
     [[nodiscard]] constexpr Optional(V&& v)
         noexcept(meta::nothrow::exhaustive<ConvertFrom<V>, V>)
     : 
-        m_storage(bertrand::visit(ConvertFrom<V>{}, std::forward<V>(v)))
+        m_storage(impl::visit(ConvertFrom<V>{}, std::forward<V>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the value type's
@@ -3002,7 +2936,7 @@ public:
     [[nodiscard]] constexpr explicit Optional(Args&&... args)
         noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
-        m_storage(bertrand::visit(ConstructFrom{}, std::forward<Args>(args)...))
+        m_storage(impl::visit(ConstructFrom{}, std::forward<Args>(args)...))
     {}
 
     /* Implicit conversion from `Optional<T>` to `std::optional<T>` and other similar
@@ -3107,7 +3041,7 @@ public:
     constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -3161,7 +3095,7 @@ public:
     constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             and_then_fn<F, Self, Args...>{},
             std::forward<F>(f),
             std::forward<Self>(self),
@@ -3207,7 +3141,7 @@ public:
     constexpr decltype(auto) or_else(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             or_else_fn<F, Self, Args...>{},
             std::forward<F>(f),
             std::forward<Self>(self),
@@ -3262,7 +3196,7 @@ public:
     constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
         meta::nothrow::visit<impl::Call, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -3277,7 +3211,7 @@ public:
     constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
         meta::nothrow::visit<impl::Subscript, Self, Key...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
@@ -3591,7 +3525,7 @@ public:
     [[nodiscard]] constexpr Expected(V&& v)
         noexcept(meta::nothrow::exhaustive<ConvertFrom<V>, V>)
     :
-        m_storage(bertrand::visit(ConvertFrom<V>{}, std::forward<V>(v)))
+        m_storage(impl::visit(ConvertFrom<V>{}, std::forward<V>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the result type's
@@ -3606,7 +3540,7 @@ public:
     [[nodiscard]] constexpr explicit Expected(Args&&... args)
         noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
-        m_storage(bertrand::visit(ConstructFrom{}, std::forward<Args>(args)...))
+        m_storage(impl::visit(ConstructFrom{}, std::forward<Args>(args)...))
     {}
 
     /* Implicitly convert the `Expected` to any other type to which all alternatives
@@ -3617,7 +3551,7 @@ public:
     [[nodiscard]] constexpr operator V(this Self&& self) noexcept(
         meta::nothrow::exhaustive<ConvertTo<V>, Self>
     ) {
-        return bertrand::visit(ConvertTo<V>{}, std::forward<Self>(self));
+        return impl::visit(ConvertTo<V>{}, std::forward<Self>(self));
     }
 
     /* Swap the contents of two expecteds as efficiently as possible. */
@@ -3867,7 +3801,7 @@ public:
     constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             std::forward<F>(f),
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -3923,7 +3857,7 @@ public:
     constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             and_then_fn<F, Self, Args...>{},
             std::forward<F>(f),
             std::forward<Self>(self),
@@ -3980,7 +3914,7 @@ public:
     constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             and_then_fn<F, Self, Args...>{},
             std::forward<F>(f),
             std::forward<Self>(self),
@@ -4058,7 +3992,7 @@ public:
     constexpr decltype(auto) or_else(this Self&& self, F&& f, Args&&... args) noexcept(
         meta::nothrow::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             or_else_fn<F, Self, Args...>{},
             std::forward<F>(f),
             std::forward<Self>(self),
@@ -4074,7 +4008,7 @@ public:
     constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
         meta::nothrow::visit<impl::Call, Self, Args...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
             std::forward<Args>(args)...
@@ -4089,7 +4023,7 @@ public:
     constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
         meta::nothrow::visit<impl::Subscript, Self, Key...>
     ) {
-        return (bertrand::visit(
+        return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
@@ -4138,7 +4072,7 @@ template <meta::monad T> requires (meta::visit<impl::LogicalNot, T>)
 constexpr decltype(auto) operator!(T&& val) noexcept(
     meta::nothrow::visit<impl::LogicalNot, T>
 ) {
-    return (visit(impl::LogicalNot{}, std::forward<T>(val)));
+    return (impl::visit(impl::LogicalNot{}, std::forward<T>(val)));
 }
 
 
@@ -4154,7 +4088,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator&&(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::LogicalAnd, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::LogicalAnd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4174,7 +4108,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator||(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::LogicalOr, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::LogicalOr{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4194,7 +4128,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator<(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Less, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Less{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4214,7 +4148,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator<=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::LessEqual, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::LessEqual{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4234,7 +4168,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator==(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Equal, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Equal{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4254,7 +4188,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator!=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::NotEqual, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::NotEqual{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4274,7 +4208,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator>=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::GreaterEqual, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::GreaterEqual{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4294,7 +4228,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator>(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Greater, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Greater{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4314,7 +4248,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Spaceship, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Spaceship{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4329,7 +4263,7 @@ template <meta::monad T> requires (meta::visit<impl::Pos, T>)
 constexpr decltype(auto) operator+(T&& val) noexcept(
     meta::nothrow::visit<impl::Pos, T>
 ) {
-    return (visit(impl::Pos{}, std::forward<T>(val)));
+    return (impl::visit(impl::Pos{}, std::forward<T>(val)));
 }
 
 
@@ -4340,7 +4274,7 @@ template <meta::monad T> requires (meta::visit<impl::Neg, T>)
 constexpr decltype(auto) operator-(T&& val) noexcept(
     meta::nothrow::visit<impl::Neg, T>
 ) {
-    return (visit(impl::Neg{}, std::forward<T>(val)));
+    return (impl::visit(impl::Neg{}, std::forward<T>(val)));
 }
 
 
@@ -4351,7 +4285,7 @@ template <meta::monad T> requires (meta::visit<impl::PreIncrement, T>)
 constexpr decltype(auto) operator++(T&& val) noexcept(
     meta::nothrow::visit<impl::PreIncrement, T>
 ) {
-    return (visit(impl::PreIncrement{}, std::forward<T>(val)));
+    return (impl::visit(impl::PreIncrement{}, std::forward<T>(val)));
 }
 
 
@@ -4362,7 +4296,7 @@ template <meta::monad T> requires (meta::visit<impl::PostIncrement, T>)
 constexpr decltype(auto) operator++(T&& val, int) noexcept(
     meta::nothrow::visit<impl::PostIncrement, T>
 ) {
-    return (visit(impl::PostIncrement{}, std::forward<T>(val)));
+    return (impl::visit(impl::PostIncrement{}, std::forward<T>(val)));
 }
 
 
@@ -4373,7 +4307,7 @@ template <meta::monad T> requires (meta::visit<impl::PreDecrement, T>)
 constexpr decltype(auto) operator--(T&& val) noexcept(
     meta::nothrow::visit<impl::PreDecrement, T>
 ) {
-    return (visit(impl::PreDecrement{}, std::forward<T>(val)));
+    return (impl::visit(impl::PreDecrement{}, std::forward<T>(val)));
 }
 
 /* Monadic postfix decrement operator.  Delegates to `bertrand::visit()`, and is
@@ -4383,7 +4317,7 @@ template <meta::monad T> requires (meta::visit<impl::PostDecrement, T>)
 constexpr decltype(auto) operator--(T&& val, int) noexcept(
     meta::nothrow::visit<impl::PostDecrement, T>
 ) {
-    return (visit(impl::PostDecrement{}, std::forward<T>(val)));
+    return (impl::visit(impl::PostDecrement{}, std::forward<T>(val)));
 }
 
 
@@ -4399,7 +4333,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator+(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Add, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Add{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4419,7 +4353,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator+=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceAdd, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceAdd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4439,7 +4373,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator-(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Subtract, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Subtract{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4459,7 +4393,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator-=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceSubtract, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceSubtract{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4479,7 +4413,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator*(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Multiply, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Multiply{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4499,7 +4433,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator*=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceMultiply, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceMultiply{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4519,7 +4453,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator/(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Divide, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Divide{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4539,7 +4473,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator/=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceDivide, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceDivide{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4559,7 +4493,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator%(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::Modulus, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::Modulus{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4579,7 +4513,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator%=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceModulus, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceModulus{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4599,7 +4533,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator<<(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::LeftShift, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::LeftShift{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4619,7 +4553,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceLeftShift, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceLeftShift{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4639,7 +4573,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator>>(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::RightShift, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::RightShift{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4659,7 +4593,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceRightShift, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceRightShift{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4674,7 +4608,7 @@ template <meta::monad T> requires (meta::visit<impl::BitwiseNot, T>)
 constexpr decltype(auto) operator~(T&& val) noexcept(
     meta::nothrow::visit<impl::BitwiseNot, T>
 ) {
-    return (visit(impl::BitwiseNot{}, std::forward<T>(val)));
+    return (impl::visit(impl::BitwiseNot{}, std::forward<T>(val)));
 }
 
 
@@ -4690,7 +4624,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator&(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::BitwiseAnd, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::BitwiseAnd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4710,7 +4644,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator&=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceBitwiseAnd, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceBitwiseAnd{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4730,7 +4664,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator|(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::BitwiseOr, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::BitwiseOr{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4750,7 +4684,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator|=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceBitwiseOr, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceBitwiseOr{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4770,7 +4704,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator^(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::BitwiseXor, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::BitwiseXor{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4790,7 +4724,7 @@ template <typename L, typename R>
 constexpr decltype(auto) operator^=(L&& lhs, R&& rhs) noexcept(
     meta::nothrow::visit<impl::InplaceBitwiseXor, L, R>
 ) {
-    return (visit(
+    return (impl::visit(
         impl::InplaceBitwiseXor{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
@@ -4809,7 +4743,7 @@ namespace std {
         static constexpr auto operator()(auto&& value) noexcept(
             bertrand::meta::nothrow::visit<bertrand::impl::Hash, T>
         ) {
-            return bertrand::visit(
+            return bertrand::impl::visit(
                 bertrand::impl::Hash{},
                 std::forward<decltype(value)>(value)
             );
@@ -4873,31 +4807,6 @@ namespace std {
     constexpr auto* get_if(U&& u) noexcept(noexcept(u.template get_if<T>())) {
         auto result = u.template get_if<T>();  // as lvalue
         return result.has_value() ? &result.value() : nullptr;
-    }
-
-    /* Specializing `std::tuple_size<visitor>` allows `bertrand::visitor{}` objects to
-    be decomposed into their individual overloads via structured bindings. */
-    template <bertrand::meta::visitor T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::types::size>
-    {};
-
-    /* Specializing `std::tuple_element<visitor>` allows `bertrand::visitor{}` objects to
-    be decomposed into their individual overloads via structured bindings. */
-    template <size_t I, bertrand::meta::visitor T>
-        requires (I < tuple_size<T>::value)
-    struct tuple_element<I, T> {
-        using type = typename std::remove_cvref_t<T>::types::template at<I>;
-    };
-
-    /* Non-member `std::get<I>(visitor)` returns a reference (possibly rvalue) to the
-    I-th overload of the visitor, similar to `std::get<I>(variant)` and different from
-    `visitor.get<I>()`, which returns an expected according to the monadic interface. */
-    template <size_t I, bertrand::meta::visitor T> requires (I < tuple_size<T>::value)
-    constexpr decltype(auto) get(T&& v)
-        noexcept(noexcept(std::forward<T>(v).template get<I>()))
-    {
-        return (std::forward<T>(v).template get<I>());
     }
 
 }
