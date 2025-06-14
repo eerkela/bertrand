@@ -5468,14 +5468,6 @@ namespace meta {
 
 namespace impl {
 
-    /// TODO: get<> should use signed indices.  Also, ssize() and empty() as
-    /// distinct methods.
-
-    /// TODO: chain{} might benefit from a private base class and public interface,
-    /// similar to args{}.  There might also be some concern over perfect forwarding
-    /// and how references are stored when it comes to assignment operators, etc.
-
-
     template <typename F, typename... Fs>
     struct _chain : impl::chain_tag {
     protected:
@@ -5483,17 +5475,17 @@ namespace impl {
         struct storage { type value; };
 
         template <typename Self, typename... A>
-        static constexpr bool invocable = meta::invocable<
+        static constexpr bool invoke_chain = meta::invocable<
             decltype(std::declval<Self>().m_storage.value),
             A...
         >;
 
         template <size_t I, typename Self>
         static constexpr decltype(auto) get(Self&& self) noexcept {
-            return (std::forward<Self>(self).func);
+            return (std::forward<Self>(self).m_storage.value);
         }
 
-        template <typename Self, typename... A>
+        template <typename Self, typename... A> requires (invoke_chain<Self, A...>)
         static constexpr decltype(auto) operator()(Self&& self, A&&... args)
             noexcept (requires{
                 {std::forward<Self>(self).m_storage.value(std::forward<A>(args)...)} noexcept;
@@ -5575,11 +5567,11 @@ namespace impl {
         struct storage { type value; };
 
         template <typename Self, typename... A>
-        static constexpr bool invocable = false;
+        static constexpr bool invoke_chain = false;
         template <typename Self, typename... A>
             requires (meta::invocable<decltype(std::declval<Self>().m_storage.value), A...>)
-        static constexpr bool invocable<Self, A...> =
-            _chain<F2, Fs...>::template invocable<
+        static constexpr bool invoke_chain<Self, A...> =
+            _chain<F2, Fs...>::template invoke_chain<
                 meta::qualify<_chain<F2, Fs...>, Self>,
                 meta::invoke_type<decltype(std::declval<Self>().m_storage.value), A...>
             >;
@@ -5587,24 +5579,24 @@ namespace impl {
         template <size_t I, typename Self>
         static constexpr decltype(auto) get(Self&& self) noexcept {
             if constexpr (I == 0) {
-                return (std::forward<Self>(self).func);
+                return (std::forward<Self>(self).m_storage.value);
             } else {
-                return std::forward<
+                return (_chain<F2, Fs...>::template get<I - 1>(std::forward<
                     meta::qualify<_chain<F2, Fs...>, Self>
-                >(self).template get<I - 1>();
+                >(self)));
             }
         }
 
-        template <typename Self, typename... A> requires (invocable<Self, A...>)
+        template <typename Self, typename... A> requires (invoke_chain<Self, A...>)
         static constexpr decltype(auto) operator()(Self&& self, A&&... args)
             noexcept (requires{{_chain<F2, Fs...>::operator()(
                 std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
-                std::forward<Self>(self).func(std::forward<A>(args)...)
+                std::forward<Self>(self).m_storage.value(std::forward<A>(args)...)
             )} noexcept;})
         {
             return (_chain<F2, Fs...>::operator()(
                 std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
-                std::forward<Self>(self).func(std::forward<A>(args)...)
+                std::forward<Self>(self).m_storage.value(std::forward<A>(args)...)
             ));
         }
 
@@ -5690,15 +5682,61 @@ namespace impl {
     /* A higher-order function that merges a sequence of component functions into a
     single operation.  When called, the chain will evaluate the first function with the
     input arguments, then pass the result to the next function, and so on, until all
-    functions have been evaluated. */
-    template <meta::not_void F, meta::not_void... Fs>
-    struct chain : impl::_chain<F, Fs...> {
-        using functions = meta::pack<F, Fs...>;
+    functions have been evaluated.  If the first function supports partial binding or
+    explicit template parameters, then they will be transparently forwarded to the
+    chain's public interface as well. */
+    template <meta::not_void F1, meta::not_void F2, meta::not_void... Fs>
+    struct chain : impl::_chain<F1, F2, Fs...> {
+        using functions = meta::pack<F1, F2, Fs...>;
         using size_type = size_t;
         using index_type = ssize_t;
 
     private:
-        using base = impl::_chain<F, Fs...>;
+        using base = impl::_chain<F1, F2, Fs...>;
+
+        template <size_type... Is, typename Self>
+        static constexpr auto _clear(std::index_sequence<Is...>, Self&& self)
+            noexcept (requires{{impl::chain{
+                base::template get<0>(std::forward<Self>(self)).clear(),
+                base::template get<1 + Is>(std::forward<Self>(self))...
+            }} noexcept;})
+            requires (requires{{impl::chain{
+                base::template get<0>(std::forward<Self>(self)).clear(),
+                base::template get<1 + Is>(std::forward<Self>(self))...
+            }};})
+        {
+            return impl::chain{
+                base::template get<0>(std::forward<Self>(self)).clear(),
+                base::template get<1 + Is>(std::forward<Self>(self))...
+            };
+        }
+
+        template <auto... T, size_type... Is, typename Self, typename... A>
+        static constexpr auto _bind(
+            std::index_sequence<Is...>,
+            Self&& self,
+            A&&... args
+        )
+            noexcept (requires{{impl::chain{
+                base::template get<0>(std::forward<Self>(self)).template bind<T...>(
+                    std::forward<A>(args)...
+                ),
+                base::template get<1 + Is>(std::forward<Self>(self))...
+            }} noexcept;})
+            requires (requires{{impl::chain{
+                base::template get<0>(std::forward<Self>(self)).template bind<T...>(
+                    std::forward<A>(args)...
+                ),
+                base::template get<1 + Is>(std::forward<Self>(self))...
+            }};})
+        {
+            return impl::chain{
+                base::template get<0>(std::forward<Self>(self)).template bind<T...>(
+                    std::forward<A>(args)...
+                ),
+                base::template get<1 + Is>(std::forward<Self>(self))...
+            };
+        }
 
         template <size_type... Is, typename Self, typename Other>
         static constexpr auto append(
@@ -5706,26 +5744,17 @@ namespace impl {
             Self&& self,
             Other&& other
         )
-            noexcept (requires{{chain<
-                decltype(std::forward<Self>(self).template get<Is>())...,
-                Other
-            >{
-                std::forward<Self>(self).template get<Is>()...,
+            noexcept (requires{{impl::chain{
+                base::template get<Is>(std::forward<Self>(self))...,
                 std::forward<Other>(other)
             }} noexcept;})
-            requires (requires{{chain<
-                decltype(std::forward<Self>(self).template get<Is>())...,
-                Other
-            >{
-                std::forward<Self>(self).template get<Is>()...,
+            requires (requires{{impl::chain{
+                base::template get<Is>(std::forward<Self>(self))...,
                 std::forward<Other>(other)
             }};})
         {
-            return chain<
-                decltype(std::forward<Self>(self).template get<Is>())...,
-                Other
-            >{
-                std::forward<Self>(self).template get<Is>()...,
+            return impl::chain{
+                base::template get<Is>(std::forward<Self>(self))...,
                 std::forward<Other>(other)
             };
         }
@@ -5737,33 +5766,24 @@ namespace impl {
             Self&& self,
             Other&& other
         )
-            noexcept (requires{{chain<
-                decltype(std::forward<Self>(self).template get<Is>())...,
-                decltype(std::forward<Other>(other).template get<Js>())...
-            >{
-                std::forward<Self>(self).template get<Is>()...,
+            noexcept (requires{{impl::chain{
+                base::template get<Is>(std::forward<Self>(self))...,
                 std::forward<Other>(other).template get<Js>()...
             }} noexcept;})
-            requires (requires{{chain<
-                decltype(std::forward<Self>(self).template get<Is>())...,
-                decltype(std::forward<Other>(other).template get<Js>())...
-            >{
-                std::forward<Self>(self).template get<Is>()...,
+            requires (requires{{impl::chain{
+                base::template get<Is>(std::forward<Self>(self))...,
                 std::forward<Other>(other).template get<Js>()...
             }};})
         {
-            return chain<
-                decltype(std::forward<Self>(self).template get<Is>())...,
-                decltype(std::forward<Other>(other).template get<Js>())...
-            >{
-                std::forward<Self>(self).template get<Is>()...,
+            return impl::chain{
+                base::template get<Is>(std::forward<Self>(self))...,
                 std::forward<Other>(other).template get<Js>()...
             };
         }
 
     public:
         /* The number of component functions in the chain, as an unsigned integer. */
-        [[nodiscard]] static constexpr size_type size() noexcept { return sizeof...(Fs) + 1; }
+        [[nodiscard]] static constexpr size_type size() noexcept { return sizeof...(Fs) + 2; }
 
         /* The number of component functions in the chain, as a signed integer. */
         [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
@@ -5773,10 +5793,14 @@ namespace impl {
         no checks are made to ensure that the functions form a valid chain, as doing so
         in a way that allows overloads and templates requires a complete argument list
         for evaluation.  Such checks are thus deferred to the call operator itself. */
-        [[nodiscard]] constexpr chain(F func, Fs... rest)
-            noexcept (requires{{base(std::forward<F>(func), std::forward<Fs>(rest)...)} noexcept;})
+        [[nodiscard]] constexpr chain(F1 func, F2 next, Fs... rest)
+            noexcept (requires{{base(
+                std::forward<F1>(func),
+                std::forward<F2>(next),
+                std::forward<Fs>(rest)...
+            )} noexcept;})
         :
-            base(std::forward<F>(func), std::forward<Fs>(rest)...)
+            base(std::forward<F1>(func), std::forward<F2>(next), std::forward<Fs>(rest)...)
         {}
 
         /* Copying a `chain{}` will copy all of its functions.  Note that lvalues are
@@ -5832,24 +5856,148 @@ namespace impl {
         normalization. */
         template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (base::template get<impl::normalize_index<ssize(), I>>(
+            return (base::template get<impl::normalize_index<ssize(), I>()>(
                 std::forward<Self>(self)
             ));
+        }
+
+        /* Remove any partial values from the first function in the chain, assuming it
+        supports partial binding.  Fails to compile otherwise.  Note that no other
+        functions in the chain are affected, and they will be perfectly forwarded to
+        construct the result, possibly as lvalues. */
+        template <typename Self>
+        [[nodiscard]] constexpr auto clear(this Self&& self)
+            noexcept (requires{{_clear(
+                std::make_index_sequence<size() - 1>{},
+                std::forward<Self>(self)
+            )} noexcept;})
+            requires (requires{{_clear(
+                std::make_index_sequence<size() - 1>{},
+                std::forward<Self>(self)
+            )};})
+        {
+            return _clear(
+                std::make_index_sequence<size() - 1>{},
+                std::forward<Self>(self)
+            );
+        }
+
+        /* Bind one or more partial values to the first function in the chain, assuming
+        it supports partial binding.  Fails to compile otherwise.  Note that no other
+        functions in the chain are affected, and they will be perfectly forwarded to
+        construct the result, possibly as lvalues. */
+        template <auto... T, typename Self, typename... A>
+        [[nodiscard]] constexpr auto bind(this Self&& self, A&&... args)
+            noexcept (requires{{_bind<T...>(
+                std::make_index_sequence<size() - 1>{},
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (requires{{_bind<T...>(
+                std::make_index_sequence<size() - 1>{},
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            )};})
+        {
+            return _bind<T...>(
+                std::make_index_sequence<size() - 1>{},
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            );
         }
 
         /* Invoke the function chain, piping the return value from the first function
         into the input for the second function, and so on until all functions have
         been evaluated. */
-        template <typename Self, typename... A> requires (base::template invocable<Self, A...>)
+        template <typename Self, typename... A>
         constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{{base::template operator()(
+            noexcept (requires{{base::operator()(
                 std::forward<Self>(self),
                 std::forward<A>(args)...
             )} noexcept;})
+            requires (base::template invoke_chain<Self, A...>)
         {
-            return (base::template operator()(
+            return (base::operator()(
                 std::forward<Self>(self),
                 std::forward<A>(args)...
+            ));
+        }
+
+        /* Invoke the function chain, piping the return value from the first function
+        into the input for the second function, and so on until all functions have
+        been evaluated.  This overload participates in overload resolution if and only
+        if explicit template parameters are provided. */
+        template <auto... T, typename Self, typename... A> requires (sizeof...(T) > 0)
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{{_chain<F2, Fs...>::operator()(
+                std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
+                std::forward<Self>(self).m_storage.value.template operator()<T...>(
+                    std::forward<A>(args)...
+                )
+            )} noexcept;})
+            requires (requires{
+                {std::forward<Self>(self).template get<0>().template operator()<T...>(
+                    std::forward<A>(args)...
+                )};
+            } && _chain<F2, Fs...>::template invoke_chain<
+                meta::qualify<_chain<F2, Fs...>, Self>,
+                decltype(std::forward<Self>(self).template get<0>().template operator()<T...>(
+                    std::forward<A>(args)...
+                ))
+            >)
+        {
+            return (_chain<F2, Fs...>::operator()(
+                std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
+                std::forward<Self>(self).m_storage.value.template operator()<T...>(
+                    std::forward<A>(args)...
+                )
+            ));
+        }
+
+        /* Equivalent to invoking the function chain directly, but easier to spell
+        in the case where the function expects explicit template parameters. */
+        template <typename Self, typename... A>
+        constexpr decltype(auto) call(this Self&& self, A&&... args)
+            noexcept (requires{{base::operator()(
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (base::template invoke_chain<Self, A...>)
+        {
+            return (base::operator()(
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            ));
+        }
+
+        /* Equivalent to invoking the function chain directly, but easier to spell
+        in the case where the function expects explicit template parameters.  This
+        overload participates in overload resolution if and only if explicit template
+        parameters are provided. */
+        template <auto... T, typename Self, typename... A> requires (sizeof...(T) > 0)
+        constexpr decltype(auto) call(this Self&& self, A&&... args)
+            noexcept (requires{{_chain<F2, Fs...>::operator()(
+                std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
+                std::forward<Self>(self).m_storage.value.template operator()<T...>(
+                    std::forward<A>(args)...
+                )
+            )} noexcept;})
+            requires (requires{
+                {std::forward<Self>(self).template get<0>().template operator()<T...>(
+                    std::forward<A>(args)...
+                )};
+            } && _chain<F2, Fs...>::template invoke_chain<
+                meta::qualify<_chain<F2, Fs...>, Self>,
+                decltype(std::forward<Self>(self).template get<0>().template operator()<T...>(
+                    std::forward<A>(args)...
+                ))
+            >)
+        {
+            return (_chain<F2, Fs...>::operator()(
+                std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
+                std::forward<Self>(self).m_storage.value.template operator()<T...>(
+                    std::forward<A>(args)...
+                )
             ));
         }
 
@@ -5877,10 +6025,10 @@ namespace impl {
             );
         }
 
-        /* Concatenate two chains, where the second chain will be called with a single
-        argument representing the output from the current chain.  Produces a new chain
-        whose component functions represent the perfectly-forwarded contents of this
-        chain and the second chain. */
+        /* Concatenate two function chains, where the second chain will be called with
+        a single argument representing the output from the current chain.  Produces a
+        new chain whose component functions represent the perfectly-forwarded contents
+        of this chain and the second chain. */
         template <typename Self, meta::chain G>
         [[nodiscard]] constexpr auto operator>>(this Self&& self, G&& other)
             noexcept (requires{{append(
@@ -5905,53 +6053,100 @@ namespace impl {
         }
     };
 
-    template <typename F, typename... Fs>
-    chain(F&&, Fs&&...) -> chain<F, Fs...>;
+    /* CTAD constructor allows chained function types to be inferred from an
+    initializer. */
+    template <typename... Fs>
+    chain(Fs&&...) -> chain<meta::remove_rvalue<Fs>...>;
 
-    /// TODO: def() must include operator>> overloads for chaining.  Ideally, it should
-    /// detect whether the other operand is a chain or function, and produce the
-    /// appropriate chain directly.
-
-    template <meta::unqualified Sig, meta::not_void F> requires (meta::signature<Sig>)
+    /* A function object produced by the `bertrand::def()` operator.  This is a thin
+    wrapper that stores a Python-style signature in addition to an underlying C++
+    function.  When called, it will invoke the C++ function according to the
+    signature's semantics, including possible partial and default values, keyword and
+    variadic arguments, and container unpacking. */
+    template <meta::not_void F, meta::unqualified Sig> requires (meta::signature<Sig>)
     struct def {
+        using size_type = size_t;
+        using index_type = ssize_t;
         using signature_type = Sig;
         using function_type = F;
 
-        signature_type signature;
-        function_type func;
+    private:
 
-        /// TODO: document these
-
-        [[nodiscard]] static constexpr size_t n_partial() noexcept {
-            return signature_type::n_partial();
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr auto clear(this Self&& self)
-            noexcept (requires{{def<
-                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>,
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+        template <size_type... Is, typename Self, typename Other>
+        static constexpr auto append(
+            std::index_sequence<Is...>,
+            Self&& self,
+            Other&& other
+        )
+            noexcept (requires{{chain<
+                Self,
+                decltype(std::forward<Other>(other).template get<Is>())...
             >{
-                std::forward<Self>(self).signature.clear(),
-                std::forward<Self>(self).func
+                std::forward<Self>(self),
+                std::forward<Other>(other).template get<Is>()...
             }} noexcept;})
-            requires (requires{def<
-                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>,
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            requires (requires{{chain<
+                Self,
+                decltype(std::forward<Other>(other).template get<Is>())...
             >{
-                std::forward<Self>(self).signature.clear(),
-                std::forward<Self>(self).func
-            };})
+                std::forward<Self>(self),
+                std::forward<Other>(other).template get<Is>()...
+            }};})
         {
-            return def<
-                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>,
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+            return chain<
+                Self,
+                decltype(std::forward<Other>(other).template get<Is>())...
             >{
-                std::forward<Self>(self).signature.clear(),
-                std::forward<Self>(self).func
+                std::forward<Self>(self),
+                std::forward<Other>(other).template get<Is>()...
             };
         }
 
+    public:
+        function_type func;
+        signature_type signature;
+
+        /* The total number of partial arguments that have been bound to this
+        function. */
+        [[nodiscard]] static constexpr size_type n_partial() noexcept {
+            return signature_type::n_partial();
+        }
+
+        /* Return a new `def` wrapper without any partial arguments, resetting the
+        function to its unbound state. */
+        template <typename Self>
+        [[nodiscard]] constexpr auto clear(this Self&& self)
+            noexcept (requires{{def<
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
+                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>
+            >{
+                std::forward<Self>(self).func,
+                std::forward<Self>(self).signature.clear()
+            }} noexcept;})
+            requires (requires{def<
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
+                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>
+            >{
+                std::forward<Self>(self).func,
+                std::forward<Self>(self).signature.clear()
+            };})
+        {
+            return def<
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
+                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>
+            >{
+                std::forward<Self>(self).func,
+                std::forward<Self>(self).signature.clear()
+            };
+        }
+
+        /* Bind one or more partial values to the function's arguments, as if calling
+        the function directly.  Returns a new `def` wrapper with the partial values
+        applied, perfectly forwarding both the underlying function and any existing
+        partial values.  Note that no attempt is made to extend the lifetime of lvalue
+        partials, so it is up to the user to ensure proper lifetimes.  On the other
+        hand, rvalues and prvalues will be stored internally, extending their lifetime
+        to match that of the `def` wrapper itself. */
         template <auto... T, typename Self, typename... A>
             requires (
                 meta::source_args<decltype(T)...> &&
@@ -5965,35 +6160,42 @@ namespace impl {
             )
         [[nodiscard]] constexpr auto bind(this Self&& self, A&&... args)
             noexcept (requires{{def<
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
                 meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
                     std::forward<A>(args)...
-                ))>,
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+                ))>
             >{
-                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...),
-                std::forward<Self>(self).func
+                std::forward<Self>(self).func,
+                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...)
             }} noexcept;})
             requires (requires{def<
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
                 meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
                     std::forward<A>(args)...
-                ))>,
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+                ))>
             >{
-                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...),
-                std::forward<Self>(self).func
+                std::forward<Self>(self).func,
+                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...)
             };})
         {
             return def<
+                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
                 meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
                     std::forward<A>(args)...
-                ))>,
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>
+                ))>
             >{
-                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...),
-                std::forward<Self>(self).func
+                std::forward<Self>(self).func,
+                std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...)
             };
         }
 
+        /* Invoke the function with the provided arguments, parsing them according to
+        the enclosed signature.  Partial and default values will be inserted as needed,
+        and keyword arguments will be resolved statically as part of the call logic.
+        Container unpacking operators are also allowed for supported container types,
+        and any unions that are present in the arguments will be automatically visited
+        during invocation.  Explicit template parameters may be provided by calling
+        this method as a template operator, or by using the `call()` method. */
         template <auto... T, typename Self, typename... A>
             requires (
                 meta::source_args<decltype(T)...> &&
@@ -6018,6 +6220,8 @@ namespace impl {
             ));
         }
 
+        /* Identical to `operator()`, but with a more easily spellable name when
+        calling the function with explicit template parameters. */
         template <auto... T, typename Self, typename... A>
             requires (
                 meta::source_args<decltype(T)...> &&
@@ -6041,6 +6245,40 @@ namespace impl {
                 std::forward<A>(args)...
             ));
         }
+
+        /* Form a function chain starting with this function. */
+        template <typename Self, typename Other> requires (!meta::chain<Other>)
+        [[nodiscard]] constexpr auto operator>>(this Self&& self, Other&& other)
+            noexcept (requires{
+                {chain{std::forward<Self>(self), std::forward<Other>(other)}} noexcept;
+            })
+            requires (requires{
+                {chain{std::forward<Self>(self), std::forward<Other>(other)}};
+            })
+        {
+            return chain{std::forward<Self>(self), std::forward<Other>(other)};
+        }
+
+        /* Append this function to the beginning of a function chain. */
+        template <typename Self, meta::chain Other>
+        [[nodiscard]] constexpr auto operator>>(this Self&& self, Other&& other)
+            noexcept (requires{{append(
+                std::make_index_sequence<meta::unqualify<Other>::size()>{},
+                std::forward<Self>(self),
+                std::forward<Other>(other)
+            )} noexcept;})
+            requires (requires{{append(
+                std::make_index_sequence<meta::unqualify<Other>::size()>{},
+                std::forward<Self>(self),
+                std::forward<Other>(other)
+            )};})
+        {
+            return append(
+                std::make_index_sequence<meta::unqualify<Other>::size()>{},
+                std::forward<Self>(self),
+                std::forward<Other>(other)
+            );
+        }
     };
 
     template <typename F, const auto& T, const auto&... A>
@@ -6052,28 +6290,29 @@ namespace impl {
     using make_signature = _make_signature<F, T, A...>::type;
 
     template <typename F, templates T, const auto&... A>
-    using make_def = def<make_signature<F, T, A...>, meta::remove_rvalue<F>>;
+    using make_def = def<meta::remove_rvalue<F>, make_signature<F, T, A...>>;
 
 }
 
 
-/// TODO: document each overload.
+/// TODO: document each overload in detail, since this is the public entry point
+/// everyone will actually end up using to define functions.
 
 
 template <meta::arg auto... A, typename F>
 [[nodiscard]] constexpr auto def(F&& f)
     noexcept (requires{{impl::make_def<F, {}, A...>{
-        impl::make_signature<F, {}, A...>{},
-        std::forward<F>(f)
+        std::forward<F>(f),
+        impl::make_signature<F, {}, A...>{}
     }} noexcept;})
     requires (requires{impl::make_def<F, {}, A...>{
-        impl::make_signature<F, {}, A...>{},
-        std::forward<F>(f)
+        std::forward<F>(f),
+        impl::make_signature<F, {}, A...>{}
     };})
 {
     return impl::make_def<F, {}, A...>{
-        impl::make_signature<F, {}, A...>{},
-        std::forward<F>(f)
+        std::forward<F>(f),
+        impl::make_signature<F, {}, A...>{}
     };
 }
 
@@ -6081,17 +6320,17 @@ template <meta::arg auto... A, typename F>
 template <impl::templates T, meta::arg auto... A, typename F> requires (T.size > 0)
 [[nodiscard]] constexpr auto def(F&& f)
     noexcept (requires{{impl::make_def<F, T, A...>{
-        impl::make_signature<F, T, A...>{},
-        std::forward<F>(f)
+        std::forward<F>(f),
+        impl::make_signature<F, T, A...>{}
     }} noexcept;})
     requires (requires{impl::make_def<F, T, A...>{
-        impl::make_signature<F, T, A...>{},
-        std::forward<F>(f)
+        std::forward<F>(f),
+        impl::make_signature<F, T, A...>{}
     };})
 {
     return impl::make_def<F, T, A...>{
-        impl::make_signature<F, T, A...>{},
-        std::forward<F>(f)
+        std::forward<F>(f),
+        impl::make_signature<F, T, A...>{}
     };
 }
 
@@ -6099,17 +6338,17 @@ template <impl::templates T, meta::arg auto... A, typename F> requires (T.size >
 template <meta::arg auto... A, typename... F> requires (sizeof...(F) > 1)
 [[nodiscard]] constexpr auto def(F&&... fs)
     noexcept (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
-        impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{},
-        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...}
+        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
+        impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{}
     }} noexcept;})
     requires (requires{impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
-        impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{},
-        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...}
+        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
+        impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{}
     };})
 {
     return impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
-        impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{},
-        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...}
+        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
+        impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{}
     };
 }
 
@@ -6118,19 +6357,21 @@ template <impl::templates T, meta::arg auto... A, typename... F>
     requires (T.size > 0 && sizeof...(F) > 1)
 [[nodiscard]] constexpr auto def(F&&... fs)
     noexcept (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
-        impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{},
-        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...}
+        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
+        impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{}
     }} noexcept;})
     requires (requires{impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
-        impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{},
-        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...}
+        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
+        impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{}
     };})
 {
     return impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
-        impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{},
-        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...}
+        impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
+        impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{}
     };
 }
+
+
 
 
 
@@ -6146,6 +6387,9 @@ inline constexpr auto f2 = def<{"z"_ = 1}, "x"_, "y"_>([]<int z>(int x, int y) {
 });
 static_assert(f2.bind("y"_ = 1).call<("z"_ = 2)>(2) == 5);
 
+inline constexpr auto f3 = f2 >> [](int result) { return result * 2; };
+static_assert(f3.bind("y"_ = 1).clear().template call<2>(2, 1) == 10);
+
 
 
 /////////////////////////////////////
@@ -6154,15 +6398,11 @@ static_assert(f2.bind("y"_ = 1).call<("z"_ = 2)>(2) == 5);
 
 
 namespace impl {
-    struct Chain_tag {};
     struct Comprehension_tag {};
 }
 
 
 namespace meta {
-
-    template <typename T>
-    concept Chain = inherits<T, impl::Chain_tag>;
 
     template <typename T>
     concept Comprehension = inherits<T, impl::Comprehension_tag>;
@@ -6330,60 +6570,6 @@ template <typename Range, typename Func> requires (meta::transformable<Range, Fu
 comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
 
 
-
-
-
-template <meta::chain Self, meta::chain Next>
-[[nodiscard]] constexpr auto operator>>(Self&& self, Next&& next) {
-    return []<size_t... Is, size_t... Js>(
-        std::index_sequence<Is...>,
-        std::index_sequence<Js...>,
-        auto&& self,
-        auto&& next
-    ) {
-        return chain(
-            std::forward<decltype(self)>(self).template get<Is>()...,
-            std::forward<decltype(next)>(next).template get<Js>()...
-        );
-    }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
-        std::make_index_sequence<std::remove_cvref_t<Next>::size()>{},
-        std::forward<Self>(self),
-        std::forward<Next>(next)
-    );
-}
-
-
-template <meta::chain Self, typename Next>
-[[nodiscard]] constexpr auto operator>>(Self&& self, Next&& next) {
-    return []<size_t... Is>(std::index_sequence<Is...>, auto&& self, auto&& next) {
-        return chain(
-            std::forward<decltype(self)>(self).template get<Is>()...,
-            std::forward<decltype(next)>(next)
-        );
-    }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
-        std::forward<Self>(self),
-        std::forward<Next>(next)
-    );
-}
-
-
-template <typename Prev, meta::chain Self>
-[[nodiscard]] constexpr auto operator>>(Prev&& prev, Self&& self) {
-    return []<size_t... Is>(std::index_sequence<Is...>, auto&& prev, auto&& self) {
-        return chain(
-            std::forward<decltype(prev)>(prev),
-            std::forward<decltype(self)>(self).template get<Is>()...
-        );
-    }(
-        std::make_index_sequence<std::remove_cvref_t<Self>::size()>{},
-        std::forward<Prev>(prev),
-        std::forward<Self>(self)
-    );
-}
-
-
 namespace meta {
 
     /* A template constraint that controls whether the `bertrand::call()` operator is
@@ -6433,239 +6619,6 @@ namespace meta {
         bertrand::signature<F>::no_qualified_arg_annotations &&
         bertrand::signature<F>::no_duplicate_args;
 
-}
-
-
-///////////////////
-////    DEF    ////
-///////////////////
-
-
-namespace impl {
-    struct def_tag {};
-}
-
-
-namespace meta {
-
-    template <typename T>
-    concept def = inherits<T, impl::def_tag>;
-
-}
-
-
-/* Construct a partial function object that captures a C++ function and a subset of its
-arguments, which can be used to invoke the function later with the remaining arguments.
-Arguments and default values are given in the same style as `call()`, and will be
-stored internally within the partial object, forcing a copy in the case of lvalue
-inputs.  When the partial is called, an additional copy may be made if the function
-expects a temporary or rvalue reference, so as not to modify the stored arguments.  If
-the partial is called as an rvalue (by moving it, for example), then the second copy
-can be avoided, and the stored arguments will be moved directly into the function call.
-
-Note that the function signature cannot contain any template parameters (including auto
-arguments), as the function signature must be known unambiguously at compile time to
-implement the required matching.
-
-The returned partial is a thin proxy that only implements the call operator and a
-handful of introspection methods.  It also allows transparent access to the decorated
-function via the `*` and `->` operators. */
-template <typename Func, typename... Args>
-    requires (
-        signature<Func>::enable &&
-        signature<Func>::Partial::empty() &&
-        meta::partially_callable<Func, Args...>
-    )
-struct def : impl::def_tag {
-private:
-    template <typename, typename, size_t>
-    struct bind_type;
-    template <typename... out, typename sig, size_t I>
-    struct bind_type<args<out...>, sig, I> { using type = def<Func, out...>; };
-    template <typename... out, typename sig, size_t I> requires (I < sig::size())
-    struct bind_type<args<out...>, sig, I> {
-        template <typename T>
-        struct filter { using type = args<out...>; };
-        template <typename T> requires (meta::arg_traits<T>::bound())
-        struct filter<T> {
-            template <typename>
-            struct extend;
-            template <typename... bound>
-            struct extend<args<bound...>> { using type = args<out..., bound...>; };
-            using type = extend<typename meta::arg_traits<T>::bound_to>::type;
-        };
-        using type = bind_type<
-            typename filter<typename sig::template at<I>>::type,
-            sig,
-            I + 1
-        >::type;
-    };
-
-public:
-    using Function = std::remove_cvref_t<Func>;
-    using Partial = decltype(
-        std::declval<typename signature<Function>::Partial>().bind(std::declval<Args>()...)
-    );
-    using Signature = Partial::type;
-    using Defaults = Signature::Defaults;
-
-    Defaults defaults;
-    Function func;
-    Partial partial;
-
-    /* Allows access to the template constraints and underlying implementation for the
-    call operator. */
-    template <typename... A>
-    using Bind = Signature::template Bind<A...>;
-
-    template <meta::is<Func> F> requires (signature<F>::Defaults::empty())
-    constexpr def(F&& func, Args... args) :
-        defaults(),
-        func(std::forward<F>(func)),
-        partial(std::forward<Args>(args)...)
-    {}
-
-    template <meta::is<Func> F>
-    constexpr def(const Defaults& defaults, F&& func, Args... args) :
-        defaults(defaults),
-        func(std::forward<F>(func)),
-        partial(std::forward<Args>(args)...)
-    {}
-
-    template <meta::is<Func> F>
-    constexpr def(Defaults&& defaults, F&& func, Args... args) :
-        defaults(std::move(defaults)),
-        func(std::forward<F>(func)),
-        partial(std::forward<Args>(args)...)
-    {}
-
-    template <meta::convertible_to<Defaults> D, meta::is<Func> F, meta::convertible_to<Partial> P>
-    constexpr def(D&& defaults, F&& func, P&& partial) :
-        defaults(std::forward<D>(defaults)),
-        func(std::forward<F>(func)),
-        partial(std::forward<P>(partial))
-    {}
-
-    /* Dereference a `def` object to access the underlying function. */
-    [[nodiscard]] constexpr Function&& operator*() && noexcept { return std::move(func); }
-    [[nodiscard]] constexpr Function& operator*() & noexcept { return func; }
-    [[nodiscard]] constexpr Function* operator->() noexcept { return &func; }
-    [[nodiscard]] constexpr const Function& operator*() const noexcept { return func; }
-    [[nodiscard]] constexpr const Function* operator->() const noexcept { return &func; }
-
-    /* Get the partial value at index I if it is within range. */
-    template <size_t I, typename Self> requires (I < Partial::size())
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) {
-        return std::forward<Self>(self).partial.template get<I>();
-    }
-
-    /* Get the partial value of the named argument if it is present. */
-    template <static_str name, typename Self> requires (Partial::template contains<name>())
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) {
-        return std::forward<Self>(self).partial.template get<name>();
-    }
-
-    /* Invoke the function, applying the semantics of the inferred signature. */
-    template <typename Self, typename... A>
-        requires (
-            Bind<A...>::proper_argument_order &&
-            Bind<A...>::no_qualified_arg_annotations &&
-            Bind<A...>::no_duplicate_args &&
-            Bind<A...>::no_extra_positional_args &&
-            Bind<A...>::no_extra_keyword_args &&
-            Bind<A...>::no_conflicting_values &&
-            Bind<A...>::satisfies_required_args &&
-            Bind<A...>::can_convert
-        )
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
-        return Bind<A...>{}(
-            std::forward<Self>(self).partial,
-            std::forward<Self>(self).defaults,
-            std::forward<Self>(self).func,
-            std::forward<A>(args)...
-        );
-    }
-
-    /* Generate a partial function with the given arguments filled in.  The method can
-    be chained - any existing partial arguments will be carried over to the result, and
-    will not be considered when binding the new arguments. */
-    template <typename Self, typename... A>
-        requires (
-            !(meta::arg_traits<A>::variadic() || ...) &&
-            Bind<A...>::proper_argument_order &&
-            Bind<A...>::no_qualified_arg_annotations &&
-            Bind<A...>::no_duplicate_args &&
-            Bind<A...>::no_extra_positional_args &&
-            Bind<A...>::no_extra_keyword_args &&
-            Bind<A...>::no_conflicting_values &&
-            Bind<A...>::can_convert
-        )
-    [[nodiscard]] constexpr auto bind(this Self&& self, A&&... args) {
-        using sig = std::remove_cvref_t<
-            decltype(partial.bind(std::forward<A>(args)...))
-        >::type;
-        return []<size_t... Is>(
-            std::index_sequence<Is...>,
-            auto&& defaults,
-            auto&& func,
-            auto&& partial
-        ) {
-            return typename bind_type<bertrand::args<>, sig, 0>::type(
-                std::forward<decltype(defaults)>(defaults),
-                std::forward<decltype(func)>(func),
-                std::forward<decltype(partial)>(partial)
-            );
-        }(
-            std::make_index_sequence<sig::Partial::size()>{},
-            std::forward<Self>(self).defaults,
-            std::forward<Self>(self).func,
-            std::forward<Self>(self).partial.bind(std::forward<A>(args)...)
-        );
-    }
-
-    /* Clear any partial arguments that have been accumulated thus far, returning a new
-    function object without them. */
-    template <typename Self>
-    [[nodiscard]] constexpr def<Func> unbind(this Self&& self) {
-        return def<Func>(std::forward<Self>(self).defaults, std::forward<Self>(self).func);
-    }
-};
-
-
-template <typename F, typename... A>
-    requires (
-        signature<F>::Defaults::empty() &&
-        signature<F>::Partial::empty() &&
-        meta::partially_callable<F, A...>
-    )
-def(F, A&&...) -> def<F, A...>;
-
-
-template <typename F, typename... A>
-    requires (
-        signature<F>::Partial::empty() &&
-        meta::partially_callable<F, A...>
-    )
-def(typename signature<F>::Defaults&&, F, A&&...) -> def<F, A...>;
-
-
-template <typename F, typename... A>
-    requires (
-        signature<F>::Partial::empty() &&
-        meta::partially_callable<F, A...>
-    )
-def(const typename signature<F>::Defaults&, F, A&&...) -> def<F, A...>;
-
-
-template <typename L, typename R>
-    requires (
-        (meta::inherits<L, impl::def_tag> || meta::inherits<R, impl::def_tag>) &&
-        (!meta::inherits<L, impl::chain_tag> && !meta::inherits<R, impl::chain_tag>) &&
-        signature<L>::enable &&
-        std::invocable<R, typename signature<L>::Return>
-    )
-[[nodiscard]] constexpr auto operator>>(L&& lhs, R&& rhs) {
-    return chain(std::forward<L>(lhs)) >> std::forward<R>(rhs);
 }
 
 
