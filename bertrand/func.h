@@ -823,9 +823,7 @@ namespace impl {
     struct args<T, Ts...> : args<Ts...> {
     protected:
         using type = meta::remove_rvalue<T>;
-        struct storage {
-            type value;
-        };
+        struct storage { type value; };
 
         template <size_t I, typename S>
         static constexpr decltype(auto) get(S&& s) noexcept {
@@ -862,15 +860,14 @@ namespace impl {
     public:
         storage m_storage;
 
-        template <typename A, typename... As>
-        constexpr args(A&& curr, As&&... rest)
+        constexpr args(T curr, Ts... rest)
             noexcept (
-                meta::nothrow::convertible_to<A, type> &&
-                meta::nothrow::constructible_from<args<Ts...>, As...>
+                meta::nothrow::convertible_to<T, type> &&
+                meta::nothrow::constructible_from<args<Ts...>, Ts...>
             )
         :
-            args<Ts...>(std::forward<As>(rest)...),
-            m_storage(std::forward<A>(curr))
+            args<Ts...>(std::forward<Ts>(rest)...),
+            m_storage(std::forward<T>(curr))
         {}
 
         constexpr args(args&& other) = default;
@@ -1029,15 +1026,15 @@ public:
         return (sizeof...(Ts) == 0);
     }
 
-    /* CTAD Constructor saves a pack of arguments for later use, retaining proper
+    /* CTAD constructor saves a pack of arguments for later use, retaining proper
     lvalue/rvalue categories and cv qualifiers in the template signature.  If another
     pack is present in the arguments, then it will be automatically flattened, such
     that the result represents the concatenation of each pack.  This also means that
     argument packs can never be directly nested.  If this behavior is needed for some
-    reason, it can be disabled by encapsulating the arguments in another type, making
-    it inaccessible in deduction. */
+    reason, it can be disabled by encapsulating the arguments in another type, which
+    makes it inaccessible in deduction. */
     [[nodiscard]] constexpr args(Ts... args)
-        noexcept (noexcept(base(std::forward<Ts>(args)...)))
+        noexcept (requires{{base(std::forward<Ts>(args)...)} noexcept;})
     :
         base(std::forward<Ts>(args)...)
     {}
@@ -1045,12 +1042,12 @@ public:
     /* Copying an `args{}` container will copy all of its contents.  Note that lvalues
     are trivially copied, meaning the new container will reference the exact same
     objects as the original, and will not extend their lifetimes in any way. */
-    [[nodiscard]] constexpr args(const args& other) = default;
+    [[nodiscard]] constexpr args(const args&) = default;
 
     /* Moving an `args{}` container will transfer all of its contents.  Note that
     lvalues are trivially moved, meaning the new container will reference the exact
     same objects as the original, and will not extend their lifetimes in any way. */
-    [[nodiscard]] constexpr args(args&& other) = default;
+    [[nodiscard]] constexpr args(args&&) = default;
 
     /* Copy assigning to an `args{}` container will reassign all of its contents to
     copies of the invoming values.  Note that lvalues will be trivially rebound,
@@ -1080,7 +1077,7 @@ public:
         return *this;
     }
 
-    /* STL-compatible swap() method for args{} instances. */ 
+    /* STL-compatible `swap()` method for `args{}` instances. */ 
     constexpr void swap(args& other)
         noexcept (meta::nothrow::swappable<base>)
         requires (meta::swappable<base>)
@@ -1089,6 +1086,8 @@ public:
             base::swap(other);
         }
     }
+
+    /// TODO: allow negative indices.
 
     /* Get the argument at index I, perfectly forwarding it according to the pack's
     current cvref qualifications.  This means that if the pack is supplied as an
@@ -3429,7 +3428,7 @@ namespace impl {
                 }
 
                 template <typename P, typename... A>
-                static constexpr decltype(auto) bind_positional(P&& partial, A&&... args)
+                static constexpr decltype(auto) bind_pos(P&& partial, A&&... args)
                     noexcept (requires{{fn<
                         Ts...,
                         impl::make_partial<meta::unpack_type<J, A...>>(curr.arg)
@@ -3452,7 +3451,7 @@ namespace impl {
                     typename P,
                     typename... A
                 >
-                static constexpr decltype(auto) bind_keyword(
+                static constexpr decltype(auto) bind_kw(
                     std::index_sequence<prev...>,
                     std::index_sequence<middle...>,
                     std::index_sequence<next...>,
@@ -3682,16 +3681,16 @@ namespace impl {
                 // signature and then trivially forwarded.
                 template <typename P, typename... A> requires (dispatch_positional<I, J, A...>)
                 static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{bind_positional(
+                    noexcept (requires{{bind_pos(
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    // requires (requires{bind_positional(
-                    //     std::forward<P>(partial),
-                    //     std::forward<A>(args)...
-                    // );})
+                    requires (requires{bind_pos(
+                        std::forward<P>(partial),
+                        std::forward<A>(args)...
+                    );})
                 {
-                    return (bind_positional(
+                    return (bind_pos(
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     ));
@@ -3702,14 +3701,14 @@ namespace impl {
                 // and then forwarded.
                 template <typename P, typename... A> requires (dispatch_keyword<I, J, A...>)
                 static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{bind_keyword(
+                    noexcept (requires{{bind_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_keyword(
+                    requires (requires{bind_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
@@ -3717,7 +3716,7 @@ namespace impl {
                         std::forward<A>(args)...
                     );})
                 {
-                    return (bind_keyword(
+                    return (bind_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
@@ -4063,9 +4062,9 @@ namespace impl {
             /* A function object that invokes an external function according to the
             signature's semantics, using the explicit template parameters in `T...` and
             a runtime argument list supplied at the call site.  This works by scanning
-            `Args...` from left to right and updating the argument list `A...`
-            in-place at every iteration, such that by the end, it represents a valid
-            call site for the function `F`. */
+            `Args...` from left to right and updating the argument list `A...` in-place
+            at every iteration, such that by the end, it represents a valid call site
+            for the function `F`. */
             template <size_type I = Spec.size, size_type delta = 0>
             struct fn {
             private:
@@ -4234,7 +4233,7 @@ namespace impl {
                     typename P,
                     typename... A
                 >
-                static constexpr decltype(auto) call_keyword(
+                static constexpr decltype(auto) call_kw(
                     std::index_sequence<prev...>,
                     std::index_sequence<middle...>,
                     std::index_sequence<next...>,
@@ -4542,14 +4541,14 @@ namespace impl {
                         meta::arg_pack<meta::unpack_type<J, A...>>
                     )
                 static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
-                    noexcept (requires{{call_positional(
+                    noexcept (requires{{call_arg_pack(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<sizeof...(A) - J + 1>{},
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_positional(
+                    requires (requires{call_arg_pack(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<sizeof...(A) - J + 1>{},
                         std::forward<F>(func),
@@ -4557,7 +4556,7 @@ namespace impl {
                         std::forward<A>(args)...
                     );})
                 {
-                    return (call_positional(
+                    return (call_arg_pack(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<sizeof...(A) - J + 1>{},
                         std::forward<F>(func),
@@ -4575,7 +4574,7 @@ namespace impl {
                         !meta::kwarg_pack<meta::unpack_type<consume_keyword<I, J, A...>, A...>>
                     )
                 static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
-                    noexcept (requires{{call_keyword(
+                    noexcept (requires{{call_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
@@ -4583,7 +4582,7 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_keyword(
+                    requires (requires{call_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
@@ -4592,7 +4591,7 @@ namespace impl {
                         std::forward<A>(args)...
                     );})
                 {
-                    return (call_keyword(
+                    return (call_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
@@ -4637,9 +4636,13 @@ namespace impl {
 
             /* Base case: once all `Args...` have been matched and inserted into the
             runtime argument list `A...`, then the combination of `T...` and `A...`
-            must represent a valid call site for the underlying function `F`. */
-            template <size_type delta>
+            must represent a valid call site for the underlying function `F`.
+            Conversion to a specific return type is done if the signature defines a
+            return annotation. */
+            template <size_type delta> requires (info.ret.idx >= size())
             struct fn<size(), delta> {
+
+
                 /// TODO: this base case will have to validate and remove positional/keyword
                 /// packs at the same time.
 
@@ -4662,6 +4665,48 @@ namespace impl {
                 // templates
                 template <typename F, typename P, typename... A>
                 static constexpr decltype(auto) operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{
+                        std::forward<F>(func).template operator()<T...>(
+                            std::forward<A>(args)...
+                        )
+                    } noexcept;})
+                    requires (sizeof...(T) > 0 && requires{
+                        std::forward<F>(func).template operator()<T...>(
+                            std::forward<A>(args)...
+                        );
+                    })
+                {
+                    return (std::forward<F>(func).template operator()<T...>(
+                        std::forward<A>(args)...
+                    ));
+                }
+            };
+            template <size_type delta> requires (info.ret.idx < size())
+            struct fn<size(), delta> {
+                using type = meta::arg_type<decltype(info.template get<info.ret.idx>())>;
+
+                /// TODO: this base case will have to validate and remove positional/keyword
+                /// packs at the same time.
+
+                // If no template arguments are supplied, then we call the function
+                // normally by perfectly forwarding.
+                template <typename F, typename P, typename... A>
+                static constexpr type operator()(F&& func, P&& partial, A&&... args)
+                    noexcept (requires{{
+                        std::forward<F>(func)(std::forward<A>(args)...)
+                    } noexcept;})
+                    requires (sizeof...(T) == 0 && requires{
+                        std::forward<F>(func)(std::forward<A>(args)...);
+                    })
+                {
+                    return (std::forward<F>(func)(std::forward<A>(args)...));
+                }
+
+                // If one or more explicit template arguments are given, then we
+                // manually call the function's `operator()` with the provided
+                // templates
+                template <typename F, typename P, typename... A>
+                static constexpr type operator()(F&& func, P&& partial, A&&... args)
                     noexcept (requires{{
                         std::forward<F>(func).template operator()<T...>(
                             std::forward<A>(args)...
@@ -5358,6 +5403,7 @@ namespace impl {
 
 
 namespace impl {
+    struct chain_tag {};
     struct def_tag {};
 
     /* A simple convenience struct implementing the overload pattern for a finite
@@ -5400,6 +5446,9 @@ namespace impl {
 namespace meta {
 
     template <typename T>
+    concept chain = inherits<T, impl::chain_tag>;
+
+    template <typename T>
     concept def = inherits<T, impl::def_tag>;
 
     namespace detail {
@@ -5418,6 +5467,450 @@ namespace meta {
 
 
 namespace impl {
+
+    /// TODO: get<> should use signed indices.  Also, ssize() and empty() as
+    /// distinct methods.
+
+    /// TODO: chain{} might benefit from a private base class and public interface,
+    /// similar to args{}.  There might also be some concern over perfect forwarding
+    /// and how references are stored when it comes to assignment operators, etc.
+
+
+    template <typename F, typename... Fs>
+    struct _chain : impl::chain_tag {
+    protected:
+        using type = meta::remove_rvalue<F>;
+        struct storage { type value; };
+
+        template <typename Self, typename... A>
+        static constexpr bool invocable = meta::invocable<
+            decltype(std::declval<Self>().m_storage.value),
+            A...
+        >;
+
+        template <size_t I, typename Self>
+        static constexpr decltype(auto) get(Self&& self) noexcept {
+            return (std::forward<Self>(self).func);
+        }
+
+        template <typename Self, typename... A>
+        static constexpr decltype(auto) operator()(Self&& self, A&&... args)
+            noexcept (requires{
+                {std::forward<Self>(self).m_storage.value(std::forward<A>(args)...)} noexcept;
+            })
+        {
+            return (std::forward<Self>(self).m_storage.value(std::forward<A>(args)...));
+        }
+
+    public:
+        storage m_storage;
+
+        constexpr _chain(F func)
+            noexcept (meta::nothrow::convertible_to<F, type>)
+        :
+            m_storage(std::forward<F>(func))
+        {}
+
+        constexpr _chain(const _chain&) = default;
+        constexpr _chain(_chain&&) = default;
+
+        constexpr _chain& operator=(const _chain& other)
+            noexcept (meta::lvalue<F> || meta::nothrow::copy_assignable<F> || (
+                meta::nothrow::copyable<F> && meta::nothrow::swappable<F>
+            ))
+            requires (meta::lvalue<F> || meta::copy_assignable<F> || (
+                meta::copyable<F> && meta::swappable<F>
+            ))
+        {
+            if constexpr (meta::lvalue<F>) {
+                std::construct_at(&m_storage, other.m_storage);
+
+            } else if constexpr (meta::copy_assignable<F>) {
+                m_storage.value = other.m_storage.value;
+
+            } else {
+                _chain temp(other);
+                swap(temp);
+            }
+
+            return *this;
+        }
+
+        constexpr _chain& operator=(_chain&& other)
+            noexcept (
+                meta::lvalue<F> ||
+                meta::nothrow::move_assignable<F> || 
+                meta::nothrow::swappable<F>
+            )
+            requires (
+                meta::lvalue<F> ||
+                meta::nothrow::move_assignable<F> ||
+                meta::swappable<F>
+            )
+        {
+            if constexpr (meta::lvalue<F>) {
+                std::construct_at(&m_storage, other.m_storage);
+
+            } else if constexpr (meta::move_assignable<F>) {
+                m_storage.value = std::move(other.m_storage.value);
+
+            } else {
+                swap(other);
+            }
+
+            return *this;
+        }
+
+        constexpr void swap(_chain& other)
+            noexcept (meta::nothrow::swappable<F>)
+            requires (meta::swappable<F>)
+        {
+            std::ranges::swap(m_storage.value, other.m_storage.value);
+        }
+    };
+    template <typename F1, typename F2, typename... Fs>
+    struct _chain<F1, F2, Fs...> : _chain<F2, Fs...> {
+    protected:
+        using type = meta::remove_rvalue<F1>;
+        struct storage { type value; };
+
+        template <typename Self, typename... A>
+        static constexpr bool invocable = false;
+        template <typename Self, typename... A>
+            requires (meta::invocable<decltype(std::declval<Self>().m_storage.value), A...>)
+        static constexpr bool invocable<Self, A...> =
+            _chain<F2, Fs...>::template invocable<
+                meta::qualify<_chain<F2, Fs...>, Self>,
+                meta::invoke_type<decltype(std::declval<Self>().m_storage.value), A...>
+            >;
+
+        template <size_t I, typename Self>
+        static constexpr decltype(auto) get(Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<Self>(self).func);
+            } else {
+                return std::forward<
+                    meta::qualify<_chain<F2, Fs...>, Self>
+                >(self).template get<I - 1>();
+            }
+        }
+
+        template <typename Self, typename... A> requires (invocable<Self, A...>)
+        static constexpr decltype(auto) operator()(Self&& self, A&&... args)
+            noexcept (requires{{_chain<F2, Fs...>::operator()(
+                std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
+                std::forward<Self>(self).func(std::forward<A>(args)...)
+            )} noexcept;})
+        {
+            return (_chain<F2, Fs...>::operator()(
+                std::forward<meta::qualify<_chain<F2, Fs...>, Self>>(self),
+                std::forward<Self>(self).func(std::forward<A>(args)...)
+            ));
+        }
+
+    public:
+        storage m_storage;
+
+        constexpr _chain(F1 func, F2 next, Fs... rest)
+            noexcept (
+                meta::nothrow::convertible_to<F1, type> &&
+                meta::nothrow::constructible_from<_chain<F2, Fs...>, F2, Fs...>
+            )
+        :
+            _chain<F2, Fs...>(std::forward<F2>(next), std::forward<Fs>(rest)...),
+            m_storage(std::forward<F1>(func))
+        {}
+
+        constexpr _chain(const _chain&) = default;
+        constexpr _chain(_chain&&) = default;
+
+        constexpr _chain& operator=(const _chain& other)
+            noexcept (meta::nothrow::copy_assignable<_chain<F2, Fs...>> && (
+                meta::lvalue<F1> || meta::nothrow::copy_assignable<F1> || (
+                    meta::nothrow::copyable<F1> && meta::nothrow::swappable<F1>
+                )
+            ))
+            requires (meta::copy_assignable<_chain<F2, Fs...>> && (
+                meta::lvalue<F1> || meta::copy_assignable<F1> || (
+                    meta::copyable<F1> && meta::swappable<F1>
+                )
+            ))
+        {
+            _chain<F2, Fs...>::operator=(other);
+
+            if constexpr (meta::lvalue<F1>) {
+                std::construct_at(&m_storage, other.m_storage);
+
+            } else if constexpr (meta::copy_assignable<F1>) {
+                m_storage.value = other.m_storage.value;
+
+            } else {
+                _chain temp(other);
+                swap(temp);
+            }
+
+            return *this;
+        }
+
+        constexpr _chain& operator=(_chain&& other)
+            noexcept (
+                meta::nothrow::move_assignable<_chain<F2, Fs...>> && (
+                    meta::lvalue<F1> || meta::nothrow::move_assignable<F1> ||
+                    meta::nothrow::swappable<F1>
+                )
+            )
+            requires (meta::move_assignable<_chain<F2, Fs...>> && (
+                meta::lvalue<F1> || meta::move_assignable<F1> || meta::swappable<F1>
+            ))
+        {
+            _chain<F2, Fs...>::operator=(std::move(other));
+
+            if constexpr (meta::lvalue<F1>) {
+                std::construct_at(&m_storage, other.m_storage);
+
+            } else if constexpr (meta::move_assignable<F1>) {
+                m_storage.value = std::move(other.m_storage.value);
+
+            } else {
+                swap(other);
+            }
+
+            return *this;
+        }
+
+        constexpr void swap(_chain& other)
+            noexcept (meta::nothrow::swappable<_chain<F2, Fs...>> && meta::nothrow::swappable<F1>)
+            requires (meta::swappable<_chain<F2, Fs...>> && meta::swappable<F1>)
+        {
+            _chain<F2, Fs...>::swap(other);
+            std::ranges::swap(m_storage.value, other.m_storage.value);
+        }
+    };
+
+    /* A higher-order function that merges a sequence of component functions into a
+    single operation.  When called, the chain will evaluate the first function with the
+    input arguments, then pass the result to the next function, and so on, until all
+    functions have been evaluated. */
+    template <meta::not_void F, meta::not_void... Fs>
+    struct chain : impl::_chain<F, Fs...> {
+        using functions = meta::pack<F, Fs...>;
+        using size_type = size_t;
+        using index_type = ssize_t;
+
+    private:
+        using base = impl::_chain<F, Fs...>;
+
+        template <size_type... Is, typename Self, typename Other>
+        static constexpr auto append(
+            std::index_sequence<Is...>,
+            Self&& self,
+            Other&& other
+        )
+            noexcept (requires{{chain<
+                decltype(std::forward<Self>(self).template get<Is>())...,
+                Other
+            >{
+                std::forward<Self>(self).template get<Is>()...,
+                std::forward<Other>(other)
+            }} noexcept;})
+            requires (requires{{chain<
+                decltype(std::forward<Self>(self).template get<Is>())...,
+                Other
+            >{
+                std::forward<Self>(self).template get<Is>()...,
+                std::forward<Other>(other)
+            }};})
+        {
+            return chain<
+                decltype(std::forward<Self>(self).template get<Is>())...,
+                Other
+            >{
+                std::forward<Self>(self).template get<Is>()...,
+                std::forward<Other>(other)
+            };
+        }
+
+        template <size_type... Is, size_type... Js, typename Self, typename Other>
+        static constexpr auto append(
+            std::index_sequence<Is...>,
+            std::index_sequence<Js...>,
+            Self&& self,
+            Other&& other
+        )
+            noexcept (requires{{chain<
+                decltype(std::forward<Self>(self).template get<Is>())...,
+                decltype(std::forward<Other>(other).template get<Js>())...
+            >{
+                std::forward<Self>(self).template get<Is>()...,
+                std::forward<Other>(other).template get<Js>()...
+            }} noexcept;})
+            requires (requires{{chain<
+                decltype(std::forward<Self>(self).template get<Is>())...,
+                decltype(std::forward<Other>(other).template get<Js>())...
+            >{
+                std::forward<Self>(self).template get<Is>()...,
+                std::forward<Other>(other).template get<Js>()...
+            }};})
+        {
+            return chain<
+                decltype(std::forward<Self>(self).template get<Is>())...,
+                decltype(std::forward<Other>(other).template get<Js>())...
+            >{
+                std::forward<Self>(self).template get<Is>()...,
+                std::forward<Other>(other).template get<Js>()...
+            };
+        }
+
+    public:
+        /* The number of component functions in the chain, as an unsigned integer. */
+        [[nodiscard]] static constexpr size_type size() noexcept { return sizeof...(Fs) + 1; }
+
+        /* The number of component functions in the chain, as a signed integer. */
+        [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
+
+        /* CTAD constructor saves a sequence of functions, retaining proper
+        lvalue/rvalue ctagories and cv qualifiers in the template signature.  Note that
+        no checks are made to ensure that the functions form a valid chain, as doing so
+        in a way that allows overloads and templates requires a complete argument list
+        for evaluation.  Such checks are thus deferred to the call operator itself. */
+        [[nodiscard]] constexpr chain(F func, Fs... rest)
+            noexcept (requires{{base(std::forward<F>(func), std::forward<Fs>(rest)...)} noexcept;})
+        :
+            base(std::forward<F>(func), std::forward<Fs>(rest)...)
+        {}
+
+        /* Copying a `chain{}` will copy all of its functions.  Note that lvalues are
+        trivially copied, meaning the new chain will reference the exact same objects
+        as the original, and will not extend their lifetimes in any way. */
+        [[nodiscard]] constexpr chain(const chain&) = default;
+
+        /* Moving a `chain{}` will transfer all of its contents.  Note that lvalues are
+        trivially moved, meaning the new chain will reference the exact same objects as
+        the original, and will not extend their lifetimes in any way. */
+        [[nodiscard]] constexpr chain(chain&&) = default;
+
+        /* Copy assigning to a `chain{}` will reassign all of its contents to copies of
+        the incoming values.  Note that lvalues will be trivially rebound, meaning no
+        chainges will occur to the referenced data.  Instead, the reference address may
+        change to reflect the assignment. */
+        constexpr chain& operator=(const chain& other)
+            noexcept (meta::nothrow::copy_assignable<base>)
+            requires (meta::copy_assignable<base>)
+        {
+            if (&other != this) {
+                base::operator=(other);
+            }
+            return *this;
+        }
+
+        /* Move assigning to a `chain{}` will reassign all of its contents to the
+        incoming values.  Note that lvalues will be trivially rebound, meaning no
+        changes will occur to the referenced data.  Instead, the reference address may
+        change to reflect the assignment. */
+        constexpr chain& operator=(chain&& other)
+            noexcept (meta::nothrow::move_assignable<base>)
+            requires (meta::move_assignable<base>)
+        {
+            if (&other != this) {
+                base::operator=(std::move(other));
+            }
+            return *this;
+        }
+
+        /* STL-compatible `swap()` method for `chain{}` functions. */
+        constexpr void swap(chain& other)
+            noexcept (meta::nothrow::swappable<base>)
+            requires (meta::swappable<base>)
+        {
+            if (&other != this) {
+                base::swap(other);
+            }
+        }
+
+        /* Get the component function at index `I`, applying Python-style wraparound
+        for negative indices.  Fails to compile if the index is out of bounds after
+        normalization. */
+        template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            return (base::template get<impl::normalize_index<ssize(), I>>(
+                std::forward<Self>(self)
+            ));
+        }
+
+        /* Invoke the function chain, piping the return value from the first function
+        into the input for the second function, and so on until all functions have
+        been evaluated. */
+        template <typename Self, typename... A> requires (base::template invocable<Self, A...>)
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{{base::template operator()(
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            )} noexcept;})
+        {
+            return (base::template operator()(
+                std::forward<Self>(self),
+                std::forward<A>(args)...
+            ));
+        }
+
+        /* Extend the chain with another function, which will be called with a single
+        argument representing the output from the current chain.  Produces a new chain
+        whose component functions represent the perfectly-forwarded contents of this
+        chain. */
+        template <typename Self, typename G>
+        [[nodiscard]] constexpr auto operator>>(this Self&& self, G&& func)
+            noexcept (requires{{append(
+                std::make_index_sequence<size()>{},
+                std::forward<Self>(self),
+                std::forward<G>(func)
+            )} noexcept;})
+            requires (requires{{append(
+                std::make_index_sequence<size()>{},
+                std::forward<Self>(self),
+                std::forward<G>(func)
+            )};})
+        {
+            return append(
+                std::make_index_sequence<size()>{},
+                std::forward<Self>(self),
+                std::forward<G>(func)
+            );
+        }
+
+        /* Concatenate two chains, where the second chain will be called with a single
+        argument representing the output from the current chain.  Produces a new chain
+        whose component functions represent the perfectly-forwarded contents of this
+        chain and the second chain. */
+        template <typename Self, meta::chain G>
+        [[nodiscard]] constexpr auto operator>>(this Self&& self, G&& other)
+            noexcept (requires{{append(
+                std::make_index_sequence<size()>{},
+                std::make_index_sequence<meta::unqualify<G>::size()>{},
+                std::forward<Self>(self),
+                std::forward<G>(other)
+            )} noexcept;})
+            requires (requires{{append(
+                std::make_index_sequence<size()>{},
+                std::make_index_sequence<meta::unqualify<G>::size()>{},
+                std::forward<Self>(self),
+                std::forward<G>(other)
+            )};})
+        {
+            return append(
+                std::make_index_sequence<size()>{},
+                std::make_index_sequence<meta::unqualify<G>::size()>{},
+                std::forward<Self>(self),
+                std::forward<G>(other)
+            );
+        }
+    };
+
+    template <typename F, typename... Fs>
+    chain(F&&, Fs&&...) -> chain<F, Fs...>;
+
+    /// TODO: def() must include operator>> overloads for chaining.  Ideally, it should
+    /// detect whether the other operand is a chain or function, and produce the
+    /// appropriate chain directly.
 
     template <meta::unqualified Sig, meta::not_void F> requires (meta::signature<Sig>)
     struct def {
@@ -5837,116 +6330,7 @@ template <typename Range, typename Func> requires (meta::transformable<Range, Fu
 comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
 
 
-/* A higher-order function that merges a sequence of component functions into a single
-operation.  When called, the chain will evaluate the first function with the input
-arguments, then pass the result to the next function, and so on, until the final result
-is returned. */
-template <typename F, typename... Fs>
-    requires (
-        !std::is_reference_v<F> &&
-        !(std::is_reference_v<Fs> || ...)
-    )
-struct chain : impl::chain_tag {
-private:
-    F func;
 
-public:
-    /* The number of component functions in the chain. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return 1; }
-
-    /* Get the type of the component function at index I. */
-    template <size_t I> requires (I < size())
-    using at = F;
-
-    template <meta::is<F> First>
-    constexpr chain(First&& func) : func(std::forward<First>(func)) {}
-
-    /* Invoke the function chain, piping the return value from the first function into
-    the input for the second function, and so on. */
-    template <typename Self, typename... A> requires (std::invocable<F, A...>)
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
-        return std::forward<Self>(self).func(std::forward<A>(args)...);
-    }
-
-    /* Get the component function at index I. */
-    template <size_t I, typename Self> requires (I < size())
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        return std::forward<Self>(self).func;
-    }
-};
-
-
-template <typename F1, typename F2, typename... Fs>
-    requires (
-        !std::is_reference_v<F1> &&
-        !std::is_reference_v<F2> &&
-        !(std::is_reference_v<Fs> || ...)
-    )
-struct chain<F1, F2, Fs...> : chain<F2, Fs...> {
-private:
-    using base = chain<F2, Fs...>;
-
-    F1 func;
-
-    template <size_t I>
-    struct _at { using type = base::template at<I - 1>; };
-    template <>
-    struct _at<0> { using type = F1; };
-
-    template <typename R, typename...>
-    struct _chainable { static constexpr bool value = true; };
-    template <typename R, typename G, typename... Gs>
-    struct _chainable<R, G, Gs...> {
-        template <typename H>
-        static constexpr bool invoke = false;
-        template <typename H> requires (std::invocable<H, R>)
-        static constexpr bool invoke<H> =
-            _chainable<typename std::invoke_result_t<H, R>, Gs...>::value;
-        static constexpr bool value = invoke<G>;
-    };
-    template <typename... A>
-    static constexpr bool chainable =
-        _chainable<typename std::invoke_result_t<F1, A...>, F2, Fs...>::value;
-
-public:
-    /* The number of component functions in the chain. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return base::size() + 1; }
-
-    /* Get the type of the component function at index I. */
-    template <size_t I> requires (I < size())
-    using at = _at<I>::type;
-
-    template <meta::is<F1> First, meta::is<F2> Next, meta::is<Fs>... Rest>
-    constexpr chain(First&& first, Next&& next, Rest&&... rest) :
-        base(std::forward<Next>(next), std::forward<Rest>(rest)...),
-        func(std::forward<First>(first))
-    {}
-
-    /* Invoke the function chain, piping the return value from the first function into
-    the input for the second function, and so on. */
-    template <typename Self, typename... A>
-        requires (std::invocable<F1, A...> && chainable<A...>)
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args) {
-        return static_cast<meta::qualify<base, Self>>(std::forward<Self>(self))(
-            std::forward<Self>(self).func(std::forward<A>(args)...)
-        );
-    }
-
-    /* Get the component function at index I. */
-    template <size_t I, typename Self> requires (I < size())
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        if constexpr (I == 0) {
-            return std::forward<Self>(self).func;
-        } else {
-            using parent = meta::qualify<base, Self>;
-            return static_cast<parent>(std::forward<Self>(self)).template get<I - 1>();
-        }
-    }
-};
-
-
-template <typename F, typename... Fs>
-chain(F, Fs...) -> chain<F, Fs...>;
 
 
 template <meta::chain Self, meta::chain Next>
