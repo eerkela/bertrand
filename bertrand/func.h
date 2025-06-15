@@ -44,73 +44,38 @@ static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.")
 ////////////////////////////////////
 
 
-/// TODO: maybe placing a small bitset on the arguments themselves that describes their
-/// properties would be better than inheritance, and produce slightly better error
-/// diagnostics without as many curly braces.
-
-
-/// TODO: also, untyped arguments still need to be able to use materialization
-/// functions, otherwise there's no way to set a default value unless the default
-/// value is a constant expression.
-
-
 namespace impl {
-    struct arg_tag {};
-    struct partial_tag {};
-    struct template_arg_tag {};
-    struct standard_arg_tag : arg_tag {};
-    struct variadic_tag : arg_tag {};
-    struct var_args_tag : variadic_tag {};
-    struct var_kwargs_tag : variadic_tag {};
-    struct arg_pack_tag : var_args_tag {};
-    struct kwarg_pack_tag : var_kwargs_tag {};
-    struct arg_sep_tag : arg_tag {};
-    struct posonly_sep_tag : arg_sep_tag {};
-    struct kwonly_sep_tag : arg_sep_tag {};
-    struct return_annotation_tag : arg_tag {};
+
+    template <meta::invocable F> requires (!meta::invoke_returns<void, F>)
+    struct materialize {
+        meta::remove_rvalue<F> func;
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator()(this Self&& self)
+            noexcept (meta::nothrow::invocable<F>)
+        {
+            return (std::forward<Self>(self).func());
+        }
+    };
+
 }
 
 
 namespace meta {
 
-    template <typename T>
-    concept arg = inherits<T, impl::arg_tag>;
+    namespace detail {
 
-    template <typename T>
-    concept partial_arg = arg<T> && inherits<T, impl::partial_tag>;
+        template <typename T>
+        constexpr bool materialize = false;
+        template <typename T>
+        constexpr bool materialize<impl::materialize<T>> = true;
 
-    template <typename T>
-    concept template_arg = arg<T> && inherits<T, impl::template_arg_tag>;
+    }
 
-    template <typename T>
-    concept standard_arg = arg<T> && inherits<T, impl::standard_arg_tag>;
+    template <typename F>
+    concept materialization_function = invocable<F> && !invoke_returns<void, F>;
 
-    template <typename T>
-    concept variadic = arg<T> && inherits<T, impl::variadic_tag>;
-
-    template <typename T>
-    concept variadic_positional = variadic<T> && inherits<T, impl::var_args_tag>;
-
-    template <typename T>
-    concept variadic_keyword = variadic<T> && inherits<T, impl::var_kwargs_tag>;
-
-    template <typename T>
-    concept arg_pack = variadic<T> && inherits<T, impl::arg_pack_tag>;
-
-    template <typename T>
-    concept kwarg_pack = variadic<T> && inherits<T, impl::kwarg_pack_tag>;
-
-    template <typename T>
-    concept arg_separator = arg<T> && inherits<T, impl::arg_sep_tag>;
-
-    template <typename T>
-    concept positional_only_separator = arg_separator<T> && inherits<T, impl::posonly_sep_tag>;
-
-    template <typename T>
-    concept keyword_only_separator = arg_separator<T> && inherits<T, impl::kwonly_sep_tag>;
-
-    template <typename T>
-    concept return_annotation = arg<T> && inherits<T, impl::return_annotation_tag>;
+    template <typename F>
+    concept materialize = detail::materialize<unqualify<F>>;
 
     namespace detail {
 
@@ -200,11 +165,68 @@ namespace meta {
         valid_kwonly_separator<name> ||
         valid_return_annotation<name>;
 
+    namespace detail {
+
+        template <typename T>
+        constexpr bool arg = false;
+
+        template <typename T>
+        constexpr bool arg_pack = false;
+
+        template <typename T>
+        constexpr bool kwarg_pack = false;
+
+    }
+
     template <typename T>
-    concept typed_arg = arg<T> && not_void<typename meta::unqualify<T>::type>;
+    concept arg = detail::arg<unqualify<T>>;
 
     template <arg T>
     using arg_type = unqualify<T>::type;
+
+    template <arg T>
+    using partials = unqualify<T>::partials;
+
+    template <arg T>
+    constexpr const auto& arg_id = unqualify<T>::id;
+
+    template <typename T>
+    concept typed_arg = arg<T> && not_void<arg_type<T>>;
+
+    template <typename T>
+    concept partial_arg = arg<T> && partials<T>::size > 0;
+
+    template <typename T>
+    concept standard_arg = arg<T> && valid_arg_name<arg_id<T>>;
+
+    template <typename T>
+    concept variadic =
+        arg<T> && (valid_args_name<arg_id<T>> || valid_kwargs_name<arg_id<T>>);
+
+    template <typename T>
+    concept variadic_positional = variadic<T> && valid_args_name<arg_id<T>>;
+
+    template <typename T>
+    concept variadic_keyword = variadic<T> && valid_kwargs_name<arg_id<T>>;
+
+    template <typename T>
+    concept arg_pack = variadic<T> && detail::arg_pack<unqualify<T>>;
+
+    template <typename T>
+    concept kwarg_pack = variadic<T> && detail::kwarg_pack<unqualify<T>>;
+
+    template <typename T>
+    concept arg_separator =
+        arg<T> && (valid_posonly_separator<arg_id<T>> || valid_kwonly_separator<arg_id<T>>);
+
+    template <typename T>
+    concept positional_only_separator = arg_separator<T> && valid_posonly_separator<arg_id<T>>;
+
+    template <typename T>
+    concept keyword_only_separator = arg_separator<T> && valid_kwonly_separator<arg_id<T>>;
+
+    template <typename T>
+    concept return_annotation = arg<T> && valid_return_annotation<arg_id<T>>;
 
     /// TODO: maybe just meta::has_value<T>, meta::value_type<T>, and meta::value_returns<R, T>,
     /// which could be shared with monads that fit the same pattern.
@@ -227,21 +249,16 @@ namespace meta {
 
     }
 
-    template <meta::arg T>
-    constexpr const auto& arg_id = unqualify<T>::id;
-
-    template <arg T>
-    using partials = meta::unqualify<T>::partials;
-
     namespace detail {
 
         template <typename T>
         constexpr bertrand::static_str arg_prefix = "";
-        template <meta::return_annotation T>
-        constexpr bertrand::static_str arg_prefix<T> = meta::arg_id<T>;
-        template <meta::positional_only_separator T>
-        constexpr bertrand::static_str arg_prefix<T> = meta::arg_id<T>;
-        template <meta::keyword_only_separator T>
+        template <typename T>
+            requires (
+                meta::return_annotation<T> ||
+                meta::positional_only_separator<T> ||
+                meta::keyword_only_separator<T>
+            )
         constexpr bertrand::static_str arg_prefix<T> = meta::arg_id<T>;
         template <meta::variadic_positional T>
         constexpr bertrand::static_str arg_prefix<T> =
@@ -340,7 +357,7 @@ namespace impl {
     Such arguments can be explicitly typed and bound accordingly. */
     template <static_str ID, typename T>
         requires (meta::valid_arg<ID> && meta::valid_arg_name<ID>)
-    struct arg<ID, T, void> : impl::standard_arg_tag {
+    struct arg<ID, T, void> {
         using base_type = arg;
         using type = T;
         using value_type = void;
@@ -348,53 +365,76 @@ namespace impl {
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
-        template <meta::not_void V> requires (meta::is_void<T>)
-        constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return arg<ID, meta::remove_rvalue<V>, void>{};
+        template <meta::not_void type> requires (meta::is_void<T>)
+        constexpr auto operator[](std::type_identity<type>) && noexcept {
+            return arg<ID, meta::remove_rvalue<type>, void>{};
         }
 
-        /* Assigning to the argument binds a value to it, which is interpreted as either
-        a default value if the assignment is done in the function signature, or as a
-        keyword argument if done at the call site.  For arguments without an explicit
-        type, the value is unconstrained, and can take any type. */
+        /* Assigning to the argument binds a value to it, which is interpreted as
+        either a default value if the assignment is done in the function signature, or
+        as a keyword argument if done at the call site.  For arguments without an
+        explicit type, the value is unconstrained, and can take any type. */
         template <typename V> requires (meta::is_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)}))
-            requires (requires{arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};})
-        {
-            return arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
-        }
-
-        /* Assigning to the argument binds a value to it, which is interpreted as either
-        a default value if the assignment is done in the function signature, or as a
-        keyword argument if done at the call site.  If the argument has an explicit type,
-        then the value must be convertible to that type, or be a materialization function
-        of zero arguments that returns a convertible result. */
-        template <typename V>  requires (meta::not_void<T>)
-        constexpr auto operator=(V&& val) &&
-            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)}))
-            requires (meta::convertible_to<V, T> && requires{
-                arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
+            noexcept (requires{
+                {arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}} noexcept;
+            })
+            requires (requires{
+                {arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}};
             })
         {
-            return arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
+            return arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
         }
 
-        /* Assigning to the argument binds a value to it, which is interpreted as either
-        a default value if the assignment is done in the function signature, or as a
-        keyword argument if done at the call site.  If the argument has an explicit type,
-        then the value must be convertible to that type, or be a materialization function
-        of zero arguments that returns a convertible result. */
+        /* Assigning to the argument binds a value to it, which is interpreted as
+        either a default value if the assignment is done in the function signature, or
+        as a keyword argument if done at the call site.  If the argument has an
+        explicit type, then the value must be convertible to that type. */
         template <typename V>  requires (meta::not_void<T>)
         constexpr auto operator=(V&& val) &&
-            noexcept (noexcept(arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)}))
+            noexcept (requires{
+                {arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)}} noexcept;
+            })
+            requires (meta::convertible_to<V, T> && requires{
+                arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+            })
+        {
+            return arg<ID, T, meta::remove_rvalue<V>>{std::forward<V>(val)};
+        }
+
+        /* Calling the argument annotation with a function of zero arguments sets it as
+        a materialization function, which will be called to produce a bound value in
+        case the result would otherwise not be a constant expression, or would be
+        expensive to compute for some reason.  If the argument has an explicit type,
+        then the result must be convertible to that type. */
+        template <meta::materialization_function F> requires (meta::is_void<T>)
+        constexpr auto operator()(F&& f) &&
+            noexcept (requires{
+                {arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;
+            })
+            requires (requires{
+                {arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}};
+            })
+        {
+            return arg<ID, T, impl::materialize<F>>{std::forward<F>(f)};
+        }
+
+        /* Calling the argument annotation with a function of zero arguments sets it as
+        a materialization function, which will be called to produce a bound value in
+        case the result would otherwise not be a constant expression, or would be
+        expensive to compute for some reason.  If the argument has an explicit type,
+        then the result must be convertible to that type. */
+        template <meta::materialization_function F> requires (meta::not_void<T>)
+        constexpr auto operator()(F&& f) &&
+            noexcept (requires{
+                {arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;
+            })
             requires (
-                !meta::convertible_to<V, T> &&
-                meta::invoke_returns<T, V> &&
-                requires{arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};}
+                meta::invoke_returns<T, F> &&
+                requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}};}
             )
         {
-            return arg<ID, T, meta::remove_rvalue<V>>{{}, std::forward<V>(val)};
+            return arg<ID, T, impl::materialize<F>>{std::forward<F>(f)};
         }
 
         /* STL-compliant `swap()` method for argument annotations.  Does nothing for
@@ -406,7 +446,7 @@ namespace impl {
     arguments can be typed, but cannot be bound. */
     template <static_str ID, typename T>
         requires (meta::valid_arg<ID> && meta::valid_args_name<ID>)
-    struct arg<ID, T, void> : impl::var_args_tag {
+    struct arg<ID, T, void> {
         using base_type = arg;
         using type = T;
         using value_type = void;
@@ -414,9 +454,9 @@ namespace impl {
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
-        template <meta::not_void V> requires (meta::is_void<T>)
-        constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return arg<ID, meta::remove_rvalue<V>, void>{};
+        template <meta::not_void type> requires (meta::is_void<T>)
+        constexpr auto operator[](std::type_identity<type>) && noexcept {
+            return arg<ID, meta::remove_rvalue<type>, void>{};
         }
 
         /* STL-compliant `swap()` method for argument annotations.  Does nothing for
@@ -428,7 +468,7 @@ namespace impl {
     arguments can be typed, but cannot be bound. */
     template <static_str ID, typename T>
         requires (meta::valid_arg<ID> && meta::valid_kwargs_name<ID>)
-    struct arg<ID, T, void> : impl::var_kwargs_tag {
+    struct arg<ID, T, void> {
         using base_type = arg;
         using type = T;
         using value_type = void;
@@ -436,9 +476,9 @@ namespace impl {
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
-        template <meta::not_void V> requires (meta::is_void<T>)
-        constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return arg<ID, meta::remove_rvalue<V>, void>{};
+        template <meta::not_void type> requires (meta::is_void<T>)
+        constexpr auto operator[](std::type_identity<type>) && noexcept {
+            return arg<ID, meta::remove_rvalue<type>, void>{};
         }
 
         /* STL-compliant `swap()` method for argument annotations.  Does nothing for
@@ -450,7 +490,7 @@ namespace impl {
     arguments cannot be typed and cannot be bound. */
     template <static_str ID>
         requires (meta::valid_arg<ID> && meta::valid_posonly_separator<ID>)
-    struct arg<ID, void, void> : impl::posonly_sep_tag {
+    struct arg<ID, void, void> {
         using base_type = arg;
         using type = void;
         using value_type = void;
@@ -466,7 +506,7 @@ namespace impl {
     arguments cannot be typed and cannot be bound. */
     template <static_str ID>
         requires (meta::valid_arg<ID> && meta::valid_kwonly_separator<ID>)
-    struct arg<ID, void, void> : impl::kwonly_sep_tag {
+    struct arg<ID, void, void> {
         using base_type = arg;
         using type = void;
         using value_type = void;
@@ -482,7 +522,7 @@ namespace impl {
     can be typed, but cannot be bound. */
     template <static_str ID, typename T>
         requires (meta::valid_arg<ID> && meta::valid_return_annotation<ID>)
-    struct arg<ID, T, void> : impl::return_annotation_tag {
+    struct arg<ID, T, void> {
         using base_type = arg;
         using type = T;
         using value_type = void;
@@ -490,9 +530,9 @@ namespace impl {
         static constexpr const auto& id = ID;
 
         /* Indexing the argument sets its `type`. */
-        template <meta::not_void V> requires (meta::is_void<T>)
-        constexpr auto operator[](std::type_identity<V> type) && noexcept {
-            return arg<ID, meta::remove_rvalue<V>, void>{};
+        template <meta::not_void type> requires (meta::is_void<T>)
+        constexpr auto operator[](std::type_identity<type>) && noexcept {
+            return arg<ID, meta::remove_rvalue<type>, void>{};
         }
 
         /* STL-compliant `swap()` method for argument annotations.  Does nothing for
@@ -500,28 +540,11 @@ namespace impl {
         constexpr void swap(arg&) noexcept {}
     };
 
-    template <meta::arg T>
-    struct choose_arg_base { using type = impl::standard_arg_tag; };
-    template <meta::variadic_positional T>
-    struct choose_arg_base<T> { using type = impl::var_args_tag; };
-    template <meta::arg_pack T>
-    struct choose_arg_base<T> { using type = impl::arg_pack_tag; };
-    template <meta::variadic_keyword T>
-    struct choose_arg_base<T> { using type = impl::var_kwargs_tag; };
-    template <meta::kwarg_pack T>
-    struct choose_arg_base<T> { using type = impl::kwarg_pack_tag; };
-    template <meta::positional_only_separator T>
-    struct choose_arg_base<T> { using type = impl::posonly_sep_tag; };
-    template <meta::keyword_only_separator T>
-    struct choose_arg_base<T> { using type = impl::kwonly_sep_tag; };
-    template <meta::return_annotation T>
-    struct choose_arg_base<T> { using type = impl::return_annotation_tag; };
-
     /* A specialization of `arg` for arguments that have been bound to a value, but
     otherwise have no explicit type.  Most call-site arguments fall into this
     category. */
     template <static_str ID, meta::not_void V> requires (meta::valid_arg<ID>)
-    struct arg<ID, void, V> : choose_arg_base<arg<ID, void, void>>::type {
+    struct arg<ID, void, V> {
         using base_type = arg;
         using type = void;
         using value_type = V;
@@ -530,10 +553,19 @@ namespace impl {
 
         [[no_unique_address]] V m_value;
 
-        /* Unconstrained arguments never invoke materialization functions. */
-        template <typename Self>
+        /* Directly forward a bound value of any type. */
+        template <typename Self> requires (!meta::materialize<V>)
         [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
             return (std::forward<Self>(self).m_value);
+        }
+
+        /* Invoke a materialization function with unconstrained return type. */
+        template <typename Self> requires (meta::materialize<V>)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).m_value()} noexcept;})
+            requires (requires{{std::forward<Self>(self).m_value()};})
+        {
+            return (std::forward<Self>(self).m_value());
         }
 
         /* STL-compliant `swap()` method for argument annotations.  Defers to the
@@ -556,7 +588,7 @@ namespace impl {
     been bound to a value.  Most signature arguments that have a default value fall into
     this category. */
     template <static_str ID, meta::not_void T, meta::not_void V> requires (meta::valid_arg<ID>)
-    struct arg<ID, T, V> : choose_arg_base<arg<ID, T, void>>::type {
+    struct arg<ID, T, V> {
         using base_type = arg;
         using type = T;
         using value_type = V;
@@ -565,33 +597,28 @@ namespace impl {
 
         [[no_unique_address]] V m_value;
 
-        /* If the argument is explicitly typed and the value is convertible, prefer
-        implicit conversions. */
+        /* Implicitly convert a bound value to the expected type. */
         template <typename Self>
         [[nodiscard]] constexpr T value(this Self&& self)
             noexcept (requires{
-                { std::forward<Self>(self).m_value } -> meta::nothrow::convertible_to<T>;
+                {std::forward<Self>(self).m_value} -> meta::nothrow::convertible_to<T>;
             })
             requires (requires{
-                { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
+                {std::forward<Self>(self).m_value} -> meta::convertible_to<T>;
             })
         {
             return std::forward<Self>(self).m_value;
         }
 
-        /* If the argument is explicitly typed and the value is not immediately convertible
-        to that type, then it must be a materialization function that must be invoked. */
-        template <typename Self>
+        /* Invoke a materialization function and implicitly convert to the expected
+        type. */
+        template <typename Self> requires (meta::materialize<V>)
         [[nodiscard]] constexpr T value(this Self&& self)
             noexcept (requires{
-                {
-                    std::forward<Self>(self).m_value()
-                } noexcept -> meta::nothrow::convertible_to<T>;
+                {std::forward<Self>(self).m_value()} noexcept -> meta::nothrow::convertible_to<T>;
             })
-            requires (!requires{
-                { std::forward<Self>(self).m_value } -> meta::convertible_to<T>;
-            } && requires{
-                { std::forward<Self>(self).m_value() } -> meta::convertible_to<T>;
+            requires (requires{
+                {std::forward<Self>(self).m_value()} -> meta::convertible_to<T>;
             })
         {
             return std::forward<Self>(self).m_value();
@@ -613,7 +640,90 @@ namespace impl {
         }
     };
 
+    template <typename A, typename... Ts>
+    constexpr bool check_partial = (meta::arg<A> && ... && (
+        !meta::partial_arg<Ts> &&
+        !meta::arg<Ts>
+    ));
+    template <meta::variadic_keyword A, typename... Ts>
+    constexpr bool check_partial<A, Ts...> = (meta::arg<A> && ... && (
+        !meta::partial_arg<Ts> &&
+        meta::standard_arg<Ts> &&
+        meta::bound_arg<Ts>
+    ));
+
+    /* A subclass of `Arg` that categorizes it as having one or more partially-applied
+    values when stored within an `impl::signature` object.  This changes nothing about
+    the argument itself, but triggers the function call machinery to always insert a
+    particular value that may only be known at runtime, and is stored within the
+    signature itself.  Calling a signature's `.bind()` method equates to marking one or
+    more of its arguments with this type, and `.clear()` strips all such wrappers from
+    the signature's arguments. */
+    template <meta::unqualified Arg, typename... Ts> requires (check_partial<Arg, Ts...>)
+    struct partial : Arg {
+        using partials = meta::pack<Ts...>;
+    };
+
+    template <typename, typename, typename...>
+    struct _as_partial;
+    template <typename A, typename... Ps, typename... Ts>
+    struct _as_partial<A, meta::pack<Ps...>, Ts...> {
+        using type = partial<A, Ps..., Ts...>;
+    };
+    template <meta::arg A, typename... Ts>
+    using as_partial = _as_partial<
+        meta::unqualify<A>,
+        meta::partials<A>,
+        meta::remove_rvalue<Ts>...
+    >::type;
+
+    /* Append `Ts...` to the list of partial values for an argument. */
+    template <meta::not_void... Ts, meta::arg A>
+    constexpr auto make_partial(A&& arg)
+        noexcept (requires{{as_partial<A, Ts...>{std::forward<A>(arg)}} noexcept;})
+        requires (requires{{as_partial<A, Ts...>{std::forward<A>(arg)}};})
+    {
+        return as_partial<A, Ts...>{std::forward<A>(arg)};
+    }
+
+    /* Strip any partial values from an argument. */
+    template <meta::arg A> requires (meta::partial_arg<A>)
+    constexpr decltype(auto) remove_partial(A&& arg)
+        noexcept (requires{
+            {std::forward<meta::qualify<typename meta::unqualify<A>::base_type, A>>(arg)} noexcept;
+        })
+        requires (requires{
+            {std::forward<meta::qualify<typename meta::unqualify<A>::base_type, A>>(arg)};
+        })
+    {
+        return (std::forward<meta::qualify<typename meta::unqualify<A>::base_type, A>>(arg));
+    }
+
+    /* Strip any partial values from an argument. */
+    template <meta::arg A> requires (!meta::partial_arg<A>)
+    constexpr decltype(auto) remove_partial(A&& arg) noexcept {
+        return (std::forward<A>(arg));
+    }
+
+
+
+    /// TODO: extract_partial<>, which should also handle the template case.  Maybe
+
 }
+
+
+namespace meta {
+
+    namespace detail {
+
+        template <const auto& /* static_str */ ID, typename T, typename V>
+        constexpr bool arg<impl::arg<ID, T, V>> = true;
+
+    }
+
+
+}
+
 
 
 /* Argument creation operator.
@@ -825,15 +935,6 @@ namespace impl {
         using type = meta::remove_rvalue<T>;
         struct storage { type value; };
 
-        template <size_t I, typename S>
-        static constexpr decltype(auto) get(S&& s) noexcept {
-            if constexpr (I == 0) {
-                return (std::forward<meta::qualify<args, S>>(s).m_storage.value);
-            } else {
-                return (args<Ts...>::template get<I - 1>(std::forward<S>(s)));
-            }
-        }
-
         template <typename S, typename F, typename... A>
         static constexpr decltype(auto) operator()(S&& s, F&& f, A&&... a)
             noexcept (noexcept(args<Ts...>::operator()(
@@ -931,6 +1032,15 @@ namespace impl {
         {
             args<Ts...>::swap(other);
             std::ranges::swap(m_storage.value, other.m_storage.value);
+        }
+
+        template <size_t I, typename S>
+        static constexpr decltype(auto) get(S&& s) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<meta::qualify<args, S>>(s).m_storage.value);
+            } else {
+                return (args<Ts...>::template get<I - 1>(std::forward<S>(s)));
+            }
         }
     };
 
@@ -1464,7 +1574,7 @@ namespace impl {
     DSL syntax and cannot appear at the call site, this class fills that gap and allows
     the same internals to be reused.  */
     template <meta::unpack_to_kwargs T>
-    struct kwarg_pack : impl::kwarg_pack_tag {
+    struct kwarg_pack {
         using key_type = meta::unqualify<T>::key_type;
         using mapped_type = meta::unqualify<T>::mapped_type;
         using type = mapped_type;
@@ -1672,7 +1782,7 @@ namespace impl {
     Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
     double unpack operator. */
     template <meta::iterable T>
-    struct arg_pack : impl::arg_pack_tag {
+    struct arg_pack {
         using container_type = meta::remove_rvalue<T>;
         using begin_type = meta::begin_type<container_type>;
         using end_type = meta::end_type<container_type>;
@@ -1786,6 +1896,26 @@ namespace impl {
 }
 
 
+namespace meta {
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool arg<impl::arg_pack<T>> = true;
+        template <typename T>
+        constexpr bool arg<impl::kwarg_pack<T>> = true;
+
+        template <typename T>
+        constexpr bool arg_pack<impl::arg_pack<T>> = true;
+
+        template <typename T>
+        constexpr bool kwarg_pack<impl::kwarg_pack<T>> = true;
+
+    }
+
+}
+
+
 /////////////////////////
 ////    SIGNATURE    ////
 /////////////////////////
@@ -1794,165 +1924,22 @@ namespace impl {
 namespace impl {
     struct signature_tag {};
 
-    /* A wrapper that identifies the arguments stored in a templates{} helper, so that
-    downstream analysis can specialize accordingly.  No behavior is changed. */
-    template <meta::unqualified Arg> requires (meta::arg<Arg> && !meta::template_arg<Arg>)
-    struct template_arg : Arg, template_arg_tag {
-        constexpr template_arg(auto&&... a)
-            noexcept (requires{{Arg(std::forward<decltype(a)>(a)...)} noexcept;})
-            requires (requires{Arg(std::forward<decltype(a)>(a)...);})
-        :
-            Arg(std::forward<decltype(a)>(a)...)
-        {}
-    };
+    /// TODO: consolidating template partials in a single args{} pack is definitely
+    /// a good idea, but it interferes with the binding logic in signature<>, which
+    /// would need to be updated to support it.  Perhaps what I can do is track the
+    /// arguments in an impl::args{} pack, which gets concatenated into a templates{}
+    /// pack in the base case, before handing off to the runtime machinery.
 
-    template <meta::arg T>
-    struct as_template_arg { using type = template_arg<T>; };
-    template <meta::template_arg T>
-    struct as_template_arg<T> { using type = T; };
 
-    /// TODO: using a simple container instead of inheritance is probably better here,
-    /// since it could condense template errors slightly, and reduce curly brace hell.
-    /// Also, template arguments themselves could maybe be rewritten along these same
-    /// lines, more or less breaking all uses of inheritance.
 
-    /* A brace-initializable container for a sequence of arguments that forms the
-    explicit template signature for a function.  Arguments within this container must
-    be provided as template arguments when the function is called. */
-    template <meta::arg... Args>
-    struct templates : as_template_arg<Args>::type... {
-        using types = meta::pack<typename as_template_arg<Args>::type...>;
-        static constexpr size_t size = sizeof...(Args);
-        static constexpr size_t n_partial = (meta::partials<Args>::size + ... + 0);
-        template <size_t I> requires (I < size)
-        [[nodiscard]] constexpr const auto& get() const noexcept {
-            return static_cast<meta::as_const_ref<typename types::template at<I>>>(*this);
-        }
-    };
 
-    template <meta::arg... Args>
-    templates(Args...) -> templates<Args...>;
 
-    /* A subclass of `Arg` that categorizes it as having one or more partially-applied
-    values when stored within an `impl::signature` object.  This changes nothing about
-    the argument itself, but triggers the function call machinery to always insert a
-    particular value that may only be known at runtime, and is stored within the
-    signature itself.  Calling a signature's `.bind()` method equates to marking one or
-    more of its arguments with this type, and `.clear()` strips all such wrappers from
-    the signature's arguments. */
-    template <meta::unqualified Arg, typename... Ts> requires (meta::arg<Arg>)
-    struct partial : Arg, impl::partial_tag {
-        using partials = meta::pack<Ts...>;
-    };
+    
 
-    /* Template arguments must store partial values internally in order to ensure they
-    are encoded at compile time. */
-    template <meta::unqualified Arg, typename... Ts> requires (meta::template_arg<Arg>)
-    struct partial<Arg, Ts...> : Arg, impl::partial_tag {
-        using partials = meta::pack<Ts...>;
-        bertrand::args<Ts...> partial_values;
 
-        template <meta::is<Arg> A>
-        constexpr partial(A&& arg, bertrand::args<Ts...>&& ps)
-            noexcept (requires{
-                {Arg(std::forward<A>(arg))} noexcept;
-                {bertrand::args<Ts...>{std::move(ps)}} noexcept;
-            })
-        :
-            Arg(std::forward<A>(arg)),
-            partial_values(std::move(ps))
-        {}
-    };
 
-    template <typename, typename... Ts>
-    constexpr bool _bind_partial = ((
-        !meta::template_arg<Ts> &&
-        !meta::partial_arg<Ts> &&
-        !meta::arg<Ts>
-    ) && ...);
-    template <meta::variadic_keyword A, typename... Ts>
-    constexpr bool _bind_partial<A, Ts...> = ((
-        !meta::template_arg<Ts> &&
-        !meta::partial_arg<Ts> &&
-        meta::standard_arg<Ts> &&
-        meta::bound_arg<Ts>
-    ) && ...);
-    template <typename A, typename... Ts>
-    concept bind_partial = _bind_partial<A, Ts...>;
 
-    template <typename, typename, typename...>
-    struct _as_partial;
-    template <typename A, typename... Ps, typename... Ts>
-    struct _as_partial<A, meta::pack<Ps...>, Ts...> {
-        using type = partial<A, Ps..., meta::remove_rvalue<Ts>...>;
-    };
-    template <meta::arg A, typename... Ts>
-    using as_partial = _as_partial<meta::unqualify<A>, meta::partials<A>, Ts...>::type;
 
-    /* Mark a runtime argument as a partial, which will store a list of types inside
-    the signature, to be used at runtime for binding.  If the argument already has
-    partial values, then the argument list will be extended with the new values. */
-    template <typename... Ts, meta::arg A>
-        requires (!meta::template_arg<A> && bind_partial<A, Ts...>)
-    constexpr auto make_partial(A&& arg)
-        noexcept (requires{{as_partial<A, Ts...>{std::forward<A>(arg)}} noexcept;})
-        requires (requires{as_partial<A, Ts...>{std::forward<A>(arg)};})
-    {
-        return as_partial<A, Ts...>{std::forward<A>(arg)};
-    }
-
-    /* Mark a template argument as a partial, which will store a list of values inside
-    the signature, to be used at compile time for binding.  If the argument already has
-    partial values, then the argument list will be extended with the new values. */
-    template <meta::template_arg A, typename... Ts>
-        requires (!meta::partial_arg<A> && bind_partial<A, Ts...>)
-    constexpr auto make_partial(const A& arg, Ts&&... ts)
-        noexcept (requires{{as_partial<A, Ts...>{
-            arg,
-            bertrand::args{std::forward<Ts>(ts)...}
-        }} noexcept;})
-        requires (requires{as_partial<A, Ts...>{
-            arg,
-            bertrand::args{std::forward<Ts>(ts)...}
-        };})
-    {
-        return as_partial<A, Ts...>{
-            arg,
-            bertrand::args{std::forward<Ts>(ts)...}
-        };
-    }
-
-    /* Form a partial from an argument and a list of values.  If the argument already
-    has partial values, then the argument list will be extended with the new values. */
-    template <meta::template_arg A, typename... Ts>
-        requires (meta::partial_arg<A> && bind_partial<A, Ts...>)
-    constexpr auto make_partial(const A& arg, Ts&&... ts)
-        noexcept (requires{{as_partial<A, Ts...>{
-            arg,
-            bertrand::args{std::forward<A>(arg).partial_values, std::forward<Ts>(ts)...}
-        }} noexcept;})
-        requires (requires{as_partial<A, Ts...>{
-            arg,
-            bertrand::args{std::forward<A>(arg).partial_values, std::forward<Ts>(ts)...}
-        };})
-    {
-        return as_partial<A, Ts...>{
-            arg,
-            bertrand::args{std::forward<A>(arg).partial_values, std::forward<Ts>(ts)...}
-        };
-    }
-
-    /* Strip any partial values from an argument. */
-    template <meta::arg Arg>
-    constexpr decltype(auto) remove_partial(Arg&& arg) noexcept {
-        if constexpr (meta::partial_arg<Arg>) {
-            return (std::forward<
-                meta::qualify<typename meta::unqualify<Arg>::base_type, Arg>
-            >(arg));
-        } else {
-            return (std::forward<Arg>(arg));
-        }
-    }
 
     /* Form a `bertrand::args{}` container to back the runtime partial arguments, for
     later use in signature binding logic. */
@@ -1984,6 +1971,38 @@ namespace impl {
     template <size_t I, typename A, typename... Args> requires (meta::partial_arg<A> && I > 0)
     constexpr size_t partial_idx<I, A, Args...> =
         partial_idx<I - 1, Args...> + meta::partials<A>::size;
+
+
+
+
+
+
+    /// TODO: using a simple container instead of inheritance is probably better here,
+    /// since it could condense template errors slightly, and reduce curly brace hell.
+    /// Also, template arguments themselves could maybe be rewritten along these same
+    /// lines, more or less breaking all uses of inheritance.
+
+    /* A brace-initializable container for a sequence of arguments that forms the
+    explicit template signature for a function.  Arguments within this container must
+    be provided as template arguments when the function is called. */
+    template <meta::arg... Args>
+    struct templates {
+        using types = meta::pack<typename as_template_arg<Args>::type...>;
+        static constexpr size_t size = sizeof...(Args);
+        static constexpr size_t n_partial = (meta::partials<Args>::size + ... + 0);
+
+        // impl::args<> 
+
+
+
+        template <size_t I> requires (I < size)
+        [[nodiscard]] constexpr const auto& get() const noexcept {
+            return static_cast<meta::as_const_ref<typename types::template at<I>>>(*this);
+        }
+    };
+
+    template <meta::arg... Args>
+    templates(Args...) -> templates<Args...>;
 
 }
 
@@ -4994,15 +5013,6 @@ namespace impl {
         using type = traits::args::template eval<expand_arguments>::type;
     };
 
-    /// TODO: another specialization of `infer_signature` for defs (and possibly
-    /// chains?) that perfectly forwards that information.
-
-    /// auto f1 = def([](int x, int y) { return x + y; });
-    /// auto f2 = def(f1);
-    /// auto f3 = def(f1 >> println);
-
-
-
 
 
 
@@ -5404,7 +5414,9 @@ namespace impl {
 
 namespace impl {
     struct chain_tag {};
-    struct def_tag {};
+
+    template <meta::not_void F, meta::unqualified Sig> requires (meta::signature<Sig>)
+    struct def;
 
     /* A simple convenience struct implementing the overload pattern for a finite
     set of function objects. */
@@ -5448,9 +5460,6 @@ namespace meta {
     template <typename T>
     concept chain = inherits<T, impl::chain_tag>;
 
-    template <typename T>
-    concept def = inherits<T, impl::def_tag>;
-
     namespace detail {
 
         template <typename T>
@@ -5458,10 +5467,18 @@ namespace meta {
         template <typename... Fs>
         constexpr bool overloads<impl::overloads<Fs...>> = true;
 
+        template <typename T>
+        constexpr bool def = false;
+        template <typename F, typename Sig>
+        constexpr bool def<impl::def<F, Sig>> = true;
+
     }
 
     template <typename T>
     concept overloads = detail::overloads<unqualify<T>>;
+
+    template <typename T>
+    concept def = detail::def<unqualify<T>>;
 
 }
 
@@ -6058,6 +6075,13 @@ namespace impl {
     template <typename... Fs>
     chain(Fs&&...) -> chain<meta::remove_rvalue<Fs>...>;
 
+    template <meta::chain C>
+    struct infer_signature<C> {
+        using type = infer_signature<
+            typename meta::unqualify<C>::functions::template at<0>
+        >::type;
+    };
+
     /* A function object produced by the `bertrand::def()` operator.  This is a thin
     wrapper that stores a Python-style signature in addition to an underlying C++
     function.  When called, it will invoke the C++ function according to the
@@ -6292,13 +6316,71 @@ namespace impl {
     template <typename F, templates T, const auto&... A>
     using make_def = def<meta::remove_rvalue<F>, make_signature<F, T, A...>>;
 
+    template <meta::def F>
+    struct infer_signature<F> {
+        using type = meta::unqualify<F>::signature_type;
+    };
+
 }
 
 
-/// TODO: document each overload in detail, since this is the public entry point
-/// everyone will actually end up using to define functions.
+/* Create a Python-style function in pure C++.
 
+This operator accepts one or more C++ functions, which may be lambda expressions,
+function pointers, and/or function objects, and returns an `impl::def` wrapper that
+applies Python semantics to the overall signature.  Explicit template parameters
+may be provided to customize the signature according to Python syntax, allowing
+keyword arguments, default values, variadic arguments, and optional types.
 
+    ```
+    constexpr auto f = def<"x"_, ("y"_[^int] = 2)>([](int x, int y) {
+        return x - y;
+    });
+    static_assert(f(1) == -1);
+    static_assert(f("y"_ = 2, "x"_ = 1) == -1);
+    static_assert(f.bind("x"_ = 1)(2) == -1);
+    ```
+
+If no explicit template parameters are provided, the signature will be inferred from
+the functions themselves, replicating their existing C++ semantics as closely as
+possible, including overloads and templates.
+
+    ```
+    constexpr auto f = def(
+        [](int x, int y) { return x + y; },  // (1)
+        [](double x, double y) { return x - y; },  // (2)
+        [](auto x, auto y) { return x * y; }  // (3)
+    );
+    static_assert(f(1, 2) == 3);  // (1)
+    static_assert(f(1.0, 2.0) == -1.0);  // (2)
+    static_assert(f(2, 4.0) == 8.0);  // (3)
+    ```
+
+A leading initializer list can be supplied as a template to define functions that
+require explicit template parameters, such as `std::get<I>()` and others.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template call<("I"_ = 2)>(std::tuple{1, 2, 3}) == 3);
+    ```
+
+Note that explicit template parameters defined in this way support all the same
+features as their runtime counterparts, meaning they can be supplied as keyword
+arguments, variadic arguments, and so on.  They can also be bound to partial
+values, allowing for partial application at both compile time and runtime.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template bind<("I"_ = 2)>()(std::tuple{1, 2, 3}) == 3);
+    static_assert(f.bind(std::tuple{1, 2, 3}).template call<2>() == 3);
+    ```
+
+See "Functions" in the API documentation for more details on how Bertrand functions may
+be defined and used. */
 template <meta::arg auto... A, typename F>
 [[nodiscard]] constexpr auto def(F&& f)
     noexcept (requires{{impl::make_def<F, {}, A...>{
@@ -6317,6 +6399,63 @@ template <meta::arg auto... A, typename F>
 }
 
 
+/* Create a Python-style function in pure C++.
+
+This operator accepts one or more C++ functions, which may be lambda expressions,
+function pointers, and/or function objects, and returns an `impl::def` wrapper that
+applies Python semantics to the overall signature.  Explicit template parameters
+may be provided to customize the signature according to Python syntax, allowing
+keyword arguments, default values, variadic arguments, and optional types.
+
+    ```
+    constexpr auto f = def<"x"_, ("y"_[^int] = 2)>([](int x, int y) {
+        return x - y;
+    });
+    static_assert(f(1) == -1);
+    static_assert(f("y"_ = 2, "x"_ = 1) == -1);
+    static_assert(f.bind("x"_ = 1)(2) == -1);
+    ```
+
+If no explicit template parameters are provided, the signature will be inferred from
+the functions themselves, replicating their existing C++ semantics as closely as
+possible, including overloads and templates.
+
+    ```
+    constexpr auto f = def(
+        [](int x, int y) { return x + y; },  // (1)
+        [](double x, double y) { return x - y; },  // (2)
+        [](auto x, auto y) { return x * y; }  // (3)
+    );
+    static_assert(f(1, 2) == 3);  // (1)
+    static_assert(f(1.0, 2.0) == -1.0);  // (2)
+    static_assert(f(2, 4.0) == 8.0);  // (3)
+    ```
+
+A leading initializer list can be supplied as a template to define functions that
+require explicit template parameters, such as `std::get<I>()` and others.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template call<("I"_ = 2)>(std::tuple{1, 2, 3}) == 3);
+    ```
+
+Note that explicit template parameters defined in this way support all the same
+features as their runtime counterparts, meaning they can be supplied as keyword
+arguments, variadic arguments, and so on.  They can also be bound to partial
+values, allowing for partial application at both compile time and runtime.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template bind<("I"_ = 2)>()(std::tuple{1, 2, 3}) == 3);
+    static_assert(f.bind(std::tuple{1, 2, 3}).template call<2>() == 3);
+    ```
+
+See "Functions" in the API documentation for more details on how Bertrand functions may
+be defined and used. */
 template <impl::templates T, meta::arg auto... A, typename F> requires (T.size > 0)
 [[nodiscard]] constexpr auto def(F&& f)
     noexcept (requires{{impl::make_def<F, T, A...>{
@@ -6335,6 +6474,63 @@ template <impl::templates T, meta::arg auto... A, typename F> requires (T.size >
 }
 
 
+/* Create a Python-style function in pure C++.
+
+This operator accepts one or more C++ functions, which may be lambda expressions,
+function pointers, and/or function objects, and returns an `impl::def` wrapper that
+applies Python semantics to the overall signature.  Explicit template parameters
+may be provided to customize the signature according to Python syntax, allowing
+keyword arguments, default values, variadic arguments, and optional types.
+
+    ```
+    constexpr auto f = def<"x"_, ("y"_[^int] = 2)>([](int x, int y) {
+        return x - y;
+    });
+    static_assert(f(1) == -1);
+    static_assert(f("y"_ = 2, "x"_ = 1) == -1);
+    static_assert(f.bind("x"_ = 1)(2) == -1);
+    ```
+
+If no explicit template parameters are provided, the signature will be inferred from
+the functions themselves, replicating their existing C++ semantics as closely as
+possible, including overloads and templates.
+
+    ```
+    constexpr auto f = def(
+        [](int x, int y) { return x + y; },  // (1)
+        [](double x, double y) { return x - y; },  // (2)
+        [](auto x, auto y) { return x * y; }  // (3)
+    );
+    static_assert(f(1, 2) == 3);  // (1)
+    static_assert(f(1.0, 2.0) == -1.0);  // (2)
+    static_assert(f(2, 4.0) == 8.0);  // (3)
+    ```
+
+A leading initializer list can be supplied as a template to define functions that
+require explicit template parameters, such as `std::get<I>()` and others.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template call<("I"_ = 2)>(std::tuple{1, 2, 3}) == 3);
+    ```
+
+Note that explicit template parameters defined in this way support all the same
+features as their runtime counterparts, meaning they can be supplied as keyword
+arguments, variadic arguments, and so on.  They can also be bound to partial
+values, allowing for partial application at both compile time and runtime.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template bind<("I"_ = 2)>()(std::tuple{1, 2, 3}) == 3);
+    static_assert(f.bind(std::tuple{1, 2, 3}).template call<2>() == 3);
+    ```
+
+See "Functions" in the API documentation for more details on how Bertrand functions may
+be defined and used. */
 template <meta::arg auto... A, typename... F> requires (sizeof...(F) > 1)
 [[nodiscard]] constexpr auto def(F&&... fs)
     noexcept (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
@@ -6353,6 +6549,63 @@ template <meta::arg auto... A, typename... F> requires (sizeof...(F) > 1)
 }
 
 
+/* Create a Python-style function in pure C++.
+
+This operator accepts one or more C++ functions, which may be lambda expressions,
+function pointers, and/or function objects, and returns an `impl::def` wrapper that
+applies Python semantics to the overall signature.  Explicit template parameters
+may be provided to customize the signature according to Python syntax, allowing
+keyword arguments, default values, variadic arguments, and optional types.
+
+    ```
+    constexpr auto f = def<"x"_, ("y"_[^int] = 2)>([](int x, int y) {
+        return x - y;
+    });
+    static_assert(f(1) == -1);
+    static_assert(f("y"_ = 2, "x"_ = 1) == -1);
+    static_assert(f.bind("x"_ = 1)(2) == -1);
+    ```
+
+If no explicit template parameters are provided, the signature will be inferred from
+the functions themselves, replicating their existing C++ semantics as closely as
+possible, including overloads and templates.
+
+    ```
+    constexpr auto f = def(
+        [](int x, int y) { return x + y; },  // (1)
+        [](double x, double y) { return x - y; },  // (2)
+        [](auto x, auto y) { return x * y; }  // (3)
+    );
+    static_assert(f(1, 2) == 3);  // (1)
+    static_assert(f(1.0, 2.0) == -1.0);  // (2)
+    static_assert(f(2, 4.0) == 8.0);  // (3)
+    ```
+
+A leading initializer list can be supplied as a template to define functions that
+require explicit template parameters, such as `std::get<I>()` and others.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template call<("I"_ = 2)>(std::tuple{1, 2, 3}) == 3);
+    ```
+
+Note that explicit template parameters defined in this way support all the same
+features as their runtime counterparts, meaning they can be supplied as keyword
+arguments, variadic arguments, and so on.  They can also be bound to partial
+values, allowing for partial application at both compile time and runtime.
+
+    ```
+    constexpr auto f = def<{"I"_ = 1}, "obj"_>([]<size_t I>(auto&& obj) {
+        return std::get<I>(std::forward<decltype(obj)>(obj));
+    });
+    static_assert(f.template bind<("I"_ = 2)>()(std::tuple{1, 2, 3}) == 3);
+    static_assert(f.bind(std::tuple{1, 2, 3}).template call<2>() == 3);
+    ```
+
+See "Functions" in the API documentation for more details on how Bertrand functions may
+be defined and used. */
 template <impl::templates T, meta::arg auto... A, typename... F>
     requires (T.size > 0 && sizeof...(F) > 1)
 [[nodiscard]] constexpr auto def(F&&... fs)
@@ -6389,6 +6642,8 @@ static_assert(f2.bind("y"_ = 1).call<("z"_ = 2)>(2) == 5);
 
 inline constexpr auto f3 = f2 >> [](int result) { return result * 2; };
 static_assert(f3.bind("y"_ = 1).clear().template call<2>(2, 1) == 10);
+
+
 
 
 
