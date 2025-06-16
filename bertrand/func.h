@@ -1891,18 +1891,18 @@ namespace impl {
     the signature, to be used at runtime for binding.  If the argument already has
     partial values, then the argument list will be extended with the new values. */
     template <typename... Ts, typename A> requires (sizeof...(Ts) > 0)
-    constexpr auto make_partial(A&& arg)
-        noexcept (requires{{as_partial<A, Ts...>{std::forward<A>(arg)}} noexcept;})
-        requires (requires{as_partial<A, Ts...>{std::forward<A>(arg)};})
+    constexpr auto make_partial(const A& arg)
+        noexcept (requires{{as_partial<A, Ts...>{arg}} noexcept;})
+        requires (requires{{as_partial<A, Ts...>{arg}};})
     {
-        return as_partial<A, Ts...>{std::forward<A>(arg)};
+        return as_partial<A, Ts...>{arg};
     }
 
     /* Template arguments must store partial values internally in order to work with
     the binding logic.  As soon as a `bind()` call has finished executing, the partial
-    value containers will be concatenated to form the final `templates{}` container,
-    and each `partial_t<>` annotation will be demoted to `partial<>`, to minimize
-    binary size and keep template errors concise. */
+    values will be concatenated to form the final `templates{}` container, and each
+    `partial_t<>` annotation will be demoted to `partial<>`, to minimize binary size
+    and keep template errors concise. */
     template <typename Arg, typename... Ts> requires (check_partial<Arg, Ts...>)
     struct partial_t : partial<Arg, Ts...> {
         using base_type = partial<Arg, Ts...>;
@@ -1932,12 +1932,9 @@ namespace impl {
         meta::remove_rvalue<Ts>...
     >::type;
 
-    template <typename T>
-    constexpr bool is_partial_t = false;
-    template <typename Arg, typename... Ts>
-    constexpr bool is_partial_t<partial_t<Arg, Ts...>> = true;
-
-    /* Form a `bertrand::args{}` container to back a set of partial arguments. */
+    /* Form a `bertrand::args{}` container to back a set of partial arguments.  Calling
+    the `extract_partial` helper is only used when constructing a `templates{}`
+    container, to extract partial values from `partial_t` wrappers. */
     template <typename, typename...>
     struct _extract_partial;
     template <typename... out>
@@ -1995,30 +1992,17 @@ namespace impl {
         static constexpr type operator()(auto&&... args)
             noexcept (requires{{extract(
                 std::make_index_sequence<sizeof...(out)>(),
-                std::make_index_sequence<meta::partials<A>::size()>(),
+                std::make_index_sequence<meta::partials<A>::size>(),
                 std::make_index_sequence<sizeof...(As) - (sizeof...(out) + 1)>(),
                 std::forward<decltype(args)>(args)...
             )} noexcept;})
-            requires (is_partial_t<meta::unqualify<A>>)
         {
             return extract(
                 std::make_index_sequence<sizeof...(out)>(),
-                std::make_index_sequence<meta::partials<A>::size()>(),
+                std::make_index_sequence<meta::partials<A>::size>(),
                 std::make_index_sequence<sizeof...(As) - (sizeof...(out) + 1)>(),
                 std::forward<decltype(args)>(args)...
             );
-        }
-        static constexpr type operator()(auto&&... args)
-            noexcept (requires{{_extract_partial<
-                typename meta::pack<out...>::template concat<meta::partials<A>>,
-                As...
-            >{}(std::forward<decltype(args)>(args)...)} noexcept;})
-            requires (!is_partial_t<meta::unqualify<A>>)
-        {
-            return _extract_partial<
-                typename meta::pack<out...>::template concat<meta::partials<A>>,
-                As...
-            >{}(std::forward<decltype(args)>(args)...);
         }
     };
     template <typename... out, typename A, typename... As> requires (!meta::partial_arg<A>)
@@ -2065,7 +2049,7 @@ namespace impl {
     template <typename... As> requires (meta::arg<As> && ...)
     using extract_partial = _extract_partial<meta::pack<>, As...>;
 
-    /* Counts the number of partial arguments to the left of `I` in `A...`.  This
+    /* Counts the number of partial arguments to the right of `I` in `A...`.  This
     allows translation from indices in a partial signature to values in a corresponding
     `args{}` container or argument list. */
     template <size_t, typename...>
@@ -2083,7 +2067,7 @@ namespace impl {
     struct templates {
         using types = meta::pack<Args...>;
         using args_t = impl::args<Args...>;
-        using partials_t = extract_partial<Args...>::type;
+        using partial_t = extract_partial<Args...>::type;
         using size_type = size_t;
         using index_type = ssize_t;
 
@@ -2091,30 +2075,24 @@ namespace impl {
         [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
         [[nodiscard]] static constexpr bool empty() noexcept { return size() == 0; }
 
-        /// TODO: args -> data
-        /// TODO: partials -> partial
-
         args_t args;
-        partials_t partials;
+        partial_t partial;
 
         template <meta::inherits<Args>... As>
         constexpr templates(As&&... args)
             noexcept (requires{
                 {args_t{std::forward<As>(args)...}} noexcept;
-                {partials_t{extract_partial<Args...>{}(std::forward<As>(args)...)}} noexcept;
+                {partial_t{extract_partial<Args...>{}(std::forward<As>(args)...)}} noexcept;
             })
         :
             args(std::forward<As>(args)...),
-            partials(extract_partial<Args...>{}(std::forward<As>(args)...))
+            partial(extract_partial<Args...>{}(std::forward<As>(args)...))
         {}
 
-        /// TODO: maybe I need a method that translates indices from the templates{}
-        /// container to the partial values, or just roll that into a get<I>() method
-        /// that is only enabled if the argument at index I is a partial.
-
-        /// signature<templates<arg<static_str<2UL - 1>{"x"}, void, int>{2}>>, arg<static_str<2UL - 1>{"y"}, void, void>> sig;
-        /// signature<{"x"_ = 2}, "y"_> sig;
-
+        template <size_type I>
+        [[nodiscard]] static constexpr size_type index() noexcept {
+            return partial_idx<I, Args...>;
+        }
 
         template <size_type I, typename... Ts> requires (I < size())
         constexpr auto make_partial(Ts&&... ts) const
@@ -2122,10 +2100,10 @@ namespace impl {
                 std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
                 std::forward<Ts>(ts)...
             )} noexcept;})
-            requires (requires{{_make_partial<I>(
-                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
-                std::forward<Ts>(ts)...
-            )};})
+            // requires (requires{{_make_partial<I>(
+            //     std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
+            //     std::forward<Ts>(ts)...
+            // )};})
         {
             return _make_partial<I>(
                 std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
@@ -2139,25 +2117,25 @@ namespace impl {
         constexpr auto _make_partial(std::index_sequence<Is...>, Ts&&... ts) const
             noexcept (requires{{as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
                 args.template get<I>(),
-                std::get<partial_idx<I, Args...> + Is>(partials)...,
+                std::get<partial_idx<I, Args...> + Is>(partial)...,
                 std::forward<Ts>(ts)...
             }} noexcept;})
             requires (requires{as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
                 args.template get<I>(),
-                std::get<partial_idx<I, Args...> + Is>(partials)...,
+                std::get<partial_idx<I, Args...> + Is>(partial)...,
                 std::forward<Ts>(ts)...
             };})
         {
             return as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
                 args.template get<I>(),
-                std::get<partial_idx<I, Args...> + Is>(partials)...,
+                std::get<partial_idx<I, Args...> + Is>(partial)...,
                 std::forward<Ts>(ts)...
             };
         }
     };
 
     template <meta::arg... A>
-    templates(A...) -> templates<typename A::base_type...>;
+    templates(A...) -> templates<A...>;
 
     /* Strip any partial values from an argument. */
     template <meta::arg A> requires (meta::partial_arg<A>)
@@ -2188,6 +2166,11 @@ namespace meta {
 
     namespace detail {
 
+        template <typename... Ts>
+        constexpr bool arg<impl::partial<Ts...>> = true;
+        template <typename... Ts>
+        constexpr bool arg<impl::partial_t<Ts...>> = true;
+
         enum class bind_error : uint8_t {
             ok,
             bad_type,
@@ -2212,17 +2195,6 @@ namespace meta {
 
 
 namespace impl {
-
-    /// TODO: the way template arguments interact with partials means that during
-    /// binding, the parameter list will be built up using partial_t<> types, which
-    /// hold the values internally.  Then, when the final templates{} object is
-    /// constructed, the partial_t<> types will be demoted to partial<>, and the
-    /// partial values will be extracted into a `bertrand::args{}` container.  If
-    /// partials are re-bound or forwarded after that, then the partial<> types
-    /// will be converted into extended partial_t<> types, and then demoted again
-    /// when the final signature is constructed.  This eliminates the template_arg
-    /// wrapper, plus a bunch of levels of inheritance, both of which should condense
-    /// error messages as much as possible.
 
     /* A compact bitset describing the kind (positional, keyword, optional, and/or
     variadic) of an argument within a C++ parameter list. */
@@ -2327,7 +2299,7 @@ namespace impl {
             describe the status of each argument in the signature, for use during
             argument binding and signature indexing/iteration.
     */
-    template <const auto& Spec, const auto&... Args>
+    template <const auto& /* templates */ Spec, const auto&... Args>
     struct signature_info {
     private:
         template <typename A>
@@ -2340,7 +2312,7 @@ namespace impl {
             if constexpr (Spec.size()) {
                 return (
                     "def<" + string_wrapper<", ">::join<
-                        display_arg<decltype(Spec.template get<Is>())>...
+                        display_arg<decltype(Spec.args.template get<Is>())>...
                     >() + ">(" + string_wrapper<", ">::join<
                         display_arg<decltype(Args)>...
                     >() + ")"
@@ -2386,7 +2358,7 @@ namespace impl {
         template <size_t I> requires (I < N)
         [[nodiscard]] static constexpr decltype(auto) get() noexcept {
             if constexpr (I < Spec.size()) {
-                return (Spec.template get<I>());
+                return (Spec.args.template get<I>());
             } else {
                 return (meta::unpack_value<I - Spec.size(), Args...>);
             }
@@ -2727,22 +2699,16 @@ namespace impl {
 
         /* The total number of argument annotations (template + runtime) that are
         included in this signature, as an unsigned integer. */
-        [[nodiscard]] static constexpr size_type size() noexcept {
-            return info_type::N;
-        }
+        [[nodiscard]] static constexpr size_type size() noexcept { return info_type::N; }
 
         /* The total number of argument annotations (template + runtime) that are
         included in this signature, as a nsigned integer. */
-        [[nodiscard]] static constexpr index_type ssize() noexcept {
-            return index_type(size());
-        }
+        [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
 
         /* True if the signature is completely empty, containing no parameters.  Such
         a function would by definition accept zero arguments and return an
         indeterminate type.  For the vast majority of functions, this will be false. */
-        [[nodiscard]] static constexpr bool empty() noexcept {
-            return size() == 0;
-        }
+        [[nodiscard]] static constexpr bool empty() noexcept { return size() == 0; }
 
     private:
         static constexpr auto names = []<
@@ -2770,19 +2736,19 @@ namespace impl {
         ) {
             return string_map<
                 size_type,
-                meta::arg_name<decltype(Spec.template get<
+                meta::arg_name<decltype(Spec.args.template get<
                     info.compile_time.posonly.offset + c_posonly
                 >())>...,
-                meta::arg_name<decltype(Spec.template get<
+                meta::arg_name<decltype(Spec.args.template get<
                     info.compile_time.pos_or_kw.offset + c_pos_or_kw
                 >())>...,
-                meta::arg_name<decltype(Spec.template get<
+                meta::arg_name<decltype(Spec.args.template get<
                     info.compile_time.kwonly.offset + c_kwonly
                 >())>...,
-                meta::arg_name<decltype(Spec.template get<
+                meta::arg_name<decltype(Spec.args.template get<
                     info.compile_time.args.offset + c_args
                 >())>...,
-                meta::arg_name<decltype(Spec.template get<
+                meta::arg_name<decltype(Spec.args.template get<
                     info.compile_time.kwargs.offset + c_kwargs
                 >())>...,
                 meta::arg_name<decltype(meta::unpack_value<
@@ -2855,10 +2821,6 @@ namespace impl {
                 return partial > 0 || kind.optional();
             }
 
-            /// TODO: this has to be able to return multiple partial values in the
-            /// case of variadic arguments, and needs to check proper noexcept/requires
-            /// clauses.
-
             static constexpr decltype(auto) value()
                 noexcept (requires{{arg.value()} noexcept;})
                 requires (partial == 0 && kind.optional())
@@ -2866,37 +2828,81 @@ namespace impl {
                 return arg.value();
             }
 
-            template <typename S> requires (partial > 0)
-            constexpr decltype(auto) value(this S&& self) noexcept {
-                if constexpr (I < Spec.size()) {
-                    /// TODO: break this into separate overloads for the template and
-                    /// runtime sections, and return an args{} container if more than
-                    /// one partial value is stored.
+            static constexpr decltype(auto) value()
+                noexcept (requires{
+                    {Spec.partial.template get<Spec.template index<I>()>()} noexcept;
+                })
+                requires (partial > 0 && I < Spec.size() && !kind.variadic() && requires{
+                    {Spec.partial.template get<Spec.template index<I>()>()};
+                })
+            {
+                return (Spec.partial.template get<Spec.template index<I>()>());
+            }
 
-                    if constexpr (kind.variadic()) {
-                        return (arg.partial_values);
-                    } else {
-                        return (arg.partial_values.template get<0>());
-                    }
-                } else {
-                    return (std::forward<S>(self).signature.partial.template get<
-                        impl::partial_idx<index - Spec.size(), decltype(Args)...>
-                    >());
-                }
+            static constexpr decltype(auto) value()
+                noexcept (requires{{template_args(std::make_index_sequence<partial>{})} noexcept;})
+                requires (partial > 0 && I < Spec.size() && kind.variadic() && requires{
+                    {template_args(std::make_index_sequence<partial>{})};
+                })
+            {
+                return (template_args(std::make_index_sequence<partial>{}));
+            }
+
+            template <typename S> requires (partial > 0 && I >= Spec.size() && !kind.variadic())
+            constexpr decltype(auto) value(this S&& self)
+                noexcept (requires{{std::forward<S>(self).signature.partial.template get<
+                    impl::partial_idx<I - Spec.size(), decltype(Args)...>
+                >()} noexcept;})
+                requires (requires{{std::forward<S>(self).signature.partial.template get<
+                    impl::partial_idx<I - Spec.size(), decltype(Args)...>
+                >()};})
+            {
+                return (std::forward<S>(self).signature.partial.template get<
+                    impl::partial_idx<I - Spec.size(), decltype(Args)...>
+                >());
+            }
+
+            template <typename S> requires (partial > 0 && I >= Spec.size() && kind.variadic())
+            constexpr decltype(auto) value(this S&& self)
+                noexcept (requires{{runtime_args(std::make_index_sequence<partial>{})} noexcept;})
+                requires (requires{{runtime_args(std::make_index_sequence<partial>{})};})
+            {
+                return (std::forward<S>(self).signature.partial.template get<
+                    impl::partial_idx<I - Spec.size(), decltype(Args)...>
+                >());
             }
 
         private:
 
-            template <size_type... parts> requires (I < Spec.size() && sizeof...(parts) == 1)
-            constexpr decltype(auto) partial_value(std::index_sequence<parts...>)
+            template <size_type... parts> requires (I < Spec.size())
+            static constexpr decltype(auto) template_args(std::index_sequence<parts...>)
+                noexcept (requires{{bertrand::args{
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...
+                }} noexcept;})
+                requires (requires{{bertrand::args{
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...
+                }};})
             {
-                /// TODO: this needs to translate the index into the templates{}
-                /// partials container
-
-                // return (Spec.partials.template get<>)
+                return bertrand::args{
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...
+                };
             }
 
-
+            template <typename S, size_type... parts> requires (I < Spec.size())
+            constexpr decltype(auto) runtime_args(this S&& self, std::index_sequence<parts...>)
+                noexcept (requires{{bertrand::args{
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...
+                }} noexcept;})
+                requires (requires{{bertrand::args{
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...
+                }};})
+            {
+                return bertrand::args{
+                    std::forward<S>(self).signature.partial.template get<
+                        impl::partial_idx<I - Spec.size(), decltype(Args)...> + parts
+                    >()...
+                };
+            }
         };
 
     public:
@@ -3257,11 +3263,10 @@ namespace impl {
             static constexpr bool type_check<T> =
                 meta::convertible_to<meta::yield_type<T>, meta::arg_type<decltype(curr.arg)>>;
             template <typename T> requires (curr.kind.typed() && meta::kwarg_pack<T>)
-            static constexpr bool type_check<T> =
-                meta::convertible_to<
-                    meta::get_type<T, curr.name>,
-                    meta::arg_type<decltype(curr.arg)>
-                >;
+            static constexpr bool type_check<T> = meta::convertible_to<
+                meta::get_type<T, curr.name>,
+                meta::arg_type<decltype(curr.arg)>
+            >;
 
             // Check to see whether any keyword arguments in `A...` are already
             // contained as partial variadic keyword arguments.  If so, then a
@@ -3270,15 +3275,10 @@ namespace impl {
             // `partial_type`.
             template <typename...>
             static constexpr bool conflicts_with_partial = false;
-            template <typename A, typename... As>
-                requires (curr.kind.kwargs() && !meta::template_arg<decltype(curr.arg)>)
+            template <typename A, typename... As> requires (curr.kind.kwargs())
             static constexpr bool conflicts_with_partial<A, As...> =
                 partial_type::template contains<meta::arg_name<A>>() ||
-                conflicts_with_partial<As...>;
-            template <typename A, typename... As>
-                requires (curr.kind.kwargs() && meta::template_arg<decltype(curr.arg)>)
-            static constexpr bool conflicts_with_partial<A, As...> =
-                curr.arg.partial_values.template contains<meta::arg_name<A>>() ||
+                Spec.partial.template contains<meta::arg_name<A>>() ||
                 conflicts_with_partial<As...>;
 
             // (1) consume a positional argument or yield from a positional pack,
@@ -3467,7 +3467,7 @@ namespace impl {
             using type = _bind<
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
-                Spec.template get<sizeof...(prev)>(),
+                Spec.args.template get<sizeof...(prev)>(),
                 meta::unpack_value<sizeof...(prev) + next, T...>...
             >;
         };
@@ -3488,8 +3488,7 @@ namespace impl {
             using type = _bind<
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
-                impl::make_partial(
-                    Spec.template get<sizeof...(prev)>(),
+                Spec.template make_partial<sizeof...(prev)>(
                     meta::unpack_value<sizeof...(prev), T...>
                 ),
                 meta::unpack_value<sizeof...(prev) + 1 + next, T...>...
@@ -3518,8 +3517,7 @@ namespace impl {
             using type = _bind<
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
-                impl::make_partial(
-                    Spec.template get<sizeof...(prev)>(),
+                Spec.template make_partial<sizeof...(prev)>(
                     meta::unpack_value<
                         consume_keyword<sizeof...(prev), sizeof...(prev), decltype(T)...>,
                         T...
@@ -3556,8 +3554,7 @@ namespace impl {
             using type = _bind<
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
-                impl::make_partial(
-                    Spec.template get<sizeof...(prev)>(),
+                Spec.template make_partial<sizeof...(prev)>(
                     meta::unpack_value<sizeof...(prev) + pos, T...>...
                 ),
                 meta::unpack_value<sizeof...(prev) + sizeof...(pos) + kw, T...>...
@@ -3588,8 +3585,7 @@ namespace impl {
             using type = _bind<
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
-                impl::make_partial(
-                    Spec.template get<sizeof...(prev)>(),
+                Spec.template make_partial<sizeof...(prev)>(
                     meta::unpack_value<sizeof...(prev) + sizeof...(pos) + kw, T...>...
                 ),
                 meta::unpack_value<sizeof...(prev) + pos, T...>...
@@ -4028,13 +4024,22 @@ namespace impl {
                 template <typename P, typename... A>
                 static constexpr decltype(auto) operator()(P&& partial, A&&... args)
                     noexcept (requires{{
-                        signature<{T...}, Ts...>{std::forward<A>(args)...}
+                        signature<
+                            templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
+                            Ts...
+                        >{std::forward<A>(args)...}
                     } noexcept;})
                     requires (requires{
-                        signature<{T...}, Ts...>{std::forward<A>(args)...};
+                        signature<
+                            templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
+                            Ts...
+                        >{std::forward<A>(args)...};
                     })
                 {
-                    return (signature<{T...}, Ts...>{std::forward<A>(args)...});
+                    return (signature<
+                        templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
+                        Ts...
+                    >{std::forward<A>(args)...});
                 }
             };
         };
@@ -5075,6 +5080,7 @@ namespace impl {
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             ));
+            /// TODO: when I finish with the call logic, delete this.
             // return (typename _call<0, 0, T...>::template fn<>{}(
             //     std::forward<F>(func),
             //     std::forward<Self>(self).partial,
@@ -6518,7 +6524,7 @@ namespace impl {
     template <typename F, const auto& T, const auto&... A>
     struct _make_signature { using type = signature<T, A...>; };
     template <typename F, const auto& T, const auto&... A>
-        requires (T.size == 0 && sizeof...(A) == 0)
+        requires (T.empty() && sizeof...(A) == 0)
     struct _make_signature<F, T, A...> { using type = infer_signature<F>::type; };
     template <typename F, templates T, const auto&... A>
     using make_signature = _make_signature<F, T, A...>::type;
@@ -6666,7 +6672,7 @@ values, allowing for partial application at both compile time and runtime.
 
 See "Functions" in the API documentation for more details on how Bertrand functions may
 be defined and used. */
-template <impl::templates T, meta::arg auto... A, typename F> requires (T.size > 0)
+template <impl::templates T, meta::arg auto... A, typename F> requires (!T.empty())
 [[nodiscard]] constexpr auto def(F&& f)
     noexcept (requires{{impl::make_def<F, T, A...>{
         std::forward<F>(f),
@@ -6817,7 +6823,7 @@ values, allowing for partial application at both compile time and runtime.
 See "Functions" in the API documentation for more details on how Bertrand functions may
 be defined and used. */
 template <impl::templates T, meta::arg auto... A, typename... F>
-    requires (T.size > 0 && sizeof...(F) > 1)
+    requires (!T.empty() && sizeof...(F) > 1)
 [[nodiscard]] constexpr auto def(F&&... fs)
     noexcept (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
@@ -6839,6 +6845,13 @@ template <impl::templates T, meta::arg auto... A, typename... F>
 
 
 
+
+
+
+
+
+
+
 // inline constexpr auto f = def(
 //     [](int x, int y) { return x + y; },
 //     [](double x, double y) { return x - y; }
@@ -6848,7 +6861,7 @@ template <impl::templates T, meta::arg auto... A, typename... F>
 // inline constexpr auto f2 = def<{"z"_ = 1}, "x"_, "y"_>([]<int z>(int x, int y) {
 //     return x + y + z;
 // });
-// static_assert(f2.bind("y"_ = 1).call<("z"_ = 2)>(2) == 5);
+// static_assert(f2.bind<("z"_ = 2)>()(2, "y"_ = 1) == 5);
 
 // inline constexpr auto f3 = f2 >> [](int result) { return result * 2; };
 // static_assert(f3.bind("y"_ = 1).clear().template call<2>(2, 1) == 10);
