@@ -413,12 +413,8 @@ namespace impl {
         then the result must be convertible to that type. */
         template <meta::materialization_function F> requires (meta::is_void<T>)
         constexpr auto operator()(F&& f) &&
-            noexcept (requires{
-                {arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;
-            })
-            requires (requires{
-                {arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}};
-            })
+            noexcept (requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;})
+            requires (requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}};})
         {
             return arg<ID, T, impl::materialize<F>>{std::forward<F>(f)};
         }
@@ -430,9 +426,7 @@ namespace impl {
         then the result must be convertible to that type. */
         template <meta::materialization_function F> requires (meta::not_void<T>)
         constexpr auto operator()(F&& f) &&
-            noexcept (requires{
-                {arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;
-            })
+            noexcept (requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;})
             requires (
                 meta::invoke_returns<T, F> &&
                 requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}};}
@@ -697,7 +691,7 @@ constexpr std::type_identity<T> type;
 template <meta::arg T>
 constexpr void swap(T& a, T& b)
     noexcept (requires{{a.swap(b)} noexcept;})
-    requires (requires{a.swap(b);})
+    requires (requires{{a.swap(b)};})
 {
     a.swap(b);
 }
@@ -708,17 +702,12 @@ constexpr void swap(T& a, T& b)
 //////////////////////////////
 
 
-namespace impl {
-    struct args_tag {};
-}
-
-
 namespace meta {
 
-    template <typename T>
-    concept args = inherits<T, impl::args_tag>;
-
     namespace detail {
+
+        template <typename T>
+        constexpr bool args = false;
 
         template <size_t I, typename...>
         struct _extract_keywords {
@@ -781,6 +770,9 @@ namespace meta {
 
     }
 
+    template <typename T>
+    concept args = detail::args<unqualify<T>>;
+
     template <typename... Ts>
     concept args_spec = ((
         source_args<Ts...> &&
@@ -837,7 +829,7 @@ args(Ts&&...) -> args<Ts...>;
 template <typename... Ts>
 constexpr void swap(args<Ts...>& a, args<Ts...>& b)
     noexcept (requires{{a.swap(b)} noexcept;})
-    requires (requires{a.swap(b);})
+    requires (requires{{a.swap(b)};})
 {
     a.swap(b);
 }
@@ -846,7 +838,7 @@ constexpr void swap(args<Ts...>& a, args<Ts...>& b)
 namespace impl {
 
     template <typename...>
-    struct args : args_tag {
+    struct args {
         constexpr void swap(args& other) noexcept {}
 
         template <typename S, typename F, typename... A>
@@ -1034,11 +1026,11 @@ private:
                     indices.start + Is * indices.step
                 >()...}
             } noexcept;})
-            requires (requires{
+            requires (requires{{
                 bertrand::args{std::forward<meta::qualify<base, Self>>(self).template get<
                     indices.start + Is * indices.step
-                >()...};
-            })
+                >()...}
+            };})
         {
             return bertrand::args{std::forward<meta::qualify<base, Self>>(self).template get<
                 indices.start + Is * indices.step
@@ -1142,9 +1134,9 @@ public:
         noexcept (requires{{get_slice<slice.normalize(ssize())>::operator()(
             std::forward<Self>(self)
         )} noexcept;})
-        requires (requires{get_slice<slice.normalize(ssize())>::operator()(
+        requires (requires{{get_slice<slice.normalize(ssize())>::operator()(
             std::forward<Self>(self)
-        );})
+        )};})
     {
         return get_slice<slice.normalize(ssize())>::operator()(
             std::forward<Self>(self)
@@ -1168,11 +1160,11 @@ public:
                 self
             ).template get<names.template get<name>()>().value()
         } noexcept;})
-        requires (names.template contains<name>() && requires{
+        requires (names.template contains<name>() && requires{{
             std::forward<meta::qualify<base, Self>>(
                 self
-            ).template get<names.template get<name>()>().value();
-        })
+            ).template get<names.template get<name>()>().value()
+        };})
     {
         return (std::forward<meta::qualify<base, Self>>(
             self
@@ -1224,11 +1216,11 @@ public:
                 self
             ).template get<names.template index<name>()>().value()}
         } noexcept;})
-        requires (names.template contains<name>() && requires{
+        requires (names.template contains<name>() && requires{{
             Optional{std::forward<meta::qualify<base, Self>>(
                 self
-            ).template get<names.template index<name>()>().value()};
-        })
+            ).template get<names.template index<name>()>().value()}
+        };})
     {
         return Optional{std::forward<meta::qualify<base, Self>>(
             self
@@ -1294,7 +1286,7 @@ public:
         noexcept (requires{
             {std::forward<meta::qualify<base, Self>>(self)(std::forward<F>(f))} noexcept;
         })
-        requires (requires{std::forward<meta::qualify<base, Self>>(self)(std::forward<F>(f));})
+        requires (requires{{std::forward<meta::qualify<base, Self>>(self)(std::forward<F>(f))};})
     {
         return (std::forward<meta::qualify<base, Self>>(self)(std::forward<F>(f)));
     }
@@ -1570,7 +1562,7 @@ namespace impl {
 
         constexpr void swap(kwarg_pack& other)
             noexcept (requires{{std::ranges::swap(m_data, other.m_data)} noexcept;})
-            requires (requires{std::ranges::swap(m_data, other.m_data);})
+            requires (requires{{std::ranges::swap(m_data, other.m_data)};})
         {
             std::ranges::swap(m_data, other.m_data);
         }
@@ -1803,7 +1795,7 @@ namespace impl {
             }} noexcept;})
             requires (
                 meta::unpack_to_kwargs<T> &&
-                requires{kwarg_pack<T>{std::forward<container_type>(m_data)};}
+                requires{{kwarg_pack<T>{std::forward<container_type>(m_data)}};}
             )
         {
             return kwarg_pack<T>{std::forward<container_type>(m_data)};
@@ -1819,6 +1811,11 @@ namespace impl {
 namespace meta {
 
     namespace detail {
+
+        template <typename... Ts>
+        constexpr bool args<bertrand::args<Ts...>> = true;
+        template <typename... Ts>
+        constexpr bool args<impl::args<Ts...>> = true;
 
         template <typename T>
         constexpr bool arg<impl::arg_pack<T>> = true;
@@ -1932,6 +1929,17 @@ namespace impl {
         meta::remove_rvalue<Ts>...
     >::type;
 
+    /* Counts the number of partial arguments to the right of `I` in `A...`.  This
+    allows translation from indices in a partial signature to values in a corresponding
+    `args{}` container or argument list. */
+    template <size_t, typename...>
+    constexpr size_t partial_idx = 0;
+    template <size_t I, typename A, typename... Args> requires (!meta::partial_arg<A> && I > 0)
+    constexpr size_t partial_idx<I, A, Args...> = partial_idx<I - 1, Args...>;
+    template <size_t I, typename A, typename... Args> requires (meta::partial_arg<A> && I > 0)
+    constexpr size_t partial_idx<I, A, Args...> =
+        partial_idx<I - 1, Args...> + meta::partials<A>::size;
+
     /* Form a `bertrand::args{}` container to back a set of partial arguments.  Calling
     the `extract_partial` helper is only used when constructing a `templates{}`
     container, to extract partial values from `partial_t` wrappers. */
@@ -1954,6 +1962,8 @@ namespace impl {
         >::type;
 
     private:
+        static constexpr size_t idx = partial_idx<sizeof...(out), out...>;
+
         template <size_t... prev, size_t... parts, size_t... next>
         static constexpr type extract(
             std::index_sequence<prev...>,
@@ -1991,16 +2001,16 @@ namespace impl {
     public:
         static constexpr type operator()(auto&&... args)
             noexcept (requires{{extract(
-                std::make_index_sequence<sizeof...(out)>(),
+                std::make_index_sequence<idx>(),
                 std::make_index_sequence<meta::partials<A>::size>(),
-                std::make_index_sequence<sizeof...(As) - (sizeof...(out) + 1)>(),
+                std::make_index_sequence<sizeof...(args) - (idx + 1)>(),
                 std::forward<decltype(args)>(args)...
             )} noexcept;})
         {
             return extract(
-                std::make_index_sequence<sizeof...(out)>(),
+                std::make_index_sequence<idx>(),
                 std::make_index_sequence<meta::partials<A>::size>(),
-                std::make_index_sequence<sizeof...(As) - (sizeof...(out) + 1)>(),
+                std::make_index_sequence<sizeof...(args) - (idx + 1)>(),
                 std::forward<decltype(args)>(args)...
             );
         }
@@ -2010,6 +2020,8 @@ namespace impl {
         using type = _extract_partial<meta::pack<out...>, As...>::type;
 
     private:
+        static constexpr size_t idx = partial_idx<sizeof...(out), out...>;
+
         template <size_t... prev, size_t... parts, size_t... next>
         static constexpr type extract(
             std::index_sequence<prev...>,
@@ -2034,14 +2046,14 @@ namespace impl {
     public:
         static constexpr type operator()(auto&&... args)
             noexcept (requires{{extract(
-                std::make_index_sequence<sizeof...(out)>(),
-                std::make_index_sequence<sizeof...(args) - (sizeof...(out) + 1)>(),
+                std::make_index_sequence<idx>(),
+                std::make_index_sequence<sizeof...(args) - (idx + 1)>(),
                 std::forward<decltype(args)>(args)...
             )} noexcept;})
         {
             return extract(
-                std::make_index_sequence<sizeof...(out)>(),
-                std::make_index_sequence<sizeof...(args) - (sizeof...(out) + 1)>(),
+                std::make_index_sequence<idx>(),
+                std::make_index_sequence<sizeof...(args) - (idx + 1)>(),
                 std::forward<decltype(args)>(args)...
             );
         }
@@ -2049,25 +2061,14 @@ namespace impl {
     template <typename... As> requires (meta::arg<As> && ...)
     using extract_partial = _extract_partial<meta::pack<>, As...>;
 
-    /* Counts the number of partial arguments to the right of `I` in `A...`.  This
-    allows translation from indices in a partial signature to values in a corresponding
-    `args{}` container or argument list. */
-    template <size_t, typename...>
-    constexpr size_t partial_idx = 0;
-    template <size_t I, typename A, typename... Args> requires (!meta::partial_arg<A> && I > 0)
-    constexpr size_t partial_idx<I, A, Args...> = partial_idx<I - 1, Args...>;
-    template <size_t I, typename A, typename... Args> requires (meta::partial_arg<A> && I > 0)
-    constexpr size_t partial_idx<I, A, Args...> =
-        partial_idx<I - 1, Args...> + meta::partials<A>::size;
-
     /* A brace-initializable container for a sequence of arguments that forms the
     explicit template signature for a function.  Arguments within this container must
     be provided as template arguments when the function is called. */
     template <meta::unqualified... Args> requires (meta::arg<Args> && ...)
     struct templates {
         using types = meta::pack<Args...>;
-        using args_t = impl::args<Args...>;
-        using partial_t = extract_partial<Args...>::type;
+        using args_type = impl::args<Args...>;
+        using partial_type = extract_partial<Args...>::type;
         using size_type = size_t;
         using index_type = ssize_t;
 
@@ -2075,14 +2076,14 @@ namespace impl {
         [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
         [[nodiscard]] static constexpr bool empty() noexcept { return size() == 0; }
 
-        args_t args;
-        partial_t partial;
+        args_type args;
+        partial_type partial;
 
         template <meta::inherits<Args>... As>
         constexpr templates(As&&... args)
             noexcept (requires{
-                {args_t{std::forward<As>(args)...}} noexcept;
-                {partial_t{extract_partial<Args...>{}(std::forward<As>(args)...)}} noexcept;
+                {args_type{std::forward<As>(args)...}} noexcept;
+                {partial_type{extract_partial<Args...>{}(std::forward<As>(args)...)}} noexcept;
             })
         :
             args(std::forward<As>(args)...),
@@ -2094,43 +2095,43 @@ namespace impl {
             return partial_idx<I, Args...>;
         }
 
+    private:
+        template <size_type I, size_type... Is, typename... Ts>
+        constexpr auto _make_partial(std::index_sequence<Is...>, Ts&&... ts) const
+            noexcept (requires{{as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
+                args.template get<I>(),
+                partial.template get<partial_idx<I, Args...> + Is>()...,
+                std::forward<Ts>(ts)...
+            }} noexcept;})
+            requires (requires{{as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
+                args.template get<I>(),
+                partial.template get<partial_idx<I, Args...> + Is>()...,
+                std::forward<Ts>(ts)...
+            }};})
+        {
+            return as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
+                args.template get<I>(),
+                partial.template get<partial_idx<I, Args...> + Is>()...,
+                std::forward<Ts>(ts)...
+            };
+        }
+
+    public:
         template <size_type I, typename... Ts> requires (I < size())
         constexpr auto make_partial(Ts&&... ts) const
             noexcept (requires{{_make_partial<I>(
                 std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
                 std::forward<Ts>(ts)...
             )} noexcept;})
-            // requires (requires{{_make_partial<I>(
-            //     std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
-            //     std::forward<Ts>(ts)...
-            // )};})
+            requires (requires{{_make_partial<I>(
+                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
+                std::forward<Ts>(ts)...
+            )};})
         {
             return _make_partial<I>(
                 std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
                 std::forward<Ts>(ts)...
             );
-        }
-
-    private:
-
-        template <size_type I, size_type... Is, typename... Ts>
-        constexpr auto _make_partial(std::index_sequence<Is...>, Ts&&... ts) const
-            noexcept (requires{{as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
-                args.template get<I>(),
-                std::get<partial_idx<I, Args...> + Is>(partial)...,
-                std::forward<Ts>(ts)...
-            }} noexcept;})
-            requires (requires{as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
-                args.template get<I>(),
-                std::get<partial_idx<I, Args...> + Is>(partial)...,
-                std::forward<Ts>(ts)...
-            };})
-        {
-            return as_partial_t<meta::unpack_type<I, Args...>, Ts...>{
-                args.template get<I>(),
-                std::get<partial_idx<I, Args...> + Is>(partial)...,
-                std::forward<Ts>(ts)...
-            };
         }
     };
 
@@ -3017,10 +3018,10 @@ namespace impl {
                 Self,
                 size_type(impl::normalize_index<ssize(), I>())
             >{std::forward<Self>(self)}} noexcept;})
-            requires (requires{access<
+            requires (requires{{access<
                 Self,
                 size_type(impl::normalize_index<ssize(), I>())
-            >{std::forward<Self>(self)};})
+            >{std::forward<Self>(self)}};})
         {
             return access<
                 Self,
@@ -3042,9 +3043,9 @@ namespace impl {
             noexcept (requires{{access<Self, names.template get<name>()>{
                 std::forward<Self>(self)
             }} noexcept;})
-            requires (requires{access<Self, names.template get<name>()>{
+            requires (requires{{access<Self, names.template get<name>()>{
                 std::forward<Self>(self)
-            };})
+            }};})
         {
             return access<Self, names.template get<name>()>{std::forward<Self>(self)};
         }
@@ -3059,9 +3060,9 @@ namespace impl {
             noexcept (requires{{Optional<reference>{
                 info.params[idx + (ssize() * (idx < 0))]
             }} noexcept;})
-            requires (requires{Optional<reference>{
+            requires (requires{{Optional<reference>{
                 info.params[idx + (ssize() * (idx < 0))]
-            };})
+            }};})
         {
             index_type i = idx + (ssize() * (idx < 0));
             if (i < 0 || i >= ssize()) {
@@ -3076,7 +3077,7 @@ namespace impl {
         indicates that the argument name is not present in the signature. */
         [[nodiscard]] static constexpr Optional<reference> get(std::string_view name)
             noexcept (requires{{Optional<reference>{info.params[names[name]]}} noexcept;})
-            requires (requires{Optional<reference>{info.params[names[name]]};})
+            requires (requires{{Optional<reference>{info.params[names[name]]}};})
         {
             if (const auto it = names.find(name); it != names.end()) {
                 return {info.params[it->second]};
@@ -3478,9 +3479,8 @@ namespace impl {
             T...
         >::type {};
 
-        // (2) matching positional arguments are bound to `curr.partial_values`
-        // and then forwarded, after checking for a type mismatch or conflicting
-        // keyword.
+        // (2) matching positional arguments are bound and then forwarded, after
+        // checking for a type mismatch or conflicting keyword.
         template <typename, typename, auto...>
         struct bind_pos;
         template <size_type... prev, size_type... next, auto... T>
@@ -3503,8 +3503,7 @@ namespace impl {
         >::type {};
 
         // (3) keywords must be removed from their current location, unwrapped to
-        // their underlying values, bound to `curr.partial_values`, and then
-        // forwarded.
+        // their underlying values, bound, and then forwarded.
         template <typename, typename, typename, auto...>
         struct bind_kw;
         template <size_type... prev, size_type... middle, size_type... next, auto... T>
@@ -3637,12 +3636,12 @@ namespace impl {
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{fn<Ts..., curr.arg>{}(
+                    requires (requires{{fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
-                    );})
+                    )};})
                 {
                     return (fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
@@ -3658,10 +3657,10 @@ namespace impl {
                         Ts...,
                         impl::make_partial<meta::unpack_type<J, A...>>(curr.arg)
                     >{}(std::forward<P>(partial), std::forward<A>(args)...)} noexcept;})
-                    requires (requires{fn<
+                    requires (requires{{fn<
                         Ts...,
                         impl::make_partial<meta::unpack_type<J, A...>>(curr.arg)
-                    >{}(std::forward<P>(partial), std::forward<A>(args)...);})
+                    >{}(std::forward<P>(partial), std::forward<A>(args)...)};})
                 {
                     return (fn<
                         Ts...,
@@ -3699,7 +3698,7 @@ namespace impl {
                             std::forward<A>(args)...
                         )...
                     )} noexcept;})
-                    requires (requires{fn<
+                    requires (requires{{fn<
                         Ts...,
                         impl::make_partial<
                             meta::arg_value<meta::unpack_type<consume_keyword<I, J, A...>, A...>>
@@ -3714,7 +3713,7 @@ namespace impl {
                         meta::unpack_arg<consume_keyword<I, J, A...> + 1 + next>(
                             std::forward<A>(args)...
                         )...
-                    );})
+                    )};})
                 {
                     return (fn<
                         Ts...,
@@ -3760,7 +3759,7 @@ namespace impl {
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{fn<
+                    requires (requires{{fn<
                         Ts...,
                         impl::make_partial<meta::unpack_type<J + pos, A...>...>(curr.arg)
                     >{}(
@@ -3769,7 +3768,7 @@ namespace impl {
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
-                    );})
+                    )};})
                 {
                     return (fn<
                         Ts...,
@@ -3812,7 +3811,7 @@ namespace impl {
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{fn<
+                    requires (requires{{fn<
                         Ts...,
                         impl::make_partial<meta::unpack_type<
                             J + sizeof...(pos) + kw,
@@ -3824,7 +3823,7 @@ namespace impl {
                         meta::unpack_arg<J + pos>(std::forward<A>(args)...)...,
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<J + sizeof...(pos) + kw>(std::forward<A>(args)...)...
-                    );})
+                    )};})
                 {
                     return (fn<
                         Ts...,
@@ -3856,10 +3855,10 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{fn<Ts..., curr.arg>{}(
+                    requires (requires{{fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (fn<Ts..., curr.arg>{}(
                         std::forward<P>(partial),
@@ -3885,13 +3884,13 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_partial(
+                    requires (requires{{bind_partial(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<curr.partial>{},
                         std::make_index_sequence<sizeof...(A) - J>{},
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (bind_partial(
                         std::make_index_sequence<J>{},
@@ -3910,10 +3909,10 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_pos(
+                    requires (requires{{bind_pos(
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (bind_pos(
                         std::forward<P>(partial),
@@ -3933,13 +3932,13 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_kw(
+                    requires (requires{{bind_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (bind_kw(
                         std::make_index_sequence<J>{},
@@ -3963,14 +3962,14 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_args(
+                    requires (requires{{bind_args(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<curr.partial>{},
                         std::make_index_sequence<consume_positional<J, A...>>{},
                         std::make_index_sequence<sizeof...(A) - (J + consume_positional<J, A...>)>{},
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (bind_args(
                         std::make_index_sequence<J>{},
@@ -3996,14 +3995,14 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{bind_kwargs(
+                    requires (requires{{bind_kwargs(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<curr.partial>{},
                         std::make_index_sequence<consume_positional<J, A...>>{},
                         std::make_index_sequence<sizeof...(A) - (J + consume_positional<J, A...>)>{},
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (bind_kwargs(
                         std::make_index_sequence<J>{},
@@ -4021,25 +4020,16 @@ namespace impl {
             signature. */
             template <auto... Ts> requires (sizeof...(Ts) == sizeof...(Args))
             struct fn<Ts...> {
+                using type = signature<
+                    templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
+                    Ts...
+                >;
                 template <typename P, typename... A>
                 static constexpr decltype(auto) operator()(P&& partial, A&&... args)
-                    noexcept (requires{{
-                        signature<
-                            templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
-                            Ts...
-                        >{std::forward<A>(args)...}
-                    } noexcept;})
-                    requires (requires{
-                        signature<
-                            templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
-                            Ts...
-                        >{std::forward<A>(args)...};
-                    })
+                    noexcept (requires{{type{std::forward<A>(args)...}} noexcept;})
+                    requires (requires{{type{std::forward<A>(args)...}};})
                 {
-                    return (signature<
-                        templates<typename meta::unqualify<decltype(T)>::base_type...>{T...},
-                        Ts...
-                    >{std::forward<A>(args)...});
+                    return (type{std::forward<A>(args)...});
                 }
             };
         };
@@ -4099,7 +4089,7 @@ namespace impl {
                 I + 1,
                 sizeof...(prev) + sizeof...(parts),
                 meta::unpack_value<prev, T...>...,
-                Spec.template get<I>().partial_values.template get<parts>()...,
+                Spec.partial.template get<Spec.template index<I>() + parts>()...,
                 meta::unpack_value<sizeof...(prev) + next, T...>...
             >;
         };
@@ -4204,7 +4194,7 @@ namespace impl {
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
                 bertrand::args{
-                    Spec.template get<I>().partial_values.template get<parts>()...,
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...,
                     meta::unpack_value<sizeof...(prev) + pos, T...>...
                 },
                 meta::unpack_value<sizeof...(prev) + sizeof...(pos) + kw, T...>...
@@ -4272,7 +4262,7 @@ namespace impl {
                 sizeof...(prev) + 1,
                 meta::unpack_value<prev, T...>...,
                 args{
-                    Spec.template get<I>().partial_values.template get<parts>()...,
+                    Spec.partial.template get<Spec.template index<I>() + parts>()...,
                     meta::unpack_value<sizeof...(prev) + sizeof...(pos) + kw, T...>...
                 },
                 meta::unpack_value<sizeof...(prev) + pos, T...>...
@@ -4329,13 +4319,13 @@ namespace impl {
                         curr.arg.value(),
                         meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{fn<I + 1, delta>{}(
+                    requires (requires{{fn<I + 1, delta>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         curr.arg.value(),
                         meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
-                    );})
+                    )};})
                 {
                     return (fn<I + 1, delta>{}(
                         std::forward<F>(func),
@@ -4369,13 +4359,13 @@ namespace impl {
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
                     )} noexcept;})
-                    requires (requires{fn<I + 1, delta>{}(
+                    requires (requires{{fn<I + 1, delta>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         std::forward<P>(partial).template get<target_partial<I> + parts>()...,
                         meta::unpack_arg<sizeof...(prev) + next>(std::forward<A>(args)...)...
-                    );})
+                    )};})
                 {
                     return (fn<I + 1, delta>{}(
                         std::forward<F>(func),
@@ -4416,14 +4406,14 @@ namespace impl {
                             meta::unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
                         )} noexcept;
                     })
-                    requires (requires{fn<I + 1, delta>{}(
+                    requires (requires{{fn<I + 1, delta>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
                         meta::unpack_arg<sizeof...(prev)>(std::forward<A>(args)...).next(),
                         meta::unpack_arg<sizeof...(prev)>(std::forward<A>(args)...),
                         meta::unpack_arg<sizeof...(prev) + 1 + next>(std::forward<A>(args)...)...
-                    );})
+                    )};})
                 {
                     if (meta::unpack_arg<I>(std::forward<A>(args)...).empty()) {
                         if constexpr (requires{fn{}(
@@ -4487,7 +4477,7 @@ namespace impl {
                             std::forward<A>(args)...
                         )...
                     )} noexcept;})
-                    requires (requires{fn<I + 1, delta>{}(
+                    requires (requires{{fn<I + 1, delta>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         meta::unpack_arg<prev>(std::forward<A>(args)...)...,
@@ -4498,7 +4488,7 @@ namespace impl {
                         meta::unpack_arg<consume_keyword<I, sizeof...(prev), A...> + 1 + next>(
                             std::forward<A>(args)...
                         )...
-                    );})
+                    )};})
                 {
                     return (fn<I + 1, delta>{}(
                         std::forward<F>(func),
@@ -4660,11 +4650,11 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{fn<I + 1, delta + 1>{}(
+                    requires (requires{{fn<I + 1, delta + 1>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (fn<I + 1, delta + 1>{}(
                         std::forward<F>(func),
@@ -4689,13 +4679,13 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_default(
+                    requires (requires{{call_default(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<sizeof...(A) - J>{},
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (call_default(
                         std::make_index_sequence<J>{},
@@ -4725,14 +4715,14 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_partial(
+                    requires (requires{{call_partial(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<curr.partial>{},
                         std::make_index_sequence<sizeof...(A) - J>{},
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (call_partial(
                         std::make_index_sequence<J>{},
@@ -4757,11 +4747,11 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{fn<I + 1, delta>{}(
+                    requires (requires{{fn<I + 1, delta>{}(
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (fn<I + 1, delta>{}(
                         std::forward<F>(func),
@@ -4782,13 +4772,13 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_arg_pack(
+                    requires (requires{{call_arg_pack(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<sizeof...(A) - J + 1>{},
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (call_arg_pack(
                         std::make_index_sequence<J>{},
@@ -4816,14 +4806,14 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_kw(
+                    requires (requires{{call_kw(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<consume_keyword<I, J, A...> - J>{},
                         std::make_index_sequence<sizeof...(A) - (consume_keyword<I, J, A...> + 1)>{},
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (call_kw(
                         std::make_index_sequence<J>{},
@@ -4847,13 +4837,13 @@ namespace impl {
                         std::forward<P>(partial),
                         std::forward<A>(args)...
                     )} noexcept;})
-                    requires (requires{call_kwarg_pack(
+                    requires (requires{{call_kwarg_pack(
                         std::make_index_sequence<J>{},
                         std::make_index_sequence<sizeof...(A) - J>{},
                         std::forward<F>(func),
                         std::forward<P>(partial),
                         std::forward<A>(args)...
-                    );})
+                    )};})
                 {
                     return (call_kwarg_pack(
                         std::make_index_sequence<J>{},
@@ -4875,8 +4865,6 @@ namespace impl {
             return annotation. */
             template <size_type delta> requires (info.ret.idx >= size())
             struct fn<size(), delta> {
-
-
                 /// TODO: this base case will have to validate and remove positional/keyword
                 /// packs at the same time.
 
@@ -4887,9 +4875,9 @@ namespace impl {
                     noexcept (requires{{
                         std::forward<F>(func)(std::forward<A>(args)...)
                     } noexcept;})
-                    requires (sizeof...(T) == 0 && requires{
-                        std::forward<F>(func)(std::forward<A>(args)...);
-                    })
+                    requires (sizeof...(T) == 0 && requires{{
+                        std::forward<F>(func)(std::forward<A>(args)...)
+                    };})
                 {
                     return (std::forward<F>(func)(std::forward<A>(args)...));
                 }
@@ -4904,11 +4892,11 @@ namespace impl {
                             std::forward<A>(args)...
                         )
                     } noexcept;})
-                    requires (sizeof...(T) > 0 && requires{
+                    requires (sizeof...(T) > 0 && requires{{
                         std::forward<F>(func).template operator()<T...>(
                             std::forward<A>(args)...
-                        );
-                    })
+                        )
+                    };})
                 {
                     return (std::forward<F>(func).template operator()<T...>(
                         std::forward<A>(args)...
@@ -4929,11 +4917,11 @@ namespace impl {
                     noexcept (requires{{
                         std::forward<F>(func)(std::forward<A>(args)...)
                     } noexcept;})
-                    requires (sizeof...(T) == 0 && requires{
-                        std::forward<F>(func)(std::forward<A>(args)...);
-                    })
+                    requires (sizeof...(T) == 0 && requires{{
+                        std::forward<F>(func)(std::forward<A>(args)...)
+                    };})
                 {
-                    return (std::forward<F>(func)(std::forward<A>(args)...));
+                    return std::forward<F>(func)(std::forward<A>(args)...);
                 }
 
                 // If one or more explicit template arguments are given, then we
@@ -4946,15 +4934,15 @@ namespace impl {
                             std::forward<A>(args)...
                         )
                     } noexcept;})
-                    requires (sizeof...(T) > 0 && requires{
+                    requires (sizeof...(T) > 0 && requires{{
                         std::forward<F>(func).template operator()<T...>(
                             std::forward<A>(args)...
-                        );
-                    })
+                        )
+                    };})
                 {
-                    return (std::forward<F>(func).template operator()<T...>(
+                    return std::forward<F>(func).template operator()<T...>(
                         std::forward<A>(args)...
-                    ));
+                    );
                 }
             };
         };
@@ -4962,7 +4950,7 @@ namespace impl {
         template <size_type... Is>
         static constexpr auto _clear(std::index_sequence<Is...>) noexcept {
             return signature<
-                {impl::remove_partial(Spec.template get<Is>())...},
+                {impl::remove_partial(Spec.args.template get<Is>())...},
                 impl::remove_partial(Args)...
             >{};
         }
@@ -5040,10 +5028,10 @@ namespace impl {
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
             )} noexcept;})
-            requires (requires{typename _bind<0, T...>::template fn<>{}(
+            requires (requires{{typename _bind<0, T...>::template fn<>{}(
                 std::forward<Self>(self).partial,
                 std::forward<A>(args)...
-            );})
+            )};})
         {
             return (typename _bind<0, T...>::template fn<>{}(
                 std::forward<Self>(self).partial,
@@ -5135,11 +5123,11 @@ namespace impl {
                             T.template get<Is>()...
                         >(std::forward<decltype(args)>(args)...)} noexcept;
                     })
-                    requires (requires{
+                    requires (requires{{
                         std::forward<Func>(func).template operator()<
                             T.template get<Is>()...
-                        >(std::forward<decltype(args)>(args)...);
-                    })
+                        >(std::forward<decltype(args)>(args)...)
+                    };})
                 {
                     return (std::forward<Func>(func).template operator()<
                         T.template get<Is>()...
@@ -5155,7 +5143,7 @@ namespace impl {
             template <meta::args auto T, typename S, meta::args A> requires (T.empty())
             constexpr decltype(auto) operator()(this S&& self, A&& args)
                 noexcept (requires{{std::forward<A>(args)(std::forward<S>(self).func)} noexcept;})
-                requires (requires{std::forward<A>(args)(std::forward<S>(self).func);})
+                requires (requires{{std::forward<A>(args)(std::forward<S>(self).func)};})
             {
                 return (std::forward<A>(args)(std::forward<S>(self).func));
             }
@@ -5171,13 +5159,13 @@ namespace impl {
                         decltype(std::forward<S>(self).func)
                     >{self.func})} noexcept;
                 })
-                requires (requires{
+                requires (requires{{
                     std::forward<A>(args)(call<
                         T,
                         std::make_index_sequence<T.size()>,
                         decltype(std::forward<S>(self).func)
-                    >{self.func});
-                })
+                    >{self.func})
+                };})
             {
                 return std::forward<A>(args)(call<
                     T,
@@ -6312,6 +6300,23 @@ namespace impl {
 
     private:
 
+        template <auto... T>
+        struct partial {
+            template <typename Self, typename... A>
+            using func = def<
+                meta::remove_rvalue<decltype(std::declval<Self>().func)>,
+                meta::unqualify<decltype(std::declval<Self>().signature.template bind<T...>(
+                    std::declval<A>()...
+                ))>
+            >;
+        };
+
+        template <typename Self>
+        using remove_partial = def<
+            meta::remove_rvalue<decltype(std::declval<Self>().func)>,
+            meta::unqualify<decltype(std::declval<Self>().signature.clear())>
+        >;
+
         template <size_type... Is, typename Self, typename Other>
         static constexpr auto append(
             std::index_sequence<Is...>,
@@ -6356,25 +6361,16 @@ namespace impl {
         function to its unbound state. */
         template <typename Self>
         [[nodiscard]] constexpr auto clear(this Self&& self)
-            noexcept (requires{{def<
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
-                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>
-            >{
+            noexcept (requires{{remove_partial<Self>{
                 std::forward<Self>(self).func,
                 std::forward<Self>(self).signature.clear()
             }} noexcept;})
-            requires (requires{def<
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
-                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>
-            >{
+            requires (requires{{remove_partial<Self>{
                 std::forward<Self>(self).func,
                 std::forward<Self>(self).signature.clear()
-            };})
+            }};})
         {
-            return def<
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
-                meta::unqualify<decltype(std::forward<Self>(self).signature.clear())>
-            >{
+            return remove_partial<Self>{
                 std::forward<Self>(self).func,
                 std::forward<Self>(self).signature.clear()
             };
@@ -6399,31 +6395,16 @@ namespace impl {
                 meta::bind_error<Sig::template bind_params<A...>>
             )
         [[nodiscard]] constexpr auto bind(this Self&& self, A&&... args)
-            noexcept (requires{{def<
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
-                meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
-                    std::forward<A>(args)...
-                ))>
-            >{
+            noexcept (requires{{typename partial<T...>::template func<Self, A...>{
                 std::forward<Self>(self).func,
                 std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...)
             }} noexcept;})
-            requires (requires{def<
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
-                meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
-                    std::forward<A>(args)...
-                ))>
-            >{
+            requires (requires{{typename partial<T...>::template func<Self, A...>{
                 std::forward<Self>(self).func,
                 std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...)
-            };})
+            }};})
         {
-            return def<
-                meta::remove_rvalue<decltype(std::forward<Self>(self).func)>,
-                meta::unqualify<decltype(std::forward<Self>(self).signature.template bind<T...>(
-                    std::forward<A>(args)...
-                ))>
-            >{
+            return typename partial<T...>::template func<Self, A...>{
                 std::forward<Self>(self).func,
                 std::forward<Self>(self).signature.template bind<T...>(std::forward<A>(args)...)
             };
@@ -6603,10 +6584,10 @@ template <meta::arg auto... A, typename F>
         std::forward<F>(f),
         impl::make_signature<F, {}, A...>{}
     }} noexcept;})
-    requires (requires{impl::make_def<F, {}, A...>{
+    requires (requires{{impl::make_def<F, {}, A...>{
         std::forward<F>(f),
         impl::make_signature<F, {}, A...>{}
-    };})
+    }};})
 {
     return impl::make_def<F, {}, A...>{
         std::forward<F>(f),
@@ -6678,10 +6659,10 @@ template <impl::templates T, meta::arg auto... A, typename F> requires (!T.empty
         std::forward<F>(f),
         impl::make_signature<F, T, A...>{}
     }} noexcept;})
-    requires (requires{impl::make_def<F, T, A...>{
+    requires (requires{{impl::make_def<F, T, A...>{
         std::forward<F>(f),
         impl::make_signature<F, T, A...>{}
-    };})
+    }};})
 {
     return impl::make_def<F, T, A...>{
         std::forward<F>(f),
@@ -6753,10 +6734,10 @@ template <meta::arg auto... A, typename... F> requires (sizeof...(F) > 1)
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
         impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{}
     }} noexcept;})
-    requires (requires{impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
+    requires (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
         impl::make_signature<impl::overloads<meta::unqualify<F>...>, {}, A...>{}
-    };})
+    }};})
 {
     return impl::make_def<impl::overloads<meta::unqualify<F>...>, {}, A...>{
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
@@ -6829,10 +6810,10 @@ template <impl::templates T, meta::arg auto... A, typename... F>
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
         impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{}
     }} noexcept;})
-    requires (requires{impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
+    requires (requires{{impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
         impl::make_signature<impl::overloads<meta::unqualify<F>...>, T, A...>{}
-    };})
+    }};})
 {
     return impl::make_def<impl::overloads<meta::unqualify<F>...>, T, A...>{
         impl::overloads<meta::unqualify<F>...>{std::forward<F>(fs)...},
@@ -6858,13 +6839,13 @@ template <impl::templates T, meta::arg auto... A, typename... F>
 // );
 // static_assert(f(1.0, 2.0) == -1.0);
 
-// inline constexpr auto f2 = def<{"z"_ = 1}, "x"_, "y"_>([]<int z>(int x, int y) {
-//     return x + y + z;
-// });
-// static_assert(f2.bind<("z"_ = 2)>()(2, "y"_ = 1) == 5);
+inline constexpr auto f2 = def<{"z"_ = 1}, "x"_, "y"_>([]<int z>(int x, int y) {
+    return x + y + z;
+});
+static_assert(f2.bind<("z"_ = 2)>()(2, "y"_ = 1) == 5);
 
-// inline constexpr auto f3 = f2 >> [](int result) { return result * 2; };
-// static_assert(f3.bind("y"_ = 1).clear().template call<2>(2, 1) == 10);
+inline constexpr auto f3 = f2 >> [](int result) { return result * 2; };
+static_assert(f3.bind("y"_ = 1).clear().template call<2>(2, 1) == 10);
 
 
 
