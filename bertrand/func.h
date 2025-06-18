@@ -1632,6 +1632,7 @@ namespace impl {
         }
 
         /// TODO: operator*() converts the view into a kwargs{} pack.
+        /// TODO: operator->*() creates a structured comprehension.
 
         /// TODO: std::tuple_size, element, and std::get<I>() specializations for
         /// tuple-like access.  That also means meta::tuple_like applies to this type.
@@ -1910,7 +1911,6 @@ namespace impl {
         }
 
     public:
-
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{{init(indices{})} noexcept;})
             requires (requires{{init(indices{})};})
@@ -1949,7 +1949,256 @@ namespace impl {
     }
 
     /// NOTE: all elementary math operators are enabled between comprehensions, in
-    /// order to simulate SIMD-style template expressions.
+    /// order to simulate SIMD-style template expressions.  
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator<(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Less{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Less{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Less{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator<=(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::LessEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::LessEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::LessEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator==(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Equal{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Equal{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Equal{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator!=(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::NotEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::NotEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::NotEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator>=(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::GreaterEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::GreaterEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::GreaterEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator>(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Greater{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Greater{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Greater{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator<=>(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Spaceship{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Spaceship{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Spaceship{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension T>
+    constexpr auto operator+(T&& self)
+        noexcept (requires{{comprehension{
+            impl::Pos{},
+            std::forward<T>(self)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Pos{},
+            std::forward<T>(self)
+        }};})
+    {
+        return comprehension{
+            impl::Pos{},
+            std::forward<T>(self)
+        };
+    }
+
+    template <meta::iterable_comprehension T>
+    constexpr auto operator-(T&& self)
+        noexcept (requires{{comprehension{
+            impl::Neg{},
+            std::forward<T>(self)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Neg{},
+            std::forward<T>(self)
+        }};})
+    {
+        return comprehension{
+            impl::Neg{},
+            std::forward<T>(self)
+        };
+    }
+
+    template <meta::iterable_comprehension T>
+    constexpr void operator++(T&& self)
+        noexcept (requires{{exhaust(comprehension{
+            impl::PreIncrement{},
+            std::forward<T>(self)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::PreIncrement{},
+            std::forward<T>(self)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::PreIncrement{},
+            std::forward<T>(self)
+        });
+    }
+
+    template <meta::iterable_comprehension T>
+    constexpr void operator++(T&& self, int)
+        noexcept (requires{{exhaust(comprehension{
+            impl::PostIncrement{},
+            std::forward<T>(self)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::PostIncrement{},
+            std::forward<T>(self)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::PostIncrement{},
+            std::forward<T>(self)
+        });
+    }
+
+    template <meta::iterable_comprehension T>
+    constexpr void operator--(T&& self)
+        noexcept (requires{{exhaust(comprehension{
+            impl::PreDecrement{},
+            std::forward<T>(self)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::PreDecrement{},
+            std::forward<T>(self)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::PreDecrement{},
+            std::forward<T>(self)
+        });
+    }
+
+    template <meta::iterable_comprehension T>
+    constexpr void operator--(T&& self, int)
+        noexcept (requires{{exhaust(comprehension{
+            impl::PostDecrement{},
+            std::forward<T>(self)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::PostDecrement{},
+            std::forward<T>(self)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::PostDecrement{},
+            std::forward<T>(self)
+        });
+    }
 
     template <typename L, typename R>
         requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
@@ -2033,18 +2282,348 @@ namespace impl {
         });
     }
 
-    /// TODO: all the other elementary operators.
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator*(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Multiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Multiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Multiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
 
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator*=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceMultiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceMultiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceMultiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
 
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator/(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Divide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Divide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Divide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator/=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceDivide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceDivide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceDivide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator%(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Modulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Modulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Modulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator%=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceModulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceModulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceModulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator<<(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::LeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::LeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::LeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator<<=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceLeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceLeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceLeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator>>(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::RightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::RightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::RightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator>>=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceRightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceRightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceRightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator|(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::BitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::BitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::BitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator|=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceBitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceBitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceBitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator&(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::BitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::BitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::BitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator&=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceBitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceBitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceBitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator^(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::BitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::BitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::BitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator^=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceBitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceBitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceBitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
 
 }
 
 
-namespace meta::detail {
-    template <typename C>
-    static constexpr bool comprehension<impl::view<C>> = true;
-    template <typename F, typename... A>
-    static constexpr bool comprehension<impl::comprehension<F, A...>> = true;
+namespace meta {
+
+    namespace detail {
+
+        template <typename C>
+        constexpr bool comprehension<impl::view<C>> = true;
+        template <typename F, typename... A>
+        constexpr bool comprehension<impl::comprehension<F, A...>> = true;
+
+    }
+
 }
 
 
@@ -2059,15 +2638,24 @@ template <meta::viewable T>
 
 template <meta::viewable T, typename F>
 [[nodiscard]] constexpr auto operator->*(T&& container, F&& func)
-    noexcept (requires{
-        {impl::comprehension{std::forward<F>(func), impl::view{std::forward<T>(container)}}} noexcept;
-    })
-    requires (requires{
-        {impl::comprehension{std::forward<F>(func), impl::view{std::forward<T>(container)}}};
-    })
+    noexcept (requires{{impl::comprehension{
+        std::forward<F>(func),
+        impl::view{std::forward<T>(container)}
+    }} noexcept;})
+    requires (requires{{impl::comprehension{
+        std::forward<F>(func),
+        impl::view{std::forward<T>(container)}
+    }};})
 {
-    return impl::comprehension{std::forward<F>(func), impl::view{std::forward<T>(container)}};
+    return impl::comprehension{
+        std::forward<F>(func),
+        impl::view{std::forward<T>(container)}
+    };
 }
+
+
+
+
 
 
 
@@ -2089,9 +2677,6 @@ static_assert([] {
         if (x != 4) { return false; }
     }
 
-
-    /// TODO: unnecessarily complicated.  A modified assignment operator should always
-    /// greedily evaluate the expression template?
     auto c = std::array{1, 2, 3};
     *c -= *std::array{1, 2, 3};
     for (auto&& x : c) {
@@ -2100,7 +2685,7 @@ static_assert([] {
 
     auto c2 = std::array{1, 2, 3};
     *c2 -= 2;
-    for (auto&& x : c2) {
+    for (auto&& x : *c2) {
         if (x != -1 && x != 0 && x != 1) { return false; }
     }
     return true;
