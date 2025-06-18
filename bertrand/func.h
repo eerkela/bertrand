@@ -1404,9 +1404,25 @@ public:
 };
 
 
+//////////////////////////////
+////    COMPREHENSIONS    ////
+//////////////////////////////
+
+
+namespace impl {
+    /// TODO: viewable goes up here?
+}
+
+
 namespace meta {
 
     namespace detail {
+
+        template <typename T>
+        constexpr bool comprehension = false;
+
+        template <typename T>
+        constexpr bool viewable = true;
 
         template <typename T>
         concept kwarg_like =
@@ -1466,6 +1482,19 @@ namespace meta {
     }
 
     template <typename T>
+    concept comprehension = detail::comprehension<unqualify<T>>;
+
+    template <typename T>
+    concept iterable_comprehension = comprehension<T> && iterable<T>;
+
+    template <typename T>
+    concept tuple_comprehension = comprehension<T> && tuple_like<T>;
+
+    template <typename T>
+    concept viewable =
+        (tuple_like<T> || (iterable<T> && has_size<T>)) && detail::viewable<unqualify<T>>;
+
+    template <typename T>
     concept unpack_to_kwargs = detail::kwarg_like<T> && (
         detail::kwarg_yield<T> ||
         detail::kwarg_items<T> ||
@@ -1475,6 +1504,608 @@ namespace meta {
     );
 
 }
+
+
+namespace impl {
+
+    template <typename T>
+    struct view_size_type { using type = meta::unqualify<decltype(std::tuple_size<T>::value)>; };
+    template <meta::has_size T>
+    struct view_size_type<T> { using type = meta::size_type<T>; };
+
+    /* Base comprehension type, which is returned by the `*` operator for an iterable
+    or tuple-like container.
+
+    This is just a basic interface for iteration and tuple-like decomposition, which
+    can be interpreted as either an argument pack or SIMD-style expression template,
+    depending on where the operator was applied.  When provided as an argument to a
+    `def()` function, the view will be unpacked into the function's argument list.
+    Otherwise, it exposes all the elementary math operators for SIMD-style chains, as
+    well as structured comprehensions via the `->*` operator.  Dereferencing the view
+    once more promotes it to a keyword argument pack, assuming the underlying container
+    can be viewed as such. */
+    template <meta::viewable C>
+    struct view {
+        using container_type = meta::unqualify<C>;
+        using size_type = view_size_type<C>::type;
+        using index_type = meta::as_signed<size_type>;
+
+        meta::remove_rvalue<C> container;
+
+        template <size_t I, typename Self> requires (meta::tuple_like<container_type>)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{meta::tuple_get<I>(std::forward<Self>(self).container)} noexcept;})
+            requires (requires{{meta::tuple_get<I>(std::forward<Self>(self).container)};})
+        {
+            return (meta::tuple_get<I>(std::forward<Self>(self).container));
+        }
+
+        [[nodiscard]] constexpr size_type size() const
+            noexcept (requires{{std::ranges::size(container)} noexcept;})
+            requires (requires{{std::ranges::size(container)};})
+        {
+            return std::ranges::size(container);
+        }
+
+        [[nodiscard]] constexpr size_type size() const noexcept
+            requires (
+                meta::tuple_like<container_type> &&
+                !requires{{std::ranges::size(container)};
+            })
+        {
+            return std::tuple_size<container_type>::value;
+        }
+
+        [[nodiscard]] constexpr index_type ssize() const
+            noexcept (requires{{std::ranges::ssize(container)} noexcept;})
+            requires (requires{{std::ranges::ssize(container)};})
+        {
+            return std::ranges::ssize(container);
+        }
+
+        [[nodiscard]] constexpr index_type ssize() const noexcept
+            requires (
+                meta::tuple_like<container_type> &&
+                !requires{{std::ranges::ssize(container)};}
+            )
+        {
+            return index_type(std::tuple_size<container_type>::value);
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{std::ranges::empty(container)} noexcept;})
+            requires (requires{{std::ranges::empty(container)};})
+        {
+            return std::ranges::empty(container);
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{std::tuple_size<container_type>::value == 0} noexcept;})
+            requires (
+                meta::tuple_like<container_type> &&
+                !requires{{std::ranges::empty(container)};}
+            )
+        {
+            return std::tuple_size<container_type>::value == 0;
+        }
+
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{std::ranges::begin(container)} noexcept;})
+            requires (requires{{std::ranges::begin(container)};})
+        {
+            return std::ranges::begin(container);
+        }
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{std::ranges::begin(container)} noexcept;})
+            requires (requires{{std::ranges::begin(container)};})
+        {
+            return std::ranges::begin(container);
+        }
+
+        [[nodiscard]] constexpr auto cbegin() const
+            noexcept (requires{{std::ranges::cbegin(container)} noexcept;})
+            requires (requires{{std::ranges::cbegin(container)};})
+        {
+            return std::ranges::cbegin(container);
+        }
+
+        [[nodiscard]] constexpr auto end()
+            noexcept (requires{{std::ranges::end(container)} noexcept;})
+            requires (requires{{std::ranges::end(container)};})
+        {
+            return std::ranges::end(container);
+        }
+
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{std::ranges::end(container)} noexcept;})
+            requires (requires{{std::ranges::end(container)};})
+        {
+            return std::ranges::end(container);
+        }
+
+        [[nodiscard]] constexpr auto cend() const
+            noexcept (requires{{std::ranges::cend(container)} noexcept;})
+            requires (requires{{std::ranges::cend(container)};})
+        {
+            return std::ranges::cend(container);
+        }
+
+        /// TODO: operator*() converts the view into a kwargs{} pack.
+
+        /// TODO: std::tuple_size, element, and std::get<I>() specializations for
+        /// tuple-like access.  That also means meta::tuple_like applies to this type.
+    };
+
+    template <typename C>
+    view(C&&) -> view<C>;
+
+    template <typename F, typename args, typename its, typename Is, typename... A>
+    struct _invoke_comprehension { static constexpr bool enable = false; };
+    template <
+        typename F,
+        typename... args,
+        typename... its,
+        size_t... Is
+    > requires (sizeof...(its) > 0 && meta::invocable<meta::as_lvalue<F>, args...>)
+    struct _invoke_comprehension<
+        F,
+        meta::pack<args...>,
+        meta::pack<its...>,
+        std::index_sequence<Is...>
+    > {
+        using type = meta::invoke_type<meta::as_lvalue<F>, args...>;
+        static constexpr bool enable = meta::not_void<type>;
+        static constexpr size_t N = sizeof...(its);
+        using storage = impl::args<its...>;
+        using indices = std::index_sequence<Is...>;
+    };
+    template <
+        typename F,
+        typename... out,
+        typename... its,
+        size_t... Is,
+        typename A,
+        typename... As
+    > requires (meta::iterable_comprehension<A>)
+    struct _invoke_comprehension<
+        F,
+        meta::pack<out...>,
+        meta::pack<its...>,
+        std::index_sequence<Is...>,
+        A,
+        As...
+    > : _invoke_comprehension<
+        F,
+        meta::pack<out..., meta::yield_type<A>>,
+        meta::pack<its..., meta::begin_type<A>>,
+        std::index_sequence<Is..., sizeof...(out)>,
+        As...
+    > {};
+    template <
+        typename F,
+        typename... out,
+        typename... its,
+        size_t... Is,
+        typename A,
+        typename... As
+    > requires (!meta::iterable_comprehension<A>)
+    struct _invoke_comprehension<
+        F,
+        meta::pack<out...>,
+        meta::pack<its...>,
+        std::index_sequence<Is...>,
+        A,
+        As...
+    > : _invoke_comprehension<
+        F,
+        meta::pack<out..., meta::as_lvalue<A>>,
+        meta::pack<its...>,
+        std::index_sequence<Is...>,
+        As...
+    >
+    {};
+    template <typename F, typename... A>
+    using invoke_comprehension = _invoke_comprehension<
+        F,
+        meta::pack<>,
+        meta::pack<>,
+        std::index_sequence<>,
+        A...
+    >;
+
+    template <size_t, typename...>
+    constexpr size_t comprehension_idx = 0;
+    template <size_t I, typename A, typename... Args>
+        requires (!meta::iterable_comprehension<A> && I > 0)
+    constexpr size_t comprehension_idx<I, A, Args...> = comprehension_idx<I - 1, Args...>;
+    template <size_t I, typename A, typename... Args>
+        requires (meta::iterable_comprehension<A> && I > 0)
+    constexpr size_t comprehension_idx<I, A, Args...> = comprehension_idx<I - 1, Args...> + 1;
+
+    /* A composition of one or more iterable `view`s that applies a function `F`
+    elementwise over the zipped contents.  All views must have a consistent size, and
+    may be combined with non-view arguments, which will be broadcasted to that size.
+    An `IndexError` will be issued if views of conflicting sizes are provided, and the
+    comprehension will fail to compile if the function is not callable with the
+    argument types. */
+    template <typename F, typename... A> requires (invoke_comprehension<F, A...>::enable)
+    struct comprehension {
+        using size_type = size_t;
+        using index_type = ssize_t;
+        using function_type = meta::unqualify<F>;
+
+    private:
+        static constexpr size_type N = invoke_comprehension<F, A...>::N;
+        using indices = invoke_comprehension<F, A...>::indices;
+
+        template <typename V>
+        constexpr void get_length(const V&) noexcept {}
+        template <meta::iterable_comprehension V>
+        constexpr void get_length(const V& other) {
+            auto n = other.size();
+            if (length < std::numeric_limits<size_type>::max() && length != n) {
+                if consteval {
+                    static constexpr static_str msg =
+                        "comprehensions must have the same length";
+                    throw IndexError(msg);
+                } else {
+                    throw IndexError(std::format(
+                        "comprehensions must have the same length: {} != {}",
+                        length,
+                        n
+                    ));
+                }
+            }
+            length = n;
+        }
+
+    public:
+        size_type length = std::numeric_limits<size_type>::max();
+        meta::remove_rvalue<F> func;
+        bertrand::args<A...> args;
+
+        [[nodiscard]] constexpr comprehension(F func, A... args)
+            noexcept (requires{
+                {meta::remove_rvalue<F>(std::forward<F>(func))} noexcept;
+                {bertrand::args<A...>(std::forward<A>(args)...)} noexcept;
+                {(get_length(args), ...)} noexcept;
+            })
+            requires (requires{
+                {meta::remove_rvalue<F>(std::forward<F>(func))};
+                {bertrand::args<A...>(std::forward<A>(args)...)};
+                {(get_length(args), ...)};
+            })
+        :
+            func(std::forward<F>(func)),
+            args(std::forward<A>(args)...)
+        {
+            (get_length(args), ...);
+        }
+
+        [[nodiscard]] constexpr size_type size() const noexcept { return length; }
+        [[nodiscard]] constexpr index_type ssize() const noexcept { return index_type(size()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return size() == 0; }
+
+        /* A forward iterator that evaluates the comprehension for each element. */
+        struct iterator {
+            using storage_type = invoke_comprehension<F, A...>::storage;
+            using iterator_category = std::input_iterator_tag;
+            using difference_type = std::ptrdiff_t;
+            using value_type = invoke_comprehension<F, A...>::type;
+            using reference = meta::as_lvalue<value_type>;
+            using pointer = meta::as_pointer<value_type>;
+
+            comprehension* self;
+            size_type length;
+            storage_type iterators;
+
+        private:
+            template <size_type I>
+                requires (meta::iterable_comprehension<meta::unpack_type<I, A...>>)
+            constexpr decltype(auto) get()
+                noexcept (requires{
+                    {*iterators.template get<comprehension_idx<I, A...>>()} noexcept;
+                })
+            {
+                return (*iterators.template get<comprehension_idx<I, A...>>());
+            }
+            template <size_type I>
+                requires (!meta::iterable_comprehension<meta::unpack_type<I, A...>>)
+            constexpr decltype(auto) get()
+                noexcept (requires{{self->args.template get<I>()} noexcept;})
+            {
+                return (self->args.template get<I>());
+            }
+
+            template <size_type... Is>
+            constexpr decltype(auto) call(std::index_sequence<Is...>)
+                noexcept (requires{{self->func(get<Is>()...)} noexcept;})
+                requires (requires{{self->func(get<Is>()...)};})
+            {
+                return (self->func((get<Is>())...));
+            }
+
+            template <size_type... Is>
+            constexpr void advance(std::index_sequence<Is...>)
+                noexcept (requires{{(++(iterators.template get<Is>()), ...)} noexcept;})
+                requires (requires{{(++(iterators.template get<Is>()), ...)};})
+            {
+                (++(iterators.template get<Is>()), ...);
+            }
+
+        public:
+            constexpr decltype(auto) operator*()
+                noexcept (requires{{call(std::index_sequence_for<A...>{})} noexcept;})
+                requires (requires{{call(std::index_sequence_for<A...>{})};})
+            {
+                return (call(std::index_sequence_for<A...>{}));
+            }
+
+            constexpr iterator& operator++()
+                noexcept (requires{{advance(std::make_index_sequence<N>{})} noexcept;})
+                requires (requires{{advance(std::make_index_sequence<N>{})};})
+            {
+                advance(std::make_index_sequence<N>{});
+                --length;
+                return *this;
+            }
+
+            [[nodiscard]] constexpr iterator operator++(int)
+                noexcept (requires{
+                    {iterator(*this)} noexcept;
+                    {++*this} noexcept;
+                })
+                requires (requires{
+                    {iterator(*this)};
+                    {++*this};
+                })
+            {
+                iterator temp = *this;
+                ++*this;
+                return temp;
+            }
+
+            [[nodiscard]] friend constexpr bool operator==(
+                const iterator& self,
+                impl::sentinel
+            ) noexcept {
+                return self.length == 0;
+            }
+
+            [[nodiscard]] friend constexpr bool operator==(
+                impl::sentinel,
+                const iterator& self
+            ) noexcept {
+                return self.length == 0;
+            }
+
+            [[nodiscard]] friend constexpr bool operator!=(
+                const iterator& self,
+                impl::sentinel
+            ) noexcept {
+                return self.length != 0;
+            }
+
+            [[nodiscard]] friend constexpr bool operator!=(
+                impl::sentinel,
+                const iterator& self
+            ) noexcept {
+                return self.length != 0;
+            }
+        };
+
+    private:
+
+        template <size_type... Is>
+        constexpr auto init(std::index_sequence<Is...>)
+            noexcept (requires{
+                {iterator{this, size(), {args.template get<Is>().begin()...}}} noexcept;
+            })
+            requires (requires{
+                {iterator{this, size(), {args.template get<Is>().begin()...}}};
+            })
+        {
+            return iterator{this, size(), {args.template get<Is>().begin()...}};
+        }
+
+    public:
+
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{init(indices{})} noexcept;})
+            requires (requires{{init(indices{})};})
+        {
+            return init(indices{});
+        }
+
+        [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
+    };
+
+    template <typename F, typename... A>
+    comprehension(F&&, A&&...) -> comprehension<F, A...>;
+
+    /* Iterate over all elements of an input range and discard the results.  This is
+    used to invoke a modified assignment comprehension, so that it eagerly evaluates
+    an elementwise assignment function, which operates by side effect. */
+    template <meta::iterable R>
+    constexpr void exhaust(R&& r)
+        noexcept (requires{
+            {std::ranges::begin(r) != std::ranges::end(r)} noexcept;
+            {*std::ranges::begin(r)} noexcept;
+            {++std::ranges::begin(r)} noexcept;
+        })
+        requires (requires{
+            {std::ranges::begin(r) != std::ranges::end(r)};
+            {*std::ranges::begin(r)};
+            {++std::ranges::begin(r)};
+        })
+    {
+        auto it = std::ranges::begin(r);
+        auto end = std::ranges::end(r);
+        while (it != end) {
+            *it;
+            ++it;
+        }
+    }
+
+    /// NOTE: all elementary math operators are enabled between comprehensions, in
+    /// order to simulate SIMD-style template expressions.
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator+(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Add{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Add{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Add{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator+=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceAdd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceAdd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceAdd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    template <typename L, typename R>
+        requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
+    [[nodiscard]] constexpr auto operator-(L&& lhs, R&& rhs)
+        noexcept (requires{{comprehension{
+            impl::Subtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }} noexcept;})
+        requires (requires{{comprehension{
+            impl::Subtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};})
+    {
+        return comprehension{
+            impl::Subtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        };
+    }
+
+    template <meta::iterable_comprehension L, typename R>
+    constexpr void operator-=(L&& lhs, R&& rhs)
+        noexcept (requires{{exhaust(comprehension{
+            impl::InplaceSubtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })} noexcept;})
+        requires (requires{{exhaust(comprehension{
+            impl::InplaceSubtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        })};})
+    {
+        exhaust(comprehension{
+            impl::InplaceSubtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        });
+    }
+
+    /// TODO: all the other elementary operators.
+
+
+
+}
+
+
+namespace meta::detail {
+    template <typename C>
+    static constexpr bool comprehension<impl::view<C>> = true;
+    template <typename F, typename... A>
+    static constexpr bool comprehension<impl::comprehension<F, A...>> = true;
+}
+
+
+template <meta::viewable T>
+[[nodiscard]] constexpr auto operator*(T&& container)
+    noexcept (requires{{impl::view<T>(std::forward<T>(container))} noexcept;})
+    requires (requires{{impl::view<T>(std::forward<T>(container))};})
+{
+    return impl::view<T>(std::forward<T>(container));
+}
+
+
+template <meta::viewable T, typename F>
+[[nodiscard]] constexpr auto operator->*(T&& container, F&& func)
+    noexcept (requires{
+        {impl::comprehension{std::forward<F>(func), impl::view{std::forward<T>(container)}}} noexcept;
+    })
+    requires (requires{
+        {impl::comprehension{std::forward<F>(func), impl::view{std::forward<T>(container)}}};
+    })
+{
+    return impl::comprehension{std::forward<F>(func), impl::view{std::forward<T>(container)}};
+}
+
+
+
+static_assert([] {
+    for (auto&& x : impl::comprehension{
+        impl::Add{},
+        *std::array{1, 2, 3},
+        *std::array{3, 2, 1}
+    }) {
+        if (x != 4) { return false; }
+    }
+
+    for (auto&& x : *std::array{1, 2, 3} + *std::array{3, 2, 1}) {
+        if (x != 4) { return false; }
+    }
+
+    auto r = std::array{1, 2, 3}->*[](int a) { return a + 3; };
+    for (auto&& x : r - *std::array{0, 1, 2}) {
+        if (x != 4) { return false; }
+    }
+
+
+    /// TODO: unnecessarily complicated.  A modified assignment operator should always
+    /// greedily evaluate the expression template?
+    auto c = std::array{1, 2, 3};
+    *c -= *std::array{1, 2, 3};
+    for (auto&& x : c) {
+        if (x != 0) { return false; }
+    }
+
+    auto c2 = std::array{1, 2, 3};
+    *c2 -= 2;
+    for (auto&& x : c2) {
+        if (x != -1 && x != 0 && x != 1) { return false; }
+    }
+    return true;
+}());
+
 
 
 namespace impl {
@@ -3049,9 +3680,6 @@ namespace impl {
         {
             return access<Self, names.template get<name>()>{std::forward<Self>(self)};
         }
-
-        /// TODO: an overload of get<>() that allows signatures to be sliced at
-        /// compile time.
 
         /* Index into the signature, returning an `Optional<T>`, where `T` is a simple
         parameter descriptor.  An empty optional indicates that the index was out of
@@ -5075,14 +5703,6 @@ namespace impl {
             //     std::forward<A>(args)...
             // ));
         }
-
-        /// TODO: apply(), which is just a simple wrapper around the call operator
-        /// that unpacks tuples first.  This is probably completely replaced by
-        /// *tuple syntax at the call site, which unifies the concept with ordinary
-        /// container unpacking, which should also be syntactically correct.
-
-        /// f(1, 2, *std::tuple{3, 4, 5});
-        /// f(1, 2, *List{3, 4, 5});
     };
 
     /* Attempt to deduce the signature of a callable of arbitrary type.  This helper
@@ -5216,46 +5836,6 @@ namespace impl {
     public:
         using type = traits::args::template eval<expand_arguments>::type;
     };
-
-
-
-
-
-    // static constexpr auto x = "x"_;
-    // static constexpr auto z = "z"_ = 2;
-    // static constexpr auto p1 = impl::partial<meta::unqualify<decltype(x)>, int>{x};
-    // static constexpr auto p2 = impl::partial<meta::unqualify<decltype(z)>, decltype("z"_ = 2)>{z};
-
-
-    // inline constexpr signature<{}, p1, "/"_, "y"_, "*args"_, p2> sig{1, "z"_ = 2};
-    // inline constexpr auto param = sig["x"];
-    // static_assert(sig["x"].index == 0);
-    // static_assert(sig.n_partial() == 2);
-    // static_assert(sig.clear().n_partial() == 0);
-    // static_assert(sig.get<-1>().has_value());
-    // static_assert(sig.get(-1).value().name == "z");
-    // static_assert(sig.get("x").value().kind.posonly());
-
-
-    // inline constexpr signature<{"x"_[type<int>], "y"_[type<int>]}, "z"_, "w"_> sig2;
-    // inline constexpr signature sig3 = sig2.bind<1, ("y"_ = 2)>("w"_ = 2).bind(1);
-    // // inline constexpr auto sig3 = sig2.bind<1, ("y"_ = 2)>(1, "w"_ = 2);
-    // static_assert(sig3.n_partial() == 4);
-    // static_assert(sig3.get<"z">().value() == 1);
-    // static_assert(sig3.clear().n_partial() == 0);
-
-
-    // inline constexpr signature<{}, "x"_, "y"_, "/"_> sig4;
-    // static_assert(sig4.bind(1, 2).n_partial() == 2);
-    // // static_assert(meta::bind_error<sig4.template test<int, int>>);
-    // static_assert(sig4(
-    //     [](int x, int y) { return x - y; },
-    //     1,
-    //     Optional{2}
-    // ).value() == -1);
-
-
-
 
 
     /// TODO: format_signature is a monster, and should be simplified and possibly
