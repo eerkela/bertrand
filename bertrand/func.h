@@ -1419,10 +1419,35 @@ namespace meta {
     namespace detail {
 
         template <typename T>
+        constexpr bool viewable = true;
+
+        template <typename T>
         constexpr bool comprehension = false;
 
         template <typename T>
-        constexpr bool viewable = true;
+        constexpr bool use_structured_comprehension = false;
+        template <meta::iterable T>
+        constexpr bool use_structured_comprehension<T> =
+            !meta::iterable<meta::yield_type<T>> && meta::tuple_like<meta::yield_type<T>>;
+
+        template <typename T>
+        constexpr bool use_standard_comprehension = false;
+        template <meta::iterable T>
+        constexpr bool use_standard_comprehension<T> =
+            meta::iterable<meta::yield_type<T>> || !meta::tuple_like<meta::yield_type<T>>;
+
+        template <typename T>
+        constexpr bool use_direct_comprehension = !meta::iterable<T> && meta::tuple_like<T>;
+
+        template <typename F, typename T, typename>
+        constexpr bool _decompose = false;
+        template <typename F, meta::tuple_like T, size_t... Is>
+            requires (meta::tuple_size<T> == sizeof...(Is))
+        constexpr bool _decompose<F, T, ::std::index_sequence<Is...>> =
+            meta::invocable<F, meta::get_type<T, Is>...>;
+        template <typename F, meta::tuple_like T>
+        constexpr bool decompose =
+            _decompose<meta::as_lvalue<F>, T, ::std::make_index_sequence<meta::tuple_size<T>>>;
 
         template <typename T>
         concept kwarg_like =
@@ -1490,6 +1515,12 @@ namespace meta {
     template <typename T>
     concept tuple_comprehension = comprehension<T> && tuple_like<T>;
 
+    template <typename F, typename T>
+    concept comprehension_func =
+        (detail::use_structured_comprehension<T> && detail::decompose<F, meta::yield_type<T>>) ||
+        (detail::use_standard_comprehension<T> && meta::invocable<F, meta::yield_type<T>>) ||
+        (detail::use_direct_comprehension<T> && detail::decompose<F, T>);
+
     template <typename T>
     concept viewable =
         (tuple_like<T> || (iterable<T> && has_size<T>)) && detail::viewable<unqualify<T>>;
@@ -1509,7 +1540,7 @@ namespace meta {
 namespace impl {
 
     template <typename T>
-    struct view_size_type { using type = meta::unqualify<decltype(std::tuple_size<T>::value)>; };
+    struct view_size_type { using type = meta::unqualify<decltype(meta::tuple_size<T>)>; };
     template <meta::has_size T>
     struct view_size_type<T> { using type = meta::size_type<T>; };
 
@@ -1553,7 +1584,7 @@ namespace impl {
                 !requires{{std::ranges::size(container)};
             })
         {
-            return std::tuple_size<container_type>::value;
+            return meta::tuple_size<container_type>;
         }
 
         [[nodiscard]] constexpr index_type ssize() const
@@ -1569,7 +1600,7 @@ namespace impl {
                 !requires{{std::ranges::ssize(container)};}
             )
         {
-            return index_type(std::tuple_size<container_type>::value);
+            return index_type(meta::tuple_size<container_type>);
         }
 
         [[nodiscard]] constexpr bool empty() const
@@ -1580,13 +1611,13 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{std::tuple_size<container_type>::value == 0} noexcept;})
+            noexcept (requires{{meta::tuple_size<container_type> == 0} noexcept;})
             requires (
                 meta::tuple_like<container_type> &&
                 !requires{{std::ranges::empty(container)};}
             )
         {
-            return std::tuple_size<container_type>::value == 0;
+            return meta::tuple_size<container_type> == 0;
         }
 
         [[nodiscard]] constexpr auto begin()
@@ -1631,8 +1662,24 @@ namespace impl {
             return std::ranges::cend(container);
         }
 
+
+        template <typename V>
+        [[nodiscard]] constexpr operator V() const
+            noexcept (requires{{V(std::from_range, *this)} noexcept;})
+            requires (requires{{V(std::from_range, *this)};})
+        {
+            return V(std::from_range, *this);
+        }
+
+        template <typename V>
+        [[nodiscard]] constexpr operator V() const
+            noexcept (requires{{V(begin(), end())} noexcept;})
+            requires (!requires{{V(std::from_range, *this)};} && requires{{V(begin(), end())};})
+        {
+            return V(begin(), end());
+        }
+
         /// TODO: operator*() converts the view into a kwargs{} pack.
-        /// TODO: operator->*() creates a structured comprehension.
 
         /// TODO: std::tuple_size, element, and std::get<I>() specializations for
         /// tuple-like access.  That also means meta::tuple_like applies to this type.
@@ -1642,14 +1689,14 @@ namespace impl {
     view(C&&) -> view<C>;
 
     template <typename F, typename args, typename its, typename Is, typename... A>
-    struct _invoke_comprehension { static constexpr bool enable = false; };
+    struct _comprehension_traits { static constexpr bool enable = false; };
     template <
         typename F,
         typename... args,
         typename... its,
         size_t... Is
     > requires (sizeof...(its) > 0 && meta::invocable<meta::as_lvalue<F>, args...>)
-    struct _invoke_comprehension<
+    struct _comprehension_traits<
         F,
         meta::pack<args...>,
         meta::pack<its...>,
@@ -1669,14 +1716,14 @@ namespace impl {
         typename A,
         typename... As
     > requires (meta::iterable_comprehension<A>)
-    struct _invoke_comprehension<
+    struct _comprehension_traits<
         F,
         meta::pack<out...>,
         meta::pack<its...>,
         std::index_sequence<Is...>,
         A,
         As...
-    > : _invoke_comprehension<
+    > : _comprehension_traits<
         F,
         meta::pack<out..., meta::yield_type<A>>,
         meta::pack<its..., meta::begin_type<A>>,
@@ -1691,14 +1738,14 @@ namespace impl {
         typename A,
         typename... As
     > requires (!meta::iterable_comprehension<A>)
-    struct _invoke_comprehension<
+    struct _comprehension_traits<
         F,
         meta::pack<out...>,
         meta::pack<its...>,
         std::index_sequence<Is...>,
         A,
         As...
-    > : _invoke_comprehension<
+    > : _comprehension_traits<
         F,
         meta::pack<out..., meta::as_lvalue<A>>,
         meta::pack<its...>,
@@ -1707,7 +1754,7 @@ namespace impl {
     >
     {};
     template <typename F, typename... A>
-    using invoke_comprehension = _invoke_comprehension<
+    using comprehension_traits = _comprehension_traits<
         F,
         meta::pack<>,
         meta::pack<>,
@@ -1730,15 +1777,15 @@ namespace impl {
     An `IndexError` will be issued if views of conflicting sizes are provided, and the
     comprehension will fail to compile if the function is not callable with the
     argument types. */
-    template <typename F, typename... A> requires (invoke_comprehension<F, A...>::enable)
+    template <typename F, typename... A> requires (comprehension_traits<F, A...>::enable)
     struct comprehension {
         using size_type = size_t;
         using index_type = ssize_t;
         using function_type = meta::unqualify<F>;
 
     private:
-        static constexpr size_type N = invoke_comprehension<F, A...>::N;
-        using indices = invoke_comprehension<F, A...>::indices;
+        static constexpr size_type N = comprehension_traits<F, A...>::N;
+        using indices = comprehension_traits<F, A...>::indices;
 
         template <typename V>
         constexpr void get_length(const V&) noexcept {}
@@ -1790,10 +1837,10 @@ namespace impl {
 
         /* A forward iterator that evaluates the comprehension for each element. */
         struct iterator {
-            using storage_type = invoke_comprehension<F, A...>::storage;
+            using storage_type = comprehension_traits<F, A...>::storage;
             using iterator_category = std::input_iterator_tag;
             using difference_type = std::ptrdiff_t;
-            using value_type = invoke_comprehension<F, A...>::type;
+            using value_type = comprehension_traits<F, A...>::type;
             using reference = meta::as_lvalue<value_type>;
             using pointer = meta::as_pointer<value_type>;
 
@@ -1819,8 +1866,33 @@ namespace impl {
                 return (self->args.template get<I>());
             }
 
+            template <size_type I>
+                requires (meta::iterable_comprehension<meta::unpack_type<I, A...>>)
+            constexpr decltype(auto) get() const
+                noexcept (requires{
+                    {*iterators.template get<comprehension_idx<I, A...>>()} noexcept;
+                })
+            {
+                return (*iterators.template get<comprehension_idx<I, A...>>());
+            }
+            template <size_type I>
+                requires (!meta::iterable_comprehension<meta::unpack_type<I, A...>>)
+            constexpr decltype(auto) get() const
+                noexcept (requires{{self->args.template get<I>()} noexcept;})
+            {
+                return (self->args.template get<I>());
+            }
+
             template <size_type... Is>
             constexpr decltype(auto) call(std::index_sequence<Is...>)
+                noexcept (requires{{self->func(get<Is>()...)} noexcept;})
+                requires (requires{{self->func(get<Is>()...)};})
+            {
+                return (self->func((get<Is>())...));
+            }
+
+            template <size_type... Is>
+            constexpr decltype(auto) call(std::index_sequence<Is...>) const
                 noexcept (requires{{self->func(get<Is>()...)} noexcept;})
                 requires (requires{{self->func(get<Is>()...)};})
             {
@@ -1837,6 +1909,13 @@ namespace impl {
 
         public:
             constexpr decltype(auto) operator*()
+                noexcept (requires{{call(std::index_sequence_for<A...>{})} noexcept;})
+                requires (requires{{call(std::index_sequence_for<A...>{})};})
+            {
+                return (call(std::index_sequence_for<A...>{}));
+            }
+
+            constexpr decltype(auto) operator*() const
                 noexcept (requires{{call(std::index_sequence_for<A...>{})} noexcept;})
                 requires (requires{{call(std::index_sequence_for<A...>{})};})
             {
@@ -1918,11 +1997,136 @@ namespace impl {
             return init(indices{});
         }
 
-        [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept { return {}; }
+
+        template <typename V>
+        [[nodiscard]] constexpr operator V()
+            noexcept (requires{{V(std::from_range, *this)} noexcept;})
+            requires (requires{{V(std::from_range, *this)};})
+        {
+            return V(std::from_range, *this);
+        }
+
+        template <typename V>
+        [[nodiscard]] constexpr operator V()
+            noexcept (requires{{V(begin(), end())} noexcept;})
+            requires (!requires{{V(std::from_range, *this)};} && requires{{V(begin(), end())};})
+        {
+            return V(begin(), end());
+        }
     };
 
     template <typename F, typename... A>
     comprehension(F&&, A&&...) -> comprehension<F, A...>;
+
+    template <typename F, meta::tuple_like T, size_t... Is>
+        requires (meta::tuple_size<T> == sizeof...(Is))
+    constexpr decltype(auto) call_tuple(F&& f, T&& t, std::index_sequence<Is...>)
+        noexcept (requires{
+            {std::forward<F>(f)(meta::tuple_get<Is>(std::forward<T>(t))...)} noexcept;
+        })
+        requires (requires{
+            {std::forward<F>(f)(meta::tuple_get<Is>(std::forward<T>(t))...)};
+        })
+    {
+        return (std::forward<F>(f)(meta::tuple_get<Is>(std::forward<T>(t))...));
+    }
+
+    /* A wrapper around a function `F` that expects a tuple-like argument of type `T`
+    and decomposes it into its individual components before forwarding to the wrapped
+    function.  This is used to create structured comprehensions. */
+    template <typename F>
+    struct decompose {
+        meta::remove_rvalue<F> func;
+
+        template <typename Self, meta::tuple_like T>
+        constexpr decltype(auto) operator()(this Self&& self, T&& t)
+            noexcept (requires{{call_tuple(
+                std::forward<Self>(self).func,
+                std::forward<T>(t),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            )} noexcept;})
+            requires (requires{{call_tuple(
+                std::forward<Self>(self).func,
+                std::forward<T>(t),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            )};})
+        {
+            return (call_tuple(
+                std::forward<Self>(self).func,
+                std::forward<T>(t),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            ));
+        }
+    };
+
+    template <typename F>
+    decompose(F&&) -> decompose<F>;
+
+    /* When used on iterable containers that yield non-iterable, tuple-like types,
+    `operator->*` will generate a comprehension that decomposes each element when
+    calling the supplied function. */
+    template <meta::viewable T, meta::comprehension_func<T> F>
+        requires (meta::detail::use_structured_comprehension<T>)
+    [[nodiscard]] constexpr auto comprehend(T&& container, F&& func)
+        noexcept (requires{{impl::comprehension{
+            decompose{std::forward<F>(func)},
+            impl::view{std::forward<T>(container)}
+        }} noexcept;})
+        requires (requires{{impl::comprehension{
+            decompose{std::forward<F>(func)},
+            impl::view{std::forward<T>(container)}
+        }};})
+    {
+        return impl::comprehension{
+            decompose{std::forward<F>(func)},
+            impl::view{std::forward<T>(container)}
+        };
+    }
+
+    /* When used on iterable containers that yield iterable or non-tuple-like types,
+    `operator->*` will generate a comprehension that accepts the yield type
+    directly. */
+    template <meta::viewable T, meta::comprehension_func<T> F>
+        requires (meta::detail::use_standard_comprehension<T>)
+    [[nodiscard]] constexpr auto comprehend(T&& container, F&& func)
+        noexcept (requires{{impl::comprehension{
+            std::forward<F>(func),
+            impl::view{std::forward<T>(container)}
+        }} noexcept;})
+        requires (requires{{impl::comprehension{
+            std::forward<F>(func),
+            impl::view{std::forward<T>(container)}
+        }};})
+    {
+        return impl::comprehension{
+            std::forward<F>(func),
+            impl::view{std::forward<T>(container)}
+        };
+    }
+
+    /* When used on non-iterable, tuple-like containers, `operator->*` will decompose
+    the container elements and directly call the supplied function with its contents. */
+    template <meta::viewable T, meta::comprehension_func<T> F>
+        requires (meta::detail::use_direct_comprehension<T>)
+    [[nodiscard]] constexpr decltype(auto) comprehend(T&& container, F&& func)
+        noexcept (requires{{call_tuple(
+            std::forward<F>(func),
+            std::forward<T>(container),
+            std::make_index_sequence<meta::tuple_size<T>>{}
+        )} noexcept;})
+        requires (requires{{call_tuple(
+            std::forward<F>(func),
+            std::forward<T>(container),
+            std::make_index_sequence<meta::tuple_size<T>>{}
+        )};})
+    {
+        return (call_tuple(
+            std::forward<F>(func),
+            std::forward<T>(container),
+            std::make_index_sequence<meta::tuple_size<T>>{}
+        ));
+    }
 
     /* Iterate over all elements of an input range and discard the results.  This is
     used to invoke a modified assignment comprehension, so that it eagerly evaluates
@@ -1948,8 +2152,11 @@ namespace impl {
         }
     }
 
-    /// NOTE: all elementary math operators are enabled between comprehensions, in
-    /// order to simulate SIMD-style template expressions.  
+    /// NOTE: all elementary math operators are enabled between comprehensions in
+    /// order to simulate SIMD-style expression templates.  Note that no actual SIMD
+    /// primitives are explicitly called - these expressions simply fuse the loops and
+    /// allow the  auto-vectorizer to make that decision behind the scenes, which often
+    /// leads to SIMD codegen anyways.
 
     template <typename L, typename R>
         requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
@@ -2636,21 +2843,18 @@ template <meta::viewable T>
 }
 
 
-template <meta::viewable T, typename F>
-[[nodiscard]] constexpr auto operator->*(T&& container, F&& func)
-    noexcept (requires{{impl::comprehension{
-        std::forward<F>(func),
-        impl::view{std::forward<T>(container)}
-    }} noexcept;})
-    requires (requires{{impl::comprehension{
-        std::forward<F>(func),
-        impl::view{std::forward<T>(container)}
-    }};})
+template <meta::viewable T, meta::comprehension_func<T> F>
+constexpr decltype(auto) operator->*(T&& container, F&& func)
+    noexcept (requires{{impl::comprehend(
+        std::forward<T>(container),
+        std::forward<F>(func))
+    } noexcept;})
+    requires (requires{{impl::comprehend(
+        std::forward<T>(container),
+        std::forward<F>(func))
+    };})
 {
-    return impl::comprehension{
-        std::forward<F>(func),
-        impl::view{std::forward<T>(container)}
-    };
+    return (impl::comprehend(std::forward<T>(container), std::forward<F>(func)));
 }
 
 
@@ -2659,37 +2863,58 @@ template <meta::viewable T, typename F>
 
 
 
+
+
+
 static_assert([] {
-    for (auto&& x : impl::comprehension{
-        impl::Add{},
-        *std::array{1, 2, 3},
-        *std::array{3, 2, 1}
-    }) {
+    if (std::pair{1, 2}->*[](int a, int b) { return a + b; } != 3) {
+        return false;
+    }
+
+    std::array p {std::pair{1, 2}, std::pair{3, 4}, std::pair{5, 6}};\
+    for (auto&& x : p->*[](int a, int b) { return a + b; }) {
+        if (x != 3 && x != 7 && x != 11) { return false; }
+    }
+
+
+
+    std::array a = {1, 2, 3};
+    std::array b = {3, 2, 1};
+
+    for (auto&& x : impl::comprehension{impl::Add{}, *a, *b}) {
         if (x != 4) { return false; }
     }
 
-    for (auto&& x : *std::array{1, 2, 3} + *std::array{3, 2, 1}) {
+    for (auto&& x : *a + *b) {
         if (x != 4) { return false; }
     }
 
-    auto r = std::array{1, 2, 3}->*[](int a) { return a + 3; };
+    auto r = a->*[](int a) { return a + 3; };
     for (auto&& x : r - *std::array{0, 1, 2}) {
         if (x != 4) { return false; }
     }
 
-    auto c = std::array{1, 2, 3};
-    *c -= *std::array{1, 2, 3};
+    auto c = a;
+    *c -= *a;
     for (auto&& x : c) {
         if (x != 0) { return false; }
     }
 
-    auto c2 = std::array{1, 2, 3};
+    auto c2 = a;
     *c2 -= 2;
     for (auto&& x : *c2) {
         if (x != -1 && x != 0 && x != 1) { return false; }
     }
+
+    std::vector<int> v = a->*[](int a) -> int { return a + 3; };
+    if (v.size() != 3) {
+        return false;
+    }
     return true;
 }());
+
+
+
 
 
 

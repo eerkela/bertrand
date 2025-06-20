@@ -377,19 +377,16 @@ namespace impl {
 
         template <typename V>
         [[nodiscard]] constexpr operator V() const
-            noexcept(noexcept(V(std::from_range, *this)))
-            requires(meta::constructible_from<V, std::from_range_t, slice&>)
+            noexcept (requires{{V(std::from_range, *this)} noexcept;})
+            requires (requires{{V(std::from_range, *this)};})
         {
             return V(std::from_range, *this);
         }
 
         template <typename V>
         [[nodiscard]] constexpr operator V() const
-            noexcept(noexcept(V(begin(), end())))
-            requires(
-                !meta::constructible_from<V, std::from_range_t, slice&> &&
-                meta::constructible_from<V, iterator, iterator>
-            )
+            noexcept (requires{{V(begin(), end())} noexcept;})
+            requires (!requires{{V(std::from_range, *this)};} && requires{{V(begin(), end())};})
         {
             return V(begin(), end());
         }
