@@ -841,6 +841,9 @@ namespace impl {
     struct args {
         constexpr void swap(args& other) noexcept {}
 
+        template <size_t I, typename S> requires (false)
+        constexpr decltype(auto) get(this S&& s) noexcept;  // never called
+
         template <typename S, typename F, typename... A>
         constexpr decltype(auto) operator()(this S&&, F&& f, A&&... a)
             noexcept (meta::nothrow::invocable<F, A...>)
@@ -932,7 +935,7 @@ namespace impl {
             std::ranges::swap(m_storage.value, other.m_storage.value);
         }
 
-        template <size_t I, typename S>
+        template <size_t I, typename S> requires (I <= sizeof...(Ts))
         constexpr decltype(auto) get(this S&& s) noexcept {
             if constexpr (I == 0) {
                 return (std::forward<S>(s).m_storage.value);
@@ -1113,6 +1116,29 @@ public:
         }
     }
 
+    /* Check to see whether the argument pack contains a named keyword argument.  This
+    overload applies when the argument name is known at compile time and can be
+    statically resolved. */
+    template <static_str name> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] static constexpr bool contains() noexcept
+        requires (names.template contains<name>())
+    {
+        return names.template contains<name>();
+    }
+
+    /* Check to see whether the argument pack contains a named keyword argument.  This
+    overload applies when the argument name is known at compile time, but cannot be
+    statically resolved, and the pack permits runtime-only keyword arguments (e.g.
+    the contents of a keyword unpacking operator), and the underlying container
+    supports a matching `contains()` method. */
+    template <static_str name> requires (meta::valid_arg_name<name>)
+    [[nodiscard]] constexpr bool contains() const
+        noexcept (requires{{get<names.template get<"">()>().template contains<name>()} noexcept;})
+        requires (!names.template contains<name>() && names.template contains<"">())
+    {
+        return get<names.template get<"">()>().template contains<name>();
+    }
+
     /* Get the argument at index I, perfectly forwarding it according to the pack's
     current cvref qualifications.  This means that if the pack is supplied as an
     lvalue, then all arguments will be forwarded as lvalues, regardless of their
@@ -1251,29 +1277,6 @@ public:
         ).template get<names.template get<"">()>().template get_if<name>());
     }
 
-    /* Check to see whether the argument pack contains a named keyword argument.  This
-    overload applies when the argument name is known at compile time and can be
-    statically resolved. */
-    template <static_str name> requires (meta::valid_arg_name<name>)
-    [[nodiscard]] static constexpr bool contains() noexcept
-        requires (names.template contains<name>())
-    {
-        return names.template contains<name>();
-    }
-
-    /* Check to see whether the argument pack contains a named keyword argument.  This
-    overload applies when the argument name is known at compile time, but cannot be
-    statically resolved, and the pack permits runtime-only keyword arguments (e.g.
-    the contents of a keyword unpacking operator), and the underlying container
-    supports a matching `contains()` method. */
-    template <static_str name> requires (meta::valid_arg_name<name>)
-    [[nodiscard]] constexpr bool contains() const
-        noexcept (requires{{get<names.template get<"">()>().template contains<name>()} noexcept;})
-        requires (!names.template contains<name>() && names.template contains<"">())
-    {
-        return get<names.template get<"">()>().template contains<name>();
-    }
-
     /* Invoking a pack will perfectly forward the saved arguments to a target function
     according to the pack's current cvref qualifications.  This means that if the pack
     is supplied as an lvalue, then all arguments will be forwarded as lvalues,
@@ -1409,6 +1412,13 @@ public:
 //////////////////////////////
 
 
+/// TODO: the logic around tuple comprehensions is convoluted and potentially
+/// self-referential.  There needs to be a better vocabulary for this, especially
+/// around the view/comprehension distinction, and associated concepts.
+
+/// Maybe `view` -> `unpack`, and concept is called `unpackable`?
+
+
 namespace impl {
     /// TODO: viewable goes up here?
 }
@@ -1539,10 +1549,203 @@ namespace meta {
 
 namespace impl {
 
+    /* A keyword parameter pack obtained by double-dereferencing a mapping-like
+    container within a Python-style function call.  The template machinery recognizes
+    this as if it were an `"*<anonymous>"_(container)` argument defined in the
+    signature, if such an expression were well-formed.  Because that is outlawed by the
+    DSL syntax and cannot appear at the call site, this class fills that gap and allows
+    the same internals to be reused.  */
+    template <meta::unpack_to_kwargs T>
+    struct kwarg_pack {
+        using key_type = meta::unqualify<T>::key_type;
+        using mapped_type = meta::unqualify<T>::mapped_type;
+        using type = mapped_type;
+        static constexpr static_str id = "";
+
+    private:
+        struct hash {
+            using is_transparent = void;
+            static constexpr size_t operator()(std::string_view str)
+                noexcept (requires{{bertrand::hash(str)} noexcept;})
+            {
+                return bertrand::hash(str);
+            }
+        };
+
+        struct equal {
+            using is_transparent = void;
+            static constexpr bool operator()(
+                std::string_view lhs,
+                std::string_view rhs
+            ) noexcept (requires{{lhs == rhs} noexcept;}) {
+                return lhs == rhs;
+            }
+        };
+
+        /// TODO: eventually, I should try to replace the `unordered_map` with a
+        /// `Map<...>` type under my control for consistency.
+
+        using Map = std::unordered_map<std::string, mapped_type, hash, equal>;
+        Map m_data;
+
+    public:
+        template <meta::is<T> C>
+        explicit constexpr kwarg_pack(C&& container) {
+            if constexpr (meta::has_size<C>) {
+                m_data.reserve(std::ranges::size(container));
+            }
+            if constexpr (meta::detail::kwarg_yield<C>) {
+                for (auto&& [key, value] : std::forward<C>(container)) {
+                    m_data.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                }
+
+            } else if constexpr (meta::detail::kwarg_items<C>) {
+                for (auto&& [key, value] : std::forward<C>(container).items()) {
+                    m_data.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                }
+
+            } else if constexpr (meta::detail::kwarg_keys_and_values<C>) {
+                for (auto&& [key, value] : zip(container.keys(), container.values())) {
+                    m_data.emplace(
+                        std::forward<decltype(key)>(key),
+                        std::forward<decltype(value)>(value)
+                    );
+                }
+
+            } else if constexpr (meta::detail::kwarg_yield_and_lookup<C>) {
+                for (auto& key : container) {
+                    m_data.emplace(key, container[key]);
+                }
+
+            } else {
+                for (auto& key : container.keys()) {
+                    m_data.emplace(key, container[key]);
+                }
+            }
+        }
+
+        constexpr void swap(kwarg_pack& other)
+            noexcept (requires{{std::ranges::swap(m_data, other.m_data)} noexcept;})
+            requires (requires{{std::ranges::swap(m_data, other.m_data)};})
+        {
+            std::ranges::swap(m_data, other.m_data);
+        }
+
+        [[nodiscard]] constexpr auto& data() noexcept { return m_data; }
+        [[nodiscard]] constexpr const auto& data() const noexcept { return m_data; }
+        [[nodiscard]] constexpr auto size() const noexcept { return m_data.size(); }
+        [[nodiscard]] constexpr auto ssize() const noexcept { return std::ranges::ssize(m_data); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return m_data.empty(); }
+        [[nodiscard]] constexpr auto begin() noexcept { return m_data.begin(); }
+        [[nodiscard]] constexpr auto begin() const noexcept { return m_data.begin(); }
+        [[nodiscard]] constexpr auto end() noexcept { return m_data.end(); }
+        [[nodiscard]] constexpr auto end() const noexcept { return m_data.end(); }
+
+        template <static_str key>
+        [[nodiscard]] constexpr Optional<mapped_type> pop() {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                return None;
+            }
+            Optional<mapped_type> result{std::move(it->second)};
+            m_data.erase(it);
+            return result;
+        }
+
+        constexpr void validate() {
+            if (!empty()) {
+                if consteval {
+                    static constexpr static_str msg = "unexpected keyword arguments";
+                    throw TypeError(msg);
+                } else {
+                    auto it = m_data.begin();
+                    auto end = m_data.end();
+                    std::string message = "unexpected keyword arguments: ['";
+                    message += repr(it->first);
+                    while (++it != end) {
+                        message += "', '" + repr(it->first);
+                    }
+                    message += "']";
+                    throw TypeError(message);
+                }
+            }
+        }
+
+        template <static_str key>
+        [[nodiscard]] constexpr bool contains() const
+            noexcept (requires{{m_data.contains(key)} noexcept;})
+        {
+            return m_data.contains(key);
+        }
+
+        template <static_str key>
+        [[nodiscard]] constexpr auto& get() {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                static constexpr static_str msg =
+                    "missing keyword argument: '" + key + "'";
+                throw KeyError(msg);
+            }
+            return it->second;
+        }
+
+        template <static_str key>
+        [[nodiscard]] constexpr const auto& get() const {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                static constexpr static_str msg =
+                    "missing keyword argument: '" + key + "'";
+                throw KeyError(msg);
+            }
+            return it->second;
+        }
+
+        template <static_str key>
+        [[nodiscard]] constexpr Optional<meta::as_lvalue<mapped_type>> get_if()
+            noexcept (requires{
+                {m_data.find(key) == m_data.end()} noexcept;
+                {Optional<meta::as_lvalue<mapped_type>>{m_data.find(key)->second}} noexcept;
+            })
+        {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                return None;
+            }
+            return {it->second};
+        }
+
+        template <static_str key>
+        [[nodiscard]] constexpr Optional<meta::as_const_ref<mapped_type>> get_if() const
+            noexcept (requires{
+                {m_data.find(key) == m_data.end()} noexcept;
+                {Optional<meta::as_const_ref<mapped_type>>{m_data.find(key)->second}} noexcept;
+            })
+        {
+            auto it = m_data.find(key);
+            if (it == m_data.end()) {
+                return None;
+            }
+            return {it->second};
+        }
+    };
+
+    template <meta::unpack_to_kwargs T>
+    kwarg_pack(T&&) -> kwarg_pack<T>;
+
     template <typename T>
     struct view_size_type { using type = meta::unqualify<decltype(meta::tuple_size<T>)>; };
     template <meta::has_size T>
     struct view_size_type<T> { using type = meta::size_type<T>; };
+
+    /// TODO: view needs to be swappable, and possibly also renamed to avoid confusion
+    /// with the `std::ranges::view` concept.  It may be better expressed as a null
+    /// comprehension.
 
     /* Base comprehension type, which is returned by the `*` operator for an iterable
     or tuple-like container.
@@ -1552,14 +1755,17 @@ namespace impl {
     depending on where the operator was applied.  When provided as an argument to a
     `def()` function, the view will be unpacked into the function's argument list.
     Otherwise, it exposes all the elementary math operators for SIMD-style chains, as
-    well as structured comprehensions via the `->*` operator.  Dereferencing the view
-    once more promotes it to a keyword argument pack, assuming the underlying container
-    can be viewed as such. */
+    well as structured comprehensions via the `->*` operator.
+
+    Applying the unary `*` operator to a view promotes it to a keyword argument pack,
+    assuming the underlying container can be viewed as such. */
     template <meta::viewable C>
     struct view {
         using container_type = meta::unqualify<C>;
         using size_type = view_size_type<C>::type;
         using index_type = meta::as_signed<size_type>;
+        /// TODO: id is an empty string?  Or just handle this within the concepts
+        /// directly.
 
         meta::remove_rvalue<C> container;
 
@@ -1662,7 +1868,6 @@ namespace impl {
             return std::ranges::cend(container);
         }
 
-
         template <typename V>
         [[nodiscard]] constexpr operator V() const
             noexcept (requires{{V(std::from_range, *this)} noexcept;})
@@ -1679,10 +1884,66 @@ namespace impl {
             return V(begin(), end());
         }
 
-        /// TODO: operator*() converts the view into a kwargs{} pack.
+        /// TODO: next() and validate() are only used within the function call logic,
+        /// and only in the runtime case.  It might be best to move them into a
+        /// temporary container that is only used within the binding logic.
 
-        /// TODO: std::tuple_size, element, and std::get<I>() specializations for
-        /// tuple-like access.  That also means meta::tuple_like applies to this type.
+        /// TODO: next() is unsafe, and should be made into a private helper, along
+        /// with validate().  That would also help with the effort to make this into an
+        /// entry point for comprehensions, since the user might start interacting
+        /// with these types with some regularity.
+
+        // [[nodiscard]] constexpr decltype(auto) next() noexcept {
+        //     decltype(auto) value = *m_begin;
+        //     ++m_begin;
+        //     return value;
+        // }
+
+        // void constexpr validate() {
+        //     if (!empty()) {
+        //         if consteval {
+        //             static constexpr static_str msg =
+        //                 "too many arguments in positional parameter pack";
+        //             throw TypeError(msg);
+        //         } else {
+        //             std::string message =
+        //                 "too many arguments in positional parameter pack: ['" +
+        //                 repr(*m_begin);
+        //             while (++m_begin != m_end) {
+        //                 message += "', '" + repr(*m_begin);
+        //             }
+        //             message += "']";
+        //             throw TypeError(message);
+        //         }
+        //     }
+        // }
+
+        /* Dereference a positional pack to promote it to a key/value pack.  This
+        allows Python-style double unpack operators to be used with supported
+        containers when calling `def` statements, e.g.:
+
+            ```
+            auto func = def<"**kwargs"_[type<int>]>([](auto&& kwargs) {
+                std::cout << kwargs["a"] << ", " << kwargs["b"] << '\n';
+                return Map{std::forward<decltype(kwargs)>(kwargs)};
+            })
+
+            Map<std::string, int> in {{"a", 1}, {"b", 2}};
+            Map out = func(**in);  // prints "1, 2"
+            assert(in == out);
+            ```
+
+        Enabling this operator must be done explicitly, by specializing the
+        `meta::detail::unpack<T>` flag for a given container. */
+        [[nodiscard]] constexpr auto operator*() &&
+            noexcept (requires{{kwarg_pack<C>{std::forward<C>(container)}} noexcept;})
+            requires (
+                meta::unpack_to_kwargs<C> &&
+                requires{{kwarg_pack<C>{std::forward<C>(container)}};}
+            )
+        {
+            return kwarg_pack<C>{std::forward<C>(container)};
+        }
     };
 
     template <typename C>
@@ -2834,6 +3095,31 @@ namespace meta {
 }
 
 
+namespace meta {
+
+    namespace detail {
+
+        template <typename... Ts>
+        constexpr bool args<bertrand::args<Ts...>> = true;
+        template <typename... Ts>
+        constexpr bool args<impl::args<Ts...>> = true;
+
+        // template <typename T>
+        // constexpr bool arg<impl::arg_pack<T>> = true;
+        template <typename T>
+        constexpr bool arg<impl::kwarg_pack<T>> = true;
+
+        // template <typename T>
+        // constexpr bool arg_pack<impl::arg_pack<T>> = true;
+
+        template <typename T>
+        constexpr bool kwarg_pack<impl::kwarg_pack<T>> = true;
+
+    }
+
+}
+
+
 template <meta::viewable T>
 [[nodiscard]] constexpr auto operator*(T&& container)
     noexcept (requires{{impl::view<T>(std::forward<T>(container))} noexcept;})
@@ -2855,422 +3141,6 @@ constexpr decltype(auto) operator->*(T&& container, F&& func)
     };})
 {
     return (impl::comprehend(std::forward<T>(container), std::forward<F>(func)));
-}
-
-
-
-
-
-
-
-
-
-
-static_assert([] {
-    if (std::pair{1, 2}->*[](int a, int b) { return a + b; } != 3) {
-        return false;
-    }
-
-    std::array p {std::pair{1, 2}, std::pair{3, 4}, std::pair{5, 6}};\
-    for (auto&& x : p->*[](int a, int b) { return a + b; }) {
-        if (x != 3 && x != 7 && x != 11) { return false; }
-    }
-
-
-
-    std::array a = {1, 2, 3};
-    std::array b = {3, 2, 1};
-
-    for (auto&& x : impl::comprehension{impl::Add{}, *a, *b}) {
-        if (x != 4) { return false; }
-    }
-
-    for (auto&& x : *a + *b) {
-        if (x != 4) { return false; }
-    }
-
-    auto r = a->*[](int a) { return a + 3; };
-    for (auto&& x : r - *std::array{0, 1, 2}) {
-        if (x != 4) { return false; }
-    }
-
-    auto c = a;
-    *c -= *a;
-    for (auto&& x : c) {
-        if (x != 0) { return false; }
-    }
-
-    auto c2 = a;
-    *c2 -= 2;
-    for (auto&& x : *c2) {
-        if (x != -1 && x != 0 && x != 1) { return false; }
-    }
-
-    std::vector<int> v = a->*[](int a) -> int { return a + 3; };
-    if (v.size() != 3) {
-        return false;
-    }
-    return true;
-}());
-
-
-
-
-
-
-namespace impl {
-
-    /* A keyword parameter pack obtained by double-dereferencing a mapping-like
-    container within a Python-style function call.  The template machinery recognizes
-    this as if it were an `"*<anonymous>"_(container)` argument defined in the
-    signature, if such an expression were well-formed.  Because that is outlawed by the
-    DSL syntax and cannot appear at the call site, this class fills that gap and allows
-    the same internals to be reused.  */
-    template <meta::unpack_to_kwargs T>
-    struct kwarg_pack {
-        using key_type = meta::unqualify<T>::key_type;
-        using mapped_type = meta::unqualify<T>::mapped_type;
-        using type = mapped_type;
-        static constexpr static_str id = "";
-
-    private:
-        struct hash {
-            using is_transparent = void;
-            static constexpr size_t operator()(std::string_view str)
-                noexcept (requires{{bertrand::hash(str)} noexcept;})
-            {
-                return bertrand::hash(str);
-            }
-        };
-
-        struct equal {
-            using is_transparent = void;
-            static constexpr bool operator()(
-                std::string_view lhs,
-                std::string_view rhs
-            ) noexcept (requires{{lhs == rhs} noexcept;}) {
-                return lhs == rhs;
-            }
-        };
-
-        /// TODO: eventually, I should try to replace the `unordered_map` with a
-        /// `Map<...>` type under my control for consistency.
-
-        using Map = std::unordered_map<std::string, mapped_type, hash, equal>;
-        Map m_data;
-
-    public:
-        template <meta::is<T> C>
-        explicit constexpr kwarg_pack(C&& container) {
-            if constexpr (meta::has_size<C>) {
-                m_data.reserve(std::ranges::size(container));
-            }
-            if constexpr (meta::detail::kwarg_yield<C>) {
-                for (auto&& [key, value] : std::forward<C>(container)) {
-                    m_data.emplace(
-                        std::forward<decltype(key)>(key),
-                        std::forward<decltype(value)>(value)
-                    );
-                }
-
-            } else if constexpr (meta::detail::kwarg_items<C>) {
-                for (auto&& [key, value] : std::forward<C>(container).items()) {
-                    m_data.emplace(
-                        std::forward<decltype(key)>(key),
-                        std::forward<decltype(value)>(value)
-                    );
-                }
-
-            } else if constexpr (meta::detail::kwarg_keys_and_values<C>) {
-                for (auto&& [key, value] : zip(container.keys(), container.values())) {
-                    m_data.emplace(
-                        std::forward<decltype(key)>(key),
-                        std::forward<decltype(value)>(value)
-                    );
-                }
-
-            } else if constexpr (meta::detail::kwarg_yield_and_lookup<C>) {
-                for (auto& key : container) {
-                    m_data.emplace(key, container[key]);
-                }
-
-            } else {
-                for (auto& key : container.keys()) {
-                    m_data.emplace(key, container[key]);
-                }
-            }
-        }
-
-        constexpr void swap(kwarg_pack& other)
-            noexcept (requires{{std::ranges::swap(m_data, other.m_data)} noexcept;})
-            requires (requires{{std::ranges::swap(m_data, other.m_data)};})
-        {
-            std::ranges::swap(m_data, other.m_data);
-        }
-
-        [[nodiscard]] constexpr auto& data() noexcept { return m_data; }
-        [[nodiscard]] constexpr const auto& data() const noexcept { return m_data; }
-        [[nodiscard]] constexpr auto size() const noexcept { return m_data.size(); }
-        [[nodiscard]] constexpr auto ssize() const noexcept { return std::ranges::ssize(m_data); }
-        [[nodiscard]] constexpr bool empty() const noexcept { return m_data.empty(); }
-        [[nodiscard]] constexpr auto begin() noexcept { return m_data.begin(); }
-        [[nodiscard]] constexpr auto begin() const noexcept { return m_data.begin(); }
-        [[nodiscard]] constexpr auto end() noexcept { return m_data.end(); }
-        [[nodiscard]] constexpr auto end() const noexcept { return m_data.end(); }
-
-        template <static_str key>
-        [[nodiscard]] constexpr Optional<mapped_type> pop() {
-            auto it = m_data.find(key);
-            if (it == m_data.end()) {
-                return None;
-            }
-            Optional<mapped_type> result{std::move(it->second)};
-            m_data.erase(it);
-            return result;
-        }
-
-        constexpr void validate() {
-            if (!empty()) {
-                if consteval {
-                    static constexpr static_str msg = "unexpected keyword arguments";
-                    throw TypeError(msg);
-                } else {
-                    auto it = m_data.begin();
-                    auto end = m_data.end();
-                    std::string message = "unexpected keyword arguments: ['";
-                    message += repr(it->first);
-                    while (++it != end) {
-                        message += "', '" + repr(it->first);
-                    }
-                    message += "']";
-                    throw TypeError(message);
-                }
-            }
-        }
-
-        template <static_str key>
-        [[nodiscard]] constexpr bool contains() const
-            noexcept (requires{{m_data.contains(key)} noexcept;})
-        {
-            return m_data.contains(key);
-        }
-
-        template <static_str key>
-        [[nodiscard]] constexpr auto& get() {
-            auto it = m_data.find(key);
-            if (it == m_data.end()) {
-                static constexpr static_str msg =
-                    "missing keyword argument: '" + key + "'";
-                throw KeyError(msg);
-            }
-            return it->second;
-        }
-
-        template <static_str key>
-        [[nodiscard]] constexpr const auto& get() const {
-            auto it = m_data.find(key);
-            if (it == m_data.end()) {
-                static constexpr static_str msg =
-                    "missing keyword argument: '" + key + "'";
-                throw KeyError(msg);
-            }
-            return it->second;
-        }
-
-        template <static_str key>
-        [[nodiscard]] constexpr Optional<meta::as_lvalue<mapped_type>> get_if()
-            noexcept (requires{
-                {m_data.find(key) == m_data.end()} noexcept;
-                {Optional<meta::as_lvalue<mapped_type>>{m_data.find(key)->second}} noexcept;
-            })
-        {
-            auto it = m_data.find(key);
-            if (it == m_data.end()) {
-                return None;
-            }
-            return {it->second};
-        }
-
-        template <static_str key>
-        [[nodiscard]] constexpr Optional<meta::as_const_ref<mapped_type>> get_if() const
-            noexcept (requires{
-                {m_data.find(key) == m_data.end()} noexcept;
-                {Optional<meta::as_const_ref<mapped_type>>{m_data.find(key)->second}} noexcept;
-            })
-        {
-            auto it = m_data.find(key);
-            if (it == m_data.end()) {
-                return None;
-            }
-            return {it->second};
-        }
-    };
-
-    template <meta::unpack_to_kwargs T>
-    kwarg_pack(T&&) -> kwarg_pack<T>;
-
-    /// TODO: arg_pack should be a trivial comprehension, which allows it to be used
-    /// as an entry point into elementwise algorithms that fuse loops through
-    /// expression templates.  A similar object should be returned by the ->* operator
-    /// for perfect symmetry.
-
-    /// bool x = List{1, 2, 3} < List{4, 5, 6};
-    /// List<bool> y = *List{1, 2, 3} < *List{4, 5, 6};
-    /// List<bool> z = List{1, 2, 3}->*[](int x) { return x + 3; } < *List{4, 5, 6};
-
-    /// TODO: these comprehensions support all the elementary math operators, and
-    /// enable them only if the yield type supports them, and only in combination with
-    /// other comprehensions that support the same operators, which prevents type
-    /// mismatches, like:
-
-    /// List<bool> y = *List{1, 2, 3} < List{4, 5, 6};  // caught by compiler
-
-    /* A positional parameter pack obtained by dereferencing an iterable container
-    within a Python-style function call.  The template machinery recognizes this as if
-    it were an "**<anonymous>"_(container) argument defined in the signature, if such
-    an expression were well-formed.  Because that is outlawed by the DSL syntax and
-    cannot appear at the call site, this class fills the gap and allows the same
-    internals to be reused.
-
-    Dereferencing an `arg_pack` pack promotes it to a `kwarg_pack`, mirroring Python's
-    double unpack operator. */
-    template <meta::iterable T>
-    struct arg_pack {
-        using container_type = meta::remove_rvalue<T>;
-        using begin_type = meta::begin_type<container_type>;
-        using end_type = meta::end_type<container_type>;
-        using type = meta::yield_type<T>;
-        static constexpr static_str id = "";
-
-    private:
-        container_type m_data;
-        begin_type m_begin;
-        end_type m_end;
-
-    public:
-        template <meta::is<T> C>
-        explicit constexpr arg_pack(C&& data) :
-            m_data(std::forward<C>(data)),
-            m_begin(std::ranges::begin(m_data)),
-            m_end(std::ranges::end(m_data))
-        {}
-
-        constexpr void swap(arg_pack& other)
-            noexcept (requires{
-                {std::ranges::swap(m_data, other.m_data)} noexcept;
-                {std::ranges::swap(m_begin, other.m_begin)} noexcept;
-                {std::ranges::swap(m_end, other.m_end)} noexcept;
-            })
-            requires (requires{
-                std::ranges::swap(m_data, other.m_data);
-                std::ranges::swap(m_begin, other.m_begin);
-                std::ranges::swap(m_end, other.m_end);
-            })
-        {
-            std::ranges::swap(m_data, other.m_data);
-            std::ranges::swap(m_begin, other.m_begin);
-            std::ranges::swap(m_end, other.m_end);
-        }
-
-        [[nodiscard]] constexpr container_type& data() noexcept { return m_data; }
-        [[nodiscard]] constexpr const container_type& data() const noexcept { return m_data; }
-        [[nodiscard]] constexpr begin_type& begin() noexcept { return m_begin; }
-        [[nodiscard]] constexpr begin_type begin() const noexcept { return m_begin; }
-        [[nodiscard]] constexpr end_type& end() noexcept { return m_end; }
-        [[nodiscard]] constexpr end_type end() const noexcept { return m_end; }
-
-        [[nodiscard]] constexpr bool empty() const noexcept (requires{{m_begin == m_end} noexcept;}) {
-            return m_begin == m_end;
-        }
-
-        /// TODO: next() is unsafe, and should be made into a private helper, along
-        /// with validate().  That would also help with the effort to make this into an
-        /// entry point for comprehensions, since the user might start interacting
-        /// with these types with some regularity.
-
-        [[nodiscard]] constexpr decltype(auto) next() noexcept {
-            decltype(auto) value = *m_begin;
-            ++m_begin;
-            return value;
-        }
-
-        void constexpr validate() {
-            if (!empty()) {
-                if consteval {
-                    static constexpr static_str msg =
-                        "too many arguments in positional parameter pack";
-                    throw TypeError(msg);
-                } else {
-                    std::string message =
-                        "too many arguments in positional parameter pack: ['" +
-                        repr(*m_begin);
-                    while (++m_begin != m_end) {
-                        message += "', '" + repr(*m_begin);
-                    }
-                    message += "']";
-                    throw TypeError(message);
-                }
-            }
-        }
-
-        /* Dereference a positional pack to promote it to a key/value pack.  This
-        allows Python-style double unpack operators to be used with supported
-        containers when calling `def` statements, e.g.:
-
-            ```
-            auto func = def<"**kwargs"_[type<int>]>([](auto&& kwargs) {
-                std::cout << kwargs["a"] << ", " << kwargs["b"] << '\n';
-                return Map{std::forward<decltype(kwargs)>(kwargs)};
-            })
-
-            Map<std::string, int> in {{"a", 1}, {"b", 2}};
-            Map out = func(**in);  // prints "1, 2"
-            assert(in == out);
-            ```
-
-        Enabling this operator must be done explicitly, by specializing the
-        `meta::detail::unpack<T>` flag for a given container. */
-        [[nodiscard]] constexpr auto operator*() &&
-            noexcept (requires{{kwarg_pack<T>{
-                std::forward<container_type>(m_data)
-            }} noexcept;})
-            requires (
-                meta::unpack_to_kwargs<T> &&
-                requires{{kwarg_pack<T>{std::forward<container_type>(m_data)}};}
-            )
-        {
-            return kwarg_pack<T>{std::forward<container_type>(m_data)};
-        }
-    };
-
-    template <meta::iterable T>
-    arg_pack(T&&) -> arg_pack<T>;
-
-}
-
-
-namespace meta {
-
-    namespace detail {
-
-        template <typename... Ts>
-        constexpr bool args<bertrand::args<Ts...>> = true;
-        template <typename... Ts>
-        constexpr bool args<impl::args<Ts...>> = true;
-
-        template <typename T>
-        constexpr bool arg<impl::arg_pack<T>> = true;
-        template <typename T>
-        constexpr bool arg<impl::kwarg_pack<T>> = true;
-
-        template <typename T>
-        constexpr bool arg_pack<impl::arg_pack<T>> = true;
-
-        template <typename T>
-        constexpr bool kwarg_pack<impl::kwarg_pack<T>> = true;
-
-    }
-
 }
 
 
@@ -6535,7 +6405,7 @@ namespace impl {
     `def()` functions themselves, whose signatures will always be implicitly propagated
     if necessary. */
     template <typename F>
-    struct infer_signature {
+    struct detect_signature {
     private:
 
         struct wrapper {
@@ -6623,7 +6493,7 @@ namespace impl {
     /* Specialization for trivially-introspectable function objects, whose signatures
     can be statically deduced. */
     template <meta::has_call_operator F>
-    struct infer_signature<F> {
+    struct detect_signature<F> {
     private:
         using traits = meta::call_operator<F>;
 
@@ -7016,21 +6886,24 @@ namespace impl {
     set of function objects. */
     template <meta::unqualified... Fs> requires (meta::not_void<Fs> && ...)
     struct overloads : public Fs... {
+        using size_type = size_t;
+        using index_type = ssize_t;
+
         /* Records the type of each function, in the same order they were given. */
         using types = meta::pack<Fs...>;
 
         /* The number of overloads within the set, as an unsigned integer. */
-        [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Fs); }
+        [[nodiscard]] static constexpr size_type size() noexcept { return sizeof...(Fs); }
 
         /* The number of overloads within the set, as a signed integer. */
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
+        [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
 
         /* True if the overload set is empty.  This is almost always false. */
         [[nodiscard]] static constexpr bool empty() noexcept { return size() == 0; }
 
         /* Get the function at index I, perfectly forwarding it according to the pack's
         current cvref qualifications. */
-        template <ssize_t I, typename Self> requires (impl::valid_index<ssize(), I>)
+        template <index_type I, typename Self> requires (impl::valid_index<ssize(), I>)
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
             return (std::forward<meta::qualify<
                 meta::unpack_type<impl::normalize_index<ssize(), I>, Fs...>,
@@ -7670,8 +7543,8 @@ namespace impl {
     chain(Fs&&...) -> chain<meta::remove_rvalue<Fs>...>;
 
     template <meta::chain C>
-    struct infer_signature<C> {
-        using type = infer_signature<
+    struct detect_signature<C> {
+        using type = detect_signature<
             typename meta::unqualify<C>::functions::template at<0>
         >::type;
     };
@@ -7896,7 +7769,7 @@ namespace impl {
     struct _make_signature { using type = signature<T, A...>; };
     template <typename F, const auto& T, const auto&... A>
         requires (T.empty() && sizeof...(A) == 0)
-    struct _make_signature<F, T, A...> { using type = infer_signature<F>::type; };
+    struct _make_signature<F, T, A...> { using type = detect_signature<F>::type; };
     template <typename F, templates T, const auto&... A>
     using make_signature = _make_signature<F, T, A...>::type;
 
@@ -7904,9 +7777,11 @@ namespace impl {
     using make_def = def<meta::remove_rvalue<F>, make_signature<F, T, A...>>;
 
     template <meta::def F>
-    struct infer_signature<F> {
+    struct detect_signature<F> {
         using type = meta::unqualify<F>::signature_type;
     };
+
+    // static_assert(meta::signature<signature<{}, "x"_>>);
 
 }
 
@@ -8239,476 +8114,233 @@ static_assert(f3.bind("y"_ = 1).clear().template call<2>(2, 1) == 10);
 
 
 
-
-
-/////////////////////////////////////
-////    CHAIN + COMPREHENSION    ////
-/////////////////////////////////////
-
-
-namespace impl {
-    struct Comprehension_tag {};
-}
-
-
-namespace meta {
-
-    template <typename T>
-    concept Comprehension = inherits<T, impl::Comprehension_tag>;
-
-    template <typename T>
-    concept unpack_operator = detail::enable_unpack_operator<meta::unqualify<T>>;
-
-    template <typename T>
-    concept comprehension_operator =
-        detail::enable_comprehension_operator<meta::unqualify<T>>;
-
-    /// TODO: not entirely sure if viewable and transformable are necessary.
-
-    template <typename Range, typename View>
-    concept viewable = requires(Range r, View v) { ::std::views::all(r) | v; };
-
-    template <typename Range, typename Func>
-    concept transformable = !viewable<Range, Func> && requires(Range r, Func f) {
-        ::std::views::transform(r, f);
-    };
-
-}
-
-
-
-
-/* A range adaptor returned by the `->*` operator, which allows for Python-style
-iterator comprehensions in C++.  This is essentially equivalent to a
-`std::views::transform_view`, but with the caveat that any function which returns
-another view will have its result flattened into the output, allowing for nested
-comprehensions and filtering according to Python semantics. */
-template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
-struct comprehension :
-    std::ranges::view_interface<comprehension<Range, Func>>,
-    impl::comprehension_tag
-{
-private:
-    using View = decltype(std::views::transform(
-        std::declval<Range>(),
-        std::declval<Func>()
-    ));
-    using Value = std::ranges::range_value_t<View>;
-
-    View view;
-
-    template <typename>
-    struct iterator {
-        using Begin = std::ranges::iterator_t<const View>;
-        using End = std::ranges::sentinel_t<const View>;
-    };
-    template <typename Value> requires (std::ranges::view<std::remove_cvref_t<Value>>)
-    struct iterator<Value> {
-        struct Begin {
-            using iterator_category = std::input_iterator_tag;
-            using difference_type = std::ranges::range_difference_t<const Value>;
-            using value_type = std::ranges::range_value_t<const Value>;
-            using pointer = value_type*;
-            using reference = value_type&;
-
-            using Iter = std::ranges::iterator_t<const View>;
-            using End = std::ranges::sentinel_t<const View>;
-            Iter iter;
-            End end;
-            struct Inner {
-                using Iter = std::ranges::iterator_t<const Value>;
-                using End = std::ranges::sentinel_t<const Value>;
-                Value curr;
-                Iter iter = std::ranges::begin(curr);
-                End end = std::ranges::end(curr);
-            } inner;
-
-            Begin(Iter&& begin, End&& end) :
-                iter(std::move(begin)),
-                end(std::move(end)),
-                inner([](Iter& begin, End& end) -> Inner {
-                    while (begin != end) {
-                        Inner curr = {*begin};
-                        if (curr.iter != curr.end) {
-                            return curr;
-                        }
-                        ++begin;
-                    }
-                    return {};
-                }(this->iter, this->end))
-            {}
-
-            Begin& operator++() {
-                if (++inner.iter == inner.end) {
-                    while (++iter != end) {
-                        inner.curr = *iter;
-                        inner.iter = std::ranges::begin(inner.curr);
-                        inner.end = std::ranges::end(inner.curr);
-                        if (inner.iter != inner.end) {
-                            break;
-                        }
-                    }
-                }
-                return *this;
-            }
-
-            Begin operator++(int) {
-                Begin copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            decltype(auto) operator*() const { return *inner.iter; }
-            decltype(auto) operator->() const { return inner.iter.operator->(); }
-
-            friend bool operator==(const Begin& self, sentinel) {
-                return self.iter == self.end;
-            }
-
-            friend bool operator==(sentinel, const Begin& self) {
-                return self.iter == self.end;
-            }
-
-            friend bool operator!=(const Begin& self, sentinel) {
-                return self.iter != self.end;
-            }
-
-            friend bool operator!=(sentinel, const Begin& self) {
-                return self.iter != self.end;
-            }
-        };
-        using End = sentinel;
-    };
-
-    using Begin = iterator<Value>::Begin;
-    using End = iterator<Value>::End;
-
-public:
-    comprehension() = default;
-    comprehension(Range range, Func func) :
-        view(std::views::transform(
-            std::forward<Range>(range),
-            std::forward<Func>(func)
-        ))
-    {}
-
-    [[nodiscard]] Begin begin() const {
-        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
-            return {std::ranges::begin(view), std::ranges::end(view)};
-        } else {
-            return std::ranges::begin(view);
-        }
-    }
-
-    [[nodiscard]] End end() const {
-        if constexpr (std::ranges::view<std::remove_cvref_t<Value>>) {
-            return {};
-        } else {
-            return std::ranges::end(view);
-        }
-    }
-
-    /* Implicitly convert the comprehension into any type that can be constructed from
-    the iterator pair. */
-    template <typename T> requires (std::constructible_from<T, Begin, End>)
-    [[nodiscard]] operator T() const { return T(begin(), end()); }
-};
-
-
-template <typename Range, typename Func> requires (meta::transformable<Range, Func>)
-comprehension(Range&&, Func&&) -> comprehension<Range, Func>;
-
-
-namespace meta {
-
-    /* A template constraint that controls whether the `bertrand::call()` operator is
-    enabled for a given C++ function and argument list. */
-    template <typename F, typename... Args>
-    concept callable =
-        bertrand::signature<F>::enable &&
-        bertrand::signature<F>::within_arg_limit &&
-        bertrand::signature<F>::proper_argument_order &&
-        bertrand::signature<F>::no_qualified_arg_annotations &&
-        bertrand::signature<F>::no_duplicate_args &&
-        bertrand::signature<F>::template Bind<Args...>::proper_argument_order &&
-        bertrand::signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-        bertrand::signature<F>::template Bind<Args...>::no_duplicate_args &&
-        bertrand::signature<F>::template Bind<Args...>::no_conflicting_values &&
-        bertrand::signature<F>::template Bind<Args...>::no_extra_positional_args &&
-        bertrand::signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-        bertrand::signature<F>::template Bind<Args...>::satisfies_required_args &&
-        bertrand::signature<F>::template Bind<Args...>::can_convert;
-
-    /* A template constraint that controls whether the `bertrand::def()` operator is
-    enabled for a given C++ function and argument list. */
-    template <typename F, typename... Args>
-    concept partially_callable =
-        bertrand::signature<F>::enable &&
-        !(meta::arg_traits<Args>::variadic() || ...) &&
-        bertrand::signature<F>::proper_argument_order &&
-        bertrand::signature<F>::no_qualified_arg_annotations &&
-        bertrand::signature<F>::no_duplicate_args &&
-        bertrand::signature<F>::template Bind<Args...>::proper_argument_order &&
-        bertrand::signature<F>::template Bind<Args...>::no_qualified_arg_annotations &&
-        bertrand::signature<F>::template Bind<Args...>::no_duplicate_args &&
-        bertrand::signature<F>::template Bind<Args...>::no_conflicting_values &&
-        bertrand::signature<F>::template Bind<Args...>::no_extra_positional_args &&
-        bertrand::signature<F>::template Bind<Args...>::no_extra_keyword_args &&
-        bertrand::signature<F>::template Bind<Args...>::can_convert;
-
-    /* A template constraint that controls whether the `bertrand::Function()` type can
-    be instantiated with a given Python-compatible signature. */
-    template <typename F>
-    concept py_function =
-        bertrand::signature<F>::enable &&
-        bertrand::signature<F>::python &&
-        bertrand::signature<F>::within_arg_limit &&
-        bertrand::signature<F>::proper_argument_order &&
-        bertrand::signature<F>::no_qualified_args &&
-        bertrand::signature<F>::no_qualified_arg_annotations &&
-        bertrand::signature<F>::no_duplicate_args;
-
-}
+static_assert(std::tuple{1, 2, 3} ->* def([](int x, int y, int z) {
+    return x + y + z;
+}) == 6);
 
 
 }  // namespace bertrand
 
 
 /* Specializing `std::tuple_size`, `std::tuple_element`, and `std::get` allows
-saved arguments, function chains, `def` objects, and signature tuples to be decomposed
-using structured bindings. */
+saved arguments, tuple comprehensions, signatures, overload sets, and function chains
+to be decomposed using structured bindings. */
 namespace std {
 
-    /// TODO: all references to signature<T> should be stripped, and these overloads
-    /// in general should be looked over.
+    ////////////////////
+    ////    ARGS    ////
+    ////////////////////
 
     template <bertrand::meta::args T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
-    {};
+    struct tuple_size<T> : std::integral_constant<
+        typename std::remove_cvref_t<T>::size_type,
+        std::remove_cvref_t<T>::size()
+    > {};
+
+    template <size_t I, bertrand::meta::args T> requires (I < std::tuple_size<T>::value)
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    template <auto... A, bertrand::meta::args T>
+        requires (!bertrand::meta::static_str<decltype(A)> || ...)
+    [[nodiscard]] constexpr decltype(auto) get(T&& args)
+        noexcept (requires{{std::forward<T>(args).template get<A...>()} noexcept;})
+        requires (requires{{std::forward<T>(args).template get<A...>()};})
+    {
+        return (std::forward<T>(args).template get<A...>());
+    }
+
+    template <bertrand::static_str... S, bertrand::meta::args T>
+    [[nodiscard]] constexpr decltype(auto) get(T&& args)
+        noexcept (requires{{std::forward<T>(args).template get<S...>()} noexcept;})
+        requires (requires{{std::forward<T>(args).template get<S...>()};})
+    {
+        return (std::forward<T>(args).template get<S...>());
+    }
+
+    //////////////////////////////
+    ////    COMPREHENSIONS    ////
+    //////////////////////////////
+
+    /// TODO: restrict to views and not comprehensions?
+    template <bertrand::meta::comprehension T>
+    struct tuple_size<T> : std::tuple_size<typename std::remove_cvref_t<T>::container_type> {};
+
+    template <size_t I, bertrand::meta::comprehension T> requires (I < std::tuple_size<T>::value)
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    template <auto... A, bertrand::meta::comprehension T>
+    [[nodiscard]] constexpr decltype(auto) get(T&& comprehension)
+        noexcept (requires{{std::forward<T>(comprehension).template get<A...>()} noexcept;})
+        requires (requires{{std::forward<T>(comprehension).template get<A...>()};})
+    {
+        return (std::forward<T>(comprehension).template get<A...>());
+    }
+
+    //////////////////////////
+    ////    SIGNATURES    ////
+    //////////////////////////
 
     template <bertrand::meta::signature T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
-    {};
+    struct tuple_size<T> : std::integral_constant<
+        typename std::remove_cvref_t<T>::size_type,
+        std::remove_cvref_t<T>::size()
+    > {};
 
-    template <bertrand::meta::def T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, bertrand::signature<T>::size()>
-    {};
+    template <size_t I, bertrand::meta::signature T> requires (I < std::tuple_size<T>::value)
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    template <auto... A, bertrand::meta::signature T>
+        requires (!bertrand::meta::static_str<decltype(A)> || ...)
+    [[nodiscard]] constexpr decltype(auto) get(T&& sig)
+        noexcept (requires{{std::forward<T>(sig).template get<A...>()} noexcept;})
+        requires (requires{{std::forward<T>(sig).template get<A...>()};})
+    {
+        return (std::forward<T>(sig).template get<A...>());
+    }
+
+    template <bertrand::static_str... S, bertrand::meta::signature T>
+    [[nodiscard]] constexpr decltype(auto) get(T&& sig)
+        noexcept (requires{{std::forward<T>(sig).template get<S...>()} noexcept;})
+        requires (requires{{std::forward<T>(sig).template get<S...>()};})
+    {
+        return (std::forward<T>(sig).template get<S...>());
+    }
+
+    ////////////////////////
+    ////    OVERLOADS   ////
+    ////////////////////////
 
     template <bertrand::meta::overloads T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::types::size>
-    {};
+    struct tuple_size<T> : std::integral_constant<
+        typename std::remove_cvref_t<T>::size_type,
+        std::remove_cvref_t<T>::size()
+    > {};
+
+    template <size_t I, bertrand::meta::overloads T> requires (I < std::tuple_size<T>::value)
+    struct tuple_element<I, T> {
+        using type = decltype(std::declval<T>().template get<I>());
+    };
+
+    template <auto... A, bertrand::meta::overloads T>
+    [[nodiscard]] constexpr decltype(auto) get(T&& overloads)
+        noexcept (requires{{std::forward<T>(overloads).template get<A...>()} noexcept;})
+        requires (requires{{std::forward<T>(overloads).template get<A...>()};})
+    {
+        return (std::forward<T>(overloads).template get<A...>());
+    }
+
+    //////////////////////
+    ////    CHAINS    ////
+    //////////////////////
 
     template <bertrand::meta::chain T>
-    struct tuple_size<T> :
-        std::integral_constant<size_t, std::remove_cvref_t<T>::size()>
-    {};
+    struct tuple_size<T> : std::integral_constant<
+        typename std::remove_cvref_t<T>::size_type,
+        std::remove_cvref_t<T>::size()
+    > {};
 
-    template <size_t I, bertrand::meta::args T>
-        requires (I < std::remove_cvref_t<T>::size())
-    struct tuple_element<I, T> {
-        using type = std::remove_cvref_t<T>::template at<I>;
-    };
-
-    template <size_t I, bertrand::meta::signature T>
+    template <size_t I, bertrand::meta::chain T> requires (I < std::tuple_size<T>::value)
     struct tuple_element<I, T> {
         using type = decltype(std::declval<T>().template get<I>());
     };
 
-    template <size_t I, bertrand::meta::def T>
-        requires (I < bertrand::signature<T>::size())
-    struct tuple_element<I, T> {
-        using type = decltype(std::declval<T>().template get<I>());
-    };
-
-    template <size_t I, bertrand::meta::overloads T>
-        requires (I < tuple_size<T>::value)
-    struct tuple_element<I, T> {
-        using type = typename std::remove_cvref_t<T>::types::template at<I>;
-    };
-
-    template <size_t I, bertrand::meta::chain T>
-        requires (I < std::remove_cvref_t<T>::size())
-    struct tuple_element<I, T> {
-        using type = decltype(std::declval<T>().template get<I>());
-    };
-
-    template <size_t I, bertrand::meta::args T>
-        requires (!bertrand::meta::lvalue<T> && I < std::remove_cvref_t<T>::size())
-    [[nodiscard]] constexpr decltype(auto) get(T&& args) noexcept {
-        return std::forward<T>(args).template get<I>();
-    }
-
-    template <size_t I, bertrand::meta::signature T>
-        requires (I < std::remove_cvref_t<T>::size())
-    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
-        return std::forward<T>(signature).template get<I>();
-    }
-
-    template <size_t I, bertrand::meta::def T>
-        requires (I < bertrand::signature<T>::size())
-    [[nodiscard]] constexpr decltype(auto) get(T&& def) noexcept {
-        return std::forward<T>(def).template get<I>();
-    }
-
-    template <size_t I, bertrand::meta::overloads T> requires (I < tuple_size<T>::value)
-    constexpr decltype(auto) get(T&& v)
-        noexcept (requires{{std::forward<T>(v).template get<I>()} noexcept;})
+    template <auto... A, bertrand::meta::chain T>
+    [[nodiscard]] constexpr decltype(auto) get(T&& chain)
+        noexcept (requires{{std::forward<T>(chain).template get<A...>()} noexcept;})
+        requires (requires{{std::forward<T>(chain).template get<A...>()};})
     {
-        return (std::forward<T>(v).template get<I>());
-    }
-
-    template <size_t I, bertrand::meta::chain T>
-        requires (I < std::remove_cvref_t<T>::size())
-    [[nodiscard]] constexpr decltype(auto) get(T&& chain) {
-        return std::forward<T>(chain).template get<I>();
-    }
-
-    template <bertrand::static_str name, bertrand::meta::args T>
-        requires (bertrand::signature<T>::template contains<name>())
-    [[nodiscard]] constexpr decltype(auto) get(T&& def) noexcept {
-        return std::forward<T>(def).template get<name>();
-    }
-
-    template <bertrand::static_str name, bertrand::meta::signature T>
-        requires (std::remove_cvref_t<T>::template contains<name>())
-    [[nodiscard]] constexpr decltype(auto) get(T&& signature) noexcept {
-        return std::forward<T>(signature).template get<name>();
-    }
-
-    template <bertrand::static_str name, bertrand::meta::def T>
-        requires (bertrand::signature<T>::template contains<name>())
-    [[nodiscard]] constexpr decltype(auto) get(T&& def) noexcept {
-        return std::forward<T>(def).template get<name>();
+        return (std::forward<T>(chain).template get<A...>());
     }
 
 }
 
 
-/* The dereference operator can be used to emulate Python container unpacking when
-calling a Python-style function from C++.
+// /* The dereference operator can be used to emulate Python container unpacking when
+// calling a Python-style function from C++.
 
-A single unpacking operator passes the contents of an iterable container as positional
-arguments to a function.  Unlike Python, only one such operator is allowed per call,
-and it must be the last positional argument in the parameter list.  This allows the
-compiler to ensure that the container's value type is minimally convertible to each of
-the remaining positional arguments ahead of time, even though the number of arguments
-cannot be determined until runtime.  Thus, if any arguments are missing or extras are
-provided, the call will raise an exception similar to Python, rather than failing
-statically at compile time.  This can be avoided by using standard positional and
-keyword arguments instead, which can be fully verified at compile time, or by including
-variadic positional arguments in the function signature, which will consume any
-remaining arguments according to Python semantics.
+// A single unpacking operator passes the contents of an iterable container as positional
+// arguments to a function.  Unlike Python, only one such operator is allowed per call,
+// and it must be the last positional argument in the parameter list.  This allows the
+// compiler to ensure that the container's value type is minimally convertible to each of
+// the remaining positional arguments ahead of time, even though the number of arguments
+// cannot be determined until runtime.  Thus, if any arguments are missing or extras are
+// provided, the call will raise an exception similar to Python, rather than failing
+// statically at compile time.  This can be avoided by using standard positional and
+// keyword arguments instead, which can be fully verified at compile time, or by including
+// variadic positional arguments in the function signature, which will consume any
+// remaining arguments according to Python semantics.
 
-A second unpacking operator promotes the arguments into keywords, and can only be used
-if the container is mapping-like, meaning it possess both `::key_type` and
-`::mapped_type` aliases, and that indexing it with an instance of the key type returns
-a value of the mapped type.  The actual unpacking is robust, and will attempt to use
-iterators over the container to produce key-value pairs, either directly through
-`begin()` and `end()` or by calling the `.items()` method if present, followed by
-zipping `.keys()` and `.values()` if both exist, and finally by iterating over the keys
-and indexing into the container.  Similar to the positional unpacking operator, only
-one of these may be present as the last keyword argument in the parameter list, and a
-compile-time check is made to ensure that the mapped type is convertible to any missing
-keyword arguments that are not explicitly provided at the call site.
+// A second unpacking operator promotes the arguments into keywords, and can only be used
+// if the container is mapping-like, meaning it possess both `::key_type` and
+// `::mapped_type` aliases, and that indexing it with an instance of the key type returns
+// a value of the mapped type.  The actual unpacking is robust, and will attempt to use
+// iterators over the container to produce key-value pairs, either directly through
+// `begin()` and `end()` or by calling the `.items()` method if present, followed by
+// zipping `.keys()` and `.values()` if both exist, and finally by iterating over the keys
+// and indexing into the container.  Similar to the positional unpacking operator, only
+// one of these may be present as the last keyword argument in the parameter list, and a
+// compile-time check is made to ensure that the mapped type is convertible to any missing
+// keyword arguments that are not explicitly provided at the call site.
 
-In both cases, the extra runtime complexity results in a small performance degradation
-over a typical function call, which is minimized as much as possible. */
-template <bertrand::meta::iterable T> requires (bertrand::meta::unpack_operator<T>)
-[[nodiscard]] constexpr auto operator*(T&& value) {
-    return bertrand::arg_pack{std::forward<T>(value)};
-}
-
-
-/* Apply a C++ range adaptor to a container via the comprehension operator.  This is
-similar to the C++-style `|` operator for chaining range adaptors, but uses the `->*`
-operator to avoid conflicts with other operator overloads and apply higher precedence
-than typical binary operators. */
-template <typename T, typename V>
-    requires (
-        bertrand::meta::comprehension_operator<T> &&
-        bertrand::meta::viewable<T, V>
-    )
-[[nodiscard]] constexpr auto operator->*(T&& value, V&& view) {
-    return std::views::all(std::forward<T>(value)) | std::forward<V>(view);
-}
+// In both cases, the extra runtime complexity results in a small performance degradation
+// over a typical function call, which is minimized as much as possible. */
+// template <bertrand::meta::iterable T> requires (bertrand::meta::unpack_operator<T>)
+// [[nodiscard]] constexpr auto operator*(T&& value) {
+//     return bertrand::arg_pack{std::forward<T>(value)};
+// }
 
 
-/* Generate a C++ range adaptor that approximates a Python-style list comprehension.
-This is done by piping a function in place of a C++ range adaptor, which will be
-applied to each element in the sequence.  The function must be callable with the
-container's value type, and may return any type.
-
-If the function returns another range adaptor, then the adaptor's output will be
-flattened into the parent range, similar to a nested `for` loop within a Python
-comprehension.  Returning a range with no elements will effectively filter out the
-current element, similar to a Python `if` clause within a comprehension.
-
-Here's an example:
-
-    std::vector vec = {1, 2, 3, 4, 5};
-    std::vector new_vec = vec->*[](int x) {
-        return std::views::repeat(x, x % 2 ? 0 : x);
-    };
-    for (int x : new_vec) {
-        std::cout << x << ", ";  // 2, 2, 4, 4, 4, 4,
-    }
-
-This is functionally equivalent to `std::views::transform()` in C++ and uses that
-implementation under the hood.  The only difference is the added logic for flattening
-nested ranges, which is extremely lightweight. */
-template <typename T, typename F>
-    requires (
-        bertrand::meta::comprehension_operator<T> &&
-        bertrand::meta::transformable<T, F>
-    )
-[[nodiscard]] constexpr auto operator->*(T&& value, F&& func) {
-    return bertrand::comprehension{std::forward<T>(value), std::forward<F>(func)};
-}
+// /* Apply a C++ range adaptor to a container via the comprehension operator.  This is
+// similar to the C++-style `|` operator for chaining range adaptors, but uses the `->*`
+// operator to avoid conflicts with other operator overloads and apply higher precedence
+// than typical binary operators. */
+// template <typename T, typename V>
+//     requires (
+//         bertrand::meta::comprehension_operator<T> &&
+//         bertrand::meta::viewable<T, V>
+//     )
+// [[nodiscard]] constexpr auto operator->*(T&& value, V&& view) {
+//     return std::views::all(std::forward<T>(value)) | std::forward<V>(view);
+// }
 
 
-namespace bertrand {
+// /* Generate a C++ range adaptor that approximates a Python-style list comprehension.
+// This is done by piping a function in place of a C++ range adaptor, which will be
+// applied to each element in the sequence.  The function must be callable with the
+// container's value type, and may return any type.
 
-    template <typename T>
-    constexpr bool meta::detail::enable_unpack_operator<std::vector<T>> = true;
-    template <typename T>
-    constexpr bool meta::detail::enable_comprehension_operator<std::vector<T>> = true;
+// If the function returns another range adaptor, then the adaptor's output will be
+// flattened into the parent range, similar to a nested `for` loop within a Python
+// comprehension.  Returning a range with no elements will effectively filter out the
+// current element, similar to a Python `if` clause within a comprehension.
 
-    inline void test() {
-        constexpr def sub(
-            { arg<"x"> = 10, arg<"y"> = 2 },
-            [](Arg<"x", int>::opt x, Arg<"y", int>::opt y) {
-                return *x - *y;
-            }
-        );
-        constexpr auto div = make_def<int(Arg<"x", int>, Arg<"y", int>::opt)>(
-            { arg<"y"> = 2 },
-            [](auto&& x, auto&& y) {
-                return x / y;
-            }
-        );
-        static_assert(sub(10, 2) == 8);
+// Here's an example:
 
-        // constexpr auto chain = sub >> div.bind(arg<"y"> = 2) >> div;
-        constexpr auto chain = sub >> div.bind(arg<"y"> = 2) >> [](auto&& x) {
-            return std::forward<decltype(x)>(x);
-        };
-        static_assert(chain(10, 2) == 4);
-        static_assert(chain.template get<1>().defaults.size() == 1);
+//     std::vector vec = {1, 2, 3, 4, 5};
+//     std::vector new_vec = vec->*[](int x) {
+//         return std::views::repeat(x, x % 2 ? 0 : x);
+//     };
+//     for (int x : new_vec) {
+//         std::cout << x << ", ";  // 2, 2, 4, 4, 4, 4,
+//     }
 
-        std::vector vec = {1, 2, 3};
-        std::vector<int> new_vec = vec->*[](int x) { return x * 2; };
-        auto view = vec->*std::views::transform([](int x) { return x * 2; });
-        auto result = sub(*vec);
-        for (int x : vec->*[](int x) { return x * 2; }) {
-            std::cout << x << std::endl;
-        }
-    }
-
-}
+// This is functionally equivalent to `std::views::transform()` in C++ and uses that
+// implementation under the hood.  The only difference is the added logic for flattening
+// nested ranges, which is extremely lightweight. */
+// template <typename T, typename F>
+//     requires (
+//         bertrand::meta::comprehension_operator<T> &&
+//         bertrand::meta::transformable<T, F>
+//     )
+// [[nodiscard]] constexpr auto operator->*(T&& value, F&& func) {
+//     return bertrand::comprehension{std::forward<T>(value), std::forward<F>(func)};
+// }
 
 
 #endif  // BERTRAND_FUNC_H
