@@ -1412,17 +1412,6 @@ public:
 //////////////////////////////
 
 
-/// TODO: the logic around tuple comprehensions is convoluted and potentially
-/// self-referential.  There needs to be a better vocabulary for this, especially
-/// around the view/comprehension distinction, and associated concepts.
-
-/// Maybe `view` -> `unpack`, and concept is called `unpackable`?
-
-
-namespace impl {
-    /// TODO: viewable goes up here?
-}
-
 
 namespace meta {
 
@@ -1430,6 +1419,9 @@ namespace meta {
 
         template <typename T>
         constexpr bool viewable = true;
+
+        template <typename T>
+        constexpr bool view = false;
 
         template <typename T>
         constexpr bool comprehension = false;
@@ -1517,6 +1509,13 @@ namespace meta {
     }
 
     template <typename T>
+    concept viewable =
+        (tuple_like<T> || (iterable<T> && has_size<T>)) && detail::viewable<unqualify<T>>;
+
+    template <typename T>
+    concept view = detail::view<unqualify<T>>;
+
+    template <typename T>
     concept comprehension = detail::comprehension<unqualify<T>>;
 
     template <typename T>
@@ -1532,10 +1531,6 @@ namespace meta {
         (detail::use_direct_comprehension<T> && detail::decompose<F, T>);
 
     template <typename T>
-    concept viewable =
-        (tuple_like<T> || (iterable<T> && has_size<T>)) && detail::viewable<unqualify<T>>;
-
-    template <typename T>
     concept unpack_to_kwargs = detail::kwarg_like<T> && (
         detail::kwarg_yield<T> ||
         detail::kwarg_items<T> ||
@@ -1545,6 +1540,21 @@ namespace meta {
     );
 
 }
+
+
+/*
+    constexpr auto is_even = [](int x) -> View<std::array<int, 1>> {
+        if (x % 2 == 0) {
+            return {x};
+        } else {
+            return {};
+        }
+    };
+
+    for (auto&& item : std::array{1, 2, 3} ->* is_even) {
+
+    }
+*/
 
 
 namespace impl {
@@ -1743,221 +1753,268 @@ namespace impl {
     template <meta::has_size T>
     struct view_size_type<T> { using type = meta::size_type<T>; };
 
+}
+
+
+/// TODO: meta::viewable should only check for iterable/tuple-like
+
+
+/* Base comprehension type, which is returned by the `*` operator for an iterable
+or tuple-like container.
+
+This is just a basic interface for iteration and tuple-like decomposition, which
+can be interpreted as either an argument pack or SIMD-style expression template,
+depending on where the operator was applied.  When provided as an argument to a
+`def()` function, the view will be unpacked into the function's argument list.
+Otherwise, it exposes all the elementary math operators for SIMD-style chains, as
+well as structured comprehensions via the `->*` operator.
+
+Applying the unary `*` operator to a view promotes it to a keyword argument pack,
+assuming the underlying container can be viewed as such. */
+template <meta::viewable C>
+struct unpack {
+    using size_type = impl::view_size_type<C>::type;
+    using index_type = meta::as_signed<size_type>;
+    using container_type = meta::unqualify<C>;
+    using value_type = meta::yield_type<C>;
+    using reference = meta::as_lvalue<value_type>;
+    using const_reference = meta::as_const_ref<value_type>;
+    using pointer = meta::as_pointer<value_type>;
+    using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+    using iterator = meta::begin_type<C>;
+    using const_iterator = meta::begin_type<meta::as_const<C>>;
+
+    /// TODO: id is an empty string?  Or just handle this within the concepts
+    /// directly.
+
+    /* The underlying container for the unpack operator, stored as an optional in order
+    to allow for default-construction of empty views.  If the container is supplied as
+    an lvalue, then this will compile down to a raw (non-owning) pointer, without any
+    extra copies or moves. */
+    Optional<C> container;
+
+    /* If the underlying container is tuple-like, then a corresponding `get()` method
+    will be exposed on the unpack proxy. */
+    template <size_t I, typename Self> requires (meta::tuple_like<C>)
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+        noexcept (requires{
+            {meta::tuple_get<I>(std::forward<Self>(self).container.value())} noexcept;
+        })
+        requires (requires{
+            {meta::tuple_get<I>(std::forward<Self>(self).container.value())};
+        })
+    {
+        return (meta::tuple_get<I>(std::forward<Self>(self).container.value()));
+    }
+
+    /* All unpack proxies have a definite size, which may be known at compile time if
+    the underlying container is tuple-like. */
+    [[nodiscard]] static constexpr size_type size() noexcept
+        requires (meta::tuple_like<C>)
+    {
+        return meta::tuple_size<C>;
+    }
+
+    /* All unpack proxies have a definite size, which may be known at compile time if
+    the underlying container is tuple-like. */
+    [[nodiscard]] constexpr size_type size() const
+        noexcept (requires{{std::ranges::size(container.value())} noexcept;})
+        requires (!meta::tuple_like<C> && requires{{std::ranges::size(container.value())};})
+    {
+        return std::ranges::size(container.value());
+    }
+
+    /* The proxy's size, as a signed integer. */
+    [[nodiscard]] static constexpr index_type ssize() noexcept
+        requires (meta::tuple_like<C>)
+    {
+        return index_type(meta::tuple_size<C>);
+    }
+
+    /* The proxy's size, as a signed integer. */
+    [[nodiscard]] constexpr index_type ssize() const
+        noexcept (requires{{std::ranges::ssize(container.value())} noexcept;})
+        requires (!meta::tuple_like<C> && requires{{std::ranges::ssize(container.value())};})
+    {
+        return std::ranges::ssize(container.value());
+    }
+
+    /* `true` if the underlying container is empty, `false` otherwise. */
+    [[nodiscard]] static constexpr bool empty() noexcept
+        requires (meta::tuple_like<C>)
+    {
+        return meta::tuple_size<C> == 0;
+    }
+
+    /* `true` if the underlying container is empty, `false` otherwise. */
+    [[nodiscard]] constexpr bool empty() const
+        noexcept (requires{{std::ranges::empty(container.value())} noexcept;})
+        requires (!meta::tuple_like<C> && requires{{std::ranges::empty(container.value())};})
+    {
+        return std::ranges::empty(container.value());
+    }
+
+    /// TODO: iterating over an optional is not well-defined, so this gets pretty
+    /// hard, all things considered.  Probably the only way to do it is to wrap the
+    /// iterators in a separate type that handles that by setting an internal length
+    /// to zero, and leaving the captured iterators in an invalid state, possibly using
+    /// a C-style union to store them efficiently.  Maybe that can be done for the
+    /// optional itself, and then this class would become pretty simple.  Alternatively,
+    /// I could use an `impl::unpack` control structure that would customize the
+    /// behavior of the `begin()` and `end()` methods.
+
+
+
+
+
+
+    /* An iterator */
+    [[nodiscard]] constexpr auto begin()
+        noexcept (requires{{std::ranges::begin(container)} noexcept;})
+        requires (requires{{std::ranges::begin(container)};})
+    {
+        return std::ranges::begin(container);
+    }
+
+    [[nodiscard]] constexpr auto begin() const
+        noexcept (requires{{std::ranges::begin(container)} noexcept;})
+        requires (requires{{std::ranges::begin(container)};})
+    {
+        return std::ranges::begin(container);
+    }
+
+    [[nodiscard]] constexpr auto cbegin() const
+        noexcept (requires{{std::ranges::cbegin(container)} noexcept;})
+        requires (requires{{std::ranges::cbegin(container)};})
+    {
+        return std::ranges::cbegin(container);
+    }
+
+    [[nodiscard]] constexpr auto end()
+        noexcept (requires{{std::ranges::end(container)} noexcept;})
+        requires (requires{{std::ranges::end(container)};})
+    {
+        return std::ranges::end(container);
+    }
+
+    [[nodiscard]] constexpr auto end() const
+        noexcept (requires{{std::ranges::end(container)} noexcept;})
+        requires (requires{{std::ranges::end(container)};})
+    {
+        return std::ranges::end(container);
+    }
+
+    [[nodiscard]] constexpr auto cend() const
+        noexcept (requires{{std::ranges::cend(container)} noexcept;})
+        requires (requires{{std::ranges::cend(container)};})
+    {
+        return std::ranges::cend(container);
+    }
+
+    template <typename V>
+    [[nodiscard]] constexpr operator V() const
+        noexcept (requires{{V(std::from_range, *this)} noexcept;})
+        requires (requires{{V(std::from_range, *this)};})
+    {
+        return V(std::from_range, *this);
+    }
+
+    template <typename V>
+    [[nodiscard]] constexpr operator V() const
+        noexcept (requires{{V(begin(), end())} noexcept;})
+        requires (!requires{{V(std::from_range, *this)};} && requires{{V(begin(), end())};})
+    {
+        return V(begin(), end());
+    }
+
+    /// TODO: next() and validate() are only used within the function call logic,
+    /// and only in the runtime case.  It might be best to move them into a
+    /// temporary container that is only used within the binding logic.
+
+    /// TODO: next() is unsafe, and should be made into a private helper, along
+    /// with validate().  That would also help with the effort to make this into an
+    /// entry point for comprehensions, since the user might start interacting
+    /// with these types with some regularity.
+
+    // [[nodiscard]] constexpr decltype(auto) next() noexcept {
+    //     decltype(auto) value = *m_begin;
+    //     ++m_begin;
+    //     return value;
+    // }
+
+    // void constexpr validate() {
+    //     if (!empty()) {
+    //         if consteval {
+    //             static constexpr static_str msg =
+    //                 "too many arguments in positional parameter pack";
+    //             throw TypeError(msg);
+    //         } else {
+    //             std::string message =
+    //                 "too many arguments in positional parameter pack: ['" +
+    //                 repr(*m_begin);
+    //             while (++m_begin != m_end) {
+    //                 message += "', '" + repr(*m_begin);
+    //             }
+    //             message += "']";
+    //             throw TypeError(message);
+    //         }
+    //     }
+    // }
+
+    /* Dereference a positional pack to promote it to a key/value pack.  This
+    allows Python-style double unpack operators to be used with supported
+    containers when calling `def` statements, e.g.:
+
+        ```
+        auto func = def<"**kwargs"_[type<int>]>([](auto&& kwargs) {
+            std::cout << kwargs["a"] << ", " << kwargs["b"] << '\n';
+            return Map{std::forward<decltype(kwargs)>(kwargs)};
+        })
+
+        Map<std::string, int> in {{"a", 1}, {"b", 2}};
+        Map out = func(**in);  // prints "1, 2"
+        assert(in == out);
+        ```
+
+    Enabling this operator must be done explicitly, by specializing the
+    `meta::detail::unpack<T>` flag for a given container. */
+    [[nodiscard]] constexpr auto operator*() &&
+        noexcept (requires{{kwarg_pack<C>{std::forward<C>(container)}} noexcept;})
+        requires (
+            meta::unpack_to_kwargs<C> &&
+            requires{{kwarg_pack<C>{std::forward<C>(container)}};}
+        )
+    {
+        return kwarg_pack<C>{std::forward<C>(container)};
+    }
+};
+
+
+/* CTAD constructor provides an explicit alternative to the unary `*` operator for
+container unpacking and expression templates in C++, which is less likely to conflict
+with other uses of the `*` operator, at the expense of verbosity and Python symmetry. */
+template <typename C>
+unpack(C&&) -> unpack<C>;
+
+
+namespace impl {
+
+
     /// TODO: view needs to be swappable, and possibly also renamed to avoid confusion
     /// with the `std::ranges::view` concept.  It may be better expressed as a null
     /// comprehension.
 
-    /* Base comprehension type, which is returned by the `*` operator for an iterable
-    or tuple-like container.
 
-    This is just a basic interface for iteration and tuple-like decomposition, which
-    can be interpreted as either an argument pack or SIMD-style expression template,
-    depending on where the operator was applied.  When provided as an argument to a
-    `def()` function, the view will be unpacked into the function's argument list.
-    Otherwise, it exposes all the elementary math operators for SIMD-style chains, as
-    well as structured comprehensions via the `->*` operator.
-
-    Applying the unary `*` operator to a view promotes it to a keyword argument pack,
-    assuming the underlying container can be viewed as such. */
-    template <meta::viewable C>
-    struct view {
-        using container_type = meta::unqualify<C>;
-        using size_type = view_size_type<C>::type;
-        using index_type = meta::as_signed<size_type>;
-        /// TODO: id is an empty string?  Or just handle this within the concepts
-        /// directly.
-
-        meta::remove_rvalue<C> container;
-
-        template <size_t I, typename Self> requires (meta::tuple_like<container_type>)
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{meta::tuple_get<I>(std::forward<Self>(self).container)} noexcept;})
-            requires (requires{{meta::tuple_get<I>(std::forward<Self>(self).container)};})
-        {
-            return (meta::tuple_get<I>(std::forward<Self>(self).container));
-        }
-
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (requires{{std::ranges::size(container)} noexcept;})
-            requires (requires{{std::ranges::size(container)};})
-        {
-            return std::ranges::size(container);
-        }
-
-        [[nodiscard]] constexpr size_type size() const noexcept
-            requires (
-                meta::tuple_like<container_type> &&
-                !requires{{std::ranges::size(container)};
-            })
-        {
-            return meta::tuple_size<container_type>;
-        }
-
-        [[nodiscard]] constexpr index_type ssize() const
-            noexcept (requires{{std::ranges::ssize(container)} noexcept;})
-            requires (requires{{std::ranges::ssize(container)};})
-        {
-            return std::ranges::ssize(container);
-        }
-
-        [[nodiscard]] constexpr index_type ssize() const noexcept
-            requires (
-                meta::tuple_like<container_type> &&
-                !requires{{std::ranges::ssize(container)};}
-            )
-        {
-            return index_type(meta::tuple_size<container_type>);
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{std::ranges::empty(container)} noexcept;})
-            requires (requires{{std::ranges::empty(container)};})
-        {
-            return std::ranges::empty(container);
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{meta::tuple_size<container_type> == 0} noexcept;})
-            requires (
-                meta::tuple_like<container_type> &&
-                !requires{{std::ranges::empty(container)};}
-            )
-        {
-            return meta::tuple_size<container_type> == 0;
-        }
-
-        [[nodiscard]] constexpr auto begin()
-            noexcept (requires{{std::ranges::begin(container)} noexcept;})
-            requires (requires{{std::ranges::begin(container)};})
-        {
-            return std::ranges::begin(container);
-        }
-
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{std::ranges::begin(container)} noexcept;})
-            requires (requires{{std::ranges::begin(container)};})
-        {
-            return std::ranges::begin(container);
-        }
-
-        [[nodiscard]] constexpr auto cbegin() const
-            noexcept (requires{{std::ranges::cbegin(container)} noexcept;})
-            requires (requires{{std::ranges::cbegin(container)};})
-        {
-            return std::ranges::cbegin(container);
-        }
-
-        [[nodiscard]] constexpr auto end()
-            noexcept (requires{{std::ranges::end(container)} noexcept;})
-            requires (requires{{std::ranges::end(container)};})
-        {
-            return std::ranges::end(container);
-        }
-
-        [[nodiscard]] constexpr auto end() const
-            noexcept (requires{{std::ranges::end(container)} noexcept;})
-            requires (requires{{std::ranges::end(container)};})
-        {
-            return std::ranges::end(container);
-        }
-
-        [[nodiscard]] constexpr auto cend() const
-            noexcept (requires{{std::ranges::cend(container)} noexcept;})
-            requires (requires{{std::ranges::cend(container)};})
-        {
-            return std::ranges::cend(container);
-        }
-
-        template <typename V>
-        [[nodiscard]] constexpr operator V() const
-            noexcept (requires{{V(std::from_range, *this)} noexcept;})
-            requires (requires{{V(std::from_range, *this)};})
-        {
-            return V(std::from_range, *this);
-        }
-
-        template <typename V>
-        [[nodiscard]] constexpr operator V() const
-            noexcept (requires{{V(begin(), end())} noexcept;})
-            requires (!requires{{V(std::from_range, *this)};} && requires{{V(begin(), end())};})
-        {
-            return V(begin(), end());
-        }
-
-        /// TODO: next() and validate() are only used within the function call logic,
-        /// and only in the runtime case.  It might be best to move them into a
-        /// temporary container that is only used within the binding logic.
-
-        /// TODO: next() is unsafe, and should be made into a private helper, along
-        /// with validate().  That would also help with the effort to make this into an
-        /// entry point for comprehensions, since the user might start interacting
-        /// with these types with some regularity.
-
-        // [[nodiscard]] constexpr decltype(auto) next() noexcept {
-        //     decltype(auto) value = *m_begin;
-        //     ++m_begin;
-        //     return value;
-        // }
-
-        // void constexpr validate() {
-        //     if (!empty()) {
-        //         if consteval {
-        //             static constexpr static_str msg =
-        //                 "too many arguments in positional parameter pack";
-        //             throw TypeError(msg);
-        //         } else {
-        //             std::string message =
-        //                 "too many arguments in positional parameter pack: ['" +
-        //                 repr(*m_begin);
-        //             while (++m_begin != m_end) {
-        //                 message += "', '" + repr(*m_begin);
-        //             }
-        //             message += "']";
-        //             throw TypeError(message);
-        //         }
-        //     }
-        // }
-
-        /* Dereference a positional pack to promote it to a key/value pack.  This
-        allows Python-style double unpack operators to be used with supported
-        containers when calling `def` statements, e.g.:
-
-            ```
-            auto func = def<"**kwargs"_[type<int>]>([](auto&& kwargs) {
-                std::cout << kwargs["a"] << ", " << kwargs["b"] << '\n';
-                return Map{std::forward<decltype(kwargs)>(kwargs)};
-            })
-
-            Map<std::string, int> in {{"a", 1}, {"b", 2}};
-            Map out = func(**in);  // prints "1, 2"
-            assert(in == out);
-            ```
-
-        Enabling this operator must be done explicitly, by specializing the
-        `meta::detail::unpack<T>` flag for a given container. */
-        [[nodiscard]] constexpr auto operator*() &&
-            noexcept (requires{{kwarg_pack<C>{std::forward<C>(container)}} noexcept;})
-            requires (
-                meta::unpack_to_kwargs<C> &&
-                requires{{kwarg_pack<C>{std::forward<C>(container)}};}
-            )
-        {
-            return kwarg_pack<C>{std::forward<C>(container)};
-        }
-    };
-
-    template <typename C>
-    view(C&&) -> view<C>;
 
     template <typename F, typename args, typename its, typename Is, typename... A>
-    struct _comprehension_traits { static constexpr bool enable = false; };
+    struct _invoke_comprehension { static constexpr bool enable = false; };
     template <
         typename F,
         typename... args,
         typename... its,
         size_t... Is
     > requires (sizeof...(its) > 0 && meta::invocable<meta::as_lvalue<F>, args...>)
-    struct _comprehension_traits<
+    struct _invoke_comprehension<
         F,
         meta::pack<args...>,
         meta::pack<its...>,
@@ -1977,14 +2034,14 @@ namespace impl {
         typename A,
         typename... As
     > requires (meta::iterable_comprehension<A>)
-    struct _comprehension_traits<
+    struct _invoke_comprehension<
         F,
         meta::pack<out...>,
         meta::pack<its...>,
         std::index_sequence<Is...>,
         A,
         As...
-    > : _comprehension_traits<
+    > : _invoke_comprehension<
         F,
         meta::pack<out..., meta::yield_type<A>>,
         meta::pack<its..., meta::begin_type<A>>,
@@ -1999,14 +2056,14 @@ namespace impl {
         typename A,
         typename... As
     > requires (!meta::iterable_comprehension<A>)
-    struct _comprehension_traits<
+    struct _invoke_comprehension<
         F,
         meta::pack<out...>,
         meta::pack<its...>,
         std::index_sequence<Is...>,
         A,
         As...
-    > : _comprehension_traits<
+    > : _invoke_comprehension<
         F,
         meta::pack<out..., meta::as_lvalue<A>>,
         meta::pack<its...>,
@@ -2015,13 +2072,15 @@ namespace impl {
     >
     {};
     template <typename F, typename... A>
-    using comprehension_traits = _comprehension_traits<
+    using invoke_comprehension = _invoke_comprehension<
         F,
         meta::pack<>,
         meta::pack<>,
         std::index_sequence<>,
         A...
     >;
+    template <typename F, typename... A>
+    concept valid_comprehension = invoke_comprehension<F, A...>::enable;
 
     template <size_t, typename...>
     constexpr size_t comprehension_idx = 0;
@@ -2032,41 +2091,44 @@ namespace impl {
         requires (meta::iterable_comprehension<A> && I > 0)
     constexpr size_t comprehension_idx<I, A, Args...> = comprehension_idx<I - 1, Args...> + 1;
 
-    /* A composition of one or more iterable `view`s that applies a function `F`
-    elementwise over the zipped contents.  All views must have a consistent size, and
-    may be combined with non-view arguments, which will be broadcasted to that size.
-    An `IndexError` will be issued if views of conflicting sizes are provided, and the
-    comprehension will fail to compile if the function is not callable with the
-    argument types. */
-    template <typename F, typename... A> requires (comprehension_traits<F, A...>::enable)
+    /// TODO: if a comprehension function returns another comprehension, then it
+    /// should be flattened into the resulting iterator.  This allows filtering and
+    /// expansion within a nested comprehension, just like Python's nested for and
+    /// if comprehensions.
+
+    /* A composition of one or more iterable `view`s and/or nested comprehensions which
+    applies a function `F` elementwise over the zipped contents.  The resulting
+    comprehension can be iterated over to execute the function, or implicitly
+    converted to any container that has a suitable `std::from_range` or
+    `begin()`/`end()` constructor.  Additionally, all comprehensions support SIMD-style
+    elementary math operators with respect to other comprehensions or views, which
+    return nested comprehensions that act as expression templates, fusing all
+    operations into a single loop over the result.
+
+    Note that if views of different sizes are provided, then the comprehension's
+    final size will be the minimum of all inputs.  If non-view or comprehension
+    arguments are provided, they will be broadcasted to that size.  If the function
+    is not callable with the elementwise argument types, then the comprehension will
+    fail to compile. */
+    template <typename F, typename... A> requires (valid_comprehension<F, A...>)
     struct comprehension {
         using size_type = size_t;
         using index_type = ssize_t;
         using function_type = meta::unqualify<F>;
 
     private:
-        static constexpr size_type N = comprehension_traits<F, A...>::N;
-        using indices = comprehension_traits<F, A...>::indices;
+        static constexpr size_type N = invoke_comprehension<F, A...>::N;
+        using indices = invoke_comprehension<F, A...>::indices;
 
-        template <typename V>
-        constexpr void get_length(const V&) noexcept {}
-        template <meta::iterable_comprehension V>
-        constexpr void get_length(const V& other) {
-            auto n = other.size();
-            if (length < std::numeric_limits<size_type>::max() && length != n) {
-                if consteval {
-                    static constexpr static_str msg =
-                        "comprehensions must have the same length";
-                    throw IndexError(msg);
-                } else {
-                    throw IndexError(std::format(
-                        "comprehensions must have the same length: {} != {}",
-                        length,
-                        n
-                    ));
-                }
+        template <typename T>
+        constexpr void get_length(T&&) noexcept {}
+        template <meta::iterable_comprehension T>
+        constexpr void get_length(T&& v)
+            noexcept (requires{{std::forward<T>(v).size()} noexcept;})
+        {
+            if (auto n = std::forward<T>(v).size(); n < length) {
+                length = n;
             }
-            length = n;
         }
 
     public:
@@ -2078,36 +2140,65 @@ namespace impl {
             noexcept (requires{
                 {meta::remove_rvalue<F>(std::forward<F>(func))} noexcept;
                 {bertrand::args<A...>(std::forward<A>(args)...)} noexcept;
-                {(get_length(args), ...)} noexcept;
+                {(get_length(std::forward<A>(args)), ...)} noexcept;
             })
             requires (requires{
                 {meta::remove_rvalue<F>(std::forward<F>(func))};
                 {bertrand::args<A...>(std::forward<A>(args)...)};
-                {(get_length(args), ...)};
+                {(get_length(std::forward<A>(args)), ...)};
             })
         :
             func(std::forward<F>(func)),
             args(std::forward<A>(args)...)
         {
-            (get_length(args), ...);
+            (get_length(std::forward<A>(args)), ...);
         }
 
         [[nodiscard]] constexpr size_type size() const noexcept { return length; }
         [[nodiscard]] constexpr index_type ssize() const noexcept { return index_type(size()); }
         [[nodiscard]] constexpr bool empty() const noexcept { return size() == 0; }
 
+        /// TODO: only comprehensions that return nested comprehensions should need
+        /// an optional cache.  Otherwise, it might interfere with the compiler's
+        /// SIMD optimizations, and a directly-yielding comprehension should have
+        /// better code gen.
+
         /* A forward iterator that evaluates the comprehension for each element. */
         struct iterator {
-            using storage_type = comprehension_traits<F, A...>::storage;
+            using storage_type = invoke_comprehension<F, A...>::storage;
             using iterator_category = std::input_iterator_tag;
             using difference_type = std::ptrdiff_t;
-            using value_type = comprehension_traits<F, A...>::type;
+            using value_type = invoke_comprehension<F, A...>::type;
             using reference = meta::as_lvalue<value_type>;
             using pointer = meta::as_pointer<value_type>;
 
             comprehension* self;
             size_type length;
             storage_type iterators;
+            Optional<value_type> cache;
+
+            template <typename... Iters>
+            constexpr iterator(
+                comprehension* self,
+                size_type length,
+                Iters&&... iterators
+            )
+            :
+                self(self),
+                length(length),
+                iterators(std::forward<Iters>(iterators)...),
+                cache(None)
+            {
+                if (length > 0) {
+                    cache = call(std::index_sequence_for<A...>{});
+                }
+            }
+
+
+            /// TODO: in order to support nested comprehensions, I need to cache the
+            /// result of the function call internally, probably as an `Optional`, and
+            /// then yield from it if it is another comprehension.
+
 
         private:
             template <size_type I>
@@ -2166,21 +2257,39 @@ namespace impl {
                 requires (requires{{(++(iterators.template get<Is>()), ...)};})
             {
                 (++(iterators.template get<Is>()), ...);
+                --length;
+                if (length > 0) {
+                    cache = call(std::index_sequence_for<A...>{});
+                }
             }
 
         public:
             constexpr decltype(auto) operator*()
-                noexcept (requires{{call(std::index_sequence_for<A...>{})} noexcept;})
-                requires (requires{{call(std::index_sequence_for<A...>{})};})
+                noexcept (requires{{std::move(cache).value()} noexcept;})
+                requires (requires{{std::move(cache).value()};})
             {
-                return (call(std::index_sequence_for<A...>{}));
+                return (std::move(cache).value());
             }
 
             constexpr decltype(auto) operator*() const
-                noexcept (requires{{call(std::index_sequence_for<A...>{})} noexcept;})
-                requires (requires{{call(std::index_sequence_for<A...>{})};})
+                noexcept (requires{{cache.value()} noexcept;})
+                requires (requires{{cache.value()};})
             {
-                return (call(std::index_sequence_for<A...>{}));
+                return (cache.value());
+            }
+
+            constexpr auto* operator->()
+                noexcept (requires{{std::addressof(cache.value())} noexcept;})
+                requires (requires{{std::addressof(cache.value())};})
+            {
+                return std::addressof(cache.value());
+            }
+
+            constexpr auto* operator->() const
+                noexcept (requires{{std::addressof(cache.value())} noexcept;})
+                requires (requires{{std::addressof(cache.value())};})
+            {
+                return std::addressof(cache.value());
             }
 
             constexpr iterator& operator++()
@@ -2188,7 +2297,6 @@ namespace impl {
                 requires (requires{{advance(std::make_index_sequence<N>{})};})
             {
                 advance(std::make_index_sequence<N>{});
-                --length;
                 return *this;
             }
 
@@ -2276,6 +2384,20 @@ namespace impl {
             return V(begin(), end());
         }
     };
+
+    /* Specialization for nested comprehensions, which will be flattened into the final
+    range.  This allows comprehensions to model Python-style nested `for` and `if`
+    statements */
+    template <typename F, typename... A>
+        requires (
+            valid_comprehension<F, A...> &&
+            meta::comprehension<typename invoke_comprehension<F, A...>::type>
+        )
+    struct comprehension<F, A...> {
+
+    };
+
+
 
     template <typename F, typename... A>
     comprehension(F&&, A&&...) -> comprehension<F, A...>;
