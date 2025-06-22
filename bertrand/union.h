@@ -1843,9 +1843,10 @@ namespace impl {
     for use with this function.  Built-in specializations exist for `Union`, `Optional`,
     and `Expected`, as well as `std::variant`, `std::optional`, and `std::expected`, each
     of which can be passed to `visit()` according to the described semantics. */
-    template <typename F, typename... Args> requires (meta::visit<F, Args...>)
+    template <typename F, typename... Args>
     constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
-        noexcept(meta::nothrow::visit<F, Args...>)
+        noexcept (meta::nothrow::visit<F, Args...>)
+        requires (meta::visit<F, Args...>)
     {
         // only generate a vtable if unions are present in the signature
         if constexpr ((meta::visitable<Args> || ...)) {
@@ -1879,11 +1880,6 @@ namespace impl {
             return std::forward<F>(f)(std::forward<Args>(args)...);
         }
     }
-
-    /// TODO: maybe 2 specializations of optional_iterator, one for when T is a proper
-    /// iterator, and the other for when T is a non-iterable type, in which case the
-    /// iterator will act like a range of 0 or 1 element.
-
 
     /* A trivial iterator for an `Optional` or `Expected` type which yields 0 or 1
     elements, depending on whether the optional is initialized or not. */
@@ -2083,7 +2079,7 @@ namespace impl {
             requires (meta::destructible<T>)
         {
             if (m_initialized) {
-                m_storage.iter.~T();
+                std::destroy_at(&m_storage.iter);
             }
             m_initialized = false;
         }
@@ -2341,6 +2337,21 @@ namespace impl {
         using rbegin_type = optional_iterator<meta::rbegin_type<T>>;
         using rend_type = optional_iterator<meta::rend_type<T>>;
     };
+
+    /// TODO: `union_iterator<Ts...>`, for which all `Ts...` must be iterators,
+    /// and the overall iterator is default constructible in case the active type is
+    /// not iterable.  It would also cache the current value as another output union,
+    /// which the dereference operators would return references to.  The real problem
+    /// is what to do with iterator tags, as well as random access/bidirectional
+    /// iterators.  That would need to be resolved before implementing this type.
+
+    // template <meta::unqualified... Ts> requires (meta::iterator<Ts> && ...)
+    // struct union_iterator {
+    //     using wrapped = meta::pack<Ts...>;
+
+
+    // };
+
 
 }
 
@@ -3684,6 +3695,54 @@ public:
         ));
     }
 
+    /* Return 0 if the optional is empty, or `std::ranges::size(value())` otherwise. */
+    [[nodiscard]] constexpr auto size() const
+        noexcept (meta::nothrow::has_size<T>)
+        requires (meta::has_size<T>)
+    {
+        if (has_value()) {
+            return std::ranges::size(m_storage.value());
+        } else {
+            return meta::size_type<T>(0);
+        }
+    }
+
+    /* Return 0 if the optional is empty, or 1 if it has a value. */
+    [[nodiscard]] constexpr size_t size() const noexcept requires (!meta::has_size<T>) {
+        return has_value();
+    }
+
+    /* Return `size()` as a signed integer. */
+    [[nodiscard]] constexpr auto ssize() const
+        noexcept (meta::nothrow::has_ssize<T>)
+        requires (meta::has_ssize<T>)
+    {
+        if (has_value()) {
+            return std::ranges::ssize(m_storage.value());
+        } else {
+            return meta::ssize_type<T>(0);
+        }
+    }
+
+    /* Return `size()` as a signed integer. */
+    [[nodiscard]] constexpr ssize_t ssize() const noexcept requires (!meta::has_ssize<T>) {
+        return has_value();
+    }
+
+    /* `true` if the optional is currently empty.  Otherwise, evaluates to
+    `std::ranges::empty(value())`. */
+    [[nodiscard]] constexpr bool empty() const
+        noexcept (meta::nothrow::has_empty<T>)
+        requires (meta::has_empty<T>)
+    {
+        return m_storage.has_value() ? std::ranges::empty(m_storage.value()) : true;
+    }
+
+    /* `true` if the optional is currently empty.  `false` otherwise. */
+    [[nodiscard]] constexpr bool empty() const noexcept requires (!meta::has_empty<T>) {
+        return !has_value();
+    }
+
     /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `begin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
@@ -4703,7 +4762,7 @@ public:
 
     /* Monadic subscript operator.  If the expected type is a container that supports
     indexing with the given key, then this will return the result of the access wrapped
-    in another optional.  Otherwise, it will propagate the error state. */
+    in another expected.  Otherwise, it will propagate the error state. */
     template <typename Self, typename... Key>
         requires (meta::visit<impl::Subscript, Self, Key...>)
     constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
@@ -4715,11 +4774,60 @@ public:
             std::forward<Key>(keys)...
         ));
     }
-    
-    /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
+
+    /* Return 0 if the expected is in an error state, or `std::ranges::size(value())`
+    otherwise. */
+    [[nodiscard]] constexpr auto size() const
+        noexcept (meta::nothrow::has_size<T>)
+        requires (meta::has_size<T>)
+    {
+        if (has_value()) {
+            return std::ranges::size(get_value());
+        } else {
+            return meta::size_type<T>(0);
+        }
+    }
+
+    /* Return 0 if the expected is in an error state, or 1 if it has a value. */
+    [[nodiscard]] constexpr size_t size() const noexcept requires (!meta::has_size<T>) {
+        return has_value();
+    }
+
+    /* Return `size()` as a signed integer. */
+    [[nodiscard]] constexpr auto ssize() const
+        noexcept (meta::nothrow::has_ssize<T>)
+        requires (meta::has_ssize<T>)
+    {
+        if (has_value()) {
+            return std::ranges::ssize(get_value());
+        } else {
+            return meta::ssize_type<T>(0);
+        }
+    }
+
+    /* Return `size()` as a signed integer. */
+    [[nodiscard]] constexpr ssize_t ssize() const noexcept requires (!meta::has_ssize<T>) {
+        return has_value();
+    }
+
+    /* `true` if the expected is currently in an error state.  Otherwise, evaluates to
+    `std::ranges::empty(value())`. */
+    [[nodiscard]] constexpr bool empty() const
+        noexcept (meta::nothrow::has_empty<T>)
+        requires (meta::has_empty<T>)
+    {
+        return has_value() ? std::ranges::empty(get_value()) : true;
+    }
+
+    /* `true` if the expected is currently in an error state.  `false` otherwise. */
+    [[nodiscard]] constexpr bool empty() const noexcept requires (!meta::has_empty<T>) {
+        return !has_value();
+    }
+
+    /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `begin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
-    optional is currently empty. */
+    expected is currently in an error state. */
     template <typename Self> requires (meta::iterable<T>)
     [[nodiscard]] constexpr auto begin(this Self&& self)
         noexcept (requires{
@@ -4737,10 +4845,10 @@ public:
         return typename iter<Self>::begin_type{std::ranges::begin(self.get_value())};
     }
 
-    /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
+    /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `begin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
-    optional is currently empty. */
+    expected is currently in an error state. */
     template <typename Self> requires (!meta::iterable<T>)
     [[nodiscard]] constexpr auto begin(this Self&& self)
         noexcept (requires{
@@ -4758,10 +4866,10 @@ public:
         return typename iter<Self>::begin_type{std::forward<Self>(self).get_value()};
     }
 
-    /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
+    /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `cbegin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
-    optional is currently empty. */
+    expected is currently in an error state. */
     [[nodiscard]] constexpr auto cbegin() const
         noexcept (requires{
             {typename const_iter::begin_type{}} noexcept;
@@ -4778,10 +4886,10 @@ public:
         return typename const_iter::begin_type{std::ranges::cbegin(get_value())};
     }
 
-    /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
+    /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `cbegin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
-    optional is currently empty. */
+    expected is currently in an error state. */
     [[nodiscard]] constexpr auto cbegin() const
         noexcept (requires{
             {typename const_iter::begin_type{}} noexcept;
@@ -4798,7 +4906,7 @@ public:
         return typename const_iter::begin_type{get_value()};
     }
 
-    /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
+    /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `end()` type.  Otherwise, it will
     return an empty iterator. */
     template <typename Self> requires (meta::iterable<T>)
@@ -4818,7 +4926,7 @@ public:
         return typename iter<Self>::end_type{std::ranges::end(self.get_value())};
     }
 
-    /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
+    /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `end()` type.  Otherwise, it will
     return an empty iterator. */
     template <typename Self> requires (!meta::iterable<T>)
@@ -4829,7 +4937,7 @@ public:
         return typename iter<Self>::end_type{};
     }
 
-    /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
+    /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `cend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto cend() const
@@ -4848,7 +4956,7 @@ public:
         return typename const_iter::end_type{std::ranges::cend(get_value())};
     }
 
-    /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
+    /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `cend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto cend() const
@@ -4858,7 +4966,7 @@ public:
         return typename const_iter::end_type{};
     }
 
-    /* Get a reverse iterator over the optional if the wrapped type is reverse
+    /* Get a reverse iterator over the expected if the wrapped type is reverse
     iterable.  Returns a lightweight wrapper around the container's `rbegin()` type. */
     template <typename Self> requires (meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto rbegin(this Self&& self)
@@ -4877,7 +4985,7 @@ public:
         return typename iter<Self>::rbegin_type{std::ranges::rbegin(self.get_value())};
     }
 
-    /* Get a reverse iterator over the optional if the wrapped type is reverse
+    /* Get a reverse iterator over the expected if the wrapped type is reverse
     iterable.  Returns a lightweight wrapper around the container's `rbegin()` type. */
     [[nodiscard]] constexpr auto crbegin() const
         noexcept (requires{
@@ -4895,7 +5003,7 @@ public:
         return typename const_iter::rbegin_type{std::ranges::rbegin(get_value())};
     }
 
-    /* Get a reverse sentinel for the optional if the wrapped type is reverse iterable.
+    /* Get a reverse sentinel for the expected if the wrapped type is reverse iterable.
     Returns a lightweight wrapper around the container's `rend()` type. */
     template <typename Self> requires (meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto rend(this Self&& self)
@@ -4914,7 +5022,7 @@ public:
         return typename iter<Self>::rend_type{std::ranges::rend(self.get_value())};
     }
 
-    /* Get a reverse sentinel for the optional if the wrapped type is reverse iterable.
+    /* Get a reverse sentinel for the expected if the wrapped type is reverse iterable.
     Returns a lightweight wrapper around the container's `rend()` type. */
     [[nodiscard]] constexpr auto crend() const
         noexcept (requires{
