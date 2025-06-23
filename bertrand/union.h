@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include <iterator>
 
 
 namespace bertrand {
@@ -1891,32 +1892,20 @@ namespace impl {
         using value_type = meta::remove_reference<T>;
         using reference = meta::as_lvalue<T>;
         using const_reference = meta::as_const<reference>;
-        using pointer = meta::as_pointer<T>;
+        using pointer = meta::as_pointer<reference>;
         using const_pointer = meta::as_pointer<const_reference>;
 
         pointer value;
 
-        [[nodiscard]] constexpr reference operator*() noexcept {
+        [[nodiscard]] constexpr reference operator*() const noexcept {
             return *value;
         }
 
-        [[nodiscard]] constexpr const_reference operator*() const noexcept {
-            return *value;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() noexcept {
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
             return value;
         }
 
-        [[nodiscard]] constexpr const_pointer operator->() const noexcept {
-            return value;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) noexcept {
-            return *(value + n);
-        }
-
-        [[nodiscard]] constexpr const_reference operator[](difference_type n) const noexcept {
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
             return *(value + n);
         }
 
@@ -1931,8 +1920,18 @@ namespace impl {
             return tmp;
         }
 
-        [[nodiscard]] constexpr optional_iterator operator+(difference_type n) const noexcept {
-            return {value + n};
+        [[nodiscard]] friend constexpr optional_iterator operator+(
+            const optional_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.value + n};
+        }
+
+        [[nodiscard]] friend constexpr optional_iterator operator+(
+            difference_type n,
+            const optional_iterator& self
+        ) noexcept {
+            return {self.value + n};
         }
 
         constexpr optional_iterator& operator+=(difference_type n) noexcept {
@@ -1982,12 +1981,17 @@ namespace impl {
     template <meta::unqualified T> requires (meta::iterator<T>)
     struct optional_iterator<T> {
         using wrapped = T;
-        using iterator_category = std::iterator_traits<T>::iterator_category;
+        using iterator_category = std::conditional_t<
+            meta::contiguous_iterator<T>,
+            std::contiguous_iterator_tag,
+            typename std::iterator_traits<T>::iterator_category
+        >;
         using difference_type = std::iterator_traits<T>::difference_type;
         using value_type = std::iterator_traits<T>::value_type;
         using reference = std::iterator_traits<T>::reference;
         using pointer = std::iterator_traits<T>::pointer;
 
+    private:
         [[no_unique_address]] union storage {
             [[no_unique_address]] T iter;
             constexpr storage() noexcept {};
@@ -2006,24 +2010,47 @@ namespace impl {
         } m_storage;
         [[no_unique_address]] bool m_initialized;
 
-    private:
-        static constexpr storage copy(const optional_iterator& other) {
+        template <typename V>
+        static constexpr decltype(auto) unwrap(V&& v) noexcept {
+            if constexpr (meta::inherits<V, optional_iterator>) {
+                return (std::forward<V>(v).unwrap());
+            } else {
+                return (std::forward<V>(v));
+            }
+        }
+
+        static constexpr storage copy(const optional_iterator& other)
+            noexcept (requires{{storage(other.unwrap())} noexcept;})
+            requires (requires{{storage(other.unwrap())};})
+        {
             if (other.m_initialized) {
-                return storage(other.m_storage.iter);
+                return storage(other.unwrap());
             } else {
                 return storage();
             }
         }
 
-        static constexpr storage move(optional_iterator&& other) {
+        static constexpr storage move(optional_iterator&& other)
+            noexcept (requires{{storage(std::move(other).unwrap())} noexcept;})
+            requires (requires{{storage(std::move(other).unwrap())};})
+        {
             if (other.m_initialized) {
-                return storage(std::move(other.m_storage.iter));
+                return storage(std::move(other).unwrap());
             } else {
                 return storage();
             }
         }
 
     public:
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) unwrap(this Self&& self) noexcept {
+            return (std::forward<Self>(self).m_storage.iter);
+        }
+
+        [[nodiscard]] constexpr bool initialized() const noexcept {
+            return m_initialized;
+        }
+
         [[nodiscard]] constexpr optional_iterator() noexcept : m_initialized(false) {}
 
         [[nodiscard]] constexpr optional_iterator(const T& it)
@@ -2066,13 +2093,13 @@ namespace impl {
         {
             if (m_initialized && other.m_initialized) {
                 if (this != other) {
-                    m_storage.iter = other.m_storage.iter;
+                    unwrap() = other.unwrap();
                 }
             } else if (m_initialized) {
-                std::destroy_at(&m_storage.iter);
+                std::destroy_at(&unwrap());
                 m_initialized = false;
             } else if (other.m_initialized) {
-                std::construct_at(&m_storage.iter, other.m_storage.iter);
+                std::construct_at(&unwrap(), other.unwrap());
                 m_initialized = true;
             }
             return *this;
@@ -2084,14 +2111,14 @@ namespace impl {
         {
             if (m_initialized && other.m_initialized) {
                 if (this != other) {
-                    m_storage.iter = std::move(other.m_storage.iter);
+                    unwrap() = std::move(other).unwrap();
                     other.m_initialized = false;
                 }
             } else if (m_initialized) {
-                std::destroy_at(&m_storage.iter);
+                std::destroy_at(&unwrap());
                 m_initialized = false;
             } else if (other.m_initialized) {
-                std::construct_at(&m_storage.iter, std::move(other.m_storage.iter));
+                std::construct_at(&unwrap(), std::move(other).unwrap());
                 m_initialized = true;
                 other.m_initialized = false;
             }
@@ -2103,236 +2130,220 @@ namespace impl {
             requires (meta::destructible<T>)
         {
             if (m_initialized) {
-                std::destroy_at(&m_storage.iter);
+                std::destroy_at(&unwrap());
             }
             m_initialized = false;
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).m_storage.iter} noexcept;})
-            requires (requires{{*std::forward<Self>(self).m_storage.iter};})
+            noexcept (requires{{*std::forward<Self>(self).unwrap()} noexcept;})
+            requires (requires{{*std::forward<Self>(self).unwrap()};})
         {
-            return (*std::forward<Self>(self).m_storage.iter);
+            return (*std::forward<Self>(self).unwrap());
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator->(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).m_storage.iter.operator->()} noexcept;})
-            requires (requires{{std::forward<Self>(self).m_storage.iter.operator->()};})
+            noexcept (requires{{std::forward<Self>(self).unwrap().operator->()} noexcept;})
+            requires (requires{{std::forward<Self>(self).unwrap().operator->()};})
         {
-            return (std::forward<Self>(self).m_storage.iter.operator->());
+            return (std::forward<Self>(self).unwrap().operator->());
+        }
+
+        template <typename Self> requires (meta::pointer<T>)
+        [[nodiscard]] constexpr decltype(auto) operator->(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).unwrap()} noexcept;})
+            requires (requires{{std::forward<Self>(self).unwrap()};})
+        {
+            return (std::forward<Self>(self).unwrap());
         }
 
         template <typename Self, typename V>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, V&& v)
             noexcept (requires{
-                {std::forward<Self>(self).m_storage.iter[std::forward<V>(v)]} noexcept;
+                {std::forward<Self>(self).unwrap()[std::forward<V>(v)]} noexcept;
             })
             requires (requires{
-                {std::forward<Self>(self).m_storage.iter[std::forward<V>(v)]};
+                {std::forward<Self>(self).unwrap()[std::forward<V>(v)]};
             })
         {
-            return (std::forward<Self>(self).m_storage.iter[std::forward<V>(v)]);
+            return (std::forward<Self>(self).unwrap()[std::forward<V>(v)]);
         }
 
         constexpr optional_iterator& operator++()
-            noexcept (requires{{++m_storage.iter} noexcept;})
-            requires (requires{{++m_storage.iter};})
+            noexcept (requires{{++unwrap()} noexcept;})
+            requires (requires{{++unwrap()};})
         {
-            ++m_storage.iter;
+            ++unwrap();
             return *this;
         }
 
         [[nodiscard]] constexpr optional_iterator operator++(int)
-            noexcept (
-                meta::nothrow::copyable<optional_iterator> &&
-                requires{{++m_storage.iter} noexcept;}
-            )
-            requires (
-                meta::copyable<optional_iterator> &&
-                requires{{++m_storage.iter};}
-            )
+            noexcept (requires{
+                {optional_iterator(*this)} noexcept;
+                {++*this} noexcept;
+            })
+            requires (requires{
+                {optional_iterator(*this)};
+                {++*this};
+            })
         {
             optional_iterator tmp(*this);
             ++*this;
             return tmp;
         }
 
-        template <typename Self, typename V>
-        [[nodiscard]] constexpr optional_iterator operator+(this Self&& self, V&& v)
+        template <typename L, typename R>
+        [[nodiscard]] friend constexpr optional_iterator operator+(L&& lhs, R&& rhs)
             noexcept (requires{{optional_iterator(
-                std::forward<Self>(self).m_storage.iter + std::forward<V>(v)
+                unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs))
             )} noexcept;})
             requires (requires{{optional_iterator(
-                std::forward<Self>(self).m_storage.iter + std::forward<V>(v)
+                unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs))
             )};})
         {
             return optional_iterator(
-                std::forward<Self>(self).m_storage.iter + std::forward<V>(v)
+                unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs))
             );
         }
 
         template <typename V>
         constexpr optional_iterator& operator+=(V&& v)
-            noexcept (requires{{m_storage.iter += std::forward<V>(v)} noexcept;})
-            requires (requires{{m_storage.iter += std::forward<V>(v)};})
+            noexcept (requires{{unwrap() += unwrap(std::forward<V>(v))} noexcept;})
+            requires (requires{{unwrap() += unwrap(std::forward<V>(v))};})
         {
-            m_storage.iter += std::forward<V>(v);
+            unwrap() += unwrap(std::forward<V>(v));
             return *this;
         }
 
         constexpr optional_iterator& operator--()
-            noexcept (requires{{--m_storage.iter} noexcept;})
-            requires (requires{{--m_storage.iter};})
+            noexcept (requires{{--unwrap()} noexcept;})
+            requires (requires{{--unwrap()};})
         {
-            --m_storage.iter;
+            --unwrap();
             return *this;
         }
 
         [[nodiscard]] constexpr optional_iterator operator--(int)
-            noexcept (
-                meta::nothrow::copyable<optional_iterator> &&
-                requires{{--m_storage.iter} noexcept;}
-            )
-            requires (
-                meta::copyable<optional_iterator> &&
-                requires{{--m_storage.iter};}
-            )
+            noexcept (requires{
+                {optional_iterator(*this)} noexcept;
+                {--*this} noexcept;
+            })
+            requires (requires{
+                {optional_iterator(*this)};
+                {--*this};
+            })
         {
             optional_iterator tmp(*this);
             --*this;
             return tmp;
         }
 
-        template <typename Self, typename V>
-        [[nodiscard]] constexpr optional_iterator operator-(this Self&& self, V&& v)
+        template <typename L, typename R>
+        [[nodiscard]] friend constexpr optional_iterator operator-(L&& lhs, R&& rhs)
             noexcept (requires{{optional_iterator(
-                std::forward<Self>(self).m_storage.iter - std::forward<V>(v)
+                unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs))
             )} noexcept;})
             requires (requires{{optional_iterator(
-                std::forward<Self>(self).m_storage.iter - std::forward<V>(v)
+                unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs))
             )};})
         {
             return optional_iterator(
-                std::forward<Self>(self).m_storage.iter - std::forward<V>(v)
+                unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs))
             );
+        }
+
+        [[nodiscard]] difference_type operator-(const optional_iterator& other) const
+            noexcept (requires{{
+                unwrap() - other.unwrap()
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (requires{{
+                unwrap() - other.unwrap()
+            } -> meta::convertible_to<difference_type>;})
+        {
+            return unwrap() - other.unwrap();
         }
 
         template <typename V>
         constexpr optional_iterator& operator-=(V&& v)
-            noexcept (requires{{m_storage.iter -= std::forward<V>(v)} noexcept;})
-            requires (requires{{m_storage.iter -= std::forward<V>(v)};})
+            noexcept (requires{{unwrap() -= unwrap(std::forward<V>(v))} noexcept;})
+            requires (requires{{unwrap() -= unwrap(std::forward<V>(v))};})
         {
-            m_storage.iter -= std::forward<V>(v);
+            unwrap() -= unwrap(std::forward<V>(v));
             return *this;
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<(const optional_iterator<U>& other) const
             noexcept (requires{{
-                m_initialized &&
-                other.m_initialized &&
-                m_storage.iter < other.m_storage.iter
+                initialized() && other.initialized() && unwrap() < other.unwrap()
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                m_initialized &&
-                other.m_initialized &&
-                m_storage.iter < other.m_storage.iter
+                initialized() && other.initialized() && unwrap() < other.unwrap()
             } -> meta::convertible_to<bool>;})
         {
-            return
-                m_initialized &&
-                other.m_initialized &&
-                m_storage.iter < other.m_storage.iter;
+            return initialized() && other.initialized() && unwrap() < other.unwrap();
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<=(const optional_iterator<U>& other) const
             noexcept (requires{{
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter <= other.m_storage.iter
+                !initialized() || !other.initialized() || unwrap() <= other.unwrap()
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter <= other.m_storage.iter
+                !initialized() || !other.initialized() || unwrap() <= other.unwrap()
             } -> meta::convertible_to<bool>;})
         {
-            return
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter <= other.m_storage.iter;
+            return !initialized() || !other.initialized() || unwrap() <= other.unwrap();
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator==(const optional_iterator<U>& other) const
             noexcept (requires{{
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter == other.m_storage.iter
+                !initialized() || !other.initialized() || unwrap() == other.unwrap()
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter == other.m_storage.iter
+                !initialized() || !other.initialized() || unwrap() == other.unwrap()
             } -> meta::convertible_to<bool>;})
         {
-            return
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter == other.m_storage.iter;
+            return !initialized() || !other.initialized() || unwrap() == other.unwrap();
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>=(const optional_iterator<U>& other) const
             noexcept (requires{{
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter >= other.m_storage.iter
+                !initialized() || !other.initialized() || unwrap() >= other.unwrap()
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter >= other.m_storage.iter
+                !initialized() || !other.initialized() || unwrap() >= other.unwrap()
             } -> meta::convertible_to<bool>;})
         {
-            return
-                !m_initialized ||
-                !other.m_initialized ||
-                m_storage.iter >= other.m_storage.iter;
+            return !initialized() || !other.initialized() || unwrap() >= other.unwrap();
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>(const optional_iterator<U>& other) const
             noexcept (requires{{
-                m_initialized &&
-                other.m_initialized &&
-                m_storage.iter > other.m_storage.iter
+                initialized() && other.initialized() && unwrap() > other.unwrap()
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                m_initialized &&
-                other.m_initialized &&
-                m_storage.iter > other.m_storage.iter
+                initialized() && other.initialized() && unwrap() > other.unwrap()
             } -> meta::convertible_to<bool>;})
         {
-            return
-                m_initialized &&
-                other.m_initialized &&
-                m_storage.iter > other.m_storage.iter;
+            return initialized() && other.initialized() && unwrap() > other.unwrap();
         }
 
         template <typename U>
         [[nodiscard]] constexpr auto operator<=>(const optional_iterator<U>& other) const
-            noexcept (requires{{m_storage.iter <=> other.m_storage.iter} noexcept;})
-            requires (requires{{m_storage.iter <=> other.m_storage.iter};})
+            noexcept (requires{{unwrap() <=> other.unwrap()} noexcept;})
+            requires (requires{{unwrap() <=> other.unwrap()};})
         {
-            using type = meta::unqualify<decltype(m_storage.iter <=> other.m_storage.iter)>;
-            if (!m_initialized || !other.m_initialized) {
+            using type = meta::unqualify<decltype(unwrap() <=> other.unwrap())>;
+            if (!initialized() || !other.initialized()) {
                 return type::equivalent;
             }
-            return m_storage.iter <=> other.m_storage.iter;
+            return unwrap() <=> other.unwrap();
         }
     };
 
