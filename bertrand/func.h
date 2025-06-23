@@ -994,6 +994,23 @@ namespace impl {
 }
 
 
+/// TODO: add iteration and indexing support by optimizing any args{} container where
+/// all arguments are of the same type to a simple std::array of that type, possible
+/// with wrapping to handle lvalue references.  Otherwise, if all types have a common
+/// type, then I can generate a compile-time vtable of function pointers that do the
+/// conversion, which can be used to iterate over the arguments in a similar way.
+/// If neither of those is possible, then the args{} container will still obey
+/// tuple-like dcomposition, but would not be iterable.  You can effectively guarantee
+/// the first case by assigning a type to a variadic function argument, which would
+/// convert to that type when initializing the args{} container, which then gets passed
+/// into the function, thereby guaranteeing iteration support within the function
+/// context.  That would also reduce the compilation overhead for these cases.
+
+/// This also fully exposes the args{} containers to the comprehension/unpacking
+/// ecosystem, which is super nice, and might provide a better way to
+/// concatenate/expand argument packs.
+
+
 template <typename... Ts> requires (meta::args_spec<Ts...>)
 struct args : impl::args<Ts...> {
     /* A nested type listing the precise types that were used to build this parameter
@@ -1874,9 +1891,10 @@ namespace impl {
 /// operator could act as an output iterator.  That's probably the best.  Together
 /// with the above:
 
+
 /*
     std::array mask {true, false, true}
-    (*c)[*mask] = 2;
+    (*c)[*mask] = 2;  // assigns 2 to the first and third elements of `c`
 */
 
 
@@ -3907,11 +3925,11 @@ static_assert([] {
     }
 
     // nested comprehension
-    for (auto&& x : arr->*[](int x) -> unpack<Optional<std::array<int, 2>>> {
+    for (auto&& x : arr->*[](int x) -> unpack<Optional<int>> {
         if (x % 2) {
             return None;
         }
-        return std::array{1, 2};
+        return 1;
     }) {
         if (x != 1 && x != 2) {
             return false;

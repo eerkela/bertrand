@@ -1886,68 +1886,92 @@ namespace impl {
     template <typename T>
     struct optional_iterator {
         using wrapped = T;
-        using iterator_category = std::forward_iterator_tag;
+        using iterator_category = std::contiguous_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = meta::remove_reference<T>;
         using reference = meta::as_lvalue<T>;
+        using const_reference = meta::as_const<reference>;
         using pointer = meta::as_pointer<T>;
+        using const_pointer = meta::as_pointer<const_reference>;
 
-        Optional<T> value;
+        pointer value;
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).value.value()} noexcept;})
-        {
-            return (std::forward<Self>(self).value.value());
+        [[nodiscard]] constexpr reference operator*() noexcept {
+            return *value;
         }
 
-        [[nodiscard]] constexpr auto* operator->()
-            noexcept (requires{{std::addressof(value.value())} noexcept -> meta::pointer;})
-            requires (requires{{std::addressof(value.value())} -> meta::pointer;})
-        {
-            return std::addressof(value.value());
+        [[nodiscard]] constexpr const_reference operator*() const noexcept {
+            return *value;
         }
 
-        [[nodiscard]] constexpr auto* operator->() const
-            noexcept (requires{{std::addressof(value.value())} noexcept -> meta::pointer;})
-            requires (requires{{std::addressof(value.value())} -> meta::pointer;})
-        {
-            return std::addressof(value.value());
+        [[nodiscard]] constexpr pointer operator->() noexcept {
+            return value;
+        }
+
+        [[nodiscard]] constexpr const_pointer operator->() const noexcept {
+            return value;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) noexcept {
+            return *(value + n);
+        }
+
+        [[nodiscard]] constexpr const_reference operator[](difference_type n) const noexcept {
+            return *(value + n);
         }
 
         constexpr optional_iterator& operator++() noexcept {
-            value.reset();
+            ++value;
             return *this;
         }
 
-        constexpr optional_iterator operator++(int) noexcept {
+        [[nodiscard]] constexpr optional_iterator operator++(int) noexcept {
             auto tmp = *this;
-            value.reset();
+            ++value;
             return tmp;
         }
 
-        [[nodiscard]] constexpr bool operator<(const optional_iterator& other) const noexcept {
-            return !value.has_value() && other.value.has_value();
+        [[nodiscard]] constexpr optional_iterator operator+(difference_type n) const noexcept {
+            return {value + n};
         }
 
-        [[nodiscard]] constexpr bool operator<=(const optional_iterator& other) const noexcept {
-            return other.has_value();
+        constexpr optional_iterator& operator+=(difference_type n) noexcept {
+            value += n;
+            return *this;
+        }
+
+        constexpr optional_iterator& operator--() noexcept {
+            --value;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr optional_iterator operator--(int) noexcept {
+            auto tmp = *this;
+            --value;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr optional_iterator operator-(difference_type n) const noexcept {
+            return {value - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const optional_iterator& other
+        ) const noexcept {
+            return value - other.value;
+        }
+
+        constexpr optional_iterator& operator-=(difference_type n) noexcept {
+            value -= n;
+            return *this;
         }
 
         [[nodiscard]] constexpr bool operator==(const optional_iterator& other) const noexcept {
-            return (value.has_value() == other.value.has_value());
+            return value == other.value;
         }
 
-        [[nodiscard]] constexpr bool operator!=(const optional_iterator& other) const noexcept {
-            return value.has_value() != other.value.has_value();
-        }
-
-        [[nodiscard]] constexpr bool operator>=(const optional_iterator& other) const noexcept {
-            return value.has_value();
-        }
-
-        [[nodiscard]] constexpr bool operator>(const optional_iterator& other) const noexcept {
-            return other.value.has_value() && !value.has_value();
+        [[nodiscard]] constexpr auto operator<=>(const optional_iterator& other) const noexcept {
+            return value <=> other.value;
         }
     };
 
@@ -2315,7 +2339,9 @@ namespace impl {
     template <typename T>
     struct make_optional_iterator : impl::optional_tag {
         using begin_type = optional_iterator<T>;
-        using end_type = optional_iterator<T>;
+        using end_type = begin_type;
+        using rbegin_type = std::reverse_iterator<begin_type>;
+        using rend_type = rbegin_type;
     };
 
     template <meta::iterable T> requires (meta::reverse_iterable<T>)
@@ -3768,21 +3794,15 @@ public:
     this will be a lightweight wrapper around its `begin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
     optional is currently empty. */
-    template <typename Self> requires (!meta::iterable<T>)
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto begin(this Self&& self)
-        noexcept (requires{
-            {typename iter<Self>::begin_type{}} noexcept;
-            {typename iter<Self>::begin_type{std::forward<Self>(self).m_storage.value()}} noexcept;
-        })
-        requires (requires{
-            {typename iter<Self>::begin_type{}};
-            {typename iter<Self>::begin_type{std::forward<Self>(self).m_storage.value()}};
-        })
+        noexcept (requires{{typename iter<Self>::begin_type{&self.m_storage.value()}} noexcept;})
+        requires (requires{{typename iter<Self>::begin_type{&self.m_storage.value()}};})
     {
         if (!self.m_storage.has_value()) {
-            return typename iter<Self>::begin_type{};
+            return typename iter<Self>::begin_type{&self.m_storage.value() + 1};
         }
-        return typename iter<Self>::begin_type{std::forward<Self>(self).m_storage.value()};
+        return typename iter<Self>::begin_type{&self.m_storage.value()};
     }
 
     /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
@@ -3810,19 +3830,16 @@ public:
     return an iterator with only a single element, or an `end()` iterator if the
     optional is currently empty. */
     [[nodiscard]] constexpr auto cbegin() const
-        noexcept (requires{
-            {typename const_iter::begin_type{}} noexcept;
-            {typename const_iter::begin_type{m_storage.value()}} noexcept;
-        })
-        requires (!meta::const_iterable<T> && requires{
-            {typename const_iter::begin_type{}};
-            {typename const_iter::begin_type{m_storage.value()}};
-        })
+        noexcept (requires{{typename const_iter::begin_type{&m_storage.value()}} noexcept;})
+        requires (
+            !meta::const_iterable<T> && !meta::const_reverse_iterable<T> &&
+            requires{{typename const_iter::begin_type{&m_storage.value()}};}
+        )
     {
         if (!m_storage.has_value()) {
-            return typename const_iter::begin_type{};
+            return typename const_iter::begin_type{&m_storage.value() + 1};
         }
-        return typename const_iter::begin_type{m_storage.value()};
+        return typename const_iter::begin_type{&m_storage.value()};
     }
 
     /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
@@ -3848,12 +3865,12 @@ public:
     /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `end()` type.  Otherwise, it will
     return an empty iterator. */
-    template <typename Self> requires (!meta::iterable<T>)
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto end(this Self&& self)
-        noexcept (requires{{typename iter<Self>::end_type{}} noexcept;})
-        requires (requires{{typename iter<Self>::end_type{}};})
+        noexcept (requires{{typename iter<Self>::end_type{&self.m_storage.value() + 1}} noexcept;})
+        requires (requires{{typename iter<Self>::end_type{&self.m_storage.value() + 1}};})
     {
-        return typename iter<Self>::end_type{};
+        return typename iter<Self>::end_type{&self.m_storage.value() + 1};
     }
 
     /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
@@ -3879,14 +3896,19 @@ public:
     this will be a lightweight wrapper around its `cend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto cend() const
-        noexcept (requires{{typename const_iter::end_type{}} noexcept;})
-        requires (!meta::const_iterable<T> && requires{{typename const_iter::end_type{}};})
+        noexcept (requires{{typename const_iter::end_type{&m_storage.value() + 1}} noexcept;})
+        requires (
+            !meta::const_iterable<T> && !meta::const_reverse_iterable<T> &&
+            requires{{typename const_iter::end_type{&m_storage.value() + 1}};}
+        )
     {
-        return typename const_iter::end_type{};
+        return typename const_iter::end_type{&m_storage.value() + 1};
     }
 
-    /* Get a reverse iterator over the optional if the wrapped type is reverse
-    iterable.  Returns a lightweight wrapper around the container's `rbegin()` type. */
+    /* Get a reverse iterator over the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `rend()` iterator if the
+    optional is currently empty. */
     template <typename Self> requires (meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto rbegin(this Self&& self)
         noexcept (requires{
@@ -3904,59 +3926,143 @@ public:
         return typename iter<Self>::rbegin_type{std::ranges::rbegin(self.m_storage.value())};
     }
 
-    /* Get a reverse iterator over the optional if the wrapped type is reverse
-    iterable.  Returns a lightweight wrapper around the container's `rbegin()` type. */
+    /* Get a reverse iterator over the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `rend()` iterator if the
+    optional is currently empty. */
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
+    [[nodiscard]] constexpr auto rbegin(this Self&& self)
+        noexcept (requires{
+            {typename iter<Self>::rbegin_type{self.begin()}} noexcept;
+            {typename iter<Self>::rbegin_type{self.end()}} noexcept;
+        })
+        requires (requires{
+            {typename iter<Self>::rbegin_type{self.begin()}};
+            {typename iter<Self>::rbegin_type{self.end()}};
+        })
+    {
+        if (!self.m_storage.has_value()) {
+            return typename iter<Self>::rbegin_type{self.begin()};
+        }
+        return typename iter<Self>::rbegin_type{self.end()};
+    }
+
+    /* Get a reverse iterator over the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `crend()` iterator if the
+    optional is currently empty. */
     [[nodiscard]] constexpr auto crbegin() const
         noexcept (requires{
             {typename const_iter::rbegin_type{}} noexcept;
-            {typename const_iter::rbegin_type{std::ranges::rbegin(m_storage.value())}} noexcept;
+            {typename const_iter::rbegin_type{std::ranges::crbegin(m_storage.value())}} noexcept;
         })
         requires (meta::const_reverse_iterable<T> && requires{
             {typename const_iter::rbegin_type{}};
-            {typename const_iter::rbegin_type{std::ranges::rbegin(m_storage.value())}};
+            {typename const_iter::rbegin_type{std::ranges::crbegin(m_storage.value())}};
         })
     {
         if (!m_storage.has_value()) {
             return typename const_iter::rbegin_type{};
         }
-        return typename const_iter::rbegin_type{std::ranges::rbegin(m_storage.value())};
+        return typename const_iter::rbegin_type{std::ranges::crbegin(m_storage.value())};
     }
 
-    /* Get a reverse sentinel for the optional if the wrapped type is reverse iterable.
-    Returns a lightweight wrapper around the container's `rend()` type. */
+    /* Get a reverse iterator over the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `crend()` iterator if the
+    optional is currently empty. */
+    [[nodiscard]] constexpr auto crbegin() const
+        noexcept (requires{
+            {typename const_iter::rbegin_type{cbegin()}} noexcept;
+            {typename const_iter::rbegin_type{cend()}} noexcept;
+        })
+        requires (!meta::const_iterable<T> && !meta::const_reverse_iterable<T> && requires{
+            {typename const_iter::rbegin_type{cbegin()}};
+            {typename const_iter::rbegin_type{cend()}};
+        })
+    {
+        if (!m_storage.has_value()) {
+            return typename const_iter::rbegin_type{cbegin()};
+        }
+        return typename const_iter::rbegin_type{cend()};
+    }
+
+    /* Get a reverse sentinel for the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rend()` type.  Otherwise, it will
+    return an empty iterator. */
     template <typename Self> requires (meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto rend(this Self&& self)
         noexcept (requires{
-            {typename iter<Self>::rend_type{}} noexcept;
-            {typename iter<Self>::rend_type{std::ranges::rend(self.m_storage.value())}} noexcept;
+            {typename const_iter::rend_type{}} noexcept;
+            {typename const_iter::rend_type{std::ranges::rend(self.m_storage.value())}} noexcept;
         })
         requires (requires{
-            {typename iter<Self>::rend_type{}};
-            {typename iter<Self>::rend_type{std::ranges::rend(self.m_storage.value())}};
+            {typename const_iter::rend_type{}};
+            {typename const_iter::rend_type{std::ranges::rend(self.m_storage.value())}};
         })
     {
         if (!self.m_storage.has_value()) {
-            return typename iter<Self>::rend_type{};
+            return typename const_iter::rend_type{};
         }
-        return typename iter<Self>::rend_type{std::ranges::rend(self.m_storage.value())};
+        return typename const_iter::rend_type{std::ranges::rend(self.m_storage.value())};
     }
 
-    /* Get a reverse sentinel for the optional if the wrapped type is reverse iterable.
-    Returns a lightweight wrapper around the container's `rend()` type. */
+    /* Get a reverse sentinel for the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rend()` type.  Otherwise, it will
+    return an empty iterator. */
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
+    [[nodiscard]] constexpr auto rend(this Self&& self)
+        noexcept (requires{
+            {typename const_iter::rend_type{self.begin()}} noexcept;
+            {typename const_iter::rend_type{self.end()}} noexcept;
+        })
+        requires (requires{
+            {typename const_iter::rend_type{self.begin()}};
+            {typename const_iter::rend_type{self.end()}};
+        })
+    {
+        if (!self.m_storage.has_value()) {
+            return typename const_iter::rend_type{self.begin()};
+        }
+        return typename const_iter::rend_type{self.end()};
+    }
+
+    /* Get a reverse sentinel for the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crend()` type.  Otherwise, it will
+    return an empty iterator. */
     [[nodiscard]] constexpr auto crend() const
         noexcept (requires{
             {typename const_iter::rend_type{}} noexcept;
-            {typename const_iter::rend_type{std::ranges::rend(m_storage.value())}} noexcept;
+            {typename const_iter::rend_type{std::ranges::crend(m_storage.value())}} noexcept;
         })
         requires (meta::const_reverse_iterable<T> && requires{
             {typename const_iter::rend_type{}};
-            {typename const_iter::rend_type{std::ranges::rend(m_storage.value())}};
+            {typename const_iter::rend_type{std::ranges::crend(m_storage.value())}};
         })
     {
         if (!m_storage.has_value()) {
             return typename const_iter::rend_type{};
         }
-        return typename const_iter::rend_type{std::ranges::rend(m_storage.value())};
+        return typename const_iter::rend_type{std::ranges::crend(m_storage.value())};
+    }
+
+    /* Get a reverse sentinel for the optional.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crend()` type.  Otherwise, it will
+    return an empty iterator. */
+    [[nodiscard]] constexpr auto crend() const
+        noexcept (requires{
+            {typename const_iter::rend_type{cbegin()}} noexcept;
+            {typename const_iter::rend_type{cend()}} noexcept;
+        })
+        requires (!meta::const_iterable<T> && !meta::const_reverse_iterable<T> && requires{
+            {typename const_iter::rend_type{cbegin()}};
+            {typename const_iter::rend_type{cend()}};
+        })
+    {
+        if (!m_storage.has_value()) {
+            return typename const_iter::rend_type{cbegin()};
+        }
+        return typename const_iter::rend_type{cend()};
     }
 };
 
@@ -4827,7 +4933,7 @@ public:
     /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `begin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
-    expected is currently in an error state. */
+    expected is currently empty. */
     template <typename Self> requires (meta::iterable<T>)
     [[nodiscard]] constexpr auto begin(this Self&& self)
         noexcept (requires{
@@ -4849,21 +4955,15 @@ public:
     this will be a lightweight wrapper around its `begin()` type.  Otherwise, it will
     return an iterator with only a single element, or an `end()` iterator if the
     expected is currently in an error state. */
-    template <typename Self> requires (!meta::iterable<T>)
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto begin(this Self&& self)
-        noexcept (requires{
-            {typename iter<Self>::begin_type{}} noexcept;
-            {typename iter<Self>::begin_type{std::forward<Self>(self).get_value()}} noexcept;
-        })
-        requires (requires{
-            {typename iter<Self>::begin_type{}};
-            {typename iter<Self>::begin_type{std::forward<Self>(self).get_value()}};
-        })
+        noexcept (requires{{typename iter<Self>::begin_type{&self.get_value()}} noexcept;})
+        requires (requires{{typename iter<Self>::begin_type{&self.get_value()}};})
     {
         if (!self.has_value()) {
-            return typename iter<Self>::begin_type{};
+            return typename iter<Self>::begin_type{&self.get_value() + 1};
         }
-        return typename iter<Self>::begin_type{std::forward<Self>(self).get_value()};
+        return typename iter<Self>::begin_type{&self.get_value()};
     }
 
     /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
@@ -4891,19 +4991,16 @@ public:
     return an iterator with only a single element, or an `end()` iterator if the
     expected is currently in an error state. */
     [[nodiscard]] constexpr auto cbegin() const
-        noexcept (requires{
-            {typename const_iter::begin_type{}} noexcept;
-            {typename const_iter::begin_type{get_value()}} noexcept;
-        })
-        requires (!meta::const_iterable<T> && requires{
-            {typename const_iter::begin_type{}};
-            {typename const_iter::begin_type{get_value()}};
-        })
+        noexcept (requires{{typename const_iter::begin_type{&get_value()}} noexcept;})
+        requires (
+            !meta::const_iterable<T> && !meta::const_reverse_iterable<T> &&
+            requires{{typename const_iter::begin_type{&get_value()}};}
+        )
     {
         if (!has_value()) {
-            return typename const_iter::begin_type{};
+            return typename const_iter::begin_type{&get_value() + 1};
         }
-        return typename const_iter::begin_type{get_value()};
+        return typename const_iter::begin_type{&get_value()};
     }
 
     /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
@@ -4929,12 +5026,12 @@ public:
     /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `end()` type.  Otherwise, it will
     return an empty iterator. */
-    template <typename Self> requires (!meta::iterable<T>)
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto end(this Self&& self)
-        noexcept (requires{{typename iter<Self>::end_type{}} noexcept;})
-        requires (requires{{typename iter<Self>::end_type{}};})
+        noexcept (requires{{typename iter<Self>::end_type{&self.get_value() + 1}} noexcept;})
+        requires (requires{{typename iter<Self>::end_type{&self.get_value() + 1}};})
     {
-        return typename iter<Self>::end_type{};
+        return typename iter<Self>::end_type{&self.get_value() + 1};
     }
 
     /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
@@ -4960,14 +5057,19 @@ public:
     this will be a lightweight wrapper around its `cend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto cend() const
-        noexcept (requires{{typename const_iter::end_type{}} noexcept;})
-        requires (!meta::const_iterable<T> && requires{{typename const_iter::end_type{}};})
+        noexcept (requires{{typename const_iter::end_type{&get_value() + 1}} noexcept;})
+        requires (
+            !meta::const_iterable<T> && !meta::const_reverse_iterable<T> &&
+            requires{{typename const_iter::end_type{&get_value() + 1}};}
+        )
     {
-        return typename const_iter::end_type{};
+        return typename const_iter::end_type{&get_value() + 1};
     }
 
-    /* Get a reverse iterator over the expected if the wrapped type is reverse
-    iterable.  Returns a lightweight wrapper around the container's `rbegin()` type. */
+    /* Get a reverse iterator over the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `rend()` iterator if the
+    expected is currently in an error state. */
     template <typename Self> requires (meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto rbegin(this Self&& self)
         noexcept (requires{
@@ -4985,59 +5087,143 @@ public:
         return typename iter<Self>::rbegin_type{std::ranges::rbegin(self.get_value())};
     }
 
-    /* Get a reverse iterator over the expected if the wrapped type is reverse
-    iterable.  Returns a lightweight wrapper around the container's `rbegin()` type. */
+    /* Get a reverse iterator over the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `rend()` iterator if the
+    expected is currently in an error state. */
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
+    [[nodiscard]] constexpr auto rbegin(this Self&& self)
+        noexcept (requires{
+            {typename iter<Self>::rbegin_type{self.begin()}} noexcept;
+            {typename iter<Self>::rbegin_type{self.end()}} noexcept;
+        })
+        requires (requires{
+            {typename iter<Self>::rbegin_type{self.begin()}};
+            {typename iter<Self>::rbegin_type{self.end()}};
+        })
+    {
+        if (!self.has_value()) {
+            return typename iter<Self>::rbegin_type{self.begin()};
+        }
+        return typename iter<Self>::rbegin_type{self.end()};
+    }
+
+    /* Get a reverse iterator over the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `crend()` iterator if the
+    expected is currently in an error state. */
     [[nodiscard]] constexpr auto crbegin() const
         noexcept (requires{
             {typename const_iter::rbegin_type{}} noexcept;
-            {typename const_iter::rbegin_type{std::ranges::rbegin(get_value())}} noexcept;
+            {typename const_iter::rbegin_type{std::ranges::crbegin(get_value())}} noexcept;
         })
         requires (meta::const_reverse_iterable<T> && requires{
             {typename const_iter::rbegin_type{}};
-            {typename const_iter::rbegin_type{std::ranges::rbegin(get_value())}};
+            {typename const_iter::rbegin_type{std::ranges::crbegin(get_value())}};
         })
     {
         if (!has_value()) {
             return typename const_iter::rbegin_type{};
         }
-        return typename const_iter::rbegin_type{std::ranges::rbegin(get_value())};
+        return typename const_iter::rbegin_type{std::ranges::crbegin(get_value())};
     }
 
-    /* Get a reverse sentinel for the expected if the wrapped type is reverse iterable.
-    Returns a lightweight wrapper around the container's `rend()` type. */
+    /* Get a reverse iterator over the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crbegin()` type.  Otherwise, it will
+    return an iterator with only a single element, or an `crend()` iterator if the
+    expected is currently in an error state. */
+    [[nodiscard]] constexpr auto crbegin() const
+        noexcept (requires{
+            {typename const_iter::rbegin_type{cbegin()}} noexcept;
+            {typename const_iter::rbegin_type{cend()}} noexcept;
+        })
+        requires (!meta::const_iterable<T> && !meta::const_reverse_iterable<T> && requires{
+            {typename const_iter::rbegin_type{cbegin()}};
+            {typename const_iter::rbegin_type{cend()}};
+        })
+    {
+        if (!has_value()) {
+            return typename const_iter::rbegin_type{cbegin()};
+        }
+        return typename const_iter::rbegin_type{cend()};
+    }
+
+    /* Get a reverse sentinel for the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rend()` type.  Otherwise, it will
+    return an empty iterator. */
     template <typename Self> requires (meta::reverse_iterable<T>)
     [[nodiscard]] constexpr auto rend(this Self&& self)
         noexcept (requires{
-            {typename iter<Self>::rend_type{}} noexcept;
-            {typename iter<Self>::rend_type{std::ranges::rend(self.get_value())}} noexcept;
+            {typename const_iter::rend_type{}} noexcept;
+            {typename const_iter::rend_type{std::ranges::rend(self.get_value())}} noexcept;
         })
         requires (requires{
-            {typename iter<Self>::rend_type{}};
-            {typename iter<Self>::rend_type{std::ranges::rend(self.get_value())}};
+            {typename const_iter::rend_type{}};
+            {typename const_iter::rend_type{std::ranges::rend(self.get_value())}};
         })
     {
         if (!self.has_value()) {
-            return typename iter<Self>::rend_type{};
+            return typename const_iter::rend_type{};
         }
-        return typename iter<Self>::rend_type{std::ranges::rend(self.get_value())};
+        return typename const_iter::rend_type{std::ranges::rend(self.get_value())};
     }
 
-    /* Get a reverse sentinel for the expected if the wrapped type is reverse iterable.
-    Returns a lightweight wrapper around the container's `rend()` type. */
+    /* Get a reverse sentinel for the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `rend()` type.  Otherwise, it will
+    return an empty iterator. */
+    template <typename Self> requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
+    [[nodiscard]] constexpr auto rend(this Self&& self)
+        noexcept (requires{
+            {typename const_iter::rend_type{self.begin()}} noexcept;
+            {typename const_iter::rend_type{self.end()}} noexcept;
+        })
+        requires (requires{
+            {typename const_iter::rend_type{self.begin()}};
+            {typename const_iter::rend_type{self.end()}};
+        })
+    {
+        if (!self.has_value()) {
+            return typename const_iter::rend_type{self.begin()};
+        }
+        return typename const_iter::rend_type{self.end()};
+    }
+
+    /* Get a reverse sentinel for the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crend()` type.  Otherwise, it will
+    return an empty iterator. */
     [[nodiscard]] constexpr auto crend() const
         noexcept (requires{
             {typename const_iter::rend_type{}} noexcept;
-            {typename const_iter::rend_type{std::ranges::rend(get_value())}} noexcept;
+            {typename const_iter::rend_type{std::ranges::crend(get_value())}} noexcept;
         })
         requires (meta::const_reverse_iterable<T> && requires{
             {typename const_iter::rend_type{}};
-            {typename const_iter::rend_type{std::ranges::rend(get_value())}};
+            {typename const_iter::rend_type{std::ranges::crend(get_value())}};
         })
     {
         if (!has_value()) {
             return typename const_iter::rend_type{};
         }
-        return typename const_iter::rend_type{std::ranges::rend(get_value())};
+        return typename const_iter::rend_type{std::ranges::crend(get_value())};
+    }
+
+    /* Get a reverse sentinel for the expected.  If the wrapped type is iterable, then
+    this will be a lightweight wrapper around its `crend()` type.  Otherwise, it will
+    return an empty iterator. */
+    [[nodiscard]] constexpr auto crend() const
+        noexcept (requires{
+            {typename const_iter::rend_type{cbegin()}} noexcept;
+            {typename const_iter::rend_type{cend()}} noexcept;
+        })
+        requires (!meta::const_iterable<T> && !meta::const_reverse_iterable<T> && requires{
+            {typename const_iter::rend_type{cbegin()}};
+            {typename const_iter::rend_type{cend()}};
+        })
+    {
+        if (!has_value()) {
+            return typename const_iter::rend_type{cbegin()};
+        }
+        return typename const_iter::rend_type{cend()};
     }
 };
 
