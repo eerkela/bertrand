@@ -1743,74 +1743,102 @@ namespace impl {
     template <meta::has_size T>
     struct view_size_type<T> { using type = meta::size_type<T>; };
 
-    template <typename F, typename args, typename its, typename Is, typename... A>
+    template <
+        bool exact,
+        typename F,
+        typename args,
+        typename begin,
+        typename end,
+        typename Is,
+        typename... A
+    >
     struct _invoke_comprehension { static constexpr bool enable = false; };
     template <
+        bool exact,
         typename F,
         typename... args,
-        typename... its,
+        typename... begin,
+        typename... end,
         size_t... Is
-    > requires (sizeof...(its) > 0 && meta::invocable<meta::as_lvalue<F>, args...>)
+    > requires (sizeof...(Is) > 0 && meta::invocable<meta::as_lvalue<F>, args...>)
     struct _invoke_comprehension<
+        exact,
         F,
         meta::pack<args...>,
-        meta::pack<its...>,
+        meta::pack<begin...>,
+        meta::pack<end...>,
         std::index_sequence<Is...>
     > {
         using type = meta::invoke_type<meta::as_lvalue<F>, args...>;
         static constexpr bool enable = meta::not_void<type>;
-        static constexpr size_t N = sizeof...(its);
-        using storage = impl::args<its...>;
+        static constexpr bool exact_size = exact;
+        static constexpr size_t N = sizeof...(Is);
+        using begin_type = impl::args<begin...>;
+        using end_type = impl::args<end...>;
         using indices = std::index_sequence<Is...>;
     };
     template <
+        bool exact,
         typename F,
         typename... out,
-        typename... its,
+        typename... begin,
+        typename... end,
         size_t... Is,
         typename A,
         typename... As
     > requires (meta::iterable_comprehension<A>)
     struct _invoke_comprehension<
+        exact,
         F,
         meta::pack<out...>,
-        meta::pack<its...>,
+        meta::pack<begin...>,
+        meta::pack<end...>,
         std::index_sequence<Is...>,
         A,
         As...
     > : _invoke_comprehension<
+        exact && meta::exact_size<A>,
         F,
         meta::pack<out..., meta::yield_type<A>>,
-        meta::pack<its..., meta::begin_type<A>>,
+        meta::pack<begin..., meta::begin_type<A>>,
+        meta::pack<end..., meta::end_type<A>>,
         std::index_sequence<Is..., sizeof...(out)>,
         As...
     > {};
     template <
+        bool exact,
         typename F,
         typename... out,
-        typename... its,
+        typename... begin,
+        typename... end,
         size_t... Is,
         typename A,
         typename... As
     > requires (!meta::iterable_comprehension<A>)
     struct _invoke_comprehension<
+        exact,
         F,
         meta::pack<out...>,
-        meta::pack<its...>,
+        meta::pack<begin...>,
+        meta::pack<end...>,
         std::index_sequence<Is...>,
         A,
         As...
     > : _invoke_comprehension<
+        exact,
         F,
         meta::pack<out..., meta::as_lvalue<A>>,
-        meta::pack<its...>,
+        meta::pack<begin...>,
+        meta::pack<end...>,
         std::index_sequence<Is...>,
         As...
     >
     {};
     template <typename F, typename... A>
     using invoke_comprehension = _invoke_comprehension<
+        true,
         F,
+        meta::pack<>,
         meta::pack<>,
         meta::pack<>,
         std::index_sequence<>,
@@ -1827,7 +1855,6 @@ namespace impl {
     template <size_t I, typename A, typename... Args>
         requires (meta::iterable_comprehension<A> && I > 0)
     constexpr size_t comprehension_idx<I, A, Args...> = comprehension_idx<I - 1, Args...> + 1;
-
 
 }
 
@@ -2117,6 +2144,8 @@ struct comprehension {
     using pointer = meta::as_pointer<value_type>;
     using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
+    static constexpr bool exact = impl::invoke_comprehension<F, A...>::exact_size;
+
 private:
     static constexpr size_type N = impl::invoke_comprehension<F, A...>::N;
     using indices = impl::invoke_comprehension<F, A...>::indices;
@@ -2167,16 +2196,14 @@ public:
         return size() == 0;
     }
 
-    /// TODO: note that I may need to add an explicit check against each container's
-    /// end iterator, rather than just relying on the length, since it's possibly
-    /// that a container's length is not reliable.
-    /// -> Maybe just a fold expression over all the end iterators would be the most
-    /// robust way to do this, even though it is maybe a little bit more expensive.
-    /// That might interfere with SIMD code gen though.
-
     /* A forward iterator that evaluates the comprehension for each element. */
     struct iterator {
-        using storage_type = impl::invoke_comprehension<F, A...>::storage;
+        using begin_type = impl::invoke_comprehension<F, A...>::begin_type;
+        using end_type = std::conditional_t<
+            exact,
+            size_type,
+            typename impl::invoke_comprehension<F, A...>::end_type
+        >;
         using iterator_category = std::input_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = comprehension::value_type;
@@ -2184,25 +2211,25 @@ public:
         using pointer = comprehension::pointer;
 
         comprehension* self;
-        size_type length;
-        storage_type iterators;
+        begin_type begin;
+        end_type end;
 
     private:
         template <size_type I, typename S>
+            requires (meta::iterable_comprehension<meta::unpack_type<I, A...>>)
         [[gnu::always_inline]] constexpr decltype(auto) get(this S&& s)
-            noexcept (meta::iterable_comprehension<meta::unpack_type<I, A...>> ?
-                requires{
-                    {*s.iterators.template get<impl::comprehension_idx<I, A...>>()} noexcept;
-                } : requires{
-                    {s.self->args.template get<I>()} noexcept;
-                }
-            )
+            noexcept (requires{
+                {*s.begin.template get<impl::comprehension_idx<I, A...>>()} noexcept;
+            })
         {
-            if constexpr (meta::iterable_comprehension<meta::unpack_type<I, A...>>) {
-                return (*s.iterators.template get<impl::comprehension_idx<I, A...>>());
-            } else {
-                return (s.self->args.template get<I>());
-            }
+            return (*s.begin.template get<impl::comprehension_idx<I, A...>>());
+        }
+        template <size_type I, typename S>
+            requires (!meta::iterable_comprehension<meta::unpack_type<I, A...>>)
+        [[gnu::always_inline]] constexpr decltype(auto) get(this S&& s)
+            noexcept (requires{{s.self->args.template get<I>()} noexcept;})
+        {
+            return (s.self->args.template get<I>());
         }
 
         template <typename S, size_type... Is>
@@ -2218,11 +2245,29 @@ public:
 
         template <size_type... Is>
         [[gnu::always_inline]] constexpr void advance(std::index_sequence<Is...>)
-            noexcept (requires{{(++(iterators.template get<Is>()), ...)} noexcept;})
-            requires (requires{{(++(iterators.template get<Is>()), ...)};})
+            noexcept (requires{{(++(begin.template get<Is>()), ...)} noexcept;})
+            requires (requires{{(++(begin.template get<Is>()), ...)};})
         {
-            (++(iterators.template get<Is>()), ...);
-            --length;
+            (++(begin.template get<Is>()), ...);
+            if constexpr (exact) {
+                --end;
+            }
+        }
+
+        template <size_type... Is>
+        [[gnu::always_inline]] constexpr bool stop(std::index_sequence<Is...>) const
+            noexcept (exact || requires{{
+                ((begin.template get<Is>() == end.template get<Is>()) || ...)
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (exact || requires{{
+                ((begin.template get<Is>() == end.template get<Is>()) || ...)
+            } -> meta::convertible_to<bool>;})
+        {
+            if constexpr (exact) {
+                return end == 0;
+            } else {
+                return ((begin.template get<Is>() == end.template get<Is>()) || ...);
+            }
         }
 
     public:
@@ -2266,44 +2311,76 @@ public:
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
             const iterator& self,
             impl::sentinel
-        ) noexcept {
-            return self.length == 0;
+        )
+            noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{self.stop(std::make_index_sequence<N>{})};})
+        {
+            return self.stop(std::make_index_sequence<N>{});
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
             impl::sentinel,
             const iterator& self
-        ) noexcept {
-            return self.length == 0;
+        )
+            noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{self.stop(std::make_index_sequence<N>{})};})
+        {
+            return self.stop(std::make_index_sequence<N>{});
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
             const iterator& self,
             impl::sentinel
-        ) noexcept {
-            return self.length != 0;
+        )
+            noexcept (requires{{!self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{!self.stop(std::make_index_sequence<N>{})};})
+        {
+            return !self.stop(std::make_index_sequence<N>{});
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
             impl::sentinel,
             const iterator& self
-        ) noexcept {
-            return self.length != 0;
+        )
+            noexcept (requires{{!self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{!self.stop(std::make_index_sequence<N>{})};})
+        {
+            return !self.stop(std::make_index_sequence<N>{});
         }
     };
 
 private:
 
-    template <size_type... Is>
+    template <size_type... Is> requires (exact)
     [[gnu::always_inline]] constexpr auto init(std::index_sequence<Is...>)
         noexcept (requires{
-            {iterator{this, size(), {args.template get<Is>().begin()...}}} noexcept;
+            {iterator{this, {args.template get<Is>().begin()...}, size()}} noexcept;
         })
         requires (requires{
-            {iterator{this, size(), {args.template get<Is>().begin()...}}};
+            {iterator{this, {args.template get<Is>().begin()...}, size()}};
         })
     {
-        return iterator{this, size(), {args.template get<Is>().begin()...}};
+        return iterator{this, {args.template get<Is>().begin()...}, size()};
+    }
+
+    template <size_type... Is> requires (!exact)
+    [[gnu::always_inline]] constexpr auto init(std::index_sequence<Is...>)
+        noexcept (requires{{iterator{
+            this,
+            {args.template get<Is>().begin()...},
+            {args.template get<Is>().end()...}
+        }} noexcept;})
+        requires (requires{{iterator{
+            this,
+            {args.template get<Is>().begin()...},
+            {args.template get<Is>().end()...}
+        }};})
+    {
+        return iterator{
+            this,
+            {args.template get<Is>().begin()...},
+            {args.template get<Is>().end()...}
+        };
     }
 
 public:
@@ -2355,6 +2432,8 @@ struct comprehension<F, A...> {
     using pointer = meta::as_pointer<value_type>;
     using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
+    static constexpr bool exact = impl::invoke_comprehension<F, A...>::exact_size;
+
 private:
     static constexpr size_type N = impl::invoke_comprehension<F, A...>::N;
     using indices = impl::invoke_comprehension<F, A...>::indices;
@@ -2393,10 +2472,6 @@ public:
         (get_length(std::forward<A>(args)), ...);
     }
 
-    /// TODO: note that size() may not exactly match the number of elements that
-    /// will be yielded by the comprehension, since the results may be flattened to
-    /// more or fewer elements depending on the comprehension function.
-
     [[nodiscard, gnu::always_inline]] constexpr size_type size() const noexcept {
         return length;
     }
@@ -2411,7 +2486,12 @@ public:
 
     /* A forward iterator that evaluates the comprehension for each element. */
     struct iterator {
-        using storage_type = impl::invoke_comprehension<F, A...>::storage;
+        using begin_type = impl::invoke_comprehension<F, A...>::begin_type;
+        using end_type = std::conditional_t<
+            exact,
+            size_type,
+            typename impl::invoke_comprehension<F, A...>::end_type
+        >;
         using iterator_category = std::input_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = comprehension::value_type;
@@ -2419,8 +2499,8 @@ public:
         using pointer = comprehension::pointer;
 
         comprehension* self;
-        size_type length;
-        storage_type iterators;
+        begin_type begin;
+        end_type end;
 
     private:
         [[no_unique_address]] union cache_type {
@@ -2433,20 +2513,20 @@ public:
         } cache;
 
         template <size_type I, typename S>
+            requires (meta::iterable_comprehension<meta::unpack_type<I, A...>>)
         [[gnu::always_inline]] constexpr decltype(auto) get(this S&& s)
-            noexcept (meta::iterable_comprehension<meta::unpack_type<I, A...>> ?
-                requires{
-                    {*s.iterators.template get<impl::comprehension_idx<I, A...>>()} noexcept;
-                } : requires{
-                    {s.self->args.template get<I>()} noexcept;
-                }
-            )
+            noexcept (requires{
+                {*s.begin.template get<impl::comprehension_idx<I, A...>>()} noexcept;
+            })
         {
-            if constexpr (meta::iterable_comprehension<meta::unpack_type<I, A...>>) {
-                return (*s.iterators.template get<impl::comprehension_idx<I, A...>>());
-            } else {
-                return (s.self->args.template get<I>());
-            }
+            return (*s.begin.template get<impl::comprehension_idx<I, A...>>());
+        }
+        template <size_type I, typename S>
+            requires (!meta::iterable_comprehension<meta::unpack_type<I, A...>>)
+        [[gnu::always_inline]] constexpr decltype(auto) get(this S&& s)
+            noexcept (requires{{s.self->args.template get<I>()} noexcept;})
+        {
+            return (s.self->args.template get<I>());
         }
 
         template <typename S, size_type... Is>
@@ -2467,87 +2547,151 @@ public:
         }
 
         template <size_type... Is>
-        [[gnu::always_inline]] constexpr void advance(std::index_sequence<Is...>)
+        [[gnu::always_inline]] constexpr void increment(std::index_sequence<Is...>)
+            noexcept (requires{{(++(begin.template get<Is>()), ...)} noexcept;})
+            requires (requires{{(++(begin.template get<Is>()), ...)};})
+        {
+            (++(begin.template get<Is>()), ...);
+            if constexpr (exact) {
+                --end;
+            }
+        }
+
+        template <size_type... Is>
+        [[gnu::always_inline]] constexpr bool stop(std::index_sequence<Is...>) const
+            noexcept (exact || requires{{
+                ((begin.template get<Is>() == end.template get<Is>()) || ...)
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (exact || requires{{
+                ((begin.template get<Is>() == end.template get<Is>()) || ...)
+            } -> meta::convertible_to<bool>;})
+        {
+            if constexpr (exact) {
+                return end == 0;
+            } else {
+                return ((begin.template get<Is>() == end.template get<Is>()) || ...);
+            }
+        }
+
+        template <size_type... Is>
+        [[gnu::always_inline]] constexpr void advance(std::index_sequence<Is...> seq)
             noexcept (requires{
                 {call(std::index_sequence_for<A...>{})} noexcept;
-                {(++(iterators.template get<Is>()), ...)} noexcept;
+                {cache.value.iter == cache.value.end} noexcept;
                 {std::destroy_at(&cache.value)} noexcept;
+                {increment(seq)} noexcept;
+                {stop(seq)} noexcept;
             })
             requires (requires{
                 {call(std::index_sequence_for<A...>{})};
-                {(++(iterators.template get<Is>()), ...)};
+                {cache.value.iter == cache.value.end};
                 {std::destroy_at(&cache.value)};
+                {increment(seq)};
+                {stop(seq)};
             })
         {
             // compute the value for the current iterator state
             call(std::index_sequence_for<A...>{});
-
-            // advance the input iterators, which always stay one step ahead
-            (++(iterators.template get<Is>()), ...);
 
             // if the cached comprehension is empty, repeat and decrement length
             // until we find a non-empty one or reach the end of the outer
             // comprehension
             while (cache.value.iter == cache.value.end) {
                 std::destroy_at(&cache.value);
-                --length;
-                if (length == 0) {
+                increment(seq);
+                if (stop(seq)) {
                     break;
                 }
                 call(std::index_sequence_for<A...>{});
-                (++(iterators.template get<Is>()), ...);
             }
         }
 
     public:
-        template <typename... Iters>
+        template <typename... Iters> requires (exact)
         constexpr iterator(
             comprehension* self,
             size_type length,
-            Iters&&... iterators
+            Iters&&... begin
         )
             noexcept (requires{
-                {storage_type(std::forward<Iters>(iterators)...)} noexcept;
+                {begin_type(std::forward<Iters>(begin)...)} noexcept;
+                {!stop(std::make_index_sequence<N>{})} noexcept;
                 {advance(std::make_index_sequence<N>{})} noexcept;
             })
             requires (requires{
-                {storage_type(std::forward<Iters>(iterators)...)};
+                {begin_type(std::forward<Iters>(begin)...)};
+                {!stop(std::make_index_sequence<N>{})};
                 {advance(std::make_index_sequence<N>{})};
             })
         :
             self(self),
-            length(length),
-            iterators(std::forward<Iters>(iterators)...),
+            begin(std::forward<Iters>(begin)...),
+            end(length),
             cache{}
         {
-            if (length > 0) {
+            if (!stop(std::make_index_sequence<N>{})) {
+                advance(std::make_index_sequence<N>{});
+            }
+        }
+
+        template <typename... Iters> requires (!exact)
+        constexpr iterator(
+            comprehension* self,
+            end_type&& end,
+            Iters&&... begin
+        )
+            noexcept (requires{
+                {begin_type(std::forward<Iters>(begin)...)} noexcept;
+                {end_type(std::move(end))} noexcept;
+                {!stop(std::make_index_sequence<N>{})} noexcept;
+                {advance(std::make_index_sequence<N>{})} noexcept;
+            })
+            requires (requires{
+                {begin_type(std::forward<Iters>(begin)...)};
+                {end_type(std::move(end))};
+                {!stop(std::make_index_sequence<N>{})};
+                {advance(std::make_index_sequence<N>{})};
+            })
+        :
+            self(self),
+            begin(std::forward<Iters>(begin)...),
+            end(std::move(end)),
+            cache{}
+        {
+            if (!stop(std::make_index_sequence<N>{})) {
                 advance(std::make_index_sequence<N>{});
             }
         }
 
         constexpr iterator(const iterator& other)
             noexcept (requires{
-                {storage_type(other.iterators)} noexcept;
+                {begin_type(other.begin)} noexcept;
+                {end_type(other.end)} noexcept;
+                {!stop(std::make_index_sequence<N>{})} noexcept;
                 {std::construct_at(&cache.value, other.cache.value)} noexcept;
             })
             requires (requires{
-                {storage_type(other.iterators)};
+                {begin_type(other.begin)};
+                {end_type(other.end)};
+                {!stop(std::make_index_sequence<N>{})};
                 {std::construct_at(&cache.value, other.cache.value)};
             })
         :
             self(other.self),
-            length(other.length),
-            iterators(other.iterators),
+            begin(other.begin),
+            end(other.end),
             cache{}
         {
-            if (length > 0) {
+            if (!stop(std::make_index_sequence<N>{})) {
                 std::construct_at(&cache.value, other.cache.value);
             }
         }
 
         constexpr iterator(iterator&& other)
             noexcept (requires{
-                {storage_type(std::move(other.iterators))} noexcept;
+                {begin_type(std::move(other.begin))} noexcept;
+                {end_type(std::move(other.end))} noexcept;
+                {!stop(std::make_index_sequence<N>{})} noexcept;
                 {std::construct_at(
                     &cache.value,
                     std::move(other.cache.value)
@@ -2555,43 +2699,48 @@ public:
                 {std::destroy_at(&other.cache.value)} noexcept;
             })
             requires (requires{
-                {storage_type(std::move(other.iterators))};
+                {!stop(std::make_index_sequence<N>{})};
+                {begin_type(std::move(other.begin))};
+                {end_type(std::move(other.end))};
                 {std::construct_at(&cache.value, std::move(other.cache.value))};
                 {std::destroy_at(&other.cache.value)};
             })
         :
             self(other.self),
-            length(other.length),
-            iterators(std::move(other.iterators)),
+            begin(std::move(other.begin)),
+            end(std::move(other.end)),
             cache{}
         {
-            if (length > 0) {
+            if (!stop(std::make_index_sequence<N>{})) {
                 std::construct_at(&cache.value, std::move(other.cache.value));
                 std::destroy_at(&other.cache.value);
-                other.length = 0;  // invalidate the moved-from iterator
             }
         }
 
         constexpr iterator& operator=(const iterator& other)
             noexcept (requires{
+                {!stop(std::make_index_sequence<N>{})} noexcept;
                 {std::destroy_at(&cache.value)} noexcept;
-                {iterators = other.iterators} noexcept;
+                {begin = other.begin} noexcept;
+                {end = other.end} noexcept;
                 {std::construct_at(&cache.value, other.cache.value)} noexcept;
             })
             requires (requires{
+                {!stop(std::make_index_sequence<N>{})};
                 {std::destroy_at(&cache.value)};
-                {iterators = other.iterators};
+                {begin = other.begin};
+                {end = other.end};
                 {std::construct_at(&cache.value, other.cache.value)};
             })
         {
             if (this != other) {
-                if (length > 0) {
+                if (!stop(std::make_index_sequence<N>{})) {
                     std::destroy_at(&cache.value);
                 }
                 self = other.self;
-                length = other.length;
-                iterators = other.iterators;
-                if (length > 0) {
+                begin = other.begin;
+                end = other.end;
+                if (!stop(std::make_index_sequence<N>{})) {
                     std::construct_at(&cache.value, other.cache.value);
                 }
             }
@@ -2600,30 +2749,33 @@ public:
 
         constexpr iterator& operator=(iterator&& other)
             noexcept (requires{
+                {!stop(std::make_index_sequence<N>{})} noexcept;
                 {std::destroy_at(&cache.value)} noexcept;
-                {iterators = std::move(other.iterators)} noexcept;
+                {begin = std::move(other.begin)} noexcept;
+                {end = std::move(other.end)} noexcept;
                 {std::construct_at(
                     &cache.value,
                     std::move(other.cache.value)
                 )} noexcept;
             })
             requires (requires{
+                {!stop(std::make_index_sequence<N>{})};
                 {std::destroy_at(&cache.value)};
-                {iterators = std::move(other.iterators)};
+                {begin = std::move(other.begin)};
+                {end = std::move(other.end)};
                 {std::construct_at(&cache.value, std::move(other.cache.value))};
             })
         {
             if (this != other) {
-                if (length > 0) {
+                if (!stop(std::make_index_sequence<N>{})) {
                     std::destroy_at(&cache.value);
                 }
                 self = other.self;
-                length = other.length;
-                iterators = std::move(other.iterators);
-                if (length > 0) {
+                begin = std::move(other.begin);
+                end = std::move(other.end);
+                if (!stop(std::make_index_sequence<N>{})) {
                     std::construct_at(&cache.value, std::move(other.cache.value));
                     std::destroy_at(&other.cache.value);
-                    other.length = 0;  // invalidate the moved-from iterator
                 }
             }
             return *this;
@@ -2662,20 +2814,26 @@ public:
         [[gnu::always_inline]] constexpr iterator& operator++()
             noexcept (requires{
                 {++cache.value.iter} noexcept;
+                {cache.value.iter == cache.value.end} noexcept;
                 {std::destroy_at(&cache.value)} noexcept;
+                {increment(std::make_index_sequence<N>{})} noexcept;
+                {!stop(std::make_index_sequence<N>{})} noexcept;
                 {advance(std::make_index_sequence<N>{})} noexcept;
             })
             requires (requires{
                 {++cache.value.iter};
+                {cache.value.iter == cache.value.end};
                 {std::destroy_at(&cache.value)};
+                {increment(std::make_index_sequence<N>{})};
+                {!stop(std::make_index_sequence<N>{})};
                 {advance(std::make_index_sequence<N>{})};
             })
         {
             ++cache.value.iter;
             if (cache.value.iter == cache.value.end) {
-                --length;
-                if (length > 0) {
-                    std::destroy_at(&cache.value);
+                std::destroy_at(&cache.value);
+                increment(std::make_index_sequence<N>{});
+                if (!stop(std::make_index_sequence<N>{})) {
                     advance(std::make_index_sequence<N>{});
                 }
             }
@@ -2700,35 +2858,47 @@ public:
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
             const iterator& self,
             impl::sentinel
-        ) noexcept {
-            return self.length == 0;
+        )
+            noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{self.stop(std::make_index_sequence<N>{})};})
+        {
+            return self.stop(std::make_index_sequence<N>{});
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
             impl::sentinel,
             const iterator& self
-        ) noexcept {
-            return self.length == 0;
+        )
+            noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{self.stop(std::make_index_sequence<N>{})};})
+        {
+            return self.stop(std::make_index_sequence<N>{});
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
             const iterator& self,
             impl::sentinel
-        ) noexcept {
-            return self.length != 0;
+        )
+            noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{self.stop(std::make_index_sequence<N>{})};})
+        {
+            return !self.stop(std::make_index_sequence<N>{});
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
             impl::sentinel,
             const iterator& self
-        ) noexcept {
-            return self.length != 0;
+        )
+            noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
+            requires (requires{{self.stop(std::make_index_sequence<N>{})};})
+        {
+            return !self.stop(std::make_index_sequence<N>{});
         }
     };
 
 private:
 
-    template <size_type... Is>
+    template <size_type... Is> requires (exact)
     [[gnu::always_inline]] constexpr auto init(std::index_sequence<Is...>)
         noexcept (requires{
             {iterator{this, size(), args.template get<Is>().begin()...}} noexcept;
@@ -2738,6 +2908,26 @@ private:
         })
     {
         return iterator{this, size(), args.template get<Is>().begin()...};
+    }
+
+    template <size_type... Is> requires (!exact)
+    [[gnu::always_inline]] constexpr auto init(std::index_sequence<Is...>)
+        noexcept (requires{{iterator{
+            this,
+            {args.template get<Is>().end()...},
+            args.template get<Is>().begin()...
+        }} noexcept;})
+        requires (requires{{iterator{
+            this,
+            {args.template get<Is>().end()...},
+            args.template get<Is>().begin()...
+        }};})
+    {
+        return iterator{
+            this,
+            {args.template get<Is>().end()...},
+            args.template get<Is>().begin()...
+        };
     }
 
 public:
@@ -2772,6 +2962,22 @@ public:
 
 template <typename F, typename... A>
 comprehension(F&&, A&&...) -> comprehension<F, A...>;
+
+
+namespace meta {
+
+    namespace detail {
+
+        /// NOTE: nested comprehensions do not have an exact size, so they need to use
+        /// the slightly slower iterator-based comparisons.
+
+        template <typename F, typename... A>
+            requires (meta::comprehension<typename impl::invoke_comprehension<F, A...>::type>)
+        constexpr bool exact_size<bertrand::comprehension<F, A...>> = false;
+
+    }
+
+}
 
 
 namespace impl {
@@ -2851,10 +3057,10 @@ namespace impl {
             std::forward<F>(func),
             unpack(std::forward<T>(container))
         }} noexcept;})
-        requires (requires{{bertrand::comprehension{
-            std::forward<F>(func),
-            unpack(std::forward<T>(container))
-        }};})
+        // requires (requires{{bertrand::comprehension{
+        //     std::forward<F>(func),
+        //     unpack(std::forward<T>(container))
+        // }};})
     {
         return bertrand::comprehension{
             std::forward<F>(func),
@@ -2917,6 +3123,7 @@ namespace impl {
 /// primitives are explicitly called - these expressions simply fuse the loops and
 /// allow the  auto-vectorizer to make that decision behind the scenes, which often
 /// leads to SIMD codegen anyways.
+
 
 template <typename L, typename R>
     requires (meta::iterable_comprehension<L> || meta::iterable_comprehension<R>)
@@ -3676,6 +3883,13 @@ static_assert([] {
         if (x != 1 && x != 2 && x != 3) {
             return false;
         }
+    }
+
+    // tuple comprehension
+    if (std::tuple{1, 2, 3}->*[](int x, int y, int z) {
+        return x + y + z;
+    } != 6) {
+        return false;
     }
 
     // expression templates

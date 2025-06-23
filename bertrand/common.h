@@ -3773,10 +3773,20 @@ namespace meta {
 
     }
 
+    namespace detail {
+
+        template <typename T>
+        constexpr bool exact_size = true;
+
+    }
+
     template <typename T>
     concept has_size = requires(T t) {
         { ::std::ranges::size(t) } -> unsigned_integer;
     };
+
+    template <typename T>
+    concept exact_size = has_size<T> && detail::exact_size<unqualify<T>>;
 
     template <has_size T>
     using size_type = decltype(::std::ranges::size(::std::declval<T>()));
