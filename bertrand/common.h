@@ -656,6 +656,9 @@ namespace meta {
     easier. */
     template <typename... Ts>
     struct pack {
+        /// TODO: size -> size() for consistency, and possibly also lazy evaluation/faster
+        /// compilation.
+
         /* The total number of arguments being stored. */
         static constexpr size_t size = sizeof...(Ts);
 
