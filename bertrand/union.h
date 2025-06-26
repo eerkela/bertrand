@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include <cstddef>
 #include <iterator>
 
 
@@ -2178,7 +2179,6 @@ namespace impl {
     template <typename... Ts> requires (meta::has_common_type<Ts...>)
     struct union_common_type<Ts...> { using type = meta::common_type<Ts...>; };
 
-
     /* Invoke a function with the given arguments, unwrapping any sum types in the
     process.  This is similar to `std::visit()`, but with greatly expanded
     metaprogramming capabilities.
@@ -2417,15 +2417,11 @@ namespace impl {
     template <meta::unqualified T> requires (meta::iterator<T>)
     struct optional_iterator {
         using wrapped = T;
-        using iterator_category = std::conditional_t<
-            meta::contiguous_iterator<T>,
-            std::contiguous_iterator_tag,
-            typename std::iterator_traits<T>::iterator_category
-        >;
-        using difference_type = std::iterator_traits<T>::difference_type;
-        using value_type = std::iterator_traits<T>::value_type;
-        using reference = std::iterator_traits<T>::reference;
-        using pointer = std::iterator_traits<T>::pointer;
+        using iterator_category = meta::iterator_category<T>;
+        using difference_type = meta::iterator_difference_type<T>;
+        using value_type = meta::iterator_value_type<T>;
+        using reference = meta::iterator_reference_type<T>;
+        using pointer = meta::iterator_pointer_type<T>;
 
     private:
         [[no_unique_address]] union storage {
@@ -2800,123 +2796,38 @@ namespace impl {
         using rend_type = optional_iterator<meta::rend_type<T>>;
     };
 
-
-
-    /// TODO: maybe union_iterator_cache should also compute the most permissive
-    /// matching tag, starting with contiguous_iterator_tag, and consulting a helper
-    /// struct to do the deduction?
-
-    /// TODO: union_iterator_cache does not produce a cache type anymore, since
-    /// iterators will not use caches in general.  It is still needed to determine the
-    /// value of the `reference` iterator type, and probably the category as well.
-
     template <typename, typename...>
-    struct _union_iterator_cache { struct type {}; };
-    template <meta::lvalue out>
-    struct _union_iterator_cache<meta::pack<out>> {
-        union type {
-            [[no_unique_address]] struct { out ref; } value;
-            constexpr ~type() noexcept {}
-
-            template <typename Self>
-            [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-                return (std::forward<Self>(self).value.ref);
-            }
-
-            constexpr void construct(out v) noexcept {
-                std::construct_at(&value, v);
-            }
-
-            constexpr void destroy() noexcept {}
-        };
-    };
-    template <typename out> requires (!meta::lvalue<out>)
-    struct _union_iterator_cache<meta::pack<out>> {
-        union type {
-            meta::remove_rvalue<out> value;
-            constexpr ~type() noexcept {}
-
-            template <typename Self>
-            [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-                return (std::forward<Self>(self).value);
-            }
-
-            template <typename... A>
-            constexpr void construct(A&&... a)
-                noexcept (requires{
-                    {std::construct_at(&value, std::forward<A>(a)...)} noexcept;
-                })
-                requires (requires{
-                    {std::construct_at(&value, std::forward<A>(a)...)};
-                })
-            {
-                std::construct_at(&value, std::forward<A>(a)...);
-            }
-
-            constexpr void destroy()
-                noexcept (meta::trivially_destructible<meta::remove_rvalue<out>> || requires{
-                    {std::destroy_at(&value)} noexcept;
-                })
-                requires (meta::trivially_destructible<meta::remove_rvalue<out>> || requires{
-                    {std::destroy_at(&value)};
-                })
-            {
-                if constexpr (!meta::trivially_destructible<meta::remove_rvalue<out>>) {
-                    std::destroy_at(&value);
-                }
-            }
-        };
-    };
+    struct _union_iterator_ref { using type = void; };
+    template <typename out>
+    struct _union_iterator_ref<meta::pack<out>> { using type = meta::remove_rvalue<out>; };
     template <typename... out> requires (sizeof...(out) > 1)
-    struct _union_iterator_cache<meta::pack<out...>> {
-        union type {
-            Union<out...> value;
-            constexpr ~type() noexcept {}
-
-            template <typename Self>
-            [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-                return (std::forward<Self>(self).value);
-            }
-
-            template <typename... A>
-            constexpr void construct(A&&... a)
-                noexcept (requires{
-                    {std::construct_at(&value, std::forward<A>(a)...)} noexcept;
-                })
-                requires (requires{
-                    {std::construct_at(&value, std::forward<A>(a)...)};
-                })
-            {
-                std::construct_at(&value, std::forward<A>(a)...);
-            }
-
-            constexpr void destroy()
-                noexcept (requires{{std::destroy_at(&value)} noexcept;})
-                requires (requires{{std::destroy_at(&value)};})
-            {
-                std::destroy_at(&value);
-            }
-        };
-    };
+    struct _union_iterator_ref<meta::pack<out...>> { using type = Union<out...>; };
     template <typename... out, meta::has_dereference T, typename... Ts>
         requires (meta::index_of<meta::dereference_type<T>, out...> == sizeof...(out))
-    struct _union_iterator_cache<meta::pack<out...>, T, Ts...> :
-        _union_iterator_cache<meta::pack<out..., meta::dereference_type<T>>, Ts...>
+    struct _union_iterator_ref<meta::pack<out...>, T, Ts...> :
+        _union_iterator_ref<meta::pack<out..., meta::dereference_type<T>>, Ts...>
     {};
     template <typename... out, typename T, typename... Ts>
-    struct _union_iterator_cache<meta::pack<out...>, T, Ts...> :
-        _union_iterator_cache<meta::pack<out...>, Ts...>
+    struct _union_iterator_ref<meta::pack<out...>, T, Ts...> :
+        _union_iterator_ref<meta::pack<out...>, Ts...>
     {};
     template <meta::iterator... Ts>
-    using union_iterator_cache = _union_iterator_cache<meta::pack<>, Ts...>::type;
+    using union_iterator_ref = _union_iterator_ref<meta::pack<>, Ts...>::type;
+
+    template <typename... Ts>
+    struct _union_iterator_ptr { using type = meta::as_pointer<union_iterator_ref<Ts...>>; };
+    template <meta::has_arrow... Ts>
+        requires (meta::has_common_type<typename meta::arrow_type<Ts>...>)
+    struct _union_iterator_ptr<Ts...> {
+        using type = meta::common_type<typename meta::arrow_type<Ts>...>;
+    };
+    template <meta::iterator... Ts>
+    using union_iterator_ptr = _union_iterator_ptr<Ts...>::type;
 
 
-    /// TODO: if all members of the union share the same iterator type, then I can
-    /// simply return that type directly to avoid any extra indirection overhead.
-    /// Otherwise, if they return 2 or more types, then I have to create a
-    /// union_iterator, which attempts to preserve the same interface as much as
-    /// possible.
-
+    /// TODO: when detecting the overall iterator category, I need to account for the
+    /// fact that C++ defaults the iterator category away from contiguous iterators.
+    /// I need a 
 
     /* A union of iterator types `Ts...`, which attempts to forward their combined
     interface as faithfully as possible.  All operations are enabled if each of the
@@ -2926,495 +2837,1046 @@ namespace impl {
     except where otherwise specified.  Iteration performance will be reduced slightly
     due to the extra dynamic dispatch, but should otherwise not degrade functionality
     in any way. */
-    template <meta::iterator... Ts>
+    template <meta::unqualified... Ts>
         requires (
-            sizeof...(Ts) > 1 &&
-            meta::has_common_type<typename std::iterator_traits<Ts>::difference_type...> &&
-            meta::has_common_type<typename std::iterator_traits<Ts>::value_type...> &&
-            meta::has_common_type<typename std::iterator_traits<Ts>::reference...> &&
-            meta::has_common_type<typename std::iterator_traits<Ts>::pointer...>
+            (meta::iterator<Ts> && ... && (sizeof...(Ts) > 1)) &&
+            meta::has_common_type<meta::iterator_category<Ts>...> &&
+            meta::has_common_type<meta::iterator_difference_type<Ts>...>
         )
     struct union_iterator {
-        using wrapped = meta::pack<Ts...>;
-        /// TODO: detect proper iterator category
-        using difference_type = meta::common_type<
-            typename std::iterator_traits<Ts>::difference_type...
-        >;
+        using types = meta::pack<Ts...>;
+        using iterator_category = meta::common_type<meta::iterator_category<Ts>...>;
+        using difference_type = meta::common_type<meta::iterator_difference_type<Ts>...>;
+        using reference = union_iterator_ref<Ts...>;
+        using pointer = union_iterator_ptr<Ts...>;
+        using value_type = meta::unqualify<reference>;
 
-        /// TODO: these are incorrect, and should refer to the the dereference type
-        /// of the overall iterator, not their common type.  Note that the reference
-        /// type must be consistent between the dereference and operator[] operators.
-        using value_type = meta::common_type<
-            typename std::iterator_traits<Ts>::value_type...
-        >;
-        using reference = meta::common_type<
-            typename std::iterator_traits<Ts>::reference...
-        >;
-        using pointer = meta::common_type<
-            typename std::iterator_traits<Ts>::pointer...
-        >;
+        /// TODO: union_iterator has to be default-constructible in order to satisfy the
+        /// C++ iterator interface, which means I probably need to add an extra empty state
+        /// to the union_storage as the last element, which would only be generated by the
+        /// default constructor.  That keeps the vtable indexing stable and efficient,
+        /// while also allowing a default constructor.
+        /// -> The only problem with this is that the vtables should maybe add another
+        /// case to account for the empty state, so that default-initialized iterators
+        /// always compare equal to an end iterator?
 
-        /// TODO: iterators -> storage
-        union_storage<Ts...> iterators;
+        union_storage<Ts..., NoneType> storage;
+
+        constexpr union_iterator() noexcept : storage(union_select<sizeof...(Ts)>{}, None) {}
+
+        template <size_t I, typename T> requires (I < sizeof...(Ts))
+        constexpr union_iterator(union_select<I> tag, T&& it)
+            noexcept (requires{{union_storage<Ts..., NoneType>(tag, std::forward<T>(it))} noexcept;})
+            requires (requires{{union_storage<Ts..., NoneType>(tag, std::forward<T>(it))};})
+        :
+            storage(tag, std::forward<T>(it))
+        {}
 
     private:
-        static constexpr bool dereferenceable =
-            ((
-                meta::has_dereference<meta::as_const_ref<Ts>> &&
-                meta::convertible_to<
-                    meta::dereference_type<meta::as_const_ref<Ts>>,
-                    reference
-                >
-            ) && ...);
-        static constexpr bool nothrow_dereferenceable =
-            ((
-                meta::nothrow::has_dereference<meta::as_const_ref<Ts>> &&
-                meta::nothrow::convertible_to<
-                    meta::nothrow::dereference_type<meta::as_const_ref<Ts>>,
-                    reference
-                >
-            ) && ...);
+        static constexpr bool dereference = (
+            requires(meta::as_const_ref<Ts> it) {
+                { *it } -> meta::convertible_to<reference>;
+            } && ...);
+        static constexpr bool nothrow_dereference = (
+            requires(meta::as_const_ref<Ts> it) {
+                { *it } noexcept -> meta::nothrow::convertible_to<reference>;
+            } && ...);
 
-        static constexpr bool indexable =
-            ((
-                meta::indexable<meta::as_const_ref<Ts>, difference_type> &&
-                meta::convertible_to<
-                    meta::index_type<meta::as_const_ref<Ts>, difference_type>,
-                    reference
-                >
-            ) && ...);
-        static constexpr bool nothrow_indexable =
-            ((
-                meta::nothrow::indexable<meta::as_const_ref<Ts>, difference_type> &&
-                meta::nothrow::convertible_to<
-                    meta::nothrow::index_type<meta::as_const_ref<Ts>, difference_type>,
-                    reference
-                >
-            ) && ...);
+        template <typename... Us>
+        static constexpr bool _arrow = false;
+        template <meta::has_arrow... Us>
+        static constexpr bool _arrow<Us...> = meta::has_common_type<meta::arrow_type<Us>...>;
+        static constexpr bool arrow = _arrow<meta::as_const_ref<Ts>...>;
+        template <typename... Us>
+        static constexpr bool _nothrow_arrow = false;
+        template <meta::nothrow::has_arrow... Us>
+        static constexpr bool _nothrow_arrow<Us...> =
+            meta::nothrow::has_common_type<meta::nothrow::arrow_type<Us>...>;
+        static constexpr bool nothrow_arrow =  _nothrow_arrow<meta::as_const_ref<Ts>...>;
 
-        static constexpr bool incrementable =
-            (meta::has_preincrement<Ts> && ...);
-        static constexpr bool nothrow_incrementable =
-            (meta::nothrow::has_preincrement<Ts> && ...);
+        static constexpr bool index = (
+            requires(meta::as_const_ref<Ts> it, difference_type n) {
+                {it[n]} -> meta::convertible_to<reference>;
+            } && ...);
+        static constexpr bool nothrow_index = (
+            requires(meta::as_const_ref<Ts> it, difference_type n) {
+                {it[n]} noexcept -> meta::nothrow::convertible_to<reference>;
+            } && ...);
 
-        /// TODO: check for convertibility to the union_iterator for add/subtract
-        /// returning a new iterator.
+        static constexpr bool increment = (meta::has_preincrement<Ts> && ...);
+        static constexpr bool nothrow_increment = (meta::nothrow::has_preincrement<Ts> && ...);
 
-        static constexpr bool forward_addable =
-            (meta::has_add<meta::as_const_ref<Ts>, difference_type> && ...);
-        static constexpr bool reverse_addable =
-            (meta::has_add<difference_type, meta::as_const_ref<Ts>> && ...);
-        static constexpr bool nothrow_forward_addable =
-            (meta::nothrow::has_add<meta::as_const_ref<Ts>, difference_type> && ...);
-        static constexpr bool nothrow_reverse_addable =
-            (meta::nothrow::has_add<difference_type, meta::as_const_ref<Ts>> && ...);
+        static constexpr bool forward_add =
+            (requires(meta::as_const_ref<Ts> it, difference_type n) {
+                {it + n} -> meta::convertible_to<Ts>;
+            } && ...);
+        static constexpr bool reverse_add =
+            (requires(difference_type n, meta::as_const_ref<Ts> it) {
+                {n + it} -> meta::convertible_to<Ts>;
+            } && ...);
+        static constexpr bool nothrow_forward_add =
+            (requires(meta::as_const_ref<Ts> it, difference_type n) {
+                {it + n} noexcept -> meta::nothrow::convertible_to<Ts>;
+            } && ...);
+        static constexpr bool nothrow_reverse_add =
+            (requires(difference_type n, meta::as_const_ref<Ts> it) {
+                {n + it} noexcept -> meta::nothrow::convertible_to<Ts>;
+            } && ...);
 
-        static constexpr bool inplace_addable =
-            (meta::has_iadd<Ts, difference_type> && ...);
-        static constexpr bool nothrow_inplace_addable =
+        static constexpr bool inplace_add = (meta::has_iadd<Ts, difference_type> && ...);
+        static constexpr bool nothrow_inplace_add =
             (meta::nothrow::has_iadd<Ts, difference_type> && ...);
 
-        static constexpr bool decrementable =
-            (meta::has_predecrement<Ts> && ...);
-        static constexpr bool nothrow_decrementable =
-            (meta::nothrow::has_predecrement<Ts> && ...);
+        static constexpr bool decrement = (meta::has_predecrement<Ts> && ...);
+        static constexpr bool nothrow_decrement = (meta::nothrow::has_predecrement<Ts> && ...);
 
-        static constexpr bool subtractable =
-            (meta::has_sub<meta::as_const_ref<Ts>, difference_type> && ...);
-        static constexpr bool nothrow_subtractable =
-            (meta::nothrow::has_sub<meta::as_const_ref<Ts>, difference_type> && ...);
+        static constexpr bool subtract =
+            (requires(meta::as_const_ref<Ts> it, difference_type n) {
+                {it - n} -> meta::convertible_to<Ts>;
+            } && ...);
+        static constexpr bool nothrow_subtract =
+            (requires(meta::as_const_ref<Ts> it, difference_type n) {
+                {it - n} noexcept -> meta::nothrow::convertible_to<Ts>;
+            } && ...);
 
-        static constexpr bool inplace_subtractable =
-            (meta::has_isub<Ts, difference_type> && ...);
-        static constexpr bool nothrow_inplace_subtractable =
+        static constexpr bool inplace_subtract = (meta::has_isub<Ts, difference_type> && ...);
+        static constexpr bool nothrow_inplace_subtract =
             (meta::nothrow::has_isub<Ts, difference_type> && ...);
 
-        using deref_fn = reference(*)(const union_iterator&) noexcept (nothrow_dereferenceable);
-        using index_fn = reference(*)(const union_iterator&, difference_type)
-            noexcept (nothrow_indexable);
-        using increment_fn = void(*)(union_iterator&) noexcept (nothrow_incrementable);
-        using forward_add_fn = union_iterator(*)(const union_iterator&, difference_type)
-            noexcept (nothrow_forward_addable);
-        using reverse_add_fn = union_iterator(*)(difference_type, const union_iterator&)
-            noexcept (nothrow_reverse_addable);
-        using inplace_add_fn = void(*)(union_iterator&, difference_type)
-            noexcept (nothrow_inplace_addable);
-        using decrement_fn = void(*)(union_iterator&) noexcept (nothrow_decrementable);
-        using subtract_fn = difference_type(*)(const union_iterator&, difference_type)
-            noexcept (nothrow_subtractable);
-        using inplace_subtract_fn = void(*)(union_iterator&, difference_type)
-            noexcept (nothrow_inplace_subtractable);
+        using deref_ptr = reference(*)(const union_iterator&) noexcept (nothrow_dereference);
+        using arrow_ptr = pointer(*)(const union_iterator&) noexcept (nothrow_arrow);
+        using index_ptr = reference(*)(const union_iterator&, difference_type)
+            noexcept (nothrow_index);
+        using increment_ptr = void(*)(union_iterator&) noexcept (nothrow_increment);
+        using forward_add_ptr = union_iterator(*)(const union_iterator&, difference_type)
+            noexcept (nothrow_forward_add);
+        using reverse_add_ptr = union_iterator(*)(difference_type, const union_iterator&)
+            noexcept (nothrow_reverse_add);
+        using inplace_add_ptr = void(*)(union_iterator&, difference_type)
+            noexcept (nothrow_inplace_add);
+        using decrement_ptr = void(*)(union_iterator&) noexcept (nothrow_decrement);
+        using subtract_ptr = difference_type(*)(const union_iterator&, difference_type)
+            noexcept (nothrow_subtract);
+        using inplace_subtract_ptr = void(*)(union_iterator&, difference_type)
+            noexcept (nothrow_inplace_subtract);
 
         template <size_t I>
-        static constexpr reference _deref(const union_iterator& self)
-            noexcept (nothrow_dereferenceable)
+        static constexpr reference deref_fn(const union_iterator& self)
+            noexcept (nothrow_dereference)
         {
-            return *self.iterators.template get<I>();
+            return *self.storage.template get<I>();
         }
 
         template <size_t I>
-        static constexpr reference _index(const union_iterator& self, difference_type n)
-            noexcept (nothrow_indexable)
+        static constexpr pointer arrow_fn(const union_iterator& self)
+            noexcept (nothrow_arrow)
         {
-            return self.iterators.template get<I>()[n];
+            return std::to_address(self.storage.template get<I>());
         }
 
         template <size_t I>
-        static constexpr void _increment(union_iterator& self)
-            noexcept (nothrow_incrementable)
+        static constexpr reference index_fn(const union_iterator& self, difference_type n)
+            noexcept (nothrow_index)
         {
-            ++self.iterators.template get<I>();
+            return self.storage.template get<I>()[n];
         }
 
         template <size_t I>
-        static constexpr union_iterator _forward_add(const union_iterator& self, difference_type n)
-            noexcept (nothrow_forward_addable)
+        static constexpr void increment_fn(union_iterator& self)
+            noexcept (nothrow_increment)
         {
-            return {.iterators = {union_select<I>{}, self.iterators.template get<I>() + n}};
+            ++self.storage.template get<I>();
         }
 
         template <size_t I>
-        static constexpr union_iterator _reverse_add(difference_type n, const union_iterator& self)
-            noexcept (nothrow_reverse_addable)
+        static constexpr union_iterator forward_add_fn(const union_iterator& self, difference_type n)
+            noexcept (nothrow_forward_add)
         {
-            return {.iterators = {union_select<I>{}, n + self.iterators.template get<I>()}};
+            return {.storage = {union_select<I>{}, self.storage.template get<I>() + n}};
         }
 
         template <size_t I>
-        static constexpr void _inplace_add(union_iterator& self, difference_type n)
-            noexcept (nothrow_inplace_addable)
+        static constexpr union_iterator reverse_add_fn(difference_type n, const union_iterator& self)
+            noexcept (nothrow_reverse_add)
         {
-            self.iterators.template get<I>() += n;
+            return {.storage = {union_select<I>{}, n + self.storage.template get<I>()}};
         }
 
         template <size_t I>
-        static constexpr void _decrement(union_iterator& self)
-            noexcept (nothrow_decrementable)
+        static constexpr void inplace_add_fn(union_iterator& self, difference_type n)
+            noexcept (nothrow_inplace_add)
         {
-            --self.iterators.template get<I>();
+            self.storage.template get<I>() += n;
         }
 
         template <size_t I>
-        static constexpr union_iterator _subtract(const union_iterator& self, difference_type n)
-            noexcept (nothrow_subtractable)
+        static constexpr void decrement_fn(union_iterator& self)
+            noexcept (nothrow_decrement)
         {
-            return {.iterators = {union_select<I>{}, self.iterators.template get<I>() - n}};
+            --self.storage.template get<I>();
         }
 
         template <size_t I>
-        static constexpr void _inplace_subtract(union_iterator& self, difference_type n)
-            noexcept (nothrow_inplace_subtractable)
+        static constexpr union_iterator subtract_fn(const union_iterator& self, difference_type n)
+            noexcept (nothrow_subtract)
         {
-            self.iterators.template get<I>() -= n;
+            return {.storage = {union_select<I>{}, self.storage.template get<I>() - n}};
+        }
+
+        template <size_t I>
+        static constexpr void inplace_subtract_fn(union_iterator& self, difference_type n)
+            noexcept (nothrow_inplace_subtract)
+        {
+            self.storage.template get<I>() -= n;
         }
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr deref_fn deref[0] {};
-        template <size_t... Is> requires (dereferenceable)
-        static constexpr deref_fn deref<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_deref<Is>...
+        static constexpr deref_ptr deref_tbl[0] {};
+        template <size_t... Is> requires (dereference)
+        static constexpr deref_ptr deref_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &deref_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr index_fn index[0] {};
-        template <size_t... Is> requires (indexable)
-        static constexpr index_fn index<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_index<Is>...
+        static constexpr arrow_ptr arrow_tbl[0] {};
+        template <size_t... Is> requires (arrow)
+        static constexpr arrow_ptr arrow_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &arrow_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr increment_fn increment[0] {};
-        template <size_t... Is> requires (incrementable)
-        static constexpr increment_fn increment<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_increment<Is>...
+        static constexpr index_ptr index_tbl[0] {};
+        template <size_t... Is> requires (index)
+        static constexpr index_ptr index_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &index_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr forward_add_fn forward_add[0] {};
-        template <size_t... Is> requires (forward_addable)
-        static constexpr forward_add_fn forward_add<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_forward_add<Is>...
+        static constexpr increment_ptr increment_tbl[0] {};
+        template <size_t... Is> requires (increment)
+        static constexpr increment_ptr increment_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &increment_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr reverse_add_fn reverse_add[0] {};
-        template <size_t... Is> requires (reverse_addable)
-        static constexpr reverse_add_fn reverse_add<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_reverse_add<Is>...
+        static constexpr forward_add_ptr forward_add_tbl[0] {};
+        template <size_t... Is> requires (forward_add)
+        static constexpr forward_add_ptr forward_add_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &forward_add_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr inplace_add_fn inplace_add[0] {};
-        template <size_t... Is> requires (inplace_addable)
-        static constexpr inplace_add_fn inplace_add<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_inplace_add<Is>...
+        static constexpr reverse_add_ptr reverse_add_tbl[0] {};
+        template <size_t... Is> requires (reverse_add)
+        static constexpr reverse_add_ptr reverse_add_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &reverse_add_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr decrement_fn decrement[0] {};
-        template <size_t... Is> requires (decrementable)
-        static constexpr decrement_fn decrement<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_decrement<Is>...
+        static constexpr inplace_add_ptr inplace_add_tbl[0] {};
+        template <size_t... Is> requires (inplace_add)
+        static constexpr inplace_add_ptr inplace_add_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &inplace_add_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr subtract_fn subtract[0] {};
-        template <size_t... Is> requires (subtractable)
-        static constexpr subtract_fn subtract<std::index_sequence<Is...>>[sizeof...(Is)] {
-            &_subtract<Is>...
+        static constexpr decrement_ptr decrement_tbl[0] {};
+        template <size_t... Is> requires (decrement)
+        static constexpr decrement_ptr decrement_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &decrement_fn<Is>...
         };
 
         template <typename = std::index_sequence_for<Ts...>>
-        static constexpr inplace_subtract_fn inplace_subtract[0] {};
-        template <size_t... Is> requires (inplace_subtractable)
-        static constexpr inplace_subtract_fn inplace_subtract<std::index_sequence<Is...>>[
+        static constexpr subtract_ptr subtract_tbl[0] {};
+        template <size_t... Is> requires (subtract)
+        static constexpr subtract_ptr subtract_tbl<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &subtract_fn<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr inplace_subtract_ptr inplace_subtract_tbl[0] {};
+        template <size_t... Is> requires (inplace_subtract)
+        static constexpr inplace_subtract_ptr inplace_subtract_tbl<std::index_sequence<Is...>>[
             sizeof...(Is)
-        ] { &_inplace_subtract<Is>... };
+        ] { &inplace_subtract_fn<Is>... };
 
-        template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
+        template <meta::unqualified other>
         struct compare {
-            using other = union_iterator<Us...>;
-
-            static constexpr bool less = (meta::lt_returns<
+            static constexpr bool forward_less = (meta::lt_returns<
                 bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>
             > && ...);
-            static constexpr bool nothrow_less = (meta::nothrow::lt_returns<
+            static constexpr bool nothrow_forward_less = (meta::nothrow::lt_returns<
                 bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>
             > && ...);
-
-            static constexpr bool less_equal = (meta::le_returns<
+            static constexpr bool reverse_less = (meta::lt_returns<
                 bool,
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
             > && ...);
-            static constexpr bool nothrow_less_equal = (meta::nothrow::le_returns<
+            static constexpr bool nothrow_reverse_less = (meta::nothrow::lt_returns<
                 bool,
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
             > && ...);
 
-            static constexpr bool equal = (meta::eq_returns<
+            static constexpr bool forward_less_equal = (meta::le_returns<
                 bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>
             > && ...);
-            static constexpr bool nothrow_equal = (meta::nothrow::eq_returns<
+            static constexpr bool nothrow_forward_less_equal = (meta::nothrow::le_returns<
                 bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>
             > && ...);
-
-            static constexpr bool unequal = (meta::ne_returns<
+            static constexpr bool reverse_less_equal = (meta::le_returns<
                 bool,
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
             > && ...);
-            static constexpr bool nothrow_unequal = (meta::nothrow::ne_returns<
+            static constexpr bool nothrow_reverse_less_equal = (meta::nothrow::le_returns<
                 bool,
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
-            > && ...);
-
-            static constexpr bool greater_equal = (meta::ge_returns<
-                bool,
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
-            > && ...);
-            static constexpr bool nothrow_greater_equal = (meta::nothrow::ge_returns<
-                bool,
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
             > && ...);
 
-            static constexpr bool greater = (meta::gt_returns<
+            static constexpr bool forward_equal = (meta::eq_returns<
                 bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>
             > && ...);
-            static constexpr bool nothrow_greater = (meta::nothrow::gt_returns<
+            static constexpr bool nothrow_forward_equal = (meta::nothrow::eq_returns<
                 bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool reverse_equal = (meta::eq_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+            static constexpr bool nothrow_reverse_equal = (meta::nothrow::eq_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
             > && ...);
 
-            static constexpr bool three_way = (meta::has_spaceship<
+            static constexpr bool forward_unequal = (meta::ne_returns<
+                bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
-            > && ... && meta::has_common_type<
-                meta::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<Us>>...
-            >);
-            static constexpr bool nothrow_three_way = (meta::nothrow::has_spaceship<
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool nothrow_forward_unequal = (meta::nothrow::ne_returns<
+                bool,
                 meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
-            > && ... && meta::nothrow::has_common_type<
-                meta::nothrow::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<Us>>...
-            >);
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool reverse_unequal = (meta::ne_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+            static constexpr bool nothrow_reverse_unequal = (meta::nothrow::ne_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+
+            static constexpr bool forward_greater_equal = (meta::ge_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool nothrow_forward_greater_equal = (meta::nothrow::ge_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool reverse_greater_equal = (meta::ge_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+            static constexpr bool nothrow_reverse_greater_equal = (meta::nothrow::ge_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+
+            static constexpr bool forward_greater = (meta::gt_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool nothrow_forward_greater = (meta::nothrow::gt_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool reverse_greater = (meta::gt_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+            static constexpr bool nothrow_reverse_greater = (meta::nothrow::gt_returns<
+                bool,
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+
+            template <typename...>
+            static constexpr bool _forward_spaceship = false;
+            template <typename... Vs>
+                requires (meta::has_spaceship<Vs, meta::as_const_ref<other>> && ...)
+            static constexpr bool _forward_spaceship<Vs...> =
+                meta::has_common_type<meta::spaceship_type<Vs, meta::as_const_ref<other>>...>;
+            static constexpr bool forward_spaceship =
+                _forward_spaceship<meta::as_const_ref<Ts>...>;
+            template <typename...>
+            static constexpr bool _nothrow_forward_spaceship = false;
+            template <typename... Vs>
+                requires (meta::nothrow::has_spaceship<Vs, meta::as_const_ref<other>> && ...)
+            static constexpr bool _nothrow_forward_spaceship<Vs...> =
+                meta::nothrow::has_common_type<
+                    meta::nothrow::spaceship_type<Vs, meta::as_const_ref<other>>...
+                >;
+            static constexpr bool nothrow_forward_spaceship =
+                _nothrow_forward_spaceship<meta::as_const_ref<Ts>...>;
             template <bool>
-            struct _spaceship_type { using type = meta::common_type<
+            struct _forward_spaceship_type { using type = meta::common_type<
+                meta::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<other>>...
+            >; };
+            template <>
+            struct _forward_spaceship_type<false> { using type = void; };
+            using forward_spaceship_type = _forward_spaceship_type<forward_spaceship>::type;
+
+            template <typename...>
+            static constexpr bool _reverse_spaceship = false;
+            template <typename... Vs>
+                requires (meta::has_spaceship<meta::as_const_ref<other>, Vs> && ...)
+            static constexpr bool _reverse_spaceship<Vs...> =
+                meta::has_common_type<meta::spaceship_type<meta::as_const_ref<other>, Vs>...>;
+            static constexpr bool reverse_spaceship =
+                _reverse_spaceship<meta::as_const_ref<Ts>...>;
+            template <typename...>
+            static constexpr bool _nothrow_reverse_spaceship = false;
+            template <typename... Vs>
+                requires (meta::nothrow::has_spaceship<meta::as_const_ref<other>, Vs> && ...)
+            static constexpr bool _nothrow_reverse_spaceship<Vs...> =
+                meta::nothrow::has_common_type<
+                    meta::nothrow::spaceship_type<meta::as_const_ref<other>, Vs>...
+                >;
+            static constexpr bool nothrow_reverse_spaceship =
+                _nothrow_reverse_spaceship<meta::as_const_ref<Ts>...>;
+            template <bool>
+            struct _reverse_spaceship_type { using type = meta::common_type<
+                meta::spaceship_type<meta::as_const_ref<other>, meta::as_const_ref<Ts>>...
+            >; };
+            template <>
+            struct _reverse_spaceship_type<false> { using type = void; };
+            using reverse_spaceship_type = _reverse_spaceship_type<reverse_spaceship>::type;
+
+            static constexpr bool forward_distance = (meta::sub_returns<
+                difference_type, 
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool nothrow_forward_distance = (meta::nothrow::sub_returns<
+                difference_type, 
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<other>
+            > && ...);
+            static constexpr bool reverse_distance = (meta::sub_returns<
+                difference_type, 
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+            static constexpr bool nothrow_reverse_distance = (meta::nothrow::sub_returns<
+                difference_type, 
+                meta::as_const_ref<other>,
+                meta::as_const_ref<Ts>
+            > && ...);
+
+            using forward_less_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_less);
+            using reverse_less_ptr = bool(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_less);
+            using forward_less_equal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_less_equal);
+            using reverse_less_equal_ptr = bool(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_less_equal);
+            using forward_equal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_equal);
+            using reverse_equal_ptr = bool(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_equal);
+            using forward_unequal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_unequal);
+            using reverse_unequal_ptr = bool(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_unequal);
+            using forward_greater_equal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_greater_equal);
+            using reverse_greater_equal_ptr = bool(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_greater_equal);
+            using forward_greater_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_greater);
+            using reverse_greater_ptr = bool(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_greater);
+            using forward_spaceship_ptr = forward_spaceship_type(*)(
+                const union_iterator&,
+                const other&
+            ) noexcept (nothrow_forward_spaceship);
+            using reverse_spaceship_ptr = reverse_spaceship_type(*)(
+                const other&,
+                const union_iterator&
+            ) noexcept (nothrow_reverse_spaceship);
+            using forward_distance_ptr = difference_type(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_distance);
+            using reverse_distance_ptr = difference_type(*)(const other&, const union_iterator&)
+                noexcept (nothrow_reverse_distance);
+
+            template <size_t I>
+            static constexpr bool forward_less_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_less)
+            {
+                return lhs.storage.template get<I>() < rhs;
+            }
+
+            template <size_t I>
+            static constexpr bool reverse_less_fn(const other& lhs, const union_iterator& rhs)
+                noexcept (nothrow_reverse_less)
+            {
+                return lhs < rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool forward_less_equal_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_less_equal)
+            {
+                return lhs.storage.template get<I>() <= rhs;
+            }
+
+            template <size_t I>
+            static constexpr bool reverse_less_equal_fn(const other& lhs, const union_iterator& rhs)
+                noexcept (nothrow_reverse_less_equal)
+            {
+                return lhs <= rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool forward_equal_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_equal)
+            {
+                return lhs.storage.template get<I>() == rhs;
+            }
+
+            template <size_t I>
+            static constexpr bool reverse_equal_fn(const other& lhs, const union_iterator& rhs)
+                noexcept (nothrow_reverse_equal)
+            {
+                return lhs == rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool forward_unequal_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_unequal)
+            {
+                return lhs.storage.template get<I>() != rhs;
+            }
+
+            template <size_t I>
+            static constexpr bool reverse_unequal_fn(const other& lhs, const union_iterator& rhs)
+                noexcept (nothrow_reverse_unequal)
+            {
+                return lhs != rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool forward_greater_equal_fn(
+                const union_iterator& lhs,
+                const other& rhs
+            )
+                noexcept (nothrow_forward_greater_equal)
+            {
+                return lhs.storage.template get<I>() >= rhs;
+            }
+
+            template <size_t I>
+            static constexpr bool reverse_greater_equal_fn(
+                const other& lhs,
+                const union_iterator& rhs
+            )
+                noexcept (nothrow_reverse_greater_equal)
+            {
+                return lhs >= rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool forward_greater_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_greater)
+            {
+                return lhs.storage.template get<I>() > rhs;
+            }
+
+            template <size_t I>
+            static constexpr bool reverse_greater_fn(const other& lhs, const union_iterator& rhs)
+                noexcept (nothrow_reverse_greater)
+            {
+                return lhs > rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr forward_spaceship_type forward_spaceship_fn(
+                const union_iterator& lhs,
+                const other& rhs
+            ) noexcept (nothrow_forward_spaceship) {
+                return lhs.storage.template get<I>() <=> rhs;
+            }
+
+            template <size_t I>
+            static constexpr reverse_spaceship_type reverse_spaceship_fn(
+                const other& lhs,
+                const union_iterator& rhs
+            ) noexcept (nothrow_reverse_spaceship) {
+                return lhs <=> rhs.storage.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr difference_type forward_distance_fn(
+                const union_iterator& lhs,
+                const other& rhs
+            ) noexcept (nothrow_forward_distance) {
+                return lhs.storage.template get<I>() - rhs;
+            }
+
+            template <size_t I>
+            static constexpr difference_type reverse_distance_fn(
+                const other& lhs,
+                const union_iterator& rhs
+            ) noexcept (nothrow_reverse_distance) {
+                return lhs - rhs.storage.template get<I>();
+            }
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_less_ptr forward_less_tbl[0] {};
+            template <size_t... Is> requires (forward_less)
+            static constexpr forward_less_ptr forward_less_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_less_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_less_ptr reverse_less_tbl[0] {};
+            template <size_t... Is> requires (reverse_less)
+            static constexpr reverse_less_ptr reverse_less_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &reverse_less_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_less_equal_ptr forward_less_equal_tbl[0] {};
+            template <size_t... Is> requires (forward_less_equal)
+            static constexpr forward_less_equal_ptr forward_less_equal_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &forward_less_equal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_less_equal_ptr reverse_less_equal_tbl[0] {};
+            template <size_t... Is> requires (reverse_less_equal)
+            static constexpr reverse_less_equal_ptr reverse_less_equal_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &reverse_less_equal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_equal_ptr forward_equal_tbl[0] {};
+            template <size_t... Is> requires (forward_equal)
+            static constexpr forward_equal_ptr forward_equal_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_equal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_equal_ptr reverse_equal_tbl[0] {};
+            template <size_t... Is> requires (reverse_equal)
+            static constexpr reverse_equal_ptr reverse_equal_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &reverse_equal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_unequal_ptr forward_unequal_tbl[0] {};
+            template <size_t... Is> requires (forward_unequal)
+            static constexpr forward_unequal_ptr forward_unequal_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_unequal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_unequal_ptr reverse_unequal_tbl[0] {};
+            template <size_t... Is> requires (reverse_unequal)
+            static constexpr reverse_unequal_ptr reverse_unequal_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &reverse_unequal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_greater_equal_ptr forward_greater_equal_tbl[0] {};
+            template <size_t... Is> requires (forward_greater_equal)
+            static constexpr forward_greater_equal_ptr forward_greater_equal_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &forward_greater_equal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_greater_equal_ptr reverse_greater_equal_tbl[0] {};
+            template <size_t... Is> requires (reverse_greater_equal)
+            static constexpr reverse_greater_equal_ptr reverse_greater_equal_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &reverse_greater_equal_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_greater_ptr forward_greater_tbl[0] {};
+            template <size_t... Is> requires (forward_greater)
+            static constexpr forward_greater_ptr forward_greater_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_greater_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_greater_ptr reverse_greater_tbl[0] {};
+            template <size_t... Is> requires (reverse_greater)
+            static constexpr reverse_greater_ptr reverse_greater_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &reverse_greater_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_spaceship_ptr forward_spaceship_tbl[0] {};
+            template <size_t... Is> requires (forward_spaceship)
+            static constexpr forward_spaceship_ptr forward_spaceship_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &forward_spaceship_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_spaceship_ptr reverse_spaceship_tbl[0] {};
+            template <size_t... Is> requires (reverse_spaceship)
+            static constexpr reverse_spaceship_ptr reverse_spaceship_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &reverse_spaceship_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr forward_distance_ptr forward_distance_tbl[0] {};
+            template <size_t... Is> requires (forward_distance)
+            static constexpr forward_distance_ptr forward_distance_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_distance_fn<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr reverse_distance_ptr reverse_distance_tbl[0] {};
+            template <size_t... Is> requires (reverse_distance)
+            static constexpr reverse_distance_ptr reverse_distance_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &reverse_distance_fn<Is>... };
+        };
+
+        template <typename... Us>
+        struct compare<union_iterator<Us...>> {
+            using other = union_iterator<Us...>;
+            static constexpr bool size_match = sizeof...(Ts) == sizeof...(Us);
+
+            static constexpr bool forward_less =
+                (size_match && ... && meta::lt_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_less =
+                (size_match && ... && meta::nothrow::lt_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_less = false;
+            static constexpr bool nothrow_reverse_less = false;
+
+            static constexpr bool forward_less_equal =
+                (size_match && ... && meta::le_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_less_equal =
+                (size_match && ... && meta::nothrow::le_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_less_equal = false;
+            static constexpr bool nothrow_reverse_less_equal = false;
+
+            static constexpr bool forward_equal =
+                (size_match && ... && meta::eq_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_equal =
+                (size_match && ... && meta::nothrow::eq_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_equal = false;
+            static constexpr bool nothrow_reverse_equal = false;
+
+            static constexpr bool forward_unequal =
+                (size_match && ... && meta::ne_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_unequal =
+                (size_match && ... && meta::nothrow::ne_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_unequal = false;
+            static constexpr bool nothrow_reverse_unequal = false;
+
+            static constexpr bool forward_greater_equal =
+                (size_match && ... && meta::ge_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_greater_equal =
+                (size_match && ... && meta::nothrow::ge_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_greater_equal = false;
+            static constexpr bool nothrow_reverse_greater_equal = false;
+
+            static constexpr bool forward_greater =
+                (size_match && ... && meta::gt_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_greater =
+                (size_match && ... && meta::nothrow::gt_returns<
+                    bool,
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_greater = false;
+            static constexpr bool nothrow_reverse_greater = false;
+
+            template <typename...>
+            static constexpr bool _forward_spaceship = false;
+            template <typename... Vs>
+                requires (size_match && ... && meta::has_spaceship<Vs, meta::as_const_ref<Us>>)
+            static constexpr bool _forward_spaceship<Vs...> =
+                meta::has_common_type<meta::spaceship_type<Vs, meta::as_const_ref<Us>>...>;
+            static constexpr bool forward_spaceship =
+                _forward_spaceship<meta::as_const_ref<Ts>...>;
+            template <typename...>
+            static constexpr bool _nothrow_forward_spaceship = false;
+            template <typename... Vs>
+                requires (
+                    size_match &&
+                    ... &&
+                    meta::nothrow::has_spaceship<Vs, meta::as_const_ref<Us>>
+                )
+            static constexpr bool _nothrow_forward_spaceship<Vs...> =
+                meta::nothrow::has_common_type<
+                    meta::nothrow::spaceship_type<Vs, meta::as_const_ref<Us>>...
+                >;
+            static constexpr bool nothrow_forward_spaceship =
+                _nothrow_forward_spaceship<meta::as_const_ref<Ts>...>;
+            static constexpr bool reverse_spaceship = false;
+            static constexpr bool nothrow_reverse_spaceship = false;
+            template <bool>
+            struct _forward_spaceship_type { using type = meta::common_type<
                 meta::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<Us>>...
             >; };
             template <>
-            struct _spaceship_type<false> { using type = void; };
-            using spaceship_type = _spaceship_type<three_way>::type;
+            struct _forward_spaceship_type<false> { using type = void; };
+            using forward_spaceship_type = _forward_spaceship_type<forward_spaceship>::type;
 
-            static constexpr bool distance = (meta::sub_returns<
-                difference_type, 
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
-            > && ...);
-            static constexpr bool nothrow_distance = (meta::nothrow::sub_returns<
-                difference_type, 
-                meta::as_const_ref<Ts>,
-                meta::as_const_ref<Us>
-            > && ...);
+            static constexpr bool forward_distance =
+                (size_match && ... && meta::sub_returns<
+                    difference_type, 
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool nothrow_forward_distance =
+                (size_match && ... && meta::nothrow::sub_returns<
+                    difference_type, 
+                    meta::as_const_ref<Ts>,
+                    meta::as_const_ref<Us>
+                >);
+            static constexpr bool reverse_distance = false;
+            static constexpr bool nothrow_reverse_distance = false;
 
-            using lt_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_less);
-            using le_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_less_equal);
-            using eq_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_equal);
-            using ne_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_unequal);
-            using ge_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_greater_equal);
-            using gt_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_greater);
-            using spaceship_fn = spaceship_type(*)(const union_iterator&, const other&)
-                noexcept (nothrow_three_way);
-            using distance_fn = difference_type(*)(const union_iterator&, const other&)
-                noexcept (nothrow_distance);
+            using forward_less_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_less);
+            using forward_less_equal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_less_equal);
+            using forward_equal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_equal);
+            using forward_unequal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_unequal);
+            using forward_greater_equal_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_greater_equal);
+            using forward_greater_ptr = bool(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_greater);
+            using forward_spaceship_ptr = forward_spaceship_type(*)(
+                const union_iterator&,
+                const other&
+            ) noexcept (nothrow_forward_spaceship);
+            using forward_distance_ptr = difference_type(*)(const union_iterator&, const other&)
+                noexcept (nothrow_forward_distance);
 
             template <size_t I>
-            static constexpr bool _lt(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_less)
+            static constexpr bool forward_less_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_less)
             {
-                return lhs.iterators.template get<I>() < rhs.iterators.template get<I>();
+                return lhs.storage.template get<I>() < rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr bool _le(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_less_equal)
+            static constexpr bool forward_less_equal_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_less_equal)
             {
-                return lhs.iterators.template get<I>() <= rhs.iterators.template get<I>();
+                return lhs.storage.template get<I>() <= rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr bool _eq(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_equal)
+            static constexpr bool forward_equal_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_equal)
             {
-                return lhs.iterators.template get<I>() == rhs.iterators.template get<I>();
+                return lhs.storage.template get<I>() == rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr bool _ne(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_unequal)
+            static constexpr bool forward_unequal_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_unequal)
             {
-                return lhs.iterators.template get<I>() != rhs.iterators.template get<I>();
+                return lhs.storage.template get<I>() != rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr bool _ge(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_greater_equal)
-            {
-                return lhs.iterators.template get<I>() >= rhs.iterators.template get<I>();
+            static constexpr bool forward_greater_equal_fn(
+                const union_iterator& lhs,
+                const other& rhs
+            ) noexcept (nothrow_forward_greater_equal) {
+                return lhs.storage.template get<I>() >= rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr bool _gt(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_greater)
+            static constexpr bool forward_greater_fn(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_forward_greater)
             {
-                return lhs.iterators.template get<I>() > rhs.iterators.template get<I>();
+                return lhs.storage.template get<I>() > rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr spaceship_type _spaceship(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_three_way)
-            {
-                return lhs.iterators.template get<I>() <=> rhs.iterators.template get<I>();
+            static constexpr forward_spaceship_type forward_spaceship_fn(
+                const union_iterator& lhs,
+                const other& rhs
+            ) noexcept (nothrow_forward_spaceship) {
+                return lhs.storage.template get<I>() <=> rhs.storage.template get<I>();
             }
 
             template <size_t I>
-            static constexpr difference_type _dist(const union_iterator& lhs, const other& rhs)
-                noexcept (nothrow_distance)
-            {
-                return lhs.iterators.template get<I>() - rhs.iterators.template get<I>();
+            static constexpr difference_type forward_distance_fn(
+                const union_iterator& lhs,
+                const other& rhs
+            ) noexcept (nothrow_forward_distance) {
+                return lhs.storage.template get<I>() - rhs.storage.template get<I>();
             }
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr lt_fn lt[0] {};
-            template <size_t... Is> requires (less)
-            static constexpr lt_fn lt<std::index_sequence<Is...>>[sizeof...(Is)] {&_lt<Is>...};
+            static constexpr forward_less_ptr forward_less_tbl[0] {};
+            template <size_t... Is> requires (forward_less)
+            static constexpr forward_less_ptr forward_less_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_less_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr le_fn le[0] {};
-            template <size_t... Is> requires (less_equal)
-            static constexpr le_fn le<std::index_sequence<Is...>>[sizeof...(Is)] {&_le<Is>...};
+            static constexpr forward_less_equal_ptr forward_less_equal_tbl[0] {};
+            template <size_t... Is> requires (forward_less_equal)
+            static constexpr forward_less_equal_ptr forward_less_equal_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &forward_less_equal_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr eq_fn eq[0] {};
-            template <size_t... Is> requires (equal)
-            static constexpr eq_fn eq<std::index_sequence<Is...>>[sizeof...(Is)] {&_eq<Is>...};
+            static constexpr forward_equal_ptr forward_equal_tbl[0] {};
+            template <size_t... Is> requires (forward_equal)
+            static constexpr forward_equal_ptr forward_equal_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_equal_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr ne_fn ne[0] {};
-            template <size_t... Is> requires (unequal)
-            static constexpr ne_fn ne<std::index_sequence<Is...>>[sizeof...(Is)] {&_ne<Is>...};
+            static constexpr forward_unequal_ptr forward_unequal_tbl[0] {};
+            template <size_t... Is> requires (forward_unequal)
+            static constexpr forward_unequal_ptr forward_unequal_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_unequal_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr ge_fn ge[0] {};
-            template <size_t... Is> requires (greater_equal)
-            static constexpr ge_fn ge<std::index_sequence<Is...>>[sizeof...(Is)] {&_ge<Is>...};
+            static constexpr forward_greater_equal_ptr forward_greater_equal_tbl[0] {};
+            template <size_t... Is> requires (forward_greater_equal)
+            static constexpr forward_greater_equal_ptr forward_greater_equal_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &forward_greater_equal_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr gt_fn gt[0] {};
-            template <size_t... Is> requires (greater)
-            static constexpr gt_fn gt<std::index_sequence<Is...>>[sizeof...(Is)] {&_gt<Is>...};
+            static constexpr forward_greater_ptr forward_greater_tbl[0] {};
+            template <size_t... Is> requires (forward_greater)
+            static constexpr forward_greater_ptr forward_greater_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_greater_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr spaceship_fn spaceship[0] {};
-            template <size_t... Is> requires (three_way)
-            static constexpr spaceship_fn spaceship<std::index_sequence<Is...>>[sizeof...(Is)] {
-                &_spaceship<Is>...
-            };
+            static constexpr forward_spaceship_ptr forward_spaceship_tbl[0] {};
+            template <size_t... Is> requires (forward_spaceship)
+            static constexpr forward_spaceship_ptr forward_spaceship_tbl<
+                std::index_sequence<Is...>
+            >[sizeof...(Is)] { &forward_spaceship_fn<Is>... };
 
             template <typename = std::index_sequence_for<Ts...>>
-            static constexpr distance_fn dist[0] {};
-            template <size_t... Is> requires (distance)
-            static constexpr distance_fn dist<std::index_sequence<Is...>>[sizeof...(Is)] {
-                &_dist<Is>...
-            };
+            static constexpr forward_distance_ptr forward_distance_tbl[0] {};
+            template <size_t... Is> requires (forward_distance)
+            static constexpr forward_distance_ptr forward_distance_tbl<std::index_sequence<Is...>>[
+                sizeof...(Is)
+            ] { &forward_distance_fn<Is>... };
         };
 
     public:
-        /// -> Note that for random access iterator to be satisfied, operator[] must
-        /// return an iter_reference_t<>, which means it has to return the same thing
-        /// as operator*(), and drop operator->().  That would also eliminate the need
-        /// for a separate cache, and should increase performance at the same time.
-        /// It just requires reconfiguring the 
-
         [[nodiscard]] constexpr reference operator*() const
-            noexcept (nothrow_dereferenceable)
-            requires (dereferenceable)
+            noexcept (nothrow_dereference)
+            requires (dereference)
         {
-            return deref<>[iterators.index](*this);
+            return deref_tbl<>[storage.index](*this);
         }
 
-        /// TODO: it might still be possible to provide operator->() if all possible
-        /// results share a common type.  Otherwise it is not usable.  This would be
-        /// similar to operator*() returning a standard reference if all types share
-        /// a common reference type, or a union of references otherwise.
-
-        [[nodiscard]] constexpr reference operator[](difference_type n)
-            noexcept (nothrow_indexable)
-            requires (indexable)
+        [[nodiscard]] constexpr pointer operator->() const
+            noexcept (nothrow_arrow)
+            requires (arrow)
         {
-            return index<>[iterators.index](*this, n);
+            return arrow_tbl<>[storage.index](*this);
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) const
+            noexcept (nothrow_index)
+            requires (index)
+        {
+            return index_tbl<>[storage.index](*this, n);
         }
 
         constexpr union_iterator& operator++()
-            noexcept (nothrow_incrementable)
-            requires (incrementable)
+            noexcept (nothrow_increment)
+            requires (increment)
         {
-            increment<>[iterators.index](*this);
+            increment_tbl<>[storage.index](*this);
             return *this;
         }
 
@@ -3431,35 +3893,35 @@ namespace impl {
             const union_iterator& self,
             difference_type n
         )
-            noexcept (nothrow_forward_addable)
-            requires (forward_addable)
+            noexcept (nothrow_forward_add)
+            requires (forward_add)
         {
-            return forward_add<>[self.iterators.index](self, n);
+            return forward_add_tbl<>[self.storage.index](self, n);
         }
 
         [[nodiscard]] friend constexpr union_iterator operator+(
             difference_type n,
             const union_iterator& self
         )
-            noexcept (nothrow_reverse_addable)
-            requires (reverse_addable)
+            noexcept (nothrow_reverse_add)
+            requires (reverse_add)
         {
-            return reverse_add<>[self.iterators.index](n, self);
+            return reverse_add_tbl<>[self.storage.index](n, self);
         }
 
         constexpr union_iterator& operator+=(difference_type n)
-            noexcept (nothrow_inplace_addable)
-            requires (inplace_addable)
+            noexcept (nothrow_inplace_add)
+            requires (inplace_add)
         {
-            inplace_add<>[iterators.index](*this, n);
+            inplace_add_tbl<>[storage.index](*this, n);
             return *this;
         }
 
         constexpr union_iterator& operator--()
-            noexcept (nothrow_decrementable)
-            requires (decrementable)
+            noexcept (nothrow_decrement)
+            requires (decrement)
         {
-            decrement<>[iterators.index](*this);
+            decrement_tbl<>[storage.index](*this);
             return *this;
         }
 
@@ -3476,92 +3938,303 @@ namespace impl {
             const union_iterator& self,
             difference_type n
         )
-            noexcept (nothrow_subtractable)
-            requires (subtractable)
+            noexcept (nothrow_subtract)
+            requires (subtract)
         {
-            return subtract<>[self.iterators.index](self, n);
+            return subtract_tbl<>[self.storage.index](self, n);
         }
 
         constexpr union_iterator& operator-=(difference_type n)
-            noexcept (nothrow_inplace_subtractable)
-            requires (inplace_subtractable)
+            noexcept (nothrow_inplace_subtract)
+            requires (inplace_subtract)
         {
-            inplace_subtract<>[iterators.index](*this, n);
+            inplace_subtract_tbl<>[storage.index](*this, n);
             return *this;
         }
 
-        template <typename... Us> requires (compare<Us...>::distance)
-        [[nodiscard]] constexpr difference_type operator-(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_distance)
-        {
-            return compare<Us...>::template dist<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::forward_distance)
+        [[nodiscard]] friend constexpr difference_type operator-(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_distance) {
+            return compare<other>::template forward_distance_tbl<>[lhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::less)
-        [[nodiscard]] constexpr bool operator<(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_less)
-        {
-            return compare<Us...>::template lt<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::reverse_distance)
+        [[nodiscard]] friend constexpr difference_type operator-(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_distance) {
+            return compare<other>::template reverse_distance_tbl<>[rhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::less_equal)
-        [[nodiscard]] constexpr bool operator<=(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_less_equal)
-        {
-            return compare<Us...>::template le<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::forward_less)
+        [[nodiscard]] friend constexpr bool operator<(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_less) {
+            return compare<other>::template forward_less_tbl<>[lhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::equal)
-        [[nodiscard]] constexpr bool operator==(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_equal)
-        {
-            return compare<Us...>::template eq<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::reverse_less)
+        [[nodiscard]] friend constexpr bool operator<(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_less) {
+            return compare<other>::template reverse_less_tbl<>[rhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::unequal)
-        [[nodiscard]] constexpr bool operator!=(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_unequal)
-        {
-            return compare<Us...>::template ne<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::forward_less_equal)
+        [[nodiscard]] friend constexpr bool operator<=(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_less_equal) {
+            return compare<other>::template forward_less_equal_tbl<>[lhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::greater_equal)
-        [[nodiscard]] constexpr bool operator>=(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_greater_equal)
-        {
-            return compare<Us...>::template ge<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::reverse_less_equal)
+        [[nodiscard]] friend constexpr bool operator<=(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_less_equal) {
+            return compare<other>::template reverse_less_equal_tbl<>[rhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::greater)
-        [[nodiscard]] constexpr bool operator>(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_greater)
-        {
-            return compare<Us...>::template gt<>[iterators.index](*this, other);
+        template <typename other> requires (compare<other>::forward_equal)
+        [[nodiscard]] friend constexpr bool operator==(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_equal) {
+            return compare<other>::template forward_equal_tbl<>[lhs.storage.index](lhs, rhs);
         }
 
-        template <typename... Us> requires (compare<Us...>::three_way)
-        [[nodiscard]] constexpr decltype(auto) operator<=>(const union_iterator<Us...>& other) const
-            noexcept (compare<Us...>::nothrow_three_way)
-        {
-            return (compare<Us...>::template spaceship<>[iterators.index](*this, other));
+        template <typename other> requires (compare<other>::reverse_equal)
+        [[nodiscard]] friend constexpr bool operator==(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_equal) {
+            return compare<other>::template reverse_equal_tbl<>[rhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::forward_unequal)
+        [[nodiscard]] friend constexpr bool operator!=(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_unequal) {
+            return compare<other>::template forward_unequal_tbl<>[lhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::reverse_unequal)
+        [[nodiscard]] friend constexpr bool operator!=(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_unequal) {
+            return compare<other>::template reverse_unequal_tbl<>[rhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::forward_greater_equal)
+        [[nodiscard]] friend constexpr bool operator>=(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_greater_equal) {
+            return compare<other>::template forward_greater_equal_tbl<>[lhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::reverse_greater_equal)
+        [[nodiscard]] friend constexpr bool operator>=(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_greater_equal) {
+            return compare<other>::template reverse_greater_equal_tbl<>[rhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::forward_greater)
+        [[nodiscard]] friend constexpr bool operator>(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_greater) {
+            return compare<other>::template forward_greater_tbl<>[lhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::reverse_greater)
+        [[nodiscard]] friend constexpr bool operator>(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_greater) {
+            return compare<other>::template reverse_greater_tbl<>[rhs.storage.index](lhs, rhs);
+        }
+
+        template <typename other> requires (compare<other>::forward_spaceship)
+        [[nodiscard]] friend constexpr decltype(auto) operator<=>(
+            const union_iterator& lhs,
+            const other& rhs
+        ) noexcept (compare<other>::nothrow_forward_spaceship) {
+            return (compare<other>::template forward_spaceship_tbl<>[lhs.storage.index](lhs, rhs));
+        }
+
+        template <typename other> requires (compare<other>::reverse_spaceship)
+        [[nodiscard]] friend constexpr decltype(auto) operator<=>(
+            const other& lhs,
+            const union_iterator& rhs
+        ) noexcept (compare<other>::nothrow_reverse_spaceship) {
+            return (compare<other>::template reverse_spaceship_tbl<>[rhs.storage.index](lhs, rhs));
         }
     };
 
-
-
-    /// TODO: It is possible for there to be no forward or (not and) reverse iterators.
-    /// Also, there might only be one iterator of either type, or duplicate sentinels,
-    /// etc.  What would probably be best is to just stick everything into a C-style
-    /// union and then enforce the pairwise constraints.
-
-    template <typename begin, typename end, typename rbegin, typename rend, typename...>
+    /* `make_union_iterator<Ts...>` accepts a sequence of types `Ts...` (which may or
+    may not be iterable), and composes a set of iterator types that can be used to
+    traverse a corresponding union.  Non-iterable types are converted into trivial
+    `single_iterator`s, and iterable types will forward their underlying iterator types
+    as-is.  If all iterators resolve to a single shared type, then that type will be
+    returned directly.  Otherwise, a `union_iterator<Is...>` will be returned, where
+    `Is...` are the unique, unqualified iterator types that were detected. */
+    template <size_t I, typename B, typename E, typename RB, typename RE, typename...>
     struct _make_union_iterator {
-        using begin_type = begin;
-        using end_type = end;
-        using rbegin_type = rbegin;
-        using rend_type = rend;
+    private:
+        using begin_t = B::template eval<meta::to_unique>;
+        using end_t = E::template eval<meta::to_unique>;
+        using rbegin_t = RB::template eval<meta::to_unique>;
+        using rend_t = RE::template eval<meta::to_unique>;
+
+        template <typename S>
+        struct _iterator { using type = S::template eval<union_iterator>; };
+        template <typename T>
+        struct _iterator<meta::pack<T>> { using type = T; };
+        template <>
+        struct _iterator<meta::pack<>> { using type = void; };
+        template <typename S>
+        using iterator = _iterator<S>::type;
+
+        template <typename S, typename T> requires (S::template index<meta::unqualify<T>> < S::size)
+        using select = union_select<S::template index<meta::unqualify<T>>>;
+
+        template <typename S, typename T> requires (S::size == 1)
+        static constexpr iterator<S> make(T&& t)
+            noexcept (meta::nothrow::convertible_to<T, iterator<S>>)
+            requires (meta::convertible_to<T, iterator<S>>)
+        {
+            return std::forward<T>(t);
+        }
+
+        template <typename S, typename T> requires (S::size > 1)
+        static constexpr iterator<S> make(T&& t)
+            noexcept (requires{{iterator<S>{select<S, T>{}, std::forward<T>(t)}} noexcept;})
+            requires (requires{{iterator<S>{select<S, T>{}, std::forward<T>(t)}};})
+        {
+            return {select<S, T>{}, std::forward<T>(t)};
+        }
+
+    public:
+        struct begin {
+            static constexpr bool enable = I == B::size;
+
+            template <meta::iterable T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{make<begin_t>(std::ranges::begin(t))} noexcept;})
+                requires (enable && requires{{make<begin_t>(std::ranges::begin(t))};})
+            {
+                return make<begin_t>(std::ranges::begin(t));
+            }
+
+            template <typename T> requires (!meta::iterable<T>)
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{
+                    {make<begin_t>(single_iterator<meta::unqualify<T>>{std::addressof(t)})} noexcept;
+                })
+                requires (enable && requires{
+                    {make<begin_t>(single_iterator<meta::unqualify<T>>{std::addressof(t)})};
+                })
+            {
+                return make<begin_t>(single_iterator<meta::unqualify<T>>{std::addressof(t)});
+            }
+        };
+
+        struct end {
+            static constexpr bool enable = I == E::size;
+
+            template <meta::iterable T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{make<end_t>(std::ranges::end(t))} noexcept;})
+                requires (enable && requires{{make<end_t>(std::ranges::end(t))};})
+            {
+                return make<end_t>(std::ranges::end(t));
+            }
+
+            template <typename T> requires (!meta::iterable<T>)
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{
+                    {make<end_t>(single_iterator<meta::unqualify<T>>{std::addressof(t)})} noexcept;
+                })
+                requires (enable && requires{
+                    {make<end_t>(single_iterator<meta::unqualify<T>>{std::addressof(t)})};
+                })
+            {
+                return make<end_t>(single_iterator<meta::unqualify<T>>{std::addressof(t)});
+            }
+        };
+
+        struct rbegin {
+            static constexpr bool enable = I == RB::size;
+
+            template <meta::reverse_iterable T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{make<rbegin_t>(std::ranges::rbegin(t))} noexcept;})
+                requires (enable && requires{{make<rbegin_t>(std::ranges::rbegin(t))};})
+            {
+                return make<rbegin_t>(std::ranges::rbegin(t));
+            }
+
+            template <typename T> requires (!meta::reverse_iterable<T>)
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{
+                    {make<rbegin_t>(std::reverse_iterator<single_iterator<meta::unqualify<T>>>{
+                        single_iterator<meta::unqualify<T>>{std::addressof(t)}
+                    })} noexcept;
+                })
+                requires (enable && requires{
+                    {make<rbegin_t>(std::reverse_iterator<single_iterator<meta::unqualify<T>>>{
+                        single_iterator<meta::unqualify<T>>{std::addressof(t)}
+                    })};
+                })
+            {
+                return make<rbegin_t>(std::reverse_iterator<single_iterator<meta::unqualify<T>>>{
+                    single_iterator<meta::unqualify<T>>{std::addressof(t)}
+                });
+            }
+        };
+
+        struct rend {
+            static constexpr bool enable = I == RE::size;
+
+            template <meta::reverse_iterable T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{make<rend_t>(std::ranges::rend(t))} noexcept;})
+                requires (enable && requires{{make<rend_t>(std::ranges::rend(t))};})
+            {
+                return make<rend_t>(std::ranges::rend(t));
+            }
+
+            template <typename T> requires (!meta::reverse_iterable<T>)
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{
+                    {make<rend_t>(std::reverse_iterator<single_iterator<meta::unqualify<T>>>{
+                        single_iterator<meta::unqualify<T>>{std::addressof(t)}
+                    })} noexcept;
+                })
+                requires (enable && requires{
+                    {make<rend_t>(std::reverse_iterator<single_iterator<meta::unqualify<T>>>{
+                        single_iterator<meta::unqualify<T>>{std::addressof(t)}
+                    })};
+                })
+            {
+                return make<rend_t>(std::reverse_iterator<single_iterator<meta::unqualify<T>>>{
+                    single_iterator<meta::unqualify<T>>{std::addressof(t)}
+                });
+            }
+        };
     };
     template <
+        size_t I,
         typename... begin,
         typename... end,
         typename... rbegin,
@@ -3570,6 +4243,7 @@ namespace impl {
         typename... Ts
     > requires (meta::iterable<T> && meta::reverse_iterable<T>)
     struct _make_union_iterator<
+        I,
         meta::pack<begin...>,
         meta::pack<end...>,
         meta::pack<rbegin...>,
@@ -3577,13 +4251,15 @@ namespace impl {
         T,
         Ts...
     > : _make_union_iterator<
-        meta::pack<begin..., meta::begin_type<T>>,
-        meta::pack<end..., meta::end_type<T>>,
-        meta::pack<rbegin..., meta::rbegin_type<T>>,
-        meta::pack<rend..., meta::rend_type<T>>,
+        I + 1,
+        meta::pack<begin..., meta::unqualify<meta::begin_type<T>>>,
+        meta::pack<end..., meta::unqualify<meta::end_type<T>>>,
+        meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<T>>>,
+        meta::pack<rend..., meta::unqualify<meta::rend_type<T>>>,
         Ts...
     > {};
     template <
+        size_t I,
         typename... begin,
         typename... end,
         typename... rbegin,
@@ -3592,6 +4268,7 @@ namespace impl {
         typename... Ts
     > requires (meta::iterable<T> && !meta::reverse_iterable<T>)
     struct _make_union_iterator<
+        I,
         meta::pack<begin...>,
         meta::pack<end...>,
         meta::pack<rbegin...>,
@@ -3599,13 +4276,15 @@ namespace impl {
         T,
         Ts...
     > : _make_union_iterator<
-        meta::pack<begin..., meta::begin_type<T>>,
-        meta::pack<end..., meta::end_type<T>>,
+        I + 1,
+        meta::pack<begin..., meta::unqualify<meta::begin_type<T>>>,
+        meta::pack<end..., meta::unqualify<meta::end_type<T>>>,
         meta::pack<rbegin...>,
         meta::pack<rend...>,
         Ts...
     > {};
     template <
+        size_t I,
         typename... begin,
         typename... end,
         typename... rbegin,
@@ -3614,6 +4293,7 @@ namespace impl {
         typename... Ts
     > requires (!meta::iterable<T> && meta::reverse_iterable<T>)
     struct _make_union_iterator<
+        I,
         meta::pack<begin...>,
         meta::pack<end...>,
         meta::pack<rbegin...>,
@@ -3621,13 +4301,15 @@ namespace impl {
         T,
         Ts...
     > : _make_union_iterator<
+        I + 1,
         meta::pack<begin...>,
         meta::pack<end...>,
-        meta::pack<rbegin..., meta::rbegin_type<T>>,
-        meta::pack<rend..., meta::rend_type<T>>,
+        meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<T>>>,
+        meta::pack<rend..., meta::unqualify<meta::rend_type<T>>>,
         Ts...
     > {};
     template <
+        size_t I,
         typename... begin,
         typename... end,
         typename... rbegin,
@@ -3636,6 +4318,7 @@ namespace impl {
         typename... Ts
     > requires (!meta::iterable<T> && !meta::reverse_iterable<T>)
     struct _make_union_iterator<
+        I,
         meta::pack<begin...>,
         meta::pack<end...>,
         meta::pack<rbegin...>,
@@ -3643,15 +4326,16 @@ namespace impl {
         T,
         Ts...
     > : _make_union_iterator<
-        meta::pack<begin..., single_iterator<T>>,
-        meta::pack<end..., single_iterator<T>>,
-        meta::pack<rbegin..., std::reverse_iterator<single_iterator<T>>>,
-        meta::pack<rend..., std::reverse_iterator<single_iterator<T>>>,
+        I + 1,
+        meta::pack<begin...>,
+        meta::pack<end...>,
+        meta::pack<rbegin...>,
+        meta::pack<rend...>,
         Ts...
     > {};
-    template <typename... Ts>
+    template <typename... Ts> requires (sizeof...(Ts) > 0)
     using make_union_iterator =
-        _make_union_iterator<meta::pack<>, meta::pack<>, meta::pack<>, meta::pack<>, Ts...>;
+        _make_union_iterator<0, meta::pack<>, meta::pack<>, meta::pack<>, meta::pack<>, Ts...>;
 
 }
 
@@ -3784,6 +4468,15 @@ private:
     template <typename T, typename Self> requires (types::template contains<T>)
     using opt_t = Optional<access_t<T, Self>>;
 
+    template <typename, typename = std::index_sequence_for<Ts...>>
+    struct _iter;
+    template <typename Self, size_t... Is>
+    struct _iter<Self, std::index_sequence<Is...>> {
+        using type = impl::make_union_iterator<access<Is, Self>...>;
+    };
+    template <typename Self>
+    using iter = _iter<Self>::type;
+
     template <size_t I>
     static constexpr std::array get_index_error {+[] {
         return BadUnionAccess(
@@ -3807,8 +4500,8 @@ private:
     struct ConvertFrom<From> {
         template <typename T>
         static constexpr storage operator()(T&& value)
-            noexcept(meta::nothrow::convertible_to<T, convert_type<T>>)
-            requires(meta::not_void<convert_type<T>>)
+            noexcept (meta::nothrow::convertible_to<T, convert_type<T>>)
+            requires (meta::not_void<convert_type<T>>)
         {
             return {
                 impl::union_select<types::template index<convert_type<T>>>{},
@@ -3820,8 +4513,8 @@ private:
     struct ConstructFrom {
         template <typename... A>
         static constexpr storage operator()(A&&... args)
-            noexcept(meta::nothrow::constructible_from<construct_type<A...>, A...>)
-            requires(meta::not_void<construct_type<A...>>)
+            noexcept (meta::nothrow::constructible_from<construct_type<A...>, A...>)
+            requires (meta::not_void<construct_type<A...>>)
         {
             return {
                 impl::union_select<types::template index<construct_type<A...>>>{},
@@ -3835,8 +4528,8 @@ private:
         using type = impl::union_common_type<access_t<Ts, Self>...>::type;
         template <typename T>
         static constexpr type operator()(T&& value)
-            noexcept(meta::nothrow::convertible_to<T, type>)
-            requires(meta::convertible_to<T, type>)
+            noexcept (meta::nothrow::convertible_to<T, type>)
+            requires (meta::convertible_to<T, type>)
         {
             return std::forward<T>(value);
         }
@@ -3886,8 +4579,8 @@ public:
     /* Default constructor finds the first type in `Ts...` that can be default
     constructed.  If no such type exists, the default constructor is disabled. */
     [[nodiscard]] constexpr Union()
-        noexcept(meta::nothrow::default_constructible<default_type>)
-        requires(meta::not_void<default_type>)
+        noexcept (meta::nothrow::default_constructible<default_type>)
+        requires (meta::not_void<default_type>)
     :
         m_storage(impl::union_select<types::template index<default_type>>{})
     {}
@@ -3906,7 +4599,7 @@ public:
             meta::consistent<ConvertFrom<T>, T>
         )
     [[nodiscard]] constexpr Union(T&& v)
-        noexcept(meta::nothrow::exhaustive<ConvertFrom<T>, T>)
+        noexcept (meta::nothrow::exhaustive<ConvertFrom<T>, T>)
     :
         m_storage(impl::visit(ConvertFrom<T>{}, std::forward<T>(v)))
     {}
@@ -3924,7 +4617,7 @@ public:
             meta::consistent<ConstructFrom, Args...>
         )
     [[nodiscard]] constexpr explicit Union(Args&&... args)
-        noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
+        noexcept (meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
         m_storage(impl::visit(ConstructFrom{}, std::forward<Args>(args)...))
     {}
@@ -3961,8 +4654,8 @@ public:
     criteria. */
     template <typename Self, typename T>
     [[nodiscard]] constexpr operator T(this Self&& self)
-        noexcept(meta::nothrow::exhaustive<impl::ConvertTo<T>, Self>)
-        requires(meta::exhaustive<impl::ConvertTo<T>, Self>)
+        noexcept (meta::nothrow::exhaustive<impl::ConvertTo<T>, Self>)
+        requires (meta::exhaustive<impl::ConvertTo<T>, Self>)
     {
         return impl::visit(impl::ConvertTo<T>{}, std::forward<Self>(self));
     }
@@ -3973,8 +4666,8 @@ public:
     conversion criteria. */
     template <typename Self, typename T>
     [[nodiscard]] constexpr explicit operator T(this Self&& self)
-        noexcept(meta::nothrow::exhaustive<impl::ExplicitConvertTo<T>, T>)
-        requires(
+        noexcept (meta::nothrow::exhaustive<impl::ExplicitConvertTo<T>, T>)
+        requires (
             !meta::exhaustive<impl::ConvertTo<T>, Self> &&
             meta::exhaustive<impl::ExplicitConvertTo<T>, Self>
         )
@@ -4004,11 +4697,11 @@ public:
     at index `I`, forwarded according the qualifiers of the enclosing union. */
     template <size_t I, typename Self> requires (I < types::size)
     [[nodiscard]] constexpr exp<I, Self> get(this Self&& self)
-        noexcept(
+        noexcept (
             meta::nothrow::convertible_to<BadUnionAccess, exp<I, Self>> &&
             meta::nothrow::convertible_to<access<I, Self>, exp<I, Self>>
         )
-        requires(
+        requires (
             meta::convertible_to<BadUnionAccess, exp<I, Self>> &&
             meta::convertible_to<access<I, Self>, exp<I, Self>>
         )
@@ -4024,11 +4717,11 @@ public:
     where `T` is forwarded according to the qualifiers of the enclosing union. */
     template <typename T, typename Self> requires (types::template contains<T>)
     [[nodiscard]] constexpr exp_t<T, Self> get(this Self&& self)
-        noexcept(
+        noexcept (
             meta::nothrow::convertible_to<BadUnionAccess, exp_t<T, Self>> &&
             meta::nothrow::convertible_to<access_t<T, Self>, exp_t<T, Self>>
         )
-        requires(
+        requires (
             meta::convertible_to<BadUnionAccess, exp_t<T, Self>> &&
             meta::convertible_to<access_t<T, Self>, exp_t<T, Self>>
         )
@@ -4045,11 +4738,11 @@ public:
     the active type, returns an empty optional instead. */
     template <size_t I, typename Self> requires (I < types::size)
     [[nodiscard]] constexpr opt<I, Self> get_if(this Self&& self)
-        noexcept(
+        noexcept (
             meta::nothrow::default_constructible<opt<I, Self>> &&
             meta::nothrow::convertible_to<access<I, Self>, opt<I, Self>>
         )
-        requires(
+        requires (
             meta::default_constructible<opt<I, Self>> &&
             meta::convertible_to<access<I, Self>, opt<I, Self>>
         )
@@ -4064,11 +4757,11 @@ public:
     the active type, returns an empty optional instead. */
     template <typename T, typename Self> requires (types::template contains<T>)
     [[nodiscard]] constexpr opt_t<T, Self> get_if(this Self&& self)
-        noexcept(
+        noexcept (
             meta::nothrow::default_constructible<opt_t<T, Self>> &&
             meta::nothrow::convertible_to<access_t<T, Self>, opt_t<T, Self>>
         )
-        requires(
+        requires (
             meta::default_constructible<opt_t<T, Self>> &&
             meta::convertible_to<access_t<T, Self>, opt_t<T, Self>>
         )
@@ -4091,8 +4784,8 @@ public:
     details. */
     template <typename F, typename Self, typename... Args>
     constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args)
-        noexcept(meta::nothrow::visit<F, Self, Args...>)
-        requires(meta::visit<F, Self, Args...>)
+        noexcept (meta::nothrow::visit<F, Self, Args...>)
+        requires (meta::visit<F, Self, Args...>)
     {
         return (impl::visit(
             std::forward<F>(f),
@@ -4107,8 +4800,8 @@ public:
     alternatives into account at the point it is called. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) flatten(this Self&& self)
-        noexcept(meta::nothrow::exhaustive<Flatten<Self>, Self>)
-        requires(
+        noexcept (meta::nothrow::exhaustive<Flatten<Self>, Self>)
+        requires (
             meta::exhaustive<Flatten<Self>, Self> &&
             meta::consistent<Flatten<Self>, Self>
         )
@@ -4126,8 +4819,8 @@ public:
     as for `impl::visit()`. */
     template <typename Self, typename... Args>
     constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
-        noexcept(meta::nothrow::visit<impl::Call, Self, Args...>)
-        requires(meta::visit<impl::Call, Self, Args...>)
+        noexcept (meta::nothrow::visit<impl::Call, Self, Args...>)
+        requires (meta::visit<impl::Call, Self, Args...>)
     {
         return (impl::visit(
             impl::Call{},
@@ -4145,14 +4838,93 @@ public:
     an `Expected<R, BadUnionAccess>`, just as for `impl::visit()`. */
     template <typename Self, typename... Key>
     constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
-        noexcept(meta::nothrow::visit<impl::Subscript, Self, Key...>)
-        requires(meta::visit<impl::Subscript, Self, Key...>)
+        noexcept (meta::nothrow::visit<impl::Subscript, Self, Key...>)
+        requires (meta::visit<impl::Subscript, Self, Key...>)
     {
         return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
             std::forward<Key>(keys)...
         ));
+    }
+
+
+
+    /// TODO: size(), ssize(), empty(), which should account for the active type and
+    /// non-iterable alternatives
+
+
+
+    template <typename Self>
+    [[nodiscard]] constexpr auto begin(this Self&& self)
+        noexcept (meta::nothrow::visit<typename iter<Self>::begin, Self>)
+        requires (iter<Self>::begin::enable && meta::visit<typename iter<Self>::begin, Self>)
+    {
+        return impl::visit(typename iter<Self>::begin{}, std::forward<Self>(self));
+    }
+
+    [[nodiscard]] constexpr auto cbegin() const
+        noexcept (meta::nothrow::visit<typename iter<const Union&>::begin, const Union&>)
+        requires (
+            iter<const Union&>::begin::enable &&
+            meta::visit<typename iter<const Union&>::begin, const Union&>
+        )
+    {
+        return impl::visit(typename iter<const Union&>::begin{}, *this);
+    }
+
+    template <typename Self>
+    [[nodiscard]] constexpr auto end(this Self&& self)
+        noexcept (meta::nothrow::visit<typename iter<Self>::end, Self>)
+        requires (iter<Self>::end::enable && meta::visit<typename iter<Self>::end, Self>)
+    {
+        return impl::visit(typename iter<Self>::end{}, std::forward<Self>(self));
+    }
+
+    [[nodiscard]] constexpr auto cend() const
+        noexcept (meta::nothrow::visit<typename iter<const Union&>::end, const Union&>)
+        requires (
+            iter<const Union&>::end::enable &&
+            meta::visit<typename iter<const Union&>::end, const Union&>
+        )
+    {
+        return impl::visit(typename iter<const Union&>::end{}, *this);
+    }
+
+    template <typename Self>
+    [[nodiscard]] constexpr auto rbegin(this Self&& self)
+        noexcept (meta::nothrow::visit<typename iter<Self>::rbegin, Self>)
+        requires (iter<Self>::rbegin::enable && meta::visit<typename iter<Self>::rbegin, Self>)
+    {
+        return impl::visit(typename iter<Self>::rbegin{}, std::forward<Self>(self));
+    }
+
+    [[nodiscard]] constexpr auto crbegin() const
+        noexcept (meta::nothrow::visit<typename iter<const Union&>::rbegin, const Union&>)
+        requires (
+            iter<const Union&>::rbegin::enable &&
+            meta::visit<typename iter<const Union&>::rbegin, const Union&>
+        )
+    {
+        return impl::visit(typename iter<const Union&>::rbegin{}, *this);
+    }
+
+    template <typename Self>
+    [[nodiscard]] constexpr auto rend(this Self&& self)
+        noexcept (meta::nothrow::visit<typename iter<Self>::rend, Self>)
+        requires (iter<Self>::rend::enable && meta::visit<typename iter<Self>::rend, Self>)
+    {
+        return impl::visit(typename iter<Self>::rend{}, std::forward<Self>(self));
+    }
+
+    [[nodiscard]] constexpr auto crend() const
+        noexcept (meta::nothrow::visit<typename iter<const Union&>::rend, const Union&>)
+        requires (
+            iter<const Union&>::rend::enable &&
+            meta::visit<typename iter<const Union&>::rend, const Union&>
+        )
+    {
+        return impl::visit(typename iter<const Union&>::rend{}, *this);
     }
 };
 
@@ -4211,7 +4983,7 @@ private:
 
     template <typename Self>
     using iter = impl::make_optional_iterator<access<Self>>;
-    using const_iter = impl::make_optional_iterator<const_reference>;
+    using const_iter = iter<const Optional&>;
 
     template <typename...>
     struct ConvertFrom {};
@@ -5086,7 +5858,7 @@ private:
 
     template <typename Self>
     using iter = impl::make_optional_iterator<access<Self>>;
-    using const_iter = impl::make_optional_iterator<const_reference>;
+    using const_iter = iter<const Expected&>;
 
     template <typename U>
     struct monadic {

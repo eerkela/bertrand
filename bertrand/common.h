@@ -2331,6 +2331,25 @@ namespace meta {
     concept sized_sentinel_for =
         sentinel_for<T, Iter> && ::std::sized_sentinel_for<T, Iter>;
 
+    template <iterator T>
+    using iterator_category = std::conditional_t<
+        contiguous_iterator<T>,
+        ::std::contiguous_iterator_tag,
+        typename ::std::iterator_traits<unqualify<T>>::iterator_category
+    >;
+
+    template <iterator T>
+    using iterator_difference_type = ::std::iterator_traits<unqualify<T>>::difference_type;
+
+    template <iterator T>
+    using iterator_value_type = ::std::iterator_traits<unqualify<T>>::value_type;
+
+    template <iterator T>
+    using iterator_reference_type = ::std::iterator_traits<unqualify<T>>::reference;
+
+    template <iterator T>
+    using iterator_pointer_type = ::std::iterator_traits<unqualify<T>>::pointer;
+
     template <typename T>
     concept has_begin = requires(T& t) { ::std::ranges::begin(t); };
 
@@ -2748,11 +2767,11 @@ namespace meta {
 
     template <typename T>
     concept has_arrow = requires(T t) {
-        { t.operator->() } -> meta::pointer;
+        { ::std::to_address(t) } -> meta::pointer;
     };
 
     template <has_arrow T>
-    using arrow_type = decltype((::std::declval<T>().operator->()));
+    using arrow_type = decltype((::std::to_address(::std::declval<T>())));
 
     template <typename Ret, typename T>
     concept arrow_returns = has_arrow<T> && convertible_to<arrow_type<T>, Ret>;
@@ -2761,7 +2780,7 @@ namespace meta {
 
         template <typename T>
         concept has_arrow =
-            meta::has_arrow<T> && noexcept(::std::declval<T>().operator->());
+            meta::has_arrow<T> && noexcept(::std::to_address(::std::declval<T>()));
 
         template <nothrow::has_arrow T>
         using arrow_type = meta::arrow_type<T>;
