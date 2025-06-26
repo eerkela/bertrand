@@ -24,7 +24,7 @@ namespace impl {
     struct expected_tag {};
 
     /* Provides an extensible mechanism for controlling the dispatching behavior of
-    the `meta::visitor` concept and `bertrand::visit()` operator, including return
+    the `meta::visitor` concept and `impl::visit()` operator, including return
     type deduction from the possible alternatives and customizable dispatch logic.
     Users can specialize this structure to extend those utilities to arbitrary types,
     without needing to reimplement the entire compile-time dispatch mechanism. */
@@ -78,7 +78,7 @@ This is similar to `std::variant<Ts...>`, but with the following changes:
         respectively, instead of just `T&` or `T*`.  This allows the type system to
         enforce exhaustive error handling on union access, without substantively
         changing the familiar variant interface.
-    5.  `visit()` is implemented according to `bertrand::visit()`, which has much
+    5.  `visit()` is implemented according to `impl::visit()`, which has much
         better support for partial coverage and heterogenous return types than
        `std::visit()`, once again with exhaustive error handling via
         `Expected<..., BadUnionAccess>` and `Optional<...>`.
@@ -1883,7 +1883,7 @@ namespace impl {
         };
         template <meta::lvalue U, typename... Us>
         union store<U, Us...> {
-            [[no_unique_address]] struct type { U value; } curr;
+            [[no_unique_address]] struct { U value; } curr;
             [[no_unique_address]] store<Us...> rest;
 
             constexpr store() noexcept {}
@@ -1981,10 +1981,10 @@ namespace impl {
             )
         )) && ...);
 
-        using copy_fn = store<Ts...>(*)(const union_storage&) noexcept(nothrow_copyable);
-        using move_fn = store<Ts...>(*)(union_storage&&) noexcept(nothrow_movable);
-        using destroy_fn = void(*)(union_storage&) noexcept(nothrow_destructible);
-        using swap_fn = void(*)(union_storage&, union_storage&) noexcept(nothrow_swappable);
+        using copy_fn = store<Ts...>(*)(const union_storage&) noexcept (nothrow_copyable);
+        using move_fn = store<Ts...>(*)(union_storage&&) noexcept (nothrow_movable);
+        using destroy_fn = void(*)(union_storage&) noexcept (nothrow_destructible);
+        using swap_fn = void(*)(union_storage&, union_storage&) noexcept (nothrow_swappable);
 
         template <size_t I>
         static constexpr store<Ts...> _copy(const union_storage& other)
@@ -2085,7 +2085,10 @@ namespace impl {
 
         template <typename = std::index_sequence_for<Ts...>>
         static constexpr destroy_fn destructors[0] {};
-        template <size_t... Is> requires (destructible)
+        template <size_t... Is>
+            requires (
+                destructible && (!meta::trivially_destructible<meta::remove_rvalue<Ts>> || ...)
+            )
         static constexpr destroy_fn destructors<std::index_sequence<Is...>>[sizeof...(Is)] {
             &_destroy<Is>...
         };
@@ -2149,7 +2152,9 @@ namespace impl {
             noexcept (nothrow_destructible)
             requires (destructible)
         {
-            destructors<>[index](*this);
+            if constexpr ((!meta::trivially_destructible<meta::remove_rvalue<Ts>> || ...)) {
+                destructors<>[index](*this);
+            }
         }
 
         constexpr void swap(union_storage& other)
@@ -2167,16 +2172,22 @@ namespace impl {
         }
     };
 
+    // determine the common type for the members of the union, if one exists.
+    template <typename... Ts>
+    struct union_common_type { using type = void; };
+    template <typename... Ts> requires (meta::has_common_type<Ts...>)
+    struct union_common_type<Ts...> { using type = meta::common_type<Ts...>; };
+
+
     /* Invoke a function with the given arguments, unwrapping any sum types in the
     process.  This is similar to `std::visit()`, but with greatly expanded
     metaprogramming capabilities.
 
     The visitor is constructed from either a single function or a set of functions
-    defined using `bertrand::visitor` or a similar overload set.  The subsequent
-    arguments will be passed to the visitor in the order they are defined, with each
-    union being unwrapped to its actual type within the visitor context.  A compilation
-    error will occur if the visitor is not callable with all nontrivial permutations of
-    the unwrapped values.
+    arranged into an overload set.  The subsequent arguments will be passed to the
+    visitor in the order they are defined, with each union being unwrapped to its
+    actual type within the visitor context.  A compilation error will occur if the
+    visitor is not callable with all nontrivial permutations of the unwrapped values.
 
     Note that the visitor does not need to be exhaustive over all possible
     permutations; only the valid ones.  Practically speaking, this means that the
@@ -2261,6 +2272,50 @@ namespace impl {
         } else {
             return std::forward<F>(f)(std::forward<Args>(args)...);
         }
+    }
+
+    /* Invoke a function with the given arguments, unpacking any product types in the
+    process.  This is similar to `std::apply()`, but permits any number of tuples as
+    arguments, including none, whereby it devolves to a simple function call.
+
+    Like `impl::visit()`, the visitor is constructed from either a single function
+    or a set of functions arranged into an overload set.  The subsequent arguments will
+    be passed to the visitor in the order they are defined, with any type that defines
+    `std::tuple_size<T>` and `std::get<I>()` being unpacked into its individual
+    elements, which are then passed as separate, consecutive arguments.  A compilation
+    error will occur if the visitor is not callable with the unpacked arguments.
+
+    In the same way that structured bindings can be used to unpack tuples into their
+    constituent elements, `impl::apply()` unpacks them as arguments to a function.
+    For example:
+
+        ```
+        std::pair<int, std::string> p{2, "hello"};
+        assert(apply(
+            [](int i, const std::string& s, double d) { return i + s.size() + d; },
+            p,
+            3.25
+        ) == 10.25);
+        ```
+
+    Note that `impl::apply()` and `impl::visit()` operate very similarly, but are not
+    interchangeable, and one does not imply the other.  This equates to the difference
+    between sum types and product types in an algebraic type system.  In particular,
+    sum types consist of a collection of types joined by a logical OR (`A` OR `B` OR
+    `C`), whereas product types represent the logical AND of those same types (`A` AND
+    `B` AND `C`).  `impl::visit()` is used to unwrap the former, while `impl::apply()`
+    handles the latter. */
+    template <typename F, typename... Ts>
+    constexpr decltype(auto) apply(F&& func, Ts&&... args)
+        noexcept(meta::nothrow::apply<F, Ts...>)
+        requires(meta::apply<F, Ts...>)
+    {
+        return (meta::detail::do_apply<0, F, Ts...>{}(
+            std::make_index_sequence<0>{},
+            std::make_index_sequence<sizeof...(Ts) - (sizeof...(Ts) > 0)>{},
+            std::forward<F>(func),
+            std::forward<Ts>(args)...
+        ));
     }
 
     /* A trivial iterator that only yields a single value, which is represented as a
@@ -2355,10 +2410,10 @@ namespace impl {
         }
     };
 
-    /* A special case of `optional_iterator<T>` where `T` is itself an iterator,
-    which allows it to be constructed in an empty state to represent an empty optional.
-    Otherwise, it behaves identically to the underlying iterator type, with the caveat
-    that it can only be compared against other `optional_iterator` wrappers. */
+    /* A wrapper for an iterator that allows it to be constructed in an empty state to
+    represent an empty optional.  Otherwise, behaves identically to the underlying
+    iterator type, with the caveat that it can only be compared against other
+    `optional_iterator` wrappers. */
     template <meta::unqualified T> requires (meta::iterator<T>)
     struct optional_iterator {
         using wrapped = T;
@@ -2525,19 +2580,11 @@ namespace impl {
         }
 
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator->(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).unwrap().operator->()} noexcept;})
-            requires (requires{{std::forward<Self>(self).unwrap().operator->()};})
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{std::to_address(std::forward<Self>(self).unwrap())} noexcept;})
+            requires (requires{{std::to_address(std::forward<Self>(self).unwrap())};})
         {
-            return (std::forward<Self>(self).unwrap().operator->());
-        }
-
-        template <typename Self> requires (meta::pointer<T>)
-        [[nodiscard]] constexpr decltype(auto) operator->(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).unwrap()} noexcept;})
-            requires (requires{{std::forward<Self>(self).unwrap()};})
-        {
-            return (std::forward<Self>(self).unwrap());
+            return std::to_address(std::forward<Self>(self).unwrap());
         }
 
         template <typename Self, typename V>
@@ -2753,75 +2800,751 @@ namespace impl {
         using rend_type = optional_iterator<meta::rend_type<T>>;
     };
 
-    /// TODO: `union_iterator<Ts...>`, for which all `Ts...` must be iterators,
-    /// and the overall iterator is default constructible in case the active type is
-    /// not iterable.  It would also cache the current value as another output union,
-    /// which the dereference operators would return references to.  The real problem
-    /// is what to do with iterator tags, as well as random access/bidirectional
-    /// iterators.  That would need to be resolved before implementing this type.
-
-    /// TODO: this would have to build up the begin type, end type, and yield type
-    /// for each iterable alternative, and then convert them into a raw union of
-    /// begin/end pairs, and a separate union holding the overall yield type.  In all
-    /// 3 cases, the types would need to be deduplicated to give the correct result,
-    /// and a vtable + tracking index would need to be generated to produce the
-    /// intended result.
-
-    /// TODO: maybe I should decouple the raw union storage from the Union internals
-    /// and generalize it so that I can use the same structure in the union iterator,
-    /// without needing to create a full Union<> type, or incur extra bounds checking.
-
-    /// TODO: make_union_iterator should also check to see what the proper iterator
-    /// tag is, which can be done with an enum that starts out as a contiguous
-    /// iterator and is reduced to the lowest common denominator of all iterators
-    /// in the union.  Then, the iterator interface would be gated by checking whether
-    /// all iterators in the union support a given operation, which will always be
-    /// true for basic, forward iteration.
-
-    /// TODO: maybe I should allow iteration over non-iterable alternatives by just
-    /// returning an iterator with a single element?  So:
-
-    /// Union<double, std::array<int, 3>> u = 1.25;
-    /// for (auto&& x : u) {  
-    ///     // x: Union<double&, int&>
-    /// }
-
-    /// TODO: that would mean all unions would be iterable, which is probably fine,
-    /// since all optionals and expecteds are also iterable in the same way.
 
 
+    /// TODO: maybe union_iterator_cache should also compute the most permissive
+    /// matching tag, starting with contiguous_iterator_tag, and consulting a helper
+    /// struct to do the deduction?
 
-    /// TODO: when it comes to comparisons and distance calculations, it should only
-    /// be possible to compare union iterators to other union iterators where each
-    /// alternative supports the comparison operation with its corresponding pair.
+    /// TODO: union_iterator_cache does not produce a cache type anymore, since
+    /// iterators will not use caches in general.  It is still needed to determine the
+    /// value of the `reference` iterator type, and probably the category as well.
+
+    template <typename, typename...>
+    struct _union_iterator_cache { struct type {}; };
+    template <meta::lvalue out>
+    struct _union_iterator_cache<meta::pack<out>> {
+        union type {
+            [[no_unique_address]] struct { out ref; } value;
+            constexpr ~type() noexcept {}
+
+            template <typename Self>
+            [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+                return (std::forward<Self>(self).value.ref);
+            }
+
+            constexpr void construct(out v) noexcept {
+                std::construct_at(&value, v);
+            }
+
+            constexpr void destroy() noexcept {}
+        };
+    };
+    template <typename out> requires (!meta::lvalue<out>)
+    struct _union_iterator_cache<meta::pack<out>> {
+        union type {
+            meta::remove_rvalue<out> value;
+            constexpr ~type() noexcept {}
+
+            template <typename Self>
+            [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+                return (std::forward<Self>(self).value);
+            }
+
+            template <typename... A>
+            constexpr void construct(A&&... a)
+                noexcept (requires{
+                    {std::construct_at(&value, std::forward<A>(a)...)} noexcept;
+                })
+                requires (requires{
+                    {std::construct_at(&value, std::forward<A>(a)...)};
+                })
+            {
+                std::construct_at(&value, std::forward<A>(a)...);
+            }
+
+            constexpr void destroy()
+                noexcept (meta::trivially_destructible<meta::remove_rvalue<out>> || requires{
+                    {std::destroy_at(&value)} noexcept;
+                })
+                requires (meta::trivially_destructible<meta::remove_rvalue<out>> || requires{
+                    {std::destroy_at(&value)};
+                })
+            {
+                if constexpr (!meta::trivially_destructible<meta::remove_rvalue<out>>) {
+                    std::destroy_at(&value);
+                }
+            }
+        };
+    };
+    template <typename... out> requires (sizeof...(out) > 1)
+    struct _union_iterator_cache<meta::pack<out...>> {
+        union type {
+            Union<out...> value;
+            constexpr ~type() noexcept {}
+
+            template <typename Self>
+            [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+                return (std::forward<Self>(self).value);
+            }
+
+            template <typename... A>
+            constexpr void construct(A&&... a)
+                noexcept (requires{
+                    {std::construct_at(&value, std::forward<A>(a)...)} noexcept;
+                })
+                requires (requires{
+                    {std::construct_at(&value, std::forward<A>(a)...)};
+                })
+            {
+                std::construct_at(&value, std::forward<A>(a)...);
+            }
+
+            constexpr void destroy()
+                noexcept (requires{{std::destroy_at(&value)} noexcept;})
+                requires (requires{{std::destroy_at(&value)};})
+            {
+                std::destroy_at(&value);
+            }
+        };
+    };
+    template <typename... out, meta::has_dereference T, typename... Ts>
+        requires (meta::index_of<meta::dereference_type<T>, out...> == sizeof...(out))
+    struct _union_iterator_cache<meta::pack<out...>, T, Ts...> :
+        _union_iterator_cache<meta::pack<out..., meta::dereference_type<T>>, Ts...>
+    {};
+    template <typename... out, typename T, typename... Ts>
+    struct _union_iterator_cache<meta::pack<out...>, T, Ts...> :
+        _union_iterator_cache<meta::pack<out...>, Ts...>
+    {};
+    template <meta::iterator... Ts>
+    using union_iterator_cache = _union_iterator_cache<meta::pack<>, Ts...>::type;
 
 
-    /* An iterator over a union of types `Ts...`, which must all be individually
-    iterable.  The implementation stores pairs of iterators over the given types in a
-    C-style union, with another C-style union storing the cached result for the current
-    iteration.  A vtable is consulted to populate the second union with the contents of
-    the first, which is then used to dereference the iterator.  This keeps the
-    iteration overhead down to one vtable lookup per increment/comparison. */
-    template <typename... Ts>
+    /// TODO: if all members of the union share the same iterator type, then I can
+    /// simply return that type directly to avoid any extra indirection overhead.
+    /// Otherwise, if they return 2 or more types, then I have to create a
+    /// union_iterator, which attempts to preserve the same interface as much as
+    /// possible.
+
+
+    /* A union of iterator types `Ts...`, which attempts to forward their combined
+    interface as faithfully as possible.  All operations are enabled if each of the
+    underlying types supports them, and will use vtables to exhaustively cover them.
+    If any operations would cause the result to narrow to a single type, then that
+    type will be returned directly, else it will be returned as a union of types,
+    except where otherwise specified.  Iteration performance will be reduced slightly
+    due to the extra dynamic dispatch, but should otherwise not degrade functionality
+    in any way. */
+    template <meta::iterator... Ts>
+        requires (
+            sizeof...(Ts) > 1 &&
+            meta::has_common_type<typename std::iterator_traits<Ts>::difference_type...> &&
+            meta::has_common_type<typename std::iterator_traits<Ts>::value_type...> &&
+            meta::has_common_type<typename std::iterator_traits<Ts>::reference...> &&
+            meta::has_common_type<typename std::iterator_traits<Ts>::pointer...>
+        )
     struct union_iterator {
         using wrapped = meta::pack<Ts...>;
+        /// TODO: detect proper iterator category
+        using difference_type = meta::common_type<
+            typename std::iterator_traits<Ts>::difference_type...
+        >;
 
-        /// TODO: now that I have a union_storage core that can cover Ts..., it should
-        /// be slightly easier to implement this class?  Nothing about union_storage
-        /// should require unique types, so there shouldn't really be any problems.
-        /// -> increment() would require another vtable, as would compare(), and
-        /// probably operator[], operator+, operator-, etc, depending on support.
-        /// Note that I still need to deduce the most permissive iterator tag as well,
-        /// and none of the vtables will be generated unless all iterators support
-        /// the operation in question.
+        /// TODO: these are incorrect, and should refer to the the dereference type
+        /// of the overall iterator, not their common type.  Note that the reference
+        /// type must be consistent between the dereference and operator[] operators.
+        using value_type = meta::common_type<
+            typename std::iterator_traits<Ts>::value_type...
+        >;
+        using reference = meta::common_type<
+            typename std::iterator_traits<Ts>::reference...
+        >;
+        using pointer = meta::common_type<
+            typename std::iterator_traits<Ts>::pointer...
+        >;
 
+        /// TODO: iterators -> storage
         union_storage<Ts...> iterators;
 
-        /// TODO: a raw C union holding the dereference type, which stays uninitialized
-        /// unless the iterator is non-empty.  Its destructor would have to be called
-        /// manually on each iteration, and then call() (separate from increment()?)
-        /// would populate it with the current value.
+    private:
+        static constexpr bool dereferenceable =
+            ((
+                meta::has_dereference<meta::as_const_ref<Ts>> &&
+                meta::convertible_to<
+                    meta::dereference_type<meta::as_const_ref<Ts>>,
+                    reference
+                >
+            ) && ...);
+        static constexpr bool nothrow_dereferenceable =
+            ((
+                meta::nothrow::has_dereference<meta::as_const_ref<Ts>> &&
+                meta::nothrow::convertible_to<
+                    meta::nothrow::dereference_type<meta::as_const_ref<Ts>>,
+                    reference
+                >
+            ) && ...);
 
+        static constexpr bool indexable =
+            ((
+                meta::indexable<meta::as_const_ref<Ts>, difference_type> &&
+                meta::convertible_to<
+                    meta::index_type<meta::as_const_ref<Ts>, difference_type>,
+                    reference
+                >
+            ) && ...);
+        static constexpr bool nothrow_indexable =
+            ((
+                meta::nothrow::indexable<meta::as_const_ref<Ts>, difference_type> &&
+                meta::nothrow::convertible_to<
+                    meta::nothrow::index_type<meta::as_const_ref<Ts>, difference_type>,
+                    reference
+                >
+            ) && ...);
+
+        static constexpr bool incrementable =
+            (meta::has_preincrement<Ts> && ...);
+        static constexpr bool nothrow_incrementable =
+            (meta::nothrow::has_preincrement<Ts> && ...);
+
+        /// TODO: check for convertibility to the union_iterator for add/subtract
+        /// returning a new iterator.
+
+        static constexpr bool forward_addable =
+            (meta::has_add<meta::as_const_ref<Ts>, difference_type> && ...);
+        static constexpr bool reverse_addable =
+            (meta::has_add<difference_type, meta::as_const_ref<Ts>> && ...);
+        static constexpr bool nothrow_forward_addable =
+            (meta::nothrow::has_add<meta::as_const_ref<Ts>, difference_type> && ...);
+        static constexpr bool nothrow_reverse_addable =
+            (meta::nothrow::has_add<difference_type, meta::as_const_ref<Ts>> && ...);
+
+        static constexpr bool inplace_addable =
+            (meta::has_iadd<Ts, difference_type> && ...);
+        static constexpr bool nothrow_inplace_addable =
+            (meta::nothrow::has_iadd<Ts, difference_type> && ...);
+
+        static constexpr bool decrementable =
+            (meta::has_predecrement<Ts> && ...);
+        static constexpr bool nothrow_decrementable =
+            (meta::nothrow::has_predecrement<Ts> && ...);
+
+        static constexpr bool subtractable =
+            (meta::has_sub<meta::as_const_ref<Ts>, difference_type> && ...);
+        static constexpr bool nothrow_subtractable =
+            (meta::nothrow::has_sub<meta::as_const_ref<Ts>, difference_type> && ...);
+
+        static constexpr bool inplace_subtractable =
+            (meta::has_isub<Ts, difference_type> && ...);
+        static constexpr bool nothrow_inplace_subtractable =
+            (meta::nothrow::has_isub<Ts, difference_type> && ...);
+
+        using deref_fn = reference(*)(const union_iterator&) noexcept (nothrow_dereferenceable);
+        using index_fn = reference(*)(const union_iterator&, difference_type)
+            noexcept (nothrow_indexable);
+        using increment_fn = void(*)(union_iterator&) noexcept (nothrow_incrementable);
+        using forward_add_fn = union_iterator(*)(const union_iterator&, difference_type)
+            noexcept (nothrow_forward_addable);
+        using reverse_add_fn = union_iterator(*)(difference_type, const union_iterator&)
+            noexcept (nothrow_reverse_addable);
+        using inplace_add_fn = void(*)(union_iterator&, difference_type)
+            noexcept (nothrow_inplace_addable);
+        using decrement_fn = void(*)(union_iterator&) noexcept (nothrow_decrementable);
+        using subtract_fn = difference_type(*)(const union_iterator&, difference_type)
+            noexcept (nothrow_subtractable);
+        using inplace_subtract_fn = void(*)(union_iterator&, difference_type)
+            noexcept (nothrow_inplace_subtractable);
+
+        template <size_t I>
+        static constexpr reference _deref(const union_iterator& self)
+            noexcept (nothrow_dereferenceable)
+        {
+            return *self.iterators.template get<I>();
+        }
+
+        template <size_t I>
+        static constexpr reference _index(const union_iterator& self, difference_type n)
+            noexcept (nothrow_indexable)
+        {
+            return self.iterators.template get<I>()[n];
+        }
+
+        template <size_t I>
+        static constexpr void _increment(union_iterator& self)
+            noexcept (nothrow_incrementable)
+        {
+            ++self.iterators.template get<I>();
+        }
+
+        template <size_t I>
+        static constexpr union_iterator _forward_add(const union_iterator& self, difference_type n)
+            noexcept (nothrow_forward_addable)
+        {
+            return {.iterators = {union_select<I>{}, self.iterators.template get<I>() + n}};
+        }
+
+        template <size_t I>
+        static constexpr union_iterator _reverse_add(difference_type n, const union_iterator& self)
+            noexcept (nothrow_reverse_addable)
+        {
+            return {.iterators = {union_select<I>{}, n + self.iterators.template get<I>()}};
+        }
+
+        template <size_t I>
+        static constexpr void _inplace_add(union_iterator& self, difference_type n)
+            noexcept (nothrow_inplace_addable)
+        {
+            self.iterators.template get<I>() += n;
+        }
+
+        template <size_t I>
+        static constexpr void _decrement(union_iterator& self)
+            noexcept (nothrow_decrementable)
+        {
+            --self.iterators.template get<I>();
+        }
+
+        template <size_t I>
+        static constexpr union_iterator _subtract(const union_iterator& self, difference_type n)
+            noexcept (nothrow_subtractable)
+        {
+            return {.iterators = {union_select<I>{}, self.iterators.template get<I>() - n}};
+        }
+
+        template <size_t I>
+        static constexpr void _inplace_subtract(union_iterator& self, difference_type n)
+            noexcept (nothrow_inplace_subtractable)
+        {
+            self.iterators.template get<I>() -= n;
+        }
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr deref_fn deref[0] {};
+        template <size_t... Is> requires (dereferenceable)
+        static constexpr deref_fn deref<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_deref<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr index_fn index[0] {};
+        template <size_t... Is> requires (indexable)
+        static constexpr index_fn index<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_index<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr increment_fn increment[0] {};
+        template <size_t... Is> requires (incrementable)
+        static constexpr increment_fn increment<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_increment<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr forward_add_fn forward_add[0] {};
+        template <size_t... Is> requires (forward_addable)
+        static constexpr forward_add_fn forward_add<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_forward_add<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr reverse_add_fn reverse_add[0] {};
+        template <size_t... Is> requires (reverse_addable)
+        static constexpr reverse_add_fn reverse_add<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_reverse_add<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr inplace_add_fn inplace_add[0] {};
+        template <size_t... Is> requires (inplace_addable)
+        static constexpr inplace_add_fn inplace_add<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_inplace_add<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr decrement_fn decrement[0] {};
+        template <size_t... Is> requires (decrementable)
+        static constexpr decrement_fn decrement<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_decrement<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr subtract_fn subtract[0] {};
+        template <size_t... Is> requires (subtractable)
+        static constexpr subtract_fn subtract<std::index_sequence<Is...>>[sizeof...(Is)] {
+            &_subtract<Is>...
+        };
+
+        template <typename = std::index_sequence_for<Ts...>>
+        static constexpr inplace_subtract_fn inplace_subtract[0] {};
+        template <size_t... Is> requires (inplace_subtractable)
+        static constexpr inplace_subtract_fn inplace_subtract<std::index_sequence<Is...>>[
+            sizeof...(Is)
+        ] { &_inplace_subtract<Is>... };
+
+        template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
+        struct compare {
+            using other = union_iterator<Us...>;
+
+            static constexpr bool less = (meta::lt_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_less = (meta::nothrow::lt_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            static constexpr bool less_equal = (meta::le_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_less_equal = (meta::nothrow::le_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            static constexpr bool equal = (meta::eq_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_equal = (meta::nothrow::eq_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            static constexpr bool unequal = (meta::ne_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_unequal = (meta::nothrow::ne_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            static constexpr bool greater_equal = (meta::ge_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_greater_equal = (meta::nothrow::ge_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            static constexpr bool greater = (meta::gt_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_greater = (meta::nothrow::gt_returns<
+                bool,
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            static constexpr bool three_way = (meta::has_spaceship<
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ... && meta::has_common_type<
+                meta::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<Us>>...
+            >);
+            static constexpr bool nothrow_three_way = (meta::nothrow::has_spaceship<
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ... && meta::nothrow::has_common_type<
+                meta::nothrow::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<Us>>...
+            >);
+            template <bool>
+            struct _spaceship_type { using type = meta::common_type<
+                meta::spaceship_type<meta::as_const_ref<Ts>, meta::as_const_ref<Us>>...
+            >; };
+            template <>
+            struct _spaceship_type<false> { using type = void; };
+            using spaceship_type = _spaceship_type<three_way>::type;
+
+            static constexpr bool distance = (meta::sub_returns<
+                difference_type, 
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+            static constexpr bool nothrow_distance = (meta::nothrow::sub_returns<
+                difference_type, 
+                meta::as_const_ref<Ts>,
+                meta::as_const_ref<Us>
+            > && ...);
+
+            using lt_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_less);
+            using le_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_less_equal);
+            using eq_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_equal);
+            using ne_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_unequal);
+            using ge_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_greater_equal);
+            using gt_fn = bool(*)(const union_iterator&, const other&) noexcept (nothrow_greater);
+            using spaceship_fn = spaceship_type(*)(const union_iterator&, const other&)
+                noexcept (nothrow_three_way);
+            using distance_fn = difference_type(*)(const union_iterator&, const other&)
+                noexcept (nothrow_distance);
+
+            template <size_t I>
+            static constexpr bool _lt(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_less)
+            {
+                return lhs.iterators.template get<I>() < rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool _le(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_less_equal)
+            {
+                return lhs.iterators.template get<I>() <= rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool _eq(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_equal)
+            {
+                return lhs.iterators.template get<I>() == rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool _ne(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_unequal)
+            {
+                return lhs.iterators.template get<I>() != rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool _ge(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_greater_equal)
+            {
+                return lhs.iterators.template get<I>() >= rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr bool _gt(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_greater)
+            {
+                return lhs.iterators.template get<I>() > rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr spaceship_type _spaceship(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_three_way)
+            {
+                return lhs.iterators.template get<I>() <=> rhs.iterators.template get<I>();
+            }
+
+            template <size_t I>
+            static constexpr difference_type _dist(const union_iterator& lhs, const other& rhs)
+                noexcept (nothrow_distance)
+            {
+                return lhs.iterators.template get<I>() - rhs.iterators.template get<I>();
+            }
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr lt_fn lt[0] {};
+            template <size_t... Is> requires (less)
+            static constexpr lt_fn lt<std::index_sequence<Is...>>[sizeof...(Is)] {&_lt<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr le_fn le[0] {};
+            template <size_t... Is> requires (less_equal)
+            static constexpr le_fn le<std::index_sequence<Is...>>[sizeof...(Is)] {&_le<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr eq_fn eq[0] {};
+            template <size_t... Is> requires (equal)
+            static constexpr eq_fn eq<std::index_sequence<Is...>>[sizeof...(Is)] {&_eq<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr ne_fn ne[0] {};
+            template <size_t... Is> requires (unequal)
+            static constexpr ne_fn ne<std::index_sequence<Is...>>[sizeof...(Is)] {&_ne<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr ge_fn ge[0] {};
+            template <size_t... Is> requires (greater_equal)
+            static constexpr ge_fn ge<std::index_sequence<Is...>>[sizeof...(Is)] {&_ge<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr gt_fn gt[0] {};
+            template <size_t... Is> requires (greater)
+            static constexpr gt_fn gt<std::index_sequence<Is...>>[sizeof...(Is)] {&_gt<Is>...};
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr spaceship_fn spaceship[0] {};
+            template <size_t... Is> requires (three_way)
+            static constexpr spaceship_fn spaceship<std::index_sequence<Is...>>[sizeof...(Is)] {
+                &_spaceship<Is>...
+            };
+
+            template <typename = std::index_sequence_for<Ts...>>
+            static constexpr distance_fn dist[0] {};
+            template <size_t... Is> requires (distance)
+            static constexpr distance_fn dist<std::index_sequence<Is...>>[sizeof...(Is)] {
+                &_dist<Is>...
+            };
+        };
+
+    public:
+        /// -> Note that for random access iterator to be satisfied, operator[] must
+        /// return an iter_reference_t<>, which means it has to return the same thing
+        /// as operator*(), and drop operator->().  That would also eliminate the need
+        /// for a separate cache, and should increase performance at the same time.
+        /// It just requires reconfiguring the 
+
+        [[nodiscard]] constexpr reference operator*() const
+            noexcept (nothrow_dereferenceable)
+            requires (dereferenceable)
+        {
+            return deref<>[iterators.index](*this);
+        }
+
+        /// TODO: it might still be possible to provide operator->() if all possible
+        /// results share a common type.  Otherwise it is not usable.  This would be
+        /// similar to operator*() returning a standard reference if all types share
+        /// a common reference type, or a union of references otherwise.
+
+        [[nodiscard]] constexpr reference operator[](difference_type n)
+            noexcept (nothrow_indexable)
+            requires (indexable)
+        {
+            return index<>[iterators.index](*this, n);
+        }
+
+        constexpr union_iterator& operator++()
+            noexcept (nothrow_incrementable)
+            requires (incrementable)
+        {
+            increment<>[iterators.index](*this);
+            return *this;
+        }
+
+        [[nodiscard]] constexpr union_iterator operator++(int)
+            noexcept (meta::nothrow::copyable<union_iterator> && requires{{++*this} noexcept;})
+            requires (meta::copyable<union_iterator> && requires{{++*this};})
+        {
+            union_iterator tmp(*this);
+            ++*this;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr union_iterator operator+(
+            const union_iterator& self,
+            difference_type n
+        )
+            noexcept (nothrow_forward_addable)
+            requires (forward_addable)
+        {
+            return forward_add<>[self.iterators.index](self, n);
+        }
+
+        [[nodiscard]] friend constexpr union_iterator operator+(
+            difference_type n,
+            const union_iterator& self
+        )
+            noexcept (nothrow_reverse_addable)
+            requires (reverse_addable)
+        {
+            return reverse_add<>[self.iterators.index](n, self);
+        }
+
+        constexpr union_iterator& operator+=(difference_type n)
+            noexcept (nothrow_inplace_addable)
+            requires (inplace_addable)
+        {
+            inplace_add<>[iterators.index](*this, n);
+            return *this;
+        }
+
+        constexpr union_iterator& operator--()
+            noexcept (nothrow_decrementable)
+            requires (decrementable)
+        {
+            decrement<>[iterators.index](*this);
+            return *this;
+        }
+
+        [[nodiscard]] constexpr union_iterator operator--(int)
+            noexcept (meta::nothrow::copyable<union_iterator> && requires{{--*this} noexcept;})
+            requires (meta::copyable<union_iterator> && requires{{--*this};})
+        {
+            union_iterator tmp(*this);
+            --*this;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr union_iterator operator-(
+            const union_iterator& self,
+            difference_type n
+        )
+            noexcept (nothrow_subtractable)
+            requires (subtractable)
+        {
+            return subtract<>[self.iterators.index](self, n);
+        }
+
+        constexpr union_iterator& operator-=(difference_type n)
+            noexcept (nothrow_inplace_subtractable)
+            requires (inplace_subtractable)
+        {
+            inplace_subtract<>[iterators.index](*this, n);
+            return *this;
+        }
+
+        template <typename... Us> requires (compare<Us...>::distance)
+        [[nodiscard]] constexpr difference_type operator-(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_distance)
+        {
+            return compare<Us...>::template dist<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::less)
+        [[nodiscard]] constexpr bool operator<(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_less)
+        {
+            return compare<Us...>::template lt<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::less_equal)
+        [[nodiscard]] constexpr bool operator<=(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_less_equal)
+        {
+            return compare<Us...>::template le<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::equal)
+        [[nodiscard]] constexpr bool operator==(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_equal)
+        {
+            return compare<Us...>::template eq<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::unequal)
+        [[nodiscard]] constexpr bool operator!=(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_unequal)
+        {
+            return compare<Us...>::template ne<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::greater_equal)
+        [[nodiscard]] constexpr bool operator>=(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_greater_equal)
+        {
+            return compare<Us...>::template ge<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::greater)
+        [[nodiscard]] constexpr bool operator>(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_greater)
+        {
+            return compare<Us...>::template gt<>[iterators.index](*this, other);
+        }
+
+        template <typename... Us> requires (compare<Us...>::three_way)
+        [[nodiscard]] constexpr decltype(auto) operator<=>(const union_iterator<Us...>& other) const
+            noexcept (compare<Us...>::nothrow_three_way)
+        {
+            return (compare<Us...>::template spaceship<>[iterators.index](*this, other));
+        }
     };
 
 
@@ -2933,52 +3656,6 @@ namespace impl {
 }
 
 
-/* Invoke a function with the given arguments, unpacking any product types in the
-process.  This is similar to `std::apply()`, but permits any number of tuples as
-arguments, including none, whereby it devolves to a simple function call.
-
-Like `bertrand::visit()`, the visitor is constructed from either a single function or a
-set of functions defined using `bertrand::visitor` or a similar overload set.  The
-subsequent arguments will be passed to the visitor in the order they are defined, with
-any type that defines `std::tuple_size<T>` and `std::get<I>()` being unpacked into its
-individual elements, which are then passed as separate, consecutive arguments.  A
-compilation error will occur if the visitor is not callable with the unpacked
-arguments.
-
-In the same way that structured bindings can be used to unpack tuples into their
-constituent elements, `bertrand::apply()` unpacks them as arguments to a function.
-For example:
-
-    ```
-    std::pair<int, std::string> p{2, "hello"};
-    assert(apply(
-        [](int i, const std::string& s, double d) { return i + s.size() + d; },
-        p,
-        3.25
-    ) == 10.25);
-    ```
-
-Note that `bertrand::apply()` and `bertrand::visit()` operate very similarly, but are
-not interchangeable, and one does not imply the other.  This equates to the difference
-between sum types and product types in an algebraic type system.  In particular, sum
-types consist of a collection of types joined by a logical OR (`A` OR `B` OR `C`),
-whereas product types represent the logical AND of those same types (`A` AND `B` AND
-`C`).  `bertrand::visit()` is used to unwrap the former, while `bertrand::apply()`
-handles the latter. */
-template <typename F, typename... Ts>
-constexpr decltype(auto) apply(F&& func, Ts&&... args)
-    noexcept(meta::nothrow::apply<F, Ts...>)
-    requires(meta::apply<F, Ts...>)
-{
-    return (meta::detail::do_apply<0, F, Ts...>{}(
-        std::make_index_sequence<0>{},
-        std::make_index_sequence<sizeof...(Ts) - (sizeof...(Ts) > 0)>{},
-        std::forward<F>(func),
-        std::forward<Ts>(args)...
-    ));
-}
-
-
 template <typename... Ts>
     requires (sizeof...(Ts) > 1 && (meta::not_void<Ts> && ...) && meta::unique<Ts...>)
 struct Union : impl::union_tag {
@@ -2993,13 +3670,10 @@ private:
         requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
     friend struct bertrand::Expected;
 
-    // determine the common type for the members of the union, if one exists.
-    template <typename... Us>
-    struct get_common_type { using type = void; };
-    template <typename... Us> requires (meta::has_common_type<Us...>)
-    struct get_common_type<Us...> { using type = meta::common_type<Us...>; };
+    using storage = impl::union_storage<Ts...>;
+    [[no_unique_address]] storage m_storage;
 
-    // Find the first type in Ts... that is default constructible, or void
+    // Find the first type in Ts... that is default constructible (void if none)
     template <typename... Us>
     struct _default_type { using type = void; };
     template <typename U, typename... Us>
@@ -3090,9 +3764,6 @@ private:
     template <typename... A>
     using construct_type = _construct_type<A...>::template infer<Ts...>::type;
 
-    using storage = impl::union_storage<Ts...>;
-    [[no_unique_address]] storage m_storage;
-
     template <size_t I, typename Self> requires (I < types::size)
     using access = decltype((std::declval<Self>().m_storage.template get<I>()));
 
@@ -3161,7 +3832,7 @@ private:
 
     template <typename Self>
     struct Flatten {
-        using type = get_common_type<access_t<Ts, Self>...>::type;
+        using type = impl::union_common_type<access_t<Ts, Self>...>::type;
         template <typename T>
         static constexpr type operator()(T&& value)
             noexcept(meta::nothrow::convertible_to<T, type>)
@@ -3274,6 +3945,16 @@ public:
     exception safety. */
     constexpr Union& operator=(Union&&) = default;
 
+    /* Swap the contents of two unions as efficiently as possible.  This will use
+    swap operators for the wrapped alternatives if possible, otherwise falling back to
+    a 3-way move using a temporary of the same type. */
+    constexpr void swap(Union& other)
+        noexcept (requires{{m_storage.swap(other.m_storage)} noexcept;})
+        requires (requires{{m_storage.swap(other.m_storage)};})
+    {
+        m_storage.swap(other.m_storage);
+    }
+
     /* Implicit conversion operator allows conversions toward any type to which all
     alternatives can be exhaustively converted.  This allows conversion to scalar types
     as well as union types (regardless of source) that satisfy the conversion
@@ -3299,16 +3980,6 @@ public:
         )
     {
         return impl::visit(impl::ExplicitConvertTo<T>{}, std::forward<Self>(self));
-    }
-
-    /* Swap the contents of two unions as efficiently as possible.  This will use
-    swap operators for the wrapped alternatives if possible, otherwise falling back to
-    a 3-way move using a temporary of the same type. */
-    constexpr void swap(Union& other)
-        noexcept (requires{{m_storage.swap(other.m_storage)} noexcept;})
-        requires (requires{{m_storage.swap(other.m_storage)};})
-    {
-        m_storage.swap(other.m_storage);
     }
     
     /* Get the index of the currently-active type in the union. */
@@ -3412,11 +4083,11 @@ public:
 
     /// TODO: maybe the member visit() method is also deleted, since def() functions
     /// are trivial to write and should better cover this case.  Also, update all
-    /// references to visit() or bertrand::visit() in the documentation to reflect
+    /// references to visit() or impl::visit() in the documentation to reflect
     /// unification with def()
 
-    /* A member equivalent for `bertrand::visit()`, which always inserts this union as
-    the first argument, for chaining purposes.  See `bertrand::visit()` for more
+    /* A member equivalent for `impl::visit()`, which always inserts this union as
+    the first argument, for chaining purposes.  See `impl::visit()` for more
     details. */
     template <typename F, typename Self, typename... Args>
     constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args)
@@ -3452,7 +4123,7 @@ public:
     converted to `Optional<R>`, where `R` is the return type(s) of the invocable
     functions.  If not all of the union types are invocable with the given arguments,
     then the result will be further wrapped in an `Expected<R, BadUnionAccess>`, just
-    as for `bertrand::visit()`. */
+    as for `impl::visit()`. */
     template <typename Self, typename... Args>
     constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
         noexcept(meta::nothrow::visit<impl::Call, Self, Args...>)
@@ -3471,7 +4142,7 @@ public:
     `void` and others are not, then the result may be converted to `Optional<R>`, where
     `R` is the return type(s) of the indexable types.  If not all of the union types
     are indexable with the given arguments, then the result will be further wrapped in
-    an `Expected<R, BadUnionAccess>`, just as for `bertrand::visit()`. */
+    an `Expected<R, BadUnionAccess>`, just as for `impl::visit()`. */
     template <typename Self, typename... Key>
     constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
         noexcept(meta::nothrow::visit<impl::Subscript, Self, Key...>)
@@ -3770,8 +4441,8 @@ public:
         }
     }
 
-    /* A member equivalent for `bertrand::visit()`, which always inserts this optional
-    as the first argument, for chaining purposes.  See `bertrand::visit()` for more
+    /* A member equivalent for `impl::visit()`, which always inserts this optional
+    as the first argument, for chaining purposes.  See `impl::visit()` for more
     details.
 
     For optionals, the visitor function only needs to handle two cases corresponding
@@ -4878,8 +5549,8 @@ public:
         }
     }
 
-    /* A member equivalent for `bertrand::visit()`, which always inserts this expected
-    as the first argument, for chaining purposes.  See `bertrand::visit()` for more
+    /* A member equivalent for `impl::visit()`, which always inserts this expected
+    as the first argument, for chaining purposes.  See `impl::visit()` for more
     details.
 
     For expecteds, the visitor function can consider any combination of the result type
@@ -5500,7 +6171,7 @@ constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
 }
 
 
-/* Monadic logical NOT operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic logical NOT operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports logical NOT. */
 template <meta::monad T> requires (meta::visit<impl::LogicalNot, T>)
@@ -5511,7 +6182,7 @@ constexpr decltype(auto) operator!(T&& val) noexcept(
 }
 
 
-/* Monadic logical AND operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic logical AND operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports logical AND against the other
 operand (which may be another monad). */
@@ -5531,7 +6202,7 @@ constexpr decltype(auto) operator&&(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic logical OR operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic logical OR operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports logical OR against the other
 operand (which may be another monad). */
@@ -5551,7 +6222,7 @@ constexpr decltype(auto) operator||(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic less-than comparison operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic less-than comparison operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports less-than comparisons against the
 other operand (which may be another monad). */
@@ -5571,7 +6242,7 @@ constexpr decltype(auto) operator<(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic less-than-or-equal comparison operator.  Delegates to `bertrand::visit()`,
+/* Monadic less-than-or-equal comparison operator.  Delegates to `impl::visit()`,
 and is automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports less-than-or-equal comparisons
 against the other operand (which may be another monad). */
@@ -5591,7 +6262,7 @@ constexpr decltype(auto) operator<=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic equality operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic equality operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports equality comparisons against the other operand
 (which may be another monad). */
@@ -5611,7 +6282,7 @@ constexpr decltype(auto) operator==(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic inequality operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic inequality operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports equality comparisons against the other operand
 (which may be another monad). */
@@ -5631,7 +6302,7 @@ constexpr decltype(auto) operator!=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic greater-than-or-equal comparison operator.  Delegates to `bertrand::visit()`,
+/* Monadic greater-than-or-equal comparison operator.  Delegates to `impl::visit()`,
 and is automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports greater-than-or-equal comparisons
 against the other operand (which may be another monad). */
@@ -5651,7 +6322,7 @@ constexpr decltype(auto) operator>=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic greater-than comparison operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic greater-than comparison operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports greater-than-or-equal comparisons
 against the other operand (which may be another monad). */
@@ -5671,7 +6342,7 @@ constexpr decltype(auto) operator>(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic three-way comparison operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic three-way comparison operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports three-way comparisons against the
 other operand (which may be another monad). */
@@ -5691,7 +6362,7 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic unary plus operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic unary plus operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports unary plus. */
 template <meta::monad T> requires (meta::visit<impl::Pos, T>)
@@ -5702,7 +6373,7 @@ constexpr decltype(auto) operator+(T&& val) noexcept(
 }
 
 
-/* Monadic unary minus operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic unary minus operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports unary minus. */
 template <meta::monad T> requires (meta::visit<impl::Neg, T>)
@@ -5713,7 +6384,7 @@ constexpr decltype(auto) operator-(T&& val) noexcept(
 }
 
 
-/* Monadic prefix increment operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic prefix increment operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one tyoe within the monad supports prefix increments. */
 template <meta::monad T> requires (meta::visit<impl::PreIncrement, T>)
@@ -5724,7 +6395,7 @@ constexpr decltype(auto) operator++(T&& val) noexcept(
 }
 
 
-/* Monadic postfix increment operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic postfix increment operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports postfix increments. */
 template <meta::monad T> requires (meta::visit<impl::PostIncrement, T>)
@@ -5735,7 +6406,7 @@ constexpr decltype(auto) operator++(T&& val, int) noexcept(
 }
 
 
-/* Monadic prefix decrement operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic prefix decrement operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports prefix decrements. */
 template <meta::monad T> requires (meta::visit<impl::PreDecrement, T>)
@@ -5745,7 +6416,7 @@ constexpr decltype(auto) operator--(T&& val) noexcept(
     return (impl::visit(impl::PreDecrement{}, std::forward<T>(val)));
 }
 
-/* Monadic postfix decrement operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic postfix decrement operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
 true and at least one type within the monad supports postfix decrements. */
 template <meta::monad T> requires (meta::visit<impl::PostDecrement, T>)
@@ -5756,7 +6427,7 @@ constexpr decltype(auto) operator--(T&& val, int) noexcept(
 }
 
 
-/* Monadic addition operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic addition operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports addition with the other operand (which may be
 another monad). */
@@ -5776,7 +6447,7 @@ constexpr decltype(auto) operator+(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place addition operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place addition operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports addition with the other operand
 (which may be another monad). */
@@ -5796,7 +6467,7 @@ constexpr decltype(auto) operator+=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic subtraction operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic subtraction operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports subtraction with the other operand
 (which may be another monad). */
@@ -5816,7 +6487,7 @@ constexpr decltype(auto) operator-(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place subtraction operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place subtraction operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports subtraction with the other operand
 (which may be another monad). */
@@ -5836,7 +6507,7 @@ constexpr decltype(auto) operator-=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic multiplication operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic multiplication operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports multiplication with the other operand
 (which may be another monad). */
@@ -5856,7 +6527,7 @@ constexpr decltype(auto) operator*(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place multiplication operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place multiplication operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports multiplication with the other operand
 (which may be another monad). */
@@ -5876,7 +6547,7 @@ constexpr decltype(auto) operator*=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic division operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic division operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports division with the other operand (which may be
 another monad). */
@@ -5896,7 +6567,7 @@ constexpr decltype(auto) operator/(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place division operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place division operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports division with the other operand
 (which may be another monad). */
@@ -5916,7 +6587,7 @@ constexpr decltype(auto) operator/=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic modulus operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic modulus operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports modulus with the other operand (which may be
 another monad). */
@@ -5936,7 +6607,7 @@ constexpr decltype(auto) operator%(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place modulus operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place modulus operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports modulus with the other operand
 (which may be another monad). */
@@ -5956,7 +6627,7 @@ constexpr decltype(auto) operator%=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic left shift operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic left shift operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports left shifts with the other operand (which may be
 another monad). */
@@ -5976,7 +6647,7 @@ constexpr decltype(auto) operator<<(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place left shift operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place left shift operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports left shifts with the other operand
 (which may be another monad). */
@@ -5996,7 +6667,7 @@ constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic right shift operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic right shift operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports right shifts with the other operand (which may be
 another monad). */
@@ -6016,7 +6687,7 @@ constexpr decltype(auto) operator>>(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place right shift operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place right shift operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports right shifts with the other operand
 (which may be another monad). */
@@ -6036,7 +6707,7 @@ constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic bitwise NOT operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic bitwise NOT operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports bitwise NOT. */
 template <meta::monad T> requires (meta::visit<impl::BitwiseNot, T>)
@@ -6047,7 +6718,7 @@ constexpr decltype(auto) operator~(T&& val) noexcept(
 }
 
 
-/* Monadic bitwise AND operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic bitwise AND operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports bitwise AND with the other operand
 (which may be another monad). */
@@ -6067,7 +6738,7 @@ constexpr decltype(auto) operator&(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place bitwise AND operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place bitwise AND operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports bitwise AND with the other operand
 (which may be another monad). */
@@ -6087,7 +6758,7 @@ constexpr decltype(auto) operator&=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic bitwise OR operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic bitwise OR operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports bitwise OR with the other operand (which may be
 another monad). */
@@ -6107,7 +6778,7 @@ constexpr decltype(auto) operator|(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place bitwise OR operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place bitwise OR operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports bitwise OR with the other operand
 (which may be another monad). */
@@ -6127,7 +6798,7 @@ constexpr decltype(auto) operator|=(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic bitwise XOR operator.  Delegates to `bertrand::visit()`, and is automatically
+/* Monadic bitwise XOR operator.  Delegates to `impl::visit()`, and is automatically
 defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
 one type within the monad supports bitwise XOR with the other operand (which may be
 another monad). */
@@ -6147,7 +6818,7 @@ constexpr decltype(auto) operator^(L&& lhs, R&& rhs) noexcept(
 }
 
 
-/* Monadic in-place bitwise XOR operator.  Delegates to `bertrand::visit()`, and is
+/* Monadic in-place bitwise XOR operator.  Delegates to `impl::visit()`, and is
 automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
 and at least one type within the monad supports bitwise XOR with the other operand
 (which may be another monad). */
