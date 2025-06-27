@@ -2712,12 +2712,12 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_address = requires(T t) {
-        { &t } -> ::std::convertible_to<as_pointer<T>>;
+    concept has_address = requires(as_lvalue<T> t) {
+        { std::addressof(t) } -> pointer;
     };
 
     template <has_address T>
-    using address_type = decltype(&::std::declval<T>());
+    using address_type = decltype(::std::addressof(::std::declval<as_lvalue<T>>()));
 
     template <typename Ret, typename T>
     concept address_returns =
@@ -2726,7 +2726,9 @@ namespace meta {
     namespace nothrow {
 
         template <typename T>
-        concept has_address = meta::has_address<T> && noexcept(&::std::declval<T>());
+        concept has_address =
+            meta::has_address<T> &&
+            noexcept(::std::addressof(::std::declval<as_lvalue<T>>()));
 
         template <nothrow::has_address T>
         using address_type = meta::address_type<T>;
