@@ -124,6 +124,9 @@ namespace meta {
     /////////////////////////////
 
     template <typename T>
+    using forward = decltype(::std::forward<T>(::std::declval<T>()));
+
+    template <typename T>
     using unqualify = ::std::remove_cvref_t<T>;
 
     template <typename T>
@@ -5133,11 +5136,32 @@ namespace impl {
         return first;
     }
 
+    template <typename T>
+    struct Construct {
+        template <typename... Args>
+        static constexpr T operator()(Args&&... args)
+            noexcept (meta::nothrow::constructible_from<T, Args...>)
+            requires (meta::constructible_from<T, Args...>)
+        {
+            return T(std::forward<Args>(args)...);
+        }
+    };
+
+    struct Assign {
+        template <typename T, typename U>
+        static constexpr decltype(auto) operator()(T&& curr, U&& other)
+            noexcept (meta::nothrow::assignable<T, U>)
+            requires (meta::assignable<T, U>)
+        {
+            return (std::forward<T>(curr) = std::forward<U>(other));
+        }
+    };
+
     template <meta::not_void T>
     struct ConvertTo {
         template <meta::convertible_to<T> U>
         static constexpr T operator()(U&& value)
-            noexcept(meta::nothrow::convertible_to<U, T>)
+            noexcept (meta::nothrow::convertible_to<U, T>)
         {
             return std::forward<U>(value);
         }
@@ -5146,17 +5170,17 @@ namespace impl {
     template <meta::not_void T>
     struct ExplicitConvertTo {
         template <meta::explicitly_convertible_to<T> U>
-        static constexpr decltype(auto) operator()(U&& value)
-            noexcept(meta::nothrow::explicitly_convertible_to<U, T>)
+        static constexpr T operator()(U&& value)
+            noexcept (meta::nothrow::explicitly_convertible_to<U, T>)
         {
-            return (static_cast<T>(std::forward<U>(value)));
+            return static_cast<T>(std::forward<U>(value));
         }
     };
 
     struct Hash {
         template <meta::hashable T>
         static constexpr decltype(auto) operator()(T&& value)
-            noexcept(meta::nothrow::hashable<T>)
+            noexcept (meta::nothrow::hashable<T>)
         {
             return (bertrand::hash(std::forward<T>(value)));
         }
@@ -5167,7 +5191,7 @@ namespace impl {
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_address<T>)
         {
-            return (&std::forward<T>(value));
+            return (std::addressof(std::forward<T>(value)));
         }
     };
 
@@ -5185,7 +5209,7 @@ namespace impl {
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_arrow<T>)
         {
-            return (std::forward<T>(value).operator->());
+            return (std::to_address(std::forward<T>(value)));
         }
     };
 
