@@ -46,12 +46,12 @@ static_assert(OVERLOAD_CACHE > 0, "`BERTRAND_OVERLOAD_CACHE` must be positive.")
 
 namespace impl {
 
-    template <meta::invocable F> requires (!meta::invoke_returns<void, F>)
+    template <meta::callable F> requires (!meta::call_returns<void, F>)
     struct materialize {
         meta::remove_rvalue<F> func;
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator()(this Self&& self)
-            noexcept (meta::nothrow::invocable<F>)
+            noexcept (meta::nothrow::callable<F>)
         {
             return (std::forward<Self>(self).func());
         }
@@ -72,7 +72,7 @@ namespace meta {
     }
 
     template <typename F>
-    concept materialization_function = invocable<F> && !invoke_returns<void, F>;
+    concept materialization_function = callable<F> && !call_returns<void, F>;
 
     template <typename F>
     concept materialize = detail::materialize<unqualify<F>>;
@@ -194,7 +194,7 @@ namespace meta {
     concept typed_arg = arg<T> && not_void<arg_type<T>>;
 
     template <typename T>
-    concept partial_arg = arg<T> && partials<T>::size > 0;
+    concept partial_arg = arg<T> && partials<T>::size() > 0;
 
     template <typename T>
     concept standard_arg = arg<T> && valid_arg_name<arg_id<T>>;
@@ -428,7 +428,7 @@ namespace impl {
         constexpr auto operator()(F&& f) &&
             noexcept (requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}} noexcept;})
             requires (
-                meta::invoke_returns<T, F> &&
+                meta::call_returns<T, F> &&
                 requires{{arg<ID, T, impl::materialize<F>>{std::forward<F>(f)}};}
             )
         {
@@ -846,8 +846,8 @@ namespace impl {
 
         template <typename S, typename F, typename... A>
         constexpr decltype(auto) operator()(this S&&, F&& f, A&&... a)
-            noexcept (meta::nothrow::invocable<F, A...>)
-            requires (meta::invocable<F, A...>)
+            noexcept (meta::nothrow::callable<F, A...>)
+            requires (meta::callable<F, A...>)
         {
             return (std::forward<F>(f)(std::forward<A>(a)...));
         }
@@ -1462,7 +1462,7 @@ namespace meta {
         template <typename F, meta::tuple_like T, size_t... Is>
             requires (meta::tuple_size<T> == sizeof...(Is))
         constexpr bool _decompose<F, T, ::std::index_sequence<Is...>> =
-            meta::invocable<F, meta::get_type<T, Is>...>;
+            meta::callable<F, meta::get_type<T, Is>...>;
         template <typename F, meta::tuple_like T>
         constexpr bool decompose =
             _decompose<meta::as_lvalue<F>, T, ::std::make_index_sequence<meta::tuple_size<T>>>;
@@ -1488,7 +1488,7 @@ namespace meta {
     template <typename F, typename T>
     concept comprehension_func =
         (detail::use_structured_comprehension<T> && detail::decompose<F, meta::yield_type<T>>) ||
-        (detail::use_standard_comprehension<T> && meta::invocable<F, meta::yield_type<T>>) ||
+        (detail::use_standard_comprehension<T> && meta::callable<F, meta::yield_type<T>>) ||
         (detail::use_direct_comprehension<T> && detail::decompose<F, T>);
 
     namespace detail {
@@ -1777,7 +1777,7 @@ namespace impl {
         typename... begin,
         typename... end,
         size_t... Is
-    > requires (sizeof...(Is) > 0 && meta::invocable<meta::as_lvalue<F>, args...>)
+    > requires (sizeof...(Is) > 0 && meta::callable<meta::as_lvalue<F>, args...>)
     struct _invoke_comprehension<
         exact,
         F,
@@ -1786,7 +1786,7 @@ namespace impl {
         meta::pack<end...>,
         std::index_sequence<Is...>
     > {
-        using type = meta::invoke_type<meta::as_lvalue<F>, args...>;
+        using type = meta::call_type<meta::as_lvalue<F>, args...>;
         static constexpr bool enable = meta::not_void<type>;
         static constexpr bool exact_size = exact;
         static constexpr size_t N = sizeof...(Is);
@@ -4068,7 +4068,7 @@ namespace impl {
     constexpr size_t partial_idx<I, A, Args...> = partial_idx<I - 1, Args...>;
     template <size_t I, typename A, typename... Args> requires (meta::partial_arg<A> && I > 0)
     constexpr size_t partial_idx<I, A, Args...> =
-        partial_idx<I - 1, Args...> + meta::partials<A>::size;
+        partial_idx<I - 1, Args...> + meta::partials<A>::size();
 
     /* Form a `bertrand::args{}` container to back a set of partial arguments.  Calling
     the `extract_partial` helper is only used when constructing a `templates{}`
@@ -4132,14 +4132,14 @@ namespace impl {
         static constexpr type operator()(auto&&... args)
             noexcept (requires{{extract(
                 std::make_index_sequence<idx>(),
-                std::make_index_sequence<meta::partials<A>::size>(),
+                std::make_index_sequence<meta::partials<A>::size()>(),
                 std::make_index_sequence<sizeof...(args) - (idx + 1)>(),
                 std::forward<decltype(args)>(args)...
             )} noexcept;})
         {
             return extract(
                 std::make_index_sequence<idx>(),
-                std::make_index_sequence<meta::partials<A>::size>(),
+                std::make_index_sequence<meta::partials<A>::size()>(),
                 std::make_index_sequence<sizeof...(args) - (idx + 1)>(),
                 std::forward<decltype(args)>(args)...
             );
@@ -4250,16 +4250,16 @@ namespace impl {
         template <size_type I, typename... Ts> requires (I < size())
         constexpr auto make_partial(Ts&&... ts) const
             noexcept (requires{{_make_partial<I>(
-                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
+                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size()>(),
                 std::forward<Ts>(ts)...
             )} noexcept;})
             requires (requires{{_make_partial<I>(
-                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
+                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size()>(),
                 std::forward<Ts>(ts)...
             )};})
         {
             return _make_partial<I>(
-                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size>(),
+                std::make_index_sequence<meta::partials<meta::unpack_type<I, Args...>>::size()>(),
                 std::forward<Ts>(ts)...
             );
         }
@@ -4633,7 +4633,7 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partials<A>::size;
+            params[I].partial = meta::partials<A>::size();
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
@@ -4674,7 +4674,7 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partials<A>::size;
+            params[I].partial = meta::partials<A>::size();
             params[I].kind = 0;
             size_t start = 0;
             if constexpr (!meta::typed_arg<A>) {
@@ -4731,7 +4731,7 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partials<A>::size;
+            params[I].partial = meta::partials<A>::size();
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
             }
@@ -4760,7 +4760,7 @@ namespace impl {
             sec.kwargs.offset = I;
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partials<A>::size;
+            params[I].partial = meta::partials<A>::size();
             params[I].kind = impl::arg_kind::VAR | impl::arg_kind::KW;
             if constexpr (!meta::typed_arg<A>) {
                 params[I].kind = params[I].kind | impl::arg_kind::UNTYPED;
@@ -4800,7 +4800,7 @@ namespace impl {
 
             params[I].name = meta::arg_name<A>;
             params[I].index = I;
-            params[I].partial = meta::partials<A>::size;
+            params[I].partial = meta::partials<A>::size();
             params[I].kind = impl::arg_kind::RUNTIME;
         }
     };
@@ -7127,7 +7127,7 @@ namespace impl {
         /* The total number of partial arguments that are currently bound to the
         signature. */
         [[nodiscard]] static constexpr size_type n_partial() noexcept {
-            return (Spec.partials.size() + ... + meta::partials<decltype(Args)>::size);
+            return (Spec.partials.size() + ... + meta::partials<decltype(Args)>::size());
         }
 
         /* Strip all bound partial arguments from the signature. */
@@ -7778,7 +7778,7 @@ namespace impl {
         struct storage { type value; };
 
         template <typename Self, typename... A>
-        static constexpr bool invoke_chain = meta::invocable<
+        static constexpr bool invoke_chain = meta::callable<
             decltype(std::declval<Self>().m_storage.value),
             A...
         >;
@@ -7872,11 +7872,11 @@ namespace impl {
         template <typename Self, typename... A>
         static constexpr bool invoke_chain = false;
         template <typename Self, typename... A>
-            requires (meta::invocable<decltype(std::declval<Self>().m_storage.value), A...>)
+            requires (meta::callable<decltype(std::declval<Self>().m_storage.value), A...>)
         static constexpr bool invoke_chain<Self, A...> =
             _chain<F2, Fs...>::template invoke_chain<
                 meta::qualify<_chain<F2, Fs...>, Self>,
-                meta::invoke_type<decltype(std::declval<Self>().m_storage.value), A...>
+                meta::call_type<decltype(std::declval<Self>().m_storage.value), A...>
             >;
 
         template <size_t I, typename Self>

@@ -4325,11 +4325,11 @@ public:
     template <meta::default_constructible Less = impl::Less, typename Self>
         requires (meta::iter_sortable<Less, std::string_view*, std::string_view*>)
     [[nodiscard]] constexpr auto sort(this Self&& self)
-        noexcept(meta::nothrow::invocable<
+        noexcept(meta::nothrow::callable<
             typename sort_helper<Less>::template call<0, string_list<>>,
             Self    
         >)
-        requires(meta::invocable<
+        requires(meta::callable<
             typename sort_helper<Less>::template call<0, string_list<>>,
             Self
         >)

@@ -993,6 +993,23 @@ public:
 };
 
 
+namespace impl {
+
+    /* Apply Python_style wraparound to a runtime index.  Throws an `IndexError` if the
+    index would be out of bounds after normalizing. */
+    inline constexpr ssize_t normalize_index(ssize_t size, ssize_t i) noexcept(!DEBUG) {
+        ssize_t j = i + size * (i < 0);
+        if constexpr (DEBUG) {
+            if (j < 0 || j >= size) {
+                throw IndexError(::std::to_string(i));
+            }
+        }
+        return j;
+    }
+
+}
+
+
 }
 
 

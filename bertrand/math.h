@@ -965,7 +965,7 @@ public:
     /* Divide two numbers, returning a floating point approximation of the true
     quotient.  This is the rounding strategy used by Python's `/` operator. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::true_<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -984,7 +984,7 @@ public:
     /* Divide two numbers according to C++ semantics.  For integers, this performs
     truncated division toward zero.  Otherwise, it is identical to "true" division. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::cpp<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1003,7 +1003,7 @@ public:
     /* Divide two numbers, rounding the quotient toward negative infinity.  This is
     the rounding strategy used by Python's `//` operator. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::floor<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1021,7 +1021,7 @@ public:
 
     /* Divide two numbers, rounding the quotient toward positive infinity. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::ceil<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1039,7 +1039,7 @@ public:
 
     /* Divide two numbers, rounding the quotient toward zero. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::down<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1057,7 +1057,7 @@ public:
 
     /* Divide two numbers, rounding the quotient away from zero. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::up<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1076,7 +1076,7 @@ public:
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward negative infinity. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::half_floor<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1095,7 +1095,7 @@ public:
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward positive infinity. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::half_ceil<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1114,7 +1114,7 @@ public:
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward zero. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::half_down<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1133,7 +1133,7 @@ public:
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties away from zero. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::half_up<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1152,7 +1152,7 @@ public:
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward the nearest even number. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::half_even<unwrap<L>, unwrap<R>>,
             const L&,
             const R&
@@ -1171,7 +1171,7 @@ public:
     /* Divide two numbers, rounding the quotient toward the nearest whole number, with
     ties toward the nearest odd number. */
     template <typename L, typename R>
-        requires (meta::invocable<
+        requires (meta::callable<
             impl::divide::half_odd<unwrap<L>, unwrap<R>>,
             const L&,
             const R&

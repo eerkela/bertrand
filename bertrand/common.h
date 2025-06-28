@@ -108,6 +108,18 @@ static_assert(
 
 namespace impl {
     struct wrapper_tag {};
+
+    /* Check to see if applying Python-style wraparound to a compile-time index would
+    yield a valid index into a container of a given size.  Returns false if the
+    index would be out of bounds after normalizing. */
+    template <ssize_t size, ssize_t I>
+    concept valid_index = ((I + size * (I < 0)) >= 0) && ((I + size * (I < 0)) < size);
+
+    /* Apply Python-style wraparound to a compile-time index. Fails to compile if the
+    index would be out of bounds after normalizing. */
+    template <ssize_t size, ssize_t I> requires (valid_index<size, I>)
+    constexpr ssize_t normalize_index() noexcept { return I + size * (I < 0); }
+
 }
 
 
@@ -393,6 +405,15 @@ namespace meta {
         template <auto V, auto... Vs>
         constexpr auto unpack_value<0, V, Vs...> = V;
 
+        template <size_t I, typename T, typename... Ts>
+        constexpr decltype(auto) unpack_arg(T&& curr, Ts&&... next) noexcept {
+            if constexpr (I == 0) {
+                return (::std::forward<T>(curr));
+            } else {
+                return (unpack_arg<I - 1>(::std::forward<Ts>(next)...));
+            }
+        }
+
         template <typename out, typename...>
         struct concat { using type = out; };
         template <typename... out, typename... curr, typename... next>
@@ -577,25 +598,27 @@ namespace meta {
     template <typename Search, typename... Ts>
     constexpr size_t index_of = detail::index_of<Search, 0, Ts...>;
 
-    /* Get the type at a particular index of a parameter pack.  This is superceded by
-    the C++26 pack indexing language feature. */
-    template <size_t I, typename... Ts> requires (I < sizeof...(Ts))
-    using unpack_type = detail::unpack_type<I, Ts...>::type;
+    /* Get the type at a particular index of a parameter pack. */
+    template <ssize_t I, typename... Ts> requires (impl::valid_index<sizeof...(Ts), I>)
+    using unpack_type = detail::unpack_type<
+        impl::normalize_index<sizeof...(Ts), I>(),
+        Ts...
+    >::type;
 
     /* Unpack the non-type template parameter at a particular index of a parameter
-    pack.  This is superceded by the C++26 pack indexing language feature. */
-    template <size_t I, auto... Vs> requires (I < sizeof...(Vs))
-    constexpr auto unpack_value = detail::unpack_value<I, Vs...>;
+    pack. */
+    template <ssize_t I, auto... Vs> requires (impl::valid_index<sizeof...(Vs), I>)
+    constexpr auto unpack_value = detail::unpack_value<
+        impl::normalize_index<sizeof...(Vs), I>(),
+        Vs...
+    >;
 
-    /* Index into a parameter pack and perfectly forward a single item.  This is
-    superceded by the C++26 pack indexing language feature. */
-    template <size_t I, typename T, typename... Ts> requires (I < (sizeof...(Ts) + 1))
-    constexpr decltype(auto) unpack_arg(T&& curr, Ts&&... next) noexcept {
-        if constexpr (I == 0) {
-            return (::std::forward<T>(curr));
-        } else {
-            return (unpack_arg<I - 1>(::std::forward<Ts>(next)...));
-        }
+    /* Index into a parameter pack and perfectly forward a single item. */
+    template <ssize_t I, typename... Ts> requires (impl::valid_index<sizeof...(Ts), I>)
+    constexpr decltype(auto) unpack_arg(Ts&&... args) noexcept {
+        return detail::unpack_arg<impl::normalize_index<sizeof...(Ts), I>()>(
+            ::std::forward<Ts>(args)...
+        );
     }
 
     /* Return a pack with the merged contents of all constituent packs. */
@@ -659,26 +682,38 @@ namespace meta {
     easier. */
     template <typename... Ts>
     struct pack {
-        /// TODO: size -> size() for consistency, and possibly also lazy evaluation/faster
-        /// compilation.
+        using size_type = size_t;
+        using index_type = ssize_t;
 
-        /* The total number of arguments being stored. */
-        static constexpr size_t size = sizeof...(Ts);
+        /* The total number of arguments being stored, as an unsigned integer. */
+        static constexpr size_type size() noexcept { return sizeof...(Ts); }
+
+        /* The total number of arguments being stored, as a signed integer. */
+        static constexpr index_type ssize() noexcept { return index_type(size()); }
+
+        /* True if the pack stores no types. */
+        static constexpr bool empty() noexcept { return size() == 0; }
 
         /* Check to see whether a particular type is present within the pack. */
         template <typename T>
-        static constexpr bool contains = meta::index_of<T, Ts...> < size;
+        static constexpr bool contains() noexcept {
+            return meta::index_of<T, Ts...> < size();
+        }
 
         /* Member equivalent for `meta::count_of<T, Ts...>`. */
         template <typename T>
-        static constexpr size_t count = meta::count_of<T, Ts...>;
+        static constexpr size_type count() {
+            return meta::count_of<T, Ts...>;
+        }
 
         /* Member equivalent for `meta::index_of<T, Ts...>`. */
         template <typename T>
-        static constexpr size_t index = meta::index_of<T, Ts...>;
+        static constexpr size_t index() noexcept {
+            return meta::index_of<T, Ts...>;
+        }
 
         /* Member equivalent for `meta::unpack_type<I, Ts...>` (pack indexing). */
-        template <size_t I> requires (I < size)
+        template <index_type I> requires (impl::valid_index<ssize(), I>)
         using at = meta::unpack_type<I, Ts...>;
 
         /* Expand the pack, instantiating a template template parameter with its
@@ -689,8 +724,7 @@ namespace meta {
 
         /* Map a template template parameter over the given arguments, returning a new
         pack containing the transformed result */
-        template <template <typename> class F>
-            requires (requires{typename pack<F<Ts>...>;})
+        template <template <typename> class F> requires (requires{typename pack<F<Ts>...>;})
         using map = pack<F<Ts>...>;
 
         /* Get a new pack with one or more types appended after the current contents. */
@@ -698,17 +732,15 @@ namespace meta {
         using append = pack<Ts..., Us...>;
 
         /* Member equivalent for `meta::concat<pack, packs...>`. */
-        template <typename... packs>
-            requires (requires{typename meta::concat<pack, packs...>;})
+        template <typename... packs> requires (requires{typename meta::concat<pack, packs...>;})
         using concat = meta::concat<pack, packs...>;
 
         /* Member equivalent for `meta::repeat<N, Ts...>`. */
-        template <size_t N>
+        template <size_type N>
         using repeat = meta::repeat<N, Ts...>;
 
         /* Member equivalent for `meta::product<pack<Ts...>, Ps...>` */
-        template <typename... Ps>
-            requires (requires{typename meta::product<pack, Ps...>;})
+        template <typename... Ps> requires (requires{typename meta::product<pack, Ps...>;})
         using product = meta::product<pack, Ps...>;
 
         /* Member equivalent for `meta::filter<F, Ts...>`. */
@@ -1461,10 +1493,10 @@ namespace meta {
             ::std::is_function_v<remove_pointer<unqualify<T>>>;
 
         template <typename F, typename... A>
-        constexpr bool invocable = ::std::invocable<F, A...>;
+        constexpr bool callable = ::std::invocable<F, A...>;
 
         template <typename F, typename... A>
-        constexpr bool nothrow_invocable = ::std::is_nothrow_invocable_v<F, A...>;
+        constexpr bool nothrow_callable = ::std::is_nothrow_invocable_v<F, A...>;
 
         template <typename S>
         struct call_operator { static constexpr bool enable = false; };
@@ -1774,27 +1806,26 @@ namespace meta {
     using call_operator = detail::call_operator<decltype(&remove_reference<T>::operator())>;
 
     template <typename F, typename... A>
-    concept invocable = detail::invocable<F, A...>;
+    concept callable = detail::callable<F, A...>;
 
-    template <typename F, typename... A> requires (invocable<F, A...>)
-    using invoke_type = ::std::invoke_result_t<F, A...>;
+    template <typename F, typename... A> requires (callable<F, A...>)
+    using call_type = ::std::invoke_result_t<F, A...>;
 
     template <typename R, typename F, typename... A>
-    concept invoke_returns = invocable<F, A...> && convertible_to<invoke_type<F, A...>, R>;
+    concept call_returns = callable<F, A...> && convertible_to<call_type<F, A...>, R>;
 
     namespace nothrow {
 
         template <typename F, typename... A>
-        concept invocable =
-            meta::invocable<F, A...> && detail::nothrow_invocable<F, A...>;
+        concept callable =
+            meta::callable<F, A...> && detail::nothrow_callable<F, A...>;
 
-        template <typename F, typename... A> requires (nothrow::invocable<F, A...>)
-        using invoke_type = meta::invoke_type<F, A...>;
+        template <typename F, typename... A> requires (nothrow::callable<F, A...>)
+        using call_type = meta::call_type<F, A...>;
 
         template <typename R, typename F, typename... A>
-        concept invoke_returns =
-            nothrow::invocable<F, A...> &&
-            nothrow::convertible_to<nothrow::invoke_type<F, A...>, R>;
+        concept call_returns =
+            nothrow::callable<F, A...> && nothrow::convertible_to<nothrow::call_type<F, A...>, R>;
 
     }
 
@@ -3775,6 +3806,30 @@ namespace meta {
     ///////////////////////////////////
 
     template <typename T>
+    concept has_value = requires(T t) { t.value(); };
+
+    template <has_value T>
+    using value_type = decltype(::std::declval<T>().value());
+
+    template <typename Ret, typename T>
+    concept value_returns = has_value<T> && convertible_to<value_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_value =
+            meta::has_value<T> && noexcept(::std::declval<T>().value());
+
+        template <nothrow::has_value T>
+        using value_type = meta::value_type<T>;
+
+        template <typename Ret, typename T>
+        concept value_returns =
+            nothrow::has_value<T> && nothrow::convertible_to<nothrow::value_type<T>, Ret>;
+
+    }
+
+    template <typename T>
     concept has_data = requires(T t) { ::std::ranges::data(t); };
 
     template <has_data T>
@@ -4347,7 +4402,7 @@ namespace meta {
             requires (
                 meta::iterable<T> &&
                 meta::default_constructible<Less> &&
-                meta::invoke_returns<
+                meta::call_returns<
                     bool,
                     meta::as_lvalue<Less>,
                     meta::as_const<meta::yield_type<T>>,
@@ -4369,712 +4424,6 @@ namespace meta {
 }
 
 
-namespace impl {
-
-    /* A helper type that simplifies friend declarations for wrapper types.  Every
-    subclass of `wrapper` should declare this as a friend and provide its own
-    `getter()` private method to implement its behavior. */
-    struct getter {
-        template <meta::wrapper T>
-            requires (requires(T&& value) { std::forward<T>(value).getter(); })
-        static constexpr decltype(auto) operator()(T&& value) noexcept(
-            noexcept(std::forward<T>(value).getter())
-        ) {
-            return std::forward<T>(value).getter();
-        }
-    };
-
-    /* A helper type that simplifies friend declarations for wrapper types.  Every
-    subclass of `wrapper` should declare this as a friend and provide its own
-    `setter(T)` private method to implement its behavior, or omit it for read-only
-    wrappers. */
-    struct setter {
-        template <meta::wrapper T, typename U>
-            requires (requires(T&& self, U&& value) {
-                std::forward<T>(self).setter(std::forward<U>(value));
-            })
-        static constexpr decltype(auto) operator()(T&& self, U&& value) noexcept(
-            noexcept(std::forward<T>(self).setter(std::forward<U>(value)))
-        ) {
-            return std::forward<T>(self).setter(std::forward<U>(value));
-        }
-    };
-
-}
-
-
-namespace meta {
-
-    /* Transparently unwrap wrapped types, triggering a getter call if the
-    `meta::wrapper` concept is modeled, or returning the result as-is otherwise. */
-    template <typename T>
-    [[nodiscard]] constexpr decltype(auto) unwrap(T&& t) noexcept {
-        return ::std::forward<T>(t);
-    }
-
-    /* Transparently unwrap wrapped types, triggering a getter call if the
-    `meta::wrapper` concept is modeled, or returning the result as-is otherwise. */
-    template <wrapper T>
-    [[nodiscard]] constexpr decltype(auto) unwrap(T&& t) noexcept(
-        noexcept(impl::getter{}(::std::forward<T>(t)))
-    ) {
-        return impl::getter{}(::std::forward<T>(t));
-    }
-
-    /* Describes the result of the `meta::unwrap()` operator. */
-    template <typename T>
-    using unwrap_type = decltype(unwrap(::std::declval<T>()));
-
-}
-
-
-namespace impl {
-
-
-    /// TODO: delete `wrapper`.  It just complicates the interface without providing any
-    /// value.  I should try to design everything such that this is not needed.
-
-
-
-    /* A smart reference class that perfectly forwards every operator except
-    assignment, unary `&`, `*`, `->`, and `->*` to the result of a private `getter()`
-    method declared with `bertrand::impl::getter` as a friend.  Assignment is forwarded
-    to a separate `setter(T)` method exposed via `bertrand::impl::setter`, while unary
-    `&` refers to the address of the wrapper, `*` triggers an explicit getter call, and
-    `->`/`->*` allow indirect access to members of the wrapped type.
-
-    Inheriting from this class allows a forwarding wrapper to be declared just by
-    implementing its getter/setter logic, without needing to recreate the full operator
-    interface.  Note that wrappers of this form cannot be copied or moved by default,
-    and should not expose any public interface of their own, including constructors.
-    The only logic that should be implemented is the getter (which must return a
-    reference), and optionally the setter (whose result will be returned from the
-    assignment operator). */
-    struct wrapper : wrapper_tag {
-    private:
-        static constexpr impl::setter setter;
-
-    protected:
-        constexpr wrapper() = default;
-
-    public:
-        constexpr wrapper(const wrapper&) = delete;
-        constexpr wrapper(wrapper&&) = delete;
-        constexpr wrapper& operator=(const wrapper&) = delete;
-        constexpr wrapper& operator=(wrapper&&) = delete;
-
-        template <typename S, typename T>
-            requires (!meta::is<T, wrapper> && requires(S self, T value) {
-                setter(std::forward<S>(self), meta::unwrap(std::forward<T>(value)));
-            })
-        constexpr decltype(auto) operator=(this S&& self, T&& value) noexcept(
-            noexcept(setter(std::forward<S>(self), meta::unwrap(std::forward<T>(value))))
-        ) {
-            return setter(std::forward<S>(self), meta::unwrap(std::forward<T>(value)));
-        }
-
-        template <typename S, typename T>
-            requires (meta::convertible_to<decltype(meta::unwrap(std::declval<S>())), T>)
-        constexpr operator T(this S&& self) noexcept(
-            noexcept(meta::implicit_cast<T>(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S, typename T>
-            requires (
-                !meta::convertible_to<decltype(meta::unwrap(std::declval<S>())), T> &&
-                meta::explicitly_convertible_to<decltype(meta::unwrap(std::declval<S>())), T>
-            )
-        explicit constexpr operator T(this S&& self) noexcept(
-            noexcept(static_cast<T>(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return static_cast<T>(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator*(this S&& self) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self)))
-        ) {
-            return meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                &meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator->(this S&& self) noexcept(
-            noexcept(&meta::unwrap(std::forward<S>(self)))
-        ) {
-            return &meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S, typename M>
-            requires (requires(S self, M member) {
-                meta::unwrap(std::forward<S>(self)).*std::forward<M>(member);
-            })
-        constexpr decltype(auto) operator->*(this S&& self, M&& member) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self)).*std::forward<M>(member))
-        ) {
-            return meta::unwrap(std::forward<S>(self)).*std::forward<M>(member);
-        }
-
-        template <typename S, typename... K>
-            requires (requires(S self, K... keys) {
-                meta::unwrap(std::forward<S>(self))[std::forward<K>(keys)...];
-            })
-        constexpr decltype(auto) operator[](this S&& self, K&&... keys) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self))[std::forward<K>(keys)...])
-        ) {
-            return meta::unwrap(std::forward<S>(self))[std::forward<K>(keys)...];
-        }
-
-        template <typename S, typename... A>
-            requires (requires(S self, A... args) {
-                meta::unwrap(std::forward<S>(self))(std::forward<A>(args)...);
-            })
-        constexpr decltype(auto) operator()(this S&& self, A&&... args) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self))(std::forward<A>(args)...))
-        ) {
-            return meta::unwrap(std::forward<S>(self))(std::forward<A>(args)...);
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)), meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator,(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)), meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)), meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                !meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator!(this S&& self) noexcept(
-            noexcept(!meta::unwrap(std::forward<S>(self)))
-        ) {
-            return !meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) && meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator&&(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) && meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) && meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) || meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator||(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) || meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) || meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) < meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator<(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) < meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) < meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) <= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator<=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) <= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) <= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) == meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator==(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) == meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) == meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) != meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator!=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) != meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) != meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) >= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator>=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) >= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) >= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) > meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator>(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) > meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) > meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) <=> meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator<=>(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) <=> meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) <=> meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                ~meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator~(this S&& self) noexcept(
-            noexcept(~meta::unwrap(std::forward<S>(self)))
-        ) {
-            return ~meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                +meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator+(this S&& self) noexcept(
-            noexcept(+meta::unwrap(std::forward<S>(self)))
-        ) {
-            return +meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                -meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator-(this S&& self) noexcept(
-            noexcept(-meta::unwrap(std::forward<S>(self)))
-        ) {
-            return -meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                ++meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator++(this S&& self) noexcept(
-            noexcept(++meta::unwrap(std::forward<S>(self)))
-        ) {
-            return ++meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                meta::unwrap(std::forward<S>(self))++;
-            })
-        constexpr decltype(auto) operator++(this S&& self, int) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self))++)
-        ) {
-            return meta::unwrap(std::forward<S>(self))++;
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                --meta::unwrap(std::forward<S>(self));
-            })
-        constexpr decltype(auto) operator--(this S&& self) noexcept(
-            noexcept(--meta::unwrap(std::forward<S>(self)))
-        ) {
-            return --meta::unwrap(std::forward<S>(self));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                meta::unwrap(std::forward<S>(self))--;
-            })
-        constexpr decltype(auto) operator--(this S&& self, int) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self))--)
-        ) {
-            return meta::unwrap(std::forward<S>(self))--;
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) + meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator+(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) + meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) + meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) += meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator+=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) += meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) += meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) - meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator-(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) - meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) - meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) -= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator-=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) -= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) -= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) * meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator*(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) * meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) * meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) *= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator*=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) *= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) *= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) / meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator/(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) / meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) / meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) /= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator/=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) /= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) /= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) % meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator%(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) % meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) % meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) %= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator%=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) %= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) %= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) << meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator<<(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) << meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) << meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) <<= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator<<=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) <<= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) <<= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) >> meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator>>(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) >> meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) >> meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) >>= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator>>=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) >>= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) >>= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) & meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator&(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) & meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) & meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) &= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator&=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) &= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) &= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) | meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator|(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) | meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) | meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) |= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator|=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) |= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) |= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) ^ meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator^(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) ^ meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) ^ meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename L, typename R>
-            requires (requires(L lhs, R rhs) {
-                meta::unwrap(std::forward<L>(lhs)) ^= meta::unwrap(std::forward<R>(rhs));
-            })
-        constexpr friend decltype(auto) operator^=(L&& lhs, R&& rhs) noexcept(
-            noexcept(meta::unwrap(std::forward<L>(lhs)) ^= meta::unwrap(std::forward<R>(rhs)))
-        ) {
-            return meta::unwrap(std::forward<L>(lhs)) ^= meta::unwrap(std::forward<R>(rhs));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::begin(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto begin(this S&& self) noexcept(
-            noexcept(std::ranges::begin(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::begin(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::cbegin(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto cbegin(this S&& self) noexcept(
-            noexcept(std::ranges::cbegin(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::cbegin(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::end(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto end(this S&& self) noexcept(
-            noexcept(std::ranges::end(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::end(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::cend(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto cend(this S&& self) noexcept(
-            noexcept(std::ranges::cend(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::cend(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::rbegin(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto rbegin(this S&& self) noexcept(
-            noexcept(std::ranges::rbegin(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::rbegin(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::crbegin(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto crbegin(this S&& self) noexcept(
-            noexcept(std::ranges::crbegin(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::crbegin(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::rend(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto rend(this S&& self) noexcept(
-            noexcept(std::ranges::rend(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::rend(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::crend(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto crend(this S&& self) noexcept(
-            noexcept(std::ranges::crend(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::crend(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::size(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto size(this S&& self) noexcept(
-            noexcept(std::ranges::size(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::size(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::empty(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto empty(this S&& self) noexcept(
-            noexcept(std::ranges::empty(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::empty(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <typename S>
-            requires (requires(S self) {
-                std::ranges::data(meta::unwrap(std::forward<S>(self)));
-            })
-        constexpr auto data(this S&& self) noexcept(
-            noexcept(std::ranges::data(meta::unwrap(std::forward<S>(self))))
-        ) {
-            return std::ranges::data(meta::unwrap(std::forward<S>(self)));
-        }
-
-        template <auto... I, typename S, typename... A>
-            requires (requires(S self, A... args) {
-                meta::unwrap(std::forward<S>(self)).template get<I...>(
-                    std::forward<A>(args)...
-                );
-            })
-        constexpr decltype(auto) get(this S&& self, A&&... args) noexcept(
-            noexcept(meta::unwrap(std::forward<S>(self)).template get<I...>(
-                std::forward<A>(args)...
-            ))
-        ) {
-            return meta::unwrap(std::forward<S>(self)).template get<I...>(
-                std::forward<A>(args)...
-            );
-        }
-
-        template <auto... I, typename S, typename... A>
-            requires (!requires(S self, A... args) {
-                meta::unwrap(std::forward<S>(self)).template get<I...>(
-                    std::forward<A>(args)...
-                );
-            } && requires(S self, A... args) {
-                std::get<I...>(meta::unwrap(
-                    std::forward<S>(self),
-                    std::forward<A>(args)...
-                ));
-            })
-        constexpr decltype(auto) get(this S&& self, A&&... args) noexcept(
-            noexcept(std::get<I...>(meta::unwrap(
-                std::forward<S>(self),
-                std::forward<A>(args)...
-            )))
-        ) {
-            return std::get<I...>(meta::unwrap(
-                std::forward<S>(self),
-                std::forward<A>(args)...
-            ));
-        }
-    };
-
-}
-
-
 /* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
 needing to explicitly specialize `std::hash`. */
 template <meta::hashable T>
@@ -5084,6 +4433,14 @@ template <meta::hashable T>
 
 
 namespace impl {
+
+    /* A generic sentinel type to simplify iterator implementations. */
+    struct sentinel {
+        constexpr bool operator==(sentinel) const noexcept { return true; }
+        constexpr auto operator<=>(sentinel) const noexcept {
+            return std::strong_ordering::equal;
+        }
+    };
 
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
@@ -5223,9 +4580,9 @@ namespace impl {
     };
 
     struct Call {
-        template <typename F, typename... A> requires (meta::invocable<F, A...>)
+        template <typename F, typename... A> requires (meta::callable<F, A...>)
         static constexpr decltype(auto) operator()(F&& f, A&&... args)
-            noexcept(meta::nothrow::invocable<F, A...>)
+            noexcept(meta::nothrow::callable<F, A...>)
         {
             return (std::forward<F>(f)(std::forward<A>(args)...));
         }
@@ -5860,46 +5217,6 @@ constexpr auto demangle() noexcept(noexcept(impl::type_name_impl<T>())) {
 
 
 }  // namespace bertrand
-
-
-namespace std {
-
-    template <bertrand::meta::wrapper T>
-        requires (requires {
-            std::tuple_size<
-                std::remove_cvref_t<bertrand::meta::unwrap_type<T>>
-            >::value;
-        })
-    struct tuple_size<T> : std::integral_constant<
-        size_t,
-        std::tuple_size<
-            std::remove_cvref_t<bertrand::meta::unwrap_type<T>>
-        >::value
-    > {};
-
-    template <size_t I, bertrand::meta::wrapper T>
-        requires (requires {
-            typename std::tuple_element<
-                I,
-                std::remove_cvref_t<bertrand::meta::unwrap_type<T>>
-            >;
-        })
-    struct tuple_element<I, T> : std::tuple_element<
-        I,
-        std::remove_cvref_t<bertrand::meta::unwrap_type<T>>
-    > {};
-
-    template <auto I, bertrand::meta::wrapper T>
-        requires (requires(T t) {
-            std::get<I>(static_cast<bertrand::meta::unwrap_type<T>>(t));
-        })
-    constexpr decltype(auto) get(T&& t) noexcept(
-        noexcept(std::get<I>(static_cast<bertrand::meta::unwrap_type<T>>(t)))
-    ) {
-        return std::get<I>(static_cast<bertrand::meta::unwrap_type<T>>(t));
-    }
-
-}
 
 
 #endif  // BERTRAND_COMMON_H

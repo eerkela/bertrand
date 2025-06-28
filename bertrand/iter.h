@@ -116,54 +116,6 @@ namespace meta {
 
 namespace impl {
 
-    /* Check to see if applying Python-style wraparound to a compile-time index would
-    yield a valid index into a container of a given size.  Returns false if the
-    index would be out of bounds after normalizing. */
-    template <ssize_t size, ssize_t I>
-    concept valid_index = ((I + size * (I < 0)) >= 0) && ((I + size * (I < 0)) < size);
-
-    /* Apply Python-style wraparound to a compile-time index. Fails to compile if the
-    index would be out of bounds after normalizing. */
-    template <ssize_t size, ssize_t I> requires (valid_index<size, I>)
-    constexpr ssize_t normalize_index() noexcept { return I + size * (I < 0); }
-
-    /* Apply Python_style wraparound to a runtime index.  Throws an `IndexError` if the
-    index would be out of bounds after normalizing. */
-    inline constexpr ssize_t normalize_index(ssize_t size, ssize_t i) noexcept(!DEBUG) {
-        ssize_t j = i + size * (i < 0);
-        if constexpr (DEBUG) {
-            if (j < 0 || j >= size) {
-                throw IndexError(std::to_string(i));
-            }
-        }
-        return j;
-    }
-
-    /* Apply python-style wraparound to a runtime index, truncating it to the nearest
-    valid index.  The second return value is set 0 if the index was valid, or +/- 1 to
-    indicate overflow to the right or left, respectively. */
-    inline constexpr std::pair<ssize_t, ssize_t> truncate_index(
-        ssize_t size,
-        ssize_t i
-    ) noexcept {
-        i += size * (i < 0);
-        if (i < 0) {
-            return {0, -1};
-        }
-        if (i >= size) {
-            return {size, 1};
-        }
-        return {i, 0};
-    }
-
-    /* A generic sentinel type to simplify iterator implementations. */
-    struct sentinel {
-        constexpr bool operator==(sentinel) const noexcept { return true; }
-        constexpr auto operator<=>(sentinel) const noexcept {
-            return std::strong_ordering::equal;
-        }
-    };
-
     /* A wrapper around a bidirectional iterator that yields a subset of a given
     container within a specified start and stop interval, with an arbitrary step
     size.  Containers can expose an `operator[]` overload that returns one of these
@@ -690,17 +642,17 @@ namespace impl {
     struct truthy {
         template <typename F>
         static constexpr bool enable = ((
-            meta::invocable<F, Ts> &&
+            meta::callable<F, Ts> &&
             meta::explicitly_convertible_to<
-                meta::invoke_type<F, Ts>,
+                meta::call_type<F, Ts>,
                 bool
             >
         ) && ...);
         template <typename F>
         static constexpr bool nothrow = ((
-            meta::nothrow::invocable<F, Ts> &&
+            meta::nothrow::callable<F, Ts> &&
             meta::nothrow::explicitly_convertible_to<
-                meta::nothrow::invoke_type<F, Ts>,
+                meta::nothrow::call_type<F, Ts>,
                 bool
             >
         ) && ...);
@@ -779,18 +731,18 @@ namespace impl {
             static constexpr bool enable = false;
             static constexpr bool nothrow = false;
         };
-        template <meta::invocable<prev, curr> F>
-            requires (meta::has_common_type<prev, meta::invoke_type<F, prev, curr>>)
+        template <meta::callable<prev, curr> F>
+            requires (meta::has_common_type<prev, meta::call_type<F, prev, curr>>)
         struct traits<F> {
             using recur = _fold_left<
-                meta::common_type<prev, meta::invoke_type<F, prev, curr>>,
+                meta::common_type<prev, meta::call_type<F, prev, curr>>,
                 next...
             >::template traits<F>;
             using type = recur::type;
             static constexpr bool enable = recur::enable;
             static constexpr bool nothrow =
-                meta::nothrow::invocable<F, prev, curr> &&
-                meta::nothrow::convertible_to<meta::invoke_type<F, prev, curr>, type> &&
+                meta::nothrow::callable<F, prev, curr> &&
+                meta::nothrow::convertible_to<meta::call_type<F, prev, curr>, type> &&
                 recur::nothrow;
         };
         template <typename F, typename L, typename R, typename... Ts>
@@ -801,7 +753,7 @@ namespace impl {
             Ts&&... rest
         ) noexcept(traits<F>::nothrow) {
             return (_fold_left<
-                meta::common_type<prev, meta::invoke_type<F, prev, curr>>,
+                meta::common_type<prev, meta::call_type<F, prev, curr>>,
                 next...
             >{}(
                 std::forward<F>(func),
@@ -843,23 +795,23 @@ namespace impl {
         };
         template <typename F>
             requires (
-                meta::invocable<F, prev, typename recur<F>::type> &&
+                meta::callable<F, prev, typename recur<F>::type> &&
                 meta::has_common_type<
                 prev,
-                    meta::invoke_type<F, prev, typename recur<F>::type>
+                    meta::call_type<F, prev, typename recur<F>::type>
                 >
             )
         struct traits<F> {
             using type = meta::common_type<
                 prev,
-                meta::invoke_type<F, prev, typename recur<F>::type>
+                meta::call_type<F, prev, typename recur<F>::type>
             >;
             static constexpr bool enable = recur<F>::enable;
             static constexpr bool nothrow =
                 recur<F>::nothrow &&
-                meta::nothrow::invocable<F, prev, typename recur<F>::type> &&
+                meta::nothrow::callable<F, prev, typename recur<F>::type> &&
                 meta::nothrow::convertible_to<
-                    meta::invoke_type<F, prev, typename recur<F>::type>,
+                    meta::call_type<F, prev, typename recur<F>::type>,
                     type
                 >;
         };
@@ -908,9 +860,9 @@ namespace impl {
             static constexpr bool enable = false;
             static constexpr bool nothrow = false;
         };
-        template <meta::invocable<prev, curr> F>
+        template <meta::callable<prev, curr> F>
             requires (meta::explicitly_convertible_to<
-                meta::invoke_type<F, prev, curr>,
+                meta::call_type<F, prev, curr>,
                 bool
             >)
         struct traits<F> {
@@ -919,9 +871,9 @@ namespace impl {
             using type = recur::type;
             static constexpr bool enable = recur::enable;
             static constexpr bool nothrow =
-                meta::nothrow::invocable<F, prev, curr> &&
+                meta::nothrow::callable<F, prev, curr> &&
                 meta::nothrow::explicitly_convertible_to<
-                    meta::invoke_type<F, prev, curr>,
+                    meta::call_type<F, prev, curr>,
                     bool
                 > &&
                 meta::nothrow::convertible_to<curr, type> &&
@@ -978,9 +930,9 @@ namespace impl {
             static constexpr bool enable = false;
             static constexpr bool nothrow = false;
         };
-        template <meta::invocable<prev, curr> F>
+        template <meta::callable<prev, curr> F>
             requires (meta::explicitly_convertible_to<
-                meta::invoke_type<F, prev, curr>,
+                meta::call_type<F, prev, curr>,
                 bool
             >)
         struct traits<F> {
@@ -989,9 +941,9 @@ namespace impl {
             using type = recur::type;
             static constexpr bool enable = recur::enable;
             static constexpr bool nothrow =
-                meta::nothrow::invocable<F, prev, curr> &&
+                meta::nothrow::callable<F, prev, curr> &&
                 meta::nothrow::explicitly_convertible_to<
-                    meta::invoke_type<F, prev, curr>,
+                    meta::call_type<F, prev, curr>,
                     bool
                 > &&
                 meta::nothrow::convertible_to<curr, type> &&
@@ -1052,9 +1004,9 @@ namespace impl {
             static constexpr bool enable = false;
             static constexpr bool nothrow = false;
         };
-        template <meta::invocable<prev, curr> F>
+        template <meta::callable<prev, curr> F>
             requires (meta::explicitly_convertible_to<
-                meta::invoke_type<F, prev, curr>,
+                meta::call_type<F, prev, curr>,
                 bool
             >)
         struct traits<F> {
@@ -1063,9 +1015,9 @@ namespace impl {
             using type = recur::type;
             static constexpr bool enable = recur::enable;
             static constexpr bool nothrow =
-                meta::nothrow::invocable<F, prev, curr> &&
+                meta::nothrow::callable<F, prev, curr> &&
                 meta::nothrow::explicitly_convertible_to<
-                    meta::invoke_type<F, prev, curr>,
+                    meta::call_type<F, prev, curr>,
                     bool
                 > &&
                 meta::nothrow::convertible_to<curr, type> &&
@@ -1323,16 +1275,16 @@ template <
     requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool any(Args&&... args)
     noexcept(((
-        meta::nothrow::invocable<F, Args> &&
+        meta::nothrow::callable<F, Args> &&
         meta::nothrow::explicitly_convertible_to<
-            meta::invoke_type<F, Args>,
+            meta::call_type<F, Args>,
             bool
         >
     ) && ...))
     requires(((
-        meta::invocable<F, Args> &&
+        meta::callable<F, Args> &&
         meta::explicitly_convertible_to<
-            meta::invoke_type<F, Args>,
+            meta::call_type<F, Args>,
             bool
         >
     ) && ...))
@@ -1377,8 +1329,8 @@ template <
     meta::iterable T
 >
     requires (
-        meta::invocable<F, meta::yield_type<T>> &&
-        meta::explicitly_convertible_to<meta::invoke_type<F, meta::yield_type<T>>, bool>
+        meta::callable<F, meta::yield_type<T>> &&
+        meta::explicitly_convertible_to<meta::call_type<F, meta::yield_type<T>>, bool>
     )
 [[nodiscard]] constexpr bool any(T&& r)
     noexcept(noexcept(std::ranges::any_of(std::forward<T>(r), F{})))
@@ -1399,16 +1351,16 @@ template <
     requires (sizeof...(Args) > 1)
 [[nodiscard]] constexpr bool all(Args&&... args)
     noexcept(((
-        meta::nothrow::invocable<F, Args> &&
+        meta::nothrow::callable<F, Args> &&
         meta::nothrow::explicitly_convertible_to<
-            meta::invoke_type<F, Args>,
+            meta::call_type<F, Args>,
             bool
         >
     ) && ...))
     requires(((
-        meta::invocable<F, Args> &&
+        meta::callable<F, Args> &&
         meta::explicitly_convertible_to<
-            meta::invoke_type<F, Args>,
+            meta::call_type<F, Args>,
             bool
         >
     ) && ...))
@@ -1453,8 +1405,8 @@ template <
     meta::iterable T
 >
     requires (
-        meta::invocable<F, meta::yield_type<T>> &&
-        meta::explicitly_convertible_to<meta::invoke_type<F, meta::yield_type<T>>, bool>
+        meta::callable<F, meta::yield_type<T>> &&
+        meta::explicitly_convertible_to<meta::call_type<F, meta::yield_type<T>>, bool>
     )
 [[nodiscard]] constexpr bool all(T&& r)
     noexcept(noexcept(std::ranges::all_of(std::forward<T>(r), F{})))
@@ -2023,20 +1975,20 @@ namespace meta {
                     Less,
                     meta::remove_reference<meta::dereference_type<Begin>>
                 > &&
-                meta::invocable<Less, meta::dereference_type<Begin>> &&
+                meta::callable<Less, meta::dereference_type<Begin>> &&
                 meta::has_lt<
-                    meta::invoke_type<Less, meta::dereference_type<Begin>>,
-                    meta::invoke_type<Less, meta::dereference_type<Begin>>
+                    meta::call_type<Less, meta::dereference_type<Begin>>,
+                    meta::call_type<Less, meta::dereference_type<Begin>>
                 >
             ) || (
                 !meta::member<Less> &&
-                meta::invocable<
+                meta::callable<
                     meta::as_lvalue<Less>,
                     meta::dereference_type<Begin>,
                     meta::dereference_type<Begin>
                 > &&
                 meta::explicitly_convertible_to<
-                    meta::invoke_type<
+                    meta::call_type<
                         meta::as_lvalue<Less>,
                         meta::dereference_type<Begin>,
                         meta::dereference_type<Begin>

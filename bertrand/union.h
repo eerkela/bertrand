@@ -101,8 +101,7 @@ This class serves as the basis for both `Optional<T>` and `Expected<T, Es...>`, 
 together form a complete, safe, and performant type-erasure mechanism for arbitrary C++
 code, including value-based exceptions at both compile time and runtime, which must be
 explicitly acknowledged through the type system. */
-template <typename... Ts>
-    requires (sizeof...(Ts) > 1 && (meta::not_void<Ts> && ...) && meta::unique<Ts...>)
+template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union;
 
 
@@ -219,25 +218,25 @@ namespace meta {
                     static constexpr bool enable = false;
                     static constexpr bool nothrow = true;
                 };
-                template <typename... As> requires (meta::invocable<F, As...>)
+                template <typename... As> requires (meta::callable<F, As...>)
                 struct invoke<As...> {
                     template <typename... Rs>
                     struct helper { using type = meta::pack<Rs...>; };
                     template <typename... Rs>
-                        requires (!::std::same_as<meta::invoke_type<F, As...>, Rs> && ...)
+                        requires (!::std::same_as<meta::call_type<F, As...>, Rs> && ...)
                     struct helper<Rs...> {
-                        using type = meta::pack<Rs..., meta::invoke_type<F, As...>>;
+                        using type = meta::pack<Rs..., meta::call_type<F, As...>>;
                     };
                     static constexpr bool enable = true;
-                    static constexpr bool nothrow = meta::nothrow::invocable<F, As...>;
+                    static constexpr bool nothrow = meta::nothrow::callable<F, As...>;
                     template <typename... Rs>
                     using type = helper<Rs...>::type;
                     static constexpr bool has_void = false;
                 };
-                template <typename... As> requires (meta::invoke_returns<void, F, As...>)
+                template <typename... As> requires (meta::call_returns<void, F, As...>)
                 struct invoke<As...> {
                     static constexpr bool enable = true;
-                    static constexpr bool nothrow = meta::nothrow::invocable<F, As...>;
+                    static constexpr bool nothrow = meta::nothrow::callable<F, As...>;
                     template <typename... Rs>
                     using type = meta::pack<Rs...>;
                     static constexpr bool has_void = true;
@@ -254,7 +253,7 @@ namespace meta {
                 >
                 struct validate {
                     static constexpr bool nothrow_ = nothrow;
-                    static constexpr bool consistent = returns::size <= 1;
+                    static constexpr bool consistent = returns::size() <= 1;
                     static constexpr bool has_void_ = has_void;
                     using return_types = returns;
                     using subset = valid;
@@ -375,7 +374,7 @@ namespace meta {
                         static constexpr bool empty =
                             meta::is<typename impl::visitable<A>::empty, alt>;
                         static constexpr bool error =
-                            impl::visitable<A>::errors::template contains<meta::unqualify<alt>>;
+                            impl::visitable<A>::errors::template contains<meta::unqualify<alt>>();
                     };
 
                     // 3c. For every alternative of `A`, check to see if it is present in
@@ -588,7 +587,7 @@ namespace meta {
             /* `meta::exhaustive<F, Args...>` evaluates to true iff all argument
             permutations are valid. */
             static constexpr bool exhaustive =
-                permutations::size == valid_permutations::size;
+                permutations::size() == valid_permutations::size();
 
             /* `meta::consistent<F, Args...>` evaluates to true iff all valid argument
             permutations return the same type, or if there are no valid paths. */
@@ -618,18 +617,18 @@ namespace meta {
         private:
             template <typename F2>
             struct _type { using type = void; };
-            template <meta::invocable F2>
-            struct _type<F2> { using type = meta::invoke_type<F2>; };
+            template <meta::callable F2>
+            struct _type<F2> { using type = meta::call_type<F2>; };
 
         public:
-            static constexpr bool enable = meta::invocable<F>;
+            static constexpr bool enable = meta::callable<F>;
             static constexpr bool exhaustive = enable;
             static constexpr bool consistent = enable;
-            static constexpr bool nothrow = meta::nothrow::invocable<F>;
+            static constexpr bool nothrow = meta::nothrow::callable<F>;
             template <typename R>
-            static constexpr bool returns = meta::invoke_returns<R, F>;
+            static constexpr bool returns = meta::call_returns<R, F>;
             template <typename R>
-            static constexpr bool nothrow_returns = meta::nothrow::invoke_returns<R, F>;
+            static constexpr bool nothrow_returns = meta::nothrow::call_returns<R, F>;
             using type = _type<F>::type;
         };
 
@@ -698,11 +697,11 @@ namespace meta {
             static constexpr bool nothrow = false;
             using type = void;
         };
-        template <typename F, typename... out> requires (meta::invocable<F, out...>)
+        template <typename F, typename... out> requires (meta::callable<F, out...>)
         struct apply<F, meta::pack<out...>> {
             static constexpr bool enable = true;
-            static constexpr bool nothrow = meta::nothrow::invocable<F, out...>;
-            using type = meta::invoke_type<F, out...>;
+            static constexpr bool nothrow = meta::nothrow::callable<F, out...>;
+            using type = meta::call_type<F, out...>;
         };
         template <typename F, typename... out, typename T, typename... Ts>
             requires (!meta::tuple_like<T>)
@@ -734,8 +733,8 @@ namespace meta {
                 G&& func,
                 A&&... args
             )
-                noexcept(nothrow::invocable<G, A...>)
-                requires(invocable<G, A...>)
+                noexcept(meta::nothrow::callable<G, A...>)
+                requires(meta::callable<G, A...>)
             {
                 static_assert(count == sizeof...(A));
                 static_assert(sizeof...(prev) == sizeof...(A));
@@ -930,7 +929,7 @@ namespace impl {
     permutations for a given set of union types. */
     template <typename... As>
     static constexpr size_t vtable_size =
-        (impl::visitable<As>::alternatives::size * ... * 1);
+        (impl::visitable<As>::alternatives::size() * ... * 1);
 
     /* Helper function to decode a vtable index for the current level of recursion.
     This is exactly equivalent to dividing the index by the appropriate visit scale
@@ -966,7 +965,7 @@ namespace impl {
     ) noexcept(meta::nothrow::visit<F, A...>) {
         static constexpr size_t I = sizeof...(Prev);
         if constexpr (I + 1 == sizeof...(A)) {
-            if constexpr (meta::is_void<meta::invoke_type<
+            if constexpr (meta::is_void<meta::call_type<
                 F,
                 meta::unpack_type<Prev, A...>...,
                 T
@@ -1021,7 +1020,7 @@ namespace impl {
         }
 
         /* Getting the value for a non-visitable type will trivially forward it. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
             return (std::forward<U>(u));
         }
@@ -1046,7 +1045,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1074,7 +1073,7 @@ namespace impl {
     template <meta::Union T>
     struct visitable<T> {
     private:
-        static constexpr size_t N = meta::unqualify<T>::types::size;
+        static constexpr size_t N = meta::unqualify<T>::types::size();
 
         template <size_t I, typename... Ts>
         struct _pack {
@@ -1106,7 +1105,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for a union of this type. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(std::forward<U>(u).storage.template value<I>())
         ) {
@@ -1134,7 +1133,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1186,7 +1185,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for a union of this type. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(std::get<I>(std::forward<U>(u)))
         ) {
@@ -1214,7 +1213,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1253,7 +1252,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I == 0 && I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I == 0 && I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(std::forward<U>(u).storage.value())
         ) {
@@ -1261,7 +1260,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
             return (None);
         }
@@ -1288,7 +1287,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1362,7 +1361,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I == 0 && I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I == 0 && I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(std::forward<U>(u).value())
         ) {
@@ -1370,7 +1369,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
             return (None);
         }
@@ -1397,7 +1396,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1472,7 +1471,7 @@ namespace impl {
         template <size_t I, typename... Errs>
             requires (
                 meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I == meta::unqualify<T>::errors::size
+                I == meta::unqualify<T>::errors::size()
             )
         struct _pack<I, Errs...> {
             using type = meta::pack<
@@ -1483,7 +1482,7 @@ namespace impl {
         template <size_t I, typename... Errs>
             requires (
                 meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I == meta::unqualify<T>::errors::size
+                I == meta::unqualify<T>::errors::size()
             )
         struct _pack<I, Errs...> {
             using type = meta::pack<NoneType, Errs...>;
@@ -1506,7 +1505,7 @@ namespace impl {
         error state(s). */
         template <meta::is<T> U>
         [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            if constexpr (errors::size > 1) {
+            if constexpr (errors::size() > 1) {
                 return u.has_value() ? 0 : u.get_error().index() + 1;
             } else {
                 return u.has_error();
@@ -1528,7 +1527,7 @@ namespace impl {
         }
 
         /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(std::forward<U>(u).template get_error<I - 1>())
         ) {
@@ -1557,7 +1556,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1654,7 +1653,7 @@ namespace impl {
         error state(s). */
         template <meta::is<T> U>
         [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            if constexpr (errors::size > 1) {
+            if constexpr (errors::size() > 1) {
                 return u.has_value() ?
                     0 :
                     visitable<decltype((u.error()))>::index(u.error()) + 1;
@@ -1667,7 +1666,7 @@ namespace impl {
         template <size_t I, meta::is<T> U>
             requires (
                 meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < alternatives::size
+                I == 0 && I < alternatives::size()
             )
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(std::forward<U>(u).value())
@@ -1679,14 +1678,14 @@ namespace impl {
         template <size_t I, meta::is<T> U>
             requires (
                 meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < alternatives::size
+                I == 0 && I < alternatives::size()
             )
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
             return (None);
         }
 
         /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size)
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
             noexcept(visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
                 std::forward<U>(u).error()
@@ -1719,7 +1718,7 @@ namespace impl {
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
                 meta::visit<F, A...>
             )
         {
@@ -1960,7 +1959,7 @@ namespace impl {
     struct union_select {};
 
     /* determine the common type for the members of the union, if one exists. */
-    template <typename Self, typename = std::index_sequence<meta::unqualify<Self>::types::size>>
+    template <typename Self, typename = std::index_sequence<meta::unqualify<Self>::types::size()>>
     struct union_common_type {
         using type = void;
         static constexpr bool nothrow = true;
@@ -2478,57 +2477,63 @@ namespace impl {
     `Union`. */
     template <typename Self>
     struct union_access {
-        using S = meta::unqualify<Self>;
+        using types = meta::unqualify<Self>::types;
+        using size_type = types::size_type;
+        using index_type = types::index_type;
 
-        static constexpr size_t size = S::types::size;
+        template <index_type I>
+        static constexpr bool valid_index = impl::valid_index<types::ssize(), I>;
+
+        template <index_type I> requires (valid_index<I>)
+        static constexpr size_type normalize_index = impl::normalize_index<types::ssize(), I>();
 
         template <typename T>
-        static constexpr bool contains = S::types::template contains<T>;
+        static constexpr bool contains = types::template contains<T>();
 
         template <typename T>
-        static constexpr size_t index_of = S::types::template index<T>;
+        static constexpr size_type index_of = types::template index<T>();
 
-        template <size_t I> requires (I < size)
-        using idx = decltype(std::declval<Self>().template value<I>());
+        template <index_type I> requires (valid_index<I>)
+        using idx = decltype(std::declval<Self>().template value<normalize_index<I>>());
 
         template <typename T> requires (contains<T>)
         using type = idx<index_of<T>>;
 
-        template <size_t I> requires (I < size)
+        template <index_type I> requires (valid_index<I>)
         using opt_idx = bertrand::Optional<idx<I>>;
 
         template <typename T> requires (contains<T>)
         using opt_type = bertrand::Optional<type<T>>;
 
-        template <size_t I> requires (I < size)
+        template <index_type I> requires (valid_index<I>)
         using exp_idx = bertrand::Expected<idx<I>, BadUnionAccess>;
 
         template <typename T> requires (contains<T>)
         using exp_type = bertrand::Expected<type<T>, BadUnionAccess>;
 
-        template <size_t I> requires (I < size)
+        template <index_type I> requires (valid_index<I>)
         [[nodiscard]] constexpr exp_idx<I> value(Self self)
             noexcept (requires{
                 {
-                    self.template index_error<I>()
+                    self.template index_error<normalize_index<I>>()
                 } noexcept -> meta::nothrow::convertible_to<exp_idx<I>>;
                 {
-                    std::forward<Self>(self).template value<I>()
+                    std::forward<Self>(self).template value<normalize_index<I>>()
                 } noexcept -> meta::nothrow::convertible_to<exp_idx<I>>;
             })
             requires (requires{
                 {
-                    self.template index_error<I>()
+                    self.template index_error<normalize_index<I>>()
                 } -> meta::convertible_to<exp_idx<I>>;
                 {
-                    std::forward<Self>(self).template value<I>()
+                    std::forward<Self>(self).template value<normalize_index<I>>()
                 } -> meta::convertible_to<exp_idx<I>>;
             })
         {
             if (self.index != I) {
-                return self.template index_error<I>();
+                return self.template index_error<normalize_index<I>>();
             }
-            return std::forward<Self>(self).template value<I>();
+            return std::forward<Self>(self).template value<normalize_index<I>>();
         }
 
         template <typename T> requires (contains<T>)
@@ -2556,19 +2561,19 @@ namespace impl {
             return std::forward<Self>(self).template value<index_of<T>>();
         }
 
-        template <size_t I> requires (I < size)
+        template <index_type I> requires (valid_index<I>)
         [[nodiscard]] constexpr opt_idx<I> value_if(Self self)
             noexcept (requires{{
-                std::forward<Self>(self).template value<I>()
+                std::forward<Self>(self).template value<normalize_index<I>>()
             } noexcept -> meta::nothrow::convertible_to<opt_idx<I>>;})
             requires (requires{{
-                std::forward<Self>(self).template value<I>()
+                std::forward<Self>(self).template value<normalize_index<I>>()
             } -> meta::convertible_to<opt_idx<I>>;})
         {
             if (self.index != I) {
                 return None;
             }
-            return std::forward<Self>(self).template value<I>();
+            return std::forward<Self>(self).template value<normalize_index<I>>();
         }
 
         template <typename T> requires (contains<T>)
@@ -2589,6 +2594,9 @@ namespace impl {
     };
     template <meta::Union Self>
     struct union_access<Self> : union_access<decltype(std::declval<Self>().storage)> {};
+
+    /// TODO: Optionals may not use the same storage as unions, since they can optimize
+    /// out all the vtables.
     template <meta::Optional Self>
     struct union_access<Self> : union_access<decltype(std::declval<Self>().storage)> {};
     template <meta::Expected Self>
@@ -4944,7 +4952,7 @@ namespace impl {
         typename... rbegin,
         typename... rend
     > requires (
-        I < meta::remove_reference<U>::types::size &&
+        I < meta::remove_reference<U>::types::size() &&
         meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
         meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
     )
@@ -4979,7 +4987,7 @@ namespace impl {
         typename... rbegin,
         typename... rend
     > requires (
-        I < meta::remove_reference<U>::types::size &&
+        I < meta::remove_reference<U>::types::size() &&
         meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
         !meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
     )
@@ -5010,7 +5018,7 @@ namespace impl {
         typename... rbegin,
         typename... rend
     > requires (
-        I < meta::remove_reference<U>::types::size &&
+        I < meta::remove_reference<U>::types::size() &&
         !meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
         meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
     )
@@ -5041,7 +5049,7 @@ namespace impl {
         typename... rbegin,
         typename... rend
     > requires (
-        I < meta::remove_reference<U>::types::size &&
+        I < meta::remove_reference<U>::types::size() &&
         !meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
         !meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
     )
@@ -5073,8 +5081,7 @@ namespace impl {
 }
 
 
-template <typename... Ts>
-    requires (sizeof...(Ts) > 1 && (meta::not_void<Ts> && ...) && meta::unique<Ts...>)
+template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union : impl::union_tag {
     using types = meta::pack<Ts...>;
 
@@ -5082,7 +5089,7 @@ struct Union : impl::union_tag {
 
 private:
 
-    template <size_t I, typename... A> requires (I < types::size)
+    template <size_t I, typename... A> requires (I < types::size())
     constexpr Union(impl::union_select<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
@@ -5096,18 +5103,21 @@ public:
     /* Explicitly construct a union with the alternative at index `I` using the
     provided arguments.  This is more explicit than using the standard constructors,
     for cases where only a specific alternative should be considered. */
-    template <size_t I, typename... A> requires (I < types::size)
+    template <ssize_t I, typename... A> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] static constexpr Union create(A&&... args)
         noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
     {
-        return {impl::union_select<I>{}, std::forward<A>(args)...};
+        return {impl::union_select<
+            impl::normalize_index<types::ssize(), I>()>{},
+            std::forward<A>(args)...
+        };
     }
 
     /* Explicitly construct a union with the specified alternative using the given
     arguments.  This is more explicit than using the standard constructors, for cases
     where only a specific alternative should be considered. */
-    template <typename T, typename... A> requires (types::template contains<T>)
+    template <typename T, typename... A> requires (types::template contains<T>())
     [[nodiscard]] static constexpr Union create(A&&... args)
         noexcept (meta::nothrow::constructible_from<T, A...>)
         requires (meta::constructible_from<T, A...>)
@@ -5198,19 +5208,16 @@ public:
         return impl::visit(impl::ExplicitConvertTo<T>{}, std::forward<Self>(self));
     }
 
-    /// TODO: swap all the index logic over to use signed indices with Python-style
-    /// wraparound.
-
     /* Check whether the union holds a specific type, identified by index. */
-    template <size_t I> requires (I < types::size)
+    template <ssize_t I> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] constexpr bool has_value() const noexcept {
-        return storage.index == I;
+        return ssize_t(storage.index) == impl::normalize_index<types::size(), I>();
     }
 
     /* Check whether the union holds a specific type. */
-    template <typename T> requires (types::template contains<T>)
+    template <typename T> requires (types::template contains<T>())
     [[nodiscard]] constexpr bool has_value() const noexcept {
-        return storage.index == types::template index<T>;
+        return storage.index == types::template index<T>();
     }
 
     /* Flatten the union into a common type, assuming one exists.  Fails to compile if
@@ -5228,7 +5235,7 @@ public:
     /* Get the value of the type at index `I`.  Fails to compile if the index is out of
     range.  Otherwise, returns an `Expected<T, BadUnionAccess>` where `T` is the type
     at index `I`, forwarded according the qualifiers of the enclosing union. */
-    template <size_t I, typename Self> requires (I < types::size)
+    template <ssize_t I, typename Self> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] constexpr auto value(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value<I>(
             std::forward<Self>(self).storage
@@ -5243,7 +5250,7 @@ public:
     /* Get the value for the templated type.  Fails to compile if the templated type
     is not a valid union member.  Otherwise, returns an `Expected<T, BadUnionAccess>`,
     where `T` is forwarded according to the qualifiers of the enclosing union. */
-    template <typename T, typename Self> requires (types::template contains<T>)
+    template <typename T, typename Self> requires (types::template contains<T>())
     [[nodiscard]] constexpr auto value(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value<T>(
             std::forward<Self>(self).storage
@@ -5260,7 +5267,7 @@ public:
     `T` is the type at index `I`, and the empty state is returned if it differs from
     the active type.  The value is forwarded according to the qualifiers of the
     enclosing union. */
-    template <size_t I, typename Self> requires (I < types::size)
+    template <ssize_t I, typename Self> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] constexpr auto value_if(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value_if<I>(
             std::forward<Self>(self).storage
@@ -5276,7 +5283,7 @@ public:
     compile if the templated type is not a valid union member.  Otherwise, returns an
     `Optional<T>`, where the empty state signals an inactive type.  The value is
     forwarded according to the qualifiers of the enclosing union. */
-    template <typename T, typename Self> requires (types::template contains<T>)
+    template <typename T, typename Self> requires (types::template contains<T>())
     [[nodiscard]] constexpr auto value_if(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value_if<T>(
             std::forward<Self>(self).storage
@@ -5482,7 +5489,8 @@ private:
     friend struct impl::make_optional_iterator;
 
     /// TODO: use impl::union_storage directly, rather than instantiating a whole new
-    /// union.
+    /// union.  Alternatively, I could just stick to a raw union with manual management,
+    /// which could end up being more performant and faster to compile anyways.
 
     template <typename U>
     struct storage {
@@ -5588,12 +5596,12 @@ private:
     };
 
     template <typename F, typename Self, typename... Args>
-        requires (meta::invocable<F, access<Self>, Args...>)
+        requires (meta::callable<F, access<Self>, Args...>)
     struct and_then_fn {
         template <meta::is<value_type> V>
         static constexpr decltype(auto) operator()(auto&& func, V&& value, auto&&... args)
-            noexcept(meta::nothrow::invocable<F, V, Args...>)
-            requires(meta::invocable<F, V, Args...>)
+            noexcept(meta::nothrow::callable<F, V, Args...>)
+            requires(meta::callable<F, V, Args...>)
         {
             return (std::forward<F>(func)(
                 std::forward<V>(value),
@@ -5603,7 +5611,7 @@ private:
     };
 
     template <typename F, typename Self, typename... Args>
-        requires (meta::invocable<F, Args...>)
+        requires (meta::callable<F, Args...>)
     struct or_else_fn {
         template <meta::is<value_type> V>
         static constexpr decltype(auto) operator()(auto&& func, V&& value, auto&&... args)
@@ -5613,8 +5621,8 @@ private:
         }
         template <typename V> requires (!meta::is<value_type, V>)
         static constexpr decltype(auto) operator()(auto&& func, V&&, auto&&... args)
-            noexcept(meta::nothrow::invocable<F, Args...>)
-            requires(meta::invocable<F, Args...>)
+            noexcept(meta::nothrow::callable<F, Args...>)
+            requires(meta::callable<F, Args...>)
         {
             return (std::forward<F>(func)(std::forward<Args>(args)...));
         }
@@ -5821,7 +5829,7 @@ public:
     can represent multiple distinct empty states without nesting. */
     template <typename Self, typename F, typename... Args>
         requires (
-            meta::invocable<F, access<Self>, Args...> &&
+            meta::callable<F, access<Self>, Args...> &&
             meta::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
         )
     constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
@@ -5867,7 +5875,7 @@ public:
     infrastructure. */
     template <typename Self, typename F, typename... Args>
         requires (
-            meta::invocable<F, Args...> &&
+            meta::callable<F, Args...> &&
             meta::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
         )
     constexpr decltype(auto) or_else(this Self&& self, F&& f, Args&&... args) noexcept(
@@ -5896,16 +5904,16 @@ public:
     */
     template <typename Self, typename F, typename... Args>
         requires (
-            meta::invocable<F, access<Self>, Args...> &&
+            meta::callable<F, access<Self>, Args...> &&
             meta::explicitly_convertible_to<
-                meta::invoke_type<F, access<Self>, Args...>,
+                meta::call_type<F, access<Self>, Args...>,
                 bool
             >
         )
     constexpr Optional filter(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::invocable<F, access<Self>, Args...> &&
+        meta::nothrow::callable<F, access<Self>, Args...> &&
         meta::nothrow::explicitly_convertible_to<
-            meta::invoke_type<F, access<Self>, Args...>,
+            meta::call_type<F, access<Self>, Args...>,
             bool
         >
     ) {
@@ -6184,7 +6192,7 @@ private:
         return (std::forward<Self>(self).m_storage.storage.template value<1>());
     }
 
-    template <size_t I, typename Self> requires (I < errors::size)
+    template <size_t I, typename Self> requires (I < errors::size())
     constexpr decltype(auto) get_error(this Self&& self) noexcept {
         if constexpr (sizeof...(Es)) {
             return (std::forward<Self>(self).get_error().storage.template value<I>());
@@ -6193,10 +6201,10 @@ private:
         }
     }
 
-    template <typename U, typename Self> requires (errors::template contains<U>)
+    template <typename U, typename Self> requires (errors::template contains<U>())
     constexpr decltype(auto) get_error(this Self&& self) noexcept {
         return (
-            std::forward<Self>(self).template get_error<errors::template index<U>>()
+            std::forward<Self>(self).template get_error<errors::template index<U>()>()
         );
     }
 
@@ -6218,7 +6226,7 @@ private:
     template <typename U>
     struct monadic {
         template <typename F, typename Self, typename... Args>
-            requires (meta::invocable<F, access<Self>, Args...>)
+            requires (meta::callable<F, access<Self>, Args...>)
         struct and_then_fn {
             template <meta::is<value_type> V>
             static constexpr decltype(auto) operator()(
@@ -6226,8 +6234,8 @@ private:
                 V&& value,
                 auto&&... args
             )
-                noexcept(meta::nothrow::invocable<F, V, Args...>)
-                requires(meta::invocable<F, V, Args...>)
+                noexcept(meta::nothrow::callable<F, V, Args...>)
+                requires(meta::callable<F, V, Args...>)
             {
                 return (std::forward<F>(func)(
                     std::forward<V>(value),
@@ -6239,9 +6247,9 @@ private:
         template <typename F, typename Self, typename... Args>
             requires (
                 (
-                    meta::invocable<F, access_type<E, Self>, Args...> ||
+                    meta::callable<F, access_type<E, Self>, Args...> ||
                     ... ||
-                    meta::invocable<F, access_type<Es, Self>, Args...>
+                    meta::callable<F, access_type<Es, Self>, Args...>
                 ) &&
                 meta::has_common_type<
                     access<Self>,
@@ -6263,8 +6271,8 @@ private:
                 Err&& error,
                 auto&&... args
             )
-                noexcept(meta::nothrow::invocable<F, Err, Args...>)
-                requires(meta::invocable<F, Err, Args...>)
+                noexcept(meta::nothrow::callable<F, Err, Args...>)
+                requires(meta::callable<F, Err, Args...>)
             {
                 return (std::forward<F>(func)(
                     std::forward<Err>(error),
@@ -6276,7 +6284,7 @@ private:
     template <meta::is_void U>
     struct monadic<U> {
         template <typename F, typename Self, typename... Args>
-            requires (meta::invocable<F, Args...>)
+            requires (meta::callable<F, Args...>)
         struct and_then_fn {
             template <meta::None V>
             static constexpr decltype(auto) operator()(
@@ -6284,8 +6292,8 @@ private:
                 V&& value,
                 auto&&... args
             )
-                noexcept(meta::nothrow::invocable<F, Args...>)
-                requires(meta::invocable<F, Args...>)
+                noexcept(meta::nothrow::callable<F, Args...>)
+                requires(meta::callable<F, Args...>)
             {
                 return (std::forward<F>(func)(std::forward<Args>(args)...));
             }
@@ -6293,9 +6301,9 @@ private:
 
         template <typename F, typename Self, typename... Args>
             requires ((
-                meta::invocable<F, access_type<E, Self>, Args...> ||
+                meta::callable<F, access_type<E, Self>, Args...> ||
                 ... ||
-                meta::invocable<F, access_type<Es, Self>, Args...>
+                meta::callable<F, access_type<Es, Self>, Args...>
             ))
         struct or_else_fn {
             template <meta::None V>
@@ -6306,8 +6314,8 @@ private:
                 Err&& error,
                 auto&&... args
             )
-                noexcept(meta::nothrow::invocable<F, Err, Args...>)
-                requires(meta::invocable<F, Err, Args...>)
+                noexcept(meta::nothrow::callable<F, Err, Args...>)
+                requires(meta::callable<F, Err, Args...>)
             {
                 return (std::forward<F>(func)(
                     std::forward<Err>(error),
@@ -6500,7 +6508,7 @@ public:
     if it stores a valid result or an error other than the one indicated.  If only one
     error state is permitted, then this is identical to calling `has_error()` without
     any template parameters. */
-    template <size_t I> requires (I < errors::size)
+    template <size_t I> requires (I < errors::size())
     [[nodiscard]] constexpr bool has_error() const noexcept {
         if constexpr (sizeof...(Es)) {
             return has_error() && get_error().template has_value<I>();
@@ -6513,7 +6521,7 @@ public:
     if it stores a valid result or an error other than the one indicated.  If only one
     error state is permitted, then this is identical to calling `has_error()` without
     any template parameters. */
-    template <typename Err> requires (errors::template contains<Err>)
+    template <typename Err> requires (errors::template contains<Err>())
     [[nodiscard]] constexpr bool has_error() const noexcept {
         if constexpr (sizeof...(Es)) {
             return has_error() && get_error().template has_value<Err>();
@@ -6541,7 +6549,7 @@ public:
     `error().get<I>().value()` in the union case.  A `BadUnionAccess` exception will
     be thrown in debug mode if the expected is currently in the valid state, or if the
     indexed error is not the active member of the union. */
-    template <size_t I, typename Self> requires (I < errors::size)
+    template <size_t I, typename Self> requires (I < errors::size())
     [[nodiscard]] constexpr access_at<I, Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_value()) {
@@ -6563,7 +6571,7 @@ public:
     `error().get<T>().value()` in the union case.  A `BadUnionAccess` exception will
     be thrown in debug mode if the expected is currently in the valid state, or if the
     specified error is not the active member of the union. */
-    template <typename Err, typename Self> requires (errors::template contains<Err>)
+    template <typename Err, typename Self> requires (errors::template contains<Err>())
     [[nodiscard]] constexpr access_type<Err, Self> error(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_value()) {
@@ -6612,7 +6620,7 @@ public:
     in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
     the indexed error is not the active member of the union. */
     template <size_t I, typename Self, typename V>
-        requires (I < errors::size && meta::has_common_type<access_at<I, Self>, V>)
+        requires (I < errors::size() && meta::has_common_type<access_at<I, Self>, V>)
     [[nodiscard]] constexpr meta::common_type<access_at<I, Self>, V> error_or(
         this Self&& self,
         V&& fallback
@@ -6648,7 +6656,7 @@ public:
     the indexed error is not the active member of the union. */
     template <typename Err, typename Self, typename V>
         requires (
-            errors::template contains<Err> &&
+            errors::template contains<Err>() &&
             meta::has_common_type<access_type<Err, Self>, V>
         )
     [[nodiscard]] constexpr auto error_or(this Self&& self, V&& fallback) noexcept(
@@ -6739,7 +6747,7 @@ public:
     template <typename Self, typename F, typename... Args>
         requires (
             meta::not_void<value_type> &&
-            meta::invocable<F, access<Self>, Args...> &&
+            meta::callable<F, access<Self>, Args...> &&
             meta::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
         )
     constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
@@ -6796,7 +6804,7 @@ public:
     template <typename Self, typename F, typename... Args>
         requires (
             meta::is_void<value_type> &&
-            meta::invocable<F, Args...> &&
+            meta::callable<F, Args...> &&
             meta::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
         )
     constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
@@ -6871,9 +6879,9 @@ public:
     template <typename Self, typename F, typename... Args>
         requires (
             (
-                meta::invocable<F, access_type<E, Self>, Args...> ||
+                meta::callable<F, access_type<E, Self>, Args...> ||
                 ... ||
-                meta::invocable<F, access_type<Es, Self>, Args...>
+                meta::callable<F, access_type<Es, Self>, Args...>
             ) &&
             meta::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
         )
@@ -7603,6 +7611,10 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 
 namespace std {
 
+    /// TODO: make sure std::get() et. al. are correctly adapted to the new
+    /// union/optional/expected interface, and consider perfectly forwarding the
+    /// tuple interface if available.
+
     template <bertrand::meta::monad T>
         requires (bertrand::meta::visit<bertrand::impl::Hash, T>)
     struct hash<T> {
@@ -7618,7 +7630,7 @@ namespace std {
 
     template <typename... Ts>
     struct variant_size<bertrand::Union<Ts...>> :
-        std::integral_constant<size_t, bertrand::Union<Ts...>::types::size>
+        std::integral_constant<size_t, bertrand::Union<Ts...>::types::size()>
     {};
 
     template <size_t I, typename... Ts>
@@ -7645,7 +7657,7 @@ namespace std {
     if the type is not active, similar to `std::get<T>(variant)` and different from
     `union.get<T>()`, which returns an expected according to the monadic interface. */
     template <typename T, bertrand::meta::Union U>
-        requires (remove_cvref_t<U>::types::template contains<T>)
+        requires (remove_cvref_t<U>::types::template contains<T>())
     constexpr decltype(auto) get(U&& u) {
         auto result = std::forward<U>(u).template get<T>();
         if (result.has_error()) {
@@ -7669,7 +7681,7 @@ namespace std {
     and different from `union.get_if<T>()`, which returns an optional according to the
     monadic interface. */
     template <typename T, bertrand::meta::Union U>
-        requires (remove_cvref_t<U>::types::template contains<T>)
+        requires (remove_cvref_t<U>::types::template contains<T>())
     constexpr auto* get_if(U&& u) noexcept(noexcept(u.template get_if<T>())) {
         auto result = u.template get_if<T>();  // as lvalue
         return result.has_value() ? &result.value() : nullptr;
