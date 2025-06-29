@@ -2012,16 +2012,18 @@ namespace impl {
         static constexpr ptr tbl[sizeof...(Ts)] { &fn<T, Ts>... };
     };
 
-    /* A simple tagged union of alternatives `Ts...`, which automatically converts
-    lvalue references, and provides vtable-based copy, move, swap, and destruction
-    operators, as well as a `value()` accessor that walks the recursive structure. */
+    /* A basic tagged union of alternatives `Ts...`, which automatically forwards
+    lvalue references and provides vtable-based copy, move, swap, and destruction
+    operators, as well as a `value()` accessor that walks the overall structure.
+    This is a fundamental building block for sum types, which can dramatically reduce
+    the amount of bookkeeping necessary to safely work with raw C unions. */
     template <meta::not_void... Ts>
     struct union_storage {
         using indices = std::index_sequence_for<Ts...>;
         using types = meta::pack<Ts...>;
         using default_type = impl::union_default_type<Ts...>;
 
-        template <size_t I>
+        template <size_t I> requires (I < sizeof...(Ts))
         using tag = impl::union_select<I>;
 
         /* A recursive C union that stores each alternative as efficiently as possible.
@@ -2466,10 +2468,6 @@ namespace impl {
         {
             return flatten_tbl<meta::forward<Self>>[self.index](std::forward<Self>(self));
         }
-
-        /// TODO: maybe conversion operators go here as well?  This would minimize the
-        /// surface are of the public `Union` type, and also allow conversion of the
-        /// union_storage to a full union, or any other compatible type.
     };
 
     /* Access a type within a `union_storage` class as either an `Expected` or
@@ -2661,7 +2659,7 @@ namespace impl {
     {};
 
     /* A simple visitor that backs the implicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::union_storate<Ts...>` primitive type. */
+    object, returning a corresponding `impl::union_storage<Ts...>` primitive type. */
     template <typename... Ts>
     struct union_convert_from {
         template <typename T>
@@ -2705,6 +2703,278 @@ namespace impl {
                 impl::union_select<meta::index_of<type<A...>, Ts...>>{},
                 std::forward<A>(args)...
             };
+        }
+    };
+
+    /* `Optional`s use a simpler storage backend that only considers a single type,
+    and stores lvalue references as raw pointers as an optimization. */
+    template <meta::not_void T>
+    struct optional_storage {
+        using type = meta::remove_rvalue<T>;
+        union store {
+            [[no_unique_address]] type value;
+            constexpr ~store() noexcept {}
+        } data;
+        [[no_unique_address]] bool initialized = false;
+
+        static constexpr bool swappable = meta::movable<type> && meta::destructible<type>;
+
+        static constexpr bool nothrow_swappable =
+            meta::nothrow::movable<type> && meta::nothrow::destructible<type> && (
+                meta::nothrow::swappable<type> ||
+                (!meta::swappable<type> && meta::nothrow::move_assignable<type>) ||
+                (!meta::swappable<type> && !meta::move_assignable<type>)
+            );
+
+        constexpr optional_storage() noexcept {};
+
+        template <typename... A>
+        constexpr optional_storage(A&&... args)
+            noexcept (meta::nothrow::constructible_from<type, A...>)
+            requires (meta::constructible_from<type, A...>)
+        :
+            data{.value = std::forward<A>(args)...},
+            initialized(true)
+        {}
+
+        constexpr optional_storage(const optional_storage& other)
+            noexcept (meta::nothrow::copyable<type>)
+            requires (meta::copyable<type>)
+        :
+            data{},
+            initialized(other.initialized)
+        {
+            if (initialized) {
+                std::construct_at(&data.value, other.data.value);
+            }
+        }
+
+        constexpr optional_storage(optional_storage&& other)
+            noexcept (meta::nothrow::movable<type> && meta::nothrow::destructible<type>)
+            requires (meta::movable<type> && meta::destructible<type>)
+        :
+            data{},
+            initialized(other.initialized)
+        {
+            if (initialized) {
+                std::construct_at(&data.value, std::move(other.data.value));
+                if constexpr (!meta::trivially_destructible<type>) {
+                    std::destroy_at(&other.data.value);
+                }
+                other.initialized = false;  // mark as moved
+            }
+        }
+
+        constexpr optional_storage& operator=(const optional_storage& other)
+            noexcept (meta::nothrow::copyable<type> && nothrow_swappable)
+            requires (meta::copyable<type> && swappable)
+        {
+            if (this != &other) {
+                optional_storage temp(other);
+                if (initialized && temp.initialized) {
+                    _swap(temp);
+                } else if (initialized) {
+                    if constexpr (!meta::trivially_destructible<type>) {
+                        std::destroy_at(&data.value);
+                    }
+                    initialized = false;
+                } else if (temp.initialized) {
+                    std::construct_at(&data.value, std::move(temp.data.value));
+                    initialized = true;
+                }
+            }
+            return *this;
+        }
+
+        constexpr optional_storage& operator=(optional_storage&& other)
+            noexcept (nothrow_swappable)
+            requires (swappable)
+        {
+            swap(other);
+            return *this;
+        }
+
+        constexpr ~optional_storage()
+            noexcept (meta::nothrow::destructible<type>)
+            requires (meta::destructible<type>)
+        {
+            if constexpr (!meta::trivially_destructible<type>) {
+                if (initialized) {
+                    std::destroy_at(&data.value);
+                }
+            }
+        }
+
+    private:
+
+        constexpr void _swap(optional_storage& other)
+            noexcept (nothrow_swappable)
+            requires (swappable)
+        {
+            if constexpr (meta::swappable<type>) {
+                std::ranges::swap(data.value, other.data.value);
+
+            } else if constexpr (meta::move_assignable<type>) {
+                type temp(std::move(data.value));
+                try {
+                    data.value = std::move(other.data.value);
+                    try {
+                        other.data.value = std::move(temp);
+                    } catch (...) {
+                        other.data.value = std::move(data.value);
+                        throw;
+                    }
+                } catch (...) {
+                    data.value = std::move(temp);
+                    throw;
+                }
+
+            } else {
+                type temp(std::move(data.value));
+                try {
+                    std::destroy_at(&data.value);
+                    std::construct_at(&data.value, std::move(other.data.value));
+                    try {
+                        std::destroy_at(&other.data.value);
+                        std::construct_at(&other.data.value, std::move(temp));
+                    } catch (...) {
+                        std::construct_at(&other.data.value, std::move(data.value));
+                        std::destroy_at(&data.value);
+                        throw;
+                    }
+                } catch (...) {
+                    std::construct_at(&data.value, std::move(temp));
+                    throw;
+                }
+            }
+        }
+
+    public:
+        constexpr void swap(optional_storage& other)
+            noexcept (nothrow_swappable)
+            requires (swappable)
+        {
+            if (initialized && other.initialized) {
+                if (this != &other) {
+                    _swap(other);
+                }
+
+            } else if (initialized) {
+                std::construct_at(&other.data.value, std::move(data.value));
+                other.initialized = true;
+                if constexpr (!meta::trivially_destructible<type>) {
+                    std::destroy_at(&data.value);
+                }
+                initialized = false;
+
+            } else if (other.initialized) {
+                std::construct_at(&data.value, std::move(other.data.value));
+                initialized = true;
+                if constexpr (!meta::trivially_destructible<type>) {
+                    std::destroy_at(&other.data.value);
+                }
+                other.initialized = false;
+            }
+        }
+        constexpr bool has_value() const noexcept { return initialized; }
+        template <typename Self>
+        constexpr decltype(auto) value(this Self&& self) noexcept {
+            return (std::forward<Self>(self).data.value);
+        }
+    };
+    template <meta::not_void T> requires (meta::lvalue<T>)
+    struct optional_storage<T> {
+        using type = meta::as_pointer<T>;
+        type ptr = nullptr;
+        constexpr optional_storage(type p = nullptr) noexcept : ptr(p) {}
+        constexpr optional_storage(T r)
+            noexcept (meta::nothrow::address_returns<type, T>)
+            requires (meta::address_returns<type, T>)
+        :
+            ptr(std::addressof(r))
+        {}
+        constexpr void swap(optional_storage& other) noexcept { std::swap(ptr, other.ptr); }
+        constexpr bool has_value() const noexcept { return ptr != nullptr; }
+        template <typename Self>
+        constexpr decltype(auto) value(this Self&& self) noexcept { return (*self.ptr); }
+    };
+
+    /* A simple visitor that backs the implicit constructor for an `Optional<T>`
+    object, returning a corresponding `impl::optional_storage<T>` primitive type. */
+    template <typename T, typename...>
+    struct optional_convert_from {};
+    template <typename T, typename U> requires (!meta::monad<U>)
+    struct optional_convert_from<T, U> {
+        using result = impl::optional_storage<T>;
+        using type = meta::remove_rvalue<T>;
+        using empty = impl::visitable<U>::empty;
+
+        // 1) prefer direct conversion to `T` if possible
+        template <typename V>
+        static constexpr result operator()(V&& v)
+            noexcept (meta::nothrow::convertible_to<V, type>)
+            requires (meta::convertible_to<V, type>)
+        {
+            return {std::forward<V>(v)};
+        }
+
+        // 2) otherwise, if the argument is in an empty state as defined by the input's
+        // `impl::visitable` specification, then we return it as an empty
+        // `optional_storage` object. 
+        template <typename V>
+        static constexpr result operator()(V&&)
+            noexcept (meta::nothrow::default_constructible<result>)
+            requires (!meta::convertible_to<V, type> && meta::is<V, empty>)
+        {
+            return {};
+        }
+
+        // 3) if `T` is an lvalue, then an extra conversion is enabled from raw
+        // pointers, where nullptr gets translated into an empty `optional_storage`
+        // object.
+        template <typename V>
+        static constexpr result operator()(V&& p)
+            noexcept (meta::nothrow::convertible_to<V, meta::as_pointer<type>>)
+            requires (
+                !meta::convertible_to<V, type> &&
+                !meta::is<V, empty> &&
+                meta::lvalue<type> &&
+                meta::convertible_to<V, meta::as_pointer<type>>
+            )
+        {
+            return {p};
+        }
+    };
+
+    /* A simple visitor that backs the explicit constructor for an `Optional<T>`
+    object, returning a corresponding `impl::optional_storage<T>` primitive type. */
+    template <typename T>
+    struct optional_construct_from {
+        using type = meta::remove_rvalue<T>;
+        template <typename... A>
+        static constexpr impl::optional_storage<T> operator()(A&&... args)
+            noexcept (meta::nothrow::constructible_from<type, A...>)
+            requires (meta::constructible_from<type, A...>)
+        {
+            return {std::forward<A>(args)...};
+        }
+    };
+
+    /* A simple visitor that backs the `Optional.value_or(f)` accessor, where `f` is
+    a function callable with zero arguments that will be invoked only if the optional
+    is empty. */
+    template <typename Self>
+    struct optional_or_else {
+        template <typename F, typename V> requires (!meta::None<V>)
+        static constexpr decltype(auto) operator()(F&&, V&& value) noexcept {
+            return (std::forward<V>(value));
+        }
+        template <typename F, meta::None V>
+        static constexpr decltype(auto) operator()(F&& func, V&&)
+            noexcept (meta::nothrow::callable<F>)
+            requires (meta::callable<F>)
+        {
+            return (std::forward<F>(func)());
         }
     };
 
@@ -3183,6 +3453,7 @@ namespace impl {
 
     template <meta::lvalue O>
     struct make_optional_iterator {
+        static constexpr bool trivial = true;
         using type = decltype(std::declval<O>().storage.value());
         using begin_type = single_iterator<type>;
         using end_type = begin_type;
@@ -3231,6 +3502,7 @@ namespace impl {
             meta::reverse_iterable<decltype(std::declval<O>().storage.value())>
         )
     struct make_optional_iterator<O> {
+        static constexpr bool trivial = false;
         using type = decltype(std::declval<O>().storage.value());
         using begin_type = make_optional_begin<type>::type;
         using end_type = make_optional_end<type>::type;
@@ -3354,7 +3626,7 @@ namespace impl {
         using difference_type = meta::common_type<meta::iterator_difference_type<Ts>...>;
         using reference = union_iterator_ref<Ts...>;
         using pointer = union_iterator_ptr<Ts...>;
-        using value_type = meta::unqualify<reference>;
+        using value_type = meta::remove_reference<reference>;
 
         union_storage<Ts..., NoneType> storage;
 
@@ -5078,12 +5350,38 @@ namespace impl {
         meta::pack<>
     >;
 
+    /// TODO: tuple_iterator<meta::tuple_like>, which could generate a compile-time
+    /// vtable of function pointers that take the tuple as input and output the correct
+    /// member for that index, possibly as a union if multiple types are resent.  If
+    /// all types are the same, then it can just return that type directly.  The actual
+    /// iterator itself is then just a pointer to the parent tuple, and an index into
+    /// the iteration table, meaning it is trivially contiguous and iteration is fast,
+    /// disregarding the vtable lookup.  If all the types in the tuple are the same,
+    /// then I could possibly just take a pointer to each one, and eliminate the extra
+    /// function dispatch.
+
+    template <meta::lvalue T> requires (meta::tuple_like<T>)
+    struct tuple_iterator {
+
+        /// TODO: all the nonsense to generate a vtable of iteration functions for the
+        /// tuple.
+
+
+    };
+
+    /// TODO: extra specialization when the tuple contains just one consistent type
+    /// after running .get<>()
+
 }
 
 
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union : impl::union_tag {
     using types = meta::pack<Ts...>;
+
+    /// TODO: maybe the storage should be named m_value so as to continue stacking
+    /// on that naming convention while leaving maximal room for emitted methods based
+    /// on static reflection?
 
     impl::union_storage<Ts...> storage;
 
@@ -5476,221 +5774,71 @@ public:
 
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
-    using value_type = T;
+    using type = T;
+    using value_type = meta::remove_reference<type>;
     using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
     using pointer = meta::as_pointer<value_type>;
     using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
-private:
-    template <typename U>
-    friend struct impl::visitable;
-    template <meta::lvalue>
-    friend struct impl::make_optional_iterator;
+    impl::optional_storage<T> storage;
 
-    /// TODO: use impl::union_storage directly, rather than instantiating a whole new
-    /// union.  Alternatively, I could just stick to a raw union with manual management,
-    /// which could end up being more performant and faster to compile anyways.
-
-    template <typename U>
-    struct storage {
-        using type = Union<value_type, NoneType>;
-        type data = None;
-        constexpr void swap(storage& other)
-            noexcept(noexcept(data.swap(other.data)))
-            requires(requires{data.swap(other.data);})
-        {
-            data.swap(other.data);
-        }
-        constexpr void reset() noexcept(noexcept(data = None)) {
-            data = None;
-        }
-        constexpr bool has_value() const noexcept {
-            return data.storage.index == 0;
-        }
-        template <typename Self>
-        constexpr decltype(auto) value(this Self&& self) noexcept {
-            return std::forward<Self>(self).data.storage.template value<0>();
-        }
-    };
-
-    template <meta::lvalue U>
-    struct storage<U> {
-        using type = pointer;
-        type data = nullptr;
-        constexpr void swap(storage& other) noexcept { std::swap(data, other.data); }
-        constexpr void reset() noexcept { data = nullptr; }
-        constexpr bool has_value() const noexcept { return data != nullptr; }
-        template <typename Self>
-        constexpr decltype(auto) value(this Self&& self) noexcept {
-            return *std::forward<Self>(self).data;
-        }
-    };
-
-public:
-    /// TODO: rename type to storage_type, then m_storage to storage
-    storage<T> m_storage;
-
-
-private:
-
-    template <typename Self>
-    using access = decltype((std::declval<Self>().storage.value()));
-
-    template <typename Self>
-    using iter = impl::make_optional_iterator<Self>;
-
-    template <typename...>
-    struct ConvertFrom {};
-    template <typename From> requires (!meta::monad<From>)
-    struct ConvertFrom<From> {
-        using type = meta::remove_rvalue<value_type>;
-        template <typename V>
-        static constexpr storage<T> operator()(V&& value)
-            noexcept(meta::nothrow::convertible_to<V, type>)
-            requires(meta::convertible_to<V, type>)
-        {
-            return {std::forward<V>(value)};
-        }
-        template <typename V>
-        static constexpr storage<T> operator()(V&& value)
-            noexcept(meta::nothrow::default_constructible<storage<T>>)
-            requires (
-                !meta::convertible_to<V, type> &&
-                meta::is<V, typename impl::visitable<From>::empty>
-            )
-        {
-            return {None};
-        }
-    };
-    template <typename From>
-        requires (
-            !meta::monad<From> &&
-            meta::lvalue<value_type> &&
-            meta::address_returns<pointer, value_type>
-        )
-    struct ConvertFrom<From> {
-        static constexpr storage<T> operator()(pointer value) noexcept {
-            return {value};
-        }
-        static constexpr storage<T> operator()(value_type value)
-            noexcept(meta::nothrow::address_returns<pointer, value_type>)
-        {
-            return {&value};
-        }
-        template <meta::is<typename impl::visitable<From>::empty> V>
-        static constexpr storage<T> operator()(V&& value) noexcept {
-            return {nullptr};
-        }
-    };
-
-    struct ConstructFrom {
-        using type = meta::remove_rvalue<value_type>;
-        template <typename... A> requires (!meta::lvalue<type>)
-        static constexpr storage<T> operator()(A&&... args)
-            noexcept(meta::nothrow::constructible_from<type, A...>)
-            requires(meta::constructible_from<type, A...>)
-        {
-            return {typename storage<T>::type(std::forward<A>(args)...)};
-        }
-    };
-
-    template <typename F, typename Self, typename... Args>
-        requires (meta::callable<F, access<Self>, Args...>)
-    struct and_then_fn {
-        template <meta::is<value_type> V>
-        static constexpr decltype(auto) operator()(auto&& func, V&& value, auto&&... args)
-            noexcept(meta::nothrow::callable<F, V, Args...>)
-            requires(meta::callable<F, V, Args...>)
-        {
-            return (std::forward<F>(func)(
-                std::forward<V>(value),
-                std::forward<Args>(args)...
-            ));
-        }
-    };
-
-    template <typename F, typename Self, typename... Args>
-        requires (meta::callable<F, Args...>)
-    struct or_else_fn {
-        template <meta::is<value_type> V>
-        static constexpr decltype(auto) operator()(auto&& func, V&& value, auto&&... args)
-            noexcept
-        {
-            return (std::forward<V>(value));
-        }
-        template <typename V> requires (!meta::is<value_type, V>)
-        static constexpr decltype(auto) operator()(auto&& func, V&&, auto&&... args)
-            noexcept(meta::nothrow::callable<F, Args...>)
-            requires(meta::callable<F, Args...>)
-        {
-            return (std::forward<F>(func)(std::forward<Args>(args)...));
-        }
-    };
-
-public:
     /* Default constructor.  Initializes the optional in the empty state. */
-    [[nodiscard]] constexpr Optional(NoneType t = None) noexcept {}
-
-    /* Implicit conversion from references to optional references, bypassing
-    visitors. */
-    [[nodiscard]] constexpr Optional(value_type v)
-        noexcept(meta::nothrow::address_returns<pointer, value_type>)
-        requires(meta::lvalue<value_type> && meta::address_returns<pointer, value_type>)
-    :
-        m_storage(&v)
-    {}
-
-    /* Implicit conversion from pointers to optional references. */
-    [[nodiscard]] constexpr Optional(pointer p) noexcept
-        requires(meta::lvalue<value_type>)
-    :
-        m_storage(p)
-    {}
+    [[nodiscard]] constexpr Optional() = default;
 
     /* Converting constructor.  Implicitly converts the input to the value type, and
-    then initializes the optional in that state.  Also allows implicit conversions from
-    any type `T` where `bertrand::impl::visitable<T>::empty` is not void and all
-    non-empty alternatives can be converted to the value type (e.g. `std::optional<U>`,
-    where `U` is convertible to `value_type`). */
-    template <typename V>
+    initializes the optional with the result.  Also allows implicit conversions from
+    any type `U` where `bertrand::impl::visitable<U>::empty` is not void and all
+    non-empty alternatives can be converted to the value type (e.g. `std::optional<V>`,
+    where `V` is convertible to `T`), or from raw pointers in case `T` is an lvalue
+    reference. */
+    template <typename U>
+    [[nodiscard]] constexpr Optional(U&& v)
+        noexcept (meta::nothrow::exhaustive<impl::optional_convert_from<T, U>, U>)
         requires (
-            meta::exhaustive<ConvertFrom<V>, V> &&
-            meta::consistent<ConvertFrom<V>, V>
+            meta::exhaustive<impl::optional_convert_from<T, U>, U> &&
+            meta::consistent<impl::optional_convert_from<T, U>, U>
         )
-    [[nodiscard]] constexpr Optional(V&& v)
-        noexcept(meta::nothrow::exhaustive<ConvertFrom<V>, V>)
     : 
-        m_storage(impl::visit(ConvertFrom<V>{}, std::forward<V>(v)))
+        storage(impl::visit(impl::optional_convert_from<T, U>{}, std::forward<U>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the value type's
-    constructor, calls it, and then initializes the optional with the result. */
-    template <typename... Args>
+    constructor, and initializes the optional with the result. */
+    template <typename... A>
+    [[nodiscard]] constexpr explicit Optional(A&&... args)
+        noexcept (meta::nothrow::exhaustive<impl::optional_construct_from<T>, A...>)
         requires (
-            sizeof...(Args) > 0 &&
-            !meta::exhaustive<ConvertFrom<Args...>, Args...> &&
-            meta::exhaustive<ConstructFrom, Args...> &&
-            meta::consistent<ConstructFrom, Args...>
+            sizeof...(A) > 0 &&
+            !meta::exhaustive<impl::optional_convert_from<T, A...>, A...> &&
+            meta::exhaustive<impl::optional_construct_from<T>, A...> &&
+            meta::consistent<impl::optional_construct_from<T>, A...>
         )
-    [[nodiscard]] constexpr explicit Optional(Args&&... args)
-        noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
-        m_storage(impl::visit(ConstructFrom{}, std::forward<Args>(args)...))
+        storage(impl::visit(impl::optional_construct_from<T>{}, std::forward<A>(args)...))
     {}
 
-    /* Implicit conversion from `Optional<T>` to `std::optional<T>` and other similar
-    types that are convertible from both the value type and `bertrand::None` (aka
-    `std::nullopt`). */
+    /* Swap the contents of two optionals as efficiently as possible. */
+    constexpr void swap(Optional& other)
+        noexcept (requires{{storage.swap(other.storage)} noexcept;})
+        requires (requires{{storage.swap(other.storage)};})
+    {
+        storage.swap(other.storage);
+    }
+
+    /* Implicit conversion from `Optional<T>` to any type that is convertible from both
+    the perfectly-forwarded value type and `None` (aka `std::nullopt`). */
     template <typename Self, typename V>
-        requires (
-            meta::convertible_to<access<Self>, V> &&
-            meta::convertible_to<NoneType, V>
-        )
-    [[nodiscard]] constexpr operator V(this Self&& self) noexcept(
-        meta::nothrow::convertible_to<access<Self>, V> &&
-        meta::nothrow::convertible_to<NoneType, V>
-    ) {
+    [[nodiscard]] constexpr operator V(this Self&& self)
+        noexcept (requires{
+            {std::forward<Self>(self).storage.value()} noexcept -> meta::nothrow::convertible_to<V>;
+            {None} noexcept -> meta::nothrow::convertible_to<V>;
+        })
+        requires (requires{
+            {std::forward<Self>(self).storage.value()} -> meta::convertible_to<V>;
+            {None} -> meta::convertible_to<V>;
+        })
+    {
         if (self.has_value()) {
             return std::forward<Self>(self).storage.value();
         }
@@ -5699,43 +5847,30 @@ public:
 
     /* Implicit conversion from `Optional<T&>` to pointers and other similar types that
     are convertible from both the address type of the value and `nullptr`. */
-    template <typename Self, typename V>
-        requires (
-            meta::lvalue<value_type> &&
-            meta::address_returns<V, access<Self>> &&
-            meta::convertible_to<std::nullptr_t, V> &&
-            !meta::convertible_to<access<Self>, V> &&
-            !meta::convertible_to<NoneType, V>
-        )
-    [[nodiscard]] constexpr operator V(this Self&& self) noexcept(
-        meta::nothrow::address_returns<V, access<Self>> &&
-        meta::nothrow::convertible_to<std::nullptr_t, V>
-    ) {
+    template <typename Self, typename V> requires (meta::lvalue<T>)
+    [[nodiscard]] constexpr operator V(this Self&& self)
+        noexcept (requires{
+            {std::addressof(self.storage.value())} noexcept -> meta::nothrow::convertible_to<V>;
+            {nullptr} noexcept -> meta::nothrow::convertible_to<V>;
+        })
+        requires (!requires{
+            {std::forward<Self>(self).storage.value()} -> meta::convertible_to<V>;
+            {None} -> meta::convertible_to<V>;
+        } && requires{
+            {std::addressof(self.storage.value())} -> meta::convertible_to<V>;
+            {nullptr} -> meta::convertible_to<V>;
+        })
+    {
         if (self.has_value()) {
             return std::addressof(self.storage.value());
         }
         return nullptr;
     }
 
-    /* Swap the contents of two optionals as efficiently as possible. */
-    constexpr void swap(Optional& other)
-        noexcept(noexcept(m_storage.swap(other.m_storage)))
-        requires(requires{m_storage.swap(other.m_storage);})
-    {
-        if (this != &other) {
-            m_storage.swap(other.m_storage);
-        }
-    }
-
-    /* Clear the current value, transitioning the optional to the empty state. */
-    constexpr void reset() noexcept(noexcept(m_storage.reset())) {
-        m_storage.reset();
-    }
-
     /* Returns `true` if the optional currently holds a value, or `false` if it is in
     the empty state. */
     [[nodiscard]] constexpr bool has_value() const noexcept {
-        return m_storage.has_value();
+        return storage.has_value();
     }
 
     /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
@@ -5744,186 +5879,60 @@ public:
     [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept(!DEBUG) {
         if constexpr (DEBUG) {
             if (!self.has_value()) {
-                throw BadUnionAccess("Cannot access value of an empty Optional");
+                static constexpr static_str msg =
+                    "Empty optional has no value: " + demangle<Self>();
+                throw BadUnionAccess(msg);
             }
         }
         return (std::forward<Self>(self).storage.value());
     }
 
-    /* Access the stored value or return the default value if the optional is empty,
-    converting to the common type between the wrapped type and the default value. */
-    template <typename Self, typename V>
-        requires (meta::has_common_type<access<Self>, V>)
-    [[nodiscard]] constexpr meta::common_type<access<Self>, V> value_or(
-        this Self&& self,
-        V&& fallback
-    ) noexcept(
-        meta::nothrow::convertible_to<access<Self>, meta::common_type<access<Self>, V>> &&
-        meta::nothrow::convertible_to<V, meta::common_type<access<Self>, V>>
-    ) {
-        if (self.has_value()) {
-            return std::forward<Self>(self).storage.value();
-        } else {
-            return std::forward<V>(fallback);
-        }
-    }
+    /* If the optional is empty, invoke a given function and return its result,
+    otherwise propagate the non-empty state.  This is identical to invoking a manual
+    visitor (e.g. a `def` statement) over the union, except that the visitor function
+    does not need to accept `bertrand::NoneType` (aka `std::nullopt_t`) explicitly, and
+    the non-empty state is implicitly forwarded, rather than the empty state.  All
+    other rules (including promotion to union or handling of void return types) remain
+    the same.
 
-    /* A member equivalent for `impl::visit()`, which always inserts this optional
-    as the first argument, for chaining purposes.  See `impl::visit()` for more
-    details.
+    For most visitors, where `f()` returns the same type as the optional:
 
-    For optionals, the visitor function only needs to handle two cases corresponding
-    to the empty and non-empty states.  If the optional is empty, then the visitor will
-    be invoked with an argument of type `bertrand::NoneType` (aka `std::nullopt_t`).
-    Otherwise, it will be invoked with the output from `.value()`. */
-    template <typename F, typename Self, typename... Args>
-        requires (meta::visit<F, Self, Args...>)
-    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<F, Self, Args...>
-    ) {
-        return (impl::visit(
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
-    }
+                self                invoke              result
+        -----------------------------------------------------------------------
+        1.  Optional<T>(empty)      f() -> t            T(t)
+        2.  Optional<T>(t)          (no call)           T(t)
 
-    /* If the optional is not empty, invoke a given function on the wrapped value,
-    otherwise propagate the empty state.  This is identical to `visit()`, except that
-    the visitor is forced to cover the non-empty state, and will not be invoked in the
-    empty case.  All other rules (including flattening or handling of void return
-    types) remain the same.
+    If `f()` returns a type different from the optional:
 
-    For most visitors:
+                self                invoke              result
+        -----------------------------------------------------------------------
+        1.  Optional<T>(empty)      f() -> u            Union<T, U>(u)
+        2.  Optional<T>(t)          (no call)           Union<T, U>(t)
 
-                self                    invoke                      result
-        -------------------------------------------------------------------------
-        1.  Optional<T>(empty)      (no call)                   Optional<U>(empty)
-        2.  Optional<T>(t)          f(t, args...) -> empty      Optional<U>(empty)
-        3.  Optional<T>(t)          f(t, args...) -> u          Optional<U>(u)
+    If `f()` returns an `Expected<U, E...>`:
+
+                self                invoke              result
+        ----------------------------------------------------------------------
+        1.  Optional<T>(empty)      f() -> e            Expected<Union<T, U>, E...>(e)
+        2.  Optional<T>(t)          (no call)           Expected<Union<T, U>, E...>(t)
 
     If the visitor returns void:
 
-                self                    invoke                      result
-        -------------------------------------------------------------------------
-        1.  Optional<T>(empty)      (no call)                   void
-        2.  Optional<T>(t)          f(t, args...) -> void       void
-
-    Some functional languages call this operation "flatMap" or "bind".
-
-    NOTE: the extra flattening and void handling by this method differs from many
-    functional languages, as well as `std::optional::and_then()` and
-    `std::optional::transform()`.  For those methods, the former requires the visitor
-    to always return another `std::optional`, whereas the latter implicitly promotes
-    the return type to `std::optional`, even if it was one already (possibly resulting
-    in a nested optional).  Thanks to the use of `visit()` under the hood, Bertrand's
-    `and_then()` method unifies both models by allowing the function to return either
-    an optional (of any kind, possibly nested), which will be used directly (merging
-    with the original empty state), or a non-optional, which will be promoted to an
-    optional unless it is void.  This guards against accidental nested optionals, which
-    Bertrand considers to be an anti-pattern.  This is especially true if the nesting
-    is dependent on the order of operations, which can lead to brittle code and subtle
-    bugs.  If the empty states must remain distinct, then it is always preferable to
-    explicitly handle the original empty state before chaining, or by converting the
-    optional into a `Union<Ts...>` or `Expected<T, Es...>` beforehand, both of which
-    can represent multiple distinct empty states without nesting. */
-    template <typename Self, typename F, typename... Args>
-        requires (
-            meta::callable<F, access<Self>, Args...> &&
-            meta::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
-        )
-    constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
-    ) {
-        return (impl::visit(
-            and_then_fn<F, Self, Args...>{},
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
-    }
-
-    /* If the optional is empty, invoke a given function, otherwise propagate the
-    non-empty state.  This is identical to `visit()`, except that the visitor does not
-    need to accept `bertrand::NoneType` (aka `std::nullopt_t`) explicitly, and will not
-    be invoked if the optional holds a value.  All other rules (including promotion to
-    union or handling of void return types) remain the same.
-
-    For most visitors:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------
-        1.  Optional<T>(empty)      f(args...) -> u             Union<T, U>(u)
-        2.  Optional<T>(t)          (no call)                   Union<T, U>(t)
-
-    If the visitor returns void:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------
-        1.  Optional<T>(empty)      f(args...) -> void          Optional<T>(empty)
-        2.  Optional<T>(t)          (no call)                   Optional<T>(t)
-
-    NOTE: the extra union promotion and void handling by this method differs from many
-    functional languages, as well as from `std::optional::or_else()`, which forces the
-    function to always return another `std::optional` of the same type as the input.
-    Thanks to the use of `visit()` under the hood, Bertrand's `or_else()` method is not
-    as restrictive, and allows the function to possibly return a different type, in
-    which case the result will be promoted to a union of the original optional type and
-    the function's return type.  Functions that return void will map to optionals,
-    where the original empty state will be preserved.  This is done for consistency
-    with `visit()` as well as `and_then()`, all of which use the same underlying
-    infrastructure. */
-    template <typename Self, typename F, typename... Args>
-        requires (
-            meta::callable<F, Args...> &&
-            meta::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
-        )
-    constexpr decltype(auto) or_else(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
-    ) {
-        return (impl::visit(
-            or_else_fn<F, Self, Args...>{},
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
-    }
-
-    /* If the optional is not empty, invoke a boolean predicate on the value, returning
-    a new optional with an identical value if the result is `true`, or an empty
-    optional if it is `false`.  Any additional arguments in `Args...` will be
-    perfectly forwarded to the predicate function in the order they are provided.
-    If the original optional was empty to begin with, the predicate will not be
-    invoked, and the optional will remain in the empty state.
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------
-        1.  Optional<T>(empty)      (no call)                   Optional<T>(empty)
-        2.  Optional<T>(t)          f(t, args...) -> false      Optional<T>(empty)
-        3.  Optional<T>(t)          f(t, args...) -> true       Optional<T>(t)
+                self                invoke              result
+        -----------------------------------------------------------------------
+        1.  Optional<T>(empty)      f() -> void         Optional<T>(empty)
+        2.  Optional<T>(t)          (no call)           Optional<T>(t)
     */
-    template <typename Self, typename F, typename... Args>
-        requires (
-            meta::callable<F, access<Self>, Args...> &&
-            meta::explicitly_convertible_to<
-                meta::call_type<F, access<Self>, Args...>,
-                bool
-            >
-        )
-    constexpr Optional filter(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::callable<F, access<Self>, Args...> &&
-        meta::nothrow::explicitly_convertible_to<
-            meta::call_type<F, access<Self>, Args...>,
-            bool
-        >
-    ) {
-        if (!self.has_value() || !std::forward<F>(f)(
-            std::forward<Self>(self).storage.value(),
-            std::forward<Args>(args)...
-        )) {
-            return {};
-        }
-        return std::forward<Self>(self);
+    template <typename Self, typename F>
+    constexpr decltype(auto) value_or(this Self&& self, F&& f)
+        noexcept (meta::nothrow::visit<impl::optional_or_else<Self>, F, Self>)
+        requires (meta::callable<F> && meta::visit<impl::optional_or_else<Self>, F, Self>)
+    {
+        return (impl::visit(
+            impl::optional_or_else<Self>{},
+            std::forward<F>(f),
+            std::forward<Self>(self)
+        ));
     }
 
     /* Monadic call operator.  If the optional type is a function-like object and is
@@ -5932,10 +5941,10 @@ public:
     function returns void, then the result will be void in both cases, and the function
     will not be invoked for the empty state. */
     template <typename Self, typename... Args>
+    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
+        noexcept (meta::nothrow::visit<impl::Call, Self, Args...>)
         requires (meta::visit<impl::Call, Self, Args...>)
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
-        meta::nothrow::visit<impl::Call, Self, Args...>
-    ) {
+    {
         return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
@@ -5947,10 +5956,10 @@ public:
     indexing with the given key, then this will return the result of the access wrapped
     in another optional.  Otherwise, it will propagate the empty state. */
     template <typename Self, typename... Key>
+    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
+        noexcept (meta::nothrow::visit<impl::Subscript, Self, Key...>)
         requires (meta::visit<impl::Subscript, Self, Key...>)
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
-        meta::nothrow::visit<impl::Subscript, Self, Key...>
-    ) {
+    {
         return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
@@ -5958,52 +5967,72 @@ public:
         ));
     }
 
-    /* Return 0 if the optional is empty, or `std::ranges::size(value())` otherwise. */
+    /* Return 0 if the optional is empty or `std::ranges::size(value())` otherwise.
+    If `std::ranges::size(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the optional would return just a single element), then
+    the result will be identical to `has_value()`.  If neither option is available,
+    then this method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
-        noexcept (meta::nothrow::has_size<T>)
-        requires (meta::has_size<T>)
+        noexcept (
+            meta::nothrow::has_size<T> || impl::make_optional_iterator<const Optional&>::trivial
+        )
+        requires (
+            meta::has_size<T> || impl::make_optional_iterator<const Optional&>::trivial
+        )
     {
-        if (has_value()) {
-            return std::ranges::size(storage.value());
+        if constexpr (meta::has_size<T>) {
+            if (has_value()) {
+                return std::ranges::size(storage.value());
+            } else {
+                return meta::size_type<T>(0);
+            }
         } else {
-            return meta::size_type<T>(0);
+            return size_t(has_value());
         }
     }
 
-    /* Return 0 if the optional is empty, or 1 if it has a value. */
-    [[nodiscard]] constexpr size_t size() const noexcept requires (!meta::has_size<T>) {
-        return has_value();
-    }
-
-    /* Return `size()` as a signed integer. */
+    /* Return 0 if the optional is empty or `std::ranges::ssize(value())` otherwise.
+    If `std::ranges::ssize(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the optional would return just a single element), then
+    the result will be identical to `has_value()`.  If neither option is available,
+    then this method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
-        noexcept (meta::nothrow::has_ssize<T>)
-        requires (meta::has_ssize<T>)
+        noexcept (
+            meta::nothrow::has_ssize<T> || impl::make_optional_iterator<const Optional&>::trivial
+        )
+        requires (
+            meta::has_ssize<T> || impl::make_optional_iterator<const Optional&>::trivial
+        )
     {
-        if (has_value()) {
-            return std::ranges::ssize(storage.value());
+        if constexpr (meta::has_ssize<T>) {
+            if (has_value()) {
+                return std::ranges::ssize(storage.value());
+            } else {
+                return meta::ssize_type<T>(0);
+            }
         } else {
-            return meta::ssize_type<T>(0);
+            return ssize_t(has_value());
         }
     }
 
-    /* Return `size()` as a signed integer. */
-    [[nodiscard]] constexpr ssize_t ssize() const noexcept requires (!meta::has_ssize<T>) {
-        return has_value();
-    }
-
-    /* `true` if the optional is currently empty.  Otherwise, evaluates to
-    `std::ranges::empty(value())`. */
+    /* Return true if the optional is empty or `std::ranges::empty(value())` otherwise.
+    If `std::ranges::empty(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the optional would return just a single element), then
+    the result will be identical to `!has_value()`.  If neither option is available,
+    then this method will fail to compile. */
     [[nodiscard]] constexpr bool empty() const
-        noexcept (meta::nothrow::has_empty<T>)
-        requires (meta::has_empty<T>)
+        noexcept (
+            meta::nothrow::has_empty<T> || impl::make_optional_iterator<const Optional&>::trivial
+        )
+        requires (
+            meta::has_empty<T> || impl::make_optional_iterator<const Optional&>::trivial
+        )
     {
-        return m_storage.has_value() ? std::ranges::empty(storage.value()) : true;
-    }
-
-    /* `true` if the optional is currently empty.  `false` otherwise. */
-    [[nodiscard]] constexpr bool empty() const noexcept requires (!meta::has_empty<T>) {
-        return !has_value();
+        if constexpr (meta::has_empty<T>) {
+            return has_value() ? std::ranges::empty(storage.value()) : true;
+        } else {
+            return !has_value();
+        }
     }
 
     /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
@@ -6012,10 +6041,10 @@ public:
     optional is currently empty. */
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self& self)
-        noexcept (requires{{iter<Self&>::begin(self)} noexcept;})
-        requires (requires{{iter<Self&>::begin(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::begin(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::begin(self)};})
     {
-        return iter<Self&>::begin(self);
+        return impl::make_optional_iterator<Self&>::begin(self);
     }
 
     /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
@@ -6023,10 +6052,14 @@ public:
     return an iterator with only a single element, or an `end()` iterator if the
     optional is currently empty. */
     [[nodiscard]] constexpr auto cbegin() const
-        noexcept (requires{{iter<const Optional&>::begin(*this)} noexcept;})
-        requires (requires{{iter<const Optional&>::begin(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Optional&>::begin(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Optional&>::begin(*this)};
+        })
     {
-        return iter<const Optional&>::begin(*this);
+        return impl::make_optional_iterator<const Optional&>::begin(*this);
     }
 
     /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
@@ -6034,20 +6067,24 @@ public:
     return an empty iterator. */
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self& self)
-        noexcept (requires{{iter<Self&>::end(self)} noexcept;})
-        requires (requires{{iter<Self&>::end(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::end(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::end(self)};})
     {
-        return iter<Self&>::end(self);
+        return impl::make_optional_iterator<Self&>::end(self);
     }
 
     /* Get a forward sentinel for the optional.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `cend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto cend() const
-        noexcept (requires{{iter<const Optional&>::end(*this)} noexcept;})
-        requires (requires{{iter<const Optional&>::end(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Optional&>::end(*this)} noexcept;}
+        )
+        requires (requires{
+            {impl::make_optional_iterator<const Optional&>::end(*this)};
+        })
     {
-        return iter<const Optional&>::end(*this);
+        return impl::make_optional_iterator<const Optional&>::end(*this);
     }
 
     /* Get a reverse iterator over the optional.  If the wrapped type is iterable, then
@@ -6056,10 +6093,10 @@ public:
     optional is currently empty. */
     template <typename Self>
     [[nodiscard]] constexpr auto rbegin(this Self& self)
-        noexcept (requires{{iter<Self&>::rbegin(self)} noexcept;})
-        requires (requires{{iter<Self&>::rbegin(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::rbegin(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::rbegin(self)};})
     {
-        return iter<Self&>::rbegin(self);
+        return impl::make_optional_iterator<Self&>::rbegin(self);
     }
 
     /* Get a reverse iterator over the optional.  If the wrapped type is iterable, then
@@ -6067,10 +6104,14 @@ public:
     return an iterator with only a single element, or an `crend()` iterator if the
     optional is currently empty. */
     [[nodiscard]] constexpr auto crbegin() const
-        noexcept (requires{{iter<const Optional&>::rbegin(*this)} noexcept;})
-        requires (requires{{iter<const Optional&>::rbegin(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Optional&>::rbegin(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Optional&>::rbegin(*this)};
+        })
     {
-        return iter<const Optional&>::rbegin(*this);
+        return impl::make_optional_iterator<const Optional&>::rbegin(*this);
     }
 
     /* Get a reverse sentinel for the optional.  If the wrapped type is iterable, then
@@ -6078,20 +6119,24 @@ public:
     return an empty iterator. */
     template <typename Self>
     [[nodiscard]] constexpr auto rend(this Self& self)
-        noexcept (requires{{iter<Self&>::rend(self)} noexcept;})
-        requires (requires{{iter<Self&>::rend(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::rend(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::rend(self)};})
     {
-        return iter<Self&>::rend(self);
+        return impl::make_optional_iterator<Self&>::rend(self);
     }
 
     /* Get a reverse sentinel for the optional.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `crend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto crend() const
-        noexcept (requires{{iter<const Optional&>::rend(*this)} noexcept;})
-        requires (requires{{iter<const Optional&>::rend(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Optional&>::rend(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Optional&>::rend(*this)};
+        })
     {
-        return iter<const Optional&>::rend(*this);
+        return impl::make_optional_iterator<const Optional&>::rend(*this);
     }
 };
 
@@ -6219,9 +6264,6 @@ private:
 
     template <typename U, typename Self>
     using access_type = decltype((std::declval<Self>().template get_error<U>()));
-
-    template <typename Self>
-    using iter = impl::make_optional_iterator<Self>;
 
     template <typename U>
     struct monadic {
@@ -6684,26 +6726,6 @@ public:
         }
     }
 
-    /* A member equivalent for `impl::visit()`, which always inserts this expected
-    as the first argument, for chaining purposes.  See `impl::visit()` for more
-    details.
-
-    For expecteds, the visitor function can consider any combination of the result type
-    and/or enumerated error types.  If the result type is `void`, then the visitor will
-    be invoked with an argument of type `bertrand::NoneType` (aka `std::nullopt_t`)
-    instead.  Otherwise, it will be invoked with the normal output from `.value()`. */
-    template <typename F, typename Self, typename... Args>
-        requires (meta::visit<F, Self, Args...>)
-    constexpr decltype(auto) visit(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<F, Self, Args...>
-    ) {
-        return (impl::visit(
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
-    }
-
     /* If the optional stores a valid result, invoke a given function on the wrapped
     value, otherwise propagate the error state(s).  This is identical to `visit()`,
     except that the visitor is forced to cover the result state, and will not be
@@ -6981,10 +7003,10 @@ public:
     expected is currently in an error state. */
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self& self)
-        noexcept (requires{{iter<Self&>::begin(self)} noexcept;})
-        requires (requires{{iter<Self&>::begin(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::begin(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::begin(self)};})
     {
-        return iter<Self&>::begin(self);
+        return impl::make_optional_iterator<Self&>::begin(self);
     }
 
     /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
@@ -6992,10 +7014,14 @@ public:
     return an iterator with only a single element, or an `end()` iterator if the
     expected is currently in an error state. */
     [[nodiscard]] constexpr auto cbegin() const
-        noexcept (requires{{iter<const Expected&>::begin(*this)} noexcept;})
-        requires (requires{{iter<const Expected&>::begin(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Expected&>::begin(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Expected&>::begin(*this)};
+        })
     {
-        return iter<const Expected&>::begin(*this);
+        return impl::make_optional_iterator<const Expected&>::begin(*this);
     }
 
     /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
@@ -7003,20 +7029,24 @@ public:
     return an empty iterator. */
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self& self)
-        noexcept (requires{{iter<Self&>::end(self)} noexcept;})
-        requires (requires{{iter<Self&>::end(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::end(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::end(self)};})
     {
-        return iter<Self&>::end(self);
+        return impl::make_optional_iterator<Self&>::end(self);
     }
 
     /* Get a forward sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `cend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto cend() const
-        noexcept (requires{{iter<const Expected&>::end(*this)} noexcept;})
-        requires (requires{{iter<const Expected&>::end(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Expected&>::end(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Expected&>::end(*this)};
+        })
     {
-        return iter<const Expected&>::end(*this);
+        return impl::make_optional_iterator<const Expected&>::end(*this);
     }
 
     /* Get a reverse iterator over the expected.  If the wrapped type is iterable, then
@@ -7025,10 +7055,10 @@ public:
     expected is currently in an error state. */
     template <typename Self>
     [[nodiscard]] constexpr auto rbegin(this Self& self)
-        noexcept (requires{{iter<Self&>::rbegin(self)} noexcept;})
-        requires (requires{{iter<Self&>::rbegin(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::rbegin(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::rbegin(self)};})
     {
-        return iter<Self&>::rbegin(self);
+        return impl::make_optional_iterator<Self&>::rbegin(self);
     }
 
     /* Get a reverse iterator over the expected.  If the wrapped type is iterable, then
@@ -7036,10 +7066,14 @@ public:
     return an iterator with only a single element, or an `crend()` iterator if the
     expected is currently in an error state. */
     [[nodiscard]] constexpr auto crbegin() const
-        noexcept (requires{{iter<const Expected&>::rbegin(*this)} noexcept;})
-        requires (requires{{iter<const Expected&>::rbegin(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Expected&>::rbegin(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Expected&>::rbegin(*this)};
+        })
     {
-        return iter<const Expected&>::rbegin(*this);
+        return impl::make_optional_iterator<const Expected&>::rbegin(*this);
     }
 
     /* Get a reverse sentinel for the expected.  If the wrapped type is iterable, then
@@ -7047,20 +7081,24 @@ public:
     return an empty iterator. */
     template <typename Self>
     [[nodiscard]] constexpr auto rend(this Self& self)
-        noexcept (requires{{iter<Self&>::rend(self)} noexcept;})
-        requires (requires{{iter<Self&>::rend(self)};})
+        noexcept (requires{{impl::make_optional_iterator<Self&>::rend(self)} noexcept;})
+        requires (requires{{impl::make_optional_iterator<Self&>::rend(self)};})
     {
-        return iter<Self&>::rend(self);
+        return impl::make_optional_iterator<Self&>::rend(self);
     }
 
     /* Get a reverse sentinel for the expected.  If the wrapped type is iterable, then
     this will be a lightweight wrapper around its `crend()` type.  Otherwise, it will
     return an empty iterator. */
     [[nodiscard]] constexpr auto crend() const
-        noexcept (requires{{iter<const Expected&>::rend(*this)} noexcept;})
-        requires (requires{{iter<const Expected&>::rend(*this)};})
+        noexcept (requires{
+            {impl::make_optional_iterator<const Expected&>::rend(*this)} noexcept;
+        })
+        requires (requires{
+            {impl::make_optional_iterator<const Expected&>::rend(*this)};
+        })
     {
-        return iter<const Expected&>::rend(*this);
+        return impl::make_optional_iterator<const Expected&>::rend(*this);
     }
 };
 
