@@ -10,15 +10,6 @@
 namespace bertrand {
 
 
-/* An alias for `std::nullopt_t`, which can be used similar to Python's
-`types.NoneType`. */
-using NoneType = std::nullopt_t;
-
-
-/* An alias for `std::nullopt`, which can be used similar to Python's `None`. */
-static constexpr NoneType None = std::nullopt;
-
-
 namespace impl {
     struct union_tag {};
     struct optional_tag {};
@@ -51,9 +42,6 @@ namespace meta {
 
     template <typename T>
     concept Expected = inherits<T, impl::expected_tag>;
-
-    template <typename T>
-    concept None = meta::is<T, NoneType>;
 
 }
 
@@ -6144,6 +6132,16 @@ public:
 };
 
 
+/// TODO: do I need to provide an explicit comparison against `std::nullopt`?  That
+/// would ordinarily not pass the monadic constraints unless `T` is itself comparable
+/// against `std::nullopt`, which is not guaranteed to be the case.  If it is, then
+/// we can simply visit it like normal, but otherwise, the non-empty case will always
+/// return false.  Basically, that just means an extra visitor.  As long as I
+/// support `std::nullopt`, the `None` template operators should kick in automatically
+/// and cover that case as well, without allowing comparison against nullptr unless
+/// T also supports it.
+
+
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
     using type = T;
@@ -6518,9 +6516,15 @@ struct Optional : impl::optional_tag {
 /// with the perfectly-firwarded `Es...` from the call site.
 
 
+/// TODO: Expected<void, Es...> => Expected<NoneType, Es...>, which should regularize
+/// it.  This is trivially doable by just not referencing T directly, and converting
+/// it to `NoneType`
+
+
 template <typename T, meta::unqualified E, meta::unqualified... Es>
     requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
 struct Expected : impl::expected_tag {
+    using type = std::conditional_t<meta::is_void<T>, NoneType, T>;
     using errors = meta::pack<E, Es...>;
     using value_type = T;
     using reference = meta::as_lvalue<value_type>;

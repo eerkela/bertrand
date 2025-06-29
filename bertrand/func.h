@@ -2328,7 +2328,7 @@ public:
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
             const iterator& self,
-            impl::sentinel
+            NoneType
         )
             noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
             requires (requires{{self.stop(std::make_index_sequence<N>{})};})
@@ -2337,7 +2337,7 @@ public:
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
-            impl::sentinel,
+            NoneType,
             const iterator& self
         )
             noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
@@ -2348,7 +2348,7 @@ public:
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
             const iterator& self,
-            impl::sentinel
+            NoneType
         )
             noexcept (requires{{!self.stop(std::make_index_sequence<N>{})} noexcept;})
             requires (requires{{!self.stop(std::make_index_sequence<N>{})};})
@@ -2357,7 +2357,7 @@ public:
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
-            impl::sentinel,
+            NoneType,
             const iterator& self
         )
             noexcept (requires{{!self.stop(std::make_index_sequence<N>{})} noexcept;})
@@ -2409,9 +2409,7 @@ public:
         return init(indices{});
     }
 
-    [[nodiscard, gnu::always_inline]] static constexpr impl::sentinel end() noexcept {
-        return {};
-    }
+    [[nodiscard, gnu::always_inline]] static constexpr NoneType end() noexcept { return {}; }
 
     template <typename V>
     [[nodiscard, gnu::always_inline]] constexpr operator V()
@@ -2875,7 +2873,7 @@ public:
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
             const iterator& self,
-            impl::sentinel
+            NoneType
         )
             noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
             requires (requires{{self.stop(std::make_index_sequence<N>{})};})
@@ -2884,7 +2882,7 @@ public:
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator==(
-            impl::sentinel,
+            NoneType,
             const iterator& self
         )
             noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
@@ -2895,7 +2893,7 @@ public:
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
             const iterator& self,
-            impl::sentinel
+            NoneType
         )
             noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
             requires (requires{{self.stop(std::make_index_sequence<N>{})};})
@@ -2904,7 +2902,7 @@ public:
         }
 
         [[nodiscard, gnu::always_inline]] friend constexpr bool operator!=(
-            impl::sentinel,
+            NoneType,
             const iterator& self
         )
             noexcept (requires{{self.stop(std::make_index_sequence<N>{})} noexcept;})
@@ -2956,7 +2954,7 @@ public:
         return init(indices{});
     }
 
-    [[nodiscard, gnu::always_inline]] static constexpr impl::sentinel end() noexcept {
+    [[nodiscard, gnu::always_inline]] static constexpr NoneType end() noexcept {
         return {};
     }
 

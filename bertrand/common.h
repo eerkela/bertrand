@@ -123,6 +123,9 @@ namespace impl {
 }
 
 
+struct NoneType;
+
+
 namespace meta {
 
     /// NOTE: many of these concepts delegate immediately to a constexpr bool flag
@@ -287,14 +290,20 @@ namespace meta {
 
     namespace detail {
         template <typename T>
-        constexpr bool is_void = ::std::is_void_v<unqualify<T>>;
+        constexpr bool is_void = ::std::is_void_v<T>;
+
+        template <typename T>
+        constexpr bool None = meta::inherits<T, bertrand::NoneType>;
     }
 
     template <typename T>
-    concept is_void = detail::is_void<T>;
+    concept is_void = detail::is_void<unqualify<T>>;
 
     template <typename T>
     concept not_void = !detail::is_void<T>;
+
+    template <typename T>
+    concept None = detail::None<unqualify<T>>;
 
     namespace detail {
         template <typename L, typename R>
@@ -4424,6 +4433,158 @@ namespace meta {
 }
 
 
+/* An empty type that can be used as a drop-in replacement for `std::nullopt` and
+`std::nullptr_t`, with the only difference being that conversions to pointer types must
+be explicit, in order to avoid ambiguities in overload resolution.  Comparisons with
+pointer types are unrestricted, in which `NoneType` acts just like `nullptr`.
+
+This type can also be used as a trivial sentinel in custom iterator implementations,
+where all relevant information is isolated to the begin iterator.  Special significance
+is also given to this type within the monadic union interface, where it represents
+either the empty state of an `Optional` or the result state of an `Expected<void>`,
+depending on context. */
+struct NoneType {
+    [[nodiscard]] constexpr NoneType() = default;
+    [[nodiscard]] constexpr NoneType(std::nullopt_t) noexcept {}
+    [[nodiscard]] constexpr NoneType(std::nullptr_t) noexcept {}
+
+    [[nodiscard]] friend constexpr bool operator==(NoneType, NoneType) noexcept { return true; }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator==(NoneType, T&& other)
+        noexcept (requires{
+            {std::nullopt == std::forward<T>(other)} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (requires{
+            {std::nullopt == std::forward<T>(other)} -> meta::convertible_to<bool>;
+        })
+    {
+        return std::nullopt == std::forward<T>(other);
+    }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator==(NoneType, T&& other)
+        noexcept (requires{
+            {nullptr == std::forward<T>(other)} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (requires{
+            {nullptr == std::forward<T>(other)} -> meta::convertible_to<bool>;
+        })
+    {
+        return nullptr == std::forward<T>(other);
+    }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator==(T&& other, NoneType)
+        noexcept (requires{
+            {std::forward<T>(other) == std::nullopt} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (requires{
+            {std::forward<T>(other) == std::nullopt} -> meta::convertible_to<bool>;
+        })
+    {
+        return std::forward<T>(other) == std::nullopt;
+    }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator==(T&& other, NoneType)
+        noexcept (requires{
+            {std::forward<T>(other) == nullptr} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (
+            !requires{{std::forward<T>(other) == std::nullopt} -> meta::convertible_to<bool>;} &&
+            requires{{std::forward<T>(other) == nullptr} -> meta::convertible_to<bool>;}
+        )
+    {
+        return std::forward<T>(other) == nullptr;
+    }
+    [[nodiscard]] friend constexpr bool operator!=(NoneType, NoneType) noexcept { return false; }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator!=(NoneType, T&& other)
+        noexcept (requires{
+            {std::nullopt != std::forward<T>(other)} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (requires{
+            {std::nullopt != std::forward<T>(other)} -> meta::convertible_to<bool>;
+        })
+    {
+        return std::nullopt != std::forward<T>(other);
+    }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator!=(NoneType, T&& other)
+        noexcept (requires{
+            {nullptr != std::forward<T>(other)} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (requires{
+            {nullptr != std::forward<T>(other)} -> meta::convertible_to<bool>;
+        })
+    {
+        return nullptr != std::forward<T>(other);
+    }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator!=(T&& other, NoneType)
+        noexcept (requires{
+            {std::forward<T>(other) != std::nullopt} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (requires{
+            {std::forward<T>(other) != std::nullopt} -> meta::convertible_to<bool>;
+        })
+    {
+        return std::forward<T>(other) != std::nullopt;
+    }
+
+    template <typename T> requires (!meta::convertible_to<T, NoneType>)
+    [[nodiscard]] friend constexpr bool operator!=(T&& other, NoneType)
+        noexcept (requires{
+            {std::forward<T>(other) != nullptr} noexcept -> meta::nothrow::convertible_to<bool>;
+        })
+        requires (
+            !requires{{std::forward<T>(other) != std::nullopt} -> meta::convertible_to<bool>;} &&
+            requires{{std::forward<T>(other) != nullptr} -> meta::convertible_to<bool>;}
+        )
+    {
+        return std::forward<T>(other) != nullptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] constexpr operator T() const
+        noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, T>)
+        requires (meta::convertible_to<const std::nullopt_t&, T>)
+    {
+        return std::nullopt;
+    }
+
+    template <typename T>
+    [[nodiscard]] explicit constexpr operator T() const
+        noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, T>)
+        requires (
+            !meta::convertible_to<const std::nullopt_t&, T> &&
+            meta::explicitly_convertible_to<const std::nullopt_t&, T>
+        )
+    {
+        return static_cast<T>(std::nullopt);
+    }
+
+    template <typename T>
+    [[nodiscard]] explicit constexpr operator T() const
+        noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, T>)
+        requires (
+            !meta::explicitly_convertible_to<const std::nullopt_t&, T> &&
+            meta::explicitly_convertible_to<std::nullptr_t, T>
+        )
+    {
+        return static_cast<T>(nullptr);
+    }
+};
+
+
+/* The global `None` singleton, representing the absence of a value. */
+inline constexpr NoneType None;
+
+
 /* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
 needing to explicitly specialize `std::hash`. */
 template <meta::hashable T>
@@ -4433,14 +4594,6 @@ template <meta::hashable T>
 
 
 namespace impl {
-
-    /* A generic sentinel type to simplify iterator implementations. */
-    struct sentinel {
-        constexpr bool operator==(sentinel) const noexcept { return true; }
-        constexpr auto operator<=>(sentinel) const noexcept {
-            return std::strong_ordering::equal;
-        }
-    };
 
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
@@ -5217,6 +5370,20 @@ constexpr auto demangle() noexcept(noexcept(impl::type_name_impl<T>())) {
 
 
 }  // namespace bertrand
+
+
+namespace std {
+
+    template <bertrand::meta::is<bertrand::NoneType> T>
+    struct hash<T> {
+        [[nodiscard]] static constexpr size_t operator()(const T& value) noexcept {
+            // any arbitrary constant will do.  Large random numbers are preferred to
+            // avoid collisions clustered around zero.
+            return 4238894112;
+        }
+    };
+
+}
 
 
 #endif  // BERTRAND_COMMON_H

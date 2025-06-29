@@ -3033,13 +3033,13 @@ private:
 
             [[nodiscard]] friend constexpr bool operator==(
                 const iterator& self,
-                impl::sentinel
+                NoneType
             ) noexcept {
                 return self.indices.length == 0;
             }
 
             [[nodiscard]] friend constexpr bool operator==(
-                impl::sentinel,
+                NoneType,
                 const iterator& self
             ) noexcept {
                 return self.indices.length == 0;
@@ -3047,13 +3047,13 @@ private:
 
             [[nodiscard]] friend constexpr bool operator!=(
                 const iterator& self,
-                impl::sentinel
+                NoneType
             ) noexcept {
                 return self.indices.length > 0;
             }
 
             [[nodiscard]] friend constexpr bool operator!=(
-                impl::sentinel,
+                NoneType,
                 const iterator& self
             ) noexcept {
                 return self.indices.length > 0;
@@ -3078,8 +3078,8 @@ private:
         [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
         [[nodiscard]] constexpr iterator begin() const noexcept { return {bits, m_indices}; }
         [[nodiscard]] constexpr iterator cbegin() const noexcept { return {bits, m_indices}; }
-        [[nodiscard]] constexpr impl::sentinel end() const noexcept { return {}; }
-        [[nodiscard]] constexpr impl::sentinel cend() const noexcept { return {}; }
+        [[nodiscard]] constexpr NoneType end() const noexcept { return {}; }
+        [[nodiscard]] constexpr NoneType cend() const noexcept { return {}; }
     };
 
 public:
