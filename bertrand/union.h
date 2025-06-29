@@ -3070,10 +3070,10 @@ namespace impl {
         }
     };
 
-    /* A wrapper for an iterator that allows it to be constructed in an empty state to
-    represent an empty optional.  Otherwise, behaves identically to the underlying
-    iterator type, with the caveat that it can only be compared against other
-    `optional_iterator` wrappers. */
+    /* A wrapper for an arbitrary iterator that allows it to be constructed in an empty
+    state to represent an empty optional.  Otherwise, behaves identically to the
+    underlying iterator type, with the caveat that it can only be compared against
+    other `optional_iterator` wrappers. */
     template <meta::unqualified T> requires (meta::iterator<T>)
     struct optional_iterator {
         using wrapped = T;
@@ -5350,27 +5350,399 @@ namespace impl {
         meta::pack<>
     >;
 
-    /// TODO: tuple_iterator<meta::tuple_like>, which could generate a compile-time
-    /// vtable of function pointers that take the tuple as input and output the correct
-    /// member for that index, possibly as a union if multiple types are resent.  If
-    /// all types are the same, then it can just return that type directly.  The actual
-    /// iterator itself is then just a pointer to the parent tuple, and an index into
-    /// the iteration table, meaning it is trivially contiguous and iteration is fast,
-    /// disregarding the vtable lookup.  If all the types in the tuple are the same,
-    /// then I could possibly just take a pointer to each one, and eliminate the extra
-    /// function dispatch.
-
-    template <meta::lvalue T> requires (meta::tuple_like<T>)
-    struct tuple_iterator {
-
-        /// TODO: all the nonsense to generate a vtable of iteration functions for the
-        /// tuple.
-
-
+    /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
+    pointers if all elements unpack to the same lvalue type.  Otherwise, they must
+    build a vtable and perform a dynamic dispatch to yield a proper value type, which
+    may be a union. */
+    enum class tuple_iterator_kind {
+        NO_COMMON_TYPE,
+        EMPTY,
+        ARRAY,
+        DYNAMIC,
+        NOTHROW_DYNAMIC
     };
 
-    /// TODO: extra specialization when the tuple contains just one consistent type
-    /// after running .get<>()
+    template <typename>
+    struct _tuple_iterator_ref {
+        using types = meta::pack<>;
+        using reference = const NoneType&;
+        static constexpr tuple_iterator_kind kind = tuple_iterator_kind::EMPTY;
+    };
+    template <typename T>
+    struct _tuple_iterator_ref<meta::pack<T>> {
+        using types = meta::pack<T>;
+        using reference = T;
+        static constexpr tuple_iterator_kind kind =
+            meta::lvalue<T> && meta::has_address<T> ?
+                tuple_iterator_kind::ARRAY :
+                tuple_iterator_kind::NOTHROW_DYNAMIC;
+    };
+    template <typename... Ts> requires (sizeof...(Ts) > 1)
+    struct _tuple_iterator_ref<meta::pack<Ts...>> {
+        using types = meta::pack<Ts...>;
+        using reference = bertrand::Union<Ts...>;
+        static constexpr tuple_iterator_kind kind =
+            !(meta::convertible_to<Ts, reference> && ...) ?
+                tuple_iterator_kind::NO_COMMON_TYPE :
+                (meta::nothrow::convertible_to<Ts, reference> && ...) ?
+                    tuple_iterator_kind::NOTHROW_DYNAMIC :
+                    tuple_iterator_kind::DYNAMIC;
+    };
+    template <meta::lvalue T> requires (meta::tuple_like<T>)
+    using tuple_iterator_ref =
+        _tuple_iterator_ref<typename meta::tuple_types<T>::template eval<meta::to_unique>>;
+
+    template <typename T>
+    concept enable_tuple_iterator =
+        meta::lvalue<T> &&
+        meta::tuple_like<T> &&
+        tuple_iterator_ref<T>::kind != tuple_iterator_kind::NO_COMMON_TYPE;
+
+    /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
+    of callback functions yielding each value.  This allows tuples to be used as inputs
+    to iterable algorithms, as long as those algorithms are built to handle `Union`
+    inputs. */
+    template <enable_tuple_iterator T>
+    struct tuple_iterator {
+        using types = tuple_iterator_ref<T>::types;
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using reference = tuple_iterator_ref<T>::reference;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::as_pointer<value_type>;
+
+    private:
+        static constexpr bool nothrow =
+            tuple_iterator_ref<T>::kind == tuple_iterator_kind::NOTHROW_DYNAMIC;
+
+        using indices = std::make_index_sequence<types::size()>;
+        using storage = meta::as_pointer<T>;
+        using fn_ptr = reference(*)(T) noexcept(nothrow);
+
+        template <size_t I>
+        static constexpr reference fn(T t) noexcept (nothrow) {
+            return meta::tuple_get<I>(t);
+        }
+
+        template <typename = indices>
+        static constexpr fn_ptr vtbl[0] {};
+        template <size_t... Is>
+        static constexpr fn_ptr vtbl<std::index_sequence<Is...>>[sizeof...(Is)] { &fn<Is>... };
+
+        [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
+            data(data),
+            index(index)
+        {}
+
+    public:
+        storage data;
+        difference_type index;
+
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0) noexcept :
+            data(nullptr),
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr tuple_iterator(T tuple, difference_type index = 0)
+            noexcept (meta::nothrow::address_returns<storage, T>)
+            requires (meta::address_returns<storage, T>)
+        :
+            data(std::addressof(tuple)),
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept(nothrow) {
+            return vtbl<>[index](*data);
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept(nothrow) {
+            return vtbl<>[index + n](*data);
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            tuple_iterator tmp = *this;
+            ++index;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.data, self.index + n};
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type n,
+            const tuple_iterator& self
+        ) noexcept {
+            return {self.data, self.index + n};
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            tuple_iterator tmp = *this;
+            --index;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
+            return {data, index - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const tuple_iterator& other
+        ) const noexcept {
+            return index - other.index;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
+            return index == other.index;
+        }
+    };
+
+    /* A special case of `tuple_iterator` for tuples where all elements share the
+    same lvalue type.  In this case, the vtable is reduced to a simple array of
+    pointers that are initialized on construction, without requiring dynamic
+    dispatch. */
+    template <enable_tuple_iterator T>
+        requires (tuple_iterator_ref<T>::kind == tuple_iterator_kind::ARRAY)
+    struct tuple_iterator<T> {
+        using types = tuple_iterator_ref<T>::types;
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using reference = tuple_iterator_ref<T>::reference;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::address_type<reference>;
+
+    private:
+        using indices = std::make_index_sequence<types::size()>;
+        using array = std::array<pointer, types::size()>;
+
+        template <size_t... Is>
+        static constexpr array init(std::index_sequence<Is...>, T t)
+            noexcept ((requires{{
+                std::addressof(meta::tuple_get<Is>(t))
+            } noexcept -> meta::nothrow::convertible_to<pointer>;} && ...))
+        {
+            return {std::addressof(meta::tuple_get<Is>(t))...};
+        }
+
+        [[nodiscard]] constexpr tuple_iterator(const array& arr, difference_type index)
+            noexcept (meta::nothrow::copyable<array>)
+        :
+            arr(arr),
+            index(index)
+        {}
+
+    public:
+        array arr;
+        difference_type index;
+
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0)
+            noexcept (meta::nothrow::default_constructible<array>)
+        :
+            arr{},
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index)
+            noexcept (requires{{init(indices{}, t)} noexcept;})
+        :
+            arr(init(indices{}, t)),
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr reference operator*() const
+            noexcept (requires{{*arr[index]} noexcept -> meta::nothrow::convertible_to<reference>;})
+            requires (requires{{*arr[index]} -> meta::convertible_to<reference>;})
+        {
+            return *arr[index];
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const
+            noexcept (requires{{arr[index]} noexcept -> meta::nothrow::convertible_to<pointer>;})
+            requires (requires{{arr[index]} -> meta::convertible_to<pointer>;})
+        {
+            return arr[index];
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n)
+            noexcept (requires{
+                {*arr[index + n]} noexcept -> meta::nothrow::convertible_to<reference>;
+            })
+            requires (requires{{*arr[index + n]} -> meta::convertible_to<reference>;})
+        {
+            return *arr[index + n];
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            auto tmp = *this;
+            ++index;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.arr, self.index + n};
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type n,
+            const tuple_iterator& self
+        ) noexcept {
+            return {self.arr, self.index + n};
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            auto tmp = *this;
+            --index;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
+            return {arr, index - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
+            return index - index;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
+            return index == other.index;
+        }
+    };
+
+    /* A special case of `tuple_iterator` for empty tuples, which do not yield any
+    results, and are optimized away entirely. */
+    template <enable_tuple_iterator T>
+        requires (tuple_iterator_ref<T>::kind == tuple_iterator_kind::EMPTY)
+    struct tuple_iterator<T> {
+        using types = meta::pack<>;
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = const NoneType;
+        using pointer = const NoneType*;
+        using reference = const NoneType&;
+
+        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
+        [[nodiscard]] constexpr tuple_iterator(T, difference_type) noexcept {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return None;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            return &None;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
+            return None;
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type
+        ) noexcept {
+            return self;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type,
+            const tuple_iterator& self
+        ) noexcept {
+            return self;
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type) noexcept {
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
+            return 0;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
+            return std::strong_ordering::equal;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
+            return true;
+        }
+    };
 
 }
 
@@ -6139,6 +6511,11 @@ struct Optional : impl::optional_tag {
         return impl::make_optional_iterator<const Optional&>::rend(*this);
     }
 };
+
+
+/// TODO: Expected<T, Es...> should use a flat impl::union_storage to store both T
+/// and Es..., and then .error() would return a Union<Es...> constructed on the fly,
+/// with the perfectly-firwarded `Es...` from the call site.
 
 
 template <typename T, meta::unqualified E, meta::unqualified... Es>

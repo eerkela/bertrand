@@ -2212,7 +2212,7 @@ namespace meta {
     concept has_get = has_member_get<T, A...> || has_adl_get<T, A...>;
 
     template <typename T, auto... A> requires (has_get<T, A...>)
-    using get_type = typename detail::get_type<T, A...>::type;
+    using get_type = detail::get_type<T, A...>::type;
 
     template <typename Ret, typename T, auto... A>
     concept get_returns = has_get<T, A...> && convertible_to<get_type<T, A...>, Ret>;
