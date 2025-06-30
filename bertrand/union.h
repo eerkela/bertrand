@@ -20,10 +20,10 @@ sweet spot for each platform.  Note that since `impl::visit()` is used internall
 all monadic operators, cross products that fit within this threshold will generally
 run faster, with more predictable performance characteristics compared to vtable-based
 alternatives. */
-#ifdef BERTRAND_EMIT_VTABLE_AFTER
-    inline constexpr size_t EMIT_VTABLE_AFTER = BERTRAND_EMIT_VTABLE_AFTER;
+#ifdef BERTRAND_MIN_VTABLE_SIZE
+    inline constexpr size_t MIN_VTABLE_SIZE = BERTRAND_MIN_VTABLE_SIZE;
 #else
-    inline constexpr size_t EMIT_VTABLE_AFTER = 5;
+    inline constexpr size_t MIN_VTABLE_SIZE = 5;
 #endif
 
 
@@ -1950,36 +1950,10 @@ namespace impl {
     template <size_t N> requires (N <= std::numeric_limits<size_t>::max())
     using union_index_type = _union_index_type<N>::type;
 
-    /* Find the first type in Ts... that is default constructible (void if none) */
-    template <typename...>
-    struct _union_default_type { using type = void; };
-    template <meta::default_constructible T, typename... Ts>
-    struct _union_default_type<T, Ts...> { using type = T; };
-    template <typename T, typename... Ts>
-    struct _union_default_type<T, Ts...> : _union_default_type<Ts...> {};
-    template <typename... Ts>
-    using union_default_type = _union_default_type<Ts...>::type;
-
     /* A tag class used to select a particular alternative during initialization of a
     `union_storage` buffer. */
     template <size_t I>
     struct union_select {};
-
-    /* determine the common type for the members of the union, if one exists. */
-    template <typename Self, typename = std::index_sequence<meta::unqualify<Self>::types::size()>>
-    struct union_common_type {
-        using type = void;
-        static constexpr bool nothrow = true;
-    };
-    template <typename Self, size_t... Is>
-        requires (meta::has_common_type<decltype(std::declval<Self>().template value<Is>())...>)
-    struct union_common_type<Self, std::index_sequence<Is...>> {
-        using type = meta::common_type<decltype(std::declval<Self>().template value<Is>())...>;
-        static constexpr bool nothrow = (meta::nothrow::convertible_to<
-            decltype(std::declval<Self>().template value<Is>()),
-            type
-        > && ...);
-    };
 
     /* Accessing the wrong index of a union yields a standardized error message from a
     centralized vtable, to limit binary bloat. */
@@ -2018,7 +1992,7 @@ namespace impl {
     public:
         template <typename... Ts> requires (sizeof...(Ts) > 0)
         static constexpr BadUnionAccess error(size_t index) noexcept {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return tbl<std::index_sequence_for<Ts...>>[index]();
             } else {
                 return recur<0, sizeof...(Ts)>(index);
@@ -2060,13 +2034,39 @@ namespace impl {
     public:
         template <typename... Ts> requires (sizeof...(Ts) > 0)
         static constexpr BadUnionAccess error(size_t index) noexcept {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return tbl<Ts...>[index]();
             } else {
                 return recur<0, Ts...>(index);
             }
         }
     };
+
+    /* determine the common type for the members of the union, if one exists. */
+    template <typename Self, typename = std::index_sequence<meta::unqualify<Self>::types::size()>>
+    struct union_common_type {
+        using type = void;
+        static constexpr bool nothrow = true;
+    };
+    template <typename Self, size_t... Is>
+        requires (meta::has_common_type<decltype(std::declval<Self>().template value<Is>())...>)
+    struct union_common_type<Self, std::index_sequence<Is...>> {
+        using type = meta::common_type<decltype(std::declval<Self>().template value<Is>())...>;
+        static constexpr bool nothrow = (meta::nothrow::convertible_to<
+            decltype(std::declval<Self>().template value<Is>()),
+            type
+        > && ...);
+    };
+
+    /* Find the first type in Ts... that is default constructible (void if none) */
+    template <typename...>
+    struct _union_default_type { using type = void; };
+    template <meta::default_constructible T, typename... Ts>
+    struct _union_default_type<T, Ts...> { using type = T; };
+    template <typename T, typename... Ts>
+    struct _union_default_type<T, Ts...> : _union_default_type<Ts...> {};
+    template <typename... Ts>
+    using union_default_type = _union_default_type<Ts...>::type;
 
     /* A basic tagged union of alternatives `Ts...`, which automatically forwards
     lvalue references and provides vtable-based copy, move, swap, and destruction
@@ -2522,7 +2522,7 @@ namespace impl {
             requires (copyable)
         {
             if consteval {
-                if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+                if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                     return copy_tbl<>[other.index()](other);
                 } else {
                     return recursive_copy<0>(other, other.index());
@@ -2530,7 +2530,7 @@ namespace impl {
             } else {
                 if constexpr (trivially_copyable) {
                     return trivial_copy(other);
-                } else if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+                } else if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                     return copy_tbl<>[other.index()](other);
                 } else {
                     return recursive_copy<0>(other, other.index());
@@ -2543,7 +2543,7 @@ namespace impl {
             requires (movable)
         {
             if consteval {
-                if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+                if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                     return move_tbl<>[other.index()](other);
                 } else {
                     return recursive_move<0>(other, other.index());
@@ -2551,7 +2551,7 @@ namespace impl {
             } else {
                 if constexpr (trivially_copyable) {
                     return trivial_copy(other);
-                } else if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+                } else if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                     return move_tbl<>[other.index()](other);
                 } else {
                     return recursive_move<0>(other, other.index());
@@ -2564,7 +2564,7 @@ namespace impl {
             requires (destructible)
         {
             if constexpr (!trivially_destructible) {
-                if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+                if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                     destroy_tbl<>[other.index()](other);
                 } else {
                     recursive_destroy<0>(other, other.index());
@@ -2578,7 +2578,7 @@ namespace impl {
         {
             if consteval {
                 size_t index = lhs.index() * sizeof...(Ts) + rhs.index();
-                if constexpr ((sizeof...(Ts) * sizeof...(Ts)) >= EMIT_VTABLE_AFTER) {
+                if constexpr ((sizeof...(Ts) * sizeof...(Ts)) >= MIN_VTABLE_SIZE) {
                     swap_tbl<>[index](lhs, rhs);
                 } else {
                     recursive_swap<0>(lhs, rhs, index);
@@ -2594,7 +2594,7 @@ namespace impl {
                     rhs.m_index = idx;
                 } else {
                     size_t index = lhs.index() * sizeof...(Ts) + rhs.index();
-                    if constexpr ((sizeof...(Ts) * sizeof...(Ts)) >= EMIT_VTABLE_AFTER) {
+                    if constexpr ((sizeof...(Ts) * sizeof...(Ts)) >= MIN_VTABLE_SIZE) {
                         swap_tbl<>[index](lhs, rhs);
                     } else {
                         recursive_swap<0>(lhs, rhs, index);
@@ -2654,7 +2654,7 @@ namespace impl {
             noexcept (nothrow_common_type<meta::forward<Self>>)
             requires (has_common_type<meta::forward<Self>>)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return flatten_tbl<meta::forward<Self>>[self.index()](std::forward<Self>(self));
             } else {
                 return recursive_flatten<0>(std::forward<Self>(self), self.index());
@@ -2806,133 +2806,6 @@ namespace impl {
         }
     };
 
-    /* Safely access a type within a `union_storage` container as either an `Expected`
-    or `Optional`, corresponding to the `.value()` and `.value_if()` methods of a
-    `Union`, respectively. */
-    template <typename Self>
-    struct union_access {
-        using types = meta::unqualify<Self>::types;
-        using size_type = types::size_type;
-        using index_type = types::index_type;
-
-        template <index_type I>
-        static constexpr bool valid_index = impl::valid_index<types::ssize(), I>;
-
-        template <index_type I> requires (valid_index<I>)
-        static constexpr size_type normalize_index = impl::normalize_index<types::ssize(), I>();
-
-        template <typename T>
-        static constexpr bool contains = types::template contains<T>();
-
-        template <typename T>
-        static constexpr size_type index_of = types::template index<T>();
-
-        template <index_type I> requires (valid_index<I>)
-        using idx = decltype(std::declval<Self>().template value<normalize_index<I>>());
-
-        template <typename T> requires (contains<T>)
-        using type = idx<index_of<T>>;
-
-        template <index_type I> requires (valid_index<I>)
-        using opt_idx = bertrand::Optional<idx<I>>;
-
-        template <typename T> requires (contains<T>)
-        using opt_type = bertrand::Optional<type<T>>;
-
-        template <index_type I> requires (valid_index<I>)
-        using exp_idx = bertrand::Expected<idx<I>, BadUnionAccess>;
-
-        template <typename T> requires (contains<T>)
-        using exp_type = bertrand::Expected<type<T>, BadUnionAccess>;
-
-        template <index_type I> requires (valid_index<I>)
-        [[nodiscard]] constexpr exp_idx<I> value(Self self)
-            noexcept (requires{
-                {
-                    self.template index_error<normalize_index<I>>()
-                } noexcept -> meta::nothrow::convertible_to<exp_idx<I>>;
-                {
-                    std::forward<Self>(self).template value<normalize_index<I>>()
-                } noexcept -> meta::nothrow::convertible_to<exp_idx<I>>;
-            })
-            requires (requires{
-                {
-                    self.template index_error<normalize_index<I>>()
-                } -> meta::convertible_to<exp_idx<I>>;
-                {
-                    std::forward<Self>(self).template value<normalize_index<I>>()
-                } -> meta::convertible_to<exp_idx<I>>;
-            })
-        {
-            if (self.index() != I) {
-                return self.template index_error<normalize_index<I>>();
-            }
-            return std::forward<Self>(self).template value<normalize_index<I>>();
-        }
-
-        template <typename T> requires (contains<T>)
-        [[nodiscard]] constexpr exp_type<T> value_if(Self self)
-            noexcept (requires{
-                {
-                    self.template type_error<T>()
-                } noexcept -> meta::nothrow::convertible_to<exp_type<T>>;
-                {
-                    std::forward<Self>(self).template value<index_of<T>>()
-                } noexcept -> meta::nothrow::convertible_to<exp_type<T>>;
-            })
-            requires (requires{
-                {
-                    self.template type_error<T>()
-                } -> meta::convertible_to<exp_type<T>>;
-                {
-                    std::forward<Self>(self).template value<index_of<T>>()
-                } -> meta::convertible_to<exp_type<T>>;
-            })
-        {
-            if (self.index() != index_of<T>) {
-                return self.template type_error<T>();
-            }
-            return std::forward<Self>(self).template value<index_of<T>>();
-        }
-
-        template <index_type I> requires (valid_index<I>)
-        [[nodiscard]] constexpr opt_idx<I> value_if(Self self)
-            noexcept (requires{{
-                std::forward<Self>(self).template value<normalize_index<I>>()
-            } noexcept -> meta::nothrow::convertible_to<opt_idx<I>>;})
-            requires (requires{{
-                std::forward<Self>(self).template value<normalize_index<I>>()
-            } -> meta::convertible_to<opt_idx<I>>;})
-        {
-            if (self.index() != I) {
-                return None;
-            }
-            return std::forward<Self>(self).template value<normalize_index<I>>();
-        }
-
-        template <typename T> requires (contains<T>)
-        [[nodiscard]] constexpr opt_type<T> value_if(Self self)
-            noexcept (requires{{
-                std::forward<Self>(self).template value<index_of<T>>()
-            } noexcept -> meta::nothrow::convertible_to<opt_type<T>>;})
-            requires (requires{{
-                std::forward<Self>(self).template value<index_of<T>>()
-            } -> meta::convertible_to<opt_type<T>>;})
-        {
-            if (self.index() != index_of<T>) {
-                return None;
-            }
-            return std::forward<Self>(self).template value<index_of<T>>();
-        }
-
-    };
-    template <meta::Union Self>
-    struct union_access<Self> : union_access<decltype(std::declval<Self>().storage)> {};
-    template <meta::Optional Self>
-    struct union_access<Self> : union_access<decltype(std::declval<Self>().storage)> {};
-    template <meta::Expected Self>
-    struct union_access<Self> : union_access<decltype(std::declval<Self>().storage)> {};
-
     template <typename T, typename U>
     concept union_match_proximal =
         meta::inherits<T, U> &&
@@ -3055,7 +2928,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<V, type>)
             requires (meta::convertible_to<V, type>)
         {
-            return {std::forward<V>(v)};
+            return {typename result::template tag<1>{}, std::forward<V>(v)};
         }
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
@@ -3074,12 +2947,13 @@ namespace impl {
         // object.
         template <typename V>
         static constexpr result operator()(V&& p)
-            noexcept (meta::nothrow::convertible_to<V, meta::as_pointer<type>>)
+            noexcept (meta::nothrow::convertible_to<V, meta::address_type<type>>)
             requires (
                 !meta::convertible_to<V, type> &&
                 !meta::is<V, empty> &&
                 meta::lvalue<type> &&
-                meta::convertible_to<V, meta::as_pointer<type>>
+                meta::has_address<type> &&
+                meta::convertible_to<V, meta::address_type<type>>
             )
         {
             return {p};
@@ -3090,15 +2964,163 @@ namespace impl {
     object, returning a corresponding `impl::optional_storage<T>` primitive type. */
     template <typename T>
     struct optional_construct_from {
+        using result = impl::union_storage<NoneType, T>;
         using type = meta::remove_rvalue<T>;
         template <typename... A>
-        static constexpr impl::union_storage<NoneType, T> operator()(A&&... args)
+        static constexpr result operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
-            return {std::forward<A>(args)...};
+            return {typename result::template tag<1>{}, std::forward<A>(args)...};
         }
     };
+
+    /// TODO: finish the conversion visitor for expected types.  This will be necessary
+    /// to complete the expected refactor in general.
+
+    /* Given an initializer that inherits from at least one expected exception type,
+    determine the most proximal exception to initialize. */
+    template <typename out, typename in, typename... Es>
+    struct _expected_convert_error { using type = out; };
+    template <typename out, typename in, typename E, typename... Es>
+        requires (meta::inherits<in, E>)
+    struct _expected_convert_error<out, in, E, Es...> {
+        /// TODO: filter to find the most derived type
+
+    };
+    template <typename out, typename in, typename E, typename... Es>
+    struct _expected_convert_error<out, in, E, Es...> :
+        _expected_convert_error<out, in, Es...>
+    {};
+    template <typename in, typename... Es>
+    using expected_convert_error = _expected_convert_error<void, in, Es...>::type;
+
+    /* Safely access a perfectly-forwarded type from a `union_storage` container as
+    either an `Expected` or `Optional`, corresponding to the `.value()` and
+    `.value_if()` methods of a `Union`, respectively. */
+    template <typename Self>
+    struct union_access {
+        using types = meta::unqualify<Self>::types;
+        using size_type = types::size_type;
+        using index_type = types::index_type;
+
+        template <index_type I>
+        static constexpr bool valid_index = impl::valid_index<types::ssize(), I>;
+
+        template <index_type I> requires (valid_index<I>)
+        static constexpr size_type normalize_index = impl::normalize_index<types::ssize(), I>();
+
+        template <typename T>
+        static constexpr bool contains = types::template contains<T>();
+
+        template <typename T>
+        static constexpr size_type index_of = types::template index<T>();
+
+        template <index_type I> requires (valid_index<I>)
+        using idx = decltype(std::declval<Self>().template value<normalize_index<I>>());
+
+        template <typename T> requires (contains<T>)
+        using type = idx<index_of<T>>;
+
+        template <index_type I> requires (valid_index<I>)
+        using opt_idx = bertrand::Optional<idx<I>>;
+
+        template <typename T> requires (contains<T>)
+        using opt_type = bertrand::Optional<type<T>>;
+
+        template <index_type I> requires (valid_index<I>)
+        using exp_idx = bertrand::Expected<idx<I>, BadUnionAccess>;
+
+        template <typename T> requires (contains<T>)
+        using exp_type = bertrand::Expected<type<T>, BadUnionAccess>;
+
+        template <index_type I> requires (valid_index<I>)
+        [[nodiscard]] constexpr exp_idx<I> value(Self self)
+            noexcept (requires{
+                {
+                    self.template index_error<normalize_index<I>>()
+                } noexcept -> meta::nothrow::convertible_to<exp_idx<I>>;
+                {
+                    std::forward<Self>(self).template value<normalize_index<I>>()
+                } noexcept -> meta::nothrow::convertible_to<exp_idx<I>>;
+            })
+            requires (requires{
+                {
+                    self.template index_error<normalize_index<I>>()
+                } -> meta::convertible_to<exp_idx<I>>;
+                {
+                    std::forward<Self>(self).template value<normalize_index<I>>()
+                } -> meta::convertible_to<exp_idx<I>>;
+            })
+        {
+            if (self.index() != I) {
+                return self.template index_error<normalize_index<I>>();
+            }
+            return std::forward<Self>(self).template value<normalize_index<I>>();
+        }
+
+        template <typename T> requires (contains<T>)
+        [[nodiscard]] constexpr exp_type<T> value_if(Self self)
+            noexcept (requires{
+                {
+                    self.template type_error<T>()
+                } noexcept -> meta::nothrow::convertible_to<exp_type<T>>;
+                {
+                    std::forward<Self>(self).template value<index_of<T>>()
+                } noexcept -> meta::nothrow::convertible_to<exp_type<T>>;
+            })
+            requires (requires{
+                {
+                    self.template type_error<T>()
+                } -> meta::convertible_to<exp_type<T>>;
+                {
+                    std::forward<Self>(self).template value<index_of<T>>()
+                } -> meta::convertible_to<exp_type<T>>;
+            })
+        {
+            if (self.index() != index_of<T>) {
+                return self.template type_error<T>();
+            }
+            return std::forward<Self>(self).template value<index_of<T>>();
+        }
+
+        template <index_type I> requires (valid_index<I>)
+        [[nodiscard]] constexpr opt_idx<I> value_if(Self self)
+            noexcept (requires{{
+                std::forward<Self>(self).template value<normalize_index<I>>()
+            } noexcept -> meta::nothrow::convertible_to<opt_idx<I>>;})
+            requires (requires{{
+                std::forward<Self>(self).template value<normalize_index<I>>()
+            } -> meta::convertible_to<opt_idx<I>>;})
+        {
+            if (self.index() != I) {
+                return None;
+            }
+            return std::forward<Self>(self).template value<normalize_index<I>>();
+        }
+
+        template <typename T> requires (contains<T>)
+        [[nodiscard]] constexpr opt_type<T> value_if(Self self)
+            noexcept (requires{{
+                std::forward<Self>(self).template value<index_of<T>>()
+            } noexcept -> meta::nothrow::convertible_to<opt_type<T>>;})
+            requires (requires{{
+                std::forward<Self>(self).template value<index_of<T>>()
+            } -> meta::convertible_to<opt_type<T>>;})
+        {
+            if (self.index() != index_of<T>) {
+                return None;
+            }
+            return std::forward<Self>(self).template value<index_of<T>>();
+        }
+
+    };
+    template <meta::Union Self>
+    struct union_access<Self> : union_access<decltype(std::declval<Self>()._value)> {};
+    template <meta::Optional Self>
+    struct union_access<Self> : union_access<decltype(std::declval<Self>()._value)> {};
+    template <meta::Expected Self>
+    struct union_access<Self> : union_access<decltype(std::declval<Self>()._value)> {};
 
     /* A simple visitor that backs the `Optional.value_or(f)` accessor, where `f` is
     a function callable with zero arguments that will be invoked only if the optional
@@ -3118,25 +3140,9 @@ namespace impl {
         }
     };
 
-    /* Given an initializer that inherits from at least one expected exception type,
-    determine the most proximal exception to initialize. */
-    template <typename out, typename in, typename... Es>
-    struct _expected_convert_error { using type = out; };
-    template <typename out, typename in, typename E, typename... Es>
-        requires (meta::inherits<in, E>)
-    struct _expected_convert_error<out, in, E, Es...> {
-        /// TODO: filter to find the most derived type
-
-    };
-    template <typename out, typename in, typename E, typename... Es>
-    struct _expected_convert_error<out, in, E, Es...> :
-        _expected_convert_error<out, in, Es...>
-    {};
-    template <typename in, typename... Es>
-    using expected_convert_error = _expected_convert_error<void, in, Es...>::type;
-
     /* A trivial iterator that only yields a single value, which is represented as a
-    raw pointer internally. */
+    raw pointer internally.  This is the iterator type for `Optional<T>` where `T` is
+    not itself iterable. */
     template <meta::not_void T>
     struct single_iterator {
         using wrapped = T;
@@ -3227,6 +3233,498 @@ namespace impl {
         }
     };
 
+    /* A wrapper for an arbitrary iterator that allows it to be constructed in an empty
+    state in order to represent empty optionals.  This is the iterator type for
+    `Optional<T>`, where `T` is iterable.  In that case, this iterator behaves exactly
+    like the underlying iterator type, with the caveat that it can only be compared
+    against other `optional_iterator<U>` wrappers, where `U` may be different from
+    `T`. */
+    template <meta::unqualified T> requires (meta::iterator<T>)
+    struct optional_iterator {
+    private:
+        union storage {
+            [[no_unique_address]] T iter;
+            constexpr storage() noexcept {};
+            constexpr storage(const T& it) 
+                noexcept (meta::nothrow::copyable<T>)
+                requires (meta::copyable<T>)
+            : iter(it) {}
+            constexpr storage(T&& it)
+                noexcept (meta::nothrow::movable<T>)
+                requires (meta::movable<T>)
+            : iter(std::move(it)) {}
+            constexpr ~storage()
+                noexcept (meta::nothrow::destructible<T>)
+                requires (meta::destructible<T>)
+            {}
+        };
+
+        static constexpr storage copy(const optional_iterator& other)
+            noexcept (requires{{storage{other._value.iter}} noexcept;})
+            requires (requires{{storage{other._value.iter}};})
+        {
+            if (other.initialized) {
+                return {other._value.iter};
+            } else {
+                return {};
+            }
+        }
+
+        static constexpr storage move(optional_iterator&& other)
+            noexcept (requires{{storage{std::move(other)._value.iter}} noexcept;})
+            requires (requires{{storage{std::move(other)._value.iter}};})
+        {
+            if (other.initialized) {
+                return {std::move(other)._value.iter};
+            } else {
+                return {};
+            }
+        }
+
+    public:
+        using iterator_category = meta::iterator_category<T>;
+        using difference_type = meta::iterator_difference_type<T>;
+        using value_type = meta::iterator_value_type<T>;
+        using reference = meta::iterator_reference_type<T>;
+        using pointer = meta::iterator_pointer_type<T>;
+
+        [[no_unique_address]] storage _value;
+        [[no_unique_address]] bool initialized;
+
+        [[nodiscard]] constexpr optional_iterator() noexcept : initialized(false) {}
+
+        [[nodiscard]] constexpr optional_iterator(const T& it)
+            noexcept (meta::nothrow::copyable<T>)
+            requires (meta::copyable<T>)
+        :
+            _value(it),
+            initialized(true)
+        {}
+
+        [[nodiscard]] constexpr optional_iterator(T&& it)
+            noexcept (meta::nothrow::movable<T>)
+            requires (meta::movable<T>)
+        :
+            _value(std::move(it)),
+            initialized(true)
+        {}
+
+        [[nodiscard]] constexpr optional_iterator(const optional_iterator& other)
+            noexcept (meta::nothrow::copyable<T>)
+            requires (meta::copyable<T>)
+        :
+            _value(copy(other)),
+            initialized(other.initialized)
+        {}
+
+        [[nodiscard]] constexpr optional_iterator(optional_iterator&& other)
+            noexcept (meta::nothrow::movable<T>)
+            requires (meta::movable<T>)
+        :
+            _value(move(std::move(other))),
+            initialized(other.initialized)
+        {
+            other.initialized = false;
+        }
+
+        [[nodiscard]] constexpr optional_iterator& operator=(const optional_iterator& other)
+            noexcept (meta::nothrow::copyable<T> && meta::nothrow::copy_assignable<T>)
+            requires (meta::copyable<T> && meta::copy_assignable<T>)
+        {
+            if (initialized && other.initialized) {
+                if (this != other) {
+                    _value.iter = other._value.iter;
+                }
+            } else if (initialized) {
+                std::destroy_at(&_value.iter);
+                initialized = false;
+            } else if (other.initialized) {
+                std::construct_at(&_value.iter, other._value.iter);
+                initialized = true;
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr optional_iterator& operator=(optional_iterator&& other)
+            noexcept (meta::nothrow::copyable<T> && meta::nothrow::copy_assignable<T>)
+            requires (meta::copyable<T> && meta::copy_assignable<T>)
+        {
+            if (initialized && other.initialized) {
+                if (this != other) {
+                    _value.iter = std::move(other)._value.iter;
+                    other.initialized = false;
+                }
+            } else if (initialized) {
+                std::destroy_at(&_value.iter);
+                initialized = false;
+            } else if (other.initialized) {
+                std::construct_at(&_value.iter, std::move(other)._value.iter);
+                initialized = true;
+                other.initialized = false;
+            }
+            return *this;
+        }
+
+        constexpr ~optional_iterator()
+            noexcept (meta::nothrow::destructible<T>)
+            requires (meta::destructible<T>)
+        {
+            if (initialized) {
+                std::destroy_at(&_value.iter);
+            }
+            initialized = false;
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self)._value.iter} noexcept;})
+            requires (requires{{*std::forward<Self>(self)._value.iter};})
+        {
+            return (*std::forward<Self>(self)._value.iter);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{std::to_address(std::forward<Self>(self)._value.iter)} noexcept;})
+            requires (requires{{std::to_address(std::forward<Self>(self)._value.iter)};})
+        {
+            return std::to_address(std::forward<Self>(self)._value.iter);
+        }
+
+        template <typename Self, typename V>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, V&& v)
+            noexcept (requires{
+                {std::forward<Self>(self)._value.iter[std::forward<V>(v)]} noexcept;
+            })
+            requires (requires{
+                {std::forward<Self>(self)._value.iter[std::forward<V>(v)]};
+            })
+        {
+            return (std::forward<Self>(self)._value.iter[std::forward<V>(v)]);
+        }
+
+        constexpr optional_iterator& operator++()
+            noexcept (requires{{++_value.iter} noexcept;})
+            requires (requires{{++_value.iter};})
+        {
+            ++_value.iter;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr optional_iterator operator++(int)
+            noexcept (requires{
+                {optional_iterator(*this)} noexcept;
+                {++*this} noexcept;
+            })
+            requires (requires{
+                {optional_iterator(*this)};
+                {++*this};
+            })
+        {
+            optional_iterator tmp(*this);
+            ++*this;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr optional_iterator operator+(
+            const optional_iterator& lhs,
+            difference_type rhs
+        )
+            noexcept (requires{{optional_iterator(lhs._value.iter + rhs)} noexcept;})
+            requires (requires{{optional_iterator(lhs._value.iter + rhs)};})
+        {
+            return optional_iterator(lhs._value.iter + rhs);
+        }
+
+        [[nodiscard]] friend constexpr optional_iterator operator+(
+            difference_type lhs,
+            const optional_iterator& rhs
+        )
+            noexcept (requires{{optional_iterator(lhs + rhs._value.iter)} noexcept;})
+            requires (requires{{optional_iterator(lhs + rhs._value.iter)};})
+        {
+            return optional_iterator(lhs + rhs._value.iter);
+        }
+
+        constexpr optional_iterator& operator+=(difference_type n)
+            noexcept (requires{{_value.iter += n} noexcept;})
+            requires (requires{{_value.iter += n};})
+        {
+            _value.iter += n;
+            return *this;
+        }
+
+        constexpr optional_iterator& operator--()
+            noexcept (requires{{--_value.iter} noexcept;})
+            requires (requires{{--_value.iter};})
+        {
+            --_value.iter;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr optional_iterator operator--(int)
+            noexcept (requires{
+                {optional_iterator(*this)} noexcept;
+                {--*this} noexcept;
+            })
+            requires (requires{
+                {optional_iterator(*this)};
+                {--*this};
+            })
+        {
+            optional_iterator tmp(*this);
+            --*this;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr optional_iterator operator-(difference_type n) const
+            noexcept (requires{{optional_iterator(_value.iter - n)} noexcept;})
+            requires (requires{{optional_iterator(_value.iter - n)};})
+        {
+            return optional_iterator(_value.iter - n);
+        }
+
+        [[nodiscard]] difference_type operator-(const optional_iterator& other) const
+            noexcept (requires{{
+                _value.iter - other._value.iter
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (requires{{
+                _value.iter - other._value.iter
+            } -> meta::convertible_to<difference_type>;})
+        {
+            return _value.iter - other._value.iter;
+        }
+
+        constexpr optional_iterator& operator-=(difference_type n)
+            noexcept (requires{{_value.iter -= n} noexcept;})
+            requires (requires{{_value.iter -= n};})
+        {
+            _value.iter -= n;
+            return *this;
+        }
+
+        template <typename U>
+        [[nodiscard]] constexpr bool operator<(const optional_iterator<U>& other) const
+            noexcept (requires{{
+                initialized && other.initialized && _value.iter < other._value.iter
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                initialized && other.initialized && _value.iter < other._value.iter
+            } -> meta::convertible_to<bool>;})
+        {
+            return initialized && other.initialized && _value.iter < other._value.iter;
+        }
+
+        template <typename U>
+        [[nodiscard]] constexpr bool operator<=(const optional_iterator<U>& other) const
+            noexcept (requires{{
+                !initialized || !other.initialized || _value.iter <= other._value.iter
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                !initialized || !other.initialized || _value.iter <= other._value.iter
+            } -> meta::convertible_to<bool>;})
+        {
+            return !initialized || !other.initialized || _value.iter <= other._value.iter;
+        }
+
+        template <typename U>
+        [[nodiscard]] constexpr bool operator==(const optional_iterator<U>& other) const
+            noexcept (requires{{
+                !initialized || !other.initialized || _value.iter == other._value.iter
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                !initialized || !other.initialized || _value.iter == other._value.iter
+            } -> meta::convertible_to<bool>;})
+        {
+            return !initialized || !other.initialized || _value.iter == other._value.iter;
+        }
+
+        template <typename U>
+        [[nodiscard]] constexpr bool operator>=(const optional_iterator<U>& other) const
+            noexcept (requires{{
+                !initialized || !other.initialized || _value.iter >= other._value.iter
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                !initialized || !other.initialized || _value.iter >= other._value.iter
+            } -> meta::convertible_to<bool>;})
+        {
+            return !initialized || !other.initialized || _value.iter >= other._value.iter;
+        }
+
+        template <typename U>
+        [[nodiscard]] constexpr bool operator>(const optional_iterator<U>& other) const
+            noexcept (requires{{
+                initialized && other.initialized && _value.iter > other._value.iter
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                initialized && other.initialized && _value.iter > other._value.iter
+            } -> meta::convertible_to<bool>;})
+        {
+            return initialized && other.initialized && _value.iter > other._value.iter;
+        }
+
+        template <typename U>
+        [[nodiscard]] constexpr auto operator<=>(const optional_iterator<U>& other) const
+            noexcept (requires{{_value.iter <=> other._value.iter} noexcept;})
+            requires (requires{{_value.iter <=> other._value.iter};})
+        {
+            using type = meta::unqualify<decltype(_value.iter <=> other._value.iter)>;
+            if (!initialized || !other.initialized) {
+                return type::equivalent;
+            }
+            return _value.iter <=> other._value.iter;
+        }
+    };
+
+    template <typename T>
+    struct make_optional_begin { using type = void; };
+    template <meta::iterable T>
+    struct make_optional_begin<T> { using type = optional_iterator<meta::begin_type<T>>; };
+
+    template <typename T>
+    struct make_optional_end { using type = void; };
+    template <meta::iterable T>
+    struct make_optional_end<T> { using type = optional_iterator<meta::end_type<T>>; };
+
+    template <typename T>
+    struct make_optional_rbegin { using type = void; };
+    template <meta::reverse_iterable T>
+    struct make_optional_rbegin<T> { using type = optional_iterator<meta::rbegin_type<T>>; };
+
+    template <typename T>
+    struct make_optional_rend { using type = void; };
+    template <meta::reverse_iterable T>
+    struct make_optional_rend<T> { using type = optional_iterator<meta::rend_type<T>>; };
+
+    template <meta::lvalue T>
+    struct make_optional_iterator {
+        static constexpr bool trivial = true;
+        using type = decltype(std::declval<T>()._value.template value<1>());
+        using begin_type = single_iterator<type>;
+        using end_type = begin_type;
+        using rbegin_type = std::reverse_iterator<begin_type>;
+        using rend_type = rbegin_type;
+
+        static constexpr auto begin(T opt)
+            noexcept (requires{
+                {begin_type(std::addressof(opt._value.template value<1>()) + !opt.has_value())} noexcept;
+            })
+            requires (requires{
+                {begin_type(std::addressof(opt._value.template value<1>()) + !opt.has_value())};
+            })
+        {
+            return begin_type{std::addressof(opt._value.template value<1>()) + !opt.has_value()};
+        }
+
+        static constexpr auto end(T opt)
+            noexcept (requires{
+                {end_type(std::addressof(opt._value.template value<1>()) + 1)} noexcept;
+            })
+            requires (requires{
+                {end_type(std::addressof(opt._value.template value<1>()) + 1)};
+            })
+        {
+            return end_type{std::addressof(opt._value.template value<1>()) + 1};
+        }
+
+        static constexpr auto rbegin(T opt)
+            noexcept (requires{{std::make_reverse_iterator(end(opt))} noexcept;})
+            requires (requires{{std::make_reverse_iterator(end(opt))};})
+        {
+            return std::make_reverse_iterator(end(opt));
+        }
+
+        static constexpr auto rend(T opt)
+            noexcept (requires{{std::make_reverse_iterator(begin(opt))} noexcept;})
+            requires (requires{{std::make_reverse_iterator(begin(opt))};})
+        {
+            return std::make_reverse_iterator(begin(opt));
+        }
+    };
+    template <meta::lvalue T>
+        requires (
+            meta::iterable<decltype(std::declval<T>()._value.template value<1>())> ||
+            meta::reverse_iterable<decltype(std::declval<T>()._value.template value<1>())>
+        )
+    struct make_optional_iterator<T> {
+        static constexpr bool trivial = false;
+        using type = decltype(std::declval<T>()._value.template value<1>());
+        using begin_type = make_optional_begin<type>::type;
+        using end_type = make_optional_end<type>::type;
+        using rbegin_type = make_optional_rbegin<type>::type;
+        using rend_type = make_optional_rend<type>::type;
+
+        static constexpr auto begin(T opt)
+            noexcept (requires{
+                {begin_type{std::ranges::begin(opt._value.template value<1>())}} noexcept;
+                {begin_type{}} noexcept;
+            })
+            requires (requires{
+                {begin_type{std::ranges::begin(opt._value.template value<1>())}};
+                {begin_type{}};
+            })
+        {
+            if (opt.has_value()) {
+                return begin_type{std::ranges::begin(opt._value.template value<1>())};
+            } else {
+                return begin_type{};
+            }
+        }
+
+        static constexpr auto end(T opt)
+            noexcept (requires{
+                {end_type{std::ranges::end(opt._value.template value<1>())}} noexcept;
+                {end_type{}} noexcept;
+            })
+            requires (requires{
+                {end_type{std::ranges::end(opt._value.template value<1>())}};
+                {end_type{}};
+            })
+        {
+            if (opt.has_value()) {
+                return end_type{std::ranges::end(opt._value.template value<1>())};
+            } else {
+                return end_type{};
+            }
+        }
+
+        static constexpr auto rbegin(T opt)
+            noexcept (requires{
+                {rbegin_type{std::ranges::rbegin(opt._value.template value<1>())}} noexcept;
+                {rbegin_type{}} noexcept;
+            })
+            requires (requires{
+                {rbegin_type{std::ranges::rbegin(opt._value.template value<1>())}};
+                {rbegin_type{}};
+            })
+        {
+            if (opt.has_value()) {
+                return rbegin_type{std::ranges::rbegin(opt._value.template value<1>())};
+            } else {
+                return rbegin_type{};
+            }
+        }
+
+        static constexpr auto rend(T opt)
+            noexcept (requires{
+                {rend_type{std::ranges::rend(opt._value.template value<1>())}} noexcept;
+                {rend_type{}} noexcept;
+            })
+            requires (requires{
+                {rend_type{std::ranges::rend(opt._value.template value<1>())}};
+                {rend_type{}};
+            })
+        {
+            if (opt.has_value()) {
+                return rend_type{std::ranges::rend(opt._value.template value<1>())};
+            } else {
+                return rend_type{};
+            }
+        }
+    };
+
+    /* Union iterators can dereference to exactly one type or a `Union` of 2 or more
+    possible types, depending on the configuration of the input iterators. */
     template <typename, typename...>
     struct _union_iterator_ref { using type = void; };
     template <typename out>
@@ -3245,6 +3743,9 @@ namespace impl {
     template <meta::iterator... Ts>
     using union_iterator_ref = _union_iterator_ref<meta::pack<>, Ts...>::type;
 
+    /* The `->` indirection operator is only enabled if all of the iterators support
+    it and return a consistent pointer type.  Otherwise, `pointer` is trivial, and the
+    `->` is disabled. */
     template <typename... Ts>
     struct _union_iterator_ptr { using type = meta::as_pointer<union_iterator_ref<Ts...>>; };
     template <meta::has_arrow... Ts>
@@ -3277,7 +3778,7 @@ namespace impl {
         using pointer = union_iterator_ptr<Ts...>;
         using value_type = meta::remove_reference<reference>;
 
-        union_storage<Ts..., NoneType> storage;
+        union_storage<Ts..., NoneType> _value;
 
     private:
         static constexpr bool dereference = (
@@ -3371,70 +3872,70 @@ namespace impl {
         static constexpr reference deref_fn(const union_iterator& self)
             noexcept (nothrow_dereference)
         {
-            return *self.storage.template value<I>();
+            return *self._value.template value<I>();
         }
 
         template <size_t I>
         static constexpr pointer arrow_fn(const union_iterator& self)
             noexcept (nothrow_arrow)
         {
-            return std::to_address(self.storage.template value<I>());
+            return std::to_address(self._value.template value<I>());
         }
 
         template <size_t I>
         static constexpr reference index_fn(const union_iterator& self, difference_type n)
             noexcept (nothrow_index)
         {
-            return self.storage.template value<I>()[n];
+            return self._value.template value<I>()[n];
         }
 
         template <size_t I>
         static constexpr void increment_fn(union_iterator& self)
             noexcept (nothrow_increment)
         {
-            ++self.storage.template value<I>();
+            ++self._value.template value<I>();
         }
 
         template <size_t I>
         static constexpr union_iterator forward_add_fn(const union_iterator& self, difference_type n)
             noexcept (nothrow_forward_add)
         {
-            return {.storage = {union_select<I>{}, self.storage.template value<I>() + n}};
+            return {._value = {union_select<I>{}, self._value.template value<I>() + n}};
         }
 
         template <size_t I>
         static constexpr union_iterator reverse_add_fn(difference_type n, const union_iterator& self)
             noexcept (nothrow_reverse_add)
         {
-            return {.storage = {union_select<I>{}, n + self.storage.template value<I>()}};
+            return {._value = {union_select<I>{}, n + self._value.template value<I>()}};
         }
 
         template <size_t I>
         static constexpr void inplace_add_fn(union_iterator& self, difference_type n)
             noexcept (nothrow_inplace_add)
         {
-            self.storage.template value<I>() += n;
+            self._value.template value<I>() += n;
         }
 
         template <size_t I>
         static constexpr void decrement_fn(union_iterator& self)
             noexcept (nothrow_decrement)
         {
-            --self.storage.template value<I>();
+            --self._value.template value<I>();
         }
 
         template <size_t I>
         static constexpr union_iterator subtract_fn(const union_iterator& self, difference_type n)
             noexcept (nothrow_subtract)
         {
-            return {.storage = {union_select<I>{}, self.storage.template value<I>() - n}};
+            return {._value = {union_select<I>{}, self._value.template value<I>() - n}};
         }
 
         template <size_t I>
         static constexpr void inplace_subtract_fn(union_iterator& self, difference_type n)
             noexcept (nothrow_inplace_subtract)
         {
-            self.storage.template value<I>() -= n;
+            self._value.template value<I>() -= n;
         }
 
         template <typename = std::index_sequence_for<Ts...>>
@@ -3512,7 +4013,7 @@ namespace impl {
             const union_iterator& self
         ) noexcept (nothrow_dereference) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return deref_fn<I>(self);
                 } else {
                     return recursive_deref<I + 1>(self);
@@ -3527,7 +4028,7 @@ namespace impl {
             const union_iterator& self
         ) noexcept (nothrow_arrow) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return arrow_fn<I>(self);
                 } else {
                     return recursive_arrow<I + 1>(self);
@@ -3542,7 +4043,7 @@ namespace impl {
             const union_iterator& self
         ) noexcept (nothrow_index) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return index_fn<I>(self, 0);
                 } else {
                     return recursive_index<I + 1>(self);
@@ -3557,7 +4058,7 @@ namespace impl {
             union_iterator& self
         ) noexcept (nothrow_increment) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return increment_fn<I>(self);
                 } else {
                     return recursive_increment<I + 1>(self);
@@ -3573,7 +4074,7 @@ namespace impl {
             difference_type n
         ) noexcept (nothrow_forward_add) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return forward_add_fn<I>(self, n);
                 } else {
                     return recursive_forward_add<I + 1>(self, n);
@@ -3589,7 +4090,7 @@ namespace impl {
             const union_iterator& self
         ) noexcept (nothrow_reverse_add) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return reverse_add_fn<I>(n, self);
                 } else {
                     return recursive_reverse_add<I + 1>(n, self);
@@ -3605,7 +4106,7 @@ namespace impl {
             difference_type n
         ) noexcept (nothrow_inplace_add) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return inplace_add_fn<I>(self, n);
                 } else {
                     return recursive_inplace_add<I + 1>(self, n);
@@ -3620,7 +4121,7 @@ namespace impl {
             union_iterator& self
         ) noexcept (nothrow_decrement) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return decrement_fn<I>(self);
                 } else {
                     return recursive_decrement<I + 1>(self);
@@ -3636,7 +4137,7 @@ namespace impl {
             difference_type n
         ) noexcept (nothrow_subtract) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return subtract_fn<I>(self, n);
                 } else {
                     return recursive_subtract<I + 1>(self, n);
@@ -3652,7 +4153,7 @@ namespace impl {
             difference_type n
         ) noexcept (nothrow_inplace_subtract) {
             if constexpr ((I + 1) < sizeof...(Ts)) {
-                if (self.storage.index() == I) {
+                if (self._value.index() == I) {
                     return inplace_subtract_fn<I>(self, n);
                 } else {
                     return recursive_inplace_subtract<I + 1>(self, n);
@@ -3904,56 +4405,56 @@ namespace impl {
             static constexpr bool forward_less_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_less)
             {
-                return lhs.storage.template value<I>() < rhs;
+                return lhs._value.template value<I>() < rhs;
             }
 
             template <size_t I>
             static constexpr bool reverse_less_fn(const other& lhs, const union_iterator& rhs)
                 noexcept (nothrow_reverse_less)
             {
-                return lhs < rhs.storage.template value<I>();
+                return lhs < rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_less_equal_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_less_equal)
             {
-                return lhs.storage.template value<I>() <= rhs;
+                return lhs._value.template value<I>() <= rhs;
             }
 
             template <size_t I>
             static constexpr bool reverse_less_equal_fn(const other& lhs, const union_iterator& rhs)
                 noexcept (nothrow_reverse_less_equal)
             {
-                return lhs <= rhs.storage.template value<I>();
+                return lhs <= rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_equal_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_equal)
             {
-                return lhs.storage.template value<I>() == rhs;
+                return lhs._value.template value<I>() == rhs;
             }
 
             template <size_t I>
             static constexpr bool reverse_equal_fn(const other& lhs, const union_iterator& rhs)
                 noexcept (nothrow_reverse_equal)
             {
-                return lhs == rhs.storage.template value<I>();
+                return lhs == rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_unequal_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_unequal)
             {
-                return lhs.storage.template value<I>() != rhs;
+                return lhs._value.template value<I>() != rhs;
             }
 
             template <size_t I>
             static constexpr bool reverse_unequal_fn(const other& lhs, const union_iterator& rhs)
                 noexcept (nothrow_reverse_unequal)
             {
-                return lhs != rhs.storage.template value<I>();
+                return lhs != rhs._value.template value<I>();
             }
 
             template <size_t I>
@@ -3963,7 +4464,7 @@ namespace impl {
             )
                 noexcept (nothrow_forward_greater_equal)
             {
-                return lhs.storage.template value<I>() >= rhs;
+                return lhs._value.template value<I>() >= rhs;
             }
 
             template <size_t I>
@@ -3973,21 +4474,21 @@ namespace impl {
             )
                 noexcept (nothrow_reverse_greater_equal)
             {
-                return lhs >= rhs.storage.template value<I>();
+                return lhs >= rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_greater_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_greater)
             {
-                return lhs.storage.template value<I>() > rhs;
+                return lhs._value.template value<I>() > rhs;
             }
 
             template <size_t I>
             static constexpr bool reverse_greater_fn(const other& lhs, const union_iterator& rhs)
                 noexcept (nothrow_reverse_greater)
             {
-                return lhs > rhs.storage.template value<I>();
+                return lhs > rhs._value.template value<I>();
             }
 
             template <size_t I>
@@ -3995,7 +4496,7 @@ namespace impl {
                 const union_iterator& lhs,
                 const other& rhs
             ) noexcept (nothrow_forward_spaceship) {
-                return lhs.storage.template value<I>() <=> rhs;
+                return lhs._value.template value<I>() <=> rhs;
             }
 
             template <size_t I>
@@ -4003,7 +4504,7 @@ namespace impl {
                 const other& lhs,
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_spaceship) {
-                return lhs <=> rhs.storage.template value<I>();
+                return lhs <=> rhs._value.template value<I>();
             }
 
             template <size_t I>
@@ -4011,7 +4512,7 @@ namespace impl {
                 const union_iterator& lhs,
                 const other& rhs
             ) noexcept (nothrow_forward_distance) {
-                return lhs.storage.template value<I>() - rhs;
+                return lhs._value.template value<I>() - rhs;
             }
 
             template <size_t I>
@@ -4019,7 +4520,7 @@ namespace impl {
                 const other& lhs,
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_distance) {
-                return lhs - rhs.storage.template value<I>();
+                return lhs - rhs._value.template value<I>();
             }
 
             template <typename = std::index_sequence_for<Ts...>>
@@ -4140,7 +4641,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_less) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_less_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_less<I + 1>(lhs, rhs);
@@ -4156,7 +4657,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_less) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_less_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_less<I + 1>(lhs, rhs);
@@ -4172,7 +4673,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_less_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_less_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_less_equal<I + 1>(lhs, rhs);
@@ -4188,7 +4689,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_less_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_less_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_less_equal<I + 1>(lhs, rhs);
@@ -4204,7 +4705,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_equal<I + 1>(lhs, rhs);
@@ -4220,7 +4721,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_equal<I + 1>(lhs, rhs);
@@ -4236,7 +4737,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_unequal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_unequal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_unequal<I + 1>(lhs, rhs);
@@ -4252,7 +4753,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_unequal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_unequal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_unequal<I + 1>(lhs, rhs);
@@ -4268,7 +4769,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_greater_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_greater_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_greater_equal<I + 1>(lhs, rhs);
@@ -4284,7 +4785,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_greater_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_greater_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_greater_equal<I + 1>(lhs, rhs);
@@ -4300,7 +4801,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_greater) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_greater_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_greater<I + 1>(lhs, rhs);
@@ -4316,7 +4817,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_greater) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_greater_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_greater<I + 1>(lhs, rhs);
@@ -4332,7 +4833,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_spaceship) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_spaceship_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_spaceship<I + 1>(lhs, rhs);
@@ -4348,7 +4849,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_spaceship) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_spaceship_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_spaceship<I + 1>(lhs, rhs);
@@ -4364,7 +4865,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_distance) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_distance_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_distance<I + 1>(lhs, rhs);
@@ -4380,7 +4881,7 @@ namespace impl {
                 const union_iterator& rhs
             ) noexcept (nothrow_reverse_distance) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (rhs.storage.index() == I) {
+                    if (rhs._value.index() == I) {
                         return reverse_distance_fn<I>(lhs, rhs);
                     } else {
                         return recursive_reverse_distance<I + 1>(lhs, rhs);
@@ -4556,28 +5057,28 @@ namespace impl {
             static constexpr bool forward_less_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_less)
             {
-                return lhs.storage.template value<I>() < rhs.storage.template value<I>();
+                return lhs._value.template value<I>() < rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_less_equal_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_less_equal)
             {
-                return lhs.storage.template value<I>() <= rhs.storage.template value<I>();
+                return lhs._value.template value<I>() <= rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_equal_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_equal)
             {
-                return lhs.storage.template value<I>() == rhs.storage.template value<I>();
+                return lhs._value.template value<I>() == rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_unequal_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_unequal)
             {
-                return lhs.storage.template value<I>() != rhs.storage.template value<I>();
+                return lhs._value.template value<I>() != rhs._value.template value<I>();
             }
 
             template <size_t I>
@@ -4585,14 +5086,14 @@ namespace impl {
                 const union_iterator& lhs,
                 const other& rhs
             ) noexcept (nothrow_forward_greater_equal) {
-                return lhs.storage.template value<I>() >= rhs.storage.template value<I>();
+                return lhs._value.template value<I>() >= rhs._value.template value<I>();
             }
 
             template <size_t I>
             static constexpr bool forward_greater_fn(const union_iterator& lhs, const other& rhs)
                 noexcept (nothrow_forward_greater)
             {
-                return lhs.storage.template value<I>() > rhs.storage.template value<I>();
+                return lhs._value.template value<I>() > rhs._value.template value<I>();
             }
 
             template <size_t I>
@@ -4600,7 +5101,7 @@ namespace impl {
                 const union_iterator& lhs,
                 const other& rhs
             ) noexcept (nothrow_forward_spaceship) {
-                return lhs.storage.template value<I>() <=> rhs.storage.template value<I>();
+                return lhs._value.template value<I>() <=> rhs._value.template value<I>();
             }
 
             template <size_t I>
@@ -4608,7 +5109,7 @@ namespace impl {
                 const union_iterator& lhs,
                 const other& rhs
             ) noexcept (nothrow_forward_distance) {
-                return lhs.storage.template value<I>() - rhs.storage.template value<I>();
+                return lhs._value.template value<I>() - rhs._value.template value<I>();
             }
 
             template <typename = std::index_sequence_for<Ts...>>
@@ -4673,7 +5174,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_less) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_less_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_less<I + 1>(lhs, rhs);
@@ -4689,7 +5190,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_less_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_less_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_less_equal<I + 1>(lhs, rhs);
@@ -4705,7 +5206,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_equal<I + 1>(lhs, rhs);
@@ -4721,7 +5222,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_unequal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_unequal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_unequal<I + 1>(lhs, rhs);
@@ -4737,7 +5238,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_greater_equal) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_greater_equal_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_greater_equal<I + 1>(lhs, rhs);
@@ -4753,7 +5254,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_greater) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_greater_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_greater<I + 1>(lhs, rhs);
@@ -4769,7 +5270,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_spaceship) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_spaceship_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_spaceship<I + 1>(lhs, rhs);
@@ -4785,7 +5286,7 @@ namespace impl {
                 const other& rhs
             ) noexcept (nothrow_forward_distance) {
                 if constexpr ((I + 1) < sizeof...(Ts)) {
-                    if (lhs.storage.index() == I) {
+                    if (lhs._value.index() == I) {
                         return forward_distance_fn<I>(lhs, rhs);
                     } else {
                         return recursive_forward_distance<I + 1>(lhs, rhs);
@@ -4801,8 +5302,8 @@ namespace impl {
             noexcept (nothrow_dereference)
             requires (dereference)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                return deref_tbl<>[storage.index()](*this);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                return deref_tbl<>[_value.index()](*this);
             } else {
                 return recursive_deref<0>(*this);
             }
@@ -4812,8 +5313,8 @@ namespace impl {
             noexcept (nothrow_arrow)
             requires (arrow)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                return arrow_tbl<>[storage.index()](*this);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                return arrow_tbl<>[_value.index()](*this);
             } else {
                 return recursive_arrow<0>(*this);
             }
@@ -4823,8 +5324,8 @@ namespace impl {
             noexcept (nothrow_index)
             requires (index)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                return index_tbl<>[storage.index()](*this, n);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                return index_tbl<>[_value.index()](*this, n);
             } else {
                 return recursive_index<0>(*this, n);
             }
@@ -4834,8 +5335,8 @@ namespace impl {
             noexcept (nothrow_increment)
             requires (increment)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                increment_tbl<>[storage.index()](*this);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                increment_tbl<>[_value.index()](*this);
             } else {
                 recursive_increment<0>(*this);
             }
@@ -4858,8 +5359,8 @@ namespace impl {
             noexcept (nothrow_forward_add)
             requires (forward_add)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                return forward_add_tbl<>[self.storage.index()](self, n);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                return forward_add_tbl<>[self._value.index()](self, n);
             } else {
                 return recursive_forward_add<0>(self, n);
             }
@@ -4872,8 +5373,8 @@ namespace impl {
             noexcept (nothrow_reverse_add)
             requires (reverse_add)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                return reverse_add_tbl<>[self.storage.index()](n, self);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                return reverse_add_tbl<>[self._value.index()](n, self);
             } else {
                 return recursive_reverse_add<0>(n, self);
             }
@@ -4883,8 +5384,8 @@ namespace impl {
             noexcept (nothrow_inplace_add)
             requires (inplace_add)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                inplace_add_tbl<>[storage.index()](*this, n);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                inplace_add_tbl<>[_value.index()](*this, n);
             } else {
                 recursive_inplace_add<0>(*this, n);
             }
@@ -4895,8 +5396,8 @@ namespace impl {
             noexcept (nothrow_decrement)
             requires (decrement)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                decrement_tbl<>[storage.index()](*this);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                decrement_tbl<>[_value.index()](*this);
             } else {
                 recursive_decrement<0>(*this);
             }
@@ -4919,8 +5420,8 @@ namespace impl {
             noexcept (nothrow_subtract)
             requires (subtract)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                return subtract_tbl<>[self.storage.index()](self, n);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                return subtract_tbl<>[self._value.index()](self, n);
             } else {
                 return recursive_subtract<0>(self, n);
             }
@@ -4930,8 +5431,8 @@ namespace impl {
             noexcept (nothrow_inplace_subtract)
             requires (inplace_subtract)
         {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
-                inplace_subtract_tbl<>[storage.index()](*this, n);
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
+                inplace_subtract_tbl<>[_value.index()](*this, n);
             } else {
                 recursive_inplace_subtract<0>(*this, n);
             }
@@ -4943,9 +5444,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_distance) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_distance_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_distance<0>(lhs, rhs);
@@ -4957,9 +5458,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_distance) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_distance_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_distance<0>(lhs, rhs);
@@ -4971,9 +5472,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_less) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_less_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_less<0>(lhs, rhs);
@@ -4985,9 +5486,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_less) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_less_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_less<0>(lhs, rhs);
@@ -4999,9 +5500,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_less_equal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_less_equal_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_less_equal<0>(lhs, rhs);
@@ -5013,9 +5514,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_less_equal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_less_equal_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_less_equal<0>(lhs, rhs);
@@ -5027,9 +5528,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_equal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_equal_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_equal<0>(lhs, rhs);
@@ -5041,9 +5542,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_equal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_equal_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_equal<0>(lhs, rhs);
@@ -5055,9 +5556,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_unequal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_unequal_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_unequal<0>(lhs, rhs);
@@ -5069,9 +5570,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_unequal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_unequal_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_unequal<0>(lhs, rhs);
@@ -5083,9 +5584,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_greater_equal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_greater_equal_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_greater_equal<0>(lhs, rhs);
@@ -5097,9 +5598,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_greater_equal) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_greater_equal_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_greater_equal<0>(lhs, rhs);
@@ -5111,9 +5612,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_greater) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template forward_greater_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_forward_greater<0>(lhs, rhs);
@@ -5125,9 +5626,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_greater) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return compare<other>::template reverse_greater_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs);
             } else {
                 return compare<other>::template recursive_reverse_greater<0>(lhs, rhs);
@@ -5139,9 +5640,9 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         ) noexcept (compare<other>::nothrow_forward_spaceship) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return (compare<other>::template forward_spaceship_tbl<>[
-                    lhs.storage.index()
+                    lhs._value.index()
                 ](lhs, rhs));
             } else {
                 return (compare<other>::template recursive_forward_spaceship<0>(lhs, rhs));
@@ -5153,9 +5654,9 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         ) noexcept (compare<other>::nothrow_reverse_spaceship) {
-            if constexpr (sizeof...(Ts) >= EMIT_VTABLE_AFTER) {
+            if constexpr (sizeof...(Ts) >= MIN_VTABLE_SIZE) {
                 return (compare<other>::template reverse_spaceship_tbl<>[
-                    rhs.storage.index()
+                    rhs._value.index()
                 ](lhs, rhs));
             } else {
                 return (compare<other>::template recursive_reverse_spaceship<0>(lhs, rhs));
@@ -5198,20 +5699,20 @@ namespace impl {
         template <typename = std::make_index_sequence<N>>
         struct _size_type { using type = void; };
         template <size_t... Is>
-            requires (meta::has_size<decltype(std::declval<U>().storage.template value<Is>())> && ...)
+            requires (meta::has_size<decltype(std::declval<U>()._value.template value<Is>())> && ...)
         struct _size_type<std::index_sequence<Is...>> {
             using type = meta::common_type<
-                meta::size_type<decltype(std::declval<U>().storage.template value<Is>())>...
+                meta::size_type<decltype(std::declval<U>()._value.template value<Is>())>...
             >;
         };
 
         template <typename = std::make_index_sequence<N>>
         struct _ssize_type { using type = void; };
         template <size_t... Is>
-            requires (meta::has_ssize<decltype(std::declval<U>().storage.template value<Is>())> && ...)
+            requires (meta::has_ssize<decltype(std::declval<U>()._value.template value<Is>())> && ...)
         struct _ssize_type<std::index_sequence<Is...>> {
             using type = meta::common_type<
-                meta::ssize_type<decltype(std::declval<U>().storage.template value<Is>())>...
+                meta::ssize_type<decltype(std::declval<U>()._value.template value<Is>())>...
             >;
         };
 
@@ -5228,11 +5729,11 @@ namespace impl {
         static constexpr bool _enable_begin = false;
         template <size_t... Is> requires (sizeof...(B) == sizeof...(Is) && iter<B...>::direct)
         static constexpr bool _enable_begin<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::begin(u.storage.template value<Is>())
+            std::ranges::begin(u._value.template value<Is>())
         } -> meta::convertible_to<begin_type>;} && ...);
         template <size_t... Is> requires (sizeof...(B) == sizeof...(Is) && !iter<B...>::direct)
         static constexpr bool _enable_begin<std::index_sequence<Is...>> = (requires(U u) {{
-            begin_type{{union_select<Is>{}, std::ranges::begin(u.storage.template value<Is>())}}
+            begin_type{{union_select<Is>{}, std::ranges::begin(u._value.template value<Is>())}}
         };} && ...);
         static constexpr bool enable_begin = _enable_begin<>;
 
@@ -5240,11 +5741,11 @@ namespace impl {
         static constexpr bool _nothrow_begin = false;
         template <size_t... Is> requires (sizeof...(B) == sizeof...(Is) && iter<B...>::direct)
         static constexpr bool _nothrow_begin<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::begin(u.storage.template value<Is>())
+            std::ranges::begin(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<begin_type>;} && ...);
         template <size_t... Is> requires (sizeof...(B) == sizeof...(Is) && !iter<B...>::direct)
         static constexpr bool _nothrow_begin<std::index_sequence<Is...>> = (requires(U u) {{
-            begin_type{{union_select<Is>{}, std::ranges::begin(u.storage.template value<Is>())}}
+            begin_type{{union_select<Is>{}, std::ranges::begin(u._value.template value<Is>())}}
         } noexcept;} && ...);
         static constexpr bool nothrow_begin = _nothrow_begin<>;
 
@@ -5252,11 +5753,11 @@ namespace impl {
         static constexpr bool _enable_end = false;
         template <size_t... Is> requires (sizeof...(E) == sizeof...(Is) && iter<E...>::direct)
         static constexpr bool _enable_end<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::end(u.storage.template value<Is>())
+            std::ranges::end(u._value.template value<Is>())
         } -> meta::convertible_to<end_type>;} && ...);
         template <size_t... Is> requires (sizeof...(E) == sizeof...(Is) && !iter<E...>::direct)
         static constexpr bool _enable_end<std::index_sequence<Is...>> = (requires(U u) {{
-            end_type{{union_select<Is>{}, std::ranges::end(u.storage.template value<Is>())}}
+            end_type{{union_select<Is>{}, std::ranges::end(u._value.template value<Is>())}}
         };} && ...);
         static constexpr bool enable_end = _enable_end<>;
         
@@ -5264,11 +5765,11 @@ namespace impl {
         static constexpr bool _nothrow_end = false;
         template <size_t... Is> requires (sizeof...(E) == sizeof...(Is) && iter<E...>::direct)
         static constexpr bool _nothrow_end<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::end(u.storage.template value<Is>())
+            std::ranges::end(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<end_type>;} && ...);
         template <size_t... Is> requires (sizeof...(E) == sizeof...(Is) && !iter<E...>::direct)
         static constexpr bool _nothrow_end<std::index_sequence<Is...>> = (requires(U u) {{
-            end_type{{union_select<Is>{}, std::ranges::end(u.storage.template value<Is>())}}
+            end_type{{union_select<Is>{}, std::ranges::end(u._value.template value<Is>())}}
         } noexcept;} && ...);
         static constexpr bool nothrow_end = _nothrow_end<>;
 
@@ -5276,11 +5777,11 @@ namespace impl {
         static constexpr bool _enable_rbegin = false;
         template <size_t... Is> requires (sizeof...(RB) == sizeof...(Is) && iter<RB...>::direct)
         static constexpr bool _enable_rbegin<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::rbegin(u.storage.template value<Is>())
+            std::ranges::rbegin(u._value.template value<Is>())
         } -> meta::convertible_to<rbegin_type>;} && ...);
         template <size_t... Is> requires (sizeof...(RB) == sizeof...(Is) && !iter<RB...>::direct)
         static constexpr bool _enable_rbegin<std::index_sequence<Is...>> = (requires(U u) {{
-            rbegin_type{{union_select<Is>{}, std::ranges::rbegin(u.storage.template value<Is>())}}
+            rbegin_type{{union_select<Is>{}, std::ranges::rbegin(u._value.template value<Is>())}}
         };} && ...);
         static constexpr bool enable_rbegin = _enable_rbegin<>;
 
@@ -5288,11 +5789,11 @@ namespace impl {
         static constexpr bool _nothrow_rbegin = false;
         template <size_t... Is> requires (sizeof...(RB) == sizeof...(Is) && iter<RB...>::direct)
         static constexpr bool _nothrow_rbegin<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::rbegin(u.storage.template value<Is>())
+            std::ranges::rbegin(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<rbegin_type>;} && ...);
         template <size_t... Is> requires (sizeof...(RB) == sizeof...(Is) && !iter<RB...>::direct)
         static constexpr bool _nothrow_rbegin<std::index_sequence<Is...>> = (requires(U u) {{
-            rbegin_type{{union_select<Is>{}, std::ranges::rbegin(u.storage.template value<Is>())}}
+            rbegin_type{{union_select<Is>{}, std::ranges::rbegin(u._value.template value<Is>())}}
         } noexcept;} && ...);
         static constexpr bool nothrow_rbegin = _nothrow_rbegin<>;
 
@@ -5300,11 +5801,11 @@ namespace impl {
         static constexpr bool _enable_rend = false;
         template <size_t... Is> requires (sizeof...(RE) == sizeof...(Is) && iter<RE...>::direct)
         static constexpr bool _enable_rend<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::rend(u.storage.template value<Is>())
+            std::ranges::rend(u._value.template value<Is>())
         } -> meta::convertible_to<rend_type>;} && ...);
         template <size_t... Is> requires (sizeof...(RE) == sizeof...(Is) && !iter<RE...>::direct)
         static constexpr bool _enable_rend<std::index_sequence<Is...>> = (requires(U u) {{
-            rend_type{{union_select<Is>{}, std::ranges::rend(u.storage.template value<Is>())}}
+            rend_type{{union_select<Is>{}, std::ranges::rend(u._value.template value<Is>())}}
         };} && ...);
         static constexpr bool enable_rend = _enable_rend<>;
         
@@ -5312,11 +5813,11 @@ namespace impl {
         static constexpr bool _nothrow_rend = false;
         template <size_t... Is> requires (sizeof...(RE) == sizeof...(Is) && iter<RE...>::direct)
         static constexpr bool _nothrow_rend<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::rend(u.storage.template value<Is>())
+            std::ranges::rend(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<rend_type>;} && ...);
         template <size_t... Is> requires (sizeof...(RE) == sizeof...(Is) && !iter<RE...>::direct)
         static constexpr bool _nothrow_rend<std::index_sequence<Is...>> = (requires(U u) {{
-            rend_type{{union_select<Is>{}, std::ranges::rend(u.storage.template value<Is>())}}
+            rend_type{{union_select<Is>{}, std::ranges::rend(u._value.template value<Is>())}}
         } noexcept;} && ...);
         static constexpr bool nothrow_rend = _nothrow_rend<>;
 
@@ -5324,7 +5825,7 @@ namespace impl {
         static constexpr bool _enable_size = false;
         template <size_t... Is>
         static constexpr bool _enable_size<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::size(u.storage.template value<Is>())
+            std::ranges::size(u._value.template value<Is>())
         } -> meta::convertible_to<size_type>;} && ...);
         static constexpr bool enable_size = _enable_size<>;
 
@@ -5332,7 +5833,7 @@ namespace impl {
         static constexpr bool _nothrow_size = false;
         template <size_t... Is>
         static constexpr bool _nothrow_size<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::size(u.storage.template value<Is>())
+            std::ranges::size(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<size_type>;} && ...);
         static constexpr bool nothrow_size = _nothrow_size<>;
 
@@ -5340,7 +5841,7 @@ namespace impl {
         static constexpr bool _enable_ssize = false;
         template <size_t... Is>
         static constexpr bool _enable_ssize<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::ssize(u.storage.template value<Is>())
+            std::ranges::ssize(u._value.template value<Is>())
         } -> meta::convertible_to<ssize_type>;} && ...);
         static constexpr bool enable_ssize = _enable_ssize<>;
 
@@ -5348,7 +5849,7 @@ namespace impl {
         static constexpr bool _nothrow_ssize = false;
         template <size_t... Is>
         static constexpr bool _nothrow_ssize<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::ssize(u.storage.template value<Is>())
+            std::ranges::ssize(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<ssize_type>;} && ...);
         static constexpr bool nothrow_ssize = _nothrow_ssize<>;
 
@@ -5356,7 +5857,7 @@ namespace impl {
         static constexpr bool _enable_empty = false;
         template <size_t... Is>
         static constexpr bool _enable_empty<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::empty(u.storage.template value<Is>())
+            std::ranges::empty(u._value.template value<Is>())
         } -> meta::convertible_to<bool>;} && ...);
         static constexpr bool enable_empty = _enable_empty<>;
 
@@ -5364,7 +5865,7 @@ namespace impl {
         static constexpr bool _nothrow_empty = false;
         template <size_t... Is>
         static constexpr bool _nothrow_empty<std::index_sequence<Is...>> = (requires(U u) {{
-            std::ranges::empty(u.storage.template value<Is>())
+            std::ranges::empty(u._value.template value<Is>())
         } noexcept -> meta::nothrow::convertible_to<bool>;} && ...);
         static constexpr bool nothrow_empty = _nothrow_empty<>;
 
@@ -5379,43 +5880,43 @@ namespace impl {
         template <size_t I>
         static constexpr begin_type begin_fn(U u) noexcept (nothrow_begin) {
             if constexpr (iter<B...>::direct) {
-                return std::ranges::begin(u.storage.template value<I>());
+                return std::ranges::begin(u._value.template value<I>());
             } else {
-                return {{union_select<I>{}, std::ranges::begin(u.storage.template value<I>())}};
+                return {{union_select<I>{}, std::ranges::begin(u._value.template value<I>())}};
             }
         }
 
         template <size_t I>
         static constexpr end_type end_fn(U u) noexcept (nothrow_end) {
             if constexpr (iter<E...>::direct) {
-                return std::ranges::end(u.storage.template value<I>());
+                return std::ranges::end(u._value.template value<I>());
             } else {
-                return {{union_select<I>{}, std::ranges::end(u.storage.template value<I>())}};
+                return {{union_select<I>{}, std::ranges::end(u._value.template value<I>())}};
             }
         }
 
         template <size_t I>
         static constexpr rbegin_type rbegin_fn(U u) noexcept (nothrow_rbegin) {
             if constexpr (iter<RB...>::direct) {
-                return std::ranges::rbegin(u.storage.template value<I>());
+                return std::ranges::rbegin(u._value.template value<I>());
             } else {
-                return {{union_select<I>{}, std::ranges::rbegin(u.storage.template value<I>())}};
+                return {{union_select<I>{}, std::ranges::rbegin(u._value.template value<I>())}};
             }
         }
 
         template <size_t I>
         static constexpr rend_type rend_fn(U u) noexcept (nothrow_rend) {
             if constexpr (iter<RE...>::direct) {
-                return std::ranges::rend(u.storage.template value<I>());
+                return std::ranges::rend(u._value.template value<I>());
             } else {
-                return {{union_select<I>{}, std::ranges::rend(u.storage.template value<I>())}};
+                return {{union_select<I>{}, std::ranges::rend(u._value.template value<I>())}};
             }
         }
 
         template <size_t I>
         static constexpr size_type size_fn(U u) noexcept (nothrow_size) {
-            if constexpr (meta::has_size<decltype(u.storage.template value<I>())>) {
-                return std::ranges::size(u.storage.template value<I>());
+            if constexpr (meta::has_size<decltype(u._value.template value<I>())>) {
+                return std::ranges::size(u._value.template value<I>());
             } else {
                 return 0;
             }
@@ -5423,8 +5924,8 @@ namespace impl {
 
         template <size_t I>
         static constexpr ssize_type ssize_fn(U u) noexcept (nothrow_ssize) {
-            if constexpr (meta::has_ssize<decltype(u.storage.template value<I>())>) {
-                return std::ranges::ssize(u.storage.template value<I>());
+            if constexpr (meta::has_ssize<decltype(u._value.template value<I>())>) {
+                return std::ranges::ssize(u._value.template value<I>());
             } else {
                 return 0;
             }
@@ -5432,8 +5933,8 @@ namespace impl {
 
         template <size_t I>
         static constexpr bool empty_fn(U u) noexcept (nothrow_empty) {
-            if constexpr (meta::has_empty<decltype(u.storage.template value<I>())>) {
-                return std::ranges::empty(u.storage.template value<I>());
+            if constexpr (meta::has_empty<decltype(u._value.template value<I>())>) {
+                return std::ranges::empty(u._value.template value<I>());
             } else {
                 return true;
             }
@@ -5493,7 +5994,7 @@ namespace impl {
             noexcept (nothrow_begin)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return begin_fn<I>(u);
                 } else {
                     return recursive_begin<I + 1>(u);
@@ -5508,7 +6009,7 @@ namespace impl {
             noexcept (nothrow_end)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return end_fn<I>(u);
                 } else {
                     return recursive_end<I + 1>(u);
@@ -5523,7 +6024,7 @@ namespace impl {
             noexcept (nothrow_rbegin)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return rbegin_fn<I>(u);
                 } else {
                     return recursive_rbegin<I + 1>(u);
@@ -5538,7 +6039,7 @@ namespace impl {
             noexcept (nothrow_rend)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return rend_fn<I>(u);
                 } else {
                     return recursive_rend<I + 1>(u);
@@ -5553,7 +6054,7 @@ namespace impl {
             noexcept (nothrow_size)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return size_fn<I>(u);
                 } else {
                     return recursive_size<I + 1>(u);
@@ -5568,7 +6069,7 @@ namespace impl {
             noexcept (nothrow_ssize)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return ssize_fn<I>(u);
                 } else {
                     return recursive_ssize<I + 1>(u);
@@ -5583,7 +6084,7 @@ namespace impl {
             noexcept (nothrow_empty)
         {
             if constexpr ((I + 1) < N) {
-                if (u.storage.index() == I) {
+                if (u._value.index() == I) {
                     return empty_fn<I>(u);
                 } else {
                     return recursive_empty<I + 1>(u);
@@ -5598,8 +6099,8 @@ namespace impl {
             noexcept (nothrow_begin)
             requires (enable_begin)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return begin_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return begin_tbl<>[u._value.index()](u);
             } else {
                 return recursive_begin<0>(u);
             }
@@ -5609,8 +6110,8 @@ namespace impl {
             noexcept (nothrow_end)
             requires (enable_end)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return end_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return end_tbl<>[u._value.index()](u);
             } else {
                 return recursive_end<0>(u);
             }
@@ -5620,8 +6121,8 @@ namespace impl {
             noexcept (nothrow_rbegin)
             requires (enable_rbegin)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return rbegin_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return rbegin_tbl<>[u._value.index()](u);
             } else {
                 return recursive_rbegin<0>(u);
             }
@@ -5631,8 +6132,8 @@ namespace impl {
             noexcept (nothrow_rend)
             requires (enable_rend)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return rend_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return rend_tbl<>[u._value.index()](u);
             } else {
                 return recursive_rend<0>(u);
             }
@@ -5642,8 +6143,8 @@ namespace impl {
             noexcept (nothrow_size)
             requires (enable_size)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return size_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return size_tbl<>[u._value.index()](u);
             } else {
                 return recursive_size<0>(u);
             }
@@ -5653,8 +6154,8 @@ namespace impl {
             noexcept (nothrow_ssize)
             requires (enable_ssize)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return ssize_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return ssize_tbl<>[u._value.index()](u);
             } else {
                 return recursive_ssize<0>(u);
             }
@@ -5664,8 +6165,8 @@ namespace impl {
             noexcept (nothrow_empty)
             requires (enable_empty)
         {
-            if constexpr (N >= EMIT_VTABLE_AFTER) {
-                return empty_tbl<>[u.storage.index()](u);
+            if constexpr (N >= MIN_VTABLE_SIZE) {
+                return empty_tbl<>[u._value.index()](u);
             } else {
                 return recursive_empty<0>(u);
             }
@@ -5680,8 +6181,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
-        meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
+        meta::iterable<decltype(std::declval<U>()._value.template value<I>())> &&
+        meta::reverse_iterable<decltype(std::declval<U>()._value.template value<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -5694,16 +6195,16 @@ namespace impl {
         I + 1,
         U,
         meta::pack<begin..., meta::unqualify<meta::begin_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>,
         meta::pack<end..., meta::unqualify<meta::end_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>,
         meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>,
         meta::pack<rend..., meta::unqualify<meta::rend_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>
     > {};
     template <
@@ -5715,8 +6216,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
-        !meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
+        meta::iterable<decltype(std::declval<U>()._value.template value<I>())> &&
+        !meta::reverse_iterable<decltype(std::declval<U>()._value.template value<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -5729,10 +6230,10 @@ namespace impl {
         I + 1,
         U,
         meta::pack<begin..., meta::unqualify<meta::begin_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>,
         meta::pack<end..., meta::unqualify<meta::end_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>,
         meta::pack<rbegin...>,
         meta::pack<rend...>
@@ -5746,8 +6247,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        !meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
-        meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
+        !meta::iterable<decltype(std::declval<U>()._value.template value<I>())> &&
+        meta::reverse_iterable<decltype(std::declval<U>()._value.template value<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -5762,10 +6263,10 @@ namespace impl {
         meta::pack<begin...>,
         meta::pack<end...>,
         meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>,
         meta::pack<rend..., meta::unqualify<meta::rend_type<
-            decltype(std::declval<U>().storage.template value<I>())
+            decltype(std::declval<U>()._value.template value<I>())
         >>>
     > {};
     template <
@@ -5777,8 +6278,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        !meta::iterable<decltype(std::declval<U>().storage.template value<I>())> &&
-        !meta::reverse_iterable<decltype(std::declval<U>().storage.template value<I>())>
+        !meta::iterable<decltype(std::declval<U>()._value.template value<I>())> &&
+        !meta::reverse_iterable<decltype(std::declval<U>()._value.template value<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -5805,514 +6306,6 @@ namespace impl {
         meta::pack<>
     >;
 
-    /* A wrapper for an arbitrary iterator that allows it to be constructed in an empty
-    state to represent an empty optional.  Otherwise, behaves identically to the
-    underlying iterator type, with the caveat that it can only be compared against
-    other `optional_iterator` wrappers. */
-    template <meta::unqualified T> requires (meta::iterator<T>)
-    struct optional_iterator {
-        using wrapped = T;
-        using iterator_category = meta::iterator_category<T>;
-        using difference_type = meta::iterator_difference_type<T>;
-        using value_type = meta::iterator_value_type<T>;
-        using reference = meta::iterator_reference_type<T>;
-        using pointer = meta::iterator_pointer_type<T>;
-
-    private:
-        [[no_unique_address]] union storage {
-            [[no_unique_address]] T iter;
-            constexpr storage() noexcept {};
-            constexpr storage(const T& it) 
-                noexcept (meta::nothrow::copyable<T>)
-                requires (meta::copyable<T>)
-            : iter(it) {}
-            constexpr storage(T&& it)
-                noexcept (meta::nothrow::movable<T>)
-                requires (meta::movable<T>)
-            : iter(std::move(it)) {}
-            constexpr ~storage()
-                noexcept (meta::nothrow::destructible<T>)
-                requires (meta::destructible<T>)
-            {}
-        } m_storage;
-        [[no_unique_address]] bool m_initialized;
-
-        template <typename V>
-        static constexpr decltype(auto) unwrap(V&& v) noexcept {
-            if constexpr (meta::inherits<V, optional_iterator>) {
-                return (std::forward<V>(v).unwrap());
-            } else {
-                return (std::forward<V>(v));
-            }
-        }
-
-        static constexpr storage copy(const optional_iterator& other)
-            noexcept (requires{{storage(other.unwrap())} noexcept;})
-            requires (requires{{storage(other.unwrap())};})
-        {
-            if (other.m_initialized) {
-                return storage(other.unwrap());
-            } else {
-                return storage();
-            }
-        }
-
-        static constexpr storage move(optional_iterator&& other)
-            noexcept (requires{{storage(std::move(other).unwrap())} noexcept;})
-            requires (requires{{storage(std::move(other).unwrap())};})
-        {
-            if (other.m_initialized) {
-                return storage(std::move(other).unwrap());
-            } else {
-                return storage();
-            }
-        }
-
-    public:
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) unwrap(this Self&& self) noexcept {
-            return (std::forward<Self>(self).m_storage.iter);
-        }
-
-        [[nodiscard]] constexpr bool initialized() const noexcept {
-            return m_initialized;
-        }
-
-        [[nodiscard]] constexpr optional_iterator() noexcept : m_initialized(false) {}
-
-        [[nodiscard]] constexpr optional_iterator(const T& it)
-            noexcept (meta::nothrow::copyable<T>)
-            requires (meta::copyable<T>)
-        :
-            m_storage(it),
-            m_initialized(true)
-        {}
-
-        [[nodiscard]] constexpr optional_iterator(T&& it)
-            noexcept (meta::nothrow::movable<T>)
-            requires (meta::movable<T>)
-        :
-            m_storage(std::move(it)),
-            m_initialized(true)
-        {}
-
-        [[nodiscard]] constexpr optional_iterator(const optional_iterator& other)
-            noexcept (meta::nothrow::copyable<T>)
-            requires (meta::copyable<T>)
-        :
-            m_storage(copy(other)),
-            m_initialized(other.m_initialized)
-        {}
-
-        [[nodiscard]] constexpr optional_iterator(optional_iterator&& other)
-            noexcept (meta::nothrow::movable<T>)
-            requires (meta::movable<T>)
-        :
-            m_storage(move(std::move(other))),
-            m_initialized(other.m_initialized)
-        {
-            other.m_initialized = false;
-        }
-
-        [[nodiscard]] constexpr optional_iterator& operator=(const optional_iterator& other)
-            noexcept (meta::nothrow::copyable<T> && meta::nothrow::copy_assignable<T>)
-            requires (meta::copyable<T> && meta::copy_assignable<T>)
-        {
-            if (m_initialized && other.m_initialized) {
-                if (this != other) {
-                    unwrap() = other.unwrap();
-                }
-            } else if (m_initialized) {
-                std::destroy_at(&unwrap());
-                m_initialized = false;
-            } else if (other.m_initialized) {
-                std::construct_at(&unwrap(), other.unwrap());
-                m_initialized = true;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr optional_iterator& operator=(optional_iterator&& other)
-            noexcept (meta::nothrow::copyable<T> && meta::nothrow::copy_assignable<T>)
-            requires (meta::copyable<T> && meta::copy_assignable<T>)
-        {
-            if (m_initialized && other.m_initialized) {
-                if (this != other) {
-                    unwrap() = std::move(other).unwrap();
-                    other.m_initialized = false;
-                }
-            } else if (m_initialized) {
-                std::destroy_at(&unwrap());
-                m_initialized = false;
-            } else if (other.m_initialized) {
-                std::construct_at(&unwrap(), std::move(other).unwrap());
-                m_initialized = true;
-                other.m_initialized = false;
-            }
-            return *this;
-        }
-
-        constexpr ~optional_iterator()
-            noexcept (meta::nothrow::destructible<T>)
-            requires (meta::destructible<T>)
-        {
-            if (m_initialized) {
-                std::destroy_at(&unwrap());
-            }
-            m_initialized = false;
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).unwrap()} noexcept;})
-            requires (requires{{*std::forward<Self>(self).unwrap()};})
-        {
-            return (*std::forward<Self>(self).unwrap());
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{std::to_address(std::forward<Self>(self).unwrap())} noexcept;})
-            requires (requires{{std::to_address(std::forward<Self>(self).unwrap())};})
-        {
-            return std::to_address(std::forward<Self>(self).unwrap());
-        }
-
-        template <typename Self, typename V>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, V&& v)
-            noexcept (requires{
-                {std::forward<Self>(self).unwrap()[std::forward<V>(v)]} noexcept;
-            })
-            requires (requires{
-                {std::forward<Self>(self).unwrap()[std::forward<V>(v)]};
-            })
-        {
-            return (std::forward<Self>(self).unwrap()[std::forward<V>(v)]);
-        }
-
-        constexpr optional_iterator& operator++()
-            noexcept (requires{{++unwrap()} noexcept;})
-            requires (requires{{++unwrap()};})
-        {
-            ++unwrap();
-            return *this;
-        }
-
-        [[nodiscard]] constexpr optional_iterator operator++(int)
-            noexcept (requires{
-                {optional_iterator(*this)} noexcept;
-                {++*this} noexcept;
-            })
-            requires (requires{
-                {optional_iterator(*this)};
-                {++*this};
-            })
-        {
-            optional_iterator tmp(*this);
-            ++*this;
-            return tmp;
-        }
-
-        template <typename L, typename R>
-        [[nodiscard]] friend constexpr optional_iterator operator+(L&& lhs, R&& rhs)
-            noexcept (requires{{optional_iterator(
-                unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs))
-            )} noexcept;})
-            requires (requires{{optional_iterator(
-                unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs))
-            )};})
-        {
-            return optional_iterator(
-                unwrap(std::forward<L>(lhs)) + unwrap(std::forward<R>(rhs))
-            );
-        }
-
-        template <typename V>
-        constexpr optional_iterator& operator+=(V&& v)
-            noexcept (requires{{unwrap() += unwrap(std::forward<V>(v))} noexcept;})
-            requires (requires{{unwrap() += unwrap(std::forward<V>(v))};})
-        {
-            unwrap() += unwrap(std::forward<V>(v));
-            return *this;
-        }
-
-        constexpr optional_iterator& operator--()
-            noexcept (requires{{--unwrap()} noexcept;})
-            requires (requires{{--unwrap()};})
-        {
-            --unwrap();
-            return *this;
-        }
-
-        [[nodiscard]] constexpr optional_iterator operator--(int)
-            noexcept (requires{
-                {optional_iterator(*this)} noexcept;
-                {--*this} noexcept;
-            })
-            requires (requires{
-                {optional_iterator(*this)};
-                {--*this};
-            })
-        {
-            optional_iterator tmp(*this);
-            --*this;
-            return tmp;
-        }
-
-        template <typename L, typename R>
-        [[nodiscard]] friend constexpr optional_iterator operator-(L&& lhs, R&& rhs)
-            noexcept (requires{{optional_iterator(
-                unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs))
-            )} noexcept;})
-            requires (requires{{optional_iterator(
-                unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs))
-            )};})
-        {
-            return optional_iterator(
-                unwrap(std::forward<L>(lhs)) - unwrap(std::forward<R>(rhs))
-            );
-        }
-
-        [[nodiscard]] difference_type operator-(const optional_iterator& other) const
-            noexcept (requires{{
-                unwrap() - other.unwrap()
-            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-            requires (requires{{
-                unwrap() - other.unwrap()
-            } -> meta::convertible_to<difference_type>;})
-        {
-            return unwrap() - other.unwrap();
-        }
-
-        template <typename V>
-        constexpr optional_iterator& operator-=(V&& v)
-            noexcept (requires{{unwrap() -= unwrap(std::forward<V>(v))} noexcept;})
-            requires (requires{{unwrap() -= unwrap(std::forward<V>(v))};})
-        {
-            unwrap() -= unwrap(std::forward<V>(v));
-            return *this;
-        }
-
-        template <typename U>
-        [[nodiscard]] constexpr bool operator<(const optional_iterator<U>& other) const
-            noexcept (requires{{
-                initialized() && other.initialized() && unwrap() < other.unwrap()
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{
-                initialized() && other.initialized() && unwrap() < other.unwrap()
-            } -> meta::convertible_to<bool>;})
-        {
-            return initialized() && other.initialized() && unwrap() < other.unwrap();
-        }
-
-        template <typename U>
-        [[nodiscard]] constexpr bool operator<=(const optional_iterator<U>& other) const
-            noexcept (requires{{
-                !initialized() || !other.initialized() || unwrap() <= other.unwrap()
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{
-                !initialized() || !other.initialized() || unwrap() <= other.unwrap()
-            } -> meta::convertible_to<bool>;})
-        {
-            return !initialized() || !other.initialized() || unwrap() <= other.unwrap();
-        }
-
-        template <typename U>
-        [[nodiscard]] constexpr bool operator==(const optional_iterator<U>& other) const
-            noexcept (requires{{
-                !initialized() || !other.initialized() || unwrap() == other.unwrap()
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{
-                !initialized() || !other.initialized() || unwrap() == other.unwrap()
-            } -> meta::convertible_to<bool>;})
-        {
-            return !initialized() || !other.initialized() || unwrap() == other.unwrap();
-        }
-
-        template <typename U>
-        [[nodiscard]] constexpr bool operator>=(const optional_iterator<U>& other) const
-            noexcept (requires{{
-                !initialized() || !other.initialized() || unwrap() >= other.unwrap()
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{
-                !initialized() || !other.initialized() || unwrap() >= other.unwrap()
-            } -> meta::convertible_to<bool>;})
-        {
-            return !initialized() || !other.initialized() || unwrap() >= other.unwrap();
-        }
-
-        template <typename U>
-        [[nodiscard]] constexpr bool operator>(const optional_iterator<U>& other) const
-            noexcept (requires{{
-                initialized() && other.initialized() && unwrap() > other.unwrap()
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{
-                initialized() && other.initialized() && unwrap() > other.unwrap()
-            } -> meta::convertible_to<bool>;})
-        {
-            return initialized() && other.initialized() && unwrap() > other.unwrap();
-        }
-
-        template <typename U>
-        [[nodiscard]] constexpr auto operator<=>(const optional_iterator<U>& other) const
-            noexcept (requires{{unwrap() <=> other.unwrap()} noexcept;})
-            requires (requires{{unwrap() <=> other.unwrap()};})
-        {
-            using type = meta::unqualify<decltype(unwrap() <=> other.unwrap())>;
-            if (!initialized() || !other.initialized()) {
-                return type::equivalent;
-            }
-            return unwrap() <=> other.unwrap();
-        }
-    };
-
-    template <typename T>
-    struct make_optional_begin { using type = void; };
-    template <meta::iterable T>
-    struct make_optional_begin<T> { using type = optional_iterator<meta::begin_type<T>>; };
-
-    template <typename T>
-    struct make_optional_end { using type = void; };
-    template <meta::iterable T>
-    struct make_optional_end<T> { using type = optional_iterator<meta::end_type<T>>; };
-
-    template <typename T>
-    struct make_optional_rbegin { using type = void; };
-    template <meta::reverse_iterable T>
-    struct make_optional_rbegin<T> { using type = optional_iterator<meta::rbegin_type<T>>; };
-
-    template <typename T>
-    struct make_optional_rend { using type = void; };
-    template <meta::reverse_iterable T>
-    struct make_optional_rend<T> { using type = optional_iterator<meta::rend_type<T>>; };
-
-    template <meta::lvalue O>
-    struct make_optional_iterator {
-        static constexpr bool trivial = true;
-        using type = decltype(std::declval<O>().storage.value());
-        using begin_type = single_iterator<type>;
-        using end_type = begin_type;
-        using rbegin_type = std::reverse_iterator<begin_type>;
-        using rend_type = rbegin_type;
-
-        static constexpr auto begin(O opt)
-            noexcept (requires{
-                {begin_type(std::addressof(opt.storage.value()) + !opt.has_value())} noexcept;
-            })
-            requires (requires{
-                {begin_type(std::addressof(opt.storage.value()) + !opt.has_value())};
-            })
-        {
-            return begin_type{std::addressof(opt.storage.value()) + !opt.has_value()};
-        }
-
-        static constexpr auto end(O opt)
-            noexcept (requires{
-                {end_type(std::addressof(opt.storage.value()) + 1)} noexcept;
-            })
-            requires (requires{
-                {end_type(std::addressof(opt.storage.value()) + 1)};
-            })
-        {
-            return end_type{std::addressof(opt.storage.value()) + 1};
-        }
-
-        static constexpr auto rbegin(O opt)
-            noexcept (requires{{std::make_reverse_iterator(end(opt))} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end(opt))};})
-        {
-            return std::make_reverse_iterator(end(opt));
-        }
-
-        static constexpr auto rend(O opt)
-            noexcept (requires{{std::make_reverse_iterator(begin(opt))} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin(opt))};})
-        {
-            return std::make_reverse_iterator(begin(opt));
-        }
-    };
-    template <meta::lvalue O>
-        requires (
-            meta::iterable<decltype(std::declval<O>().storage.value())> ||
-            meta::reverse_iterable<decltype(std::declval<O>().storage.value())>
-        )
-    struct make_optional_iterator<O> {
-        static constexpr bool trivial = false;
-        using type = decltype(std::declval<O>().storage.value());
-        using begin_type = make_optional_begin<type>::type;
-        using end_type = make_optional_end<type>::type;
-        using rbegin_type = make_optional_rbegin<type>::type;
-        using rend_type = make_optional_rend<type>::type;
-
-        static constexpr auto begin(O opt)
-            noexcept (requires{
-                {begin_type{std::ranges::begin(opt.storage.value())}} noexcept;
-                {begin_type{}} noexcept;
-            })
-            requires (requires{
-                {begin_type{std::ranges::begin(opt.storage.value())}};
-                {begin_type{}};
-            })
-        {
-            if (opt.has_value()) {
-                return begin_type{std::ranges::begin(opt.storage.value())};
-            } else {
-                return begin_type{};
-            }
-        }
-
-        static constexpr auto end(O opt)
-            noexcept (requires{
-                {end_type{std::ranges::end(opt.storage.value())}} noexcept;
-                {end_type{}} noexcept;
-            })
-            requires (requires{
-                {end_type{std::ranges::end(opt.storage.value())}};
-                {end_type{}};
-            })
-        {
-            if (opt.has_value()) {
-                return end_type{std::ranges::end(opt.storage.value())};
-            } else {
-                return end_type{};
-            }
-        }
-
-        static constexpr auto rbegin(O opt)
-            noexcept (requires{
-                {rbegin_type{std::ranges::rbegin(opt.storage.value())}} noexcept;
-                {rbegin_type{}} noexcept;
-            })
-            requires (requires{
-                {rbegin_type{std::ranges::rbegin(opt.storage.value())}};
-                {rbegin_type{}};
-            })
-        {
-            if (opt.has_value()) {
-                return rbegin_type{std::ranges::rbegin(opt.storage.value())};
-            } else {
-                return rbegin_type{};
-            }
-        }
-
-        static constexpr auto rend(O opt)
-            noexcept (requires{
-                {rend_type{std::ranges::rend(opt.storage.value())}} noexcept;
-                {rend_type{}} noexcept;
-            })
-            requires (requires{
-                {rend_type{std::ranges::rend(opt.storage.value())}};
-                {rend_type{}};
-            })
-        {
-            if (opt.has_value()) {
-                return rend_type{std::ranges::rend(opt.storage.value())};
-            } else {
-                return rend_type{};
-            }
-        }
-    };
-
     /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
     pointers if all elements unpack to the same lvalue type.  Otherwise, they must
     build a vtable and perform a dynamic dispatch to yield a proper value type, which
@@ -6325,6 +6318,8 @@ namespace impl {
         NOTHROW_DYNAMIC
     };
 
+    /* Tuple iterators may dereference to either a single type if all access types in
+    the tuple are consistent, or a `Union` of 2 or more access types as needed. */
     template <typename>
     struct _tuple_iterator_ref {
         using types = meta::pack<>;
@@ -6363,8 +6358,8 @@ namespace impl {
 
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
-    to iterable algorithms, as long as those algorithms are built to handle `Union`
-    inputs. */
+    to iterable algorithms, as long as those algorithms are built to handle possible
+    `Union` values. */
     template <enable_tuple_iterator T>
     struct tuple_iterator {
         using types = tuple_iterator_ref<T>::types;
@@ -6488,7 +6483,7 @@ namespace impl {
     };
 
     /* A special case of `tuple_iterator` for tuples where all elements share the
-    same lvalue type.  In this case, the vtable is reduced to a simple array of
+    same addressable type.  In this case, the vtable is reduced to a simple array of
     pointers that are initialized on construction, without requiring dynamic
     dispatch. */
     template <enable_tuple_iterator T>
@@ -6626,7 +6621,7 @@ namespace impl {
     };
 
     /* A special case of `tuple_iterator` for empty tuples, which do not yield any
-    results, and are optimized away entirely. */
+    results, and are optimized away by the compiler. */
     template <enable_tuple_iterator T>
         requires (tuple_iterator_ref<T>::kind == tuple_iterator_kind::EMPTY)
     struct tuple_iterator<T> {
@@ -6712,51 +6707,19 @@ namespace impl {
 
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union : impl::union_tag {
-    using types = meta::pack<Ts...>;
-
-    /// TODO: maybe the storage should be named _value so as to continue stacking
-    /// on that naming convention while leaving maximal room for emitted methods based
-    /// on static reflection?
-
-    impl::union_storage<Ts...> storage;
-
 private:
 
-    template <size_t I, typename... A> requires (I < types::size())
+    template <size_t I, typename... A> requires (I < sizeof...(Ts))
     constexpr Union(impl::union_select<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
     :
-        storage{tag, std::forward<A>(args)...}
+        _value{tag, std::forward<A>(args)...}
     {}
 
 public:
-    /// TODO: create<I/T>(args...) -> with_value<I/T>(args...)
-
-    /* Explicitly construct a union with the alternative at index `I` using the
-    provided arguments.  This is more explicit than using the standard constructors,
-    for cases where only a specific alternative should be considered. */
-    template <ssize_t I, typename... A> requires (impl::valid_index<types::ssize(), I>)
-    [[nodiscard]] static constexpr Union create(A&&... args)
-        noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
-        requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
-    {
-        return {impl::union_select<
-            impl::normalize_index<types::ssize(), I>()>{},
-            std::forward<A>(args)...
-        };
-    }
-
-    /* Explicitly construct a union with the specified alternative using the given
-    arguments.  This is more explicit than using the standard constructors, for cases
-    where only a specific alternative should be considered. */
-    template <typename T, typename... A> requires (types::template contains<T>())
-    [[nodiscard]] static constexpr Union create(A&&... args)
-        noexcept (meta::nothrow::constructible_from<T, A...>)
-        requires (meta::constructible_from<T, A...>)
-    {
-        return {impl::union_select<meta::index_of<T, Ts...>>{}, std::forward<A>(args)...};
-    }
+    using types = meta::pack<Ts...>;
+    impl::union_storage<Ts...> _value;
 
     /* Default constructor finds the first type in `Ts...` that can be default
     constructed.  If no such type exists, then the default constructor is disabled. */
@@ -6764,7 +6727,7 @@ public:
         noexcept (meta::nothrow::default_constructible<impl::union_storage<Ts...>>)
         requires (impl::union_storage<Ts...>::default_constructible)
     :
-        storage()
+        _value()
     {}
 
     /* Converting constructor finds the most proximal type in `Ts...` that can be
@@ -6783,7 +6746,7 @@ public:
             meta::consistent<impl::union_convert_from<Ts...>, T>
         )
     :
-        storage(impl::visit(impl::union_convert_from<Ts...>{}, std::forward<T>(v)))
+        _value(impl::visit(impl::union_convert_from<Ts...>{}, std::forward<T>(v)))
     {}
 
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
@@ -6801,17 +6764,17 @@ public:
             meta::consistent<impl::union_construct_from<Ts...>, A...>
         )
     :
-        storage(impl::visit(impl::union_construct_from<Ts...>{}, std::forward<A>(args)...))
+        _value(impl::visit(impl::union_construct_from<Ts...>{}, std::forward<A>(args)...))
     {}
 
     /* Swap the contents of two unions as efficiently as possible.  This will use
     swap operators for the wrapped alternatives if possible, otherwise falling back to
     a 3-way move using a temporary of the same type. */
     constexpr void swap(Union& other)
-        noexcept (requires{{storage.swap(other.storage)} noexcept;})
-        requires (requires{{storage.swap(other.storage)};})
+        noexcept (requires{{_value.swap(other._value)} noexcept;})
+        requires (requires{{_value.swap(other._value)};})
     {
-        storage.swap(other.storage);
+        _value.swap(other._value);
     }
 
     /* Implicit conversion operator allows conversions toward any type to which all
@@ -6844,13 +6807,13 @@ public:
     /* Check whether the union holds a specific type, identified by index. */
     template <ssize_t I> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] constexpr bool has_value() const noexcept {
-        return ssize_t(storage.index()) == impl::normalize_index<types::size(), I>();
+        return ssize_t(_value.index()) == impl::normalize_index<types::size(), I>();
     }
 
     /* Check whether the union holds a specific type. */
     template <typename T> requires (types::template contains<T>())
     [[nodiscard]] constexpr bool has_value() const noexcept {
-        return storage.index() == types::template index<T>();
+        return _value.index() == types::template index<T>();
     }
 
     /* Flatten the union into a common type, assuming one exists.  Fails to compile if
@@ -6858,11 +6821,11 @@ public:
     according to their storage qualifiers as well as those of the union itself. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) value(this Self&& self)
-        noexcept (requires{{std::forward<Self>(self).storage.flatten()} noexcept;})
-        requires (requires{{std::forward<Self>(self).storage.flatten()};}
+        noexcept (requires{{std::forward<Self>(self)._value.flatten()} noexcept;})
+        requires (requires{{std::forward<Self>(self)._value.flatten()};}
         )
     {
-        return (std::forward<Self>(self).storage.flatten());
+        return (std::forward<Self>(self)._value.flatten());
     }
 
     /* Get the value of the type at index `I`.  Fails to compile if the index is out of
@@ -6871,13 +6834,13 @@ public:
     template <ssize_t I, typename Self> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] constexpr auto value(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value<I>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )} noexcept;})
         requires (requires{{impl::union_access<Self>::template value<I>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )};})
     {
-        return impl::union_access<Self>::template value<I>(std::forward<Self>(self).storage);
+        return impl::union_access<Self>::template value<I>(std::forward<Self>(self)._value);
     }
 
     /* Get the value for the templated type.  Fails to compile if the templated type
@@ -6886,13 +6849,13 @@ public:
     template <typename T, typename Self> requires (types::template contains<T>())
     [[nodiscard]] constexpr auto value(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value<T>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )} noexcept;})
         requires (requires{{impl::union_access<Self>::template value<T>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )};})
     {
-        return impl::union_access<Self>::template value<T>(std::forward<Self>(self).storage);
+        return impl::union_access<Self>::template value<T>(std::forward<Self>(self)._value);
     }
 
     /* Get the value of the type at index `I` if it is the active type.  Fails to
@@ -6903,13 +6866,13 @@ public:
     template <ssize_t I, typename Self> requires (impl::valid_index<types::ssize(), I>)
     [[nodiscard]] constexpr auto value_if(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value_if<I>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )} noexcept;})
         requires (requires{{impl::union_access<Self>::template value_if<I>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )};})
     {
-        return impl::union_access<Self>::template value_if<I>(std::forward<Self>(self).storage);
+        return impl::union_access<Self>::template value_if<I>(std::forward<Self>(self)._value);
     }
 
     /* Get the value for the templated type if it is currently active.  Fails to
@@ -6919,13 +6882,38 @@ public:
     template <typename T, typename Self> requires (types::template contains<T>())
     [[nodiscard]] constexpr auto value_if(this Self&& self)
         noexcept (requires{{impl::union_access<Self>::template value_if<T>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )} noexcept;})
         requires (requires{{impl::union_access<Self>::template value_if<T>(
-            std::forward<Self>(self).storage
+            std::forward<Self>(self)._value
         )};})
     {
-        return impl::union_access<Self>::template value_if<T>(std::forward<Self>(self).storage);
+        return impl::union_access<Self>::template value_if<T>(std::forward<Self>(self)._value);
+    }
+
+    /* Explicitly construct a union with the alternative at index `I` using the
+    provided arguments.  This is more explicit than using the standard constructors,
+    for cases where only a specific alternative should be considered. */
+    template <ssize_t I, typename... A> requires (impl::valid_index<types::ssize(), I>)
+    [[nodiscard]] static constexpr Union with_value(A&&... args)
+        noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
+        requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
+    {
+        return {impl::union_select<
+            impl::normalize_index<types::ssize(), I>()>{},
+            std::forward<A>(args)...
+        };
+    }
+
+    /* Explicitly construct a union with the specified alternative using the given
+    arguments.  This is more explicit than using the standard constructors, for cases
+    where only a specific alternative should be considered. */
+    template <typename T, typename... A> requires (types::template contains<T>())
+    [[nodiscard]] static constexpr Union with_value(A&&... args)
+        noexcept (meta::nothrow::constructible_from<T, A...>)
+        requires (meta::constructible_from<T, A...>)
+    {
+        return {impl::union_select<meta::index_of<T, Ts...>>{}, std::forward<A>(args)...};
     }
 
     /* Monadic call operator.  If any of the union types are function-like objects that
@@ -7126,7 +7114,7 @@ struct Optional : impl::optional_tag {
     using pointer = meta::as_pointer<value_type>;
     using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
 
-    impl::optional_storage<T> storage;
+    impl::union_storage<NoneType, T> _value;
 
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
@@ -7145,7 +7133,7 @@ struct Optional : impl::optional_tag {
             meta::consistent<impl::optional_convert_from<T, U>, U>
         )
     : 
-        storage(impl::visit(impl::optional_convert_from<T, U>{}, std::forward<U>(v)))
+        _value(impl::visit(impl::optional_convert_from<T, U>{}, std::forward<U>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the value type's
@@ -7160,15 +7148,15 @@ struct Optional : impl::optional_tag {
             meta::consistent<impl::optional_construct_from<T>, A...>
         )
     :
-        storage(impl::visit(impl::optional_construct_from<T>{}, std::forward<A>(args)...))
+        _value(impl::visit(impl::optional_construct_from<T>{}, std::forward<A>(args)...))
     {}
 
     /* Swap the contents of two optionals as efficiently as possible. */
     constexpr void swap(Optional& other)
-        noexcept (requires{{storage.swap(other.storage)} noexcept;})
-        requires (requires{{storage.swap(other.storage)};})
+        noexcept (requires{{_value.swap(other._value)} noexcept;})
+        requires (requires{{_value.swap(other._value)};})
     {
-        storage.swap(other.storage);
+        _value.swap(other._value);
     }
 
     /* Implicit conversion from `Optional<T>` to any type that is convertible from both
@@ -7176,18 +7164,20 @@ struct Optional : impl::optional_tag {
     template <typename Self, typename V>
     [[nodiscard]] constexpr operator V(this Self&& self)
         noexcept (requires{
-            {std::forward<Self>(self).storage.value()} noexcept -> meta::nothrow::convertible_to<V>;
             {None} noexcept -> meta::nothrow::convertible_to<V>;
+            {
+                std::forward<Self>(self)._value.template value<1>()
+            } noexcept -> meta::nothrow::convertible_to<V>;
         })
         requires (requires{
-            {std::forward<Self>(self).storage.value()} -> meta::convertible_to<V>;
             {None} -> meta::convertible_to<V>;
+            {std::forward<Self>(self)._value.template value<1>()} -> meta::convertible_to<V>;
         })
     {
-        if (self.has_value()) {
-            return std::forward<Self>(self).storage.value();
+        if (!self.has_value()) {
+            return None;
         }
-        return None;
+        return std::forward<Self>(self)._value.template value<1>();
     }
 
     /* Implicit conversion from `Optional<T&>` to pointers and other similar types that
@@ -7195,28 +7185,28 @@ struct Optional : impl::optional_tag {
     template <typename Self, typename V> requires (meta::lvalue<T>)
     [[nodiscard]] constexpr operator V(this Self&& self)
         noexcept (requires{
-            {std::addressof(self.storage.value())} noexcept -> meta::nothrow::convertible_to<V>;
             {nullptr} noexcept -> meta::nothrow::convertible_to<V>;
+            {
+                std::addressof(self._value.template value<1>())
+            } noexcept -> meta::nothrow::convertible_to<V>;
         })
         requires (!requires{
-            {std::forward<Self>(self).storage.value()} -> meta::convertible_to<V>;
             {None} -> meta::convertible_to<V>;
+            {std::forward<Self>(self)._value.template value<1>()} -> meta::convertible_to<V>;
         } && requires{
-            {std::addressof(self.storage.value())} -> meta::convertible_to<V>;
             {nullptr} -> meta::convertible_to<V>;
+            {std::addressof(self._value.template value<1>())} -> meta::convertible_to<V>;
         })
     {
-        if (self.has_value()) {
-            return std::addressof(self.storage.value());
+        if (!self.has_value()) {
+            return nullptr;
         }
-        return nullptr;
+        return std::addressof(self._value.template value<1>());
     }
 
     /* Returns `true` if the optional currently holds a value, or `false` if it is in
     the empty state. */
-    [[nodiscard]] constexpr bool has_value() const noexcept {
-        return storage.has_value();
-    }
+    [[nodiscard]] constexpr bool has_value() const noexcept { return _value.index(); }
 
     /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
     compiled in debug mode and the optional is currently in the empty state. */
@@ -7229,7 +7219,7 @@ struct Optional : impl::optional_tag {
                 throw BadUnionAccess(msg);
             }
         }
-        return (std::forward<Self>(self).storage.value());
+        return (std::forward<Self>(self)._value.template value<1>());
     }
 
     /* If the optional is empty, invoke a given function and return its result,
@@ -7327,7 +7317,7 @@ struct Optional : impl::optional_tag {
     {
         if constexpr (meta::has_size<T>) {
             if (has_value()) {
-                return std::ranges::size(storage.value());
+                return std::ranges::size(_value.template value<1>());
             } else {
                 return meta::size_type<T>(0);
             }
@@ -7351,7 +7341,7 @@ struct Optional : impl::optional_tag {
     {
         if constexpr (meta::has_ssize<T>) {
             if (has_value()) {
-                return std::ranges::ssize(storage.value());
+                return std::ranges::ssize(_value.template value<1>());
             } else {
                 return meta::ssize_type<T>(0);
             }
@@ -7374,7 +7364,7 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_empty<T>) {
-            return has_value() ? std::ranges::empty(storage.value()) : true;
+            return has_value() ? std::ranges::empty(_value.template value<1>()) : true;
         } else {
             return !has_value();
         }
