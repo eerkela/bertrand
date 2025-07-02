@@ -60,6 +60,9 @@ namespace meta {
     template <typename T>
     concept Expected = inherits<T, impl::expected_tag>;
 
+    template <typename T>
+    concept unqualified_exception = unqualified<T> && Exception<T>;
+
 }
 
 
@@ -182,13 +185,13 @@ Bertrand uses this class internally to represent any errors that could occur dur
 normal program execution, outside of debug assertions.  The same convention is
 encouraged (though not required) for downstream users as well, so that the compiler
 can enforce exhaustive error handling via the type system. */
-template <typename T, meta::unqualified E = Exception, meta::unqualified... Es>
-    requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
+template <typename T, meta::unqualified_exception E = Exception, meta::unqualified_exception... Es>
+    requires (meta::unique<T, E, Es...>)
 struct Expected;
 
 
 /// TODO: the visitation internals (especially the impl::visitable hooks) might be
-/// revisited to ensure optimal compilation speed.
+/// refactored to optimize compilation speed.
 
 
 namespace meta {
@@ -1721,7 +1724,7 @@ namespace impl {
             F&& func,
             A&&... args
         )
-            noexcept(meta::nothrow::visit<F, A...>)
+            noexcept (meta::nothrow::visit<F, A...>)
             requires (
                 sizeof...(Prev) < sizeof...(A) &&
                 meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
@@ -1859,7 +1862,7 @@ namespace impl {
                 []<size_t... Is>(std::index_sequence<Is...>) noexcept {
                     return std::array{
                         +[](meta::as_lvalue<F> f, meta::as_lvalue<Args>... args)
-                            noexcept(meta::nothrow::visit<F, Args...>) -> R
+                            noexcept (meta::nothrow::visit<F, Args...>) -> R
                         {
                             return impl::visitable<T>::template dispatch<R, Is>(
                                 std::make_index_sequence<0>{},
@@ -1917,8 +1920,8 @@ namespace impl {
     handles the latter. */
     template <typename F, typename... Ts>
     constexpr decltype(auto) apply(F&& func, Ts&&... args)
-        noexcept(meta::nothrow::apply<F, Ts...>)
-        requires(meta::apply<F, Ts...>)
+        noexcept (meta::nothrow::apply<F, Ts...>)
+        requires (meta::apply<F, Ts...>)
     {
         return (meta::detail::do_apply<0, F, Ts...>{}(
             std::make_index_sequence<0>{},
@@ -2042,7 +2045,7 @@ namespace impl {
         }
     };
 
-    /* determine the common type for the members of the union, if one exists. */
+    /* Determine the common type for the members of the union, if one exists. */
     template <typename Self, typename = std::index_sequence<meta::unqualify<Self>::types::size()>>
     struct union_common_type {
         using type = void;
@@ -2067,6 +2070,17 @@ namespace impl {
     struct _union_default_type<T, Ts...> : _union_default_type<Ts...> {};
     template <typename... Ts>
     using union_default_type = _union_default_type<Ts...>::type;
+
+    /// TODO: maybe I add another restriction that says that union_storage cannot be
+    /// instantiated with rvalue references as `Ts`.  The outer types can do this, but
+    /// the rvalue is always stripped before instantiating the union_storage internal
+    /// type.  This would probably simplify the implementation.
+
+    /// TODO: I could also provide a `tuple_storage` recursive inheritance type that
+    /// would serve as the basis for the overload sets used in `Expected.value_or()`
+    /// and the initializer for `def` statements, as well as the `Tuple` public type,
+    /// which is defined later in func.h in order to take advantage of argument
+    /// annotations for named tuple and kwargs support.
 
     /* A basic tagged union of alternatives `Ts...`, which automatically forwards
     lvalue references and provides vtable-based copy, move, swap, and destruction
@@ -2186,8 +2200,8 @@ namespace impl {
 
             template <size_t I, typename... A> requires (I > 0)
             constexpr _type(tag<I>, A&&... args)
-                noexcept(meta::nothrow::constructible_from<_type<Us...>, tag<I - 1>, A...>)
-                requires(meta::constructible_from<_type<Us...>, tag<I - 1>, A...>)
+                noexcept (meta::nothrow::constructible_from<_type<Us...>, tag<I - 1>, A...>)
+                requires (meta::constructible_from<_type<Us...>, tag<I - 1>, A...>)
             :
                 rest(tag<I - 1>{}, std::forward<A>(args)...)  // recur
             {}
@@ -2806,100 +2820,98 @@ namespace impl {
         }
     };
 
-    template <typename T, typename U>
-    concept union_match_proximal =
-        meta::inherits<T, U> &&
-        meta::convertible_to<T, U> &&
-        (meta::lvalue<T> ? !meta::rvalue<U> : !meta::lvalue<U>);
-
-    template <typename T, typename U, typename convert>
-    concept union_match_convertible =
-        meta::is_void<convert> &&
-        !meta::lvalue<U> &&
-        meta::convertible_to<T, U>;
-
-    /* result 1: convert to proximal type */
-    template <typename T, typename proximal, typename convert, typename...>
+    /* Result 1: convert to proximal type */
+    template <typename from, typename proximal, typename convert, typename...>
     struct _union_convert_from { using type = proximal; };
 
-    /* result 2: convert to first implicitly convertible type (void if none) */
-    template <typename T, meta::is_void proximal, typename convert>
-    struct _union_convert_from<T, proximal, convert> { using type = convert; };
+    /* Result 2: convert to first implicitly convertible type (void if none) */
+    template <typename from, meta::is_void proximal, typename convert>
+    struct _union_convert_from<from, proximal, convert> { using type = convert; };
 
-    /* recursive 1: prefer the most derived and least qualified matching alternative,
+    template <typename from, typename curr>
+    concept union_proximal =
+        meta::inherits<from, curr> &&
+        meta::convertible_to<from, curr> &&
+        (meta::lvalue<from> ? !meta::rvalue<curr> : !meta::lvalue<curr>);
+
+    /* Recursive 1: prefer the most derived and least qualified matching alternative,
     with lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
-    prvalues.  If the result type is void, or if the candidate is more derived than it,
-    or if the candidate is less qualified, replace the intermediate result */
-    template <typename T, typename proximal, typename convert, typename U, typename... Us>
-        requires (union_match_proximal<T, U>)
-    struct _union_convert_from<T, proximal, convert, U, Us...> : _union_convert_from<
-        T,
+    prvalues.  If the result type is void, the candidate is more derived than it, or
+    the candidate is less qualified, replace the intermediate result */
+    template <typename from, typename proximal, typename convert, typename curr, typename... next>
+        requires (union_proximal<from, curr>)
+    struct _union_convert_from<from, proximal, convert, curr, next...> : _union_convert_from<
+        from,
         std::conditional_t<
             meta::is_void<proximal> ||
-            (meta::inherits<U, proximal> && !meta::is<U, proximal>) || (
-                meta::is<U, proximal> && (
-                    (meta::lvalue<U> && !meta::lvalue<proximal>) ||
-                    meta::more_qualified_than<proximal, U>
+            (meta::inherits<curr, proximal> && !meta::is<curr, proximal>) || (
+                meta::is<curr, proximal> && (
+                    (meta::lvalue<curr> && !meta::lvalue<proximal>) ||
+                    meta::more_qualified_than<proximal, curr>
                 )
             ),
-            U,
+            curr,
             proximal
         >,
         convert,
-        Us...
+        next...
     > {};
 
-    /* recursive 2: if no proximal match is found, prefer the leftmost implicitly
+    template <typename from, typename curr, typename convert>
+    concept union_convertible =
+        meta::is_void<convert> && !meta::lvalue<curr> && meta::convertible_to<from, curr>;
+
+    /* Recursive 2: if no proximal match is found, prefer the leftmost implicitly
     convertible type. */
-    template <typename T, typename proximal, typename convert, typename U, typename... Us>
-        requires (!union_match_proximal<T, U> && union_match_convertible<T, U, convert>)
-    struct _union_convert_from<T, proximal, convert, U, Us...> :
-        _union_convert_from<T, proximal, U, Us...>
+    template <typename from, typename proximal, typename convert, typename curr, typename... next>
+        requires (!union_proximal<from, curr> && union_convertible<from, curr, convert>)
+    struct _union_convert_from<from, proximal, convert, curr, next...> :
+        _union_convert_from<from, proximal, curr, next...>
     {};
 
-    /* recursive 3: no match at this index, advance U */
-    template <typename T, typename proximal, typename convert, typename U, typename... Us>
-        requires (!union_match_proximal<T, U> && !union_match_convertible<T, U, convert>)
-    struct _union_convert_from<T, proximal, convert, U, Us...> :
-        _union_convert_from<T, proximal, convert, Us...>
+    /* Recursive 3: no match at this index, discard curr */
+    template <typename from, typename proximal, typename convert, typename curr, typename... next>
+        requires (!union_proximal<from, curr> && !union_convertible<from, curr, convert>)
+    struct _union_convert_from<from, proximal, convert, curr, next...> :
+        _union_convert_from<from, proximal, convert, next...>
     {};
 
     /* A simple visitor that backs the implicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::union_storage<Ts...>` primitive type. */
-    template <typename... Ts>
-    struct union_convert_from {
-        template <typename T>
-        using type = _union_convert_from<T, void, void, Ts...>::type;
-        template <typename T> requires (!meta::monad<T>)
-        static constexpr impl::union_storage<Ts...> operator()(T&& arg)
-            noexcept (meta::nothrow::convertible_to<T, type<T>>)
-            requires (meta::not_void<type<T>>)
+    object, returning a corresponding `impl::union_storage` primitive type. */
+    template <typename, typename...>
+    struct union_convert_from {};
+    template <typename... Ts, typename in> requires (!meta::monad<in>)
+    struct union_convert_from<meta::pack<Ts...>, in> {
+        template <typename from>
+        using type = _union_convert_from<from, void, void, Ts...>::type;
+        template <typename from>
+        static constexpr impl::union_storage<Ts...> operator()(from&& arg)
+            noexcept (meta::nothrow::convertible_to<from, type<from>>)
+            requires (meta::not_void<type<from>>)
         {
             return {
-                impl::union_select<meta::index_of<type<T>, Ts...>>{},
-                std::forward<T>(arg)
+                impl::union_select<meta::index_of<type<from>, Ts...>>{},
+                std::forward<from>(arg)
             };
         }
     };
 
+    /* A simple visitor that backs the explicit constructor for a `Union<Ts...>`
+    object, returning a corresponding `impl::union_storage` primitive type.  Note that
+    this only applies if `union_convert_from` would be invalid. */
     template <typename... A>
     struct _union_construct_from {
         template <typename... Ts>
-        struct _type { using type = void; };
+        struct select { using type = void; };
         template <meta::constructible_from<A...> T, typename... Ts>
-        struct _type<T, Ts...> { using type = T; };
+        struct select<T, Ts...> { using type = T; };
         template <typename T, typename... Ts>
-        struct _type<T, Ts...> : _type<Ts...>::type {};
-        template <typename... Ts>
-        using type = _type<Ts...>::type;
+        struct select<T, Ts...> : select<Ts...> {};
     };
-
-    /* A simple visitor that backs the explicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::union_storage<Ts...>` primitive type. */
     template <typename... Ts>
     struct union_construct_from {
         template <typename... A>
-        using type = _union_construct_from<A...>::template type<Ts...>;
+        using type = _union_construct_from<A...>::template select<Ts...>::type;
         template <typename... A>
         static constexpr impl::union_storage<Ts...> operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type<A...>, A...>)
@@ -2913,47 +2925,46 @@ namespace impl {
     };
 
     /* A simple visitor that backs the implicit constructor for an `Optional<T>`
-    object, returning a corresponding `impl::optional_storage<T>` primitive type. */
+    object, returning a corresponding `impl::union_storage` primitive type. */
     template <typename T, typename...>
     struct optional_convert_from {};
-    template <typename T, typename U> requires (!meta::monad<U>)
-    struct optional_convert_from<T, U> {
-        using result = impl::union_storage<NoneType, T>;
+    template <typename T, typename in> requires (!meta::monad<in>)
+    struct optional_convert_from<T, in> {
         using type = meta::remove_rvalue<T>;
-        using empty = impl::visitable<U>::empty;
+        using empty = impl::visitable<in>::empty;
 
         // 1) prefer direct conversion to `T` if possible
-        template <typename V>
-        static constexpr result operator()(V&& v)
-            noexcept (meta::nothrow::convertible_to<V, type>)
-            requires (meta::convertible_to<V, type>)
+        template <typename alt>
+        static constexpr impl::union_storage<NoneType, T> operator()(alt&& v)
+            noexcept (meta::nothrow::convertible_to<alt, type>)
+            requires (meta::convertible_to<alt, type>)
         {
-            return {typename result::template tag<1>{}, std::forward<V>(v)};
+            return {union_select<1>{}, std::forward<alt>(v)};
         }
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
         // `impl::visitable` specification, then we return it as an empty
-        // `optional_storage` object. 
-        template <typename V>
-        static constexpr result operator()(V&&)
-            noexcept (meta::nothrow::default_constructible<result>)
-            requires (!meta::convertible_to<V, type> && meta::is<V, empty>)
+        // `union_storage` object. 
+        template <typename alt>
+        static constexpr impl::union_storage<NoneType, T> operator()(alt&&)
+            noexcept (meta::nothrow::default_constructible<impl::union_storage<NoneType, T>>)
+            requires (!meta::convertible_to<alt, type> && meta::is<alt, empty>)
         {
             return {};
         }
 
-        // 3) if `T` is an lvalue, then an extra conversion is enabled from raw
-        // pointers, where nullptr gets translated into an empty `optional_storage`
-        // object.
-        template <typename V>
-        static constexpr result operator()(V&& p)
-            noexcept (meta::nothrow::convertible_to<V, meta::address_type<type>>)
+        // 3) if `out` is an lvalue, then an extra conversion is enabled from raw
+        // pointers, where nullptr gets translated into an empty `union_storage`
+        // object, exploiting the pointer optimization.
+        template <typename alt>
+        static constexpr impl::union_storage<NoneType, T> operator()(alt&& p)
+            noexcept (meta::nothrow::convertible_to<alt, meta::address_type<type>>)
             requires (
-                !meta::convertible_to<V, type> &&
-                !meta::is<V, empty> &&
+                !meta::convertible_to<alt, type> &&
+                !meta::is<alt, empty> &&
                 meta::lvalue<type> &&
                 meta::has_address<type> &&
-                meta::convertible_to<V, meta::address_type<type>>
+                meta::convertible_to<alt, meta::address_type<type>>
             )
         {
             return {p};
@@ -2961,11 +2972,12 @@ namespace impl {
     };
 
     /* A simple visitor that backs the explicit constructor for an `Optional<T>`
-    object, returning a corresponding `impl::optional_storage<T>` primitive type. */
-    template <typename T>
+    object, returning a corresponding `impl::union_storage` primitive type.  Note that
+    this only applies if `optional_convert_from` is invalid. */
+    template <typename out>
     struct optional_construct_from {
-        using result = impl::union_storage<NoneType, T>;
-        using type = meta::remove_rvalue<T>;
+        using result = impl::union_storage<NoneType, out>;
+        using type = meta::remove_rvalue<out>;
         template <typename... A>
         static constexpr result operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type, A...>)
@@ -2975,25 +2987,71 @@ namespace impl {
         }
     };
 
-    /// TODO: finish the conversion visitor for expected types.  This will be necessary
-    /// to complete the expected refactor in general.
-
     /* Given an initializer that inherits from at least one expected exception type,
     determine the most proximal exception to initialize. */
-    template <typename out, typename in, typename... Es>
+    template <typename out, typename, typename...>
     struct _expected_convert_error { using type = out; };
-    template <typename out, typename in, typename E, typename... Es>
-        requires (meta::inherits<in, E>)
-    struct _expected_convert_error<out, in, E, Es...> {
-        /// TODO: filter to find the most derived type
-
-    };
-    template <typename out, typename in, typename E, typename... Es>
-    struct _expected_convert_error<out, in, E, Es...> :
-        _expected_convert_error<out, in, Es...>
+    template <typename out, typename from, typename curr, typename... next>
+        requires (meta::inherits<from, curr> && (meta::is_void<out> || meta::inherits<curr, out>))
+    struct _expected_convert_error<out, from, curr, next...> :
+        _expected_convert_error<curr, from, next...>  // replace `out`
     {};
-    template <typename in, typename... Es>
-    using expected_convert_error = _expected_convert_error<void, in, Es...>::type;
+    template <typename out, typename from, typename curr, typename... next>
+    struct _expected_convert_error<out, from, curr, next...> :
+        _expected_convert_error<out, from, next...>  // keep `out`
+    {};
+    template <typename from, typename... errors>
+    using expected_convert_error = _expected_convert_error<void, from, errors...>::type;
+
+    /* A simple visitor that backs the implicit constructor for an `Expected<T, Es...>`
+    object, returning a corresponding `impl::union_storage` primitive type. */
+    template <typename, typename...>
+    struct expected_convert_from {};
+    template <typename T, typename... Es, typename in> requires (!meta::monad<in>)
+    struct expected_convert_from<meta::pack<T, Es...>, in> {
+        template <typename from>
+        using type = expected_convert_error<from, Es...>;
+
+        // 1) prefer direct conversion to `out` if possible
+        template <typename from>
+        static constexpr impl::union_storage<T, Es...> operator()(from&& arg)
+            noexcept (meta::nothrow::convertible_to<from, meta::remove_rvalue<T>>)
+            requires (meta::convertible_to<from, meta::remove_rvalue<T>>)
+        {
+            return {impl::union_select<0>{}, std::forward<from>(arg)};
+        }
+
+        // 2) otherwise, if the input inherits from one of the expected error types,
+        // then we convert it to the most proximal such type.
+        template <typename from>
+        static constexpr impl::union_storage<T, Es...> operator()(from&& arg)
+            noexcept (meta::nothrow::convertible_to<from, type<from>>)
+            requires (
+                !meta::convertible_to<from, meta::remove_rvalue<T>> &&
+                meta::not_void<type<from>>
+            )
+        {
+            return {
+                impl::union_select<meta::index_of<type<from>, Es...>>{},
+                std::forward<from>(arg)
+            };
+        }
+    };
+
+    /* A simple visitor that backs the explicit constructor for an `Expected<T, Es...>`
+    object, returning a corresponding `impl::union_storage` primitive type.  Note that
+    this only applies if `expected_convert_from` is invalid. */
+    template <typename T, typename... Es>
+    struct expected_construct_from {
+        using type = meta::remove_rvalue<T>;
+        template <typename... A>
+        static constexpr impl::union_storage<T, Es...> operator()(A&&... args)
+            noexcept (meta::nothrow::constructible_from<type, A...>)
+            requires (meta::constructible_from<type, A...>)
+        {
+            return {impl::union_select<0>{}, std::forward<A>(args)...};
+        }
+    };
 
     /* Safely access a perfectly-forwarded type from a `union_storage` container as
     either an `Expected` or `Optional`, corresponding to the `.value()` and
@@ -3122,21 +3180,127 @@ namespace impl {
     template <meta::Expected Self>
     struct union_access<Self> : union_access<decltype(std::declval<Self>()._value)> {};
 
+
+
+    /// TODO: ensure that impl::visitable<Self> exposes the right fields.  When I
+    /// refactor the visit internals, I can come back to this and ensure it all works,
+    /// and possibly expand it to make the other trivial visitors generic in the
+    /// same way.  That way they don't depend on the underlying union type or how it is
+    /// implemented, using impl::visitable<Self> to handle the details.
+
     /* A simple visitor that backs the `Optional.value_or(f)` accessor, where `f` is
     a function callable with zero arguments that will be invoked only if the optional
     is empty. */
     template <typename Self>
     struct optional_or_else {
-        template <typename F, typename V> requires (!meta::None<V>)
-        static constexpr decltype(auto) operator()(F&&, V&& value) noexcept {
-            return (std::forward<V>(value));
+        using empty_type = impl::visitable<Self>::empty_type;
+        template <typename F, typename T> requires (!meta::is<empty_type, T>)
+        static constexpr decltype(auto) operator()(F&&, T&& value) noexcept {
+            return (std::forward<T>(value));
         }
-        template <typename F, meta::None V>
-        static constexpr decltype(auto) operator()(F&& func, V&&)
+        template <typename F, meta::is<empty_type> T>
+        static constexpr decltype(auto) operator()(F&& func, T&&)
             noexcept (meta::nothrow::callable<F>)
             requires (meta::callable<F>)
         {
             return (std::forward<F>(func)());
+        }
+    };
+
+    /* A helper type to extract the error type from an `Expected<T, Es...>`. */
+    template <typename... Es>
+    struct _expected_error_type { using type = bertrand::Union<Es...>; };
+    template <typename E>
+    struct _expected_error_type<E> { using type = E; };
+    template <typename... Es>
+    using expected_error = _expected_error_type<Es...>::type;
+
+    /* A simple visitor that backs the `Expected.value_or(fs...)` accessor, where
+    `fs...` are one or more functions that are collectively callable with all error
+    states of the expected.  If the expected specializes a `None` or `void` return
+    type, then the value path will return void, causing the visitor logic to promote
+    the final return type to an optional, or eliminate it entirely if the function also
+    returns void. */
+    template <typename Self>
+    struct expected_or_else {
+        using value_type = impl::visitable<Self>::value_type;
+        using empty_type = impl::visitable<Self>::empty_type;
+        template <typename F, meta::is<value_type> T>
+        static constexpr decltype(auto) operator()(F&&, T&& value) noexcept {
+            if constexpr (!meta::is<value_type, empty_type>) {
+                return (std::forward<T>(value));
+            }
+        }
+        template <typename F, typename E> requires (!meta::is<value_type, E>)
+        static constexpr decltype(auto) operator()(F&& func, E&& error)
+            noexcept (meta::nothrow::callable<F, E>)
+            requires (meta::callable<F, E>)
+        {
+            return (std::forward<F>(func)(std::forward<E>(error)));
+        }
+    };
+
+    /* A simple visitor that backs the implicit conversion operator from `Optional<T>`,
+    which attempts a normal visitor conversion where possible, falling back to a
+    conversion from `std::nullopt` or `nullptr` to cover all STL types and raw
+    pointers in the case of optional lvalues. */
+    template <typename Self, typename to>
+    struct optional_convert_to {
+        using value_type = impl::visitable<Self>::value_type;
+        using empty_type = impl::visitable<Self>::empty_type;
+        template <typename from>
+        static constexpr to operator()(from&& value)
+            noexcept (meta::nothrow::convertible_to<from, to>)
+            requires (meta::convertible_to<from, to>)
+        {
+            return std::forward<from>(value);
+        }
+        template <meta::is<empty_type> from>
+        static constexpr to operator()(from&&)
+            noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
+            requires (
+                !meta::convertible_to<from, to> &&
+                meta::convertible_to<const std::nullopt_t&, to>
+            )
+        {
+            return std::nullopt;
+        }
+        template <meta::is<empty_type> from> requires (meta::lvalue<value_type>)
+        static constexpr to operator()(from&&)
+            noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
+            requires (
+                !meta::convertible_to<from, to> &&
+                !meta::convertible_to<const std::nullopt_t&, to> &&
+                meta::convertible_to<std::nullptr_t, to>
+            )
+        {
+            return nullptr;
+        }
+    };
+
+    /* A simple visitor that backs the implicit conversion operator from
+    `Expected<T, Es...>`, which attempts a normal visitor conversion where possible,
+    falling back to a conversion from `std::unexpected` to cover all STL types. */
+    template <typename Self, typename to>
+    struct expected_convert_to {
+        using value_type = impl::visitable<Self>::value_type;
+        template <typename from>
+        static constexpr to operator()(from&& value)
+            noexcept (meta::nothrow::convertible_to<from, to>)
+            requires (meta::convertible_to<from, to>)
+        {
+            return std::forward<from>(value);
+        }
+        template <typename from>
+        static constexpr to operator()(from&& value)
+            noexcept (meta::nothrow::convertible_to<std::unexpected<meta::unqualify<from>>, to>)
+            requires (
+                !meta::is<from, value_type> &&
+                !meta::convertible_to<from, to> &&
+                meta::convertible_to<std::unexpected<meta::unqualify<from>>, to>
+            )
+        {
+            return std::unexpected<meta::unqualify<from>>(std::forward<from>(value));
         }
     };
 
@@ -3755,6 +3919,14 @@ namespace impl {
     };
     template <meta::iterator... Ts>
     using union_iterator_ptr = _union_iterator_ptr<Ts...>::type;
+
+
+    /// TODO: union iterators can probably shave off like 1000+ lines by reusing the
+    /// same visitor logic.  That could be done quite easily if impl::union_storage
+    /// had a visitable<> specialization, which could also save a couple hundred lines
+    /// if all of the impl::visitable<> specializations for the subtypes could reuse
+    /// logic and just add the relevant metadata, without rewriting the core dispatch
+    /// logic.
 
     /* A union of iterator types `Ts...`, which attempts to forward their combined
     interface as faithfully as possible.  All operations are enabled if each of the
@@ -6375,7 +6547,7 @@ namespace impl {
 
         using indices = std::make_index_sequence<types::size()>;
         using storage = meta::as_pointer<T>;
-        using fn_ptr = reference(*)(T) noexcept(nothrow);
+        using fn_ptr = reference(*)(T) noexcept (nothrow);
 
         template <size_t I>
         static constexpr reference fn(T t) noexcept (nothrow) {
@@ -6409,11 +6581,11 @@ namespace impl {
             index(index)
         {}
 
-        [[nodiscard]] constexpr reference operator*() const noexcept(nothrow) {
+        [[nodiscard]] constexpr reference operator*() const noexcept (nothrow) {
             return vtbl<>[index](*data);
         }
 
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept(nothrow) {
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept (nothrow) {
             return vtbl<>[index + n](*data);
         }
 
@@ -6707,6 +6879,8 @@ namespace impl {
 
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union : impl::union_tag {
+    using types = meta::pack<Ts...>;
+
 private:
 
     template <size_t I, typename... A> requires (I < sizeof...(Ts))
@@ -6718,7 +6892,6 @@ private:
     {}
 
 public:
-    using types = meta::pack<Ts...>;
     impl::union_storage<Ts...> _value;
 
     /* Default constructor finds the first type in `Ts...` that can be default
@@ -6738,15 +6911,18 @@ public:
     no such type exists, the conversion constructor is disabled.  If a visitable type
     is provided, then the conversion must be exhaustive over all alternatives, enabling
     implicit conversions from other union types, regardless of source. */
-    template <typename T>
-    [[nodiscard]] constexpr Union(T&& v)
-        noexcept (meta::nothrow::exhaustive<impl::union_convert_from<Ts...>, T>)
+    template <typename from>
+    [[nodiscard]] constexpr Union(from&& v)
+        noexcept (meta::nothrow::exhaustive<impl::union_convert_from<types, from>, from>)
         requires (
-            meta::exhaustive<impl::union_convert_from<Ts...>, T> &&
-            meta::consistent<impl::union_convert_from<Ts...>, T>
+            meta::exhaustive<impl::union_convert_from<types, from>, from> &&
+            meta::consistent<impl::union_convert_from<types, from>, from>
         )
     :
-        _value(impl::visit(impl::union_convert_from<Ts...>{}, std::forward<T>(v)))
+        _value(impl::visit(
+            impl::union_convert_from<types, from>{},
+            std::forward<from>(v)
+        ))
     {}
 
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
@@ -6759,7 +6935,7 @@ public:
         noexcept (meta::nothrow::exhaustive<impl::union_construct_from<Ts...>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::exhaustive<impl::union_convert_from<Ts...>, A...> &&
+            !meta::exhaustive<impl::union_convert_from<types, A...>, A...> &&
             meta::exhaustive<impl::union_construct_from<Ts...>, A...> &&
             meta::consistent<impl::union_construct_from<Ts...>, A...>
         )
@@ -6781,27 +6957,27 @@ public:
     alternatives can be exhaustively converted.  This allows conversion to scalar types
     as well as union types (regardless of source) that satisfy the conversion
     criteria. */
-    template <typename Self, typename T>
-    [[nodiscard]] constexpr operator T(this Self&& self)
-        noexcept (meta::nothrow::exhaustive<impl::ConvertTo<T>, Self>)
-        requires (meta::exhaustive<impl::ConvertTo<T>, Self>)
+    template <typename Self, typename to>
+    [[nodiscard]] constexpr operator to(this Self&& self)
+        noexcept (meta::nothrow::exhaustive<impl::ConvertTo<to>, Self>)
+        requires (meta::exhaustive<impl::ConvertTo<to>, Self>)
     {
-        return impl::visit(impl::ConvertTo<T>{}, std::forward<Self>(self));
+        return impl::visit(impl::ConvertTo<to>{}, std::forward<Self>(self));
     }
 
     /* Explicit conversion operator allows functional-style conversions toward any type
     to which all alternatives can be explicitly converted.  This allows conversion to
     scalar types as well as union types (regardless of source) that satisfy the
     conversion criteria. */
-    template <typename Self, typename T>
-    [[nodiscard]] constexpr explicit operator T(this Self&& self)
-        noexcept (meta::nothrow::exhaustive<impl::ExplicitConvertTo<T>, T>)
+    template <typename Self, typename to>
+    [[nodiscard]] constexpr explicit operator to(this Self&& self)
+        noexcept (meta::nothrow::exhaustive<impl::ExplicitConvertTo<to>, Self>)
         requires (
-            !meta::exhaustive<impl::ConvertTo<T>, Self> &&
-            meta::exhaustive<impl::ExplicitConvertTo<T>, Self>
+            !meta::exhaustive<impl::ConvertTo<to>, Self> &&
+            meta::exhaustive<impl::ExplicitConvertTo<to>, Self>
         )
     {
-        return impl::visit(impl::ExplicitConvertTo<T>{}, std::forward<Self>(self));
+        return impl::visit(impl::ExplicitConvertTo<to>{}, std::forward<Self>(self));
     }
 
     /* Check whether the union holds a specific type, identified by index. */
@@ -6924,15 +7100,15 @@ public:
     functions.  If not all of the union types are invocable with the given arguments,
     then the result will be further wrapped in an `Expected<R, BadUnionAccess>`, just
     as for `impl::visit()`. */
-    template <typename Self, typename... Args>
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
-        noexcept (meta::nothrow::visit<impl::Call, Self, Args...>)
-        requires (meta::visit<impl::Call, Self, Args...>)
+    template <typename Self, typename... A>
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+        noexcept (meta::nothrow::visit<impl::Call, Self, A...>)
+        requires (meta::visit<impl::Call, Self, A...>)
     {
         return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
-            std::forward<Args>(args)...
+            std::forward<A>(args)...
         ));
     }
 
@@ -6943,15 +7119,15 @@ public:
     `R` is the return type(s) of the indexable types.  If not all of the union types
     are indexable with the given arguments, then the result will be further wrapped in
     an `Expected<R, BadUnionAccess>`, just as for `impl::visit()`. */
-    template <typename Self, typename... Key>
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
-        noexcept (meta::nothrow::visit<impl::Subscript, Self, Key...>)
-        requires (meta::visit<impl::Subscript, Self, Key...>)
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
+        noexcept (meta::nothrow::visit<impl::Subscript, Self, K...>)
+        requires (meta::visit<impl::Subscript, Self, K...>)
     {
         return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
-            std::forward<Key>(keys)...
+            std::forward<K>(keys)...
         ));
     }
 
@@ -7107,14 +7283,11 @@ public:
 
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
-    using type = T;
-    using value_type = meta::remove_reference<type>;
-    using reference = meta::as_lvalue<value_type>;
-    using const_reference = meta::as_const<reference>;
-    using pointer = meta::as_pointer<value_type>;
-    using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+    using types = meta::pack<T>;
+    using value_type = T;
+    using empty_type = NoneType;
 
-    impl::union_storage<NoneType, T> _value;
+    impl::union_storage<empty_type, value_type> _value;
 
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
@@ -7125,30 +7298,36 @@ struct Optional : impl::optional_tag {
     non-empty alternatives can be converted to the value type (e.g. `std::optional<V>`,
     where `V` is convertible to `T`), or from raw pointers in case `T` is an lvalue
     reference. */
-    template <typename U>
-    [[nodiscard]] constexpr Optional(U&& v)
-        noexcept (meta::nothrow::exhaustive<impl::optional_convert_from<T, U>, U>)
+    template <typename from>
+    [[nodiscard]] constexpr Optional(from&& v)
+        noexcept (meta::nothrow::exhaustive<impl::optional_convert_from<value_type, from>, from>)
         requires (
-            meta::exhaustive<impl::optional_convert_from<T, U>, U> &&
-            meta::consistent<impl::optional_convert_from<T, U>, U>
+            meta::exhaustive<impl::optional_convert_from<value_type, from>, from> &&
+            meta::consistent<impl::optional_convert_from<value_type, from>, from>
         )
     : 
-        _value(impl::visit(impl::optional_convert_from<T, U>{}, std::forward<U>(v)))
+        _value(impl::visit(
+            impl::optional_convert_from<value_type, from>{},
+            std::forward<from>(v)
+        ))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the value type's
     constructor, and initializes the optional with the result. */
     template <typename... A>
     [[nodiscard]] constexpr explicit Optional(A&&... args)
-        noexcept (meta::nothrow::exhaustive<impl::optional_construct_from<T>, A...>)
+        noexcept (meta::nothrow::exhaustive<impl::optional_construct_from<value_type>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::exhaustive<impl::optional_convert_from<T, A...>, A...> &&
-            meta::exhaustive<impl::optional_construct_from<T>, A...> &&
-            meta::consistent<impl::optional_construct_from<T>, A...>
+            !meta::exhaustive<impl::optional_convert_from<value_type, A...>, A...> &&
+            meta::exhaustive<impl::optional_construct_from<value_type>, A...> &&
+            meta::consistent<impl::optional_construct_from<value_type>, A...>
         )
     :
-        _value(impl::visit(impl::optional_construct_from<T>{}, std::forward<A>(args)...))
+        _value(impl::visit(
+            impl::optional_construct_from<value_type>{},
+            std::forward<A>(args)...
+        ))
     {}
 
     /* Swap the contents of two optionals as efficiently as possible. */
@@ -7160,58 +7339,32 @@ struct Optional : impl::optional_tag {
     }
 
     /* Implicit conversion from `Optional<T>` to any type that is convertible from both
-    the perfectly-forwarded value type and `None` (aka `std::nullopt`). */
-    template <typename Self, typename V>
-    [[nodiscard]] constexpr operator V(this Self&& self)
-        noexcept (requires{
-            {None} noexcept -> meta::nothrow::convertible_to<V>;
-            {
-                std::forward<Self>(self)._value.template value<1>()
-            } noexcept -> meta::nothrow::convertible_to<V>;
-        })
-        requires (requires{
-            {None} -> meta::convertible_to<V>;
-            {std::forward<Self>(self)._value.template value<1>()} -> meta::convertible_to<V>;
-        })
+    the perfectly-forwarded value type and any of `None`, `std::nullopt`, or `nullptr`
+    (if `T` is an lvalue reference). */
+    template <typename Self, typename to>
+    [[nodiscard]] constexpr operator to(this Self&& self)
+        noexcept (meta::nothrow::exhaustive<impl::optional_convert_to<Self, to>>)
+        requires (
+            meta::exhaustive<impl::optional_convert_to<Self, to>, Self> &&
+            meta::consistent<impl::optional_convert_to<Self, to>, Self>
+        )
     {
-        if (!self.has_value()) {
-            return None;
-        }
-        return std::forward<Self>(self)._value.template value<1>();
-    }
-
-    /* Implicit conversion from `Optional<T&>` to pointers and other similar types that
-    are convertible from both the address type of the value and `nullptr`. */
-    template <typename Self, typename V> requires (meta::lvalue<T>)
-    [[nodiscard]] constexpr operator V(this Self&& self)
-        noexcept (requires{
-            {nullptr} noexcept -> meta::nothrow::convertible_to<V>;
-            {
-                std::addressof(self._value.template value<1>())
-            } noexcept -> meta::nothrow::convertible_to<V>;
-        })
-        requires (!requires{
-            {None} -> meta::convertible_to<V>;
-            {std::forward<Self>(self)._value.template value<1>()} -> meta::convertible_to<V>;
-        } && requires{
-            {nullptr} -> meta::convertible_to<V>;
-            {std::addressof(self._value.template value<1>())} -> meta::convertible_to<V>;
-        })
-    {
-        if (!self.has_value()) {
-            return nullptr;
-        }
-        return std::addressof(self._value.template value<1>());
+        return impl::visit(
+            impl::optional_convert_to<Self, to>{},
+            std::forward<Self>(self)
+        );
     }
 
     /* Returns `true` if the optional currently holds a value, or `false` if it is in
     the empty state. */
-    [[nodiscard]] constexpr bool has_value() const noexcept { return _value.index(); }
+    [[nodiscard]] constexpr bool has_value() const noexcept {
+        return _value.index();
+    }
 
     /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
     compiled in debug mode and the optional is currently in the empty state. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept (!DEBUG) {
         if constexpr (DEBUG) {
             if (!self.has_value()) {
                 static constexpr static_str msg =
@@ -7224,13 +7377,13 @@ struct Optional : impl::optional_tag {
 
     /* If the optional is empty, invoke a given function and return its result,
     otherwise propagate the non-empty state.  This is identical to invoking a manual
-    visitor (e.g. a `def` statement) over the union, except that the visitor function
-    does not need to accept `bertrand::NoneType` (aka `std::nullopt_t`) explicitly, and
-    the non-empty state is implicitly forwarded, rather than the empty state.  All
-    other rules (including promotion to union or handling of void return types) remain
-    the same.
+    visitor (e.g. a `def` statement) over the optional, except that the visitor
+    function does not need to accept `bertrand::NoneType` (aka `std::nullopt_t`)
+    explicitly, and the non-empty state is implicitly forwarded, rather than the
+    empty state.  All other rules (including promotion to union or handling of void
+    return types) remain the same.
 
-    For most visitors, where `f()` returns the same type as the optional:
+    For most visitors, where `f()` returns the same type as `Optional.value()`:
 
                 self                invoke              result
         -----------------------------------------------------------------------
@@ -7275,30 +7428,30 @@ struct Optional : impl::optional_tag {
     in another optional.  Otherwise, it will propagate the empty state.  If the
     function returns void, then the result will be void in both cases, and the function
     will not be invoked for the empty state. */
-    template <typename Self, typename... Args>
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args)
-        noexcept (meta::nothrow::visit<impl::Call, Self, Args...>)
-        requires (meta::visit<impl::Call, Self, Args...>)
+    template <typename Self, typename... A>
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+        noexcept (meta::nothrow::visit<impl::Call, Self, A...>)
+        requires (meta::visit<impl::Call, Self, A...>)
     {
         return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
-            std::forward<Args>(args)...
+            std::forward<A>(args)...
         ));
     }
 
     /* Monadic subscript operator.  If the optional type is a container that supports
     indexing with the given key, then this will return the result of the access wrapped
     in another optional.  Otherwise, it will propagate the empty state. */
-    template <typename Self, typename... Key>
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys)
-        noexcept (meta::nothrow::visit<impl::Subscript, Self, Key...>)
-        requires (meta::visit<impl::Subscript, Self, Key...>)
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
+        noexcept (meta::nothrow::visit<impl::Subscript, Self, K...>)
+        requires (meta::visit<impl::Subscript, Self, K...>)
     {
         return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
-            std::forward<Key>(keys)...
+            std::forward<K>(keys)...
         ));
     }
 
@@ -7309,13 +7462,15 @@ struct Optional : impl::optional_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
         noexcept (
-            meta::nothrow::has_size<T> || impl::make_optional_iterator<const Optional&>::trivial
+            meta::nothrow::has_size<value_type> ||
+            impl::make_optional_iterator<const Optional&>::trivial
         )
         requires (
-            meta::has_size<T> || impl::make_optional_iterator<const Optional&>::trivial
+            meta::has_size<value_type> ||
+            impl::make_optional_iterator<const Optional&>::trivial
         )
     {
-        if constexpr (meta::has_size<T>) {
+        if constexpr (meta::has_size<value_type>) {
             if (has_value()) {
                 return std::ranges::size(_value.template value<1>());
             } else {
@@ -7333,13 +7488,15 @@ struct Optional : impl::optional_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
         noexcept (
-            meta::nothrow::has_ssize<T> || impl::make_optional_iterator<const Optional&>::trivial
+            meta::nothrow::has_ssize<value_type> ||
+            impl::make_optional_iterator<const Optional&>::trivial
         )
         requires (
-            meta::has_ssize<T> || impl::make_optional_iterator<const Optional&>::trivial
+            meta::has_ssize<value_type> ||
+            impl::make_optional_iterator<const Optional&>::trivial
         )
     {
-        if constexpr (meta::has_ssize<T>) {
+        if constexpr (meta::has_ssize<value_type>) {
             if (has_value()) {
                 return std::ranges::ssize(_value.template value<1>());
             } else {
@@ -7357,13 +7514,15 @@ struct Optional : impl::optional_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr bool empty() const
         noexcept (
-            meta::nothrow::has_empty<T> || impl::make_optional_iterator<const Optional&>::trivial
+            meta::nothrow::has_empty<value_type> ||
+            impl::make_optional_iterator<const Optional&>::trivial
         )
         requires (
-            meta::has_empty<T> || impl::make_optional_iterator<const Optional&>::trivial
+            meta::has_empty<value_type> ||
+            impl::make_optional_iterator<const Optional&>::trivial
         )
     {
-        if constexpr (meta::has_empty<T>) {
+        if constexpr (meta::has_empty<value_type>) {
             return has_value() ? std::ranges::empty(_value.template value<1>()) : true;
         } else {
             return !has_value();
@@ -7476,431 +7635,189 @@ struct Optional : impl::optional_tag {
 };
 
 
-/// TODO: Expected<T, Es...> should use a flat impl::union_storage to store both T
-/// and Es..., and then .error() would return a Union<Es...> constructed on the fly,
-/// with the perfectly-firwarded `Es...` from the call site.
-
-
-/// TODO: Expected<void, Es...> => Expected<NoneType, Es...>, which should regularize
-/// it.  This is trivially doable by just not referencing T directly, and converting
-/// it to `NoneType`
-
-/// TODO: the exceptions must also be unique, which is currently not enforced by the
-/// template constraints.
-
-
-template <typename T, meta::unqualified E, meta::unqualified... Es>
-    requires (meta::inherits<E, Exception> && ... && meta::inherits<Es, Exception>)
+template <typename T, meta::unqualified_exception E, meta::unqualified_exception... Es>
+    requires (meta::unique<T, E, Es...>)
 struct Expected : impl::expected_tag {
-    using type = std::conditional_t<meta::is_void<T>, NoneType, T>;
+    using types = meta::pack<T, E, Es...>;
     using errors = meta::pack<E, Es...>;
-    using value_type = meta::remove_reference<type>;
-    using reference = meta::as_lvalue<value_type>;
-    using const_reference = meta::as_const<reference>;
-    using pointer = meta::as_pointer<value_type>;
-    using const_pointer = meta::as_pointer<meta::as_const<value_type>>;
+    using value_type = std::conditional_t<meta::is_void<T>, NoneType, T>;
+    using error_type = impl::expected_error<E, Es...>;
 
-    impl::union_storage<type, E, Es...> _value;
+    impl::union_storage<value_type, E, Es...> _value;
 
-private:
-    /// TODO: pretty much everything in this section should be moved into the impl::
-    /// namespace for compile-time optimization.
-
-    template <typename U>
-    friend struct impl::visitable;
-    template <meta::lvalue>
-    friend struct impl::make_optional_iterator;
-
-    /* Given an initializer that inherits from at least one exception type, determine
-    the most proximal exception to initialize. */
-    template <typename out, typename...>
-    struct _err_type { using type = out; };
-    template <typename out, typename in, typename curr, typename... next>
-    struct _err_type<out, in, curr, next...> {
-        using type = _err_type<out, in, next...>::type;
-    };
-    template <typename out, typename in, typename curr, typename... next>
-        requires (!meta::constructible_from<value_type, in> && meta::inherits<in, curr>)
-    struct _err_type<out, in, curr, next...> {
-        template <typename prev>
-        struct most_derived { using type = _err_type<prev, in, next...>::type; };
-        template <typename prev>
-            requires (meta::is_void<prev> || meta::inherits<curr, prev>)
-        struct most_derived<prev> { using type = _err_type<curr, in, next...>::type; };
-        using type = most_derived<out>::type;
-    };
-    template <typename in>
-    using err_type = _err_type<void, in, E, Es...>::type;
-
-    /* Convert void results into an empty type that can be stored in a union. */
-    template <typename U>
-    struct _Result { using type = U; };
-    template <meta::is_void U>
-    struct _Result<U> { struct type {}; };
-    using Result = _Result<value_type>::type;
-
-    /* If only one exception state is given, store that directly.  Otherwise, store a
-    union of all exception states. */
-    template <typename... Us>
-    struct _Error {
-        using type = Union<Us...>;
-        template <typename V>
-        static constexpr type operator()(V&& e) noexcept(
-            noexcept(type::template create<err_type<V>>(std::forward<V>(e)))
-        ) {
-            return type::template create<err_type<V>>(std::forward<V>(e));
-        }
-    };
-    template <typename U>
-    struct _Error<U> {
-        using type = U;
-        template <typename V>
-        static constexpr type operator()(V&& e) noexcept(
-            meta::nothrow::convertible_to<V, type>
-        ) {
-            return std::forward<V>(e);
-        }
-    };
-    using Error = _Error<E, Es...>::type;
-
-public:
-
-
-private:
-
-    /// TODO: get_value() and get_error() should be moved into the storage type, as
-    /// described above.
-
-    template <typename Self>
-    constexpr decltype(auto) get_value(this Self&& self) noexcept {
-        return (std::forward<Self>(self).m_storage.storage.template value<0>());
-    }
-
-    template <typename Self>
-    constexpr decltype(auto) get_error(this Self&& self) noexcept {
-        return (std::forward<Self>(self).m_storage.storage.template value<1>());
-    }
-
-    template <size_t I, typename Self> requires (I < errors::size())
-    constexpr decltype(auto) get_error(this Self&& self) noexcept {
-        if constexpr (sizeof...(Es)) {
-            return (std::forward<Self>(self).get_error().storage.template value<I>());
-        } else {
-            return (std::forward<Self>(self).get_error());
-        }
-    }
-
-    template <typename U, typename Self> requires (errors::template contains<U>())
-    constexpr decltype(auto) get_error(this Self&& self) noexcept {
-        return (
-            std::forward<Self>(self).template get_error<errors::template index<U>()>()
-        );
-    }
-
-    template <typename Self>
-    using access = decltype((std::declval<Self>().storage.value()));
-
-    template <typename Self>
-    using access_error = decltype((std::declval<Self>().get_error()));
-
-    template <size_t I, typename Self>
-    using access_at = decltype((std::declval<Self>().template get_error<I>())); 
-
-    template <typename U, typename Self>
-    using access_type = decltype((std::declval<Self>().template get_error<U>()));
-
-    template <typename U>
-    struct monadic {
-        template <typename F, typename Self, typename... Args>
-            requires (meta::callable<F, access<Self>, Args...>)
-        struct and_then_fn {
-            template <meta::is<value_type> V>
-            static constexpr decltype(auto) operator()(
-                auto&& func,
-                V&& value,
-                auto&&... args
-            )
-                noexcept(meta::nothrow::callable<F, V, Args...>)
-                requires(meta::callable<F, V, Args...>)
-            {
-                return (std::forward<F>(func)(
-                    std::forward<V>(value),
-                    std::forward<Args>(args)...
-                ));
-            }
-        };
-
-        template <typename F, typename Self, typename... Args>
-            requires (
-                (
-                    meta::callable<F, access_type<E, Self>, Args...> ||
-                    ... ||
-                    meta::callable<F, access_type<Es, Self>, Args...>
-                ) &&
-                meta::has_common_type<
-                    access<Self>,
-                    meta::visit_type<F, access_error<Self>, Args...>
-                >
-            )
-        struct or_else_fn {
-            template <meta::is<value_type> V>
-            static constexpr decltype(auto) operator()(
-                auto&& func,
-                V&& value,
-                auto&&... args
-            ) noexcept {
-                return (std::forward<V>(value));
-            }
-            template <typename Err> requires (!meta::is<value_type, Err>)
-            static constexpr decltype(auto) operator()(
-                auto&& func,
-                Err&& error,
-                auto&&... args
-            )
-                noexcept(meta::nothrow::callable<F, Err, Args...>)
-                requires(meta::callable<F, Err, Args...>)
-            {
-                return (std::forward<F>(func)(
-                    std::forward<Err>(error),
-                    std::forward<Args>(args)...
-                ));
-            }
-        };
-    };
-    template <meta::is_void U>
-    struct monadic<U> {
-        template <typename F, typename Self, typename... Args>
-            requires (meta::callable<F, Args...>)
-        struct and_then_fn {
-            template <meta::None V>
-            static constexpr decltype(auto) operator()(
-                auto&& func,
-                V&& value,
-                auto&&... args
-            )
-                noexcept(meta::nothrow::callable<F, Args...>)
-                requires(meta::callable<F, Args...>)
-            {
-                return (std::forward<F>(func)(std::forward<Args>(args)...));
-            }
-        };
-
-        template <typename F, typename Self, typename... Args>
-            requires ((
-                meta::callable<F, access_type<E, Self>, Args...> ||
-                ... ||
-                meta::callable<F, access_type<Es, Self>, Args...>
-            ))
-        struct or_else_fn {
-            template <meta::None V>
-            static constexpr void operator()(auto&& func, V&&, auto&&... args) noexcept {}
-            template <typename Err> requires (!meta::None<Err>)
-            static constexpr decltype(auto) operator()(
-                auto&& func,
-                Err&& error,
-                auto&&... args
-            )
-                noexcept(meta::nothrow::callable<F, Err, Args...>)
-                requires(meta::callable<F, Err, Args...>)
-            {
-                return (std::forward<F>(func)(
-                    std::forward<Err>(error),
-                    std::forward<Args>(args)...
-                ));
-            }
-        };
-    };
-
-    template <typename F, typename Self, typename... Args>
-        requires (requires{
-            typename monadic<value_type>::template and_then_fn<F, Self, Args...>;
-        })
-    using and_then_fn = monadic<value_type>::template and_then_fn<F, Self, Args...>;
-
-    template <typename F, typename Self, typename... Args>
-        requires (requires{
-            typename monadic<value_type>::template or_else_fn<F, Self, Args...>;
-        })
-    using or_else_fn = monadic<value_type>::template or_else_fn<F, Self, Args...>;
-
-    template <typename...>
-    struct ConvertFrom {};
-    template <typename From> requires (!meta::monad<From>)
-    struct ConvertFrom<From> {
-        using type = meta::remove_rvalue<value_type>;
-        template <typename V>
-        static constexpr storage operator()(V&& value)
-            noexcept(meta::nothrow::convertible_to<V, storage>)
-            requires(meta::convertible_to<V, type>)
-        {
-            return {std::forward<V>(value)};
-        }
-        template <typename V>
-        static constexpr storage operator()(V&& value)
-            noexcept(meta::nothrow::convertible_to<V, storage>)
-            requires(
-                !meta::convertible_to<V, type> &&
-                (meta::inherits<V, E> || ... || meta::inherits<V, Es>)
-            )
-        {
-            return {std::forward<V>(value)};
-        }
-    };
-
-    struct ConstructFrom {
-        using type = meta::remove_rvalue<value_type>;
-        template <typename... A> requires (!meta::lvalue<type>)
-        static constexpr storage operator()(A&&... args)
-            noexcept(meta::nothrow::constructible_from<type, A...>)
-            requires(meta::constructible_from<type, A...>)
-        {
-            return storage(std::forward<A>(args)...);
-        }
-    };
-
-    template <typename U>
-    struct ConvertTo {
-        template <meta::convertible_to<U> V>
-        static constexpr U operator()(V&& value)
-            noexcept(meta::nothrow::convertible_to<V, U>)
-        {
-            return std::forward<V>(value);
-        }
-        template <typename V>
-            requires (
-                !meta::is<value_type, V> &&
-                !meta::convertible_to<V, U> &&
-                meta::convertible_to<std::unexpected<meta::unqualify<V>>, U>
-            )
-        static constexpr U operator()(V&& value) noexcept(
-            meta::nothrow::convertible_to<std::unexpected<meta::unqualify<V>>, U>
-        ) {
-            return std::unexpected<meta::unqualify<V>>(std::forward<V>(value));
-        }
-    };
-
-public:
     /* Default constructor.  Enabled iff the result type is default constructible or
     void. */
     [[nodiscard]] constexpr Expected()
-        noexcept(meta::nothrow::default_constructible<Result>)
-        requires(meta::default_constructible<Result>)
-    {}
-
-    /* Implicit conversion from references to expected references, bypassing
-    visitors. */
-    [[nodiscard]] constexpr Expected(Result v)
-        noexcept(meta::nothrow::convertible_to<Result, storage>)
-        requires(meta::lvalue<Result> && meta::convertible_to<Result, storage>)
-    :
-        m_storage(v)
+        noexcept (meta::nothrow::default_constructible<meta::remove_rvalue<value_type>>)
+        requires (meta::default_constructible<meta::remove_rvalue<value_type>>)
     {}
 
     /* Converting constructor.  Implicitly converts the input to the value type if
     possible, otherwise accepts subclasses of the error states.  Also allows conversion
     from other visitable types whose alternatives all meet the conversion criteria. */
-    template <typename V>
+    template <typename from>
+    [[nodiscard]] constexpr Expected(from&& v)
+        noexcept (meta::nothrow::exhaustive<impl::expected_convert_from<types, from>, from>)
         requires (
-            meta::exhaustive<ConvertFrom<V>, V> &&
-            meta::consistent<ConvertFrom<V>, V>
+            meta::exhaustive<impl::expected_convert_from<types, from>, from> &&
+            meta::consistent<impl::expected_convert_from<types, from>, from>
         )
-    [[nodiscard]] constexpr Expected(V&& v)
-        noexcept(meta::nothrow::exhaustive<ConvertFrom<V>, V>)
     :
-        m_storage(impl::visit(ConvertFrom<V>{}, std::forward<V>(v)))
+        _value(impl::visit(
+            impl::expected_convert_from<types, from>{},
+            std::forward<from>(v)
+        ))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the result type's
     constructor, and initializes the expected with the result. */
-    template <typename... Args>
+    template <typename... A>
+    [[nodiscard]] constexpr explicit Expected(A&&... args)
+        noexcept (meta::nothrow::exhaustive<impl::expected_construct_from<T, E, Es...>, A...>)
         requires (
-            sizeof...(Args) > 0 &&
-            !meta::exhaustive<ConvertFrom<Args...>, Args...> &&
-            meta::exhaustive<ConstructFrom, Args...> &&
-            meta::consistent<ConstructFrom, Args...>
+            sizeof...(A) > 0 &&
+            !meta::exhaustive<impl::expected_convert_from<types, A...>, A...> &&
+            meta::exhaustive<impl::expected_construct_from<T, E, Es...>, A...> &&
+            meta::consistent<impl::expected_construct_from<T, E, Es...>, A...>
         )
-    [[nodiscard]] constexpr explicit Expected(Args&&... args)
-        noexcept(meta::nothrow::exhaustive<ConstructFrom, Args...>)
     :
-        m_storage(impl::visit(ConstructFrom{}, std::forward<Args>(args)...))
+        _value(impl::visit(
+            impl::expected_construct_from<T, E, Es...>{},
+            std::forward<A>(args)...
+        ))
     {}
 
     /* Implicitly convert the `Expected` to any other type to which all alternatives
     can be converted.  If an error state is not directly convertible to the type, the
     algorithm will try again with the type wrapped in `std::unexpected` instead. */
-    template <typename Self, typename V>
-        requires (meta::exhaustive<ConvertTo<V>, Self>)
-    [[nodiscard]] constexpr operator V(this Self&& self) noexcept(
-        meta::nothrow::exhaustive<ConvertTo<V>, Self>
-    ) {
-        return impl::visit(ConvertTo<V>{}, std::forward<Self>(self));
+    template <typename Self, typename to>
+    [[nodiscard]] constexpr operator to(this Self&& self)
+        noexcept (meta::nothrow::exhaustive<impl::expected_convert_to<Self, to>, Self>)
+        requires (meta::exhaustive<impl::expected_convert_to<Self, to>, Self>)
+    {
+        return impl::visit(
+            impl::expected_convert_to<Self, to>{},
+            std::forward<Self>(self)
+        );
     }
 
     /* Swap the contents of two expecteds as efficiently as possible. */
     constexpr void swap(Expected& other)
-        noexcept(noexcept(m_storage.swap(other.m_storage)))
-        requires(requires{m_storage.swap(other.m_storage);})
+        noexcept (requires{{_value.swap(other._value)} noexcept;})
+        requires (requires{{_value.swap(other._value)};})
     {
         if (this != &other) {
-            m_storage.swap(other.m_storage);
+            _value.swap(other._value);
         }
     }
 
     /* True if the `Expected` stores a valid result.  `False` if it is in an error
     state. */
     [[nodiscard]] constexpr bool has_value() const noexcept {
-        return m_storage.storage.index() == 0;
+        return _value.index() == 0;
     }
 
     /* Access the valid state.  Throws a `BadUnionAccess` assertion if the expected is
     currently in the error state and the program is compiled in debug mode.  Fails to
     compile if the result type is void. */
     template <typename Self> requires (meta::not_void<value_type>)
-    [[nodiscard]] constexpr access<Self> value(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept (!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_error()) {
                 throw BadUnionAccess("Expected in error state has no result");
             }
         }
-        return std::forward<Self>(self).storage.value();
+        return (std::forward<Self>(self)._value.template value<0>());
     }
 
-    /* Access the stored value or return the default value if the expected is in an
-    error state, converting to the common type between the wrapped type and the default
-    value. */
-    template <typename Self, typename V>
-        requires (meta::not_void<value_type> && meta::has_common_type<access<Self>, V>)
-    [[nodiscard]] constexpr meta::common_type<access<Self>, V> value_or(
-        this Self&& self,
-        V&& fallback
-    ) noexcept(
-        meta::nothrow::convertible_to<access<Self>, meta::common_type<access<Self>, V>> &&
-        meta::nothrow::convertible_to<V, meta::common_type<access<Self>, V>>
-    ) {
-        if (self.has_value()) {
-            return std::forward<Self>(self).storage.value();
-        } else {
-            return std::forward<V>(fallback);
-        }
+    /// TODO: it is currently impossible to form an overload set that respects lvalue
+    /// references via recursive inheritance, due to the compiler bug I filed with LLVM
+    ///     https://github.com/llvm/llvm-project/issues/146614
+    /// If a workaround can be found, or the bug is resolved, then this could be
+    /// done a little bit more efficiently when it comes to compound `def` statements
+    /// and stateful lambdas.  As of now, it always requires an extra copy for
+    /// functions that are supplied as lvalues, which is unnecessarily expensive.
+
+    /* If the expected is in an error state, invoke a given visitor over the possible
+    errors and return its result, otherwise propagate the non-error state.  This is
+    identical to invoking a manual visitor (e.g. a `def` statement) over the expected,
+    except that the visitor function must be exhaustive over all possible errors, and
+    the non-error state is implicitly forwarded, rather than the error state(s).  All
+    other rules (including promotion to union, handling of void return types) remain
+    the same.
+
+    For most visitors, where `f(e)...` returns the same type as `Expected.value()`:
+
+                self                    invoke                  result
+        -----------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e) -> t           T(t)
+        2.  Expected<T, Es...>(t)       (no call)           T(t)
+
+    If `f(e)...` returns one or more `Us...` types that differ from the expected:
+
+                self                    invoke                  result
+        -----------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e) -> u           Union<T, Us...>(u)
+        2.  Expected<T, Es...>(t)       (no call)           Union<T, Us...>(t)
+
+    If `f(e)...` returns one or more `Expected<U, Xs...>`, where `U` and/or `Xs...`
+    may or may not overlap with `T` and `Es...`, and may differ across overloads:
+
+                self                    invoke                  result
+        -----------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e) -> x           Expected<Union<T, Us...>, Xs...>(x)
+        2.  Expected<T, Es...>(t)       (no call)           Expected<Union<T, Us...>, Xs...>(t)
+
+    If the visitor returns void for one or more error states:
+
+                self                    invoke                  result
+        -----------------------------------------------------------------------
+        1.  Expected<T, Es...>(e)       f(e) -> void        Optional<T>(empty)
+        2.  Expected<T, Es...>(t)       (no call)           Optional<T>(t)
+
+    Finally, special handling is used if `T` is set to `void` or `NoneType` with
+    arbitrary qualifications, which is converted into an optional empty state or
+    dropped altogether, depending on the visitor:
+
+                self                    invoke                  result
+        -----------------------------------------------------------------------
+        1. Expected<void, Es...>(e)     f(e) -> u           Optional<U>(u)
+        2. Expected<void, Es...>(e)     f(e) -> x           Expected<Optional<Union<Us...>>, Xs...>(x)
+        3. Expected<void, Es...>(e)     f(e) -> void        void
+    */
+    template <typename Self, typename... Fs>
+    constexpr decltype(auto) value_or(this Self&& self, Fs&&... fs)
+        noexcept (meta::nothrow::exhaustive<
+            impl::expected_or_else<Self>,
+            impl::overloads<meta::remove_reference<Fs>...>,
+            Self
+        >)
+        requires (meta::exhaustive<
+            impl::expected_or_else<Self>,
+            impl::overloads<meta::remove_reference<Fs>...>,
+            Self
+        >)
+    {
+        return (impl::visit(
+            impl::expected_or_else<Self>{},
+            impl::overloads<meta::remove_reference<Fs>...>{std::forward<Fs>(fs)...},
+            std::forward<Self>(self)
+        ));
     }
 
     /* True if the `Expected` is in an error state.  False if it stores a valid
     result. */
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        return m_storage.storage.index == 1;
+        return _value.index() > 0;
     }
 
     /* True if the `Expected` is in a specific error state identified by index.  False
     if it stores a valid result or an error other than the one indicated.  If only one
     error state is permitted, then this is identical to calling `has_error()` without
     any template parameters. */
-    template <size_t I> requires (I < errors::size())
+    template <ssize_t I> requires (impl::valid_index<sizeof...(Es) + 1, I>)
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        if constexpr (sizeof...(Es)) {
-            return has_error() && get_error().template has_value<I>();
-        } else {
-            return has_error();
-        }
+        return _value.index() == impl::normalize_index<sizeof...(Es) + 1, I>() + 1;
     }
 
     /* True if the `Expected` is in a specific error state indicated by type.  False
@@ -7909,11 +7826,7 @@ public:
     any template parameters. */
     template <typename Err> requires (errors::template contains<Err>())
     [[nodiscard]] constexpr bool has_error() const noexcept {
-        if constexpr (sizeof...(Es)) {
-            return has_error() && get_error().template has_value<Err>();
-        } else {
-            return has_error();
-        }
+        return _value.index() == meta::index_of<Err, E, Es...> + 1;
     }
 
     /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
@@ -7921,424 +7834,172 @@ public:
     is either a single error or `bertrand::Union<>` of errors if there are more than
     one. */
     template <typename Self>
-    [[nodiscard]] constexpr access_error<Self> error(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept (!DEBUG) {
         if constexpr (DEBUG) {
             if (self.has_value()) {
                 throw BadUnionAccess("Expected in valid state has no error");
             }
         }
-        return std::forward<Self>(self).get_error();
+        /// TODO: this has to be a vtable or if chain to extract the right error type.
+        /// Probably I just build a manual vtable into the private section here, or
+        /// define it as a visitor.  The second option is probably better, since it
+        /// reuses all the same logic as union visitors.
+        /// -> It probably can't be a visitor, because it can't handle the valid case.
+        /// It therefore has to be a manual vtable and if chain.  When I refactor the
+        /// union iterators to get rid of those, I should replicate that logic here
+        /// in the private section, and probably keep the vtables in union_storage,
+        /// to avoid possible metaprogramming hiccups and circular definitions.
+
+        return (std::forward<Self>(self)._value.template value<1>());
     }
 
     /* Access a particular error by index.  This is equivalent to the non-templated
-    `error()` accessor in the single error case, and is a shorthand for
-    `error().get<I>().value()` in the union case.  A `BadUnionAccess` exception will
+    `error()` method in the single error case, and is an optimized shorthand for
+    `error().value<I>().value()` in the union case.  A `BadUnionAccess` exception will
     be thrown in debug mode if the expected is currently in the valid state, or if the
     indexed error is not the active member of the union. */
-    template <size_t I, typename Self> requires (I < errors::size())
-    [[nodiscard]] constexpr access_at<I, Self> error(this Self&& self) noexcept(!DEBUG) {
+    template <ssize_t I, typename Self> requires (impl::valid_index<sizeof...(Es) + 1, I>)
+    [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept (!DEBUG) {
+        static constexpr size_t J = impl::normalize_index<sizeof...(Es) + 1, I>() + 1;
         if constexpr (DEBUG) {
-            if (self.has_value()) {
-                throw BadUnionAccess("Expected in valid state has no error");
-            }
-            if constexpr (sizeof...(Es)) {
-                if (!self.get_error().template has_value<I>()) {
-                    throw self.get_error().template index_error<I>[
-                        self.get_error().storage.index
-                    ]();
+            if (self._value.index() != J) {
+                if (self._value.index() == 0) {
+                    throw BadUnionAccess("Expected in valid state has no error");
+                } else {
+                    throw impl::union_index_error<J - 1>::template error<E, Es...>(
+                        self._value.index() - 1
+                    );
                 }
             }
         }
-        return (std::forward<Self>(self).template get_error<I>());
+        return (std::forward<Self>(self)._value.template value<J>());
     }
 
     /* Access a particular error by type.  This is equivalent to the non-templated
-    `error()` accessor in the single error case, and is a shorthand for
-    `error().get<T>().value()` in the union case.  A `BadUnionAccess` exception will
+    `error()` method in the single error case, and is an optimized shorthand for
+    `error().value<T>().value()` in the union case.  A `BadUnionAccess` exception will
     be thrown in debug mode if the expected is currently in the valid state, or if the
     specified error is not the active member of the union. */
     template <typename Err, typename Self> requires (errors::template contains<Err>())
-    [[nodiscard]] constexpr access_type<Err, Self> error(this Self&& self) noexcept(!DEBUG) {
+    [[nodiscard]] constexpr decltype(auto) error(this Self&& self) noexcept (!DEBUG) {
+        static constexpr size_t J = meta::index_of<Err, E, Es...> + 1;
         if constexpr (DEBUG) {
-            if (self.has_value()) {
-                throw BadUnionAccess("Expected in valid state has no error");
-            }
-            if constexpr (sizeof...(Es)) {
-                if (!self.get_error().template has_value<Err>()) {
-                    throw self.get_error().template type_error<Err>[
-                        self.get_error().storage.index
-                    ]();
+            if (self._value.index() != J) {
+                if (self._value.index() == 0) {
+                    throw BadUnionAccess("Expected in valid state has no error");
+                } else {
+                    throw impl::union_type_error<Err>::template error<E, Es...>(
+                        self._value.index() - 1
+                    );
                 }
             }
         }
-        return (std::forward<Self>(self).template get_error<Err>());
-    }
-
-    /* Access the error state or return the default value if the expected stores a
-    valid result, converting to the common type between the error type and the default
-    value. */
-    template <typename Self, typename V>
-        requires (meta::has_common_type<access_error<Self>, V>)
-    [[nodiscard]] constexpr meta::common_type<access_error<Self>, V> error_or(
-        this Self&& self,
-        V&& fallback
-    ) noexcept(
-        meta::nothrow::convertible_to<
-            access_error<Self>,
-            meta::common_type<access_error<Self>, V>
-        > &&
-        meta::nothrow::convertible_to<
-            V,
-            meta::common_type<access_error<Self>, V>
-        >
-    ) {
-        if (self.has_error()) {
-            return std::forward<Self>(self).get_error();
-        } else {
-            return std::forward<V>(fallback);
-        }
-    }
-
-    /* Access a particular error by index or return the default value if the expected
-    stores a valid result, converting to the common type between the error and the
-    default value.  This is equivalent to the non-templated `error_or()` accessor in
-    the single error case, and is a shorthand for `error().get<I>().value_or(fallback)`
-    in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
-    the indexed error is not the active member of the union. */
-    template <size_t I, typename Self, typename V>
-        requires (I < errors::size() && meta::has_common_type<access_at<I, Self>, V>)
-    [[nodiscard]] constexpr meta::common_type<access_at<I, Self>, V> error_or(
-        this Self&& self,
-        V&& fallback
-    ) noexcept(
-        meta::nothrow::convertible_to<
-            access_at<I, Self>,
-            meta::common_type<access_at<I, Self>, V>
-        > &&
-        meta::nothrow::convertible_to<
-            V,
-            meta::common_type<access_at<I, Self>, V>
-        >
-    ) {
-        if (self.has_error()) {
-            if constexpr (DEBUG && sizeof...(Es)) {
-                if (!self.get_error().template has_value<I>()) {
-                    throw self.get_error().template index_error<I>[
-                        self.get_error().storage.index
-                    ]();
-                }
-            }
-            return std::forward<Self>(self).template get_error<I>();
-        } else {
-            return std::forward<V>(fallback);
-        }
-    }
-
-    /* Access a particular error by index or return the default value if the expected
-    stores a valid result, converting to the common type between the error and the
-    default value.  This is equivalent to the non-templated `error_or()` accessor in
-    the single error case, and is a shorthand for `error().get<I>().value_or(fallback)`
-    in the union case.  A `BadUnionAccess` exception will be thrown in debug mode if
-    the indexed error is not the active member of the union. */
-    template <typename Err, typename Self, typename V>
-        requires (
-            errors::template contains<Err>() &&
-            meta::has_common_type<access_type<Err, Self>, V>
-        )
-    [[nodiscard]] constexpr auto error_or(this Self&& self, V&& fallback) noexcept(
-        meta::nothrow::convertible_to<
-            access_type<Err, Self>,
-            meta::common_type<access_type<Err, Self>, V>
-        > &&
-        meta::nothrow::convertible_to<
-            V,
-            meta::common_type<access_type<Err, Self>, V>
-        >
-    ) -> meta::common_type<access_type<Err, Self>, V>
-    {
-        if (self.has_error()) {
-            if constexpr (DEBUG && sizeof...(Es)) {
-                if (!self.get_error().template has_value<Err>()) {
-                    throw self.get_error().template type_error<Err>[
-                        self.get_error().storage.index
-                    ]();
-                }
-            }
-            return std::forward<Self>(self).template get_error<Err>();
-        } else {
-            return std::forward<V>(fallback);
-        }
-    }
-
-    /* If the optional stores a valid result, invoke a given function on the wrapped
-    value, otherwise propagate the error state(s).  This is identical to `visit()`,
-    except that the visitor is forced to cover the result state, and will not be
-    invoked in the error case.  All other rules (including flattening or handling of
-    void return types) remain the same.
-
-    For most visitors:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(err)     (no call)               Expected<U, Es...>(err)
-        2.  Expected<T, Es...>(x)       f(x, args...) -> err    Expected<U, Es...>(err)
-        3.  Expected<T, Es...>(x)       f(x, args...) -> y      Expected<U, Es...>(y)
-        4.  Expected<void, Es...>()     f(args...) -> err       Expected<U, Es...>(err)
-        5.  Expected<void, Es...>()     f(args...) -> y         Expected<U, Es...>(y)
-
-    If the visitor returns void:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(err)     (no call)               Expected<void, Es...>(err)
-        2.  Expected<T, Es...>(x)       f(x, args...) -> void   Expected<void, Es...>()
-        4.  Expected<void, Es...>()     f(args...) -> void      Expected<void, Es...>()
-
-    Some functional languages call this operation "flatMap" or "bind".
-
-    NOTE: the extra flattening and void handling by this method differs from many
-    functional languages, as well as `std::expected::and_then()` and
-    `std::expected::transform()`.  For those methods, the former requires the visitor
-    to always return another `std::expected`, whereas the latter implicitly promotes
-    the return type to `std::expected`, even if it was one already (possibly resulting
-    in a nested expected).  Thanks to the use of `visit()` under the hood, Bertrand's
-    `and_then()` method unifies both models by allowing the function to return either
-    an expected (of any kind, possibly nested), which will be used directly (merging
-    with the original error states), or a non-expected, which will be promoted to an
-    expected.  This guards against accidental nested expecteds, which Bertrand
-    considers to be an anti-pattern.  This is especially true if the nesting is
-    dependent on the order of operations, which can lead to brittle code and subtle
-    bugs.  If the error states must remain distinct, then it is always preferable to
-    explicitly handle them before chaining. */
-    template <typename Self, typename F, typename... Args>
-        requires (
-            meta::not_void<value_type> &&
-            meta::callable<F, access<Self>, Args...> &&
-            meta::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
-        )
-    constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
-    ) {
-        return (impl::visit(
-            and_then_fn<F, Self, Args...>{},
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
-    }
-
-    /* If the optional stores a valid result, invoke a given function on the wrapped
-    value, otherwise propagate the error state(s).  This is identical to `visit()`,
-    except that the visitor is forced to cover the result state, and will not be
-    invoked in the error case.  All other rules (including flattening or handling of
-    void return types) remain the same.
-
-    For most visitors:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(err)     (no call)               Expected<U, Es...>(err)
-        2.  Expected<T, Es...>(x)       f(x, args...) -> err    Expected<U, Es...>(err)
-        3.  Expected<T, Es...>(x)       f(x, args...) -> y      Expected<U, Es...>(y)
-        4.  Expected<void, Es...>()     f(args...) -> err       Expected<U, Es...>(err)
-        5.  Expected<void, Es...>()     f(args...) -> y         Expected<U, Es...>(y)
-
-    If the visitor returns void:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(err)     (no call)               Expected<void, Es...>(err)
-        2.  Expected<T, Es...>(x)       f(x, args...) -> void   Expected<void, Es...>()
-        4.  Expected<void, Es...>()     f(args...) -> void      Expected<void, Es...>()
-
-    Some functional languages call this operation "flatMap" or "bind".
-
-    NOTE: the extra flattening and void handling by this method differs from many
-    functional languages, as well as `std::expected::and_then()` and
-    `std::expected::transform()`.  For those methods, the former requires the visitor
-    to always return another `std::expected`, whereas the latter implicitly promotes
-    the return type to `std::expected`, even if it was one already (possibly resulting
-    in a nested expected).  Thanks to the use of `visit()` under the hood, Bertrand's
-    `and_then()` method unifies both models by allowing the function to return either
-    an expected (of any kind, possibly nested), which will be used directly (merging
-    with the original error states), or a non-expected, which will be promoted to an
-    expected.  This guards against accidental nested expecteds, which Bertrand
-    considers to be an anti-pattern.  This is especially true if the nesting is
-    dependent on the order of operations, which can lead to brittle code and subtle
-    bugs.  If the error states must remain distinct, then it is always preferable to
-    explicitly handle them before chaining. */
-    template <typename Self, typename F, typename... Args>
-        requires (
-            meta::is_void<value_type> &&
-            meta::callable<F, Args...> &&
-            meta::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
-        )
-    constexpr decltype(auto) and_then(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<and_then_fn<F, Self, Args...>, F, Self, Args...>
-    ) {
-        return (impl::visit(
-            and_then_fn<F, Self, Args...>{},
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
-    }
-
-    /* If the expected is in an error state, invoke a given function, otherwise
-    propagate the result state.  This is identical to `visit()`, except that the
-    visitor will not be invoked if the expected holds a valid result.  All other rules
-    (including promotion to union, handling of void return types, and implicit
-    propagation of unhandled errors) remain the same.
-
-    For most visitors:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(e)       f(e, args...) -> u      Union<T, U>(u)
-        2.  Expected<T, Es...>(t)       (no call)               Union<T, U>(t)
-        3.  Expected<void, Es...>(e)    f(e, args...) -> u      Optional<U>(u)
-        4.  Expected<void, Es...>()     (no call)               Optional<U>(empty)
-
-    If the visitor returns void:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(e)       f(e, args...) -> void   Optional<T>(empty)
-        2.  Expected<T, Es...>(t)       (no call)               Optional<T>(t)
-        3.  Expected<void, Es...>(e)    f(e, args...) -> void   void
-        4.  Expected<void, Es...>()     (no call)               void
-
-    If the visitor leaves some error states unhandled:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(e)       f(e, args...) -> u      Expected<Union<T, U>, Rs...>(u)
-        2.  Expected<T, Es...>(t)       (no call)               Expected<Union<T, U>, Rs...>(t)
-        3.  Expected<void, Es...>(e)    f(e, args...) -> u      Expected<Optional<U>, Rs...>(u)
-        4.  Expected<void, Es...>()     (no call)               Expected<Optional<U>, Rs...>(empty)
-
-    And if it also returns void:
-
-                self                    invoke                      result
-        -------------------------------------------------------------------------------
-        1.  Expected<T, Es...>(e)       f(e, args...) -> void   Expected<Optional<T>, Rs...>(empty)
-        2.  Expected<T, Es...>(t)       (no call)               Expected<Optional<T>, Rs...>(t)
-        3.  Expected<void, Es...>(e)    f(e, args...) -> void   Expected<void, Rs...>()
-        4.  Expected<void, Es...>()     (no call)               Expected<void, Rs...>()
-
-    ... where `Rs...` represent the remaining error states that were not handled by
-    the visitor.
-
-    NOTE: the extra union promotion and void handling by this method differs from many
-    functional languages, as well as from `std::expected::or_else()`, which forces the
-    function to always return another `std::expected` of the same type as the input.
-    Thanks to the use of `visit()` under the hood, Bertrand's `or_else()` method is not
-    as restrictive, and allows the function to possibly return a different type, in
-    which case the result will be promoted to a union of the original expected type and
-    the function's return type.  Functions that return void will map to optionals,
-    where the void state is converted into an empty optional.  If the original expected
-    was specialized to void, then the final return type will be either void (if the
-    function returns void) or an optional of the function's return type, where
-    propagating the result initializes the optional in the empty state.  This is done
-    for consistency with `visit()` as well as `and_then()`, all of which use the same
-    underlying infrastructure. */
-    template <typename Self, typename F, typename... Args>
-        requires (
-            (
-                meta::callable<F, access_type<E, Self>, Args...> ||
-                ... ||
-                meta::callable<F, access_type<Es, Self>, Args...>
-            ) &&
-            meta::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
-        )
-    constexpr decltype(auto) or_else(this Self&& self, F&& f, Args&&... args) noexcept(
-        meta::nothrow::visit<or_else_fn<F, Self, Args...>, F, Self, Args...>
-    ) {
-        return (impl::visit(
-            or_else_fn<F, Self, Args...>{},
-            std::forward<F>(f),
-            std::forward<Self>(self),
-            std::forward<Args>(args)...
-        ));
+        return (std::forward<Self>(self)._value.template value<J>());
     }
 
     /* Monadic call operator.  If the expected type is a function-like object and is
     not in the error state, then this will return the result of that function wrapped
     in another expected.  Otherwise, it will propagate the error state. */
-    template <typename Self, typename... Args>
-        requires (meta::visit<impl::Call, Self, Args...>)
-    constexpr decltype(auto) operator()(this Self&& self, Args&&... args) noexcept(
-        meta::nothrow::visit<impl::Call, Self, Args...>
-    ) {
+    template <typename Self, typename... A>
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+        noexcept (meta::nothrow::visit<impl::Call, Self, A...>)
+        requires (meta::visit<impl::Call, Self, A...>)
+    {
         return (impl::visit(
             impl::Call{},
             std::forward<Self>(self),
-            std::forward<Args>(args)...
+            std::forward<A>(args)...
         ));
     }
 
     /* Monadic subscript operator.  If the expected type is a container that supports
     indexing with the given key, then this will return the result of the access wrapped
     in another expected.  Otherwise, it will propagate the error state. */
-    template <typename Self, typename... Key>
-        requires (meta::visit<impl::Subscript, Self, Key...>)
-    constexpr decltype(auto) operator[](this Self&& self, Key&&... keys) noexcept(
-        meta::nothrow::visit<impl::Subscript, Self, Key...>
-    ) {
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
+        noexcept (meta::nothrow::visit<impl::Subscript, Self, K...>)
+        requires (meta::visit<impl::Subscript, Self, K...>)
+    {
         return (impl::visit(
             impl::Subscript{},
             std::forward<Self>(self),
-            std::forward<Key>(keys)...
+            std::forward<K>(keys)...
         ));
     }
 
-    /* Return 0 if the expected is in an error state, or `std::ranges::size(value())`
-    otherwise. */
+    /* Return 0 if the expected is empty or `std::ranges::size(value())` otherwise.
+    If `std::ranges::size(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the expected would return just a single element), then
+    the result will be identical to `has_value()`.  If neither option is available,
+    then this method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
-        noexcept (meta::nothrow::has_size<T>)
-        requires (meta::has_size<T>)
+        noexcept (
+            meta::nothrow::has_size<value_type> ||
+            impl::make_optional_iterator<const Expected&>::trivial
+        )
+        requires (
+            meta::has_size<value_type> ||
+            impl::make_optional_iterator<const Expected&>::trivial
+        )
     {
-        if (has_value()) {
-            return std::ranges::size(storage.value());
+        if constexpr (meta::has_size<value_type>) {
+            if (has_value()) {
+                return std::ranges::size(_value.template value<0>());
+            } else {
+                return meta::size_type<T>(0);
+            }
         } else {
-            return meta::size_type<T>(0);
+            return size_t(has_value());
         }
     }
 
-    /* Return 0 if the expected is in an error state, or 1 if it has a value. */
-    [[nodiscard]] constexpr size_t size() const noexcept requires (!meta::has_size<T>) {
-        return has_value();
-    }
-
-    /* Return `size()` as a signed integer. */
+    /* Return 0 if the expected is empty or `std::ranges::ssize(value())` otherwise.
+    If `std::ranges::ssize(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the expected would return just a single element), then
+    the result will be identical to `has_value()`.  If neither option is available,
+    then this method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
-        noexcept (meta::nothrow::has_ssize<T>)
-        requires (meta::has_ssize<T>)
+        noexcept (
+            meta::nothrow::has_ssize<value_type> ||
+            impl::make_optional_iterator<const Expected&>::trivial
+        )
+        requires (
+            meta::has_ssize<value_type> ||
+            impl::make_optional_iterator<const Expected&>::trivial
+        )
     {
-        if (has_value()) {
-            return std::ranges::ssize(storage.value());
+        if constexpr (meta::has_ssize<value_type>) {
+            if (has_value()) {
+                return std::ranges::ssize(_value.template value<0>());
+            } else {
+                return meta::ssize_type<T>(0);
+            }
         } else {
-            return meta::ssize_type<T>(0);
+            return ssize_t(has_value());
         }
     }
 
-    /* Return `size()` as a signed integer. */
-    [[nodiscard]] constexpr ssize_t ssize() const noexcept requires (!meta::has_ssize<T>) {
-        return has_value();
-    }
-
-    /* `true` if the expected is currently in an error state.  Otherwise, evaluates to
-    `std::ranges::empty(value())`. */
+    /* Return true if the expected is in an error state or
+    `std::ranges::empty(value())` otherwise.  If `std::ranges::empty(value())` would be
+    malformed and the value is not iterable (meaning that iterating over the expected
+    would return just a single element), then the result will be identical to
+    `!has_value()`.  If neither option is available, then this method will fail to
+    compile. */
     [[nodiscard]] constexpr bool empty() const
-        noexcept (meta::nothrow::has_empty<T>)
-        requires (meta::has_empty<T>)
+        noexcept (
+            meta::nothrow::has_empty<value_type> ||
+            impl::make_optional_iterator<const Expected&>::trivial
+        )
+        requires (
+            meta::has_empty<value_type> ||
+            impl::make_optional_iterator<const Expected&>::trivial
+        )
     {
-        return has_value() ? std::ranges::empty(storage.value()) : true;
-    }
-
-    /* `true` if the expected is currently in an error state.  `false` otherwise. */
-    [[nodiscard]] constexpr bool empty() const noexcept requires (!meta::has_empty<T>) {
-        return !has_value();
+        if constexpr (meta::has_empty<value_type>) {
+            return has_value() ? std::ranges::empty(_value.template value<0>()) : true;
+        } else {
+            return !has_value();
+        }
     }
 
     /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
@@ -9000,7 +8661,7 @@ namespace std {
     template <bertrand::meta::monad T>
         requires (bertrand::meta::visit<bertrand::impl::Hash, T>)
     struct hash<T> {
-        static constexpr auto operator()(auto&& value) noexcept(
+        static constexpr auto operator()(auto&& value) noexcept (
             bertrand::meta::nothrow::visit<bertrand::impl::Hash, T>
         ) {
             return bertrand::impl::visit(
@@ -9053,7 +8714,7 @@ namespace std {
     different from `union.get_if<I>()`, which returns an optional according to the
     monadic interface. */
     template <size_t I, bertrand::meta::Union U> requires (I < variant_size<U>::value)
-    constexpr auto* get_if(U&& u) noexcept(noexcept(u.template get_if<I>())) {
+    constexpr auto* get_if(U&& u) noexcept (noexcept(u.template get_if<I>())) {
         auto result = u.template get_if<I>();  // as lvalue
         return result.has_value() ? &result.value() : nullptr;
     }
@@ -9064,7 +8725,7 @@ namespace std {
     monadic interface. */
     template <typename T, bertrand::meta::Union U>
         requires (remove_cvref_t<U>::types::template contains<T>())
-    constexpr auto* get_if(U&& u) noexcept(noexcept(u.template get_if<T>())) {
+    constexpr auto* get_if(U&& u) noexcept (noexcept(u.template get_if<T>())) {
         auto result = u.template get_if<T>();  // as lvalue
         return result.has_value() ? &result.value() : nullptr;
     }

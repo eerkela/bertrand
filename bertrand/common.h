@@ -4595,6 +4595,13 @@ template <meta::hashable T>
 
 namespace impl {
 
+    /* A simple overload set for a set of function objects Fs.... */
+    template <typename... Fs>
+    struct overloads : public Fs... { using Fs::operator()...; };
+
+    template <typename... Fs>
+    overloads(Fs&&...) -> overloads<meta::remove_rvalue<Fs>...>;
+
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
     struct fnv1a {
