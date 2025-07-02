@@ -2076,12 +2076,6 @@ namespace impl {
     /// the rvalue is always stripped before instantiating the union_storage internal
     /// type.  This would probably simplify the implementation.
 
-    /// TODO: I could also provide a `tuple_storage` recursive inheritance type that
-    /// would serve as the basis for the overload sets used in `Expected.value_or()`
-    /// and the initializer for `def` statements, as well as the `Tuple` public type,
-    /// which is defined later in func.h in order to take advantage of argument
-    /// annotations for named tuple and kwargs support.
-
     /* A basic tagged union of alternatives `Ts...`, which automatically forwards
     lvalue references and provides vtable-based copy, move, swap, and destruction
     operators, as well as a `value()` accessor that walks the overall structure.
@@ -2190,7 +2184,7 @@ namespace impl {
         };
         template <meta::lvalue U, typename... Us>
         union _type<U, Us...> {
-            [[no_unique_address]] struct { U value; } curr;
+            [[no_unique_address]] struct { U ref; } curr;
             [[no_unique_address]] _type<Us...> rest;
 
             constexpr _type() noexcept {}
@@ -2209,7 +2203,7 @@ namespace impl {
             template <size_t I, typename Self>
             constexpr decltype(auto) value(this Self&& self) noexcept {
                 if constexpr (I == 0) {
-                    return (std::forward<Self>(self).curr.value);
+                    return (std::forward<Self>(self).curr.ref);
                 } else {
                     return (std::forward<Self>(self).rest.template value<I - 1>());
                 }
@@ -2217,7 +2211,7 @@ namespace impl {
 
             template <size_t I> requires (I == 0)
             constexpr void construct(U other) noexcept {
-                std::construct_at(&curr, other);
+                std::construct_at(&curr, other.curr.ref);
             }
 
             template <size_t I, typename... A> requires (I > 0)
@@ -6874,6 +6868,248 @@ namespace impl {
         }
     };
 
+
+
+
+
+
+    /// TODO: tuple_storage may eventually need std::tuple-like destructuring operators
+
+    /// TODO: also, the storage class might be able to come after the iterator class,
+    /// and therefore be iterable by default.  It can also implement the array
+    /// optimization if all types are the same, and therefore be trivially iterable.
+
+
+    /* A basic implementation of a tuple using recursive inheritance, meant to be used
+    in conjunction with `union_storage` as the basis for algebraic types. */
+    template <meta::not_void...>
+    struct tuple_storage {
+        using types = meta::pack<>;
+        template <size_t I, typename Self> requires (false)  // never actually called
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept;
+    };
+
+    template <meta::not_void T, meta::not_void... Ts>
+    struct tuple_storage<T, Ts...> : tuple_storage<Ts...> {
+    private:
+        using type = meta::remove_rvalue<T>;
+
+    public:
+        using types = meta::pack<T, Ts...>;
+        [[no_unique_address]] type data;
+
+        [[nodiscard]] constexpr tuple_storage(T val, Ts... rest)
+            noexcept (
+                meta::nothrow::convertible_to<T, type> &&
+                meta::nothrow::constructible_from<tuple_storage<Ts...>, Ts...>
+            )
+            requires (
+                meta::convertible_to<T, type> &&
+                meta::constructible_from<tuple_storage<Ts...>, Ts...>
+            )
+        :
+            tuple_storage<Ts...>(std::forward<Ts>(rest)...),
+            data(std::forward<T>(val))
+        {}
+
+        template <size_t I, typename Self> requires (I < sizeof...(Ts) + 1)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<Self>(self).data);
+            } else {
+                using base = meta::qualify<tuple_storage<Ts...>, Self>;
+                return (std::forward<base>(self).template value<I - 1>());
+            }
+        }
+    };
+
+    template <meta::not_void T, meta::not_void... Ts> requires (meta::lvalue<T>)
+    struct tuple_storage<T, Ts...> : tuple_storage<Ts...> {
+        using types = meta::pack<T, Ts...>;
+        [[no_unique_address]] struct { T ref; } data;
+
+        [[nodiscard]] constexpr tuple_storage(T ref, Ts... rest)
+            noexcept (meta::nothrow::constructible_from<tuple_storage<Ts...>, Ts...>)
+            requires (meta::constructible_from<tuple_storage<Ts...>, Ts...>)
+        :
+            tuple_storage<Ts...>(std::forward<Ts>(rest)...),
+            data{ref}
+        {}
+
+        constexpr tuple_storage(const tuple_storage&) = default;
+        constexpr tuple_storage(tuple_storage&&) = default;
+
+        constexpr tuple_storage& operator=(const tuple_storage& other) {
+            tuple_storage<Ts...>::operator=(other);
+            std::construct_at(&data, other.data.ref);
+            return *this;
+        };
+
+        constexpr tuple_storage& operator=(tuple_storage&& other) {
+            tuple_storage<Ts...>::operator=(std::move(other));
+            std::construct_at(&data, other.data.ref);
+            return *this;
+        };
+
+        template <size_t I, typename Self> requires (I < sizeof...(Ts) + 1)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<Self>(self).data.ref);
+            } else {
+                using base = meta::qualify<tuple_storage<Ts...>, Self>;
+                return (std::forward<base>(self).template value<I - 1>());
+            }
+        }
+    };
+
+    template <typename... Ts>
+    tuple_storage(Ts&&...) -> tuple_storage<meta::remove_rvalue<Ts>...>;
+
+    /* A variation of `tuple_storage` that specifically represents an overload set
+    with the given functions. */
+    template <meta::not_void...>
+    struct overloads {
+        using types = meta::pack<>;
+        template <size_t I, typename Self> requires (false)  // never actually called
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept;
+    };
+
+    template <meta::not_void F, meta::not_void... Fs> requires (!meta::lvalue<F>)
+    struct overloads<F, Fs...> : overloads<Fs...> {
+    private:
+        using type = meta::remove_rvalue<F>;
+
+    public:
+        using types = meta::pack<F, Fs...>;
+        [[no_unique_address]] type func;
+
+        [[nodiscard]] constexpr overloads(F val, Fs... rest)
+            noexcept (
+                meta::nothrow::convertible_to<F, type> &&
+                meta::nothrow::constructible_from<overloads<Fs...>, Fs...>
+            )
+            requires (
+                meta::convertible_to<F, type> &&
+                meta::constructible_from<overloads<Fs...>, Fs...>
+            )
+        :
+            overloads<Fs...>(std::forward<Fs>(rest)...),
+            func(std::forward<F>(val))
+        {}
+
+        template <size_t I, typename Self> requires (I < sizeof...(Fs) + 1)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<Self>(self).func);
+            } else {
+                return (std::forward<overloads<Fs...>>(self).template value<I - 1>());
+            }
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{
+                {std::forward<Self>(self).func(std::forward<A>(args)...)} noexcept;
+            })
+            requires (
+                requires{{std::forward<Self>(self).func(std::forward<A>(args)...)};} &&
+                !requires{{std::forward<meta::qualify<overloads<Fs...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            return (std::forward<Self>(self).func(std::forward<A>(args)...));
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<meta::qualify<overloads<Fs...>, Self>>(self)(
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (
+                !requires{{std::forward<Self>(self).func(std::forward<A>(args)...)};} &&
+                requires{{std::forward<meta::qualify<overloads<Fs...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            using base = meta::qualify<overloads<Fs...>, Self>;
+            return (std::forward<base>(self)(std::forward<A>(args)...));
+        }
+    };
+
+    template <meta::not_void F, meta::not_void... Fs> requires (meta::lvalue<F>)
+    struct overloads<F, Fs...> : overloads<Fs...> {
+        using types = meta::pack<F, Fs...>;
+        [[no_unique_address]] struct { F ref; } func;
+
+        [[nodiscard]] constexpr overloads(F ref, Fs... rest)
+            noexcept (meta::nothrow::constructible_from<overloads<Fs...>, Fs...>)
+            requires (meta::constructible_from<overloads<Fs...>, Fs...>)
+        :
+            overloads<Fs...>(std::forward<Fs>(rest)...),
+            func{ref}
+        {}
+
+        constexpr overloads(const overloads&) = default;
+        constexpr overloads(overloads&&) = default;
+
+        constexpr overloads& operator=(const overloads& other) {
+            overloads<Fs...>::operator=(other);
+            std::construct_at(&func, other.func.ref);
+            return *this;
+        };
+
+        constexpr overloads& operator=(overloads&& other) {
+            overloads<Fs...>::operator=(std::move(other));
+            std::construct_at(&func, other.func.ref);
+            return *this;
+        };
+
+        template <size_t I, typename Self> requires (I < sizeof...(Fs) + 1)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<Self>(self).func.ref);
+            } else {
+                return (std::forward<overloads<Fs...>>(self).template value<I - 1>());
+            }
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{
+                {std::forward<Self>(self).func.ref(std::forward<A>(args)...)} noexcept;
+            })
+            requires (
+                requires{{std::forward<Self>(self).func.ref(std::forward<A>(args)...)};} &&
+                !requires{{std::forward<meta::qualify<overloads<Fs...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            return (std::forward<Self>(self).func.ref(std::forward<A>(args)...));
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<meta::qualify<overloads<Fs...>, Self>>(self)(
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (
+                !requires{{std::forward<Self>(self).func.ref(std::forward<A>(args)...)};} &&
+                requires{{std::forward<meta::qualify<overloads<Fs...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            using base = meta::qualify<overloads<Fs...>, Self>;
+            return (std::forward<base>(self)(std::forward<A>(args)...));
+        }
+    };
+
+    template <typename... Fs>
+    overloads(Fs&&...) -> overloads<meta::remove_rvalue<Fs>...>;
+
 }
 
 
@@ -7032,6 +7268,21 @@ public:
         )};})
     {
         return impl::union_access<Self>::template value<T>(std::forward<Self>(self)._value);
+    }
+
+    /* Invoke one or more visitor functions over the values of the union.  This is
+    identical to passing the union as input to a `def` function, except that the
+    functions must all be callable with a single value representing the current
+    alternative, and with slightly nicer syntax in that case. */
+    template <typename Self, typename... Fs>
+    constexpr decltype(auto) value(this Self&& self, Fs&&... fs)
+        noexcept (meta::nothrow::visit<impl::overloads<meta::remove_rvalue<Fs>...>, Self>)
+        requires (meta::visit<impl::overloads<meta::remove_rvalue<Fs>...>, Self>)
+    {
+        return (impl::visit(
+            impl::overloads<meta::remove_rvalue<Fs>...>{std::forward<Fs>(fs)...},
+            std::forward<Self>(self)
+        ));
     }
 
     /* Get the value of the type at index `I` if it is the active type.  Fails to
@@ -7730,14 +7981,6 @@ struct Expected : impl::expected_tag {
         return (std::forward<Self>(self)._value.template value<0>());
     }
 
-    /// TODO: it is currently impossible to form an overload set that respects lvalue
-    /// references via recursive inheritance, due to the compiler bug I filed with LLVM
-    ///     https://github.com/llvm/llvm-project/issues/146614
-    /// If a workaround can be found, or the bug is resolved, then this could be
-    /// done a little bit more efficiently when it comes to compound `def` statements
-    /// and stateful lambdas.  As of now, it always requires an extra copy for
-    /// functions that are supplied as lvalues, which is unnecessarily expensive.
-
     /* If the expected is in an error state, invoke a given visitor over the possible
     errors and return its result, otherwise propagate the non-error state.  This is
     identical to invoking a manual visitor (e.g. a `def` statement) over the expected,
@@ -7789,18 +8032,18 @@ struct Expected : impl::expected_tag {
     constexpr decltype(auto) value_or(this Self&& self, Fs&&... fs)
         noexcept (meta::nothrow::exhaustive<
             impl::expected_or_else<Self>,
-            impl::overloads<meta::remove_reference<Fs>...>,
+            impl::overloads<meta::remove_rvalue<Fs>...>,
             Self
         >)
         requires (meta::exhaustive<
             impl::expected_or_else<Self>,
-            impl::overloads<meta::remove_reference<Fs>...>,
+            impl::overloads<meta::remove_rvalue<Fs>...>,
             Self
         >)
     {
         return (impl::visit(
             impl::expected_or_else<Self>{},
-            impl::overloads<meta::remove_reference<Fs>...>{std::forward<Fs>(fs)...},
+            impl::overloads<meta::remove_rvalue<Fs>...>{std::forward<Fs>(fs)...},
             std::forward<Self>(self)
         ));
     }
