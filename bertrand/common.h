@@ -4595,6 +4595,38 @@ template <meta::hashable T>
 
 namespace impl {
 
+    /* A helper for defining iterators and other objects that wish to expose the `->`
+    operator, but dereference to a temporary value, whose address would otherwise not
+    be valid.  Because the built-in `operator->` recursively invokes itself on the
+    return value, this proxy will guarantee that the address of the temporary remains
+    valid for the full duration of the expression in which it is used. */
+    template <typename T>
+    struct arrow_proxy {
+        using type = meta::arrow_type<T>;
+        meta::remove_rvalue<T> value;
+        constexpr type operator->() &&
+            noexcept (requires{{std::to_address(value)} noexcept;})
+            requires (requires{{std::to_address(value)};})
+        {
+            return std::to_address(value);
+        }
+    };
+
+    /* A special case of `arrow_proxy` that represents a terminal case, where the
+    input is both not a pointer, and does not expose an arrow operator.  In this case,
+    we simply take the address of the value directly. */
+    template <meta::has_address T> requires (!meta::has_arrow<T>)
+    struct arrow_proxy<T> {
+        using type = meta::address_type<T>;
+        meta::remove_rvalue<T> value;
+        constexpr type operator->() &&
+            noexcept (requires{{std::addressof(value)} noexcept;})
+            requires (requires{{std::addressof(value)};})
+        {
+            return std::addressof(value);
+        }
+    };
+
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
     struct fnv1a {

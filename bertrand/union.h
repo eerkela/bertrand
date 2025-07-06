@@ -790,227 +790,6 @@ namespace meta {
 
     }
 
-    /// TODO: apply() no longer exists, and is completely replaced by def() functions
-    /// and Python-style unpacking operators.
-
-    namespace detail {
-
-        template <typename...>
-        struct apply {
-            static constexpr bool enable = false;
-            static constexpr bool nothrow = false;
-            using type = void;
-        };
-        template <typename F, typename... out> requires (meta::callable<F, out...>)
-        struct apply<F, meta::pack<out...>> {
-            static constexpr bool enable = true;
-            static constexpr bool nothrow = meta::nothrow::callable<F, out...>;
-            using type = meta::call_type<F, out...>;
-        };
-        template <typename F, typename... out, typename T, typename... Ts>
-            requires (!meta::tuple_like<T>)
-        struct apply<F, meta::pack<out...>, T, Ts...> {
-            using result = apply<F, meta::pack<out..., T>, Ts...>;
-            static constexpr bool enable = result::enable;
-            static constexpr bool nothrow = result::nothrow;
-            using type = result::type;
-        };
-        template <typename F, typename... out, meta::tuple_like T, typename... Ts>
-        struct apply<F, meta::pack<out...>, T, Ts...> {
-            using result = apply<
-                F,
-                meta::concat<meta::pack<out...>, meta::tuple_types<T>>,
-                Ts...
-            >;
-            static constexpr bool enable = result::enable;
-            static constexpr bool nothrow = result::nothrow;
-            using type = result::type;
-        };
-
-        // base case: all arguments have been exhausted
-        template <size_t count, typename F, typename... Ts>
-        struct do_apply {
-            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
-            static constexpr decltype(auto) operator()(
-                ::std::index_sequence<prev...>,
-                ::std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(meta::nothrow::callable<G, A...>)
-                requires(meta::callable<G, A...>)
-            {
-                static_assert(count == sizeof...(A));
-                static_assert(sizeof...(prev) == sizeof...(A));
-                static_assert(sizeof...(next) == 0);
-                return (::std::forward<G>(func)(::std::forward<A>(args)...));
-            }
-        };
-
-        // recursive case: unpack all elements of current tuple
-        template <size_t count, typename F, tuple_like T, typename... Ts>
-        struct do_apply<count, F, T, Ts...> {
-            // If the current tuple is empty, skip it without unpacking any arguments
-            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
-                requires (tuple_size<T> == 0)
-            static constexpr decltype(auto) operator()(
-                ::std::index_sequence<prev...>,
-                ::std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(do_apply<count, F, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev)>{},
-                    ::std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    ::std::forward<G>(func),
-                    unpack_arg<prev>(::std::forward<A>(args)...)...,
-                    unpack_arg<sizeof...(prev) + 1 + next>(::std::forward<A>(args)...)...
-                )))
-            {
-                return (do_apply<count, F, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev)>{},
-                    ::std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    ::std::forward<G>(func),
-                    unpack_arg<prev>(::std::forward<A>(args)...)...,
-                    unpack_arg<sizeof...(prev) + 1 + next>(::std::forward<A>(args)...)...
-                ));
-            }
-
-            // Otherwise, if there are remaining tuple elements after this one, then
-            // unpack the current element and carry the tuple forward
-            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
-                requires ((sizeof...(prev) - count + 1) < tuple_size<T>)
-            static constexpr decltype(auto) operator()(
-                ::std::index_sequence<prev...>,
-                ::std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(do_apply<count, F, T, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev) + 1>{},
-                    ::std::make_index_sequence<sizeof...(A) - (sizeof...(prev) + 1)>{},
-                    ::std::forward<G>(func),
-                    unpack_arg<prev>(::std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(::std::forward<A>(args)...)
-                    ),
-                    unpack_arg<sizeof...(prev)>(::std::forward<A>(args)...),  // carry
-                    unpack_arg<sizeof...(prev) + 1 + next>(::std::forward<A>(args)...)...
-                )))
-            {
-                return (do_apply<count, F, T, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev) + 1>{},
-                    ::std::make_index_sequence<sizeof...(A) - (sizeof...(prev) + 1)>{},
-                    ::std::forward<G>(func),
-                    unpack_arg<prev>(::std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(::std::forward<A>(args)...)
-                    ),
-                    unpack_arg<sizeof...(prev)>(::std::forward<A>(args)...),  // carry
-                    unpack_arg<sizeof...(prev) + 1 + next>(::std::forward<A>(args)...)...
-                ));
-            }
-
-            // Otherwise, if the current tuple is exhausted, unpack the last element
-            // and discard it
-            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
-                requires ((sizeof...(prev) - count + 1) == tuple_size<T>)
-            static constexpr decltype(auto) operator()(
-                ::std::index_sequence<prev...>,
-                ::std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(do_apply<count + tuple_size<T>, F, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev) + 1>{},
-                    ::std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    ::std::forward<G>(func),
-                    unpack_arg<prev>(::std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(::std::forward<A>(args)...)
-                    ),
-                    // discard tuple
-                    unpack_arg<sizeof...(prev) + 1 + next>(::std::forward<A>(args)...)...
-                )))
-            {
-                return (do_apply<count + tuple_size<T>, F, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev) + 1>{},
-                    ::std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    ::std::forward<G>(func),
-                    unpack_arg<prev>(::std::forward<A>(args)...)...,
-                    tuple_get<sizeof...(prev) - count>(
-                        unpack_arg<sizeof...(prev)>(::std::forward<A>(args)...)
-                    ),
-                    // discard tuple
-                    unpack_arg<sizeof...(prev) + 1 + next>(::std::forward<A>(args)...)...
-                ));
-            }
-        };
-
-        // recursive case: ignore non-tuple arguments and continue unpacking
-        template <size_t count, typename F, typename T, typename... Ts>
-        struct do_apply<count, F, T, Ts...> {
-            template <size_t... prev, size_t... next, meta::is<F> G, typename... A>
-            static constexpr decltype(auto) operator()(
-                ::std::index_sequence<prev...>,
-                ::std::index_sequence<next...>,
-                G&& func,
-                A&&... args
-            )
-                noexcept(noexcept(do_apply<count + 1, F, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev) + 1>{},
-                    ::std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    ::std::forward<G>(func),
-                    ::std::forward<A>(args)...
-                )))
-            {
-                return (do_apply<count + 1, F, Ts...>{}(
-                    ::std::make_index_sequence<sizeof...(prev) + 1>{},
-                    ::std::make_index_sequence<
-                        sizeof...(A) - (sizeof...(prev) + 1 + (sizeof...(next) != 0))
-                    >{},
-                    ::std::forward<G>(func),
-                    ::std::forward<A>(args)...
-                ));
-            }
-        };
-
-    }
-
-    template <typename F, typename... Ts>
-    concept apply = detail::apply<F, meta::pack<>, Ts...>::enable;
-
-    template <typename F, typename... Ts> requires (apply<F, Ts...>)
-    using apply_type = detail::apply<F, meta::pack<>, Ts...>::type;
-
-    template <typename Ret, typename F, typename... Ts>
-    concept apply_returns =
-        apply<F, Ts...> && convertible_to<apply_type<F, Ts...>, Ret>;
-
-    namespace nothrow {
-
-        template <typename F, typename... Ts>
-        concept apply = detail::apply<F, meta::pack<>, Ts...>::nothrow;
-
-        template <typename F, typename... Ts> requires (apply<F, Ts...>)
-        using apply_type = detail::apply<F, meta::pack<>, Ts...>::type;
-
-        template <typename Ret, typename F, typename... Ts>
-        concept apply_returns =
-            apply<F, Ts...> && convertible_to<apply_type<F, Ts...>, Ret>;
-
-    }
-
     namespace detail {
 
         template <typename... Ts>
@@ -1974,53 +1753,6 @@ namespace impl {
         }
     }
 
-    /// TODO: probably just delete apply().  The unpack() operator is much more
-    /// expressive, in combination with def() functions.
-
-    /* Invoke a function with the given arguments, unpacking any product types in the
-    process.  This is similar to `std::apply()`, but permits any number of tuples as
-    arguments, including none, whereby it devolves to a simple function call.
-
-    Like `impl::visit()`, the visitor is constructed from either a single function
-    or a set of functions arranged into an overload set.  The subsequent arguments will
-    be passed to the visitor in the order they are defined, with any type that defines
-    `std::tuple_size<T>` and `std::get<I>()` being unpacked into its individual
-    elements, which are then passed as separate, consecutive arguments.  A compilation
-    error will occur if the visitor is not callable with the unpacked arguments.
-
-    In the same way that structured bindings can be used to unpack tuples into their
-    constituent elements, `impl::apply()` unpacks them as arguments to a function.
-    For example:
-
-        ```
-        std::pair<int, std::string> p{2, "hello"};
-        assert(apply(
-            [](int i, const std::string& s, double d) { return i + s.size() + d; },
-            p,
-            3.25
-        ) == 10.25);
-        ```
-
-    Note that `impl::apply()` and `impl::visit()` operate very similarly, but are not
-    interchangeable, and one does not imply the other.  This equates to the difference
-    between sum types and product types in an algebraic type system.  In particular,
-    sum types consist of a collection of types joined by a logical OR (`A` OR `B` OR
-    `C`), whereas product types represent the logical AND of those same types (`A` AND
-    `B` AND `C`).  `impl::visit()` is used to unwrap the former, while `impl::apply()`
-    handles the latter. */
-    template <typename F, typename... Ts>
-    constexpr decltype(auto) apply(F&& func, Ts&&... args)
-        noexcept (meta::nothrow::apply<F, Ts...>)
-        requires (meta::apply<F, Ts...>)
-    {
-        return (meta::detail::do_apply<0, F, Ts...>{}(
-            std::make_index_sequence<0>{},
-            std::make_index_sequence<sizeof...(Ts) - (sizeof...(Ts) > 0)>{},
-            std::forward<F>(func),
-            std::forward<Ts>(args)...
-        ));
-    }
-
     /////////////////////////////
     ////    UNION STORAGE    ////
     /////////////////////////////
@@ -2950,23 +2682,8 @@ namespace impl {
     struct _union_iterator_ref<meta::pack<out...>, T, Ts...> :
         _union_iterator_ref<meta::pack<out...>, Ts...>
     {};
-    template <typename... Ts>
-    struct _union_iterator {
-        using ref = _union_iterator_ref<meta::pack<>, Ts...>::type;
-        using ptr = meta::as_pointer<ref>;
-        static constexpr bool enable_arrow = false;
-    };
-    template <typename... Ts>
-        requires (
-            meta::has_arrow<const Ts&> &&
-            ... &&
-            meta::has_common_type<typename meta::arrow_type<const Ts&>...>
-        )
-    struct _union_iterator<Ts...> {
-        using ref = _union_iterator_ref<meta::pack<>, Ts...>::type;
-        using ptr = meta::common_type<typename meta::arrow_type<const Ts&>...>;
-        static constexpr bool enable_arrow = true;
-    };
+    template <meta::iterator... Ts>
+    using union_iterator_ref = _union_iterator_ref<meta::pack<>, meta::as_const_ref<Ts>...>::type;
 
     /* A union of iterator types `Ts...`, which attempts to forward their combined
     interface as faithfully as possible.  All operations are enabled if each of the
@@ -2986,8 +2703,9 @@ namespace impl {
         using types = meta::pack<Ts...>;
         using iterator_category = meta::common_type<meta::iterator_category<Ts>...>;
         using difference_type = meta::common_type<meta::iterator_difference_type<Ts>...>;
-        using reference = _union_iterator<Ts...>::ref;
-        using pointer = _union_iterator<Ts...>::ptr;
+        using reference = union_iterator_ref<Ts...>;
+        using arrow_type = impl::arrow_proxy<reference>;
+        using pointer = arrow_type::type;
         using value_type = meta::remove_reference<reference>;
 
         union_storage<Ts...> _value;
@@ -3009,17 +2727,6 @@ namespace impl {
             }
         };
         using deref = impl::vtable<_deref>::template dispatch<indices>;
-
-        template <size_t I>
-        struct _arrow {
-            static constexpr pointer operator()(const union_iterator& self)
-                noexcept (requires{{std::to_address(self._value.template get<I>())} noexcept;})
-                requires (_union_iterator<Ts...>::enable_arrow)
-            {
-                return std::to_address(self._value.template get<I>());
-            }
-        };
-        using arrow = impl::vtable<_arrow>::template dispatch<indices>;
 
         template <size_t I>
         struct _subscript {
@@ -3500,11 +3207,11 @@ namespace impl {
             return deref{_value.index()}(*this);
         }
 
-        [[nodiscard]] constexpr pointer operator->() const
-            noexcept (requires{{arrow{_value.index()}(*this)} noexcept;})
-            requires (requires{{arrow{_value.index()}(*this)};})
+        [[nodiscard]] constexpr arrow_type operator->() const
+            noexcept (requires{{arrow_type{**this}} noexcept;})
+            requires (requires{{arrow_type{**this}};})
         {
-            return arrow{_value.index()}(*this);
+            return {**this};
         }
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const
@@ -4163,9 +3870,31 @@ namespace impl {
         meta::pack<>
     >;
 
+    template <typename T>
+    struct Foo {
+        explicit constexpr operator bool() const {
+            return true;
+        }
+        [[deprecated("this is a warning")]] explicit constexpr operator bool() const
+            requires (std::same_as<T, bool>)
+        {
+            return true;
+        }
+    };
+
+    static_assert(Foo<int>{});
+
     ////////////////////////
     ////    OPTIONAL    ////
     ////////////////////////
+
+    /* Generate a standardized error message that is returned if an empty optional is
+    manually dereferenced in debug mode */
+    template <meta::Optional Self> requires (DEBUG)
+    constexpr BadUnionAccess bad_optional_access(Self& self) {
+        static constexpr static_str msg = "empty optional has no value: " + demangle<Self>();
+        return BadUnionAccess(msg);
+    }
 
     /* A simple visitor that backs the implicit constructor for an `Optional<T>`
     object, returning a corresponding `impl::union_storage` primitive type. */
@@ -4227,6 +3956,44 @@ namespace impl {
             requires (meta::constructible_from<type, A...>)
         {
             return {typename result::template tag<1>{}, std::forward<A>(args)...};
+        }
+    };
+
+    /* A simple visitor that backs the implicit conversion operator from `Optional<T>`,
+    which attempts a normal visitor conversion where possible, falling back to a
+    conversion from `std::nullopt` or `nullptr` to cover all STL types and raw
+    pointers in the case of optional lvalues. */
+    template <typename Self, typename to>
+    struct optional_convert_to {
+        using value_type = impl::visitable<Self>::value_type;
+        using empty_type = impl::visitable<Self>::empty_type;
+        template <typename from>
+        static constexpr to operator()(from&& value)
+            noexcept (meta::nothrow::convertible_to<from, to>)
+            requires (meta::convertible_to<from, to>)
+        {
+            return std::forward<from>(value);
+        }
+        template <meta::is<empty_type> from>
+        static constexpr to operator()(from&&)
+            noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
+            requires (
+                !meta::convertible_to<from, to> &&
+                meta::convertible_to<const std::nullopt_t&, to>
+            )
+        {
+            return std::nullopt;
+        }
+        template <meta::is<empty_type> from> requires (meta::lvalue<value_type>)
+        static constexpr to operator()(from&&)
+            noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
+            requires (
+                !meta::convertible_to<from, to> &&
+                !meta::convertible_to<const std::nullopt_t&, to> &&
+                meta::convertible_to<std::nullptr_t, to>
+            )
+        {
+            return nullptr;
         }
     };
 
@@ -4944,44 +4711,6 @@ namespace impl {
         }
     };
 
-    /* A simple visitor that backs the implicit conversion operator from `Optional<T>`,
-    which attempts a normal visitor conversion where possible, falling back to a
-    conversion from `std::nullopt` or `nullptr` to cover all STL types and raw
-    pointers in the case of optional lvalues. */
-    template <typename Self, typename to>
-    struct optional_convert_to {
-        using value_type = impl::visitable<Self>::value_type;
-        using empty_type = impl::visitable<Self>::empty_type;
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::convertible_to<from, to>)
-            requires (meta::convertible_to<from, to>)
-        {
-            return std::forward<from>(value);
-        }
-        template <meta::is<empty_type> from>
-        static constexpr to operator()(from&&)
-            noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
-            requires (
-                !meta::convertible_to<from, to> &&
-                meta::convertible_to<const std::nullopt_t&, to>
-            )
-        {
-            return std::nullopt;
-        }
-        template <meta::is<empty_type> from> requires (meta::lvalue<value_type>)
-        static constexpr to operator()(from&&)
-            noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
-            requires (
-                !meta::convertible_to<from, to> &&
-                !meta::convertible_to<const std::nullopt_t&, to> &&
-                meta::convertible_to<std::nullptr_t, to>
-            )
-        {
-            return nullptr;
-        }
-    };
-
     /* A simple visitor that backs the implicit conversion operator from
     `Expected<T, Es...>`, which attempts a normal visitor conversion where possible,
     falling back to a conversion from `std::unexpected` to cover all STL types. */
@@ -5089,6 +4818,9 @@ namespace impl {
         meta::tuple_like<T> &&
         tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
 
+    /// TODO: figure out how to properly handle arrows for tuple iterators, as well as
+    /// possibly optional iterators.
+
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
     to iterable algorithms, as long as those algorithms are built to handle possible
@@ -5133,6 +4865,8 @@ namespace impl {
         [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
             return table::template tbl<>[index](*data);
         }
+
+        /// TODO: I can expose a perfectly normal operator->() if I wrap a reference
 
         [[nodiscard]] constexpr reference operator[](
             difference_type n
@@ -6161,6 +5895,58 @@ namespace meta {
 }
 
 
+/// TODO: I might be able to completely eliminate .value() and all the public members
+/// for these types by just utilizing visitors for pattern matching:
+
+/// operator*
+///    - unpacks tuples and iterables at a function's call site
+///    - serves as base comprehension for iterable types, to build up expression
+///      templates.
+///    - not defined unless the argument is iterable or tuple like, regardless of
+///      whether or not it's a sum type.
+
+/// operator->
+///    - defined for optionals and expecteds only, to provide direct access to the
+///      contained value outside of the monadic interface.
+///    - Maybe conditionally defined for unions if all types share a common lvalue that
+///      they can all convert to?
+
+/// operator->*
+///    - pattern-matching operator for sum types using `def` and the overload pattern
+///    - unpacking operator for tuples
+///    - comprehension operator for iterables, returning transformed elements.
+
+/// There would still need to be a way of perfectly-forwarding the contained value,
+/// which unfortunately isn't fully covered by operator->().  Maybe that is handled
+/// by just accessing the private member directly, since it's well-defined and
+/// documented.  That probably just means moving the .has_value(), .value() and
+/// .value_if() members into `union_storage`
+
+/// Basically, ->* would turn into a kind of pattern matching operator, where overloads
+/// handle sum types, and the argument list handles product types.  If the value is
+/// iterable and not tuple like, then it will generate a comprehension over it,
+/// applying the same rules to each element.  That would mean a sequence of unions
+/// would need to destructure in the same way as a union of sequences.  The visitor
+/// itself would need to check for exact matches before destructuring, however, so that
+/// you can pre-empt the destructuring logic and treat containers as whole arguments,
+/// for example.
+
+/// 
+
+
+
+/// TODO: Unions should expose `operator*` iff they have a common type at the call
+/// site, and `operator->` using the smart pointer rules if so.  `operator->*` would
+/// always require an exhaustive visitor, which would typically be defined using
+/// `def{}` with several overloads.  If any of the result types are tuples, then they
+/// will first be checked for an overload for the overall unit, and then if none is
+/// found, try again with the unpacked elements.  Something similar will have to be
+/// done for iterable containers, but the deeper the nesting, the more complicated
+/// everything gets.
+
+
+
+
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union : impl::union_tag {
     using types = meta::pack<Ts...>;
@@ -6571,16 +6357,6 @@ public:
 };
 
 
-/// TODO: do I need to provide an explicit comparison against `std::nullopt`?  That
-/// would ordinarily not pass the monadic constraints unless `T` is itself comparable
-/// against `std::nullopt`, which is not guaranteed to be the case.  If it is, then
-/// we can simply visit it like normal, but otherwise, the non-empty case will always
-/// return false.  Basically, that just means an extra visitor.  As long as I
-/// support `std::nullopt`, the `None` template operators should kick in automatically
-/// and cover that case as well, without allowing comparison against nullptr unless
-/// T also supports it.
-
-
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
     using types = meta::pack<T>;
@@ -6655,88 +6431,180 @@ struct Optional : impl::optional_tag {
         );
     }
 
-    /* Returns `true` if the optional currently holds a value, or `false` if it is in
-    the empty state. */
-    [[nodiscard]] constexpr bool has_value() const noexcept {
+    /* Contextually convert the optional to a boolean, where true indicates the
+    presence of a value. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+        return _value.index();
+    }
+    [[nodiscard, deprecated(
+        "contextual conversions are potentially ambiguous when used on optional "
+        "booleans.  Consider an explicit comparison against `None`, a dereference "
+        "with a leading `*`, or an exhaustive visitor using trailing `->*` instead. "
+    )]] explicit constexpr operator bool() const noexcept
+        requires (meta::boolean<value_type>)
+    {
         return _value.index();
     }
 
-    /* Access the stored value.  Throws a `BadUnionAccess` assertion if the program is
-    compiled in debug mode and the optional is currently in the empty state. */
+    /* Dereference to obtain the stored value, perfectly forwarding it according to the
+    optional's current cvref qualifications.  A `BadUnionAccess` error will be thrown
+    if the program is compiled in debug mode and the optional is empty, requiring an
+    extra conditional, which will be optimized out in release builds to maintain zero
+    overhead. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept (!DEBUG) {
+    [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept (!DEBUG) {
         if constexpr (DEBUG) {
-            if (!self.has_value()) {
-                static constexpr static_str msg =
-                    "Empty optional has no value: " + demangle<Self>();
-                throw BadUnionAccess(msg);
+            if (self._value.index() == 0) {
+                throw impl::bad_optional_access(self);
             }
         }
         return (std::forward<Self>(self)._value.template get<1>());
     }
 
-    /* Invoke one or more visitor functions over the states of the optional.  This is
-    identical to passing the optional as input to a `def` function, except that the
-    functions must exhaustively both the empty and non-empty states, and will only be
-    invoked with a single value representing the current alternative.  All other rules
-    (including promotion to union or handling of void return types) remain the same. */
-    template <typename Self, typename... Fs> requires (sizeof...(Fs) > 0)
-    constexpr decltype(auto) value(this Self&& self, Fs&&... fs)
-        noexcept (meta::nothrow::exhaustive<impl::tuple_storage<meta::remove_rvalue<Fs>...>, Self>)
-        requires (meta::exhaustive<impl::tuple_storage<meta::remove_rvalue<Fs>...>, Self>)
+    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
+    or directly returning its address otherwise.  A `BadUnionAccess` error will be
+    thrown if the program is compiled in debug mode and the optional is empty,
+    requiring an extra conditional, which will be optimized out in release builds to
+    maintain zero overhead. */
+    [[nodiscard]] constexpr auto operator->()
+        noexcept (!DEBUG && meta::nothrow::has_arrow<meta::as_lvalue<value_type>>)
+        requires (meta::has_arrow<meta::as_lvalue<value_type>>)
     {
-        return (impl::visit(
-            impl::tuple_storage<meta::remove_rvalue<Fs>...>{std::forward<Fs>(fs)...},
-            std::forward<Self>(self)
-        ));
+        if constexpr (DEBUG) {
+            if (_value.index() == 0) {
+                throw impl::bad_optional_access(*this);
+            }
+        }
+        return std::to_address(_value.template get<1>());
     }
 
-    /* If the optional is empty, invoke a given function and return its result,
-    otherwise propagate the non-empty state.  This is identical to invoking a manual
-    visitor (e.g. a `def` statement) over the optional, except that the visitor
-    function does not need to accept `bertrand::NoneType` (aka `std::nullopt_t`)
-    explicitly, and the non-empty state is implicitly forwarded, rather than the
-    empty state.  All other rules (including promotion to union or handling of void
-    return types) remain the same.
-
-    For most visitors, where `f()` returns the same type as `Optional.value()`:
-
-                self                invoke              result
-        -----------------------------------------------------------------------
-        1.  Optional<T>(empty)      f() -> t            T(t)
-        2.  Optional<T>(t)          (no call)           T(t)
-
-    If `f()` returns a type different from the optional:
-
-                self                invoke              result
-        -----------------------------------------------------------------------
-        1.  Optional<T>(empty)      f() -> u            Union<T, U>(u)
-        2.  Optional<T>(t)          (no call)           Union<T, U>(t)
-
-    If `f()` returns an `Expected<U, E...>`:
-
-                self                invoke              result
-        ----------------------------------------------------------------------
-        1.  Optional<T>(empty)      f() -> e            Expected<Union<T, U>, E...>(e)
-        2.  Optional<T>(t)          (no call)           Expected<Union<T, U>, E...>(t)
-
-    If the visitor returns void:
-
-                self                invoke              result
-        -----------------------------------------------------------------------
-        1.  Optional<T>(empty)      f() -> void         Optional<T>(empty)
-        2.  Optional<T>(t)          (no call)           Optional<T>(t)
-    */
-    template <typename Self, typename F>
-    constexpr decltype(auto) value_or(this Self&& self, F&& f)
-        noexcept (meta::nothrow::exhaustive<impl::optional_or_else<Self>, F, Self>)
-        requires (meta::callable<F> && meta::exhaustive<impl::optional_or_else<Self>, F, Self>)
+    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
+    or directly returning its address otherwise.  A `BadUnionAccess` error will be
+    thrown if the program is compiled in debug mode and the optional is empty,
+    requiring an extra conditional, which will be optimized out in release builds to
+    maintain zero overhead. */
+    [[nodiscard]] constexpr auto operator->()
+        noexcept (!DEBUG && meta::nothrow::has_address<meta::as_lvalue<value_type>>)
+        requires (
+            !meta::has_arrow<meta::as_lvalue<value_type>> &&
+            meta::has_address<meta::as_lvalue<value_type>>
+        )
     {
-        return (impl::visit(
-            impl::optional_or_else<Self>{},
-            std::forward<F>(f),
-            std::forward<Self>(self)
-        ));
+        if constexpr (DEBUG) {
+            if (_value.index() == 0) {
+                throw impl::bad_optional_access(*this);
+            }
+        }
+        return std::addressof(_value.template get<1>());
+    }
+
+    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
+    or directly returning its address otherwise.  A `BadUnionAccess` error will be
+    thrown if the program is compiled in debug mode and the optional is empty,
+    requiring an extra conditional, which will be optimized out in release builds to
+    maintain zero overhead. */
+    [[nodiscard]] constexpr auto operator->() const
+        noexcept (!DEBUG && meta::nothrow::has_arrow<meta::as_const_ref<value_type>>)
+        requires (meta::has_arrow<meta::as_const_ref<value_type>>)
+    {
+        if constexpr (DEBUG) {
+            if (_value.index() == 0) {
+                throw impl::bad_optional_access(*this);
+            }
+        }
+        return std::to_address(_value.template get<1>());
+    }
+
+    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
+    or directly returning its address otherwise.  A `BadUnionAccess` error will be
+    thrown if the program is compiled in debug mode and the optional is empty,
+    requiring an extra conditional, which will be optimized out in release builds to
+    maintain zero overhead. */
+    [[nodiscard]] constexpr auto operator->() const
+        noexcept (!DEBUG && meta::nothrow::has_address<meta::as_const_ref<value_type>>)
+        requires (
+            !meta::has_arrow<meta::as_const_ref<value_type>> &&
+            meta::has_address<meta::as_const_ref<value_type>>
+        )
+    {
+        if constexpr (DEBUG) {
+            if (_value.index() == 0) {
+                throw impl::bad_optional_access(*this);
+            }
+        }
+        return std::addressof(_value.template get<1>());
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator==(
+        const Optional& opt,
+        NoneType
+    ) noexcept {
+        return opt._value.index() == 0;
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator==(
+        NoneType,
+        const Optional& opt
+    ) noexcept {
+        return opt._value.index() == 0;
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator==(
+        const Optional& opt,
+        std::nullptr_t
+    ) noexcept requires (meta::lvalue<value_type>) {
+        return opt._value.index() == 0;
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator==(
+        std::nullptr_t,
+        const Optional& opt
+    ) noexcept requires (meta::lvalue<value_type>) {
+        return opt._value.index() == 0;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator!=(
+        const Optional& opt,
+        NoneType
+    ) noexcept {
+        return opt._value.index() != 0;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator!=(
+        NoneType,
+        const Optional& opt
+    ) noexcept {
+        return opt._value.index() != 0;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator!=(
+        const Optional& opt,
+        std::nullptr_t
+    ) noexcept requires (meta::lvalue<value_type>) {
+        return opt._value.index() != 0;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator!=(
+        std::nullptr_t,
+        const Optional& opt
+    ) noexcept requires (meta::lvalue<value_type>) {
+        return opt._value.index() != 0;
     }
 
     /* Monadic call operator.  If the optional type is a function-like object and is
@@ -6787,13 +6655,13 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_size<value_type>) {
-            if (has_value()) {
+            if (_value.index()) {
                 return std::ranges::size(_value.template get<1>());
             } else {
                 return meta::size_type<T>(0);
             }
         } else {
-            return size_t(has_value());
+            return size_t(_value.index());
         }
     }
 
@@ -6813,13 +6681,13 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_ssize<value_type>) {
-            if (has_value()) {
+            if (_value.index()) {
                 return std::ranges::ssize(_value.template get<1>());
             } else {
                 return meta::ssize_type<T>(0);
             }
         } else {
-            return ssize_t(has_value());
+            return ssize_t(_value.index());
         }
     }
 
@@ -6839,9 +6707,9 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_empty<value_type>) {
-            return has_value() ? std::ranges::empty(_value.template get<1>()) : true;
+            return _value.index() ? std::ranges::empty(_value.template get<1>()) : true;
         } else {
-            return !has_value();
+            return !_value.index();
         }
     }
 
@@ -6955,6 +6823,13 @@ struct Optional : impl::optional_tag {
 /// are .error() for expecteds, which needs to ignore the value state (possibly
 /// requiring a separate vtable), and comparisons against `None` and/or `std::nullopt`
 /// (maybe also `nullptr` for optional references?) for optionals.
+
+/// -> Expected<T, Es...> should only expose operator* for forwarding the value,
+/// operator->* for implementing visitors, `operator->` for indirect access, and
+/// boolean conversions.  Maybe also comparisons against `None`, which would check
+/// to see if the expected is currently in an error state, analogous to the empty
+/// state of an optional.
+
 
 
 template <typename T, meta::unqualified_exception E, meta::unqualified_exception... Es>
@@ -7159,6 +7034,15 @@ struct Expected : impl::expected_tag {
         return _value.index() == meta::index_of<Err, E, Es...> + 1;
     }
 
+private:
+
+    /// TODO: write a manual vtable + function class that produces the right error
+    /// type for the current state, disregarding the valid state.  Basically, just
+    /// write a similar vtable to the union iterators, and then adjust the index by 1
+    /// when invoking it.
+
+
+public:
     /* Access the error state.  Throws a `BadUnionAccess` exception if the expected is
     currently in the valid state and the program is compiled in debug mode.  The result
     is either a single error or `bertrand::Union<>` of errors if there are more than
