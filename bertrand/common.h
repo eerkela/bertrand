@@ -4627,6 +4627,9 @@ namespace impl {
         }
     };
 
+    template <typename T>
+    arrow_proxy(T&&) -> arrow_proxy<T>;
+
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
     struct fnv1a {
