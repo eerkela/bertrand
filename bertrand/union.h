@@ -236,19 +236,16 @@ template <meta::not_void T> requires (!meta::None<T>)
 struct Optional;
 
 
-/// TODO: make sure these CTAD guides are correct after the visitable refactor.
-
-
 template <typename T>
-Optional(T) -> Optional<T>;
+Optional(T&&) -> Optional<meta::remove_rvalue<T>>;
 
 
-template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty>)
-Optional(T) -> Optional<meta::remove_rvalue<typename impl::visitable<T>::wrapped>>;
+template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty_type>)
+Optional(T&&) -> Optional<typename impl::visitable<T>::value_type>;
 
 
 template <meta::pointer T>
-Optional(T) -> Optional<meta::as_lvalue<meta::remove_pointer<T>>>;
+Optional(T) -> Optional<meta::dereference_type<T>>;
 
 
 /* A wrapper for an arbitrarily qualified return type `T` that can also store one or
@@ -299,16 +296,26 @@ struct Expected;
 /// t.bar;  // 2.5
 
 
-template <meta::not_void... Ts>
+template <meta::not_void... Ts> requires (!meta::rvalue<Ts> && ...)
 struct Tuple;
 
 
 template <meta::not_void... Ts>
-Tuple(Ts&&...) -> Tuple<Ts...>;
+Tuple(Ts&&...) -> Tuple<meta::remove_rvalue<Ts>...>;
+
+
+////////////////////
+////   VISIT    ////
+////////////////////
 
 
 /// TODO: the visitation internals (especially the impl::visitable hooks) might be
-/// refactored to optimize for compilation speed.
+/// refactored to optimize for compilation speed.  `impl::visitable` also becomes a
+/// standardized trait class for all union types, which provides unchecked access to
+/// the index, various configuration types, etc.  If you need that information, you
+/// should just be able to specialize `impl::visitable` or use a CTAD constructor to
+/// access the fields you need, so that none of that needs to be available on the
+/// union types themselves.
 
 
 namespace meta {
@@ -320,154 +327,199 @@ namespace meta {
 
     namespace detail {
 
+        template <typename T, typename... Ts>
+        struct append_if_unique { using type = meta::pack<Ts...>; };
+        template <typename T, typename... Ts> requires (!::std::same_as<T, Ts> && ...)
+        struct append_if_unique<T, Ts...> { using type = meta::pack<Ts..., T>; };
+
+        /* `_visit_filter<F, P>` detects whether the argument list represented by
+        permutation `P` is a valid input to the visitor function `F`, then deduces the
+        return type/noexcept status if so.  The return type is only appended to
+        `Rs...` if it is not void and not already present. */
+        template <typename F, typename P>
+        struct _visit_filter {
+            static constexpr bool enable = false;
+            static constexpr bool nothrow = true;
+        };
+        template <typename F, typename... A> requires (meta::callable<F, A...>)
+        struct _visit_filter<F, meta::pack<A...>> {
+            static constexpr bool enable = true;
+            static constexpr bool nothrow = meta::nothrow::callable<F, A...>;
+            static constexpr bool has_void = false;
+            template <typename... R>
+            using type = append_if_unique<meta::call_type<F, A...>, R...>::type;
+        };
+        template <typename F, typename... A> requires (meta::call_returns<void, F, A...>)
+        struct _visit_filter<F, meta::pack<A...>> {
+            static constexpr bool enable = true;
+            static constexpr bool nothrow = meta::nothrow::callable<F, A...>;
+            static constexpr bool has_void = true;
+            template <typename... R>
+            using type = meta::pack<R...>;
+        };
+
+        /* `visit_filter<...>` recurs over all permutations and applies
+        `_visit_filter<F, P>` to detect the valid permutations and deduce the unique,
+        non-void return types in the same pass. */
+        template <
+            typename F,  // visitor function
+            bool nothrow,  // true if all prior permutations are noexcept
+            bool has_void,  // true if a valid permutation returned void
+            typename returns,  // valid return types found so far
+            typename valid,  // valid permutations found so far
+            typename...
+        >
+        struct visit_filter {
+            /// TODO: remove trailing underscores
+            static constexpr bool nothrow_ = nothrow;
+            static constexpr bool consistent = returns::size() <= 1;
+            static constexpr bool has_void_ = has_void;
+            using return_types = returns;
+            using valid_permutations = valid;
+        };
+        template <
+            typename F,
+            bool nothrow,
+            bool has_void,
+            typename... Rs,
+            typename... valid,
+            typename P,
+            typename... Ps
+        > requires (_visit_filter<F, P>::enable)
+        struct visit_filter<
+            F,
+            nothrow,
+            has_void,
+            meta::pack<Rs...>,
+            meta::pack<valid...>,
+            P,
+            Ps...
+        > : visit_filter<
+            F,
+            nothrow && _visit_filter<F, P>::nothrow,
+            has_void || _visit_filter<F, P>::has_void,
+            typename _visit_filter<F, P>::template type<Rs...>,
+            meta::pack<valid..., P>,
+            Ps...
+        > {};
+        template <
+            typename F,
+            bool nothrow,
+            bool has_void,
+            typename... Rs,
+            typename... valid,
+            typename P,
+            typename... Ps
+        > requires (!_visit_filter<F, P>::enable)
+        struct visit_filter<
+            F,
+            nothrow,
+            has_void,
+            meta::pack<Rs...>,
+            meta::pack<valid...>,
+            P,
+            Ps...
+        > : visit_filter<
+            F,
+            nothrow,
+            has_void,
+            meta::pack<Rs...>,
+            meta::pack<valid...>,
+            Ps...
+        >{};
+
+        /* `visit_deduce<...>` takes the valid permutations, deduced return types, and
+        original arguments and combines them to form the final return type for the
+        visitor.  This works by recurring over the arguments and checking to see if all
+        alternatives at each index occur at least once in the valid permutations.  If
+        not, then it indicates an unhandled alternative, which may be propagated to
+        the return type if it represents an empty or error state as directed by
+        `impl::visitable<A>`.  If it cannot be propagated, then `enable` will be set to
+        `false`, indicating a missing case. */
+        template <
+            /// TODO: `N` may not be necessary if I get a little more clever about how
+            /// to calculate the index.
+            size_t N,  // equivalent to the initial size of `A...` (sizeof...(Args))
+            bool optional,  // true if a void return type or unhandled empty state exists
+            typename errors,  // tracks unhandled exception states
+            typename valid,  // the valid permutations
+            typename returns,  // the deduced return types
+            typename... A  // the remaining input arguments
+        >
+        struct visit_deduce;
+        template <
+            size_t N,
+            bool optional,
+            typename... errors,
+            typename... valid,
+            typename... returns,
+            typename A,
+            typename... As
+        >
+        struct visit_deduce<
+            N,
+            optional,
+            meta::pack<errors...>,
+            meta::pack<valid...>,
+            meta::pack<returns...>,
+            A,
+            As...
+        > {
+            /// TODO: corresponds to first case of deduce<...>::infer<...> in
+            /// current implementation, but there can be some relatively substantial
+            /// refactoring here to optimize for compilation speed.  `state::helper`
+            /// is not necessary, and maybe `state` itself can be lifted to detail::.
+            /// This should also use recursive inheritance to expose the results.
+        };
+        template <
+            size_t N,
+            bool optional,
+            typename... errors,
+            typename... valid,
+            typename... returns
+        >
+        struct visit_deduce<
+            N,
+            optional,
+            meta::pack<errors...>,
+            meta::pack<valid...>,
+            meta::pack<returns...>
+        > {
+            /// TODO: this equates to the second case for deduce<...>::infer<...> in
+            /// current implementation.  The only trick here is that the metafunction
+            /// would have to be passed the return types as well.
+        };
+
+
+
+        /* `visit<F, Args...>` recursively expands any unions in `Args...` and checks
+        to see whether the visitor function `F` is callable over them, and what its
+        return type/noexcept status would be in each case. */
         template <typename F, typename... Args>
         struct visit {
         private:
             // 1. Expand arguments into a 2D pack of packs representing all possible
             //    permutations of the union types.
-            template <typename First, typename... Rest>
-            struct permute {
-                using type = meta::product<
-                    typename impl::visitable<First>::alternatives,
-                    typename impl::visitable<Rest>::alternatives...
-                >;
-            };
-            using permutations = permute<Args...>::type;
+            using permutations = meta::product<typename impl::visitable<Args>::alternatives...>;
 
-            // 2. Filter out any permutations that are not valid inputs to the
-            //    visitor `F` and deduce the unique, non-void return types as we go.
+            // 2. Filter out any permutations that are not valid inputs to the visitor,
+            //    and deduce the unique, non-void return types in the same pass.
             template <typename... permutations>
-            struct filter {
-                // 2a. `P::template eval<invoke>` detects whether the argument list
-                //     represented by permutation `P` is a valid input to the visitor
-                //     function `F`, then deduces the return type/noexcept status if
-                //     so.  The return type is only appended to `Rs...` if it is not
-                //     void and not already present.
-                template <typename... As>
-                struct invoke {
-                    static constexpr bool enable = false;
-                    static constexpr bool nothrow = true;
-                };
-                template <typename... As> requires (meta::callable<F, As...>)
-                struct invoke<As...> {
-                    template <typename... Rs>
-                    struct helper { using type = meta::pack<Rs...>; };
-                    template <typename... Rs>
-                        requires (!::std::same_as<meta::call_type<F, As...>, Rs> && ...)
-                    struct helper<Rs...> {
-                        using type = meta::pack<Rs..., meta::call_type<F, As...>>;
-                    };
-                    static constexpr bool enable = true;
-                    static constexpr bool nothrow = meta::nothrow::callable<F, As...>;
-                    template <typename... Rs>
-                    using type = helper<Rs...>::type;
-                    static constexpr bool has_void = false;
-                };
-                template <typename... As> requires (meta::call_returns<void, F, As...>)
-                struct invoke<As...> {
-                    static constexpr bool enable = true;
-                    static constexpr bool nothrow = meta::nothrow::callable<F, As...>;
-                    template <typename... Rs>
-                    using type = meta::pack<Rs...>;
-                    static constexpr bool has_void = true;
-                };
-
-                // 2b. `validate<>` recurs over all permutations, applying the above
-                //     criteria.
-                template <
-                    bool nothrow,  // true if all prior permutations are noexcept
-                    bool has_void,  // true if a valid permutation returned void
-                    typename returns,  // valid return types found so far
-                    typename valid,  // valid permutations found so far
-                    typename...
-                >
-                struct validate {
-                    static constexpr bool nothrow_ = nothrow;
-                    static constexpr bool consistent = returns::size() <= 1;
-                    static constexpr bool has_void_ = has_void;
-                    using return_types = returns;
-                    using subset = valid;
-                };
-
-                // 2d. Valid permutation - check noexcept, deduce return type, append
-                //     to valid permutations, and then advance to next permutation
-                template <
-                    bool nothrow,
-                    bool has_void,
-                    typename... Rs,
-                    typename... valid,
-                    typename P,
-                    typename... Ps
-                > requires (P::template eval<invoke>::enable)
-                struct validate<
-                    nothrow,
-                    has_void,
-                    meta::pack<Rs...>,
-                    meta::pack<valid...>,
-                    P,
-                    Ps...
-                > {
-                    using result = validate<
-                        nothrow && P::template eval<invoke>::nothrow,
-                        has_void || P::template eval<invoke>::has_void,
-                        typename P::template eval<invoke>::template type<Rs...>,
-                        meta::pack<valid..., P>,
-                        Ps...
-                    >;
-                    static constexpr bool nothrow_ = result::nothrow_;
-                    static constexpr bool consistent = result::consistent;
-                    static constexpr bool has_void_ = result::has_void_;
-                    using return_types = result::return_types;
-                    using subset = result::subset;
-                };
-
-                // 2c. Invalid permutation - advance to next permutation
-                template <
-                    bool nothrow,
-                    bool has_void,
-                    typename... Rs,
-                    typename... valid,
-                    typename P,
-                    typename... Ps
-                > requires (!P::template eval<invoke>::enable)
-                struct validate<
-                    nothrow,
-                    has_void,
-                    meta::pack<Rs...>,
-                    meta::pack<valid...>,
-                    P,
-                    Ps...
-                > {
-                    using result = validate<
-                        nothrow,
-                        has_void,
-                        meta::pack<Rs...>,
-                        meta::pack<valid...>,
-                        Ps...
-                    >;
-                    static constexpr bool nothrow_ = result::nothrow_;
-                    static constexpr bool consistent = result::consistent;
-                    static constexpr bool has_void_ = result::has_void_;
-                    using return_types = result::return_types;
-                    using subset = result::subset;
-                };
-
-                // 2e. Evaluate the `validate<>` metafunction and report results.
-                using result = validate<
-                    true,  // initially nothrow by default
-                    false,  // initially no void return types
-                    meta::pack<>,  // initially no valid return types
-                    meta::pack<>,  // initially no valid permutations
-                    permutations...
-                >;
-                static constexpr bool nothrow = result::nothrow_;
-                static constexpr bool consistent = result::consistent;
-                static constexpr bool has_void = result::has_void_;
-                using return_types = result::return_types;
-                using subset = result::subset;
-            };
-            using valid_permutations = permutations::template eval<filter>::subset;
+            using filter = visit_filter<
+                F,
+                true,  // initially nothrow by default
+                false,  // initially no void return types
+                meta::pack<>,  // initially no valid return types
+                meta::pack<>,  // initially no valid permutations
+                permutations...
+            >;
+            using valid_permutations = permutations::template eval<filter>::valid_permutations;
             using return_types = permutations::template eval<filter>::return_types;
+
+            /// TODO: deduce<...> can probably also be lifted into `detail::` for
+            /// faster compilation.  Note that permutations and return types are
+            /// needed within deduce<...>, so that's another consideration.  The
+            /// only real alternative
 
             // 3. Once all valid permutations and unique return types have been
             //    identified, deduce the final return type and propagate any unhandled
@@ -657,7 +709,7 @@ namespace meta {
             };
 
             // 4. Return type conversions are applied at the permutation level to
-            //    bypass any wrappers appended by `deduce<>`.
+            //    bypass propagation of empty/error states.
             template <typename... Rs>
             struct _returns {  // no void
                 template <typename T>
@@ -741,25 +793,29 @@ namespace meta {
             static constexpr bool nothrow_returns =
                 return_types::template eval<_returns>::template nothrow<R>;
         };
-
-        template <typename F>
+        template <meta::callable F>
         struct visit<F> {
-        private:
-            template <typename F2>
-            struct _type { using type = void; };
-            template <meta::callable F2>
-            struct _type<F2> { using type = meta::call_type<F2>; };
-
-        public:
-            static constexpr bool enable = meta::callable<F>;
-            static constexpr bool exhaustive = enable;
-            static constexpr bool consistent = enable;
+            static constexpr bool enable = true;
+            static constexpr bool exhaustive = true;
+            static constexpr bool consistent = true;
             static constexpr bool nothrow = meta::nothrow::callable<F>;
             template <typename R>
             static constexpr bool returns = meta::call_returns<R, F>;
             template <typename R>
             static constexpr bool nothrow_returns = meta::nothrow::call_returns<R, F>;
-            using type = _type<F>::type;
+            using type = meta::call_type<F>;
+        };
+        template <typename F>
+        struct visit<F> {
+            static constexpr bool enable = false;
+            static constexpr bool exhaustive = false;
+            static constexpr bool consistent = false;
+            static constexpr bool nothrow = false;
+            template <typename R>
+            static constexpr bool returns = false;
+            template <typename R>
+            static constexpr bool nothrow_returns = false;
+            using type = void;
         };
 
     }
@@ -976,702 +1032,6 @@ namespace impl {
         }
     };
 
-    /* Unions are converted into a pack of the same length. */
-    template <meta::Union T>
-    struct visitable<T> {
-    private:
-        static constexpr size_t N = meta::unqualify<T>::types::size();
-
-        template <size_t I, typename... Ts>
-        struct _pack {
-            using type = _pack<
-                I + 1,
-                Ts...,
-                decltype((std::declval<T>().storage.template get<I>()))
-            >::type;
-        };
-        template <typename... Ts>
-        struct _pack<N, Ts...> { using type = meta::pack<Ts...>; };
-
-    public:
-        static constexpr bool enable = true;
-        static constexpr bool monad = true;
-        using type = T;
-        using alternatives = _pack<0>::type;
-        using empty = void;
-        using errors = meta::pack<>;
-        template <typename U = T>
-        using to_optional = Optional<U>;
-        template <typename... Errs>
-        using to_expected = Expected<T, Errs...>;
-
-        /* Get the active index for a union of this type. */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            return u.storage.index;
-        }
-
-        /* Perfectly forward the member at index I for a union of this type. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).storage.template get<I>())
-        ) {
-            return (std::forward<U>(u).storage.template get<I>());
-        }
-
-        /* Dispatch to the proper index of this union to reveal the exact type, then
-        recur for the next argument.  If the visitor can't handle the current type,
-        then return an error indicating as such. */
-        template <
-            typename R,
-            size_t idx,
-            size_t... Prev,
-            size_t... Next,
-            typename F,
-            typename... A
-        >
-        [[gnu::always_inline]] static constexpr R dispatch(
-            std::index_sequence<Prev...> prev,
-            std::index_sequence<Next...> next,
-            F&& func,
-            A&&... args
-        )
-            noexcept(meta::nothrow::visit<F, A...>)
-            requires (
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size() &&
-                meta::visit<F, A...>
-            )
-        {
-            static constexpr size_t I = sizeof...(Prev);
-            static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            return visit_recursive<R, idx>(
-                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                prev,
-                next,
-                std::forward<F>(func),
-                std::forward<A>(args)...
-            );
-        }
-    };
-
-    /* `std::variant`s are treated like unions. */
-    template <meta::std::variant T>
-    struct visitable<T> {
-    private:
-        static constexpr size_t N = std::variant_size_v<meta::unqualify<T>>;
-
-        template <size_t I, typename... Ts>
-        struct _pack {
-            using type = _pack<
-                I + 1,
-                Ts...,
-                decltype((std::get<I>(std::declval<T>())))
-            >::type;
-        };
-        template <typename... Ts>
-        struct _pack<N, Ts...> { using type = meta::pack<Ts...>; };
-
-    public:
-        static constexpr bool enable = true;
-        static constexpr bool monad = false;
-        using type = T;
-        using alternatives = _pack<0>::type;
-        using empty = void;
-        using errors = meta::pack<>;
-        template <typename U = T>
-        using to_optional = Optional<U>;
-        template <typename... Errs>
-        using to_expected = Expected<T, Errs...>;
-
-        /* Get the active index for a union of this type. */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            return u.index();
-        }
-
-        /* Perfectly forward the member at index I for a union of this type. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::get<I>(std::forward<U>(u)))
-        ) {
-            return (std::get<I>(std::forward<U>(u)));
-        }
-
-        /* Dispatch to the proper index of this variant to reveal the exact type, then
-        recur for the next argument.  If the visitor can't handle the current type,
-        then return an error indicating as such. */
-        template <
-            typename R,
-            size_t idx,
-            size_t... Prev,
-            size_t... Next,
-            typename F,
-            typename... A
-        >
-        [[gnu::always_inline]] static constexpr R dispatch(
-            std::index_sequence<Prev...> prev,
-            std::index_sequence<Next...> next,
-            F&& func,
-            A&&... args
-        )
-            noexcept(meta::nothrow::visit<F, A...>)
-            requires (
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size() &&
-                meta::visit<F, A...>
-            )
-        {
-            static constexpr size_t I = sizeof...(Prev);
-            static constexpr size_t J = visit_index<idx, A...>(prev, next);
-            return visit_recursive<R, idx>(
-                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                prev,
-                next,
-                std::forward<F>(func),
-                std::forward<A>(args)...
-            );
-        }
-    };
-
-    /* Optionals are converted into packs of length 2. */
-    template <meta::Optional T>
-    struct visitable<T> {
-        static constexpr bool enable = true;
-        static constexpr bool monad = true;
-        using type = T;
-        using wrapped = decltype((std::declval<T>().storage.value()));
-        using alternatives = meta::pack<wrapped, NoneType>;
-        using empty = NoneType;
-        using errors = meta::pack<>;
-        template <typename U = T>
-        using to_optional = U;  // always flatten
-        template <typename... Errs>
-        using to_expected = Expected<T, Errs...>;
-
-        /* The active index of an optional is 0 for the empty state and 1 for the
-        non-empty state. */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            return u._value.index();
-        }
-
-        /// NOTE: the previous specialization had index 0 as the non-empty state, and
-        /// index 1 as the empty state, which has since been reversed.  Make sure
-        /// nothing else is broken.
-
-        /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u)._value.template get<I>())
-        ) {
-            return (std::forward<U>(u)._value.template get<I>());
-        }
-
-        /* Dispatch to the proper state of this optional, then recur for the next
-        argument.  If the visitor can't handle the current state, and it is not the
-        empty state, then return an error indicating as such.  Otherwise, implicitly
-        propagate the empty state. */
-        template <
-            typename R,
-            size_t idx,
-            size_t... Prev,
-            size_t... Next,
-            typename F,
-            typename... A
-        >
-        [[gnu::always_inline]] static constexpr R dispatch(
-            std::index_sequence<Prev...> prev,
-            std::index_sequence<Next...> next,
-            F&& func,
-            A&&... args
-        )
-            noexcept(meta::nothrow::visit<F, A...>)
-            requires (
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size() &&
-                meta::visit<F, A...>
-            )
-        {
-            static constexpr size_t I = sizeof...(Prev);
-            static constexpr size_t J = visit_index<idx, A...>(prev, next);
-
-            // valid state is always handled by definition
-            if constexpr (J == 0) {
-                return visit_recursive<R, idx>(
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                    prev,
-                    next,
-                    std::forward<F>(func),
-                    std::forward<A>(args)...
-                );
-
-            // empty state is implicitly propagated if left unhandled
-            } else {
-                using type = decltype((
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-                ));
-                if constexpr (meta::visit<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<type, R>) {
-                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
-                } else if constexpr (meta::is_void<R>) {
-                    return;
-                } else {
-                    static_assert(
-                        meta::convertible_to<type, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
-            }
-        }
-    };
-
-    /* `std::optional`s are treated like `Optional`. */
-    template <meta::std::optional T>
-    struct visitable<T> {
-        static constexpr bool enable = true;
-        static constexpr bool monad = false;
-        using type = T;
-        using wrapped = decltype((std::declval<T>().value()));
-        using alternatives = meta::pack<wrapped, NoneType>;
-        using empty = NoneType;
-        using errors = meta::pack<>;
-        template <typename U = T>
-        using to_optional = U;  // always flatten
-        template <typename... Errs>
-        using to_expected = Expected<T, Errs...>;
-
-        /* The active index of an optional is 0 for the empty state and 1 for the
-        non-empty state. */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            return !u.has_value();
-        }
-
-        /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I == 0 && I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).value())
-        ) {
-            return (std::forward<U>(u).value());
-        }
-
-        /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
-            return (None);
-        }
-
-        /* Dispatch to the proper state of this optional, then recur for the next
-        argument.  If the visitor can't handle the current state, and it is not the
-        empty state, then return an error indicating as such.  Otherwise, implicitly
-        propagate the empty state. */
-        template <
-            typename R,
-            size_t idx,
-            size_t... Prev,
-            size_t... Next,
-            typename F,
-            typename... A
-        >
-        [[gnu::always_inline]] static constexpr R dispatch(
-            std::index_sequence<Prev...> prev,
-            std::index_sequence<Next...> next,
-            F&& func,
-            A&&... args
-        )
-            noexcept(meta::nothrow::visit<F, A...>)
-            requires (
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size() &&
-                meta::visit<F, A...>
-            )
-        {
-            static constexpr size_t I = sizeof...(Prev);
-            static constexpr size_t J = visit_index<idx, A...>(prev, next);
-
-            // valid state is always handled by definition
-            if constexpr (J == 0) {
-                return visit_recursive<R, idx>(
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                    prev,
-                    next,
-                    std::forward<F>(func),
-                    std::forward<A>(args)...
-                );
-
-            // empty state is implicitly propagated if left unhandled
-            } else {
-                using type = decltype((
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-                ));
-                if constexpr (meta::visit<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        None,
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<type, R>) {
-                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
-                } else if constexpr (meta::is_void<R>) {
-                    return;
-                } else {
-                    static_assert(
-                        meta::convertible_to<type, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
-            }
-        }
-    };
-
-    /* Expecteds are converted into packs including the result type (if not void)
-    followed by all error types. */
-    template <meta::Expected T>
-    struct visitable<T> {
-    private:
-
-        template <typename V>
-        struct _wrapped { using type = void; };
-        template <meta::not_void V>
-        struct _wrapped<V> {
-            using type = decltype((std::declval<T>().storage.value()));
-        };
-
-        template <size_t I, typename... Errs>
-        struct _pack {
-            using type = _pack<
-                I + 1,
-                Errs...,
-                decltype((std::declval<T>().template get_error<I>()))
-            >::type;
-        };
-        template <size_t I, typename... Errs>
-            requires (
-                meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I == meta::unqualify<T>::errors::size()
-            )
-        struct _pack<I, Errs...> {
-            using type = meta::pack<
-                decltype((std::declval<T>().storage.value())),
-                Errs...
-            >;
-        };
-        template <size_t I, typename... Errs>
-            requires (
-                meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I == meta::unqualify<T>::errors::size()
-            )
-        struct _pack<I, Errs...> {
-            using type = meta::pack<NoneType, Errs...>;
-        };
-
-    public:
-        static constexpr bool enable = true;
-        static constexpr bool monad = true;
-        using type = T;
-        using wrapped = _wrapped<typename meta::unqualify<T>::value_type>::type;
-        using alternatives = _pack<0>::type;
-        using empty = void;
-        using errors = meta::unqualify<T>::errors;
-        template <typename U = T>
-        using to_optional = Optional<U>;
-        template <typename... Errs>
-        using to_expected = Expected<typename meta::unqualify<T>::value_type, Errs...>;
-
-        /* The active index of an expected is 0 for the empty state and > 0 for the
-        error state(s). */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            if constexpr (errors::size() > 1) {
-                return u.has_value() ? 0 : u.get_error().index() + 1;
-            } else {
-                return u.has_error();
-            }
-        }
-
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I == 0 && meta::not_void<wrapped>)
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).storage.value())
-        ) {
-            return (std::forward<U>(u).storage.value());
-        }
-
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I == 0 && meta::is_void<wrapped>)
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
-            return (None);
-        }
-
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).template get_error<I - 1>())
-        ) {
-            return (std::forward<U>(u).template get_error<I - 1>());
-        }
-
-        /* Dispatch to the proper state of this expected, then recur for the next
-        argument.  If the visitor can't handle the current state, and it is not an
-        error state, return an error indicating as such.  Otherwise, implicitly
-        propagate the error state. */
-        template <
-            typename R,
-            size_t idx,
-            size_t... Prev,
-            size_t... Next,
-            typename F,
-            typename... A
-        >
-        [[gnu::always_inline]] static constexpr R dispatch(
-            std::index_sequence<Prev...> prev,
-            std::index_sequence<Next...> next,
-            F&& func,
-            A&&... args
-        )
-            noexcept(meta::nothrow::visit<F, A...>)
-            requires (
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size() &&
-                meta::visit<F, A...>
-            )
-        {
-            static constexpr size_t I = sizeof...(Prev);
-            static constexpr size_t J = visit_index<idx, A...>(prev, next);
-
-            // valid state is always handled by definition
-            if constexpr (J == 0) {
-                return visit_recursive<R, idx>(
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                    prev,
-                    next,
-                    std::forward<F>(func),
-                    std::forward<A>(args)...
-                );
-
-            // error states are implicitly propagated if left unhandled
-            } else {
-                using type = decltype((
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-                ));
-                if constexpr (meta::visit<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<type, R>) {
-                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
-                } else {
-                    static_assert(
-                        meta::convertible_to<type, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
-            }
-        }
-    };
-
-    /* `std::expected`s are treated like `Expected`. */
-    template <meta::std::expected T>
-    struct visitable<T> {
-    private:
-
-        template <typename V>
-        struct _wrapped { using type = void; };
-        template <meta::not_void V>
-        struct _wrapped<V> {
-            using type = decltype((std::declval<T>().value()));
-        };
-
-        template <typename U>
-        struct _pack { using type = meta::pack<decltype((std::declval<T>().value()))>; };
-        template <meta::is_void U>
-        struct _pack<U> { using type = meta::pack<NoneType>; };
-
-        template <typename... Errs>
-        struct _to_expected {
-            using type =
-                std::expected<typename meta::unqualify<T>::value_type, Union<Errs...>>;
-        };
-        template <typename E>
-        struct _to_expected<E> {
-            using type =
-                std::expected<typename meta::unqualify<T>::value_type, E>;
-        };
-
-    public:
-        static constexpr bool enable = true;
-        static constexpr bool monad = false;
-        using type = T;
-        using wrapped = _wrapped<typename meta::unqualify<T>::value_type>::type;
-        using alternatives =
-            _pack<typename meta::unqualify<T>::value_type>::type::template concat<
-                typename visitable<decltype((std::declval<T>().error()))>::alternatives
-            >;
-        using empty = void;
-        using errors = visitable<decltype((std::declval<T>().error()))>::alternatives;
-        template <typename U = T>
-        using to_optional = Optional<U>;
-        template <typename... Errs>
-        using to_expected = _to_expected<Errs...>::type;
-
-        /* The active index of an expected is 0 for the empty state and > 0 for the
-        error state(s). */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
-            if constexpr (errors::size() > 1) {
-                return u.has_value() ?
-                    0 :
-                    visitable<decltype((u.error()))>::index(u.error()) + 1;
-            } else {
-                return u.has_value();
-            }
-        }
-
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U>
-            requires (
-                meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < alternatives::size()
-            )
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).value())
-        ) {
-            return (std::forward<U>(u).value());
-        }
-
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U>
-            requires (
-                meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < alternatives::size()
-            )
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
-            return (None);
-        }
-
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
-                std::forward<U>(u).error()
-            ))
-        ) {
-            return (visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
-                std::forward<U>(u).error()
-            ));
-        }
-
-        /* Dispatch to the proper state of this expected, then recur for the next
-        argument.  If the visitor can't handle the current state, and it is not an
-        error state, return an error indicating as such.  Otherwise, implicitly
-        propagate the error state. */
-        template <
-            typename R,
-            size_t idx,
-            size_t... Prev,
-            size_t... Next,
-            typename F,
-            typename... A
-        >
-        [[gnu::always_inline]] static constexpr R dispatch(
-            std::index_sequence<Prev...> prev,
-            std::index_sequence<Next...> next,
-            F&& func,
-            A&&... args
-        )
-            noexcept (meta::nothrow::visit<F, A...>)
-            requires (
-                sizeof...(Prev) < sizeof...(A) &&
-                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
-                visit_index<idx, A...>(prev, next) < alternatives::size() &&
-                meta::visit<F, A...>
-            )
-        {
-            static constexpr size_t I = sizeof...(Prev);
-            static constexpr size_t J = visit_index<idx, A...>(prev, next);
-
-            // valid state is always handled by definition
-            if constexpr (J == 0) {
-                return visit_recursive<R, idx>(
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                    prev,
-                    next,
-                    std::forward<F>(func),
-                    std::forward<A>(args)...
-                );
-
-            // error states are implicitly propagated if left unhandled
-            } else {
-                using type = decltype((
-                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
-                ));
-                if constexpr (meta::visit<
-                    F,
-                    meta::unpack_type<Prev, A...>...,
-                    type,
-                    meta::unpack_type<I + 1 + Next, A...>...
-                >) {
-                    return visit_recursive<R, idx>(
-                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
-                        prev,
-                        next,
-                        std::forward<F>(func),
-                        std::forward<A>(args)...
-                    );
-                } else if constexpr (meta::convertible_to<type, R>) {
-                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
-                } else {
-                    static_assert(
-                        meta::convertible_to<type, R>,
-                        "unreachable: a non-exhaustive iterator must always "
-                        "return an `Expected` result"
-                    );
-                    std::unreachable();
-                }
-            }
-        }
-    };
-
     /* Helper function to compute an encoded index for a sequence of visitable
     arguments at runtime, which can then be used to index into a 1D vtable for all
     arguments simultaneously. */
@@ -1778,6 +1138,26 @@ namespace impl {
             return std::forward<F>(f)(std::forward<Args>(args)...);
         }
     }
+
+}
+
+
+/////////////////////
+////    UNION    ////
+/////////////////////
+
+
+/// TODO: instead of `unpack()` and `comprehension()` being public operators, the
+/// new tuple iterable refactor means I should be able to roll them into `range()` -
+/// which is ideal.  Unambiguous unpacking can therefore be accomplished by
+/// `func(*range(opt))` instead of `func(unpack(opt))`.  That's actually superior,
+/// because it's harder to confuse with an ordinary function call, and removes another
+/// symbol from the public API.
+
+/// TODO: How would std::formatter specializations interact with unions?
+
+
+namespace impl {
 
     /* The tracking index stored within a `Union` is defined as the smallest unsigned
     integer type big enough to hold all alternatives, in order to exploit favorable
@@ -3620,13 +3000,167 @@ namespace impl {
         meta::pack<>
     >;
 
+    /* Unions are converted into a pack of the same length. */
+    template <meta::Union T>
+    struct visitable<T> {
+    private:
+        static constexpr size_t N = meta::unqualify<T>::types::size();
+
+        template <size_t I, typename... Ts>
+        struct _pack {
+            using type = _pack<
+                I + 1,
+                Ts...,
+                decltype((std::declval<T>().storage.template get<I>()))
+            >::type;
+        };
+        template <typename... Ts>
+        struct _pack<N, Ts...> { using type = meta::pack<Ts...>; };
+
+    public:
+        static constexpr bool enable = true;
+        static constexpr bool monad = true;
+        using type = T;
+        using alternatives = _pack<0>::type;
+        using empty = void;
+        using errors = meta::pack<>;
+        template <typename U = T>
+        using to_optional = Optional<U>;
+        template <typename... Errs>
+        using to_expected = Expected<T, Errs...>;
+
+        /* Get the active index for a union of this type. */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u.storage.index;
+        }
+
+        /* Perfectly forward the member at index I for a union of this type. */
+        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::forward<U>(u).storage.template get<I>())
+        ) {
+            return (std::forward<U>(u).storage.template get<I>());
+        }
+
+        /* Dispatch to the proper index of this union to reveal the exact type, then
+        recur for the next argument.  If the visitor can't handle the current type,
+        then return an error indicating as such. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept(meta::nothrow::visit<F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
+                meta::visit<F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+            return visit_recursive<R, idx>(
+                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                prev,
+                next,
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        }
+    };
+
+    /* `std::variant`s are treated like unions. */
+    template <meta::std::variant T>
+    struct visitable<T> {
+    private:
+        static constexpr size_t N = std::variant_size_v<meta::unqualify<T>>;
+
+        template <size_t I, typename... Ts>
+        struct _pack {
+            using type = _pack<
+                I + 1,
+                Ts...,
+                decltype((std::get<I>(std::declval<T>())))
+            >::type;
+        };
+        template <typename... Ts>
+        struct _pack<N, Ts...> { using type = meta::pack<Ts...>; };
+
+    public:
+        static constexpr bool enable = true;
+        static constexpr bool monad = false;
+        using type = T;
+        using alternatives = _pack<0>::type;
+        using empty = void;
+        using errors = meta::pack<>;
+        template <typename U = T>
+        using to_optional = Optional<U>;
+        template <typename... Errs>
+        using to_expected = Expected<T, Errs...>;
+
+        /* Get the active index for a union of this type. */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u.index();
+        }
+
+        /* Perfectly forward the member at index I for a union of this type. */
+        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::get<I>(std::forward<U>(u)))
+        ) {
+            return (std::get<I>(std::forward<U>(u)));
+        }
+
+        /* Dispatch to the proper index of this variant to reveal the exact type, then
+        recur for the next argument.  If the visitor can't handle the current type,
+        then return an error indicating as such. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept(meta::nothrow::visit<F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
+                meta::visit<F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+            return visit_recursive<R, idx>(
+                get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                prev,
+                next,
+                std::forward<F>(func),
+                std::forward<A>(args)...
+            );
+        }
+    };
+
 }
-
-
-/// TODO: instead of `unpack()` and `comprehension()` being public operators, the
-/// new tuple iterable refactor means I should be able to roll them into `range()` -
-/// which is ideal.  Unambiguous unpacking can therefore be accomplished by
-/// `func(*range(opt))` instead of `func(unpack(opt))`.
 
 
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
@@ -3950,6 +3484,11 @@ constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
 {
     a.swap(b);
 }
+
+
+////////////////////////
+////    OPTIONAL    ////
+////////////////////////
 
 
 namespace impl {
@@ -4760,6 +4299,222 @@ namespace impl {
         }
     };
 
+    /* Optionals are converted into packs of length 2. */
+    template <meta::Optional T>
+    struct visitable<T> {
+        static constexpr bool enable = true;
+        static constexpr bool monad = true;
+        using type = T;
+        using wrapped = decltype((std::declval<T>().storage.value()));
+        using alternatives = meta::pack<wrapped, NoneType>;
+        using empty = NoneType;
+        using errors = meta::pack<>;
+        template <typename U = T>
+        using to_optional = U;  // always flatten
+        template <typename... Errs>
+        using to_expected = Expected<T, Errs...>;
+
+        /* The active index of an optional is 0 for the empty state and 1 for the
+        non-empty state. */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return u._value.index();
+        }
+
+        /// NOTE: the previous specialization had index 0 as the non-empty state, and
+        /// index 1 as the empty state, which has since been reversed.  Make sure
+        /// nothing else is broken.
+
+        /* Perfectly forward the member at index I for an optional of this type. */
+        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::forward<U>(u)._value.template get<I>())
+        ) {
+            return (std::forward<U>(u)._value.template get<I>());
+        }
+
+        /* Dispatch to the proper state of this optional, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not the
+        empty state, then return an error indicating as such.  Otherwise, implicitly
+        propagate the empty state. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept(meta::nothrow::visit<F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
+                meta::visit<F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+
+            // valid state is always handled by definition
+            if constexpr (J == 0) {
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
+
+            // empty state is implicitly propagated if left unhandled
+            } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
+                if constexpr (meta::visit<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    type,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    return visit_recursive<R, idx>(
+                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                        prev,
+                        next,
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                } else if constexpr (meta::convertible_to<type, R>) {
+                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
+                } else if constexpr (meta::is_void<R>) {
+                    return;
+                } else {
+                    static_assert(
+                        meta::convertible_to<type, R>,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
+        }
+    };
+
+    /* `std::optional`s are treated like `Optional`. */
+    template <meta::std::optional T>
+    struct visitable<T> {
+        static constexpr bool enable = true;
+        static constexpr bool monad = false;
+        using type = T;
+        using wrapped = decltype((std::declval<T>().value()));
+        using alternatives = meta::pack<wrapped, NoneType>;
+        using empty = NoneType;
+        using errors = meta::pack<>;
+        template <typename U = T>
+        using to_optional = U;  // always flatten
+        template <typename... Errs>
+        using to_expected = Expected<T, Errs...>;
+
+        /* The active index of an optional is 0 for the empty state and 1 for the
+        non-empty state. */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            return !u.has_value();
+        }
+
+        /* Perfectly forward the member at index I for an optional of this type. */
+        template <size_t I, meta::is<T> U> requires (I == 0 && I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::forward<U>(u).value())
+        ) {
+            return (std::forward<U>(u).value());
+        }
+
+        /* Perfectly forward the member at index I for an optional of this type. */
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
+            return (None);
+        }
+
+        /* Dispatch to the proper state of this optional, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not the
+        empty state, then return an error indicating as such.  Otherwise, implicitly
+        propagate the empty state. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept(meta::nothrow::visit<F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
+                meta::visit<F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+
+            // valid state is always handled by definition
+            if constexpr (J == 0) {
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
+
+            // empty state is implicitly propagated if left unhandled
+            } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
+                if constexpr (meta::visit<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    type,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    return visit_recursive<R, idx>(
+                        None,
+                        prev,
+                        next,
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                } else if constexpr (meta::convertible_to<type, R>) {
+                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
+                } else if constexpr (meta::is_void<R>) {
+                    return;
+                } else {
+                    static_assert(
+                        meta::convertible_to<type, R>,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
+        }
+    };
+
 }
 
 
@@ -5225,6 +4980,11 @@ constexpr void swap(Optional<T>& a, Optional<T>& b)
 }
 
 
+////////////////////////
+////    EXPECTED    ////
+////////////////////////
+
+
 namespace impl {
 
     /* Return an informative error message if an expected is dereferenced while in an
@@ -5366,6 +5126,326 @@ namespace impl {
             )
         {
             return std::unexpected<meta::unqualify<from>>(std::forward<from>(value));
+        }
+    };
+
+    /* Expecteds are converted into packs including the result type (if not void)
+    followed by all error types. */
+    template <meta::Expected T>
+    struct visitable<T> {
+    private:
+
+        template <typename V>
+        struct _wrapped { using type = void; };
+        template <meta::not_void V>
+        struct _wrapped<V> {
+            using type = decltype((std::declval<T>().storage.value()));
+        };
+
+        template <size_t I, typename... Errs>
+        struct _pack {
+            using type = _pack<
+                I + 1,
+                Errs...,
+                decltype((std::declval<T>().template get_error<I>()))
+            >::type;
+        };
+        template <size_t I, typename... Errs>
+            requires (
+                meta::not_void<typename meta::unqualify<T>::value_type> &&
+                I == meta::unqualify<T>::errors::size()
+            )
+        struct _pack<I, Errs...> {
+            using type = meta::pack<
+                decltype((std::declval<T>().storage.value())),
+                Errs...
+            >;
+        };
+        template <size_t I, typename... Errs>
+            requires (
+                meta::is_void<typename meta::unqualify<T>::value_type> &&
+                I == meta::unqualify<T>::errors::size()
+            )
+        struct _pack<I, Errs...> {
+            using type = meta::pack<NoneType, Errs...>;
+        };
+
+    public:
+        static constexpr bool enable = true;
+        static constexpr bool monad = true;
+        using type = T;
+        using wrapped = _wrapped<typename meta::unqualify<T>::value_type>::type;
+        using alternatives = _pack<0>::type;
+        using empty = void;
+        using errors = meta::unqualify<T>::errors;
+        template <typename U = T>
+        using to_optional = Optional<U>;
+        template <typename... Errs>
+        using to_expected = Expected<typename meta::unqualify<T>::value_type, Errs...>;
+
+        /* The active index of an expected is 0 for the empty state and > 0 for the
+        error state(s). */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            if constexpr (errors::size() > 1) {
+                return u.has_value() ? 0 : u.get_error().index() + 1;
+            } else {
+                return u.has_error();
+            }
+        }
+
+        /* Perfectly forward the member at index I for an expected of this type. */
+        template <size_t I, meta::is<T> U> requires (I == 0 && meta::not_void<wrapped>)
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::forward<U>(u).storage.value())
+        ) {
+            return (std::forward<U>(u).storage.value());
+        }
+
+        /* Perfectly forward the member at index I for an expected of this type. */
+        template <size_t I, meta::is<T> U> requires (I == 0 && meta::is_void<wrapped>)
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
+            return (None);
+        }
+
+        /* Perfectly forward the member at index I for an expected of this type. */
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::forward<U>(u).template get_error<I - 1>())
+        ) {
+            return (std::forward<U>(u).template get_error<I - 1>());
+        }
+
+        /* Dispatch to the proper state of this expected, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not an
+        error state, return an error indicating as such.  Otherwise, implicitly
+        propagate the error state. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept(meta::nothrow::visit<F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
+                meta::visit<F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+
+            // valid state is always handled by definition
+            if constexpr (J == 0) {
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
+
+            // error states are implicitly propagated if left unhandled
+            } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
+                if constexpr (meta::visit<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    type,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    return visit_recursive<R, idx>(
+                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                        prev,
+                        next,
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                } else if constexpr (meta::convertible_to<type, R>) {
+                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
+                } else {
+                    static_assert(
+                        meta::convertible_to<type, R>,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
+        }
+    };
+
+    /* `std::expected`s are treated like `Expected`. */
+    template <meta::std::expected T>
+    struct visitable<T> {
+    private:
+
+        template <typename V>
+        struct _wrapped { using type = void; };
+        template <meta::not_void V>
+        struct _wrapped<V> {
+            using type = decltype((std::declval<T>().value()));
+        };
+
+        template <typename U>
+        struct _pack { using type = meta::pack<decltype((std::declval<T>().value()))>; };
+        template <meta::is_void U>
+        struct _pack<U> { using type = meta::pack<NoneType>; };
+
+        template <typename... Errs>
+        struct _to_expected {
+            using type =
+                std::expected<typename meta::unqualify<T>::value_type, Union<Errs...>>;
+        };
+        template <typename E>
+        struct _to_expected<E> {
+            using type =
+                std::expected<typename meta::unqualify<T>::value_type, E>;
+        };
+
+    public:
+        static constexpr bool enable = true;
+        static constexpr bool monad = false;
+        using type = T;
+        using wrapped = _wrapped<typename meta::unqualify<T>::value_type>::type;
+        using alternatives =
+            _pack<typename meta::unqualify<T>::value_type>::type::template concat<
+                typename visitable<decltype((std::declval<T>().error()))>::alternatives
+            >;
+        using empty = void;
+        using errors = visitable<decltype((std::declval<T>().error()))>::alternatives;
+        template <typename U = T>
+        using to_optional = Optional<U>;
+        template <typename... Errs>
+        using to_expected = _to_expected<Errs...>::type;
+
+        /* The active index of an expected is 0 for the empty state and > 0 for the
+        error state(s). */
+        template <meta::is<T> U>
+        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+            if constexpr (errors::size() > 1) {
+                return u.has_value() ?
+                    0 :
+                    visitable<decltype((u.error()))>::index(u.error()) + 1;
+            } else {
+                return u.has_value();
+            }
+        }
+
+        /* Perfectly forward the member at index I for an expected of this type. */
+        template <size_t I, meta::is<T> U>
+            requires (
+                meta::not_void<typename meta::unqualify<T>::value_type> &&
+                I == 0 && I < alternatives::size()
+            )
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(std::forward<U>(u).value())
+        ) {
+            return (std::forward<U>(u).value());
+        }
+
+        /* Perfectly forward the member at index I for an expected of this type. */
+        template <size_t I, meta::is<T> U>
+            requires (
+                meta::is_void<typename meta::unqualify<T>::value_type> &&
+                I == 0 && I < alternatives::size()
+            )
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
+            return (None);
+        }
+
+        /* Perfectly forward the member at index I for an expected of this type. */
+        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
+            noexcept(visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
+                std::forward<U>(u).error()
+            ))
+        ) {
+            return (visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
+                std::forward<U>(u).error()
+            ));
+        }
+
+        /* Dispatch to the proper state of this expected, then recur for the next
+        argument.  If the visitor can't handle the current state, and it is not an
+        error state, return an error indicating as such.  Otherwise, implicitly
+        propagate the error state. */
+        template <
+            typename R,
+            size_t idx,
+            size_t... Prev,
+            size_t... Next,
+            typename F,
+            typename... A
+        >
+        [[gnu::always_inline]] static constexpr R dispatch(
+            std::index_sequence<Prev...> prev,
+            std::index_sequence<Next...> next,
+            F&& func,
+            A&&... args
+        )
+            noexcept (meta::nothrow::visit<F, A...>)
+            requires (
+                sizeof...(Prev) < sizeof...(A) &&
+                meta::is<T, meta::unpack_type<sizeof...(Prev), A...>> &&
+                visit_index<idx, A...>(prev, next) < alternatives::size() &&
+                meta::visit<F, A...>
+            )
+        {
+            static constexpr size_t I = sizeof...(Prev);
+            static constexpr size_t J = visit_index<idx, A...>(prev, next);
+
+            // valid state is always handled by definition
+            if constexpr (J == 0) {
+                return visit_recursive<R, idx>(
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                    prev,
+                    next,
+                    std::forward<F>(func),
+                    std::forward<A>(args)...
+                );
+
+            // error states are implicitly propagated if left unhandled
+            } else {
+                using type = decltype((
+                    get<J>(meta::unpack_arg<I>(std::forward<A>(args)...))
+                ));
+                if constexpr (meta::visit<
+                    F,
+                    meta::unpack_type<Prev, A...>...,
+                    type,
+                    meta::unpack_type<I + 1 + Next, A...>...
+                >) {
+                    return visit_recursive<R, idx>(
+                        get<J>(meta::unpack_arg<I>(std::forward<A>(args)...)),
+                        prev,
+                        next,
+                        std::forward<F>(func),
+                        std::forward<A>(args)...
+                    );
+                } else if constexpr (meta::convertible_to<type, R>) {
+                    return get<J>(meta::unpack_arg<I>(std::forward<A>(args)...));
+                } else {
+                    static_assert(
+                        meta::convertible_to<type, R>,
+                        "unreachable: a non-exhaustive iterator must always "
+                        "return an `Expected` result"
+                    );
+                    std::unreachable();
+                }
+            }
         }
     };
 
@@ -5770,6 +5850,16 @@ constexpr void swap(Expected<T, Es...>& a, Expected<T, Es...>& b)
 {
     a.swap(b);
 }
+
+
+/////////////////////
+////    TUPLE    ////
+/////////////////////
+
+
+/// TODO: this could probably be moved fully into func.h, which would centralize
+/// most of the tuple logic there, alongside the ->* operator, argument annotations,
+/// etc.
 
 
 namespace impl {
@@ -6898,6 +6988,11 @@ namespace impl {
 }
 
 
+/////////////////////////////////
+////    MONADIC OPERATORS    ////
+/////////////////////////////////
+
+
 /// NOTE: All operators are conditionally supported for union types, but only if the
 /// underlying type(s) also support them according to the semantics of the wrapper.
 /// These all basically boil down to visitors that take advantage of the implicit
@@ -6909,7 +7004,7 @@ namespace impl {
 template <meta::monad T>
 constexpr decltype(auto) operator!(T&& val)
     noexcept (meta::nothrow::visit<impl::LogicalNot, T>)
-    requires (meta::visit<impl::LogicalNot, T>)
+    requires (!meta::explicitly_convertible_to<T, bool> && meta::visit<impl::LogicalNot, T>)
 {
     return (impl::visit(impl::LogicalNot{}, std::forward<T>(val)));
 }
@@ -6918,7 +7013,10 @@ constexpr decltype(auto) operator!(T&& val)
 template <typename L, typename R>
 constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::LogicalAnd, L, R>)
-    requires ((meta::monad<L> || meta::monad<R>) && meta::visit<impl::LogicalAnd, L, R>)
+    requires ((
+        (meta::monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
+        (meta::monad<R> && !meta::explicitly_convertible_to<R, bool>)
+    ) && meta::visit<impl::LogicalAnd, L, R>)
 {
     return (impl::visit(impl::LogicalAnd{}, std::forward<L>(lhs), std::forward<R>(rhs)));
 }
@@ -6927,7 +7025,10 @@ constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
 template <typename L, typename R>
 constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::LogicalOr, L, R>)
-    requires ((meta::monad<L> || meta::monad<R>) && meta::visit<impl::LogicalOr, L, R>)
+    requires ((
+        (meta::monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
+        (meta::monad<R> && !meta::explicitly_convertible_to<R, bool>)
+    ) && meta::visit<impl::LogicalOr, L, R>)
 {
     return (impl::visit(impl::LogicalOr{}, std::forward<L>(lhs), std::forward<R>(rhs)));
 }
@@ -7284,15 +7385,20 @@ namespace std {
     /// union/optional/expected interface, and consider perfectly forwarding the
     /// tuple interface if available.
 
+    /// TODO: ensure that None and exceptions are hashable, which makes the
+    /// std::hash specialization consistent.
+
     template <bertrand::meta::monad T>
         requires (bertrand::meta::visit<bertrand::impl::Hash, T>)
     struct hash<T> {
-        static constexpr auto operator()(auto&& value) noexcept (
-            bertrand::meta::nothrow::visit<bertrand::impl::Hash, T>
-        ) {
+        template <bertrand::meta::is<T> U>
+        static constexpr auto operator()(U&& value)
+            noexcept (bertrand::meta::nothrow::visit<bertrand::impl::Hash, U>)
+            requires (bertrand::meta::visit<bertrand::impl::Hash, U>)
+        {
             return bertrand::impl::visit(
                 bertrand::impl::Hash{},
-                std::forward<decltype(value)>(value)
+                std::forward<U>(value)
             );
         }
     };
