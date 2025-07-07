@@ -154,9 +154,6 @@ namespace meta {
     concept Optional = inherits<T, impl::optional_tag>;
 
     template <typename T>
-    concept unqualified_exception = unqualified<T> && Exception<T>;
-
-    template <typename T>
     concept Expected = inherits<T, impl::expected_tag>;
 
     template <typename T>
@@ -287,8 +284,8 @@ Bertrand uses this class internally to represent any errors that could occur dur
 normal program execution, outside of debug assertions.  The same convention is
 encouraged (though not required) for downstream users as well, so that the compiler
 can enforce exhaustive error handling via the type system. */
-template <typename T, meta::unqualified_exception E = Exception, meta::unqualified_exception... Es>
-    requires (meta::unique<T, E, Es...>)
+template <typename T, meta::unqualified E = Exception, meta::unqualified... Es>
+    requires ((meta::Exception<E> && ... && meta::Exception<Es>) && meta::unique<T, E, Es...>)
 struct Expected;
 
 
@@ -1841,17 +1838,12 @@ namespace impl {
     template <typename... Ts>
     using union_default_type = _union_default_type<Ts...>::type;
 
-    /// TODO: maybe I add another restriction that says that union_storage cannot be
-    /// instantiated with rvalue references as `Ts`.  The outer types can do this, but
-    /// the rvalue is always stripped before instantiating the union_storage internal
-    /// type.  This would probably simplify the implementation.
-
     /* A basic tagged union of alternatives `Ts...`, which automatically forwards
     lvalue references and provides vtable-based copy, move, swap, and destruction
     operators, as well as a `value()` accessor that walks the overall structure.
     This is a fundamental building block for sum types, which can dramatically reduce
     the amount of bookkeeping necessary to safely work with raw C unions. */
-    template <meta::not_void... Ts> requires (sizeof...(Ts) > 1)
+    template <meta::not_void... Ts> requires ((sizeof...(Ts) > 1) && ... && !meta::rvalue<Ts>)
     struct union_storage : union_storage_tag {
         using indices = std::index_sequence_for<Ts...>;
         using types = meta::pack<Ts...>;
@@ -1873,7 +1865,7 @@ namespace impl {
         union _type { constexpr ~_type() noexcept {}; };
         template <typename U, typename... Us> requires (!meta::lvalue<U>)
         union _type<U, Us...> {
-            [[no_unique_address]] meta::remove_rvalue<U> curr;
+            [[no_unique_address]] U curr;
             [[no_unique_address]] _type<Us...> rest;
 
             constexpr _type() noexcept {}
@@ -1881,8 +1873,8 @@ namespace impl {
 
             template <typename... A>
             constexpr _type(tag<0>, A&&... args)
-                noexcept (meta::nothrow::constructible_from<meta::remove_rvalue<U>, A...>)
-                requires (meta::constructible_from<meta::remove_rvalue<U>, A...>)
+                noexcept (meta::nothrow::constructible_from<U, A...>)
+                requires (meta::constructible_from<U, A...>)
             :
                 curr(std::forward<A>(args)...)
             {}
@@ -1931,15 +1923,15 @@ namespace impl {
             template <size_t I> requires (I == 0)
             constexpr void destroy()
                 noexcept (
-                    !meta::trivially_destructible<meta::remove_rvalue<U>> ||
+                    meta::trivially_destructible<U> ||
                     requires{{std::destroy_at(&curr)} noexcept;}
                 )
                 requires (
-                    !meta::trivially_destructible<meta::remove_rvalue<U>> ||
+                    meta::trivially_destructible<U> ||
                     requires{{std::destroy_at(&curr)};}
                 )
             {
-                if constexpr (!meta::trivially_destructible<meta::remove_rvalue<U>>) {
+                if constexpr (!meta::trivially_destructible<U>) {
                     std::destroy_at(&curr);
                 }
             }
@@ -2047,39 +2039,32 @@ namespace impl {
         }
 
     private:
-        static constexpr bool copyable =
-            ((meta::lvalue<Ts> || meta::copyable<meta::remove_rvalue<Ts>>) && ...);
+        static constexpr bool copyable = ((meta::lvalue<Ts> || meta::copyable<Ts>) && ...);
         static constexpr bool nothrow_copyable =
-            ((meta::lvalue<Ts> || meta::nothrow::copyable<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::nothrow::copyable<Ts>) && ...);
         static constexpr bool trivially_copyable =
-            ((meta::lvalue<Ts> || meta::trivially_copyable<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::trivially_copyable<Ts>) && ...);
 
         static constexpr bool movable =
-            ((meta::lvalue<Ts> || meta::movable<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::movable<Ts>) && ...);
         static constexpr bool nothrow_movable =
-            ((meta::lvalue<Ts> || meta::nothrow::movable<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::nothrow::movable<Ts>) && ...);
 
         static constexpr bool destructible =
-            ((meta::lvalue<Ts> || meta::destructible<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::destructible<Ts>) && ...);
         static constexpr bool nothrow_destructible =
-            ((meta::lvalue<Ts> || meta::nothrow::destructible<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::nothrow::destructible<Ts>) && ...);
         static constexpr bool trivially_destructible =
-            ((meta::lvalue<Ts> || meta::trivially_destructible<meta::remove_rvalue<Ts>>) && ...);
+            ((meta::lvalue<Ts> || meta::trivially_destructible<Ts>) && ...);
 
-        static constexpr bool swappable = ((meta::lvalue<Ts> || (
-            meta::destructible<meta::remove_rvalue<Ts>> &&
-            meta::movable<meta::remove_rvalue<Ts>>
-        )) && ...);
+        static constexpr bool swappable =
+            ((meta::lvalue<Ts> || (meta::destructible<Ts> && meta::movable<Ts>)) && ...);
         static constexpr bool nothrow_swappable = ((meta::lvalue<Ts> || (
-            meta::nothrow::destructible<meta::remove_rvalue<Ts>> &&
-            meta::nothrow::movable<meta::remove_rvalue<Ts>> && (
-                meta::nothrow::swappable<meta::remove_rvalue<Ts>> || (
-                    !meta::swappable<meta::remove_rvalue<Ts>> &&
-                    meta::nothrow::move_assignable<meta::remove_rvalue<Ts>>
-                ) || (
-                    !meta::swappable<meta::remove_rvalue<Ts>> &&
-                    !meta::move_assignable<meta::remove_rvalue<Ts>>
-                )
+            meta::nothrow::destructible<Ts> &&
+            meta::nothrow::movable<Ts> && (
+                meta::nothrow::swappable<Ts> ||
+                (!meta::swappable<Ts> && meta::nothrow::move_assignable<Ts>) ||
+                (!meta::swappable<Ts> && !meta::move_assignable<Ts>)
             )
         )) && ...);
 
@@ -2135,7 +2120,7 @@ namespace impl {
             {
                 static constexpr size_t J = I / sizeof...(Ts);
                 static constexpr size_t K = I % sizeof...(Ts);
-                using T = meta::remove_rvalue<meta::unpack_type<J, Ts...>>;
+                using T = meta::unpack_type<J, Ts...>;
 
                 // prefer a direct swap if the indices match and a corresponding operator
                 // is available
@@ -2321,73 +2306,6 @@ namespace impl {
                 std::index_sequence_for<Ts...>{},
                 self.index()
             ](std::forward<Self>(self));
-        }
-    };
-
-    /* A special case of `union_storage` for optional references, which encode the
-    reference as a raw pointer, with null representing the empty state.  This removes
-    the need for an additional tracking index. */
-    template <meta::None empty, meta::lvalue ref> requires (meta::has_address<ref>)
-    struct union_storage<empty, ref> {
-        using indices = std::index_sequence_for<empty, ref>;
-        using types = meta::pack<empty, ref>;
-        using default_type = empty;
-        using type = meta::address_type<ref>;
-
-        template <size_t I> requires (I < 2)
-        using tag = std::in_place_index_t<I>;
-
-        [[no_unique_address]] type m_data;
-
-        /* Default constructor always initializes to the empty state. */
-        [[nodiscard]] constexpr union_storage(tag<0> = tag<0>{}) noexcept : m_data(nullptr) {};
-
-        /* Tagged constructor specifically initializes the alternative at index `I`
-        with the given arguments. */
-        [[nodiscard]] explicit constexpr union_storage(tag<1>, ref r)
-            noexcept (meta::nothrow::has_address<ref>)
-        :
-            m_data(std::addressof(r))
-        {}
-
-        /* Special constructor that takes a pointer directly, enabling direct
-        conversions. */
-        [[nodiscard]] explicit constexpr union_storage(type p) noexcept : m_data(p) {}
-
-        /* Swap the contents of two unions as efficiently as possible. */
-        constexpr void swap(union_storage& other) noexcept {
-            std::swap(m_data, other.m_data);
-        }
-
-        /* Return the index of the active alternative. */
-        [[nodiscard]] constexpr size_t index() const noexcept { return m_data != nullptr; }
-
-        /* Access a specific value by index, where the index is known at compile
-        time. */
-        template <size_t I, typename Self> requires (I < 2)
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            if constexpr (I == 0) {
-                return (None);
-            } else {
-                return (*self.m_data);
-            }
-        }
-
-    private:
-        using common = impl::_union_flatten<const union_storage&>;
-
-    public:
-        /* If all alternatives share a common, interconvertible type, then convert to
-        that type.  Fails to compile if no such type exists. */
-        [[nodiscard]] constexpr common::type flatten() const
-            noexcept (common::nothrow)
-            requires (meta::not_void<typename common::type>)
-        {
-            if (m_data == nullptr) {
-                return None;
-            } else {
-                return *m_data;
-            }
         }
     };
 
@@ -3737,10 +3655,7 @@ struct Union : impl::union_tag {
     template <typename from>
     [[nodiscard]] constexpr Union(from&& v)
         noexcept (meta::nothrow::exhaustive<impl::union_convert_from<types, from>, from>)
-        requires (
-            meta::exhaustive<impl::union_convert_from<types, from>, from> &&
-            meta::consistent<impl::union_convert_from<types, from>, from>
-        )
+        requires (meta::exhaustive<impl::union_convert_from<types, from>, from>)
     :
         _value(impl::visit(
             impl::union_convert_from<types, from>{},
@@ -3759,8 +3674,7 @@ struct Union : impl::union_tag {
         requires (
             sizeof...(A) > 0 &&
             !meta::exhaustive<impl::union_convert_from<types, A...>, A...> &&
-            meta::exhaustive<impl::union_construct_from<Ts...>, A...> &&
-            meta::consistent<impl::union_construct_from<Ts...>, A...>
+            meta::exhaustive<impl::union_construct_from<Ts...>, A...>
         )
     :
         _value(impl::visit(impl::union_construct_from<Ts...>{}, std::forward<A>(args)...))
@@ -4056,6 +3970,73 @@ namespace impl {
     };
     template <typename curr> requires (DEBUG)
     constexpr vtable<_bad_optional_access<curr>::template visit> bad_optional_access;
+
+    /* A special case of `union_storage` for optional references, which encode the
+    reference as a raw pointer, with null representing the empty state.  This removes
+    the need for an additional tracking index. */
+    template <meta::None empty, meta::lvalue ref> requires (meta::has_address<ref>)
+    struct union_storage<empty, ref> {
+        using indices = std::index_sequence_for<empty, ref>;
+        using types = meta::pack<empty, ref>;
+        using default_type = empty;
+        using type = meta::address_type<ref>;
+
+        template <size_t I> requires (I < 2)
+        using tag = std::in_place_index_t<I>;
+
+        [[no_unique_address]] type m_data;
+
+        /* Default constructor always initializes to the empty state. */
+        [[nodiscard]] constexpr union_storage(tag<0> = tag<0>{}) noexcept : m_data(nullptr) {};
+
+        /* Tagged constructor specifically initializes the alternative at index `I`
+        with the given arguments. */
+        [[nodiscard]] explicit constexpr union_storage(tag<1>, ref r)
+            noexcept (meta::nothrow::has_address<ref>)
+        :
+            m_data(std::addressof(r))
+        {}
+
+        /* Special constructor that takes a pointer directly, enabling direct
+        conversions. */
+        [[nodiscard]] explicit constexpr union_storage(type p) noexcept : m_data(p) {}
+
+        /* Swap the contents of two unions as efficiently as possible. */
+        constexpr void swap(union_storage& other) noexcept {
+            std::swap(m_data, other.m_data);
+        }
+
+        /* Return the index of the active alternative. */
+        [[nodiscard]] constexpr size_t index() const noexcept { return m_data != nullptr; }
+
+        /* Access a specific value by index, where the index is known at compile
+        time. */
+        template <size_t I, typename Self> requires (I < 2)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (None);
+            } else {
+                return (*self.m_data);
+            }
+        }
+
+    private:
+        using common = impl::_union_flatten<const union_storage&>;
+
+    public:
+        /* If all alternatives share a common, interconvertible type, then convert to
+        that type.  Fails to compile if no such type exists. */
+        [[nodiscard]] constexpr common::type flatten() const
+            noexcept (common::nothrow)
+            requires (meta::not_void<typename common::type>)
+        {
+            if (m_data == nullptr) {
+                return None;
+            } else {
+                return *m_data;
+            }
+        }
+    };
 
     /* A simple visitor that backs the implicit constructor for an `Optional<T>`
     object, returning a corresponding `impl::union_storage` primitive type. */
@@ -4812,10 +4793,7 @@ struct Optional : impl::optional_tag {
     template <typename from>
     [[nodiscard]] constexpr Optional(from&& v)
         noexcept (meta::nothrow::exhaustive<impl::optional_convert_from<value_type, from>, from>)
-        requires (
-            meta::exhaustive<impl::optional_convert_from<value_type, from>, from> &&
-            meta::consistent<impl::optional_convert_from<value_type, from>, from>
-        )
+        requires (meta::exhaustive<impl::optional_convert_from<value_type, from>, from>)
     : 
         _value(impl::visit(
             impl::optional_convert_from<value_type, from>{},
@@ -4831,8 +4809,7 @@ struct Optional : impl::optional_tag {
         requires (
             sizeof...(A) > 0 &&
             !meta::exhaustive<impl::optional_convert_from<value_type, A...>, A...> &&
-            meta::exhaustive<impl::optional_construct_from<value_type>, A...> &&
-            meta::consistent<impl::optional_construct_from<value_type>, A...>
+            meta::exhaustive<impl::optional_construct_from<value_type>, A...>
         )
     :
         _value(impl::visit(
@@ -4887,7 +4864,7 @@ struct Optional : impl::optional_tag {
         return _value.index();
     }
     [[nodiscard, deprecated(
-        "contextual bool conversions are potentially ambiguous when used on optional "
+        "Contextual bool conversions are potentially ambiguous when used on optional "
         "booleans.  Consider an explicit comparison against `None`, a dereference "
         "with a leading `*`, or an exhaustive visitor using trailing `->*` instead. "
     )]] explicit constexpr operator bool() const noexcept
@@ -5331,47 +5308,11 @@ namespace impl {
         }
     };
 
-
-
-
     /// TODO: ensure that impl::visitable<Self> exposes the right fields.  When I
     /// refactor the visit internals, I can come back to this and ensure it all works,
     /// and possibly expand it to make the other trivial visitors generic in the
     /// same way.  That way they don't depend on the underlying union type or how it is
     /// implemented, using impl::visitable<Self> to handle the details.
-
-
-
-    /* A helper type to extract the proper error type from an `Expected<T, Es...>`. */
-    template <typename... Es>
-    struct expected_error { using type = bertrand::Union<Es...>; };
-    template <typename E>
-    struct expected_error<E> { using type = E; };
-
-    /* A simple visitor that backs the `Expected.value_or(fs...)` accessor, where
-    `fs...` are one or more functions that are collectively callable with all error
-    states of the expected.  If the expected specializes a `None` or `void` return
-    type, then the value path will return void, causing the visitor logic to promote
-    the final return type to an optional, or eliminate it entirely if the function also
-    returns void. */
-    template <typename Self>
-    struct expected_or_else {
-        using value_type = impl::visitable<Self>::value_type;
-        using empty_type = impl::visitable<Self>::empty_type;
-        template <typename F, meta::is<value_type> T>
-        static constexpr decltype(auto) operator()(F&&, T&& value) noexcept {
-            if constexpr (!meta::is<value_type, empty_type>) {
-                return (std::forward<T>(value));
-            }
-        }
-        template <typename F, typename E> requires (!meta::is<value_type, E>)
-        static constexpr decltype(auto) operator()(F&& func, E&& error)
-            noexcept (meta::nothrow::callable<F, E>)
-            requires (meta::callable<F, E>)
-        {
-            return (std::forward<F>(func)(std::forward<E>(error)));
-        }
-    };
 
     /* A simple visitor that backs the implicit conversion operator from
     `Expected<T, Es...>`, which attempts a normal visitor conversion where possible,
@@ -5399,16 +5340,44 @@ namespace impl {
         }
     };
 
+    /* A simple visitor that backs the explicit conversion operator from
+    `Expected<T, Es...>`, which attempts a normal visitor conversion where possible,
+    falling back to a conversion from `std::unexpected` to cover all STL types. */
+    template <typename Self, typename to>
+    struct expected_cast_to {
+        using value_type = impl::visitable<Self>::value_type;
+        template <typename from>
+        static constexpr to operator()(from&& value)
+            noexcept (meta::nothrow::explicitly_convertible_to<from, to>)
+            requires (meta::explicitly_convertible_to<from, to>)
+        {
+            return std::forward<from>(value);
+        }
+        template <typename from>
+        static constexpr to operator()(from&& value)
+            noexcept (meta::nothrow::explicitly_convertible_to<
+                std::unexpected<meta::unqualify<from>>,
+                to
+            >)
+            requires (
+                !meta::is<from, value_type> &&
+                !meta::explicitly_convertible_to<from, to> &&
+                meta::explicitly_convertible_to<std::unexpected<meta::unqualify<from>>, to>
+            )
+        {
+            return std::unexpected<meta::unqualify<from>>(std::forward<from>(value));
+        }
+    };
+
 }
 
 
-template <typename T, meta::unqualified_exception E, meta::unqualified_exception... Es>
-    requires (meta::unique<T, E, Es...>)
+template <typename T, meta::unqualified E, meta::unqualified... Es>
+    requires ((meta::Exception<E> && ... && meta::Exception<Es>) && meta::unique<T, E, Es...>)
 struct Expected : impl::expected_tag {
     using types = meta::pack<T, E, Es...>;
     using errors = meta::pack<E, Es...>;
     using value_type = std::conditional_t<meta::is_void<T>, NoneType, T>;
-    using error_type = impl::expected_error<E, Es...>::type;
 
     impl::union_storage<value_type, E, Es...> _value;
 
@@ -5425,10 +5394,7 @@ struct Expected : impl::expected_tag {
     template <typename from>
     [[nodiscard]] constexpr Expected(from&& v)
         noexcept (meta::nothrow::exhaustive<impl::expected_convert_from<types, from>, from>)
-        requires (
-            meta::exhaustive<impl::expected_convert_from<types, from>, from> &&
-            meta::consistent<impl::expected_convert_from<types, from>, from>
-        )
+        requires (meta::exhaustive<impl::expected_convert_from<types, from>, from>)
     :
         _value(impl::visit(
             impl::expected_convert_from<types, from>{},
@@ -5444,8 +5410,7 @@ struct Expected : impl::expected_tag {
         requires (
             sizeof...(A) > 0 &&
             !meta::exhaustive<impl::expected_convert_from<types, A...>, A...> &&
-            meta::exhaustive<impl::expected_construct_from<T, E, Es...>, A...> &&
-            meta::consistent<impl::expected_construct_from<T, E, Es...>, A...>
+            meta::exhaustive<impl::expected_construct_from<T, E, Es...>, A...>
         )
     :
         _value(impl::visit(
@@ -5464,6 +5429,25 @@ struct Expected : impl::expected_tag {
     {
         return impl::visit(
             impl::expected_convert_to<Self, to>{},
+            std::forward<Self>(self)
+        );
+    }
+
+    /* Explicitly convert the `Expected` to any other type to which all alternatives
+    can be explicitly converted.  If an error state is not directly convertible to the
+    type, the algorithm will try again with the type wrapped in `std::unexpected`
+    instead.  This operator only applies if an implicit conversion could not be
+    found. */
+    template <typename Self, typename to>
+    [[nodiscard]] explicit constexpr operator to(this Self&& self)
+        noexcept (meta::nothrow::exhaustive<impl::expected_cast_to<Self, to>, Self>)
+        requires (
+            !meta::exhaustive<impl::expected_convert_to<Self, to>, Self> &&
+            meta::exhaustive<impl::expected_cast_to<Self, to>, Self>
+        )
+    {
+        return impl::visit(
+            impl::expected_cast_to<Self, to>{},
             std::forward<Self>(self)
         );
     }
@@ -5777,10 +5761,10 @@ struct Expected : impl::expected_tag {
 };
 
 
-/* ADL swap() operator for `bertrand::Expected<T, E>`.  Equivalent to calling
+/* ADL swap() operator for `bertrand::Expected<T, Es...>`.  Equivalent to calling
 `a.swap(b)` as a member method. */
-template <typename T, typename E>
-constexpr void swap(Expected<T, E>& a, Expected<T, E>& b)
+template <typename T, typename... Es>
+constexpr void swap(Expected<T, Es...>& a, Expected<T, Es...>& b)
     noexcept (requires{{a.swap(b)} noexcept;})
     requires (requires{{a.swap(b)};})
 {
@@ -6914,9 +6898,14 @@ namespace impl {
 }
 
 
-/* Monadic logical NOT operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports logical NOT. */
+/// NOTE: All operators are conditionally supported for union types, but only if the
+/// underlying type(s) also support them according to the semantics of the wrapper.
+/// These all basically boil down to visitors that take advantage of the implicit
+/// propagation semantics of `impl::visit`, meaning the visitor only needs to handle
+/// the raw operation on the underlying types, and the rest is handled for free by the
+/// same visitor logic as everything else.
+
+
 template <meta::monad T>
 constexpr decltype(auto) operator!(T&& val)
     noexcept (meta::nothrow::visit<impl::LogicalNot, T>)
@@ -6926,10 +6915,6 @@ constexpr decltype(auto) operator!(T&& val)
 }
 
 
-/* Monadic logical AND operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports logical AND against the other
-operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::LogicalAnd, L, R>)
@@ -6939,10 +6924,6 @@ constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic logical OR operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports logical OR against the other
-operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::LogicalOr, L, R>)
@@ -6952,10 +6933,6 @@ constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic less-than comparison operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports less-than comparisons against the
-other operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Less, L, R>)
@@ -6965,10 +6942,6 @@ constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic less-than-or-equal comparison operator.  Delegates to `impl::visit()`,
-and is automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports less-than-or-equal comparisons
-against the other operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::LessEqual, L, R>)
@@ -6978,10 +6951,6 @@ constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic equality operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports equality comparisons against the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Equal, L, R>)
@@ -6991,10 +6960,6 @@ constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic inequality operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports equality comparisons against the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::NotEqual, L, R>)
@@ -7004,10 +6969,6 @@ constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic greater-than-or-equal comparison operator.  Delegates to `impl::visit()`,
-and is automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports greater-than-or-equal comparisons
-against the other operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::GreaterEqual, L, R>)
@@ -7017,10 +6978,6 @@ constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic greater-than comparison operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports greater-than-or-equal comparisons
-against the other operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Greater, L, R>)
@@ -7030,10 +6987,6 @@ constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic three-way comparison operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports three-way comparisons against the
-other operand (which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Spaceship, L, R>)
@@ -7043,9 +6996,6 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic unary plus operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports unary plus. */
 template <meta::monad T>
 constexpr decltype(auto) operator+(T&& val)
     noexcept (meta::nothrow::visit<impl::Pos, T>)
@@ -7055,9 +7005,6 @@ constexpr decltype(auto) operator+(T&& val)
 }
 
 
-/* Monadic unary minus operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports unary minus. */
 template <meta::monad T>
 constexpr decltype(auto) operator-(T&& val)
     noexcept (meta::nothrow::visit<impl::Neg, T>)
@@ -7067,9 +7014,6 @@ constexpr decltype(auto) operator-(T&& val)
 }
 
 
-/* Monadic prefix increment operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one tyoe within the monad supports prefix increments. */
 template <meta::monad T>
 constexpr decltype(auto) operator++(T&& val)
     noexcept (meta::nothrow::visit<impl::PreIncrement, T>)
@@ -7079,9 +7023,6 @@ constexpr decltype(auto) operator++(T&& val)
 }
 
 
-/* Monadic postfix increment operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports postfix increments. */
 template <meta::monad T>
 constexpr decltype(auto) operator++(T&& val, int)
     noexcept (meta::nothrow::visit<impl::PostIncrement, T>)
@@ -7091,9 +7032,6 @@ constexpr decltype(auto) operator++(T&& val, int)
 }
 
 
-/* Monadic prefix decrement operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports prefix decrements. */
 template <meta::monad T>
 constexpr decltype(auto) operator--(T&& val)
     noexcept (meta::nothrow::visit<impl::PreDecrement, T>)
@@ -7102,9 +7040,7 @@ constexpr decltype(auto) operator--(T&& val)
     return (impl::visit(impl::PreDecrement{}, std::forward<T>(val)));
 }
 
-/* Monadic postfix decrement operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to
-true and at least one type within the monad supports postfix decrements. */
+
 template <meta::monad T>
 constexpr decltype(auto) operator--(T&& val, int)
     noexcept (meta::nothrow::visit<impl::PostDecrement, T>)
@@ -7114,10 +7050,6 @@ constexpr decltype(auto) operator--(T&& val, int)
 }
 
 
-/* Monadic addition operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports addition with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Add, L, R>)
@@ -7127,10 +7059,6 @@ constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place addition operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports addition with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceAdd, L, R>)
@@ -7140,10 +7068,6 @@ constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic subtraction operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports subtraction with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Subtract, L, R>)
@@ -7153,10 +7077,6 @@ constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place subtraction operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports subtraction with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceSubtract, L, R>)
@@ -7170,10 +7090,6 @@ constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic multiplication operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports multiplication with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Multiply, L, R>)
@@ -7183,10 +7099,6 @@ constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place multiplication operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports multiplication with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceMultiply, L, R>)
@@ -7200,10 +7112,6 @@ constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic division operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports division with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Divide, L, R>)
@@ -7213,10 +7121,6 @@ constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place division operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports division with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceDivide, L, R>)
@@ -7230,10 +7134,6 @@ constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic modulus operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports modulus with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::Modulus, L, R>)
@@ -7243,10 +7143,6 @@ constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place modulus operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports modulus with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceModulus, L, R>)
@@ -7260,10 +7156,6 @@ constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic left shift operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports left shifts with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator<<(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::LeftShift, L, R>)
@@ -7273,10 +7165,6 @@ constexpr decltype(auto) operator<<(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place left shift operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports left shifts with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceLeftShift, L, R>)
@@ -7290,10 +7178,6 @@ constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic right shift operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports right shifts with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator>>(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::RightShift, L, R>)
@@ -7303,10 +7187,6 @@ constexpr decltype(auto) operator>>(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place right shift operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports right shifts with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceRightShift, L, R>)
@@ -7320,9 +7200,6 @@ constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic bitwise NOT operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports bitwise NOT. */
 template <meta::monad T>
 constexpr decltype(auto) operator~(T&& val)
     noexcept (meta::nothrow::visit<impl::BitwiseNot, T>)
@@ -7332,10 +7209,6 @@ constexpr decltype(auto) operator~(T&& val)
 }
 
 
-/* Monadic bitwise AND operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports bitwise AND with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::BitwiseAnd, L, R>)
@@ -7345,10 +7218,6 @@ constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place bitwise AND operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports bitwise AND with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceBitwiseAnd, L, R>)
@@ -7362,10 +7231,6 @@ constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic bitwise OR operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports bitwise OR with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::BitwiseOr, L, R>)
@@ -7375,10 +7240,6 @@ constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place bitwise OR operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports bitwise OR with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceBitwiseOr, L, R>)
@@ -7392,10 +7253,6 @@ constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic bitwise XOR operator.  Delegates to `impl::visit()`, and is automatically
-defined for any type where `bertrand::meta::monad<T>` evaluates to true and at least
-one type within the monad supports bitwise XOR with the other operand (which may be
-another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::BitwiseXor, L, R>)
@@ -7405,10 +7262,6 @@ constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
 }
 
 
-/* Monadic in-place bitwise XOR operator.  Delegates to `impl::visit()`, and is
-automatically defined for any type where `bertrand::meta::monad<T>` evaluates to true
-and at least one type within the monad supports bitwise XOR with the other operand
-(which may be another monad). */
 template <typename L, typename R>
 constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::visit<impl::InplaceBitwiseXor, L, R>)
