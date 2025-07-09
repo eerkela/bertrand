@@ -423,12 +423,70 @@ namespace meta {
             }
         }
 
+    }
+
+    /* Concept is satisfied only when `T` is an arbitrarily qualified */
+    template <typename T>
+    concept is_pack = detail::is_pack<unqualify<T>>;
+
+    /* Get the count of a particular type within a parameter pack.  Returns zero if
+    the type is not present. */
+    template <typename Search, typename... Ts>
+    constexpr size_t count_of = (::std::same_as<Search, Ts> + ... + 0);
+
+    /* Get the index of a particular type within a parameter pack.  Returns the pack's
+    size if the type is not present. */
+    template <typename Search, typename... Ts>
+    constexpr size_t index_of = detail::index_of<Search, 0, Ts...>;
+
+    /* Get the type at a particular index of a parameter pack. */
+    template <ssize_t I, typename... Ts> requires (impl::valid_index<sizeof...(Ts), I>)
+    using unpack_type = detail::unpack_type<
+        impl::normalize_index<sizeof...(Ts), I>(),
+        Ts...
+    >::type;
+
+    /* Unpack the non-type template parameter at a particular index of a parameter
+    pack. */
+    template <ssize_t I, auto... Vs> requires (impl::valid_index<sizeof...(Vs), I>)
+    constexpr auto unpack_value = detail::unpack_value<
+        impl::normalize_index<sizeof...(Vs), I>(),
+        Vs...
+    >;
+
+    /* Index into a parameter pack and perfectly forward a single item. */
+    template <ssize_t I, typename... Ts> requires (impl::valid_index<sizeof...(Ts), I>)
+    constexpr decltype(auto) unpack_arg(Ts&&... args) noexcept {
+        return detail::unpack_arg<impl::normalize_index<sizeof...(Ts), I>()>(
+            ::std::forward<Ts>(args)...
+        );
+    }
+
+    namespace detail {
+
         template <typename out, typename...>
         struct concat { using type = out; };
         template <typename... out, typename... curr, typename... next>
         struct concat<pack<out...>, pack<curr...>, next...> {
             using type = concat<pack<out..., curr...>, next...>::type;
         };
+
+        template <typename out, typename...>
+        struct concat_unique { using type = out; };
+        template <typename... out, typename... next>
+        struct concat_unique<pack<out...>, pack<>, next...> :
+            concat_unique<pack<out...>, next...>
+        {};
+        template <typename... out, typename T, typename... Ts, typename... next>
+            requires (!::std::same_as<T, out> || ...)
+        struct concat_unique<pack<out...>, pack<T, Ts...>, next...> :
+            concat_unique<pack<out..., T>, pack<Ts...>, next...>
+        {};
+        template <typename... out, typename T, typename... Ts, typename... next>
+            requires (::std::same_as<T, out> || ...)
+        struct concat_unique<pack<out...>, pack<T, Ts...>, next...> :
+            concat_unique<pack<out...>, pack<Ts...>, next...>
+        {};
 
         template <typename out, typename...>
         struct reverse { using type = out; };
@@ -593,46 +651,20 @@ namespace meta {
 
     }
 
-    /* Concept is satisfied only when `T` is an arbitrarily qualified */
-    template <typename T>
-    concept is_pack = detail::is_pack<unqualify<T>>;
-
-    /* Get the count of a particular type within a parameter pack.  Returns zero if
-    the type is not present. */
-    template <typename Search, typename... Ts>
-    constexpr size_t count_of = (::std::same_as<Search, Ts> + ... + 0);
-
-    /* Get the index of a particular type within a parameter pack.  Returns the pack's
-    size if the type is not present. */
-    template <typename Search, typename... Ts>
-    constexpr size_t index_of = detail::index_of<Search, 0, Ts...>;
-
-    /* Get the type at a particular index of a parameter pack. */
-    template <ssize_t I, typename... Ts> requires (impl::valid_index<sizeof...(Ts), I>)
-    using unpack_type = detail::unpack_type<
-        impl::normalize_index<sizeof...(Ts), I>(),
-        Ts...
-    >::type;
-
-    /* Unpack the non-type template parameter at a particular index of a parameter
-    pack. */
-    template <ssize_t I, auto... Vs> requires (impl::valid_index<sizeof...(Vs), I>)
-    constexpr auto unpack_value = detail::unpack_value<
-        impl::normalize_index<sizeof...(Vs), I>(),
-        Vs...
-    >;
-
-    /* Index into a parameter pack and perfectly forward a single item. */
-    template <ssize_t I, typename... Ts> requires (impl::valid_index<sizeof...(Ts), I>)
-    constexpr decltype(auto) unpack_arg(Ts&&... args) noexcept {
-        return detail::unpack_arg<impl::normalize_index<sizeof...(Ts), I>()>(
-            ::std::forward<Ts>(args)...
-        );
-    }
-
     /* Return a pack with the merged contents of all constituent packs. */
     template <is_pack... packs>
     using concat = detail::concat<pack<>, unqualify<packs>...>::type;
+
+    template <is_pack... packs>
+    using concat_unique = detail::concat_unique<pack<>, unqualify<packs>...>::type;
+
+    /* Append types to a pack. */
+    template <is_pack P, typename... Ts>
+    using append = concat<P, pack<Ts...>>;
+
+    /* Append types to a pack if they are not already contained within it. */
+    template <is_pack P, typename... Ts>
+    using append_unique = concat_unique<P, pack<Ts...>>;
 
     /* Return a pack containing the types in `Ts...`, but in the opposite order. */
     template <typename... Ts>
@@ -738,11 +770,21 @@ namespace meta {
 
         /* Get a new pack with one or more types appended after the current contents. */
         template <typename... Us>
-        using append = pack<Ts..., Us...>;
+        using append = meta::append<pack, Us...>;
+
+        /* Get a new pack with the given types appended after the current contents, but
+        only if they are not already contained in the pack. */
+        template <typename... Us>
+        using append_unique = meta::append_unique<pack, Us...>;
 
         /* Member equivalent for `meta::concat<pack, packs...>`. */
         template <typename... packs> requires (requires{typename meta::concat<pack, packs...>;})
         using concat = meta::concat<pack, packs...>;
+
+        /* Member equivalent for `meta::concat_unique<pack, packs...>`. */
+        template <typename... packs>
+            requires (requires{typename meta::concat_unique<pack, packs...>;})
+        using concat_unique = meta::concat_unique<pack, packs...>;
 
         /* Member equivalent for `meta::repeat<N, Ts...>`. */
         template <size_type N>
@@ -2072,7 +2114,7 @@ namespace meta {
     ///////////////////////////////////
 
     /// TODO: include typed_get concepts, as well as get_if() support, then generalize
-    /// tuple_get() for both cases?  This becomes dramatically simpler if/when
+    /// unpack_tuple() for both cases?  This becomes dramatically simpler if/when
     /// universal template parameters become available.
 
     namespace detail {
@@ -2270,23 +2312,44 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T, size_t... I>
-        constexpr bool structured(std::index_sequence<I...>) noexcept {
-            return (meta::has_get<T, I> && ...);
-        }
+        template <typename, typename>
+        constexpr bool structured = false;
+        template <typename T, size_t... Is>
+        constexpr bool structured<T, ::std::index_sequence<Is...>> = (meta::has_get<T, Is> && ...);
+
+        template <typename, typename>
+        constexpr bool nothrow_structured = false;
+        template <typename T, size_t... Is>
+        constexpr bool nothrow_structured<T, ::std::index_sequence<Is...>> =
+            (meta::nothrow::has_get<T, Is> && ...);
 
     }
 
     template <typename T, size_t N>
     concept structured =
         ::std::tuple_size<unqualify<T>>::value == N &&
-        detail::structured<T>(std::make_index_sequence<N>{});
+        detail::structured<T, ::std::make_index_sequence<N>>;
 
     template <typename T>
     concept tuple_like = structured<T, ::std::tuple_size<unqualify<T>>::value>;
 
     template <tuple_like T>
     constexpr size_t tuple_size = ::std::tuple_size<unqualify<T>>::value;
+
+    namespace nothrow {
+
+        template <typename T, size_t N>
+        concept structured =
+            meta::structured<T, N> &&
+            detail::nothrow_structured<T, std::make_index_sequence<N>>;
+
+        template <typename T>
+        concept tuple_like = nothrow::structured<T, ::std::tuple_size<unqualify<T>>::value>;
+
+        template <tuple_like T>
+        constexpr size_t tuple_size = ::std::tuple_size<unqualify<T>>::value;
+
+    }
 
     namespace detail {
 
@@ -2298,19 +2361,19 @@ namespace meta {
             using type = tuple_types<I + 1, T, Ts..., meta::get_type<T, I>>::type;
         };
 
-        template <typename T, typename... Ts>
-        struct structured_with {
-            template <size_t I, typename... Us>
-            static constexpr bool _value = true;
+        template <typename T, typename, typename...>
+        constexpr bool structured_with = false;
+        template <typename T, size_t... Is, typename... Ts>
+            requires (sizeof...(Is) == sizeof...(Ts))
+        constexpr bool structured_with<T, ::std::index_sequence<Is...>, Ts...> =
+            (meta::get_returns<Ts, T, Is> && ...);
 
-            template <size_t I, typename U, typename... Us>
-            static constexpr bool _value<I, U, Us...> = (
-                requires(T t) { { get<I>(t) } -> meta::convertible_to<U>; } ||
-                requires(T t) { { ::std::get<I>(t) } -> meta::convertible_to<U>; }
-            ) && _value<I + 1, Us...>;
-
-            static constexpr bool value = _value<0, Ts...>;
-        };
+        template <typename T, typename, typename...>
+        constexpr bool nothrow_structured_with = false;
+        template <typename T, size_t... Is, typename... Ts>
+            requires (sizeof...(Is) == sizeof...(Ts))
+        constexpr bool nothrow_structured_with<T, ::std::index_sequence<Is...>, Ts...> =
+            (meta::nothrow::get_returns<Ts, T, Is> && ...);
 
     }
 
@@ -2319,12 +2382,25 @@ namespace meta {
 
     template <typename T, typename... Ts>
     concept structured_with =
-        structured<T, sizeof...(Ts)> && detail::structured_with<T, Ts...>::value;
+        structured<T, sizeof...(Ts)> &&
+        detail::structured_with<T, ::std::index_sequence_for<Ts...>, Ts...>;
+
+    namespace nothrow {
+
+        template <nothrow::tuple_like T>
+        using tuple_types = meta::tuple_types<T>;
+
+        template <typename T, typename... Ts>
+        concept structured_with =
+            nothrow::structured<T, sizeof...(Ts)> &&
+            detail::structured_with<T, ::std::index_sequence_for<Ts...>, Ts...>;
+
+    }
 
     /* Do an integer-based `get<I>()` access on a tuple-like type by first checking for
     a `t.get<I>()` member method. */
     template <size_t I, tuple_like T>
-    constexpr decltype(auto) tuple_get(T&& t)
+    constexpr decltype(auto) unpack_tuple(T&& t)
         noexcept(nothrow::has_member_get<T, I>)
         requires(has_member_get<T, I>)
     {
@@ -2334,7 +2410,7 @@ namespace meta {
     /* If no `t.get<I>()` member method is found, attempt an ADL-enabled `get<I>(t)`
     instead. */
     template <size_t I, tuple_like T>
-    constexpr decltype(auto) tuple_get(T&& t)
+    constexpr decltype(auto) unpack_tuple(T&& t)
         noexcept(nothrow::has_adl_get<T, I>)
         requires(!has_member_get<T, I> && has_adl_get<T, I>)
     {

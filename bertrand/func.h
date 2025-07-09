@@ -1943,13 +1943,13 @@ struct unpack {
     template <size_t I, typename Self> requires (meta::tuple_like<C>)
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
         noexcept (requires{
-            {meta::tuple_get<I>(std::forward<Self>(self).container)} noexcept;
+            {meta::unpack_tuple<I>(std::forward<Self>(self).container)} noexcept;
         })
         requires (requires{
-            {meta::tuple_get<I>(std::forward<Self>(self).container)};
+            {meta::unpack_tuple<I>(std::forward<Self>(self).container)};
         })
     {
-        return (meta::tuple_get<I>(std::forward<Self>(self).container));
+        return (meta::unpack_tuple<I>(std::forward<Self>(self).container));
     }
 
     /* All unpack proxies have a definite size, which may be known at compile time if
@@ -3002,13 +3002,13 @@ namespace impl {
         requires (meta::tuple_size<T> == sizeof...(Is))
     constexpr decltype(auto) call_tuple(F&& f, T&& t, std::index_sequence<Is...>)
         noexcept (requires{
-            {std::forward<F>(f)(meta::tuple_get<Is>(std::forward<T>(t))...)} noexcept;
+            {std::forward<F>(f)(meta::unpack_tuple<Is>(std::forward<T>(t))...)} noexcept;
         })
         requires (requires{
-            {std::forward<F>(f)(meta::tuple_get<Is>(std::forward<T>(t))...)};
+            {std::forward<F>(f)(meta::unpack_tuple<Is>(std::forward<T>(t))...)};
         })
     {
-        return (std::forward<F>(f)(meta::tuple_get<Is>(std::forward<T>(t))...));
+        return (std::forward<F>(f)(meta::unpack_tuple<Is>(std::forward<T>(t))...));
     }
 
     /* A wrapper around a function `F` that expects a tuple-like argument of type `T`

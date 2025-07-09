@@ -138,6 +138,10 @@ namespace impl {
 
 namespace meta {
 
+    /// TODO: delete meta::monad and merge it with meta::visitable, since that's a
+    /// lot better defined, and maps onto the operator overloads at the end of the
+    /// file.
+
     template <typename T>
     concept visitable = impl::visitable<T>::enable;
 
@@ -281,8 +285,7 @@ Bertrand uses this class internally to represent any errors that could occur dur
 normal program execution, outside of debug assertions.  The same convention is
 encouraged (though not required) for downstream users as well, so that the compiler
 can enforce exhaustive error handling via the type system. */
-template <typename T, meta::unqualified E = Exception, meta::unqualified... Es>
-    requires ((meta::Exception<E> && ... && meta::Exception<Es>) && meta::unique<T, E, Es...>)
+template <typename T, typename E = Exception, typename... Es> requires (meta::unique<T, E, Es...>)
 struct Expected;
 
 
@@ -320,6 +323,9 @@ Tuple(Ts&&...) -> Tuple<meta::remove_rvalue<Ts>...>;
 
 namespace meta {
 
+    /// TODO: visit_size should account for flattening of sum types, which also has to
+    /// be handled delicately in the type inference logic.
+
     /* Scaling is needed to uniquely encode the index sequence of all possible
     permutations for a given set of union types. */
     template <typename... As>
@@ -327,108 +333,214 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T, typename... Ts>
-        struct append_if_unique { using type = meta::pack<Ts...>; };
-        template <typename T, typename... Ts> requires (!::std::same_as<T, Ts> && ...)
-        struct append_if_unique<T, Ts...> { using type = meta::pack<Ts..., T>; };
+        /// TODO: impl::visitable must expose
+        /// ::value - either a self-reference or the dereference type for an optional/expected
+        /// ::empty - void or an empty sentinel
+        /// ::errors - a pack of all expected error states.
 
-        /* `_visit_filter<F, P>` detects whether the argument list represented by
-        permutation `P` is a valid input to the visitor function `F`, then deduces the
-        return type/noexcept status if so.  The return type is only appended to
-        `Rs...` if it is not void and not already present. */
-        template <typename F, typename P>
-        struct _visit_filter {
-            static constexpr bool enable = false;
-            static constexpr bool nothrow = true;
-        };
-        template <typename F, typename... A> requires (meta::callable<F, A...>)
-        struct _visit_filter<F, meta::pack<A...>> {
+        /// Each of these will need to be recursive, meaning that `visitable<Expected<Optional<T>>>`
+        /// should merge traits from both `Expected` and `Optional`, and account for that
+        /// in the indexing logic.  Unless I can somehow factor it out into separate
+        /// helpers that wrap around a visitable definition and give the correct, recursive
+        /// results.
+
+
+        /// NOTE: The visit metafunction is split up into 3 main parts.
+        ///
+        ///     1.  Compute the cartesian product of all alternatives for each visitable
+        ///         argument, which is done by inspecting `impl::visitable::alternatives`
+        ///         for each argument type.
+        ///     2.  Test all permutations against the visitor function, throwing away
+        ///         any that are invalid, and detecting the return type(s) and noexcept
+        ///         status for each valid permutation.  If the return type is itself
+        ///         visitable, then it will be broken down into its constituent parts
+        ///         as inputs to step 3.
+        ///     3.  Recur over the arguments once again, checking each alternative to
+        ///         see if it appears in the valid permutations, indicating that it has
+        ///         been handled by the visitor.  If not, and it represents the empty
+        ///         state of an optional or error state of an expected, then it can be
+        ///         implicitly propagated to the return type, merging with the results
+        ///         from step 2.  Otherwise, the visitor is invalid, and will fail to
+        ///         compile.
+        ///
+        /// The overall return type reflects all of the unique return types from the
+        /// valid permutations, with empty and error states merged and flattened
+        /// alongside any that could be implicitly propagated.
+
+        /* `_visit_permutation<F, P>` detects whether the argument list represented by
+        permutation `P` is a valid input to the visitor function `F`, and then deduces
+        the return type/noexcept status, and evaluates the `::values`, `::has_void`,
+        `::optional`, and `::errors` fields, respectively. */
+        template <typename F, typename P, typename R, typename E>
+        struct _visit_permutation { static constexpr bool enable = false; };
+        template <typename F, typename... A, typename R, typename E>
+            requires (meta::callable<F, A...>)
+        struct _visit_permutation<F, meta::pack<A...>, R, E> {
+        private:
+            using T = meta::call_type<F, A...>;
+
+        public:
             static constexpr bool enable = true;
             static constexpr bool nothrow = meta::nothrow::callable<F, A...>;
             static constexpr bool has_void = false;
-            template <typename... R>
-            using type = append_if_unique<meta::call_type<F, A...>, R...>::type;
+            static constexpr bool optional = meta::not_void<typename impl::visitable<T>::empty>;
+            /// NOTE: note that values doesn't immediately expand the return types,
+            /// so that we can correctly analyze `consistent` return types, even when
+            /// those types are themselves unions.  They will be flattened later to
+            /// deduce the overall return type.
+            using values = R::template append_unique<typename impl::visitable<T>::value>;
+            using errors = E::template concat_unique<typename impl::visitable<T>::errors>;
         };
-        template <typename F, typename... A> requires (meta::call_returns<void, F, A...>)
-        struct _visit_filter<F, meta::pack<A...>> {
+        template <typename F, typename... A, typename R, typename E>
+            requires (meta::call_returns<void, F, A...>)
+        struct _visit_permutation<F, meta::pack<A...>, R, E> {
             static constexpr bool enable = true;
             static constexpr bool nothrow = meta::nothrow::callable<F, A...>;
             static constexpr bool has_void = true;
-            template <typename... R>
-            using type = meta::pack<R...>;
+            static constexpr bool optional = false;
+            using values = R;
+            using errors = E;
         };
 
-        /* `visit_filter<...>` recurs over all permutations and applies
-        `_visit_filter<F, P>` to detect the valid permutations and deduce the unique,
-        non-void return types in the same pass. */
+        /* `visit_permutations<...>` recurs over all permutations and applies
+        `_visit_permutation<F, P>` to detect the valid permutations and deduce the
+        unique, non-void return types in the same pass. */
         template <
             typename F,  // visitor function
-            bool nothrow,  // true if all prior permutations are noexcept
-            bool has_void,  // true if a valid permutation returned void
-            typename returns,  // valid return types found so far
-            typename valid,  // valid permutations found so far
+            typename permutations_,  // valid permutations found so far
+            typename returns__,  // unique, non-void return types found so far
+            typename errors_,  // accumulated error states
+            bool nothrow_,  // true if all prior permutations are noexcept
+            bool has_void_,  // true if a valid permutation returned void
+            bool optional_,  // true if an optional return type was encountered
             typename...
         >
-        struct visit_filter {
-            /// TODO: remove trailing underscores
-            static constexpr bool nothrow_ = nothrow;
-            static constexpr bool consistent = returns::size() <= 1;
-            static constexpr bool has_void_ = has_void;
-            using return_types = returns;
-            using valid_permutations = valid;
+        struct visit_permutations {
+            using permutations = permutations_;
+            using returns = returns__;
+            using errors = errors_;
+            static constexpr bool nothrow = nothrow_;
+            static constexpr bool has_void = has_void_;
+            static constexpr bool optional = optional_;
         };
         template <
             typename F,
+            typename... permutations,
+            typename returns,
+            typename errors,
             bool nothrow,
             bool has_void,
-            typename... Rs,
-            typename... valid,
+            bool optional,
             typename P,
             typename... Ps
-        > requires (_visit_filter<F, P>::enable)
-        struct visit_filter<
+        > requires (_visit_permutation<F, P, returns, errors>::enable)
+        struct visit_permutations<
             F,
+            meta::pack<permutations...>,
+            returns,
+            errors,
             nothrow,
             has_void,
-            meta::pack<Rs...>,
-            meta::pack<valid...>,
+            optional,
             P,
             Ps...
-        > : visit_filter<
+        > : visit_permutations<
             F,
-            nothrow && _visit_filter<F, P>::nothrow,
-            has_void || _visit_filter<F, P>::has_void,
-            typename _visit_filter<F, P>::template type<Rs...>,
-            meta::pack<valid..., P>,
+            meta::pack<permutations..., P>,
+            typename _visit_permutation<F, P, returns, errors>::returns,
+            typename _visit_permutation<F, P, returns, errors>::errors,
+            nothrow && _visit_permutation<F, P, returns, errors>::nothrow,
+            has_void || _visit_permutation<F, P, returns, errors>::has_void,
+            optional || _visit_permutation<F, P, returns, errors>::optional,
             Ps...
         > {};
         template <
             typename F,
+            typename permutations,
+            typename returns,
+            typename errors,
             bool nothrow,
             bool has_void,
-            typename... Rs,
-            typename... valid,
+            bool optional,
             typename P,
             typename... Ps
-        > requires (!_visit_filter<F, P>::enable)
-        struct visit_filter<
+        > requires (!_visit_permutation<F, P, returns, errors>::enable)
+        struct visit_permutations<
             F,
+            permutations,
+            returns,
+            errors,
             nothrow,
             has_void,
-            meta::pack<Rs...>,
-            meta::pack<valid...>,
+            optional,
             P,
             Ps...
-        > : visit_filter<
+        > : visit_permutations<
             F,
+            permutations,
+            returns,
+            errors,
             nothrow,
             has_void,
-            meta::pack<Rs...>,
-            meta::pack<valid...>,
+            optional,
             Ps...
         >{};
 
-        /* `visit_deduce<...>` takes the valid permutations, deduced return types, and
+        /* Collapsed return types need to be flattened after checking all permutations
+        and before deducing the final return type. */
+        /// TODO: this should be pretty simple, and just consist of concatenating the
+        /// results from meta::detail::visit_alternatives, which handles the recursive
+        /// expansion so that impl::visitable specializations don't need to.
+
+
+        /* If there are multiple non-void return types, then we need to return a
+        `Union` of those types.  Otherwise, we return the type itself if there is
+        only one, or void if there are none. */
+        template <typename>
+        struct visit_to_union { using type = void; };
+        template <typename R>
+        struct visit_to_union<meta::pack<R>> { using type = R; };
+        template <typename... Rs>
+        struct visit_to_union<meta::pack<Rs...>> { using type = bertrand::Union<Rs...>; };
+
+        /* If `option` is true (indicating either an unhandled empty state or void
+        return type), then the result deduces to `Optional<R>`, where `R` is the output
+        from `visit_to_union`.  If `R` is itself an optional type, then it will be
+        flattened into the output. */
+        template <typename R, bool optional>
+        struct visit_to_optional { using type = R; };
+        template <meta::not_void R>
+        struct visit_to_optional<R, true> { using type = bertrand::Optional<R>; };
+
+        /* If there are any accumulated error states, then the result will be further
+        wrapped in `Expected<R, errors...>` to propagate them. */
+        template <typename R, typename>
+        struct visit_to_expected { using type = R; };
+        template <typename R, typename... errors> requires (sizeof...(errors) > 0)
+        struct visit_to_expected<R, meta::pack<errors...>> {
+            using type = bertrand::Expected<R, errors...>;
+        };
+
+        /* Merges a set of unique, non-void return types, an optional flag, and a set
+        of accumulated error states into a final return type. */
+        template <typename returns, bool optional, typename errors>
+        using visit_type = visit_to_expected<
+            typename visit_to_optional<
+                typename visit_to_union<returns>::type,
+                optional
+            >::type,
+            errors
+        >::type;
+
+        /* Check whether all valid return types are nothrow convertible to a specific
+        type. */
+        template <typename, typename>
+        static constexpr bool visit_nothrow = false;
+        template <typename... Rs, typename to>
+        static constexpr bool visit_nothrow<meta::pack<Rs...>, to> =
+            (meta::nothrow::convertible_to<Rs, to> && ...);
+
+        /* `visit_returns<...>` takes the valid permutations, deduced return types, and
         original arguments and combines them to form the final return type for the
         visitor.  This works by recurring over the arguments and checking to see if all
         alternatives at each index occur at least once in the valid permutations.  If
@@ -437,60 +549,206 @@ namespace meta {
         `impl::visitable<A>`.  If it cannot be propagated, then `enable` will be set to
         `false`, indicating a missing case. */
         template <
-            /// TODO: `N` may not be necessary if I get a little more clever about how
-            /// to calculate the index.
-            size_t N,  // equivalent to the initial size of `A...` (sizeof...(Args))
+            typename permutations,  // the valid permutations
+            typename returns,  // the reduced, unique, non-void return types
+            typename errors,  // accumulated error states
             bool optional,  // true if a void return type or unhandled empty state exists
-            typename errors,  // tracks unhandled exception states
-            typename valid,  // the valid permutations
-            typename returns,  // the deduced return types
             typename... A  // the remaining input arguments
         >
-        struct visit_deduce;
+        struct visit_returns {
+            /// TODO: expand returns pack to account for nested visitables, which need
+            /// to be flattened before calling visit_type.
+            using type = visit_type<returns, optional, errors>;
+            static constexpr bool enable = true;
+            static constexpr bool nothrow = visit_nothrow<returns, type>;
+        };
+
+        /* An enum describing the possible states that an alternative could have within
+        the dispatch logic.  `EMPTY` and `ERROR` represent unhandled states that can be
+        implicitly propagated. */
+        enum class visit_kind {
+            INVALID,
+            HANDLED,
+            EMPTY,
+            ERROR,
+        };
+
+        template <typename T, typename permutation, size_t I>
+        concept visit_handled = ::std::same_as<T, typename permutation::template at<I>>;
+
+        template <typename T, typename>
+        constexpr bool visit_error = false;
+        template <typename T, typename... errors>
+        constexpr bool visit_error<T, meta::pack<errors...>> = (meta::is<T, errors> || ...);
+
+        /* `_visit_kind<...>` deduces whether a specific alternative for argument
+        `A` is handled by the visitor, or if it is a special empty or error state,
+        which can be implicitly propagated.  This works by checking to see if the given
+        type appears in the list of valid permutations at least once at its current
+        index.  If not, then it must be equal to `impl::visitable<A>::empty` or
+        contained within `impl::visitable<A>::errors` in order to be propagated.
+        Otherwise, the visitor is invalid. */
+        template <typename T, typename P, typename A, typename... As>
+        constexpr visit_kind _visit_kind = visit_kind::INVALID;
+        template <typename T, typename... P, typename A, typename... As>
+            requires (visit_handled<T, P, P::size() - (sizeof...(As) + 1)> || ...)
+        constexpr visit_kind _visit_kind<T, meta::pack<P...>, A, As...> = visit_kind::HANDLED;
+        template <typename T, typename... P, typename A, typename... As>
+            requires (
+                (!visit_handled<T, P, P::size() - (sizeof...(As) + 1)> && ...) &&
+                meta::is<typename impl::visitable<A>::empty, T>
+            )
+        constexpr visit_kind _visit_kind<T, meta::pack<P...>, A, As...> = visit_kind::EMPTY;
+        template <typename T, typename... P, typename A, typename... As>
+            requires (
+                (!visit_handled<T, P, P::size() - (sizeof...(As) + 1)> && ...) &&
+                !meta::is<T, typename impl::visitable<A>::empty> &&
+                visit_error<T, typename impl::visitable<A>::errors>
+            )
+        constexpr visit_kind _visit_kind<T, meta::pack<P...>, A, As...> = visit_kind::ERROR;
+
+        /* `visit_propagate` evaluates `_visit_kind` for each alternative of argument
+        `A` and updates the `optional`, and `errors` fields for the implicitly
+        propagated alternatives, and then continues evaluating `visit_returns` once
+        all alternatives has been handled.  If any invalid states are encountered, then
+        the recursion will terminate early at the first invalid state. */
         template <
-            size_t N,
+            typename permutations,
+            typename returns,
+            typename errors,
             bool optional,
-            typename... errors,
-            typename... valid,
-            typename... returns,
+            typename alternatives,
             typename A,
             typename... As
         >
-        struct visit_deduce<
-            N,
+        struct visit_propagate : visit_returns<permutations, returns, errors, optional, As...> {};
+        template <
+            typename permutations,
+            typename returns,
+            typename errors,
+            bool optional,
+            typename curr,
+            typename... next,
+            typename A,
+            typename... As
+        > requires (_visit_kind<curr, permutations, A, As...> == visit_kind::INVALID)
+        struct visit_propagate<
+            permutations,
+            returns,
+            errors,
             optional,
-            meta::pack<errors...>,
-            meta::pack<valid...>,
-            meta::pack<returns...>,
+            meta::pack<curr, next...>,
             A,
             As...
         > {
-            /// TODO: corresponds to first case of deduce<...>::infer<...> in
-            /// current implementation, but there can be some relatively substantial
-            /// refactoring here to optimize for compilation speed.  `state::helper`
-            /// is not necessary, and maybe `state` itself can be lifted to detail::.
-            /// This should also use recursive inheritance to expose the results.
+            using type = void;
+            static constexpr bool enable = false;  // terminate recursion
+            static constexpr bool nothrow = false;
         };
         template <
-            size_t N,
+            typename permutations,
+            typename returns,
+            typename errors,
             bool optional,
-            typename... errors,
-            typename... valid,
-            typename... returns
-        >
-        struct visit_deduce<
-            N,
+            typename curr,
+            typename... next,
+            typename A,
+            typename... As
+        > requires (_visit_kind<curr, permutations, A, As...> == visit_kind::HANDLED)
+        struct visit_propagate<
+            permutations,
+            returns,
+            errors,
             optional,
+            meta::pack<curr, next...>,
+            A,
+            As...
+        > : visit_propagate<
+            permutations,
+            returns,
+            errors,
+            optional,
+            meta::pack<next...>,
+            A,
+            As...
+        > {};
+        template <
+            typename permutations,
+            typename returns,
+            typename errors,
+            bool optional,
+            typename curr,
+            typename... next,
+            typename A,
+            typename... As
+        > requires (_visit_kind<curr, permutations, A, As...> == visit_kind::EMPTY)
+        struct visit_propagate<
+            permutations,
+            returns,
+            errors,
+            optional,
+            meta::pack<curr, next...>,
+            A,
+            As...
+        > : visit_propagate<
+            permutations,
+            returns,
+            errors,
+            true,  // propagate empty state
+            meta::pack<next...>,
+            A,
+            As...
+        > {};
+        template <
+            typename permutations,
+            typename returns,
+            typename... errors,
+            bool optional,
+            typename curr,
+            typename... next,
+            typename A,
+            typename... As
+        > requires (_visit_kind<curr, permutations, A, As...> == visit_kind::ERROR)
+        struct visit_propagate<
+            permutations,
+            returns,
             meta::pack<errors...>,
-            meta::pack<valid...>,
-            meta::pack<returns...>
-        > {
-            /// TODO: this equates to the second case for deduce<...>::infer<...> in
-            /// current implementation.  The only trick here is that the metafunction
-            /// would have to be passed the return types as well.
-        };
+            optional,
+            meta::pack<curr, next...>,
+            A,
+            As...
+        > : visit_propagate<
+            permutations,
+            returns,
+            meta::pack<errors..., curr>,  // propagate error state
+            optional,
+            meta::pack<next...>,
+            A,
+            As...
+        > {};
 
-
+        /* Recursive case.  Calls `visit_propagate` to visit all alternatives for
+        argument `A` and update `optional` and `errors...` to capture implicitly
+        propagated states and determine whether the visitor is valid. */
+        template <
+            typename permutations,
+            typename returns,
+            typename errors,
+            bool optional,
+            typename A,
+            typename... As
+        >
+        struct visit_returns<permutations, returns, errors, optional, A, As...> : visit_propagate<
+            permutations,  // valid permutations
+            returns,  // valid return types
+            errors,  // unhandled errors
+            optional,
+            /// TODO: I shouldn't go straight to visitable<A>::alternatives.  Instead,
+            /// I should check a different property that accounts for recursive monads.
+            typename impl::visitable<A>::alternatives,  // alternatives for current argument
+            A,  // current argument
+            As...  // remaining arguments
+        > {};
 
         /* `visit<F, Args...>` recursively expands any unions in `Args...` and checks
         to see whether the visitor function `F` is callable over them, and what its
@@ -505,317 +763,68 @@ namespace meta {
             // 2. Filter out any permutations that are not valid inputs to the visitor,
             //    and deduce the unique, non-void return types in the same pass.
             template <typename... permutations>
-            using filter = visit_filter<
+            using filter = visit_permutations<
                 F,
+                meta::pack<>,  // initially no valid permutations
+                meta::pack<>,  // initially no valid return types
+                meta::pack<>,  // initially no accumulated errors
                 true,  // initially nothrow by default
                 false,  // initially no void return types
-                meta::pack<>,  // initially no valid return types
-                meta::pack<>,  // initially no valid permutations
+                false,  // initially no optional return types
                 permutations...
             >;
-            using valid_permutations = permutations::template eval<filter>::valid_permutations;
-            using return_types = permutations::template eval<filter>::return_types;
-
-            /// TODO: deduce<...> can probably also be lifted into `detail::` for
-            /// faster compilation.  Note that permutations and return types are
-            /// needed within deduce<...>, so that's another consideration.  The
-            /// only real alternative
+            using valid = permutations::template eval<filter>;
 
             // 3. Once all valid permutations and unique return types have been
             //    identified, deduce the final return type and propagate any unhandled
             //    states.
-            template <typename... valid>
-            struct deduce {
-                template <
-                    bool option,  // true if a void return type or unhandled empty state exists
-                    typename errors,  // tracks unhandled exception states 
-                    typename...
-                >
-                struct infer;
-
-                // 3a. Iterate over all arguments to discover the precise alternatives
-                //     that are left unhandled by the visitor, and apply custom
-                //     forwarding behavior on that basis.  If any states cannot be
-                //     trivially forwarded, then `enable` will evaluate to false.
-                template <bool option, typename... errors, typename A, typename... As>
-                struct infer<option, meta::pack<errors...>, A, As...> {
-                    static constexpr size_t I = sizeof...(Args) - (sizeof...(As) + 1);
-
-                    // 3b. `state<alt>` deduces whether the alternative is handled by the
-                    //     visitor, or if it is a special empty or error state, which can
-                    //     be implicitly propagated
-                    template <typename alt>
-                    struct state {
-                        template <typename... Ts>
-                        struct helper {
-                            static constexpr bool value =
-                                ::std::same_as<alt, meta::unpack_type<I, Ts...>>;
-                        };
-                        static constexpr bool handled =
-                            (valid::template eval<helper>::value || ...);
-                        static constexpr bool empty =
-                            meta::is<typename impl::visitable<A>::empty, alt>;
-                        static constexpr bool error =
-                            impl::visitable<A>::errors::template contains<meta::unqualify<alt>>();
-                    };
-
-                    // 3c. For every alternative of `A`, check to see if it is present in
-                    //     the valid permutations or can be implicitly propagated.  If not,
-                    //     insert a `BadUnionAccess` state into the `errors...` pack.
-                    template <typename...>
-                    struct scan {
-                        template <bool opt, typename... errs>
-                        using type = infer<
-                            opt,  // accumulated empty state
-                            meta::pack<errs...>,  // accumulated errors
-                            As...
-                        >::type;
-                        static constexpr bool enable = infer<
-                            false,  // irrelevant for `enable` status
-                            meta::pack<>,  // irrelevant for `enable` status
-                            As...
-                        >::enable;
-                    };
-
-                    // 3d. If the alternative is explicitly handled by the visitor, then we
-                    //     can proceed to the next alternative.
-                    template <typename alt, typename... alts>
-                    struct scan<alt, alts...> {
-                        template <bool opt, typename... errs>
-                        using type = scan<alts...>::template type<opt, errs...>;
-                        static constexpr bool enable = scan<alts...>::enable;
-                    };
-
-                    // 3e. Otherwise, if an unhandled alternative represents the empty
-                    //     state of an optional, then we can set `opt` to true and proceed
-                    //     to the next alternative.
-                    template <typename alt, typename... alts>
-                        requires (state<alt>::empty && !state<alt>::handled)
-                    struct scan<alt, alts...> {
-                        template <bool opt, typename... errs>
-                        using type = scan<alts...>::template type<true, errs...>;
-                        static constexpr bool enable = scan<alts...>::enable;
-                    };
-
-                    // 3f. Otherwise, if an unhandled alternative represents an error state
-                    //     of an expected that has not previously been encountered, then we
-                    //     can add it to the `errors...` pack and proceed to the next
-                    //     alternative.
-                    template <typename alt, typename... alts>
-                        requires (state<alt>::error && !state<alt>::handled)
-                    struct scan<alt, alts...> {
-                        template <bool opt, typename... errs>
-                        struct helper {
-                            using type = scan<alts...>::template type<opt, errs...>;
-                        };
-                        template <bool opt, typename... errs>
-                            requires (!::std::same_as<errs, alt> && ...)
-                        struct helper<opt, errs...> {
-                            using type = scan<alts...>::template type<
-                                opt,
-                                errs...,
-                                meta::unqualify<alt>
-                            >;
-                        };
-                        template <bool opt, typename... errs>
-                        using type = helper<opt, errs...>::type;
-                        static constexpr bool enable = scan<alts...>::enable;
-                    };
-
-                    // 3g. Otherwise, we must insert a `BadUnionAccess` error state into
-                    //     the `errors...` pack and proceed to the next alternative.
-                    template <typename alt, typename... alts>
-                        requires (
-                            !state<alt>::error &&
-                            !state<alt>::empty &&
-                            !state<alt>::handled
-                        )
-                    struct scan<alt, alts...> {
-                        template <bool opt, typename... errs>
-                        using type = void;  // terminate recursion
-                        static constexpr bool enable = false;  // terminate recursion
-                    };
-
-                    // 3h. Execute the `scan<>` metafunction.
-                    using result = impl::visitable<A>::alternatives::template eval<scan>;
-                    using type = result::template type<option, errors...>;
-                    static constexpr bool enable = result::enable;
-                };
-
-                // 3i. Once all alternatives have been scanned, deduce the final return
-                //     type using the accumulated `option` and `errors...` states.
-                template <bool option, typename... errors>
-                struct infer<option, meta::pack<errors...>> {
-                    // 3j. If there are multiple non-void return types, then we need to
-                    //     return a `Union` of those types.
-                    template <typename... Rs>
-                    struct to_union { using type = bertrand::Union<Rs...>; };
-
-                    // 3k. If there is precisely one non-void return type, then that is
-                    //     the final return type.
-                    template <typename R>
-                    struct to_union<R> { using type = R; };
-
-                    // 3l. If no non-void return types are found, then the return type
-                    //     must be consistently void by definition.
-                    template <>
-                    struct to_union<> { using type = void; };
-
-                    // 3m. If `option` is true (indicating either an unhandled empty
-                    //     state or void return type), then the result deduces to
-                    //     `Optional<R>`, where `R` is the union of all non-void return
-                    //     types.  If `R` is itself an optional type, then it will be
-                    //     flattened into the output.
-                    template <typename R, bool cnd>
-                    struct to_optional { using type = R; };
-                    template <meta::not_void R>
-                    struct to_optional<R, true> {
-                        using type = impl::visitable<R>::template to_optional<>;
-                    };
-
-                    // 3n. If there are any unhandled error states, then the result
-                    //     will be further wrapped in `Expected<R, errors...>` to
-                    //     propagate them.  If `R` is itself an expected type, then the
-                    //     new errors will be flattened into the output.
-                    template <typename R, typename... Es>
-                    struct to_expected {
-                        using result = impl::visitable<R>::errors::template append<Es...>;
-                        using type = result::template eval<meta::to_unique>::template eval<
-                            impl::visitable<R>::template to_expected
-                        >;
-                    };
-                    template <typename R>
-                    struct to_expected<R> { using type = R; };
-
-                    // 3o. Evaluate the final return type.
-                    using type = to_expected<
-                        typename to_optional<
-                            typename return_types::template eval<to_union>::type,
-                            option
-                        >::type,
-                        errors...
-                    >::type;
-                    static constexpr bool enable = true;
-                };
-
-                // 3p. evaluate the infer<> metafunction'
-                using result = infer<
-                    permutations::template eval<filter>::has_void,
-                    meta::pack<>,
-                    Args...
-                >;
-                using type = result::type;
-                static constexpr bool enable = result::enable;
-            };
-
-            // 4. Return type conversions are applied at the permutation level to
-            //    bypass propagation of empty/error states.
-            template <typename... Rs>
-            struct _returns {  // no void
-                template <typename T>
-                static constexpr bool value =
-                    (meta::convertible_to<Rs, T> && ...);
-                template <typename T>
-                static constexpr bool nothrow =
-                    (meta::nothrow::convertible_to<Rs, T> && ...);
-            };
-            template <typename... Rs>
-                requires (
-                    sizeof...(Rs) > 0 &&
-                    permutations::template eval<filter>::has_void
-                )
-            struct _returns<Rs...> {  // some void, some non-void
-                template <typename T>
-                static constexpr bool value = (
-                    meta::convertible_to<Rs, T> &&
-                    ... &&
-                    meta::convertible_to<NoneType, T>
-                );
-                template <typename T>
-                static constexpr bool nothrow = (
-                    meta::nothrow::convertible_to<Rs, T> &&
-                    ... &&
-                    meta::nothrow::convertible_to<NoneType, T>
-                );
-            };
-            template <typename... Rs> requires (sizeof...(Rs) == 0)
-            struct _returns<Rs...> {  // all void
-                template <typename T>
-                static constexpr bool value = meta::convertible_to<void, T>;
-                template <typename T>
-                    requires (requires{typename impl::visitable<T>::wrapped;})
-                static constexpr bool value<T> =
-                    value<typename impl::visitable<T>::wrapped>;
-
-                template <typename T>
-                static constexpr bool nothrow = meta::nothrow::convertible_to<void, T>;
-                template <typename T>
-                    requires (requires{typename impl::visitable<T>::wrapped;})
-                static constexpr bool nothrow<T> =
-                    nothrow<typename impl::visitable<T>::wrapped>;
-            };
+            using deduce = visit_returns<
+                typename valid::permutations,
+                typename valid::returns,  // propagate unique return types
+                typename valid::errors,  // propagate accumulated error states
+                valid::has_void || valid::optional,  // propagate void or optional return types
+                Args...  // original arguments
+            >;
 
         public:
             /* The final return type is deduced from the valid argument permutations,
             with special rules for unhandled empty or error states, which can be
             implicitly propagated. */
-            using type = valid_permutations::template eval<deduce>::type;
+            using type = deduce::type;
 
             /* `meta::visit<F, Args...>` evaluates to true iff all non-empty and
             non-error states are handled by the visitor function `F`. */
-            static constexpr bool enable =
-                valid_permutations::template eval<deduce>::enable;
+            static constexpr bool enable = deduce::enable;
 
             /* `meta::exhaustive<F, Args...>` evaluates to true iff all argument
             permutations are valid. */
-            static constexpr bool exhaustive =
-                permutations::size() == valid_permutations::size();
+            static constexpr bool exhaustive = permutations::size() == valid::permutations::size();
 
             /* `meta::consistent<F, Args...>` evaluates to true iff all valid argument
             permutations return the same type, or if there are no valid paths. */
             static constexpr bool consistent =
-                permutations::template eval<filter>::consistent;
+                valid::returns::size() == 0 ||
+                (valid::returns::size() == 1 && !valid::returns::has_void);
 
             /* `meta::nothrow::visit<F, Args...>` evaluates to true iff all valid
             argument permutations are noexcept or if there are no valid paths. */
-            static constexpr bool nothrow =
-                permutations::template eval<filter>::nothrow;
-
-            /* `meta::visit_returns<R, F, Args...>` evaluates to true iff the return
-            types for all valid permutations are convertible to `R`. */
-            template <typename R>
-            static constexpr bool returns =
-                return_types::template eval<_returns>::template value<R>;
-
-            /* `meta::nothrow::visit_returns<R, F, Args...>` evaluates to true iff the
-            return types for all valid permutations are nothrow convertible to `R`. */
-            template <typename R>
-            static constexpr bool nothrow_returns =
-                return_types::template eval<_returns>::template nothrow<R>;
+            static constexpr bool nothrow = valid::nothrow && deduce::nothrow;
         };
         template <meta::callable F>
         struct visit<F> {
+            using type = meta::call_type<F>;
             static constexpr bool enable = true;
             static constexpr bool exhaustive = true;
             static constexpr bool consistent = true;
             static constexpr bool nothrow = meta::nothrow::callable<F>;
-            template <typename R>
-            static constexpr bool returns = meta::call_returns<R, F>;
-            template <typename R>
-            static constexpr bool nothrow_returns = meta::nothrow::call_returns<R, F>;
-            using type = meta::call_type<F>;
         };
         template <typename F>
         struct visit<F> {
+            using type = void;
             static constexpr bool enable = false;
             static constexpr bool exhaustive = false;
             static constexpr bool consistent = false;
             static constexpr bool nothrow = false;
-            template <typename R>
-            static constexpr bool returns = false;
-            template <typename R>
-            static constexpr bool nothrow_returns = false;
-            using type = void;
         };
 
     }
@@ -825,10 +834,14 @@ namespace meta {
     template <typename F, typename... Args>
     concept visit = detail::visit<F, Args...>::enable;
 
+    /// TODO: exhaustive -> visit_exhaustive
+
     /* Specifies that all permutations of the union types must be valid for the visitor
     function. */
     template <typename F, typename... Args>
     concept exhaustive = visit<F, Args...> && detail::visit<F, Args...>::exhaustive;
+
+    /// TODO: visit_consistent
 
     /* Specifies that all valid permutations of the union types have an identical
     return type from the visitor function. */
@@ -846,31 +859,139 @@ namespace meta {
     expected type for every possible permutation of the arguments, with unions unpacked
     to their individual alternatives. */
     template <typename Ret, typename F, typename... Args>
-    concept visit_returns =
-        visit<F, Args...> && detail::visit<F, Args...>::template returns<Ret>;
+    concept visit_returns = visit<F, Args...> && convertible_to<Ret, visit_type<F, Args...>>;
 
     namespace nothrow {
 
         template <typename F, typename... Args>
-        concept visit =
-            meta::visit<F, Args...> && detail::visit<F, Args...>::nothrow;
+        concept visit = meta::visit<F, Args...> && detail::visit<F, Args...>::nothrow;
 
         template <typename F, typename... Args>
-        concept exhaustive =
-            visit<F, Args...> && meta::exhaustive<F, Args...>;
+        concept exhaustive = nothrow::visit<F, Args...> && meta::exhaustive<F, Args...>;
 
         template <typename F, typename... Args>
-        concept consistent =
-            visit<F, Args...> && meta::consistent<F, Args...>;
+        concept consistent = nothrow::visit<F, Args...> && meta::consistent<F, Args...>;
 
-        template <typename F, typename... Args> requires (visit<F, Args...>)
+        template <typename F, typename... Args> requires (nothrow::visit<F, Args...>)
         using visit_type = meta::visit_type<F, Args...>;
 
         template <typename Ret, typename F, typename... Args>
         concept visit_returns =
-            visit<F, Args...> && detail::visit<F, Args...>::template nothrow_returns<Ret>;
+            nothrow::visit<F, Args...> &&
+            nothrow::convertible_to<Ret, nothrow::visit_type<F, Args...>>;
 
     }
+
+    /// TODO: maybe I need a separate `match` metafunction that will take a single
+    /// argument and apply the same logic as `visit`, but optimized for the single
+    /// argument case, and applying tuple-like destructuring if applicable.  This would
+    /// back the global `->*` operator, which would be enabled for all union and/or
+    /// tuple types (NOT iterables).  Iterable comprehensions would be gated behind
+    /// `range(container) ->*`, which would be defined only on the range type itself,
+    /// which is what would also be returned to produce flattened comprehensions.
+    /// It would just be an `impl::range<T>` type where `T` is either a direct container
+    /// for `range(container)`, or a `std::subrange` if `range(begin, end)`, or a
+    /// `std::views::iota` if `range(stop)` or `range(start, stop)`, possibly with a
+    /// `std::views::stride_view<std::views::iota>` for `range(start, stop, step)`.
+
+    namespace detail {
+
+        template <typename, typename>
+        constexpr bool _match_tuple_alts = false;
+        template <typename F, typename... As>
+        constexpr bool _match_tuple_alts<F, meta::pack<As...>> = (meta::callable<F, As> && ...);
+        template <typename, typename>
+        constexpr bool _match_tuple = false;
+        template <typename F, typename... Ts>
+        constexpr bool _match_tuple<F, meta::pack<Ts...>> =
+            (_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
+        template <typename F, typename T>
+        concept match_tuple = meta::tuple_like<T> && _match_tuple<F, meta::tuple_types<T>>;
+
+        template <typename, typename>
+        constexpr bool _nothrow_match_tuple_alts = false;
+        template <typename F, typename... As>
+        constexpr bool _nothrow_match_tuple_alts<F, meta::pack<As...>> =
+            (meta::nothrow::callable<F, As> && ...);
+        template <typename, typename>
+        constexpr bool _nothrow_match_tuple = false;
+        template <typename F, typename... Ts>
+        constexpr bool _nothrow_match_tuple<F, meta::pack<Ts...>> =
+            (_nothrow_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
+        template <typename F, typename T>
+        concept nothrow_match_tuple =
+            meta::nothrow::tuple_like<T> && _nothrow_match_tuple<F, meta::nothrow::tuple_types<T>>;
+
+
+
+        template <
+            typename F,  // match visitor function
+            typename returns,  // unique, non-void return types
+            typename errors,  // expected error states
+            bool has_void_,  // true if a void return type was encountered
+            bool optional,  // true if an optional return type was encountered
+            bool nothrow_,  // true if all permutations are noexcept
+            typename alternatives  // alternatives for the matched object
+        >
+        struct _match {
+            using type = visit_to_expected<
+                typename visit_to_optional<
+                    typename returns::template eval<visit_to_union>::type,
+                    has_void_ || optional
+                >::type,
+                errors
+            >::type;
+            static constexpr bool enable = true;
+            static constexpr bool ambiguous = false;
+            static constexpr bool unmatched = false;
+            static constexpr bool consistent =
+                returns::size() == 0 || (returns::size() == 1 && !has_void_);
+
+            /// TODO: nothrow has to account for nothrow conversions to type
+            static constexpr bool nothrow = nothrow_;
+        };
+        template <
+            typename F,
+            typename curr,
+            typename... next
+        >
+            requires (meta::callable<F, curr> && !match_tuple<F, curr>)
+        struct _match<F, meta::pack<curr, next...>> {
+            /// TODO: pass the tuple directly
+        };
+        template <
+            typename F,
+            typename curr,
+            typename... next
+        >
+            requires (!meta::callable<F, curr> && match_tuple<F, curr>)
+        struct _match<F, meta::pack<curr, next...>> {
+            /// TODO: unpack tuple
+        };
+        template <
+            typename F,
+            typename curr,
+            typename... next
+        >
+        struct _match<F, meta::pack<curr, next...>> {
+            using type = void;
+            static constexpr bool ambiguous = meta::callable<F, curr> && match_tuple<F, curr>;
+            static constexpr bool unmatched = !meta::callable<F, curr> && !match_tuple<F, curr>;
+            static constexpr bool consistent = false;
+            static constexpr bool nothrow = false;
+        };
+
+
+
+
+
+        template <typename F, typename T>
+        struct match : _match<F, typename impl::visitable<T>::alternatives> {};
+
+    }
+
+
+
 
     namespace detail {
 
@@ -967,26 +1088,33 @@ namespace impl {
     struct visitable {
         static constexpr bool enable = false;  // meta::visitable<T> evaluates to false
         static constexpr bool monad = false;  // meta::monad<T> evaluates to false
-        using type = T;
-        using alternatives = meta::pack<T>;
+        using alternatives = meta::pack<T>;  // exactly 1 alternative to dispatch on
+        using value = T;  // value type is identical to the type itself
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
-        template <typename U = T>  // extra template needed to delay instantiation
-        using to_optional = Optional<U>;  // a value for U will never be supplied
-        template <typename... Errs>
-        using to_expected = Expected<T, Errs...>;
 
         /* The active index for non-visitable types is trivially zero. */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+        [[gnu::always_inline]] static constexpr size_t index(meta::forward<T> u) noexcept {
             return 0;
         }
 
         /* Getting the value for a non-visitable type will trivially forward it. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
-            return (std::forward<U>(u));
+        template <size_t I> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u) noexcept {
+            return (std::forward<T>(u));
         }
+
+
+
+
+
+
+        /// TODO: I shouldn't need to place `dispatch` directly in impl::visitable.
+        /// `index()` and `get()` should be enough.  That does require the actual
+        /// call algorithm to take into account empty and error states, which
+        /// would short-circuit the recursion and return just the error state directly.
+        /// -> This is one of the last things that I need to update, together with
+        /// using `impl::vtable` to apply the small table optimization to all visitors.
 
         /* Dispatching to a non-visitable type trivially forwards to the next arg. */
         template <
@@ -5452,8 +5580,7 @@ namespace impl {
 }
 
 
-template <typename T, meta::unqualified E, meta::unqualified... Es>
-    requires ((meta::Exception<E> && ... && meta::Exception<Es>) && meta::unique<T, E, Es...>)
+template <typename T, typename E, typename... Es> requires (meta::unique<T, E, Es...>)
 struct Expected : impl::expected_tag {
     using types = meta::pack<T, E, Es...>;
     using errors = meta::pack<E, Es...>;
@@ -5917,7 +6044,7 @@ namespace impl {
 
         template <size_t I>
         static constexpr base::reference fn(T t) noexcept (base::nothrow) {
-            return meta::tuple_get<I>(t);
+            return meta::unpack_tuple<I>(t);
         }
 
         template <typename = std::make_index_sequence<meta::tuple_size<T>>>
@@ -6077,10 +6204,10 @@ namespace impl {
         template <size_t... Is>
         static constexpr array init(std::index_sequence<Is...>, T t)
             noexcept ((requires{{
-                std::addressof(meta::tuple_get<Is>(t))
+                std::addressof(meta::unpack_tuple<Is>(t))
             } noexcept -> meta::nothrow::convertible_to<pointer>;} && ...))
         {
-            return {std::addressof(meta::tuple_get<Is>(t))...};
+            return {std::addressof(meta::unpack_tuple<Is>(t))...};
         }
 
         [[nodiscard]] constexpr tuple_iterator(const array& arr, difference_type index) noexcept :

@@ -669,7 +669,7 @@ namespace impl {
             meta::nothrow::has_get<T, I> &&
             noexcept(all<I + 1>(std::forward<F>(func), std::forward<T>(t)))
         ) {
-            if (!std::forward<F>(func)(meta::tuple_get<I>(std::forward<T>(t)))) {
+            if (!std::forward<F>(func)(meta::unpack_tuple<I>(std::forward<T>(t)))) {
                 return false;
             }
             return all<I + 1>(std::forward<F>(func), std::forward<T>(t));;
@@ -693,7 +693,7 @@ namespace impl {
             meta::nothrow::has_get<T, I> &&
             noexcept(any<I + 1>(std::forward<F>(func), std::forward<T>(t)))
         ) {
-            if (std::forward<F>(func)(meta::tuple_get<I>(std::forward<T>(t)))) {
+            if (std::forward<F>(func)(meta::unpack_tuple<I>(std::forward<T>(t)))) {
                 return true;
             }
             return any<I + 1>(std::forward<F>(func), std::forward<T>(t));;
