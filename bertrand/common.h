@@ -510,6 +510,11 @@ namespace meta {
             using type = expand<pack<>, N, Ts...>::type;
         };
 
+        /// TODO: the cartesian product can be computed much more easily by just
+        /// generating a single index sequence over the product of the sizes and
+        /// then recursively dividing/moduloing the index by the product of the
+        /// sizes of each subsequent pack.
+
         template <typename... packs>
         struct product { using type = pack<>; };
         template <typename... first, typename... rest>
