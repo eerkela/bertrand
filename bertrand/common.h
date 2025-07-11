@@ -473,12 +473,10 @@ namespace meta {
 
         template <typename out, typename...>
         struct concat_unique { using type = out; };
-        template <typename... out, typename... next>
-        struct concat_unique<pack<out...>, pack<>, next...> :
-            concat_unique<pack<out...>, next...>
-        {};
+        template <typename out, typename... next>
+        struct concat_unique<out, pack<>, next...> : concat_unique<out, next...> {};
         template <typename... out, typename T, typename... Ts, typename... next>
-            requires (!::std::same_as<T, out> || ...)
+            requires (!::std::same_as<T, out> && ...)
         struct concat_unique<pack<out...>, pack<T, Ts...>, next...> :
             concat_unique<pack<out..., T>, pack<Ts...>, next...>
         {};
