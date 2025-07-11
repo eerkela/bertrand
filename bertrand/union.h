@@ -333,26 +333,308 @@ namespace meta {
 
     namespace detail {
 
+        /// TODO: the only remaining optimization that I could make is to skip runs of
+        /// non-visitable arguments, which would save a few template instantiations.
+        /// That's not a bad idea, but for now, I want to just see if it works.
+
+
+
+
+        /* The base case for the dispatch logic is to directly forward to the
+        underlying function, assuming the permutation is valid. */
+        template <typename F, typename prefix, typename... suffix>
+        struct visit_base {
+            using permutations = meta::pack<>;
+            using errors = meta::pack<>;
+            static constexpr bool optional = false;
+            static constexpr bool enable = false;
+        };
+        template <typename F, typename... prefix, typename... suffix>
+            requires (meta::callable<F, prefix..., suffix...>)
+        struct visit_base<F, meta::pack<prefix...>, suffix...> {
+            using permutations = meta::pack<meta::pack<prefix..., suffix...>>;
+            using errors = meta::pack<>;
+            static constexpr bool optional = false;
+            static constexpr bool enable = true;
+
+            template <typename R>
+            struct fn {
+                [[gnu::always_inline]] static constexpr R operator()(
+                    meta::forward<F> func,
+                    meta::forward<prefix>... prefix_args,
+                    meta::forward<suffix>... suffix_args
+                ) noexcept (meta::nothrow::call_returns<R, F, prefix..., suffix...>) {
+                    return ::std::forward<F>(func)(
+                        ::std::forward<prefix>(prefix_args)...,
+                        ::std::forward<suffix>(suffix_args)...
+                    );
+                }
+            };
+        };
+
+        /* Base case: either `F` is directly callable with the given arguments, or
+        we've run out of visitable arguments to match against. */
+        template <typename F, typename prefix, size_t k, typename... suffix>
+        struct _visit_permute : visit_base<F, prefix, suffix...> {};
+
+        /* Attempt to substitute alternatives for the current argument, assuming it is
+        visitable.  If not all alternatives are valid, then this will evaluate to a
+        substitution failure that causes the algorithm to ignore this argument and
+        attempt to visit a future argument instead. */
+        template <
+            typename F,
+            typename prefix,
+            typename A,
+            typename alts,
+            size_t k,
+            typename suffix
+        >
+        struct visit_substitute { static constexpr bool enable = false; };
+
+        template <typename E, typename>
+        constexpr bool visit_propagate_error = false;
+        template <typename E, typename... Es> requires (meta::is<E, Es> || ...)
+        constexpr bool visit_propagate_error<E, meta::pack<Es...>> = true;
+
+        /* Substitution only succeeds if every alternative is associated with at least
+        one valid permutation, or is an empty or error state of the parent visitable
+        that can be implicitly propagated. */
+        template <
+            typename F,
+            typename... prefix,
+            meta::visitable A,
+            typename... alts,
+            size_t k,
+            typename... suffix
+        >
+            requires ((
+                _visit_permute<
+                    F,
+                    meta::pack<prefix...>,
+                    k,
+                    alts,
+                    suffix...
+                >::permutations::size() > 0 ||
+                meta::is<alts, typename impl::visitable<A>::empty> ||
+                visit_propagate_error<alts, typename impl::visitable<A>::errors>
+            ) && ...)
+        struct visit_substitute<
+            F,
+            meta::pack<prefix...>,
+            A,
+            meta::pack<alts...>,
+            k,
+            meta::pack<suffix...>
+        > {
+        private:
+            using traits = impl::visitable<A>;
+
+            template <typename alt>
+            using sub = _visit_permute<F, meta::pack<prefix...>, k, alt, suffix...>;
+
+        public:
+            using permutations = meta::concat<typename sub<alts>::permutations...>;
+            using errors = meta::concat_unique<::std::conditional_t<
+                (
+                    sub<alts>::permutations::empty() &&
+                    visit_propagate_error<alts, typename traits::errors>
+                ),
+                meta::pack<alts>,
+                typename sub<alts>::errors
+            >...>;
+            static constexpr bool optional = ((sub<alts>::optional || (
+                sub<alts>::permutations::empty() && meta::is<alts, typename traits::empty>
+            )) || ...);
+            static constexpr bool enable = true;
+
+            /* `impl::visitable<A>::get<I>()` is used to unpack the correct alternative
+            when forwarding to the substituted permutation.  If the substituted
+            permutation is invalid, then the result of `get<I>()` will be directly
+            forwarded to the return type instead. */
+            template <typename R>
+            struct fn {
+                template <size_t I>
+                struct dispatch {
+                    using child = sub<meta::unpack_type<I, alts...>>;
+                    static constexpr R operator()(
+                        meta::forward<F> func,
+                        meta::forward<prefix>... prefix_args,
+                        meta::forward<A> visitable,
+                        meta::forward<suffix>... suffix_args
+                    )
+                        noexcept (requires{{typename child::template fn<R>{}(
+                            ::std::forward<F>(func),
+                            ::std::forward<prefix>(prefix_args)...,
+                            traits::template get<I>(::std::forward<A>(visitable)),
+                            ::std::forward<suffix>(suffix_args)...
+                        )} noexcept;})
+                        requires (child::enable)
+                    {
+                        return typename child::template fn<R>{}(
+                            ::std::forward<F>(func),
+                            ::std::forward<prefix>(prefix_args)...,
+                            traits::template get<I>(::std::forward<A>(visitable)),
+                            ::std::forward<suffix>(suffix_args)...
+                        );
+                    }
+                    static constexpr R operator()(
+                        meta::forward<F> func,
+                        meta::forward<prefix>... prefix_args,
+                        meta::forward<A> visitable,
+                        meta::forward<suffix>... suffix_args
+                    )
+                        noexcept (requires{{static_cast<R>(traits::template get<I>(
+                            ::std::forward<A>(visitable)
+                        ))} noexcept;})
+                        requires (!child::enable)
+                    {
+                        return static_cast<R>(traits::template get<I>(
+                            ::std::forward<A>(visitable)
+                        ));
+                    }
+                };
+
+                /* The vtable always has the same width as the number of alternatives.
+                `impl::visitable<A>` is used to retrieve the proper index at
+                runtime. */
+                using vtable = impl::vtable<dispatch>::template dispatch<
+                    ::std::make_index_sequence<traits::alternatives::size()>
+                >;
+
+                [[gnu::always_inline]] static constexpr R operator()(
+                    meta::forward<F> func,
+                    meta::forward<prefix>... prefix_args,
+                    meta::forward<A> visitable,
+                    meta::forward<suffix>... suffix_args
+                )
+                    noexcept (requires{{vtable{traits::index(visitable)}(
+                        ::std::forward<F>(func),
+                        ::std::forward<prefix>(prefix_args)...,
+                        ::std::forward<A>(visitable),
+                        ::std::forward<suffix>(suffix_args)...
+                    )} noexcept;})
+                {
+                    return vtable{traits::index(visitable)}(
+                        ::std::forward<F>(func),
+                        ::std::forward<prefix>(prefix_args)...,
+                        ::std::forward<A>(visitable),
+                        ::std::forward<suffix>(suffix_args)...
+                    );
+                }
+            };
+        };
+
+        template <typename F, size_t k, typename... As>
+        concept visit_failure = k > 0 && !meta::callable<F, As...>;
+
+        /* Recursive case: `F` is not directly callable and `k` allows further visits,
+        but either the current argument `A` is not visitable, or attempting to visit it
+        results in substitution failure.  In either case, we forward it as-is and try
+        to visit a future argument instead. */
+        template <typename F, typename... prefix, size_t k, typename A, typename... suffix>
+            requires (visit_failure<F, k, prefix..., A, suffix...>)
+        struct _visit_permute<F, meta::pack<prefix...>, k, A, suffix...> :
+            _visit_permute<F, meta::pack<prefix..., A>, k, suffix...>
+        {};
+
+        template <
+            typename F,
+            typename prefix,
+            typename A,
+            typename alts,
+            size_t k,
+            typename suffix,
+            typename... As
+        >
+        concept visit_success =
+            visit_failure<F, k, As...> &&
+            visit_substitute<F, prefix, A, alts, k - 1, suffix>::enable;
+
+        /* Visit success: `F` is not directly callable, `k` allows visits, and the
+        current argument `A` is substitutable for its alternatives.  This terminates
+        the recursion early, effectively preferring to visit earlier arguments before
+        later ones in case of ambiguity, without ever needing to check them. */
+        template <typename F, typename... prefix, size_t k, typename A, typename... suffix>
+            requires (visit_success<
+                F,
+                meta::pack<prefix...>,
+                A,
+                typename impl::visitable<A>::alternatives,
+                k,
+                meta::pack<suffix...>,
+                prefix...,
+                A,
+                suffix...
+            >)
+        struct _visit_permute<F, meta::pack<prefix...>, k, A, suffix...> : visit_substitute<
+            F,
+            meta::pack<prefix...>,
+            A,
+            typename impl::visitable<A>::alternatives,
+            k - 1,
+            meta::pack<suffix...>
+        > {};
+
+        /* Recursion is bounded by the number of visitables (including nested
+        visitables) in the input arguments.  Choices of `k` beyond this limit are
+        meaningless, since there are not enough visitables to satisfy them. */
+        template <typename>
+        constexpr size_t visit_max_k = 0;
+        template <typename... As>
+        constexpr size_t visit_max_k<meta::pack<As...>> = (
+            (meta::visitable<As> + visit_max_k<typename impl::visitable<As>::alternatives>) +
+            ...
+        );
+
+        template <typename... A>
+        struct visit_ctx {
+            static constexpr size_t max_k = visit_max_k<meta::pack<A...>>;
+            template <typename F, size_t k>
+            using permute = _visit_permute<F, meta::pack<>, k, A...>;
+            template <typename F, size_t k = 0>
+            struct type : permute<F, k> {};
+            template <typename F, size_t k> requires (!permute<F, k>::enable && k < max_k)
+            struct type<F, k> : type<F, k + 1> {};
+        };
+
+        /* Evaluate `_visit_permute` with a recursively-increasing `k`, starting at 0,
+        until a minimal set of valid permutations is found, or `k` exceeds the number
+        of visitables in the arguments, whichever comes first.  The result is a struct
+        holding a 2D pack of packs, where the inner packs represent the valid
+        permutations for each argument, along with metadata about implicitly-propagated
+        empty and error states, from which an overall return type can be deduced. */
+        template <typename F, typename... A>
+        using visit_permute = visit_ctx<A...>::template type<F>;
+
+
+
+
+        /// TODO: visit, which takes the permutations from `visit_permute`
+        /// and evaluates a final return type, ::consistent, ::exhaustive, and noexcept
+        /// status.  Note that ::consistent implies ::exhaustive.
+        /// -> visit<F, A...> should inherit from visit_permute<F, A...>::dispatch<R>,
+        /// and then forward the deduced flags.
+
+
+
+
+
+
+
+
+
+
         ///////////////////////////
         ////    (1) PERMUTE    ////
         ///////////////////////////
-
-        /// TODO: this documentation is probably wrong now.
 
         /// NOTE: step 1 of the visit metafunction is to gather the cartesian product
         /// of possible alternatives for each input argument `A`, as well as their
         /// counts in the case of nested visitables.  This generates an
         /// `N` x `M` permutation matrix, where `N = sizeof...(As)` and
         /// `M = product(alternatives(A_0), ..., alternatives(A_N-1)`, where each
-        /// element encodes an alternative type and the number of nested alternatives
-        /// that it has.
-        ///
-        /// The layout of this matrix is significant; each row `i` in `[0, N)` consists
-        /// of adjacent, contiguous groups of `G` identical types, where
-        /// `G_i = product(alternatives(A_i+1), ..., alternatives(A_N-1))`.  The first
-        /// row therefore consists of `M / G_0 = alternatives(A_0)` groups of `G`
-        /// identical types, and the last row consists of `M` groups of precisely 1
-        /// type each.
+        /// element encodes a possible alternative and the number of nested
+        /// alternatives that it can take.
 
         /* Recursively expand visitables into their alternatives, producing a flat
         pack that encodes nested alternatives immediately after their parent
@@ -399,11 +681,9 @@ namespace meta {
         struct _visit_permutations;
         template <size_t... Is, typename... alternatives>
         struct _visit_permutations<::std::index_sequence<Is...>, alternatives...> {
-            using type = ::std::tuple<typename _visit_permute<
-                ::std::tuple<>,
-                Is,
-                alternatives...
-            >::type...>;
+            using type = ::std::tuple<
+                typename _visit_permute<::std::tuple<>, Is, alternatives...>::type...
+            >;
         };
 
         /* Default-initializing the cartesian product type assigns the correct size to
@@ -424,15 +704,29 @@ namespace meta {
         /////////////////////////
 
         /// NOTE: step 2 of the visit metafunction takes the permutation matrix from
-        /// step 1 and analyzes each group to check for unhandled states, building up
-        /// a valid subset matrix in the process.  If no permutations in a group are
-        /// valid, then the group's type represents an unhandled state, which can be
-        /// implicitly propagated if it is an empty or error state for group type `T`,
-        /// or terminates the algorithm early if it is a missing required state.
+        /// step 1 and analyzes each group of alternatives to filter out any invalid
+        /// or superfluous permutations, leaving only the valid ones that can be used
+        /// to deduce a proper return type for the visitor.  If no permutations in a
+        /// group are valid, and the group type `T` is not an empty or error state for
+        /// its parent visitable, then the algorithm terminates early, indicating a
+        /// missing required state.  Superfluous permutations can occur when all
+        /// permutations with a nested visitable are valid, without needing to unpack
+        /// the individual alternatives, in which case the nested alternatives are
+        /// discarded.
         /// 
         /// The output from step 2 consists of the filtered permutation matrix, a flag
         /// indicating one or more unhandled empty states, and a pack of unhandled
         /// error states, which can be used to deduce the final return type in step 3.
+
+
+        /// TODO: this is the hardest part, and requires the most care when computing
+        /// indices and such.  Technically, I should have enough information in the
+        /// permutation matrix to do this reliably, but the actual logic to do so is
+        /// quite complicated.
+
+
+
+
 
         template <typename E, typename>
         constexpr bool visit_error = false;
