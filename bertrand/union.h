@@ -379,8 +379,8 @@ template <typename T>
 Optional(T&&) -> Optional<meta::remove_rvalue<T>>;
 
 
-template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty_type>)
-Optional(T&&) -> Optional<typename impl::visitable<T>::value_type>;
+template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty>)
+Optional(T&&) -> Optional<typename impl::visitable<T>::value>;
 
 
 template <meta::pointer T>
@@ -1082,6 +1082,15 @@ namespace meta {
     namespace detail {
 
         template <typename... Ts>
+        constexpr bool prefer_constructor<bertrand::Union<Ts...>> = true;
+
+        template <typename T>
+        constexpr bool prefer_constructor<bertrand::Optional<T>> = true;
+
+        template <typename T, typename... Es>
+        constexpr bool prefer_constructor<bertrand::Expected<T, Es...>> = true;
+
+        template <typename... Ts>
         constexpr bool exact_size<bertrand::Union<Ts...>> =
             (exact_size<meta::unqualify<Ts>> && ...);
 
@@ -1311,7 +1320,7 @@ namespace impl {
     public:
         static constexpr bool enable = true;
         static constexpr bool monad = true;
-        using value = _wrapped<typename meta::unqualify<T>::value_type>::type;
+        using value = _wrapped<typename meta::unqualify<T>::types::template at<0>>::type;
         using alternatives = visitable<decltype((std::declval<T>()._value))>::alternatives;
         using empty = void;
         using errors = meta::unqualify<T>::errors;
@@ -3431,7 +3440,10 @@ struct Union : impl::union_tag {
     template <typename Self, typename to>
     [[nodiscard]] constexpr operator to(this Self&& self)
         noexcept (requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))};})
+        requires (
+            !meta::prefer_constructor<to> &&
+            requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))};}
+        )
     {
         return impl::union_convert_to<Self, to>{}(std::forward<Self>(self));
     }
@@ -3444,6 +3456,7 @@ struct Union : impl::union_tag {
     [[nodiscard]] constexpr explicit operator to(this Self&& self)
         noexcept (requires{{impl::union_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;})
         requires (
+            !meta::prefer_constructor<to> &&
             !requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
             requires{{impl::union_cast_to<Self, to>{}(std::forward<Self>(self))};}
         )
@@ -3671,22 +3684,15 @@ constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
 
 namespace impl {
 
-    /* Return an informative error message if an expected is dereferenced while in an
-    error state and `DEBUG` is true. */
-    template <typename curr>
-    struct _bad_optional_access {
-        template <size_t J>
-        struct visit {
-            static constexpr BadUnionAccess operator()() {
-                static constexpr static_str msg =
-                    "'" + demangle<curr>() + "' is not the active type in the optional "
-                    "(active is 'NoneType')";
-                return BadUnionAccess(msg);
-            }
-        };
-    };
+    /* Return an informative error message if an optional is dereferenced while in the
+    empty state.  Note that these checks will be optimized out in release builds. */
     template <typename curr> requires (DEBUG)
-    constexpr vtable<_bad_optional_access<curr>::template visit> bad_optional_access;
+    constexpr BadUnionAccess bad_optional_access() noexcept {
+        static constexpr static_str msg =
+            "'" + demangle<curr>() + "' is not the active type in the optional "
+            "(active is 'NoneType')";
+        return BadUnionAccess(msg);
+    }
 
     /* A special case of `union_storage` for optional references, which encode the
     reference as a raw pointer, with null representing the empty state.  This removes
@@ -3746,10 +3752,11 @@ namespace impl {
     struct optional_convert_from<T, in> {
         using type = meta::remove_rvalue<T>;
         using empty = impl::visitable<in>::empty;
+        using result = impl::union_storage<NoneType, type>;
 
         // 1) prefer direct conversion to `T` if possible
         template <typename alt>
-        static constexpr impl::union_storage<NoneType, meta::remove_rvalue<T>> operator()(alt&& v)
+        static constexpr result operator()(alt&& v)
             noexcept (meta::nothrow::convertible_to<alt, type>)
             requires (meta::convertible_to<alt, type>)
         {
@@ -3757,14 +3764,15 @@ namespace impl {
         }
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
-        // `impl::visitable` specification, then we return it as an empty
-        // `union_storage` object. 
+        // `impl::visitable` specification, or is given as a none sentinel, then we
+        // return it as an empty `union_storage` object. 
         template <typename alt>
-        static constexpr impl::union_storage<NoneType, meta::remove_rvalue<T>> operator()(alt&&)
-            noexcept (meta::nothrow::default_constructible<
-                impl::union_storage<NoneType, meta::remove_rvalue<T>>
-            >)
-            requires (!meta::convertible_to<alt, type> && meta::is<alt, empty>)
+        static constexpr result operator()(alt&&)
+            noexcept (meta::nothrow::default_constructible<impl::union_storage<NoneType, type>>)
+            requires (
+                !meta::convertible_to<alt, type> &&
+                (meta::is<alt, empty> || meta::None<alt> || meta::is<alt, std::nullopt_t>)
+            )
         {
             return {};
         }
@@ -3773,11 +3781,11 @@ namespace impl {
         // pointers, where nullptr gets translated into an empty `union_storage`
         // object, exploiting the pointer optimization.
         template <typename alt>
-        static constexpr impl::union_storage<NoneType, meta::remove_rvalue<T>> operator()(alt&& p)
+        static constexpr result operator()(alt&& p)
             noexcept (meta::nothrow::convertible_to<alt, meta::address_type<type>>)
             requires (
                 !meta::convertible_to<alt, type> &&
-                !meta::is<alt, empty> &&
+                !(meta::is<alt, empty> || meta::None<alt> || meta::is<alt, std::nullopt_t>) &&
                 meta::lvalue<type> &&
                 meta::has_address<type> &&
                 meta::convertible_to<alt, meta::address_type<type>>
@@ -3790,16 +3798,15 @@ namespace impl {
     /* A simple visitor that backs the explicit constructor for an `Optional<T>`
     object, returning a corresponding `impl::union_storage` primitive type.  Note that
     this only applies if `optional_convert_from` is invalid. */
-    template <typename out>
+    template <typename T>
     struct optional_construct_from {
-        using result = impl::union_storage<NoneType, meta::remove_rvalue<out>>;
-        using type = meta::remove_rvalue<out>;
+        using type = meta::remove_rvalue<T>;
         template <typename... A>
-        static constexpr result operator()(A&&... args)
+        static constexpr impl::union_storage<NoneType, type> operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
-            return {typename result::template tag<1>{}, std::forward<A>(args)...};
+            return {std::in_place_index<1>, std::forward<A>(args)...};
         }
     };
 
@@ -3809,35 +3816,56 @@ namespace impl {
     pointers in the case of optional lvalues. */
     template <typename Self, typename to>
     struct optional_convert_to {
-        using value_type = impl::visitable<Self>::value_type;
-        using empty_type = impl::visitable<Self>::empty_type;
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::convertible_to<from, to>)
-            requires (meta::convertible_to<from, to>)
+        static constexpr bool from_none = meta::convertible_to<const bertrand::NoneType&, to>;
+        static constexpr bool from_nullopt = meta::convertible_to<const std::nullopt_t&, to>;
+        static constexpr bool from_nullptr =
+            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
+            meta::convertible_to<std::nullptr_t, to>;
+
+        template <size_t I>
+        struct fn {
+            static constexpr bool convert = requires(meta::forward<Self> self) {{
+                std::forward<Self>(self)._value.template get<I>()
+            } -> meta::convertible_to<to>;};
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (requires{{
+                    std::forward<Self>(self)._value.template get<I>()
+                } noexcept -> meta::nothrow::convertible_to<to>;})
+                requires (convert)
+            {
+                return std::forward<Self>(self)._value.template get<I>();
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::convertible_to<const bertrand::NoneType&, to>)
+                requires (!convert && I == 0 && from_none)
+            {
+                return bertrand::None;
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
+                requires (!convert && I == 0 && !from_none && from_nullopt)
+            {
+                return std::nullopt;
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
+                requires (!convert && I == 0 && !from_none && !from_nullopt && from_nullptr)
+            {
+                return nullptr;
+            }
+        };
+
+        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<2>>;
+
+        [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
         {
-            return std::forward<from>(value);
-        }
-        template <meta::is<empty_type> from>
-        static constexpr to operator()(from&&)
-            noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
-            requires (
-                !meta::convertible_to<from, to> &&
-                meta::convertible_to<const std::nullopt_t&, to>
-            )
-        {
-            return std::nullopt;
-        }
-        template <meta::is<empty_type> from> requires (meta::lvalue<value_type>)
-        static constexpr to operator()(from&&)
-            noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
-            requires (
-                !meta::convertible_to<from, to> &&
-                !meta::convertible_to<const std::nullopt_t&, to> &&
-                meta::convertible_to<std::nullptr_t, to>
-            )
-        {
-            return nullptr;
+            return dispatch{self._value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -3847,35 +3875,58 @@ namespace impl {
     in the case of optional lvalues. */
     template <typename Self, typename to>
     struct optional_cast_to {
-        using value_type = impl::visitable<Self>::value_type;
-        using empty_type = impl::visitable<Self>::empty_type;
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::explicitly_convertible_to<from, to>)
-            requires (meta::explicitly_convertible_to<from, to>)
+        static constexpr bool from_none =
+            meta::explicitly_convertible_to<const bertrand::NoneType&, to>;
+        static constexpr bool from_nullopt =
+            meta::explicitly_convertible_to<const std::nullopt_t&, to>;
+        static constexpr bool from_nullptr =
+            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
+            meta::explicitly_convertible_to<std::nullptr_t, to>;
+
+        template <size_t I>
+        struct fn {
+            static constexpr bool convert = requires(meta::forward<Self> self) {{
+                static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+            };};
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (requires{{
+                    static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                } noexcept;})
+                requires (convert)
+            {
+                return static_cast<to>(std::forward<Self>(self)._value.template get<I>());
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::explicitly_convertible_to<const bertrand::NoneType&, to>)
+                requires (!convert && I == 0 && from_none)
+            {
+                return static_cast<to>(bertrand::None);
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, to>)
+                requires (!convert && I == 0 && !from_none && from_nullopt)
+            {
+                return static_cast<to>(std::nullopt);
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::explicitly_convertible_to<std::nullptr_t, to>)
+                requires (!convert && I == 0 && !from_none && !from_nullopt && from_nullptr)
+            {
+                return static_cast<to>(nullptr);
+            }
+        };
+
+        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<2>>;
+
+        [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
         {
-            return std::forward<from>(value);
-        }
-        template <meta::is<empty_type> from>
-        static constexpr to operator()(from&&)
-            noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, to>)
-            requires (
-                !meta::explicitly_convertible_to<from, to> &&
-                meta::explicitly_convertible_to<const std::nullopt_t&, to>
-            )
-        {
-            return std::nullopt;
-        }
-        template <meta::is<empty_type> from> requires (meta::lvalue<value_type>)
-        static constexpr to operator()(from&&)
-            noexcept (meta::nothrow::explicitly_convertible_to<std::nullptr_t, to>)
-            requires (
-                !meta::explicitly_convertible_to<from, to> &&
-                !meta::explicitly_convertible_to<const std::nullopt_t&, to> &&
-                meta::explicitly_convertible_to<std::nullptr_t, to>
-            )
-        {
-            return nullptr;
+            return dispatch{self._value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -4469,19 +4520,7 @@ template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
     using types = meta::pack<T>;
 
-    /// TODO: delete value_type and empty_type to provide a consistent interface.
-    /// impl::visitable<T> will provide more detailed access.  That might be true for
-    /// all aliases, actually.
-    using value_type = T;
-    using empty_type = NoneType;
-
-    /// TODO: it may be best to make _value legitimately private, and then only provide
-    /// generic access via impl::visitable<T>.  The only problem here is that optionals
-    /// would not be valid as explicit template parameters.  I can probably solve that
-    /// by keeping the value public, but renaming it to __value with double underscores
-    /// instead.
-
-    impl::union_storage<empty_type, meta::remove_rvalue<T>> _value;
+    impl::union_storage<NoneType, meta::remove_rvalue<T>> _value;
 
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
@@ -4494,11 +4533,11 @@ struct Optional : impl::optional_tag {
     reference. */
     template <typename from>
     [[nodiscard]] constexpr Optional(from&& v)
-        noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_from<value_type, from>, from>)
-        requires (meta::visit_exhaustive<impl::optional_convert_from<value_type, from>, from>)
+        noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
+        requires (meta::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
     : 
         _value(impl::visit(
-            impl::optional_convert_from<value_type, from>{},
+            impl::optional_convert_from<T, from>{},
             std::forward<from>(v)
         ))
     {}
@@ -4507,15 +4546,15 @@ struct Optional : impl::optional_tag {
     constructor, and initializes the optional with the result. */
     template <typename... A>
     [[nodiscard]] constexpr explicit Optional(A&&... args)
-        noexcept (meta::nothrow::visit_exhaustive<impl::optional_construct_from<value_type>, A...>)
+        noexcept (meta::nothrow::visit_exhaustive<impl::optional_construct_from<T>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::visit_exhaustive<impl::optional_convert_from<value_type, A...>, A...> &&
-            meta::visit_exhaustive<impl::optional_construct_from<value_type>, A...>
+            !meta::visit_exhaustive<impl::optional_convert_from<T, A...>, A...> &&
+            meta::visit_exhaustive<impl::optional_construct_from<T>, A...>
         )
     :
         _value(impl::visit(
-            impl::optional_construct_from<value_type>{},
+            impl::optional_construct_from<T>{},
             std::forward<A>(args)...
         ))
     {}
@@ -4533,13 +4572,15 @@ struct Optional : impl::optional_tag {
     (if `T` is an lvalue reference). */
     template <typename Self, typename to>
     [[nodiscard]] constexpr operator to(this Self&& self)
-        noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_to<Self, to>>)
-        requires (meta::visit_exhaustive<impl::optional_convert_to<Self, to>, Self>)
+        noexcept (requires{
+            {impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))} noexcept;
+        })
+        requires (
+            !meta::prefer_constructor<to> &&
+            requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};}
+        )
     {
-        return impl::visit(
-            impl::optional_convert_to<Self, to>{},
-            std::forward<Self>(self)
-        );
+        return impl::optional_convert_to<Self, to>{}(std::forward<Self>(self));
     }
 
     /* Explicit conversion from `Optional<T>` to any type that is explicitly
@@ -4548,16 +4589,16 @@ struct Optional : impl::optional_tag {
     applies if an implicit conversion could not be found. */
     template <typename Self, typename to>
     [[nodiscard]] explicit constexpr operator to(this Self&& self)
-        noexcept (meta::nothrow::visit_exhaustive<impl::optional_cast_to<Self, to>>)
+        noexcept (requires{
+            {impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
+        })
         requires (
-            !meta::visit_exhaustive<impl::optional_convert_to<Self, to>, Self> &&
-            meta::visit_exhaustive<impl::optional_cast_to<Self, to>, Self>
+            !meta::prefer_constructor<to> &&
+            !requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
+            requires{{impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))};}
         )
     {
-        return impl::visit(
-            impl::optional_cast_to<Self, to>{},
-            std::forward<Self>(self)
-        );
+        return impl::optional_cast_to<Self, to>{}(std::forward<Self>(self));
     }
 
     /* Contextually convert the optional to a boolean, where true indicates the
@@ -4569,9 +4610,7 @@ struct Optional : impl::optional_tag {
         "Contextual bool conversions are potentially ambiguous when used on optional "
         "booleans.  Consider an explicit comparison against `None`, a dereference "
         "with a leading `*`, or an exhaustive visitor using trailing `->*` instead. "
-    )]] explicit constexpr operator bool() const noexcept
-        requires (DEBUG && meta::boolean<value_type>)
-    {
+    )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return _value.index();
     }
 
@@ -4596,23 +4635,18 @@ struct Optional : impl::optional_tag {
     check requires a single extra conditional, which will be optimized out in release
     builds to maintain zero overhead. */
     [[nodiscard]] constexpr auto operator->()
-        noexcept (!DEBUG && (
-            meta::nothrow::has_arrow<meta::as_lvalue<value_type>> || (
-                !meta::has_arrow<meta::as_lvalue<value_type>> &&
-                meta::nothrow::has_address<meta::as_lvalue<value_type>>
-            )
-        ))
-        requires (
-            meta::has_arrow<meta::as_lvalue<value_type>> ||
-            meta::has_address<meta::as_lvalue<value_type>>
-        )
+        noexcept (!DEBUG && (meta::nothrow::has_arrow<meta::as_lvalue<T>> || (
+            !meta::has_arrow<meta::as_lvalue<T>> &&
+            meta::nothrow::has_address<meta::as_lvalue<T>>
+        )))
+        requires (meta::has_arrow<meta::as_lvalue<T>> || meta::has_address<meta::as_lvalue<T>>)
     {
         if constexpr (DEBUG) {
             if (_value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
-        if constexpr (meta::has_arrow<meta::as_lvalue<value_type>>) {
+        if constexpr (meta::has_arrow<meta::as_lvalue<T>>) {
             return std::to_address(_value.template get<1>());
         } else {
             return std::addressof(_value.template get<1>());
@@ -4625,23 +4659,18 @@ struct Optional : impl::optional_tag {
     check requires a single extra conditional, which will be optimized out in release
     builds to maintain zero overhead. */
     [[nodiscard]] constexpr auto operator->() const
-        noexcept (!DEBUG && (
-            meta::nothrow::has_arrow<meta::as_const_ref<value_type>> || (
-                !meta::has_arrow<meta::as_const_ref<value_type>> &&
-                meta::nothrow::has_address<meta::as_const_ref<value_type>>
-            )
-        ))
-        requires (
-            meta::has_arrow<meta::as_const_ref<value_type>> ||
-            meta::has_address<meta::as_const_ref<value_type>>
-        )
+        noexcept (!DEBUG && (meta::nothrow::has_arrow<meta::as_const_ref<T>> || (
+            !meta::has_arrow<meta::as_const_ref<T>> &&
+            meta::nothrow::has_address<meta::as_const_ref<T>>
+        )))
+        requires (meta::has_arrow<meta::as_const_ref<T>> || meta::has_address<meta::as_const_ref<T>>)
     {
         if constexpr (DEBUG) {
             if (_value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
-        if constexpr (meta::has_arrow<meta::as_const_ref<value_type>>) {
+        if constexpr (meta::has_arrow<meta::as_const_ref<T>>) {
             return std::to_address(_value.template get<1>());
         } else {
             return std::addressof(_value.template get<1>());
@@ -4663,7 +4692,7 @@ struct Optional : impl::optional_tag {
     /* Explicitly check whether the optional is in the empty state by comparing against
     `nullptr`, assuming `T` is an lvalue reference. */
     [[nodiscard]] friend constexpr bool operator==(const Optional& opt, std::nullptr_t) noexcept
-        requires (meta::lvalue<value_type>)
+        requires (meta::lvalue<T>)
     {
         return opt._value.index() == 0;
     }
@@ -4671,7 +4700,7 @@ struct Optional : impl::optional_tag {
     /* Explicitly check whether the optional is in the empty state by comparing against
     `nullptr`, assuming `T` is an lvalue reference. */
     [[nodiscard]] friend constexpr bool operator==(std::nullptr_t, const Optional& opt) noexcept
-        requires (meta::lvalue<value_type>)
+        requires (meta::lvalue<T>)
     {
         return opt._value.index() == 0;
     }
@@ -4691,7 +4720,7 @@ struct Optional : impl::optional_tag {
     /* Explicitly check whether the optional is in the non-empty state by comparing
     against `nullptr`, assuming `T` is an lvalue reference. */
     [[nodiscard]] friend constexpr bool operator!=(const Optional& opt, std::nullptr_t) noexcept
-        requires (meta::lvalue<value_type>)
+        requires (meta::lvalue<T>)
     {
         return opt._value.index() != 0;
     }
@@ -4699,7 +4728,7 @@ struct Optional : impl::optional_tag {
     /* Explicitly check whether the optional is in the non-empty state by comparing
     against `nullptr`, assuming `T` is an lvalue reference. */
     [[nodiscard]] friend constexpr bool operator!=(std::nullptr_t, const Optional& opt) noexcept
-        requires (meta::lvalue<value_type>)
+        requires (meta::lvalue<T>)
     {
         return opt._value.index() != 0;
     }
@@ -4711,11 +4740,11 @@ struct Optional : impl::optional_tag {
     will not be invoked for the empty state. */
     template <typename Self, typename... A>
     constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::Call, Self, A...>)
-        requires (meta::visit<impl::Call, Self, A...>)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
     {
         return (impl::visit(
-            impl::Call{},
+            impl::monadic<impl::Call>{},
             std::forward<Self>(self),
             std::forward<A>(args)...
         ));
@@ -4726,11 +4755,11 @@ struct Optional : impl::optional_tag {
     in another optional.  Otherwise, it will propagate the empty state. */
     template <typename Self, typename... K>
     constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::Subscript, Self, K...>)
-        requires (meta::visit<impl::Subscript, Self, K...>)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
     {
         return (impl::visit(
-            impl::Subscript{},
+            impl::monadic<impl::Subscript>{},
             std::forward<Self>(self),
             std::forward<K>(keys)...
         ));
@@ -4743,15 +4772,15 @@ struct Optional : impl::optional_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
         noexcept (
-            meta::nothrow::has_size<value_type> ||
+            meta::nothrow::has_size<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Optional&>::trivial
         )
         requires (
-            meta::has_size<value_type> ||
+            meta::has_size<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Optional&>::trivial
         )
     {
-        if constexpr (meta::has_size<value_type>) {
+        if constexpr (meta::has_size<meta::as_const_ref<T>>) {
             if (_value.index()) {
                 return std::ranges::size(_value.template get<1>());
             } else {
@@ -4769,15 +4798,15 @@ struct Optional : impl::optional_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
         noexcept (
-            meta::nothrow::has_ssize<value_type> ||
+            meta::nothrow::has_ssize<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Optional&>::trivial
         )
         requires (
-            meta::has_ssize<value_type> ||
+            meta::has_ssize<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Optional&>::trivial
         )
     {
-        if constexpr (meta::has_ssize<value_type>) {
+        if constexpr (meta::has_ssize<meta::as_const_ref<T>>) {
             if (_value.index()) {
                 return std::ranges::ssize(_value.template get<1>());
             } else {
@@ -4795,15 +4824,15 @@ struct Optional : impl::optional_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr bool empty() const
         noexcept (
-            meta::nothrow::has_empty<value_type> ||
+            meta::nothrow::has_empty<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Optional&>::trivial
         )
         requires (
-            meta::has_empty<value_type> ||
+            meta::has_empty<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Optional&>::trivial
         )
     {
-        if constexpr (meta::has_empty<value_type>) {
+        if constexpr (meta::has_empty<meta::as_const_ref<T>>) {
             return _value.index() ? std::ranges::empty(_value.template get<1>()) : true;
         } else {
             return !_value.index();
@@ -4932,7 +4961,24 @@ constexpr void swap(Optional<T>& a, Optional<T>& b)
 ////////////////////////
 
 
+/// TODO: maybe the pointer operators throw the error state if they are used
+/// incorrectly, which makes the dereference operator essentially promote the expected
+/// into a hard exception, which is fairly intuitive, and differentiates expecteds from
+/// optionals and unions somewhat.
+
+
+
+
 namespace impl {
+
+    /// TODO: no need for the error here.  Just throw the unexpected state directly.
+    /// -> This requires a vtable that throws the proper error on dereference, such
+    /// that the expected output is the value type, and all other alternatives throw
+    /// the error.  That keeps the overhead to just one conditional, which will be
+    /// applied in both debug and release builds, as a differentiating feature of
+    /// expecteds.
+
+
 
     /* Return an informative error message if an expected is dereferenced while in an
     error state and `DEBUG` is true. */
@@ -5023,35 +5069,47 @@ namespace impl {
         }
     };
 
-    /// TODO: ensure that impl::visitable<Self> exposes the right fields.  When I
-    /// refactor the visit internals, I can come back to this and ensure it all works,
-    /// and possibly expand it to make the other trivial visitors generic in the
-    /// same way.  That way they don't depend on the underlying union type or how it is
-    /// implemented, using impl::visitable<Self> to handle the details.
-
     /* A simple visitor that backs the implicit conversion operator from
     `Expected<T, Es...>`, which attempts a normal visitor conversion where possible,
     falling back to a conversion from `std::unexpected` to cover all STL types. */
     template <typename Self, typename to>
     struct expected_convert_to {
-        using value_type = impl::visitable<Self>::value_type;
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::convertible_to<from, to>)
-            requires (meta::convertible_to<from, to>)
+        template <size_t I>
+        struct fn {
+            static constexpr bool convert = requires(meta::forward<Self> self) {{
+                std::forward<Self>(self)._value.template get<I>()
+            } -> meta::convertible_to<to>;};
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (requires{{
+                    std::forward<Self>(self)._value.template get<I>()
+                } noexcept -> meta::nothrow::convertible_to<to>;})
+                requires (convert)
+            {
+                return std::forward<Self>(self)._value.template get<I>();
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (requires{{
+                    std::unexpected(std::forward<Self>(self)._value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<to>;})
+                requires (!convert && I > 0 && requires{{
+                    std::unexpected(std::forward<Self>(self)._value.template get<I>())
+                } -> meta::convertible_to<to>;})
+            {
+                return std::unexpected(std::forward<Self>(self)._value.template get<I>());
+            }
+        };
+
+        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<
+            meta::unqualify<Self>::types::size()
+        >>;
+
+        [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
         {
-            return std::forward<from>(value);
-        }
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::convertible_to<std::unexpected<meta::unqualify<from>>, to>)
-            requires (
-                !meta::is<from, value_type> &&
-                !meta::convertible_to<from, to> &&
-                meta::convertible_to<std::unexpected<meta::unqualify<from>>, to>
-            )
-        {
-            return std::unexpected<meta::unqualify<from>>(std::forward<from>(value));
+            return dispatch{self._value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -5060,27 +5118,44 @@ namespace impl {
     falling back to a conversion from `std::unexpected` to cover all STL types. */
     template <typename Self, typename to>
     struct expected_cast_to {
-        using value_type = impl::visitable<Self>::value_type;
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::explicitly_convertible_to<from, to>)
-            requires (meta::explicitly_convertible_to<from, to>)
+        template <size_t I>
+        struct fn {
+            static constexpr bool convert = requires(meta::forward<Self> self) {{
+                static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+            };};
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (requires{{
+                    static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                } noexcept;})
+                requires (convert)
+            {
+                return static_cast<to>(std::forward<Self>(self)._value.template get<I>());
+            }
+
+            static constexpr to operator()(meta::forward<Self> self)
+                noexcept (requires {{static_cast<to>(std::unexpected(
+                    std::forward<Self>(self)._value.template get<I>()
+                ))} noexcept;})
+                requires (!convert && I > 0 && requires {{static_cast<to>(std::unexpected(
+                    std::forward<Self>(self)._value.template get<I>()
+                ))};})
+            {
+                return static_cast<to>(std::unexpected(
+                    std::forward<Self>(self)._value.template get<I>()
+                ));
+            }
+        };
+
+        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<
+            meta::unqualify<Self>::types::size()
+        >>;
+
+        [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
         {
-            return std::forward<from>(value);
-        }
-        template <typename from>
-        static constexpr to operator()(from&& value)
-            noexcept (meta::nothrow::explicitly_convertible_to<
-                std::unexpected<meta::unqualify<from>>,
-                to
-            >)
-            requires (
-                !meta::is<from, value_type> &&
-                !meta::explicitly_convertible_to<from, to> &&
-                meta::explicitly_convertible_to<std::unexpected<meta::unqualify<from>>, to>
-            )
-        {
-            return std::unexpected<meta::unqualify<from>>(std::forward<from>(value));
+            return dispatch{self._value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -5090,8 +5165,6 @@ namespace impl {
 template <typename T, typename E, typename... Es> requires (meta::unique<T, E, Es...>)
 struct Expected : impl::expected_tag {
     using types = meta::pack<T, E, Es...>;
-    using errors = meta::pack<E, Es...>;
-    using value_type = std::conditional_t<meta::is_void<T>, NoneType, T>;
 
     impl::union_storage<
         meta::remove_rvalue<T>,
@@ -5102,8 +5175,8 @@ struct Expected : impl::expected_tag {
     /* Default constructor.  Enabled iff the result type is default constructible or
     void. */
     [[nodiscard]] constexpr Expected()
-        noexcept (meta::nothrow::default_constructible<meta::remove_rvalue<value_type>>)
-        requires (meta::default_constructible<meta::remove_rvalue<value_type>>)
+        noexcept (meta::nothrow::default_constructible<meta::remove_rvalue<T>>)
+        requires (meta::default_constructible<meta::remove_rvalue<T>>)
     {}
 
     /* Converting constructor.  Implicitly converts the input to the value type if
@@ -5142,13 +5215,15 @@ struct Expected : impl::expected_tag {
     algorithm will try again with the type wrapped in `std::unexpected` instead. */
     template <typename Self, typename to>
     [[nodiscard]] constexpr operator to(this Self&& self)
-        noexcept (meta::nothrow::visit_exhaustive<impl::expected_convert_to<Self, to>, Self>)
-        requires (meta::visit_exhaustive<impl::expected_convert_to<Self, to>, Self>)
+        noexcept (requires{
+            {impl::expected_convert_to<Self, to>{}(std::forward<Self>(self))} noexcept;
+        })
+        requires (
+            !meta::prefer_constructor<to> &&
+            requires{{impl::expected_convert_to<Self, to>{}(std::forward<Self>(self))};}
+        )
     {
-        return impl::visit(
-            impl::expected_convert_to<Self, to>{},
-            std::forward<Self>(self)
-        );
+        return impl::expected_convert_to<Self, to>{}(std::forward<Self>(self));
     }
 
     /* Explicitly convert the `Expected` to any other type to which all alternatives
@@ -5158,16 +5233,16 @@ struct Expected : impl::expected_tag {
     found. */
     template <typename Self, typename to>
     [[nodiscard]] explicit constexpr operator to(this Self&& self)
-        noexcept (meta::nothrow::visit_exhaustive<impl::expected_cast_to<Self, to>, Self>)
+        noexcept (requires{
+            {impl::expected_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
+        })
         requires (
-            !meta::visit_exhaustive<impl::expected_convert_to<Self, to>, Self> &&
-            meta::visit_exhaustive<impl::expected_cast_to<Self, to>, Self>
+            !meta::prefer_constructor<to> &&
+            !requires{{impl::expected_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
+            requires{{impl::expected_cast_to<Self, to>{}(std::forward<Self>(self))};}
         )
     {
-        return impl::visit(
-            impl::expected_cast_to<Self, to>{},
-            std::forward<Self>(self)
-        );
+        return impl::expected_cast_to<Self, to>{}(std::forward<Self>(self));
     }
 
     /* Swap the contents of two expecteds as efficiently as possible. */
@@ -5189,9 +5264,7 @@ struct Expected : impl::expected_tag {
         "contextual bool conversions are potentially ambiguous when used on expected "
         "booleans.  Consider dereferencing with a leading `*`, or an exhaustive "
         "visitor using trailing `->*` instead. "
-    )]] explicit constexpr operator bool() const noexcept
-        requires (DEBUG && meta::boolean<value_type>)
-    {
+    )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return _value.index() == 0;
     }
 
@@ -5217,14 +5290,14 @@ struct Expected : impl::expected_tag {
     in release builds to maintain zero overhead. */
     [[nodiscard]] constexpr auto operator->()
         noexcept (!DEBUG && (
-            meta::nothrow::has_arrow<meta::as_lvalue<value_type>> || (
-                !meta::has_arrow<meta::as_lvalue<value_type>> &&
-                meta::nothrow::has_address<meta::as_lvalue<value_type>>
+            meta::nothrow::has_arrow<meta::as_lvalue<T>> || (
+                !meta::has_arrow<meta::as_lvalue<T>> &&
+                meta::nothrow::has_address<meta::as_lvalue<T>>
             )
         ))
         requires (
-            meta::has_arrow<meta::as_lvalue<value_type>> ||
-            meta::has_address<meta::as_lvalue<value_type>>
+            meta::has_arrow<meta::as_lvalue<T>> ||
+            meta::has_address<meta::as_lvalue<T>>
         )
     {
         if constexpr (DEBUG) {
@@ -5232,7 +5305,7 @@ struct Expected : impl::expected_tag {
                 throw impl::bad_expected_access<T, E, Es...>();
             }
         }
-        if constexpr (meta::has_arrow<meta::as_lvalue<value_type>>) {
+        if constexpr (meta::has_arrow<meta::as_lvalue<T>>) {
             return std::to_address(_value.template get<0>());
         } else {
             return std::addressof(_value.template get<0>());
@@ -5246,14 +5319,14 @@ struct Expected : impl::expected_tag {
     release builds to maintain zero overhead. */
     [[nodiscard]] constexpr auto operator->() const
         noexcept (!DEBUG && (
-            meta::nothrow::has_arrow<meta::as_const_ref<value_type>> || (
-                !meta::has_arrow<meta::as_const_ref<value_type>> &&
-                meta::nothrow::has_address<meta::as_const_ref<value_type>>
+            meta::nothrow::has_arrow<meta::as_const_ref<T>> || (
+                !meta::has_arrow<meta::as_const_ref<T>> &&
+                meta::nothrow::has_address<meta::as_const_ref<T>>
             )
         ))
         requires (
-            meta::has_arrow<meta::as_const_ref<value_type>> ||
-            meta::has_address<meta::as_const_ref<value_type>>
+            meta::has_arrow<meta::as_const_ref<T>> ||
+            meta::has_address<meta::as_const_ref<T>>
         )
     {
         if constexpr (DEBUG) {
@@ -5261,7 +5334,7 @@ struct Expected : impl::expected_tag {
                 throw impl::bad_expected_access<T, E, Es...>();
             }
         }
-        if constexpr (meta::has_arrow<meta::as_const_ref<value_type>>) {
+        if constexpr (meta::has_arrow<meta::as_const_ref<T>>) {
             return std::to_address(_value.template get<0>());
         } else {
             return std::addressof(_value.template get<0>());
@@ -5273,11 +5346,11 @@ struct Expected : impl::expected_tag {
     in another expected.  Otherwise, it will propagate the error state. */
     template <typename Self, typename... A>
     constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::Call, Self, A...>)
-        requires (meta::visit<impl::Call, Self, A...>)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
     {
         return (impl::visit(
-            impl::Call{},
+            impl::monadic<impl::Call>{},
             std::forward<Self>(self),
             std::forward<A>(args)...
         ));
@@ -5288,11 +5361,11 @@ struct Expected : impl::expected_tag {
     in another expected.  Otherwise, it will propagate the error state. */
     template <typename Self, typename... K>
     constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::Subscript, Self, K...>)
-        requires (meta::visit<impl::Subscript, Self, K...>)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
     {
         return (impl::visit(
-            impl::Subscript{},
+            impl::monadic<impl::Subscript>{},
             std::forward<Self>(self),
             std::forward<K>(keys)...
         ));
@@ -5305,15 +5378,15 @@ struct Expected : impl::expected_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
         noexcept (
-            meta::nothrow::has_size<value_type> ||
+            meta::nothrow::has_size<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
         requires (
-            meta::has_size<value_type> ||
+            meta::has_size<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
     {
-        if constexpr (meta::has_size<value_type>) {
+        if constexpr (meta::has_size<meta::as_const_ref<T>>) {
             if (_value.index() == 0) {
                 return std::ranges::size(_value.template get<0>());
             } else {
@@ -5331,15 +5404,15 @@ struct Expected : impl::expected_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
         noexcept (
-            meta::nothrow::has_ssize<value_type> ||
+            meta::nothrow::has_ssize<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
         requires (
-            meta::has_ssize<value_type> ||
+            meta::has_ssize<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
     {
-        if constexpr (meta::has_ssize<value_type>) {
+        if constexpr (meta::has_ssize<meta::as_const_ref<T>>) {
             if (_value.index() == 0) {
                 return std::ranges::ssize(_value.template get<0>());
             } else {
@@ -5358,15 +5431,15 @@ struct Expected : impl::expected_tag {
     compile. */
     [[nodiscard]] constexpr bool empty() const
         noexcept (
-            meta::nothrow::has_empty<value_type> ||
+            meta::nothrow::has_empty<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
         requires (
-            meta::has_empty<value_type> ||
+            meta::has_empty<meta::as_const_ref<T>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
     {
-        if constexpr (meta::has_empty<value_type>) {
+        if constexpr (meta::has_empty<meta::as_const_ref<T>>) {
             return _value.index() != 0 || std::ranges::empty(_value.template get<0>());
         } else {
             return _value.index() != 0;
@@ -7194,11 +7267,20 @@ static_assert(y == 2);
 static_assert(z == 3);
 
 
-
+/// static_assert(u ->* def{
+///     [](int i) { return 1; }
+///     [](const int& i) { return 2; }
+/// } == 2);
 static_assert(impl::visit(overload{
     // [](int i) { return 1; },
     [](const int& s) { return 2; }
 }, u) == 2);
+
+
+static constexpr Optional opt = 2;
+static constexpr auto opt2 = opt + 2;
+static constexpr Optional<int> opt3 = None;
+static_assert(opt3 + 2 == None);
 
 
 

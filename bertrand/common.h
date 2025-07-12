@@ -1200,7 +1200,7 @@ namespace meta {
     }
 
     template <typename T>
-    concept prefer_constructor = detail::prefer_constructor<T>;
+    concept prefer_constructor = detail::prefer_constructor<unqualify<T>>;
 
     template <typename L, typename R>
     concept convertible_to = detail::convertible_to<L, R>;
@@ -4631,7 +4631,7 @@ struct NoneType {
     template <typename T>
     [[nodiscard]] constexpr operator T() const
         noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, T>)
-        requires (meta::convertible_to<const std::nullopt_t&, T>)
+        requires (!meta::prefer_constructor<T> && meta::convertible_to<const std::nullopt_t&, T>)
     {
         return std::nullopt;
     }
@@ -4640,6 +4640,7 @@ struct NoneType {
     [[nodiscard]] explicit constexpr operator T() const
         noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, T>)
         requires (
+            !meta::prefer_constructor<T> &&
             !meta::convertible_to<const std::nullopt_t&, T> &&
             meta::explicitly_convertible_to<const std::nullopt_t&, T>
         )
@@ -4651,6 +4652,7 @@ struct NoneType {
     [[nodiscard]] explicit constexpr operator T() const
         noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, T>)
         requires (
+            !meta::prefer_constructor<T> &&
             !meta::explicitly_convertible_to<const std::nullopt_t&, T> &&
             meta::explicitly_convertible_to<std::nullptr_t, T>
         )
