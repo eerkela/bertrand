@@ -4961,41 +4961,13 @@ constexpr void swap(Optional<T>& a, Optional<T>& b)
 ////////////////////////
 
 
-/// TODO: maybe the pointer operators throw the error state if they are used
-/// incorrectly, which makes the dereference operator essentially promote the expected
-/// into a hard exception, which is fairly intuitive, and differentiates expecteds from
-/// optionals and unions somewhat.
-
-
-
-
 namespace impl {
 
-    /// TODO: no need for the error here.  Just throw the unexpected state directly.
-    /// -> This requires a vtable that throws the proper error on dereference, such
-    /// that the expected output is the value type, and all other alternatives throw
-    /// the error.  That keeps the overhead to just one conditional, which will be
-    /// applied in both debug and release builds, as a differentiating feature of
-    /// expecteds.
+    /// TODO: don't check for explicit inheritance from an exception type.  Instead,
+    /// use the same deduction rules as for `Union<Ts...>`, where proximal matches are
+    /// preferred over implicit conversions.  I might skip the implicit conversions
+    /// in this case, however.
 
-
-
-    /* Return an informative error message if an expected is dereferenced while in an
-    error state and `DEBUG` is true. */
-    template <typename curr, typename... Ts>
-    struct _bad_expected_access {
-        template <size_t J>
-        struct visit {
-            static constexpr BadUnionAccess operator()() {
-                static constexpr static_str msg =
-                    "'" + demangle<curr>() + "' is not the active type in the expected "
-                    "(active is '" + demangle<meta::unpack_type<J, Ts...>>() + "')";
-                return BadUnionAccess(msg);
-            }
-        };
-    };
-    template <typename curr, typename... Ts> requires (DEBUG)
-    constexpr vtable<_bad_expected_access<curr, Ts...>::template visit> bad_expected_access;
 
     /* Given an initializer that inherits from at least one expected exception type,
     determine the most proximal exception to initialize. */
@@ -5017,36 +4989,35 @@ namespace impl {
     struct expected_convert_from {};
     template <typename T, typename... Es, typename in> requires (!meta::monad<in>)
     struct expected_convert_from<meta::pack<T, Es...>, in> {
-        template <typename from>
-        using type = _expected_convert_from<void, from, Es...>::type;
+        using result = impl::union_storage<
+            meta::remove_rvalue<T>,
+            meta::remove_rvalue<Es>...
+        >;
 
         // 1) prefer direct conversion to `out` if possible
         template <typename from>
-        static constexpr impl::union_storage<
-            meta::remove_rvalue<T>,
-            meta::remove_rvalue<Es>...
-        > operator()(from&& arg)
+        static constexpr result operator()(from&& arg)
             noexcept (meta::nothrow::convertible_to<from, meta::remove_rvalue<T>>)
             requires (meta::convertible_to<from, meta::remove_rvalue<T>>)
         {
             return {std::in_place_index<0>, std::forward<from>(arg)};
         }
 
+        template <typename from>
+        using err = _expected_convert_from<void, from, Es...>::type;
+
         // 2) otherwise, if the input inherits from one of the expected error types,
         // then we convert it to the most proximal such type.
         template <typename from>
-        static constexpr impl::union_storage<
-            meta::remove_rvalue<T>,
-            meta::remove_rvalue<Es>...
-        > operator()(from&& arg)
-            noexcept (meta::nothrow::convertible_to<from, type<from>>)
+        static constexpr result operator()(from&& arg)
+            noexcept (meta::nothrow::convertible_to<from, err<from>>)
             requires (
                 !meta::convertible_to<from, meta::remove_rvalue<T>> &&
-                meta::not_void<type<from>>
+                meta::not_void<err<from>>
             )
         {
             return {
-                std::in_place_index<meta::index_of<type<from>, Es...>>,
+                std::in_place_index<meta::index_of<err<from>, Es...> + 1>,
                 std::forward<from>(arg)
             };
         }
@@ -5152,6 +5123,39 @@ namespace impl {
         >>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+        {
+            return dispatch{self._value.index()}(std::forward<Self>(self));
+        }
+    };
+
+    /* Attempt to dereference an expected.  If it is in an error state, then that state
+    will be thrown as an exception.  Otherwise, perfectly forwards the contained
+    value. */
+    template <typename Self>
+    struct expected_access {
+        using type = decltype((std::declval<Self>()._value.template get<0>()));
+
+        template <size_t I>
+        struct fn {
+            static constexpr type operator()(meta::forward<Self> self)
+                requires (I == 0)
+            {
+                return (std::forward<Self>(self)._value.template get<0>());
+            }
+            [[noreturn]] static constexpr type operator()(meta::forward<Self> self)
+                requires (I > 0)
+            {
+                throw std::forward<Self>(self)._value.template get<I>();
+            }
+        };
+
+        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<
+            meta::unqualify<Self>::types::size()
+        >>;
+
+        [[nodiscard]] static constexpr type operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
             requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
         {
@@ -5268,19 +5272,17 @@ struct Expected : impl::expected_tag {
         return _value.index() == 0;
     }
 
+    /// TODO: this now throws the error state if the expected is in that state,
+    /// which should be reflected in the documentation.
+
     /* Dereference to obtain the stored value, perfectly forwarding it according to the
     expected's current cvref qualifications.  A `BadUnionAccess` error will be thrown
     if the program is compiled in debug mode and the expected is in an error state.
     This check requires a single extra conditional, which will be optimized out in
     release builds to maintain zero overhead. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept (!DEBUG) {
-        if constexpr (DEBUG) {
-            if (self._value.index() != 0) {
-                throw impl::bad_expected_access<T, E, Es...>();
-            }
-        }
-        return (std::forward<Self>(self)._value.template get<0>());
+    [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) {
+        return (impl::expected_access<Self>{}(std::forward<Self>(self)));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -5289,27 +5291,9 @@ struct Expected : impl::expected_tag {
     state.  This check requires a single extra conditional, which will be optimized out
     in release builds to maintain zero overhead. */
     [[nodiscard]] constexpr auto operator->()
-        noexcept (!DEBUG && (
-            meta::nothrow::has_arrow<meta::as_lvalue<T>> || (
-                !meta::has_arrow<meta::as_lvalue<T>> &&
-                meta::nothrow::has_address<meta::as_lvalue<T>>
-            )
-        ))
-        requires (
-            meta::has_arrow<meta::as_lvalue<T>> ||
-            meta::has_address<meta::as_lvalue<T>>
-        )
+        requires (meta::has_arrow<meta::as_lvalue<T>> || meta::has_address<meta::as_lvalue<T>>)
     {
-        if constexpr (DEBUG) {
-            if (_value.index() != 0) {
-                throw impl::bad_expected_access<T, E, Es...>();
-            }
-        }
-        if constexpr (meta::has_arrow<meta::as_lvalue<T>>) {
-            return std::to_address(_value.template get<0>());
-        } else {
-            return std::addressof(_value.template get<0>());
-        }
+        return impl::arrow_proxy{**this};
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -5318,27 +5302,9 @@ struct Expected : impl::expected_tag {
     This check requires a single extra conditional, which will be optimized out in
     release builds to maintain zero overhead. */
     [[nodiscard]] constexpr auto operator->() const
-        noexcept (!DEBUG && (
-            meta::nothrow::has_arrow<meta::as_const_ref<T>> || (
-                !meta::has_arrow<meta::as_const_ref<T>> &&
-                meta::nothrow::has_address<meta::as_const_ref<T>>
-            )
-        ))
-        requires (
-            meta::has_arrow<meta::as_const_ref<T>> ||
-            meta::has_address<meta::as_const_ref<T>>
-        )
+        requires (meta::has_arrow<meta::as_const_ref<T>> || meta::has_address<meta::as_const_ref<T>>)
     {
-        if constexpr (DEBUG) {
-            if (_value.index() != 0) {
-                throw impl::bad_expected_access<T, E, Es...>();
-            }
-        }
-        if constexpr (meta::has_arrow<meta::as_const_ref<T>>) {
-            return std::to_address(_value.template get<0>());
-        } else {
-            return std::addressof(_value.template get<0>());
-        }
+        return impl::arrow_proxy{**this};
     }
 
     /* Monadic call operator.  If the expected type is a function-like object and is
@@ -7282,6 +7248,15 @@ static constexpr auto opt2 = opt + 2;
 static constexpr Optional<int> opt3 = None;
 static_assert(opt3 + 2 == None);
 
+struct Foo {
+    int x;
+};
+
+struct Bar {};
+
+
+static constexpr Expected<Foo, Bar> foo = Foo{23};
+static_assert(foo->x == 23);
 
 
 
