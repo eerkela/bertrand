@@ -5493,9 +5493,7 @@ namespace std {
     template <bertrand::meta::is<bertrand::NoneType> T>
     struct hash<T> {
         [[nodiscard]] static constexpr size_t operator()(const T& value) noexcept {
-            // any arbitrary constant will do.  Large random numbers are preferred to
-            // avoid collisions clustered around zero.
-            return 4238894112;
+            return std::bit_cast<size_t>(&bertrand::None);
         }
     };
 

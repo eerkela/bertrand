@@ -7,63 +7,64 @@
 
 /* INTRODUCTION
 
-    "A monad is a monoid in the category of endofunctors"
+    "A monad is a monoid in the category of endofunctors of some fixed category"
         - Category Theory (https://medium.com/@felix.kuehl/a-monad-is-just-a-monoid-in-the-category-of-endofunctors-lets-actually-unravel-this-f5d4b7dbe5d6)
 
 Unless you already know what each of these words means, this definition is about as
 clear as mud, so here's a better one:
 
     A monad (in the context of computer science) is a separate *domain* of values, in
-    which results are *annotated* with the monad type, and compositions of monads
-    return other monads.
+    which results are *labeled* with the monad type, and compositions of monads return
+    other monads.
 
 Intuitively, a monad is a kind of "sticky" wrapper around a value, which behaves
-similarly to the value itself, but with extra properties that change its semantics in
-some way that is consistent across the entire domain.  It is a natural extension of
-the Decorator pattern, and is a fundamental abstraction in functional programming
-languages, such as Haskell, Scala, and Elixir.
+similarly to the value itself, but with extra properties that alter its semantics in
+a way that is consistent across the entire domain.  It is a natural extension of the
+Gang of Four's Decorator pattern, and is a fundamental abstraction in functional
+programming languages, such as Haskell, Scala, and Elixir.
 
 Let's look at one of the most basic examples of a monad: the `Optional` type:
 
 ```
-    // the default constructor for `int` is undefined, so `x` is uninitialized
+    // the default constructor for `int` is undefined, so `x` is technically uninitialized
     int x1;
-    int y1 = x1 + 2;  // undefined behavior -> `y` may contain garbage
+    int y1 = x1 + 2;  // undefined behavior -> `y1` may contain garbage
 
     // Optional<> provides a default constructor, initializing to an empty state
     Optional<int> x2;
-    Optional<int> y2 = x2 + 2;  // well-defined -> `y` is also empty.  No computation takes place
+    Optional<int> y2 = x2 + 2;  // well-defined -> `y2` is also empty.  No computation takes place
 ```
 
-Formally, `Optional<T>` adds a universal `None` state to the domain of `T`, which is
-can be used to represent the absence of a value, regardless of the specific
-characteristics of `T`.  Operating on an `Optional<T>` is exactly like operating on `T`
-itself, except that the empty state will be propagated through the computation, and
-usually maps to itself.  Thus, any algorithm that operates on `T` should also be able
-to operate on `Optional<T>` without any changes; it will simply not be computed if
-the input is in the empty state.  Such operations can therefore be chained together
-without needing to check for the empty state at every step, allowing for more concise
-and readable code, which better models the underlying problem space.
+Formally, `Optional<T>` adds a universal `None` state to the domain of `T`, which can
+be used to represent the absence of a value, regardless of the specific characteristics
+of `T`.  Operating on an `Optional<T>` is exactly like operating on `T` itself, except
+that the empty state will be propagated through the computation, and usually maps to
+itself (which turns the operation into an identity function).  Thus, any algorithm that
+operates on `T` should also be able to operate on `Optional<T>` without any changes;
+it will simply not be computed if the input is in the empty state.  Such operations can
+thus be chained together without needing to check for the empty state at every step,
+allowing for more concise and readable code, which better models the underlying problem
+space.
 
 `Optional`s are just one example of a monad, and are actually just a special case of
 `Union`, where the first type is the empty state.  In (mathematical) type theory, these
 are categorized as "sum types": composite types that can hold **one** (and only one) of
 several possible types, where the overall space of types is given by the disjunction
 (logical OR) between every alternative.  Bertrand's `Union<Ts...>` monad generalizes
-this concept for any choice of `Ts...`, and provides a type-safe, monadic way to
-represent values of indeterminate type in statically-typed languages such as C++.
+this concept to any choice of (non-void) `Ts...`, and provides a type-safe, monadic way
+to represent values of indeterminate type in statically-typed languages such as C++.
 Operators for monadic unions are allowed if and only if all alternatives support the
 same operation, and may return further unions of several unique types, reflecting the
 results from each alternative.
 
 Sometimes, it is beneficial to explicitly leave the monadic domain and unwrap the raw
 value(s), which can be done in a number of ways.  First, all monads support both
-implicit and explicit conversions to arbitrary types as long as each alternative can be
-converted to that same type in turn.  This generates a "projection" from the monadic
-domain to that of the target type, which is the logical inversion of the projection
-from ordinary values to monads.  Additionally, monads support pattern matching, which
-is commonly used by functional languages to destructure types into their constituent
-parts.  Here's a simple example:
+implicit and explicit conversion to arbitrary types as long as all alternatives can be
+converted to that type in turn.  This generates a "projection" from the monadic domain
+to that of the destination type, which is the logical inversion of the monad's
+constructor.  Additionally, monads support pattern matching, as is commonly used by
+functional languages to destructure algebraic types into their constituent parts.
+Here's a simple example:
 
 ```
     using A = std::array<double, 3>;
@@ -81,46 +82,45 @@ parts.  Here's a simple example:
 ```
 
 Note that the `assert` in the last line only compiles because all 3 alternatives
-support the `size()` operator, meaning that `u.size()` is well-defined and returns a
+support the `size()` operator, meaning that `u.size()` is well-formed and returns a
 type comparable to `int`.  The pattern matching expression `u ->* def{...}` is not
-constrained in this way, and will compile as long as all alternatives are exhaustively
-handled, regardless of each case's return type or internal logic.  This allows for
-detailed and type-safe access to the internal structure of the union, possibly
-including unique behavior for each alternative while remaining within (or projecting
-from) the monadic domain.
+constrained in the same way, and will compile as long as all alternatives are
+(unambiguously) handled, regardless of each case's return type or internal logic.  This
+allows for detailed and type-safe access to the internal structure of a union, possibly
+including unique projections or other behavior for each alternative.
 
 Some monads, including `Optional` and `Expected` also support pointer-like dereference
 operators, which trivially map from the monadic domain to the underlying type, assuming
 the monad is not in an empty or error state.  This means that `Optional<T>` (and
 particularly `Optional<T&>`) can be used to model pointers, which is useful when
-integrating with languages that do not otherwise expose pointers to the user, such as
+integrating with languages that do not otherwise expose them to the user, such as
 Python.  In fact, optional references are literally reduced to pointers in the
 underlying implementation, with the only change being that they forward all operations
-to the referenced value, rather than exposing pointer arithmetic or similar error-prone
-and potentially insecure operations to the user.  `Union<Ts...>` also support the
-same operators, but only if all alternatives share a common type, and will fail to
-compile otherwise.
+to the referenced value, rather than exposing pointer arithmetic or similar operations
+(which may be error-prone and potentially insecure) to the user.  `Union<Ts...>` also
+support the same operators, but only if all alternatives share a common type, and will
+fail to compile otherwise.
 
-There are also other monads not covered here, such as `Tuple<Ts...>` and `range<T>`,
+There are also other monads not covered here, such as `Tuple<Ts...>` and `range<C>`,
 which extend these monadic principles to so-called "product types", where the overall
-space of types is given by the conjunction (logical AND) of each alternative, as well
-as iterables, where the monad represents an individual element in a sequence.  Monads
-are also useful for modeling operations across time, as is the case with
+space of types is given by the conjunction (logical AND) of each alternative.  Monads
+can also be useful when modeling operations across time, as is the case for
 `async<F, A...>`, which schedules a function `F` to be executed asynchronously on a
-separate thread.  Operating on the `async` monad after it has been scheduled extends it
-with one or more continuations, which will be executed immediately after the original
-function completes, allowing users to chain together asynchronous operations in a more
-intuitive and type-safe manner.  See the documentation for these types for more details
-on their specific behavior and how it relates to Bertrand's overall monadic ecosystem.
+separate resource (usually a thread).  Operating on the `async` monad after it has been
+scheduled extends it with one or more continuations, which will be executed on the same
+resource immediately after the original function completes, allowing users to chain
+together asynchronous operations in a more intuitive and type-safe manner.  See the
+documentation of these types for more details on their specific behavior and how it
+relates to Bertrand's overall monad ecosystem.
 
 One of the most powerful features of monads is their composability.  There is nothing
-inherently wrong with an optional union, or union of optionals, for example, and both
-will be treated in exactly the same way during pattern matching and monadic operations.
-Formally, visitors act by flattening monads into their constituent types, meaning
-that no special syntax is necessary to deal with recursively nested structures, and
-monadic return types will always be merged into a canonical (non-nested) form at all
-times.  These kinds of transformations keep the monadic domain clean and predictable,
-with no extra boilerplate or special syntax, leading to simpler code that is easier to
+inherently wrong with an optional union, or union of optionals, or async expected
+tuple, for example.  They will all be treated in exactly the same way during pattern
+matching and monadic operations.  Formally, visitors act by flattening monads into
+their constituent types, meaning that they will recursively unpack any nested monads,
+and monadic return types will always be merged into a canonical (non-nested) form.
+These kinds of transformations keep the monadic interface clean and predictable, with
+no extra boilerplate or special syntax, leading to simpler code that is easier to
 reason about, maintain, and generalize to other languages, regardless of their
 capabilities.
 */
@@ -130,15 +130,14 @@ namespace bertrand {
 
 
 /* Unions emit internal vtables when provided as inputs to `def` visitors and the
-`impl::visit()` function, whose sizes are equal to the cross product of all possible
-alternatives.  In order to optimize performance and reduce code bloat, these vtables
-are only emitted when the cross product exceeds a certain threshold, as controlled by
-an equivalent compilation flag.  Profile Guided Optimization (PGO) may be used to
-optimally select this constant for a given architecture, with a hardware-dependent
-sweet spot for each platform.  Note that since `impl::visit()` is used internally for
-all monadic operators, cross products that fit within this threshold will generally
-run faster, with more predictable performance characteristics compared to vtable-based
-alternatives. */
+`impl::visit()` function.  As an optimization, these vtables will be omitted and
+replaced with a simple `if/else` chain as long as the total number of alternatives
+is less than this threshold.  Profile Guided Optimization (PGO) may be used to
+optimally select this threshold for a given architecture, as there is a
+hardware-dependent sweet spot for each platform.  Note that since `impl::visit()` is
+used internally for all monadic operators, unions that fit within this threshold will
+generally run faster, with more predictable performance characteristics compared to
+vtable-based alternatives. */
 #ifdef BERTRAND_MIN_VTABLE_SIZE
     inline constexpr size_t MIN_VTABLE_SIZE = BERTRAND_MIN_VTABLE_SIZE;
 #else
@@ -155,13 +154,13 @@ namespace impl {
     struct union_tag {};
     struct optional_tag {};
     struct expected_tag {};
-    struct tuple_storage_tag {};
 
     /* A helper class that generates a manual vtable for a visitor function `F`, which
     must be a template class that accepts a single `size_t` parameter representing the
     index of the alternative being invoked.  Indexing the vtable object sets the
     number of alternatives and requested index, and returns a function object that
-    performs the necessary dispatch. */
+    performs the necessary dispatch.  Such vtables will automatically apply the
+    `MIN_VTABLE_SIZE` optimization where possible. */
     template <template <size_t> typename F>
     struct vtable {
         template <typename>
@@ -247,22 +246,70 @@ namespace impl {
     };
 
     /* Provides an extensible mechanism for controlling the dispatching behavior of
-    the `meta::visitor` concept and `impl::visit()` operator, including return
-    type deduction from the possible alternatives and customizable dispatch logic.
+    the `meta::visit` concept(s) and `impl::visit()` operator for a given type `T`.
     Users can specialize this structure to extend those utilities to arbitrary types,
-    without needing to reimplement the entire compile-time dispatch mechanism. */
+    by providing the following information:
+    
+        -   `enable`: a boolean which must be set to `true` for all custom
+            specializations.  Controls the output of the `meta::visitable<T>` concept.
+        -   `monad`: a boolean which exposes type `T` to bertrand's monadic operator
+            interface.  This can be checked via the `meta::monad<T>` concept, which
+            all monadic operators are constrained with.
+        -   `alternatives`: a `meta::pack<Ts...>` with one or more types, which
+            represent the exact alternatives that the monad can dispatch to.
+
+    /// TODO: maybe if ::value is non-void, then it indicates that the type supports
+    /// pointer indirection returning the specified type?
+
+        -   `value`: if the monad supports pointer-like dereference operators, then
+            this must be an alias to the exact type returned by the `*` dereference
+            operator.  Otherwise, it must be `void`.
+        -   `empty`: an alias to the `None` state for this monad, or `void` if the
+            monad does not model an empty state.  If this is not `void`, then it
+            signals that the monad acts like an optional within the dispatch logic,
+            which can trigger automatic propagation of the empty state and/or
+            canonicalization of `T` to `Optional<T>` when appropriate.
+        -   `errors`: a `meta::pack<Es...>` with zero or more error types, which
+            represent the possible error states that the monad models.  If this is
+            non-empty, then it singals that the monad acts like an expected within the
+            dispatch logic, which can trigger automatic propagation of the error state
+            and/or canonicalization of `T` to `Expected<T, Es...>` when appropriate.
+        -   `index(T)`: a static method that returns the monad's active index, aligned
+            to the given `alternatives`.  This is used to determine which branch to
+            dispatch to when the monad is destructured within `impl::visit()`.
+        -   `get<I>(T)`: a static method that takes a compile-time index `I` as a
+            template parameter, and casts the monad to the `I`-th type in
+            `alternatives` (including cvref qualifications).  The output from this is
+            what gets passed into the visitor function, completing the dispatch.
+
+    Built-in specializations are provided for:
+
+        -   `bertrand::Union<Ts...>`
+        -   `bertrand::Optional<T>`
+        -   `bertrand::Expected<T, Es...>`
+        -   `std::variant<Ts...>`
+        -   `std::optional<T>`
+        -   `std::expected<T, E>`
+
+    The default specialization covers all other non-monad types, which will be passed
+    through without dispatching.
+
+    Note also that the type `T` may be arbitrarily-qualified, and always matches the
+    qualifications of the observed type at the point where `impl::visit()` is called.
+    It may therefore be useful to define all aliases in terms of `decltype()`
+    reflection, which should always forward the qualifications of the input type,
+    otherwise the visit logic may not work as intended. */
     template <typename T>
     struct visitable {
-        static constexpr bool enable = false;  // must be enabled by specializations
-        static constexpr bool monad = false;  // meta::monad<T> evaluates to false
-        using value = T;  // value type is identical to the type itself
+        static constexpr bool enable = false;
+        static constexpr bool monad = false;
         using alternatives = meta::pack<>;  // no alternatives to dispatch to
+        using value = T;  // TODO: should this be `void`?
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
 
         /// NOTE: for the default specialization, the following methods will never
-        /// actually be called, but are part of the interface that must be implemented
-        /// by custom extensions.
+        /// actually be called, but are part of the interface for custom extensions.
 
         /* The active index for non-visitable types is trivially zero. */
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept;
@@ -277,9 +324,11 @@ namespace impl {
 
 namespace meta {
 
+    /* True for types which have a custom `impl::visitable<T>` specialization. */
     template <typename T>
     concept visitable = impl::visitable<T>::enable;
 
+    /* True for types where `impl::visitable<T>::monad` is set to true. */
     template <typename T>
     concept monad = impl::visitable<T>::monad;
 
@@ -295,82 +344,105 @@ namespace meta {
     template <typename T>
     concept Expected = inherits<T, impl::expected_tag>;
 
-    template <typename T>
-    concept tuple_storage = inherits<T, impl::tuple_storage_tag>;
-
 }
 
 
-/* A type-safe union capable of storing any number of arbitrarily-qualified types.
+/// TODO: CTAD guides for `Union<Ts...>` and `Expected<T, Es...>` with visitable
+/// initializers, which will automatically deduce the correct types from
+/// `impl::visitable`.  Unfortunately, this is not possible in current C++, since
+/// CTAD guides are required to list the deduced type on to the right of `->`, which
+/// precludes direct expansions over a `meta::pack<...>`.  This would require a
+/// standards proposal to allow CTAD guides to list a type different from the deduced
+/// type after `->`, as long as it resolves to that type during instantiation.
+/// Alternatively, a standards proposal that allows syntax such as
+/// `using alternatives = Ts...;`, or direct fold expressions over `meta::pack<...>`
+/// would also work, but none of these are currently available.
+
+
+/* A type-safe union capable of storing two or more arbitrarily-qualified types.
 
 This is similar to `std::variant<Ts...>`, but with the following changes:
 
     1.  `Ts...` may have cvref qualifications, allowing the union to model references
-        and other cvref-qualified types without requiring an extra copy or
-        `std::reference_wrapper` workaround.  Note that the union does not extend the
-        lifetime of the referenced objects, so the usual guidelines for references
-        still apply.
+        and other cv-qualified types without requiring an extra copy or
+        `std::reference_wrapper` workaround.  Note that cvref qualifications may also
+        be forwarded from the union itself when accessed, and no attempt is made to
+        extend the lifetime of referenced objects, so all of the usual guidelines for
+        references still apply.
     2.  The union can never be in an invalid state, meaning the index is always within
-        range and points to a valid member of the union.
+        range and points to a valid alternative of the union.
     3.  The constructor is more precise than `std::variant`, preferring exact matches
         if possible, then the most proximal cvref-qualified alternative or base class,
         with implicit conversions being considered only as a last resort.  If an
         implicit conversion is selected, then it will always be the leftmost match in
-        the union signature.  The same is true for the default constructor, which
-        always constructs the leftmost default-constructible member.
-    4. `get()` and `get_if()` return `Expected<T, BadUnionAccess>` and `Optional<T>`,
-        respectively, instead of just `T&` or `T*`.  This allows the type system to
-        enforce exhaustive error handling on union access, without substantively
-        changing the familiar variant interface.
-    5.  `visit()` is implemented according to `impl::visit()`, which has much
-        better support for partial coverage and heterogenous return types than
-       `std::visit()`, once again with exhaustive error handling via
-        `Expected<..., BadUnionAccess>` and `Optional<...>`.
-    6.  All built-in operators are supported via a monadic interface, forwarding to
-        equivalent visitors.  This allows users to chain unions together in a type-safe
-        and idiomatic manner, again with exhaustive error handling enforced by the
-        compiler.  Any error or empty states will propagate through the chain along
-        with the deduced return type(s), and must be acknowledged before the result
-        can be safely accessed.
-    7.  An extra `flatten()` method is provided to collapse unions of compatible types
-        into a single common type where possible.  This can be thought of as an
-        explicit exit point for the monadic interface, allowing users to materialize
-        results into a scalar type when needed.
-    8.  All operations are available at compile time as long as the underlying types
-        support them, including `get()`, `visit()`, `flatten()`, and all operator
-        overloads.
-
-This class serves as the basis for both `Optional<T>` and `Expected<T, Es...>`, which
-together form a complete, safe, and performant type-erasure mechanism for arbitrary C++
-code, including value-based exceptions at both compile time and runtime, which must be
-explicitly acknowledged through the type system. */
+        the template signature.  The same is true for the default constructor, which
+        always constructs the leftmost default-constructible alternative.  A specific
+        alternative can be constructed by providing a `std::in_place_index<I>` or
+        `std::in_place_type<T>` tag as the first argument, whereby all other arguments
+        will be forwarded to the constructor of the selected alternative.
+    4.  All operators and members will be forwarded to the alternatives in monadic
+        fashion, assuming they all support them.  The only exception is `.__value`,
+        which provides access to the (unsafe) union internals, and is prefixed by
+        double underscores to avoid conflicts.  This maximizes the surface area for
+        automatically-generated member methods, which can be emitted via static
+        reflection.
+    5.  Basic pattern matching is supported using the `->*` operator, which takes a
+        visitor function that is invocable with a single argument representing each
+        alternative.  If any of the alternatives are nested monads, then the `->*`
+        operator will recursively apply over them, similar to `->`.  This may cause
+        product types to unpack to more or less than one argument, simulating a
+        structured binding, which is applied after unwrapping the outer union.
+    6.  Pointer-like dereference operators are supplied if and only if all alternatives
+        in the union have a common type, after accounting for the cvref qualifiers of
+        the union itself.  `*` returns that type directly, while `->` returns a proxy
+        that extends its lifetime for the duration of the access.
+    7.  Iterating over the union is possible, provided each of the alternatives are
+        iterable.  If so, and all types return the same iterator, then the result will
+        simply be that iterator, without any extra indirection.  Otherwise, if the
+        alternatives return multiple iterator types, then the result will be a wrapper
+        which acts like a union of the possible iterators, and retains as much shared
+        functionality as possible.  If all iterators dereference to the same type, then
+        so will the union iterator.  If they dereference to multiple types, then the
+        union iterator will dereference to a `bertrand::Union<Us...>`, where `Us...`
+        represent the dereferenced types of each iterator.
+ */
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union;
 
 
 /* A wrapper for an arbitrarily qualified type that can also represent an empty state.
 
-This is similar to `std::optional<T>` but with the following changes:
+This is identical to `Union<NoneType, T>`, except in the following cases:
 
-    1.  `T` may have cvref qualifications, allowing it to model optional references,
-        without requiring an extra copy or `std::reference_wrapper` workaround.  These
-        function just like raw pointers, but without pointer arithmetic, and instead
-        exposing a monadic interface for chaining operations while propagating the
-        empty state.
-    2.  The whole mechanism is safe at compile time, and can be used in constant
-        expressions, where `std::optional` may be invalid.
-    3.  `visit()` is supported just as for `Union`s, allowing type-safe access to both
-        states.  If the optional is in the empty state, then the visitor will be passed
-        a `bertrand::NoneType` (aka `std::nullopt_t`) input, which can be handled
-        explicitly.
+    1.  The implicit and explicit constructors always construct `T`, except for the
+        default constructor and implicit conversion conversion from `None` and
+        `std::nullopt` (assuming those are not valid constructors for `T`).
+    2.  Robust CTAD guides allow `T` to be omitted in many cases, and inferred from a
+        corresponding initializer.
+    3.  Pointer indirection assumes that the active member is not `NoneType`, and
+        always delegates to `T` directly.  A check confirming this will only be emitted
+        in debug builds, ensuring no overhead in release builds.
+    4.  If `T` is an lvalue reference (i.e. `T&`), then the optional supports
+        conversions both to and from `T*`, where the empty state maps to a null
+        pointer.  This allows `Optional<T&>` to be used as a drop-in replacement for
+        pointers in most cases, as long as pointer arithmetic is not required.
+    5.  The empty state can be omitted during monadic operations and `impl::visit()`
+        calls, in which case it will be implicitly propagated to the return type,
+        possibly promoting that type to an optional.  Note that this is not the case
+        for pattern matching via `->*`, which must exhaustively cover both states.
+    6.  Optionals are always iterable, with one of 2 behaviors depending on `T`:
+        -   If `T` is iterable, then the result is a forwarding adaptor for the
+            iterator(s) over `T`, which behave identically.  If the optional is in the
+            empty state, then the adaptor will be uninitialized, and will always
+            compare equal to its sentinel, yielding an empty range.
+        -   If `T` is not iterable, then the result is an iterator over a single
+            element, which is equivalent to a simple pointer to the contained value.
+            If the optional is in the empty state, then a one-past-the-end pointer will
+            be used instead.
 
-`Optional` references can be used as drop-in replacements for raw pointers in most
-cases, especially when integrating with Python or other languages where pointers are
-not first-class citizens.  The `Union` interface does this automatically for
-`get_if()`, avoiding confusion with pointer arithmetic or explicit dereferencing, and
-forcing the user to handle the empty state explicitly.  Bertrand's binding generators
-will make the same transformation from pointers to `Optional` references automatically
-when exporting C++ code to Python. */
+Note that because optional references are compatible with pointers, Bertrand's binding
+generators will emit them wherever a pointer is exposed to Python, or any other
+language that does not expose pointers as first-class citizens. */
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional;
 
@@ -379,67 +451,56 @@ template <typename T>
 Optional(T&&) -> Optional<meta::remove_rvalue<T>>;
 
 
-template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty>)
-Optional(T&&) -> Optional<typename impl::visitable<T>::value>;
-
-
 template <meta::pointer T>
 Optional(T) -> Optional<meta::dereference_type<T>>;
 
 
-/* A wrapper for an arbitrarily qualified return type `T` that can also store one or
-more possible exception types.
+template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty>)
+Optional(T&&) -> Optional<typename impl::visitable<T>::value>;
 
-This class effectively encodes the error state(s) into the C++ type system, forcing
-downstream users to explicitly acknowledge them without relying on try/catch semantics,
-promoting exhaustive error coverage.  This is similar in spirit to
-`std::expected<T, E>`, but with the following changes:
 
-    1. `T` may have arbitrary cvref qualifications, allowing it to model functions that
-        return references, without requiring an extra copy or `std::reference_wrapper`
-        workaround.
-    2.  The whole mechanism is safe at compile time, allowing `Expected` wrappers to be
-        used in constant expressions, where error handling is typically difficult.
-    3.  `E` and `Es...` are constrained to subclasses of `Exception` (the default).
-        Note that exception types will not be treated polymorphically, so initializers
-        will be sliced to the most proximal error type as specified in the template
-        signature.  Users are encouraged to list the exact error types as closely as
-        possible to allow the compiler to enforce exhaustive error handling for each
-        case.
-    4.  The exception state can be trivially re-thrown via `Expected.raise()`, which
-        propagates the error using normal try/catch semantics.  Such errors can also be
-        caught and converted back to `Expected` wrappers temporarily, allowing
-        bidirectional transfer from one domain to the other.
-    5.  `Expected` supports the same monadic operator interface as `Union` and
-        `Optional`, allowing users to chain operations on the contained value while
-        propagating errors and accumulating possible exception states.  The type system
-        will force the user to account for all possible exceptions along the chain
-        before the result can be safely accessed.
+/* A wrapper for an arbitrarily qualified type that can also represent one or more
+possible error states.
 
-Bertrand uses this class internally to represent any errors that could occur during
-normal program execution, outside of debug assertions.  The same convention is
-encouraged (though not required) for downstream users as well, so that the compiler
-can enforce exhaustive error handling via the type system. */
+This is identical to `Union<T, E, Es...>`, except in the following case:
+
+    1.  The implicit and explicit constructors always prefer to construct `T` unless
+        the initializer(s) would be invalid, in which case the same rules apply as for
+        `Union<E, Es...>` (i.e. the most proximal cvref-qualified type or base class,
+        with implicit conversions only as a last resort).  Like `Union`, it is possible
+        to unambiguously specify an error by providing a `std::in_place_index<I>` or
+        `std::in_place_type<T>` tag as the first argument.
+    2.  `E` defaults to `Exception`, which is the base class for all Bertrand exception
+        types.  This allows CTAD guides based on an initializer similar to `Optional`,
+        at the cost of an overly-general error type.
+    3.  Pointer indirection assumes that the active member is not an error state.  If
+        it is, then attempting to dereference it will throw that state as an exception,
+        which can then be caught and analyzed using traditional try/catch semantics.
+        This will never be optimized out in debug builds, differentiating it from
+        `Optional`, at the cost of an extra branch in release builds.
+    4.  `T` may be `void`, which gets implicitly promoted to `NoneType`.  This allows
+        `Expected` to be used as an error-handling strategy for functions that may
+        fail, but otherwise do not return a value.
+    5.  The error state(s) can be omitted during monadic operations and
+        `impl::visit()` calls, in which case they will be implicitly propagated to the
+        return type, possibly promoting that type to an expected.  Note that this is
+        not the case for pattern matching via `->*`, which must exhaustively cover all
+        possible states.
+    6.  Expecteds are always iterable, with one of 2 behaviors depending on `T`:
+        -   If `T` is iterable, then the result is a forwarding adaptor for the
+            iterator(s) over `T`, which behave identically.  If the expected is in an
+            error state, then the adaptor will be uninitialized, and will always
+            compare equal to its sentinel, yielding an empty range.
+        -   If `T` is not iterable, then the result is an iterator over a single
+            element, which is equivalent to a simple pointer to the contained value.
+            If the expected is in an error state, then a one-past-the-end pointer will
+            be used instead.
+
+Note that the intended use for `Expected` is as a value-based error handling strategy,
+which can be used as a safer and more explicit alternative to `try/catch` blocks,
+promoting exhaustive error coverage via the type system. */
 template <typename T, typename E = Exception, typename... Es> requires (meta::unique<T, E, Es...>)
 struct Expected;
-
-
-
-/// TODO: document tuples.  These won't be fully defined until func.h, so that they
-/// can integrate with argument annotations for named tuple support.  Eventually with
-/// reflection, I can probably even make the argument names available through the
-/// recursive inheritance structure, so you'd be able to just do
-/// Tuple t{"foo"_ = 1, "bar"_ = 2.5};
-/// t.foo;  // 1
-/// t.bar;  // 2.5
-
-
-template <meta::not_void... Ts> requires (!meta::rvalue<Ts> && ...)
-struct Tuple;
-
-
-template <meta::not_void... Ts>
-Tuple(Ts&&...) -> Tuple<meta::remove_rvalue<Ts>...>;
 
 
 namespace meta {
@@ -917,31 +978,60 @@ namespace meta {
 
     }
 
-    /* A visitor function can only be applied to a set of arguments if at least one
-    permutation of the union types are valid. */
+    /* A visitor function can only be applied to a set of arguments if it covers all
+    non-empty and non-error states of the visitable arguments. */
     template <typename F, typename... Args>
     concept visit = detail::visit<F, Args...>::enable;
 
-    /* Specifies that all permutations of the union types must be valid for the visitor
-    function. */
+    /* Specifies that a visitor function covers all states of the visitable arguments,
+    including empty and error states. */
     template <typename F, typename... Args>
     concept visit_exhaustive = visit<F, Args...> && detail::visit<F, Args...>::exhaustive;
 
-    /* Specifies that all valid permutations of the union types have an identical
-    return type from the visitor function. */
+    /* Specifies that a visitor function covers all states of the visitable arguments,
+    including empty and error states, and that all permutations return the same
+    type. */
     template <typename F, typename... Args>
     concept visit_consistent = visit<F, Args...> && detail::visit<F, Args...>::consistent;
 
-    /* A visitor function returns a new union of all possible results for each
-    permutation of the input unions.  If all permutations return the same type, then
-    that type is returned instead.  If some of the permutations return `void` and
-    others do not, then the result will be wrapped in an `Optional`. */
+    /* Visitor functions return a type that is derived from each permutation according
+    to the following rules:
+
+        1.  If `meta::visit_consistent<F, Args...>` is satisfied, then the return type
+            is identical to the shared return type for all permutations, subject to
+            canonicalization of expected, optional, and union outputs (in that order,
+            e.g. `Expected<Optional<Union<Ts...>>, Es...>`).
+        2.  If `meta::visit<F, Args...>` is satisfied, but
+            `meta::visit_consistent<F, Args...>` is not, meaning that the visitor
+            returns multiple types depending on the permutation, and/or propagates one
+            or more empty or error states, then the return types will be analyzed as
+            follows:
+                a.  If any return type is an expected, then the possible error states
+                    will be stripped and merged into the propagation set, promoting
+                    the return type to an `Expected<T, Es...>`.  Only the value type
+                    will be forwarded to (b).
+                b.  If any return type is an optional or `void`, then the overall
+                    return type will be promoted to an `Optional` and only the value
+                    type will be forwarded to (c).  If `void`, then no type will be
+                    forwarded.
+                c.  If any return type is a union (i.e. has a corresponding
+                    `impl::visitable` specialization without `empty` or `errors`
+                    states), then the overall return type will deduce to `Union<Rs...>`,
+                    where `Rs...` are the flattened alternatives.  If any of those
+                    alternatives meet the criteria for (a) and/or (b), then they will
+                    be recursively forwarded to those steps.  Otherwise, the return
+                    type is forwarded as-is and promoted according to steps (a) and (b)
+                    to produce the final result.
+
+    Inconsistent visitors are extremely useful when implementing the monadic interface
+    for visitable types.  By applying the above rules, such operations will always
+    yield a regular, canonical form that can be used in further operations. */
     template <typename F, typename... Args> requires (visit<F, Args...>)
     using visit_type = detail::visit<F, Args...>::type;
 
-    /* Tests whether the return type of a visitor is implicitly convertible to the
-    expected type for every possible permutation of the arguments, with unions unpacked
-    to their individual alternatives. */
+    /* Tests whether `meta::visit<F, Args...>` is satisfied and the result can be
+    implicitly converted to the specified type.  See `meta::visit_type<F, Args...>` for
+    a description of how the return type is deduced. */
     template <typename Ret, typename F, typename... Args>
     concept visit_returns = visit<F, Args...> && convertible_to<Ret, visit_type<F, Args...>>;
 
@@ -967,117 +1057,6 @@ namespace meta {
             nothrow::convertible_to<Ret, nothrow::visit_type<F, Args...>>;
 
     }
-
-    /// TODO: maybe I need a separate `match` metafunction that will take a single
-    /// argument and apply the same logic as `visit`, but optimized for the single
-    /// argument case, and applying tuple-like destructuring if applicable.  This would
-    /// back the global `->*` operator, which would be enabled for all union and/or
-    /// tuple types (NOT iterables).  Iterable comprehensions would be gated behind
-    /// `range(container) ->*`, which would be defined only on the range type itself,
-    /// which is what would also be returned to produce flattened comprehensions.
-    /// It would just be an `impl::range<T>` type where `T` is either a direct container
-    /// for `range(container)`, or a `std::subrange` if `range(begin, end)`, or a
-    /// `std::views::iota` if `range(stop)` or `range(start, stop)`, possibly with a
-    /// `std::views::stride_view<std::views::iota>` for `range(start, stop, step)`.
-
-    // namespace detail {
-
-    //     template <typename, typename>
-    //     constexpr bool _match_tuple_alts = false;
-    //     template <typename F, typename... As>
-    //     constexpr bool _match_tuple_alts<F, meta::pack<As...>> = (meta::callable<F, As> && ...);
-    //     template <typename, typename>
-    //     constexpr bool _match_tuple = false;
-    //     template <typename F, typename... Ts>
-    //     constexpr bool _match_tuple<F, meta::pack<Ts...>> =
-    //         (_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
-    //     template <typename F, typename T>
-    //     concept match_tuple = meta::tuple_like<T> && _match_tuple<F, meta::tuple_types<T>>;
-
-    //     template <typename, typename>
-    //     constexpr bool _nothrow_match_tuple_alts = false;
-    //     template <typename F, typename... As>
-    //     constexpr bool _nothrow_match_tuple_alts<F, meta::pack<As...>> =
-    //         (meta::nothrow::callable<F, As> && ...);
-    //     template <typename, typename>
-    //     constexpr bool _nothrow_match_tuple = false;
-    //     template <typename F, typename... Ts>
-    //     constexpr bool _nothrow_match_tuple<F, meta::pack<Ts...>> =
-    //         (_nothrow_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
-    //     template <typename F, typename T>
-    //     concept nothrow_match_tuple =
-    //         meta::nothrow::tuple_like<T> && _nothrow_match_tuple<F, meta::nothrow::tuple_types<T>>;
-
-
-
-    //     template <
-    //         typename F,  // match visitor function
-    //         typename returns,  // unique, non-void return types
-    //         typename errors,  // expected error states
-    //         bool has_void_,  // true if a void return type was encountered
-    //         bool optional,  // true if an optional return type was encountered
-    //         bool nothrow_,  // true if all permutations are noexcept
-    //         typename alternatives  // alternatives for the matched object
-    //     >
-    //     struct _match {
-    //         using type = visit_to_expected<
-    //             typename visit_to_optional<
-    //                 typename returns::template eval<visit_to_union>::type,
-    //                 has_void_ || optional
-    //             >::type,
-    //             errors
-    //         >::type;
-    //         static constexpr bool enable = true;
-    //         static constexpr bool ambiguous = false;
-    //         static constexpr bool unmatched = false;
-    //         static constexpr bool consistent =
-    //             returns::size() == 0 || (returns::size() == 1 && !has_void_);
-
-    //         /// TODO: nothrow has to account for nothrow conversions to type
-    //         static constexpr bool nothrow = nothrow_;
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //         requires (meta::callable<F, curr> && !match_tuple<F, curr>)
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         /// TODO: pass the tuple directly
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //         requires (!meta::callable<F, curr> && match_tuple<F, curr>)
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         /// TODO: unpack tuple
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         using type = void;
-    //         static constexpr bool ambiguous = meta::callable<F, curr> && match_tuple<F, curr>;
-    //         static constexpr bool unmatched = !meta::callable<F, curr> && !match_tuple<F, curr>;
-    //         static constexpr bool consistent = false;
-    //         static constexpr bool nothrow = false;
-    //     };
-
-
-
-
-
-    //     template <typename F, typename T>
-    //     struct match : _match<F, typename impl::visitable<T>::alternatives> {};
-
-    // }
-
-
-
 
     namespace detail {
 
@@ -1109,67 +1088,44 @@ namespace meta {
 
 namespace impl {
 
-    /// TODO: note that visit_consistent now implies visit_exhaustive, so the docs
-    // should be updated to reflect that.
-
-
     /* Invoke a function with the given arguments, unwrapping any sum types in the
     process.  This is similar to `std::visit()`, but with greatly expanded
-    metaprogramming capabilities.
+    metaprogramming capabilities to fit bertrand's overall monadic interface.
 
-    The visitor is constructed from either a single function or a set of functions
-    arranged into an overload set.  The subsequent arguments will be passed to the
-    visitor in the order they are defined, with each union being unwrapped to its
-    actual type within the visitor context.  A compilation error will occur if the
-    visitor is not callable with all nontrivial permutations of the unwrapped values.
+    A visitor is constructed from either a single function or a set of functions
+    arranged into an overload set.  Any subsequent arguments will be passed to the
+    visitor in the order they are defined, with each sum type being unwrapped to its
+    current alternative within the visitor context.  A compilation error occurs if the
+    visitor is not callable with all non-empty and non-error states of each
+    alternative.
 
-    Note that the visitor does not need to be exhaustive over all possible
-    permutations; only the valid ones.  Practically speaking, this means that the
-    visitor is free to ignore the empty states of optionals and error states of
-    expected inputs, which will be implicitly propagated to the return type if left
-    unhandled.  On the other hand, union states and non-empty/result states of
-    optionals and expecteds must be explicitly handled, else a compilation error will
-    occur.  This equates to adding implicit overloads to the visitor that trivially
-    forward these states without any modifications, allowing visitors to treat optional
-    and expected types as if they were always in the valid state.  The
+    Note that the visitor is free to ignore the empty and error states of optionals and
+    expecteds respectively, which will be implicitly propagated to the return type if
+    left unhandled.  This equates to adding additional implicit overloads to the
+    visitor for these states, which reduce to a simple identity function that forwards
+    that state without modification.  This allows visitors to treat optional and
+    expected types as if they were always in the valid state.  The
     `meta::visit_exhaustive<F, Args...>` concept can be used to selectively forbid
-    these cases at compile time, which returns the semantics to those of `std::visit()`
-    with respect to visitor exhaustiveness.
+    this behavior at compile time, which forces the visitor to explicitly handle all
+    states instead.
 
-    Similarly, unlike `std::visit()`, the visitor is not constrained to return a single
-    consistent type for all permutations.  If it does not, then the return type `R`
-    will deduce to `bertrand::Union<Rs...>`, where `Rs...` are the unique return types
-    for all valid permutations.  Otherwise, if all permutations return the same type,
-    then `R` will simply be that type.  If some permutations return `void` and others
-    return non-`void`, then `R` will be wrapped in an `Optional`, where the empty state
-    indicates a void return type at runtime.  If `R` is itself an optional type, then
-    the empty states will be merged so as to avoid nested optionals.  Similar to above,
-    the `meta::visit_consistent<F, Args...>` concept can be used to selectively
-    forbid these cases at compile time.  Applying that concept in combination with
-    `meta::visit_exhaustive<F, Args...>` will yield the same visitor semantics as
+    Similarly, the visitor is not constrained to return a single consistent type for
+    all permutations.  If it does not, then the return type `R` will deduce according
+    to the description provided in `meta::visit_type<F, Args...>`, which flattens and
+    canonicalizes the output types into a regular form.  Similar to above, the
+    `meta::visit_consistent<F, Args...>` concept can be used to selectively
+    forbid this behavior at compile time, which forces the visitor to return a single
+    consistent type for all permutations.  Note that
+    `meta::visit_consistent<F, Args...>` automatically implies
+    `meta::visit_exhaustive<F, Args...>`, and yields similar visitor semantics to
     `std::visit()`.
 
-    If both of the above features are enabled (the default), then a worst-case,
-    inconsistent visitor applied to an `Expected<Union<Ts...>, Es...>` input, where
-    some permutations of `Ts...` return void and others do not, can potentially yield a
-    return type of the form `Expected<Optional<Union<Rs...>>, Es...>`, where `Rs...`
-    are the non-void return types for the valid permutations, `Optional` signifies that
-    the return type may be void, and `Es...` are the original error types that were
-    implicitly propagated from the input.  If the visitor exhaustively handles the
-    error states, then the return type will reduce to `Optional<Union<Rs...>>`.  If the
-    visitor never returns void, then the return type will further reduce to
-    `Union<Rs...>`, and if it returns a single consistent type, then `R` will collapse
-    to just that type, in which case the semantics are identical to `std::visit()`.
-
     Finally, note that the arguments are fully generic, and not strictly limited to
-    union types, in contrast to `std::visit()`.  If no unions are present, then
-    `visit()` devolves to invoking the visitor normally, without any special handling.
-    Otherwise, the component unions are expanded according to the rules laid out in
-    `bertrand::impl::visitable`, which describes how to register custom visitable types
-    for use with this function.  Built-in specializations exist for `Union`,
-    `Optional`, and `Expected`, as well as `std::variant`, `std::optional`, and
-    `std::expected`, each of which can be passed to `visit()` according to the
-    described semantics. */
+    visitable types, in contrast to `std::visit()`.  If no unions are present, then
+    `visit()` devolves to an inline invocation of the visitor directly, without any
+    special handling.  Otherwise, the component unions are expanded according to the
+    semantics laid out in `bertrand::impl::visitable<T>`, which describes how to
+    register custom visitable types for use with this function. */
     template <typename F, typename... Args>
     [[gnu::always_inline]] constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
         noexcept (meta::nothrow::visit<F, Args...>)
@@ -1198,8 +1154,6 @@ namespace impl {
         using type = meta::pack<decltype(std::get<Is>(std::declval<T>()))...>;
     };
 
-    /* `Union`s are visitable, and will delegate to the underlying `union_storage`
-    object. */
     template <meta::Union T>
     struct visitable<T> {
         static constexpr bool enable = true;
@@ -1225,7 +1179,6 @@ namespace impl {
         }
     };
 
-    /* `std::variant`s are treated like unions. */
     template <meta::std::variant T>
     struct visitable<T> {
         static constexpr bool enable = true;
@@ -1249,7 +1202,6 @@ namespace impl {
         }
     };
 
-    /* Optionals are converted into exactly 2 alternatives. */
     template <meta::Optional T>
     struct visitable<T> {
         static constexpr bool enable = true;
@@ -1273,7 +1225,6 @@ namespace impl {
         }
     };
 
-    /* `std::optional`s are treated like `Optional`. */
     template <meta::std::optional T>
     struct visitable<T> {
         static constexpr bool enable = true;
@@ -1304,8 +1255,6 @@ namespace impl {
         }
     };
 
-    /* Expecteds are handled like unions of the result state (None if void) and the
-    expected state(s). */
     template <meta::Expected T>
     struct visitable<T> {
     private:
@@ -1348,7 +1297,6 @@ namespace impl {
     /// TODO: std::expected is harder to work with, and will take some thinking.
     /// -> expected_types similar to variant_types.
 
-    /* `std::expected`s are treated like `Expected`. */
     template <meta::std::expected T>
     struct visitable<T> {
     private:
@@ -1435,14 +1383,6 @@ namespace impl {
         }
     };
 
-
-
-
-    /// TODO: match(), which is a special case of `visit()` that accepts only one
-    /// argument, which may be a tuple or union of tuples, which may contain nested
-    /// unions or tuples within it
-
-
     /* A wrapper for a visitor function meant to be used by the monadic operator
     interface.  This recursively unpacks until the arguments are no longer monads, in
     order to prevent circular definitions in the monadic interface. */
@@ -1468,16 +1408,6 @@ namespace impl {
 /////////////////////
 ////    UNION    ////
 /////////////////////
-
-
-/// TODO: instead of `unpack()` and `comprehension()` being public operators, the
-/// new tuple iterable refactor means I should be able to roll them into `range()` -
-/// which is ideal.  Unambiguous unpacking can therefore be accomplished by
-/// `func(*range(opt))` instead of `func(unpack(opt))`.  That's actually superior,
-/// because it's harder to confuse with an ordinary function call, and removes another
-/// symbol from the public API.
-
-/// TODO: How would std::formatter specializations interact with unions?
 
 
 namespace impl {
@@ -3932,17 +3862,16 @@ namespace impl {
 
     /* A trivial iterator that only yields a single value, which is represented as a
     raw pointer internally.  This is the iterator type for `Optional<T>` where `T` is
-    not itself iterable. */
+    not itself iterable.  Note that using a trivial wrapper rather than the pointer
+    directly comes with some advantages regarding type safety, preventing accidental
+    conversions to pointer arguments, etc. */
     template <meta::not_void T>
     struct single_iterator {
-        using wrapped = T;
         using iterator_category = std::contiguous_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = meta::remove_reference<T>;
         using reference = meta::as_lvalue<T>;
-        using const_reference = meta::as_const<reference>;
         using pointer = meta::as_pointer<reference>;
-        using const_pointer = meta::as_pointer<const_reference>;
 
         pointer value;
 
@@ -4969,6 +4898,8 @@ namespace impl {
     /// in this case, however.
 
 
+
+
     /* Given an initializer that inherits from at least one expected exception type,
     determine the most proximal exception to initialize. */
     template <typename out, typename, typename...>
@@ -5526,1142 +5457,6 @@ constexpr void swap(Expected<T, Es...>& a, Expected<T, Es...>& b)
     requires (requires{{a.swap(b)};})
 {
     a.swap(b);
-}
-
-
-/////////////////////
-////    TUPLE    ////
-/////////////////////
-
-
-/// TODO: this could probably be moved fully into func.h, which would centralize
-/// most of the tuple logic there, alongside the ->* operator, argument annotations,
-/// etc.
-
-
-namespace impl {
-
-    /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
-    pointers if all elements unpack to the same lvalue type.  Otherwise, they must
-    build a vtable and perform a dynamic dispatch to yield a proper value type, which
-    may be a union. */
-    enum class tuple_array_kind {
-        NO_COMMON_TYPE,
-        EMPTY,
-        CONSISTENT,
-        DYNAMIC
-    };
-
-    /* Indexing and/or iterating over a tuple requires the creation of some kind of
-    array, which can either be a flat array of homogenous references or a vtable of
-    function pointers that produce a common type (which may be a `Union`) to which all
-    results are convertible. */
-    template <typename, typename>
-    struct _tuple_array {
-        using types = meta::pack<>;
-        using reference = const NoneType&;
-        static constexpr tuple_array_kind kind = tuple_array_kind::EMPTY;
-        static constexpr bool nothrow = true;
-    };
-    template <typename in, typename T>
-    struct _tuple_array<in, meta::pack<T>> {
-        using types = meta::pack<T>;
-        using reference = T;
-        static constexpr tuple_array_kind kind = meta::lvalue<T> && meta::has_address<T> ?
-            tuple_array_kind::CONSISTENT : tuple_array_kind::DYNAMIC;
-        static constexpr bool nothrow = true;
-    };
-    template <typename in, typename... Ts> requires (sizeof...(Ts) > 1)
-    struct _tuple_array<in, meta::pack<Ts...>> {
-        using types = meta::pack<Ts...>;
-        using reference = bertrand::Union<Ts...>;
-        static constexpr tuple_array_kind kind = (meta::convertible_to<Ts, reference> && ...) ?
-            tuple_array_kind::DYNAMIC : tuple_array_kind::NO_COMMON_TYPE;
-        static constexpr bool nothrow = (meta::nothrow::convertible_to<Ts, reference> && ...);
-    };
-    template <meta::tuple_like T>
-    struct tuple_array :
-        _tuple_array<T, typename meta::tuple_types<T>::template eval<meta::to_unique>>
-    {
-    private:
-        using base = _tuple_array<
-            T,
-            typename meta::tuple_types<T>::template eval<meta::to_unique>
-        >;
-
-    public:
-        using ptr = base::reference(*)(T) noexcept (base::nothrow);
-
-        template <size_t I>
-        static constexpr base::reference fn(T t) noexcept (base::nothrow) {
-            return meta::unpack_tuple<I>(t);
-        }
-
-        template <typename = std::make_index_sequence<meta::tuple_size<T>>>
-        static constexpr ptr tbl[0] {};
-        template <size_t... Is>
-        static constexpr ptr tbl<std::index_sequence<Is...>>[sizeof...(Is)] { &fn<Is>... };
-    };
-
-    template <typename>
-    struct tuple_iterator {};
-
-    template <typename T>
-    concept enable_tuple_iterator =
-        meta::lvalue<T> &&
-        meta::tuple_like<T> &&
-        tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
-
-    /// TODO: figure out how to properly handle arrows for tuple iterators, as well as
-    /// possibly optional iterators.
-
-    /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
-    of callback functions yielding each value.  This allows tuples to be used as inputs
-    to iterable algorithms, as long as those algorithms are built to handle possible
-    `Union` values. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::DYNAMIC)
-    struct tuple_iterator<T> {
-        using types = tuple_array<T>::types;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using reference = tuple_array<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::as_pointer<value_type>;
-
-    private:
-        using table = tuple_array<T>;
-        using indices = std::make_index_sequence<types::size()>;
-        using storage = meta::as_pointer<T>;
-
-        [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
-            data(data),
-            index(index)
-        {}
-
-    public:
-        storage data;
-        difference_type index;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0) noexcept :
-            data(nullptr),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr tuple_iterator(T tuple, difference_type index = 0)
-            noexcept (meta::nothrow::address_returns<storage, T>)
-            requires (meta::address_returns<storage, T>)
-        :
-            data(std::addressof(tuple)),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
-            return table::template tbl<>[index](*data);
-        }
-
-        /// TODO: I can expose a perfectly normal operator->() if I wrap a reference
-
-        [[nodiscard]] constexpr reference operator[](
-            difference_type n
-        ) const noexcept (table::nothrow) {
-            return table::template tbl<>[index + n](*data);
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            tuple_iterator tmp = *this;
-            ++index;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.data, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type n,
-            const tuple_iterator& self
-        ) noexcept {
-            return {self.data, self.index + n};
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            tuple_iterator tmp = *this;
-            --index;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {data, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const tuple_iterator& other
-        ) const noexcept {
-            return index - other.index;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
-            return index == other.index;
-        }
-    };
-
-    /* A special case of `tuple_iterator` for tuples where all elements share the
-    same addressable type.  In this case, the vtable is reduced to a simple array of
-    pointers that are initialized on construction, without requiring dynamic
-    dispatch. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::CONSISTENT)
-    struct tuple_iterator<T> {
-        using types = tuple_array<T>::types;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using reference = tuple_array<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::address_type<reference>;
-
-    private:
-        using indices = std::make_index_sequence<types::size()>;
-        using array = std::array<pointer, types::size()>;
-
-        template <size_t... Is>
-        static constexpr array init(std::index_sequence<Is...>, T t)
-            noexcept ((requires{{
-                std::addressof(meta::unpack_tuple<Is>(t))
-            } noexcept -> meta::nothrow::convertible_to<pointer>;} && ...))
-        {
-            return {std::addressof(meta::unpack_tuple<Is>(t))...};
-        }
-
-        [[nodiscard]] constexpr tuple_iterator(const array& arr, difference_type index) noexcept :
-            arr(arr),
-            index(index)
-        {}
-
-    public:
-        array arr;
-        difference_type index;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0) noexcept :
-            arr{},
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index)
-            noexcept (requires{{init(indices{}, t)} noexcept;})
-        :
-            arr(init(indices{}, t)),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return *arr[index];
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return arr[index];
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return *arr[index + n];
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            auto tmp = *this;
-            ++index;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.arr, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type n,
-            const tuple_iterator& self
-        ) noexcept {
-            return {self.arr, self.index + n};
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            auto tmp = *this;
-            --index;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {arr, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
-            return index - index;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
-            return index == other.index;
-        }
-    };
-
-    /* A special case of `tuple_iterator` for empty tuples, which do not yield any
-    results, and are optimized away by the compiler. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::EMPTY)
-    struct tuple_iterator<T> {
-        using types = meta::pack<>;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = const NoneType;
-        using pointer = const NoneType*;
-        using reference = const NoneType&;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
-        [[nodiscard]] constexpr tuple_iterator(T, difference_type) noexcept {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return None;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return &None;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
-            return None;
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type
-        ) noexcept {
-            return self;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type,
-            const tuple_iterator& self
-        ) noexcept {
-            return self;
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type) noexcept {
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
-            return 0;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
-            return std::strong_ordering::equal;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
-            return true;
-        }
-    };
-
-    template <typename...>
-    struct _tuple_storage : tuple_storage_tag {
-        using types = meta::pack<>;
-        constexpr void swap(_tuple_storage&) noexcept {}
-        template <size_t I, typename Self> requires (false)  // never actually called
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept;
-    };
-
-    template <typename T, typename... Ts>
-    struct _tuple_storage<T, Ts...> : _tuple_storage<Ts...> {
-    private:
-        using type = meta::remove_rvalue<T>;
-
-    public:
-        [[no_unique_address]] type data;
-
-        [[nodiscard]] constexpr _tuple_storage() = default;
-        [[nodiscard]] constexpr _tuple_storage(T val, Ts... rest)
-            noexcept (
-                meta::nothrow::convertible_to<T, type> &&
-                meta::nothrow::constructible_from<_tuple_storage<Ts...>, Ts...>
-            )
-            requires (
-                meta::convertible_to<T, type> &&
-                meta::constructible_from<_tuple_storage<Ts...>, Ts...>
-            )
-        :
-            _tuple_storage<Ts...>(std::forward<Ts>(rest)...),
-            data(std::forward<T>(val))
-        {}
-
-        constexpr void swap(_tuple_storage& other)
-            noexcept (
-                meta::nothrow::swappable<meta::remove_rvalue<T>> &&
-                meta::nothrow::swappable<_tuple_storage<Ts...>>
-            )
-            requires (
-                meta::swappable<meta::remove_rvalue<T>> &&
-                meta::swappable<_tuple_storage<Ts...>>
-            )
-        {
-            _tuple_storage<Ts...>::swap(other);
-            std::ranges::swap(data, other.data);
-        }
-
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{
-                {std::forward<Self>(self).data(std::forward<A>(args)...)} noexcept;
-            })
-            requires (
-                requires{{std::forward<Self>(self).data(std::forward<A>(args)...)};} &&
-                !requires{{std::forward<meta::qualify<_tuple_storage<Ts...>, Self>>(self)(
-                    std::forward<A>(args)...
-                )};}
-            )
-        {
-            return (std::forward<Self>(self).data(std::forward<A>(args)...));
-        }
-
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{{std::forward<meta::qualify<_tuple_storage<Ts...>, Self>>(self)(
-                std::forward<A>(args)...
-            )} noexcept;})
-            requires (
-                !requires{{std::forward<Self>(self).data(std::forward<A>(args)...)};} &&
-                requires{{std::forward<meta::qualify<_tuple_storage<Ts...>, Self>>(self)(
-                    std::forward<A>(args)...
-                )};}
-            )
-        {
-            using base = meta::qualify<_tuple_storage<Ts...>, Self>;
-            return (std::forward<base>(self)(std::forward<A>(args)...));
-        }
-
-        template <size_t I, typename Self> requires (I < sizeof...(Ts) + 1)
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            if constexpr (I == 0) {
-                return (std::forward<Self>(self).data);
-            } else {
-                using base = meta::qualify<_tuple_storage<Ts...>, Self>;
-                return (std::forward<base>(self).template get<I - 1>());
-            }
-        }
-    };
-
-    template <meta::lvalue T, typename... Ts>
-    struct _tuple_storage<T, Ts...> : _tuple_storage<Ts...> {
-        [[no_unique_address]] struct { T ref; } data;
-
-        /// NOTE: no default constructor for lvalue references
-        [[nodiscard]] constexpr _tuple_storage(T ref, Ts... rest)
-            noexcept (meta::nothrow::constructible_from<_tuple_storage<Ts...>, Ts...>)
-            requires (meta::constructible_from<_tuple_storage<Ts...>, Ts...>)
-        :
-            _tuple_storage<Ts...>(std::forward<Ts>(rest)...),
-            data{ref}
-        {}
-
-        constexpr _tuple_storage(const _tuple_storage&) = default;
-        constexpr _tuple_storage(_tuple_storage&&) = default;
-        constexpr _tuple_storage& operator=(const _tuple_storage& other) {
-            _tuple_storage<Ts...>::operator=(other);
-            std::construct_at(&data, other.data.ref);
-            return *this;
-        };
-        constexpr _tuple_storage& operator=(_tuple_storage&& other) {
-            _tuple_storage<Ts...>::operator=(std::move(other));
-            std::construct_at(&data, other.data.ref);
-            return *this;
-        };
-
-        constexpr void swap(_tuple_storage& other)
-            noexcept (meta::nothrow::swappable<_tuple_storage<Ts...>>)
-            requires (meta::swappable<_tuple_storage<Ts...>>)
-        {
-            _tuple_storage<Ts...>::swap(other);
-            auto tmp = data;
-            std::construct_at(&data, other.data.ref);
-            std::construct_at(&other.data, tmp.ref);
-        }
-
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{
-                {std::forward<Self>(self).data.ref(std::forward<A>(args)...)} noexcept;
-            })
-            requires (
-                requires{{std::forward<Self>(self).data.ref(std::forward<A>(args)...)};} &&
-                !requires{{std::forward<meta::qualify<_tuple_storage<Ts...>, Self>>(self)(
-                    std::forward<A>(args)...
-                )};}
-            )
-        {
-            return (std::forward<Self>(self).data.ref(std::forward<A>(args)...));
-        }
-
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{{std::forward<meta::qualify<_tuple_storage<Ts...>, Self>>(self)(
-                std::forward<A>(args)...
-            )} noexcept;})
-            requires (
-                !requires{{std::forward<Self>(self).data.ref(std::forward<A>(args)...)};} &&
-                requires{{std::forward<meta::qualify<_tuple_storage<Ts...>, Self>>(self)(
-                    std::forward<A>(args)...
-                )};}
-            )
-        {
-            using base = meta::qualify<_tuple_storage<Ts...>, Self>;
-            return (std::forward<base>(self)(std::forward<A>(args)...));
-        }
-
-        template <size_t I, typename Self> requires (I < sizeof...(Ts) + 1)
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            if constexpr (I == 0) {
-                return (std::forward<Self>(self).data.ref);
-            } else {
-                using base = meta::qualify<_tuple_storage<Ts...>, Self>;
-                return (std::forward<base>(self).template get<I - 1>());
-            }
-        }
-    };
-
-    /* A basic implementation of a tuple using recursive inheritance, meant to be used
-    in conjunction with `union_storage` as the basis for further algebraic types.
-    Tuples of this form can be destructured just like `std::tuple`, invoked as if they
-    were overload sets, and iterated over/indexed like an array, possibly yielding
-    `Union`s if the tuple types are heterogeneous. */
-    template <meta::not_void... Ts>
-    struct tuple_storage : _tuple_storage<Ts...> {
-        using types = meta::pack<Ts...>;
-        using size_type = size_t;
-        using index_type = ssize_t;
-        using iterator = tuple_iterator<tuple_storage&>;
-        using const_iterator = tuple_iterator<const tuple_storage&>;
-        using reverse_iterator = std::reverse_iterator<iterator>;
-        using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-
-        using _tuple_storage<Ts...>::_tuple_storage;
-
-        /* Return the total number of elements within the tuple, as an unsigned
-        integer. */
-        [[nodiscard]] static constexpr size_type size() noexcept {
-            return sizeof...(Ts);
-        }
-
-        /* Return the total number of elements within the tuple, as a signed
-        integer. */
-        [[nodiscard]] static constexpr index_type ssize() noexcept {
-            return index_type(size());
-        }
-
-        /* Return true if the tuple holds no elements. */
-        [[nodiscard]] static constexpr bool empty() noexcept {
-            return size() == 0;
-        }
-
-        /* Perfectly forward the value at a specific index, where that index is known
-        at compile time. */
-        template <size_type I, typename Self> requires (I < size())
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            using base = meta::qualify<_tuple_storage<Ts...>, Self>;
-            return (std::forward<base>(self).template get<I>());
-        }
-
-        /* Swap the contents of two tuples with the same type specification. */
-        constexpr void swap(tuple_storage& other)
-            noexcept (meta::nothrow::swappable<_tuple_storage<Ts...>>)
-            requires (meta::swappable<_tuple_storage<Ts...>>)
-        {
-            if (this != &other) {
-                _tuple_storage<Ts...>::swap(other);
-            }
-        }
-
-        /* Index into the tuple, perfectly forwarding the result according to the
-        tuple's current cvref qualifications. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self)
-            noexcept (tuple_array<meta::forward<Self>>::nothrow)
-            requires (
-                tuple_array<meta::forward<Self>>::kind != tuple_array_kind::NO_COMMON_TYPE &&
-                tuple_array<meta::forward<Self>>::kind != tuple_array_kind::EMPTY
-            )
-        {
-            return (tuple_array<meta::forward<Self>>::template tbl<>[
-                self._value.index()
-            ](std::forward<Self>(self)));
-        }
-
-        /* Get an iterator to a specific index of the tuple. */
-        [[nodiscard]] constexpr iterator at(size_type index)
-            noexcept (requires{{iterator{*this, index}} noexcept;})
-            requires (requires{{iterator{*this, index}};})
-        {
-            return {*this, index_type(index)};
-        }
-
-        /* Get an iterator to a specific index of the tuple. */
-        [[nodiscard]] constexpr const_iterator at(size_type index) const
-            noexcept (requires{{const_iterator{*this, index}} noexcept;})
-            requires (requires{{const_iterator{*this, index}};})
-        {
-            return {*this, index_type(index)};
-        }
-
-        /* Get an iterator to the first element in the tuple, or one past that if the
-        tuple is empty. */
-        [[nodiscard]] constexpr iterator begin()
-            noexcept (requires{{iterator{*this, 0}} noexcept;})
-            requires (requires{{iterator{*this, 0}};})
-        {
-            return {*this, 0};
-        }
-
-        /* Get an iterator to the first element in the tuple, or one past that if the
-        tuple is empty. */
-        [[nodiscard]] constexpr const_iterator begin() const
-            noexcept (requires{{const_iterator{*this, 0}} noexcept;})
-            requires (requires{{const_iterator{*this, 0}};})
-        {
-            return {*this, 0};
-        }
-
-        /* Get an iterator to the first element in the tuple, or one past that if the
-        tuple is empty. */
-        [[nodiscard]] constexpr const_iterator cbegin() const
-            noexcept (requires{{const_iterator{*this, 0}} noexcept;})
-            requires (requires{{const_iterator{*this, 0}};})
-        {
-            return {*this, 0};
-        }
-
-        /* Get an iterator to one past the last element in the tuple. */
-        [[nodiscard]] constexpr iterator end()
-            noexcept (requires{{iterator{ssize()}} noexcept;})
-            requires (requires{{iterator{ssize()}};})
-        {
-            return {ssize()};
-        }
-
-        /* Get an iterator to one past the last element in the tuple. */
-        [[nodiscard]] constexpr const_iterator end() const
-            noexcept (requires{{const_iterator{ssize()}} noexcept;})
-            requires (requires{{const_iterator{ssize()}};})
-        {
-            return {ssize()};
-        }
-
-        /* Get an iterator to one past the last element in the tuple. */
-        [[nodiscard]] constexpr const_iterator cend() const
-            noexcept (requires{{const_iterator{ssize()}} noexcept;})
-            requires (requires{{const_iterator{ssize()}};})
-        {
-            return {ssize()};
-        }
-
-        /* Get a reverse iterator to the last element in the tuple. */
-        [[nodiscard]] constexpr reverse_iterator rbegin()
-            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end())};})
-        {
-            return std::make_reverse_iterator(end());
-        }
-
-        /* Get a reverse iterator to the last element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator rbegin() const
-            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end())};})
-        {
-            return std::make_reverse_iterator(end());
-        }
-
-        /* Get a reverse iterator to the last element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator crbegin() const
-            noexcept (requires{{std::make_reverse_iterator(cend())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(cend())};})
-        {
-            return std::make_reverse_iterator(cend());
-        }
-
-        /* Get a reverse iterator to one before the first element in the tuple. */
-        [[nodiscard]] constexpr reverse_iterator rend()
-            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin())};})
-        {
-            return std::make_reverse_iterator(begin());
-        }
-
-        /* Get a reverse iterator to one before the first element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator rend() const
-            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin())};})
-        {
-            return std::make_reverse_iterator(begin());
-        }
-
-        /* Get a reverse iterator to one before the first element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator crend() const
-            noexcept (requires{{std::make_reverse_iterator(cbegin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(cbegin())};})
-        {
-            return std::make_reverse_iterator(cbegin());
-        }
-    };
-
-    /* A special case of `tuple_storage<Ts...>` where all `Ts...` are identical,
-    allowing the storage layout to optimize to a flat array instead of requiring
-    recursive base classes, speeding up both compilation and indexing/iteration. */
-    template <meta::not_void T, meta::not_void... Ts> requires (std::same_as<T, Ts> && ...)
-    struct tuple_storage<T, Ts...> : tuple_storage_tag {
-        using types = meta::pack<T, Ts...>;
-        using size_type = size_t;
-        using index_type = ssize_t;
-
-        /* Return the total number of elements within the tuple, as an unsigned integer. */
-        [[nodiscard]] static constexpr size_type size() noexcept {
-            return sizeof...(Ts) + 1;
-        }
-
-        /* Return the total number of elements within the tuple, as a signed integer. */
-        [[nodiscard]] static constexpr index_type ssize() noexcept {
-            return index_type(size());
-        }
-
-        /* Return true if the tuple holds no elements. */
-        [[nodiscard]] static constexpr bool empty() noexcept {
-            return size() == 0;
-        }
-
-    private:
-        struct store { meta::remove_rvalue<T> value; };
-        using array = std::array<store, size()>;
-
-    public:
-        struct iterator {
-            using iterator_category = std::contiguous_iterator_tag;
-            using difference_type = std::ptrdiff_t;
-            using value_type = meta::remove_reference<T>;
-            using reference = meta::as_lvalue<value_type>;
-            using pointer = meta::as_pointer<value_type>;
-
-            store* ptr;
-
-            [[nodiscard]] constexpr reference operator*() const noexcept {
-                return ptr->value;
-            }
-
-            [[nodiscard]] constexpr pointer operator->() const
-                noexcept (meta::nothrow::address_returns<pointer, reference>)
-                requires (meta::address_returns<pointer, reference>)
-            {
-                return std::addressof(ptr->value);
-            }
-
-            [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-                return ptr[n].value;
-            }
-
-            constexpr iterator& operator++() noexcept {
-                ++ptr;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr iterator operator++(int) noexcept {
-                iterator tmp = *this;
-                ++ptr;
-                return tmp;
-            }
-
-            [[nodiscard]] friend constexpr iterator operator+(
-                const iterator& self,
-                difference_type n
-            ) noexcept {
-                return {self.ptr + n};
-            }
-
-            [[nodiscard]] friend constexpr iterator operator+(
-                difference_type n,
-                const iterator& self
-            ) noexcept {
-                return {self.ptr + n};
-            }
-
-            constexpr iterator& operator+=(difference_type n) noexcept {
-                ptr += n;
-                return *this;
-            }
-
-            constexpr iterator& operator--() noexcept {
-                --ptr;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr iterator operator--(int) noexcept {
-                iterator tmp = *this;
-                --ptr;
-                return tmp;
-            }
-
-            [[nodiscard]] constexpr iterator operator-(difference_type n) const noexcept {
-                return {ptr - n};
-            }
-
-            [[nodiscard]] constexpr difference_type operator-(const iterator& other) const noexcept {
-                return ptr - other.ptr;
-            }
-
-            [[nodiscard]] constexpr bool operator==(const iterator& other) const noexcept {
-                return ptr == other.ptr;
-            }
-
-            [[nodiscard]] constexpr auto operator<=>(const iterator& other) const noexcept {
-                return ptr <=> other.ptr;
-            }
-        };
-
-        struct const_iterator {
-            using iterator_category = std::contiguous_iterator_tag;
-            using difference_type = std::ptrdiff_t;
-            using value_type = meta::remove_reference<meta::as_const<T>>;
-            using reference = meta::as_lvalue<value_type>;
-            using pointer = meta::as_pointer<value_type>;
-
-            const store* ptr;
-
-            [[nodiscard]] constexpr reference operator*() const noexcept {
-                return ptr->value;
-            }
-
-            [[nodiscard]] constexpr pointer operator->() const
-                noexcept (meta::nothrow::address_returns<pointer, reference>)
-                requires (meta::address_returns<pointer, reference>)
-            {
-                return std::addressof(ptr->value);
-            }
-
-            [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-                return ptr[n].value;
-            }
-
-            constexpr const_iterator& operator++() noexcept {
-                ++ptr;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr const_iterator operator++(int) noexcept {
-                const_iterator tmp = *this;
-                ++ptr;
-                return tmp;
-            }
-
-            [[nodiscard]] friend constexpr const_iterator operator+(
-                const const_iterator& self,
-                difference_type n
-            ) noexcept {
-                return {self.ptr + n};
-            }
-
-            [[nodiscard]] friend constexpr const_iterator operator+(
-                difference_type n,
-                const const_iterator& self
-            ) noexcept {
-                return {self.ptr + n};
-            }
-
-            constexpr const_iterator& operator+=(difference_type n) noexcept {
-                ptr += n;
-                return *this;
-            }
-
-            constexpr const_iterator& operator--() noexcept {
-                --ptr;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr const_iterator operator--(int) noexcept {
-                const_iterator tmp = *this;
-                --ptr;
-                return tmp;
-            }
-
-            [[nodiscard]] constexpr const_iterator operator-(difference_type n) const noexcept {
-                return {ptr - n};
-            }
-
-            [[nodiscard]] constexpr difference_type operator-(
-                const const_iterator& other
-            ) const noexcept {
-                return ptr - other.ptr;
-            }
-
-            [[nodiscard]] constexpr bool operator==(const const_iterator& other) const noexcept {
-                return ptr == other.ptr;
-            }
-
-            [[nodiscard]] constexpr auto operator<=>(const const_iterator& other) const noexcept {
-                return ptr <=> other.ptr;
-            }
-        };
-
-        using reverse_iterator = std::reverse_iterator<iterator>;
-        using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-
-        array data;
-
-        [[nodiscard]] constexpr tuple_storage()
-            noexcept (meta::nothrow::default_constructible<meta::remove_rvalue<T>>)
-            requires (!meta::lvalue<T> && meta::default_constructible<meta::remove_rvalue<T>>)
-        :
-            data{}
-        {}
-
-        [[nodiscard]] constexpr tuple_storage(T val, Ts... rest)
-            noexcept (requires{
-                {array{store{std::forward<T>(val)}, store{std::forward<Ts>(rest)}...}} noexcept;
-            })
-            requires (requires{
-                {array{store{std::forward<T>(val)}, store{std::forward<Ts>(rest)}...}};
-            })
-        :
-            data{store{std::forward<T>(val)}, store{std::forward<Ts>(rest)}...}
-        {}
-
-        [[nodiscard]] constexpr tuple_storage(const tuple_storage&) = default;
-        [[nodiscard]] constexpr tuple_storage(tuple_storage&&) = default;
-
-        constexpr tuple_storage& operator=(const tuple_storage& other)
-            noexcept (meta::lvalue<T> || meta::nothrow::copy_assignable<meta::remove_rvalue<T>>)
-            requires (meta::lvalue<T> || meta::copy_assignable<meta::remove_rvalue<T>>)
-        {
-            if constexpr (meta::lvalue<T>) {
-                if (this != &other) {
-                    for (size_type i = 0; i < size(); ++i) {
-                        std::construct_at(&data[i].value, other.data[i].value);
-                    }
-                }
-            } else {
-                data = other.data;
-            }
-            return *this;
-        }
-
-        constexpr tuple_storage& operator=(tuple_storage&& other)
-            noexcept (meta::lvalue<T> || meta::nothrow::move_assignable<meta::remove_rvalue<T>>)
-            requires (meta::lvalue<T> || meta::move_assignable<meta::remove_rvalue<T>>)
-        {
-            if constexpr (meta::lvalue<T>) {
-                if (this != &other) {
-                    for (size_type i = 0; i < size(); ++i) {
-                        std::construct_at(&data[i].value, other.data[i].value);
-                    }
-                }
-            } else {
-                data = std::move(other).data;
-            }
-            return *this;
-        }
-
-        /* Swap the contents of two tuples with the same type specification. */
-        constexpr void swap(tuple_storage& other)
-            noexcept (meta::lvalue<T> || meta::nothrow::swappable<meta::remove_rvalue<T>>)
-            requires (meta::lvalue<T> || meta::swappable<meta::remove_rvalue<T>>)
-        {
-            if (this != &other) {
-                for (size_type i = 0; i < size(); ++i) {
-                    if constexpr (meta::lvalue<T>) {
-                        store tmp = data[i];
-                        std::construct_at(&data[i].value, other.data[i].value);
-                        std::construct_at(&other.data[i].value, tmp.value);
-                    } else {
-                        std::ranges::swap(data[i].value, other.data[i].value);
-                    }
-                }
-            }
-        }
-
-        /* Invoke the tuple as an overload set, assuming precisely one element is
-        invocable with the given arguments. */
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{
-                {std::forward<Self>(self).data[0].value(std::forward<A>(args)...)} noexcept;
-            })
-            requires (size() == 1 && requires{
-                {std::forward<Self>(self).data[0].value(std::forward<A>(args)...)};
-            })
-        {
-            return (std::forward<Self>(self).data[0].value(std::forward<A>(args)...));
-        }
-
-        /* Perfectly forward the value at a specific index, where that index is known
-        at compile time. */
-        template <size_t I, typename Self> requires (I < size())
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (std::forward<Self>(self).data[I].value);
-        }
-
-        /* Index into the tuple, perfectly forwarding the result according to the
-        tuple's current cvref qualifications. */
-        template <typename Self>
-        constexpr decltype(auto) operator[](this Self&& self, size_type index) noexcept {
-            return (std::forward<Self>(self).data[index].value);
-        }
-
-        /* Get an iterator to a specific index of the tuple. */
-        [[nodiscard]] constexpr iterator at(size_type index) noexcept {
-            return {data.data() + index};
-        }
-
-        /* Get an iterator to a specific index of the tuple. */
-        [[nodiscard]] constexpr const_iterator at(size_type index) const noexcept {
-            return {data.data() + index};
-        }
-
-        /* Get an iterator to the first element in the tuple, or one past that if the
-        tuple is empty. */
-        [[nodiscard]] constexpr iterator begin() noexcept {
-            return {data.data()};
-        }
-
-        /* Get an iterator to the first element in the tuple, or one past that if the
-        tuple is empty. */
-        [[nodiscard]] constexpr const_iterator begin() const noexcept {
-            return {data.data()};
-        }
-
-        /* Get an iterator to the first element in the tuple, or one past that if the
-        tuple is empty. */
-        [[nodiscard]] constexpr const_iterator cbegin() const noexcept {
-            return {data.data()};
-        }
-
-        /* Get an iterator to one past the last element in the tuple. */
-        [[nodiscard]] constexpr iterator end() noexcept {
-            return {data.data() + size()};
-        }
-
-        /* Get an iterator to one past the last element in the tuple. */
-        [[nodiscard]] constexpr const_iterator end() const noexcept {
-            return {data.data() + size()};
-        }
-
-        /* Get an iterator to one past the last element in the tuple. */
-        [[nodiscard]] constexpr const_iterator cend() const noexcept {
-            return {data.data() + size()};
-        }
-
-        /* Get a reverse iterator to the last element in the tuple. */
-        [[nodiscard]] constexpr reverse_iterator rbegin() noexcept {
-            return std::make_reverse_iterator(end());
-        }
-
-        /* Get a reverse iterator to the last element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept {
-            return std::make_reverse_iterator(end());
-        }
-
-        /* Get a reverse iterator to the last element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept {
-            return std::make_reverse_iterator(cend());
-        }
-
-        /* Get a reverse iterator to one before the first element in the tuple. */
-        [[nodiscard]] constexpr reverse_iterator rend() noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-
-        /* Get a reverse iterator to one before the first element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-
-        /* Get a reverse iterator to one before the first element in the tuple. */
-        [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept {
-            return std::make_reverse_iterator(cbegin());
-        }
-    };
-
-    template <typename... Ts>
-    tuple_storage(Ts&&...) -> tuple_storage<meta::remove_rvalue<Ts>...>;
-
 }
 
 
@@ -7265,49 +6060,29 @@ static_assert(foo->x == 23);
 
 namespace std {
 
-    /// TODO: make sure std::get() et. al. are correctly adapted to the new
-    /// union/optional/expected interface, and consider perfectly forwarding the
-    /// tuple interface if available.
-
-    /// TODO: ensure that None and exceptions are hashable, which makes the
-    /// std::hash specialization consistent.
-
     template <bertrand::meta::monad T>
-        requires (bertrand::meta::visit<bertrand::impl::Hash, T>)
+        requires (bertrand::meta::visit<bertrand::impl::monadic<bertrand::impl::Hash>, T>)
     struct hash<T> {
-        template <bertrand::meta::is<T> U>
-        static constexpr auto operator()(U&& value)
-            noexcept (bertrand::meta::nothrow::visit<bertrand::impl::Hash, U>)
-            requires (bertrand::meta::visit<bertrand::impl::Hash, U>)
+        static constexpr auto operator()(bertrand::meta::as_const_ref<T> value)
+            noexcept (bertrand::meta::nothrow::visit<
+                bertrand::impl::monadic<bertrand::impl::Hash>,
+                bertrand::meta::as_const_ref<T>
+            >)
+            requires (bertrand::meta::visit<
+                bertrand::impl::monadic<bertrand::impl::Hash>,
+                bertrand::meta::as_const_ref<T>
+            >)
         {
             return bertrand::impl::visit(
-                bertrand::impl::Hash{},
-                std::forward<U>(value)
+                bertrand::impl::monadic<bertrand::impl::Hash>{},
+                value
             );
         }
     };
 
-    template <typename... Ts>
-    struct tuple_size<bertrand::impl::tuple_storage<Ts...>> : std::integral_constant<
-        typename std::remove_cvref_t<bertrand::impl::tuple_storage<Ts...>>::size_type,
-        bertrand::impl::tuple_storage<Ts...>::size()
-    > {};
-
-    template <size_t I, typename... Ts>
-        requires (I < std::tuple_size<bertrand::impl::tuple_storage<Ts...>>::value)
-    struct tuple_element<I, bertrand::impl::tuple_storage<Ts...>> {
-        using type = bertrand::impl::tuple_storage<Ts...>::types::template at<I>;
-    };
-
-    template <size_t I, bertrand::meta::tuple_storage T>
-        requires (I < std::tuple_size<std::remove_cvref_t<T>>::value)
-    constexpr decltype(auto) get(T&& t) {
-        return (std::forward<T>(t).template get<I>());
-    }
-
-
-
-
+    /// TODO: a standard formatter for union, optional, and expected types, the latter
+    /// of which would delegate to the underlying type's formatter, and just add the
+    /// extra state(s).
 
 
 
@@ -7316,59 +6091,31 @@ namespace std {
         std::integral_constant<size_t, bertrand::Union<Ts...>::types::size()>
     {};
 
-    template <size_t I, typename... Ts>
-        requires (I < variant_size<bertrand::Union<Ts...>>::value)
+    template <typename T>
+    struct variant_size<bertrand::Optional<T>> :
+        std::integral_constant<size_t, bertrand::Optional<T>::types::size()>
+    {};
+
+    template <typename T, typename... Es>
+    struct variant_size<bertrand::Expected<T, Es...>> :
+        std::integral_constant<size_t, bertrand::Expected<T, Es...>::types::size()>
+    {};
+
+    template <size_t I, typename... Ts> requires (I < variant_size<bertrand::Union<Ts...>>::value)
     struct variant_alternative<I, bertrand::Union<Ts...>> {
-        using type = remove_reference_t<
-            typename bertrand::Union<Ts...>::types::template at<I>
-        >;
+        using type = bertrand::Union<Ts...>::types::template at<I>;
     };
 
-    /* Non-member `std::get<I>(union)` returns a reference (possibly rvalue) and throws
-    if the index is invalid, similar to `std::get<I>(variant)` and different from
-    `union.get<I>()`, which returns an expected according to the monadic interface. */
-    template <size_t I, bertrand::meta::Union U> requires (I < variant_size<U>::value)
-    constexpr decltype(auto) get(U&& u) {
-        auto result = std::forward<U>(u).template get<I>();
-        if (result.has_error()) {
-            throw std::move(result).error();
-        }
-        return (std::move(result).value());
-    }
+    template <size_t I, typename T> requires (I < variant_size<bertrand::Optional<T>>::value)
+    struct variant_alternative<I, bertrand::Optional<T>> {
+        using type = bertrand::Optional<T>::types::template at<I>;
+    };
 
-    /* Non-member `std::get<T>(union)` returns a reference (possibly rvalue) and throws
-    if the type is not active, similar to `std::get<T>(variant)` and different from
-    `union.get<T>()`, which returns an expected according to the monadic interface. */
-    template <typename T, bertrand::meta::Union U>
-        requires (remove_cvref_t<U>::types::template contains<T>())
-    constexpr decltype(auto) get(U&& u) {
-        auto result = std::forward<U>(u).template get<T>();
-        if (result.has_error()) {
-            throw std::move(result).error();
-        }
-        return (std::move(result).value());
-    }
-
-    /* Non-member `std::get_if<I>(union)` returns a pointer to the value if the index
-    is valid, or `nullptr` otherwise, similar to `std::get_if<I>(variant)`, and
-    different from `union.get_if<I>()`, which returns an optional according to the
-    monadic interface. */
-    template <size_t I, bertrand::meta::Union U> requires (I < variant_size<U>::value)
-    constexpr auto* get_if(U&& u) noexcept (noexcept(u.template get_if<I>())) {
-        auto result = u.template get_if<I>();  // as lvalue
-        return result.has_value() ? &result.value() : nullptr;
-    }
-
-    /* Non-member `std::get_if<T>(union)` returns a pointer to the value if the type is
-    active, or `nullptr` otherwise, similar to `std::get_if<T>(variant)`,
-    and different from `union.get_if<T>()`, which returns an optional according to the
-    monadic interface. */
-    template <typename T, bertrand::meta::Union U>
-        requires (remove_cvref_t<U>::types::template contains<T>())
-    constexpr auto* get_if(U&& u) noexcept (noexcept(u.template get_if<T>())) {
-        auto result = u.template get_if<T>();  // as lvalue
-        return result.has_value() ? &result.value() : nullptr;
-    }
+    template <size_t I, typename T, typename... Es>
+        requires (I < variant_size<bertrand::Expected<T, Es...>>::value)
+    struct variant_alternative<I, bertrand::Expected<T, Es...>> {
+        using type = bertrand::Expected<T, Es...>::types::template at<I>;
+    };
 
 }
 

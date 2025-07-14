@@ -604,6 +604,15 @@ public:
         os << ": " << msg;
         return os;
     }
+
+    [[nodiscard]] constexpr bool operator==(const Exception& other) const noexcept {
+        if consteval {
+            return this == &other || message() == other.message();
+        } else {
+            return this == &other || (type() == other.type() && message() == other.message());
+        }
+    }
+    [[nodiscard]] constexpr bool operator!=(const Exception& other) const noexcept = default;
 };
 
 
@@ -1014,6 +1023,16 @@ namespace impl {
 
 
 namespace std {
+
+    template <bertrand::meta::Exception T>
+    struct hash<T> {
+        static constexpr size_t operator()(bertrand::meta::as_const_ref<T> exc) noexcept {
+            return bertrand::impl::hash_combine(
+                exc.type().hash_code(),
+                bertrand::hash(exc.message())
+            );
+        }
+    };
 
     /// TODO: this seems to be broken in practice, but there doesn't seem to be a good
     /// reason as to why.  There is active work being done to fix formatting in
