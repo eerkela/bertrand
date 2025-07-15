@@ -1228,6 +1228,7 @@ namespace impl {
         }
     };
 
+    /* Monads are formattable if all of their alternatives are formattable in turn. */
     template <typename, typename>
     constexpr bool _alternatives_are_formattable = false;
     template <typename... Ts, typename Char> requires (meta::formattable<Ts, Char> && ...)
@@ -4629,38 +4630,6 @@ struct Optional : impl::optional_tag {
         return opt.__value.index() != 0;
     }
 
-    /* Monadic call operator.  If the optional type is a function-like object and is
-    not in the empty state, then this will return the result of that function wrapped
-    in another optional.  Otherwise, it will propagate the empty state.  If the
-    function returns void, then the result will be void in both cases, and the function
-    will not be invoked for the empty state. */
-    template <typename Self, typename... A>
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
-        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
-    {
-        return (impl::visit(
-            impl::monadic<impl::Call>{},
-            std::forward<Self>(self),
-            std::forward<A>(args)...
-        ));
-    }
-
-    /* Monadic subscript operator.  If the optional type is a container that supports
-    indexing with the given key, then this will return the result of the access wrapped
-    in another optional.  Otherwise, it will propagate the empty state. */
-    template <typename Self, typename... K>
-    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
-        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
-    {
-        return (impl::visit(
-            impl::monadic<impl::Subscript>{},
-            std::forward<Self>(self),
-            std::forward<K>(keys)...
-        ));
-    }
-
     /* Return 0 if the optional is empty or `std::ranges::size(value())` otherwise.
     If `std::ranges::size(value())` would be malformed and the value is not iterable
     (meaning that iterating over the optional would return just a single element), then
@@ -4837,6 +4806,30 @@ struct Optional : impl::optional_tag {
         })
     {
         return impl::make_optional_iterator<const Optional&>::rend(*this);
+    }
+
+    template <typename Self, typename... A>
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
+    {
+        return (impl::visit(
+            impl::monadic<impl::Call>{},
+            std::forward<Self>(self),
+            std::forward<A>(args)...
+        ));
+    }
+
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
+    {
+        return (impl::visit(
+            impl::monadic<impl::Subscript>{},
+            std::forward<Self>(self),
+            std::forward<K>(keys)...
+        ));
     }
 };
 
@@ -6081,6 +6074,11 @@ namespace std {
     };
 
     template <typename... Ts>
+    struct variant_size<bertrand::impl::union_storage<Ts...>> :
+        std::integral_constant<size_t, bertrand::impl::union_storage<Ts...>::types::size()>
+    {};
+
+    template <typename... Ts>
     struct variant_size<bertrand::Union<Ts...>> :
         std::integral_constant<size_t, bertrand::Union<Ts...>::types::size()>
     {};
@@ -6094,6 +6092,12 @@ namespace std {
     struct variant_size<bertrand::Expected<T, Es...>> :
         std::integral_constant<size_t, bertrand::Expected<T, Es...>::types::size()>
     {};
+
+    template <size_t I, typename... Ts>
+        requires (I < variant_size<bertrand::impl::union_storage<Ts...>>::value)
+    struct variant_alternative<I, bertrand::impl::union_storage<Ts...>> {
+        using type = bertrand::impl::union_storage<Ts...>::types::template at<I>;
+    };
 
     template <size_t I, typename... Ts> requires (I < variant_size<bertrand::Union<Ts...>>::value)
     struct variant_alternative<I, bertrand::Union<Ts...>> {

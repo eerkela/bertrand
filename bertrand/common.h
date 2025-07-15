@@ -493,70 +493,26 @@ namespace meta {
             using type = reverse<pack<T, out...>, Ts...>::type;
         };
 
-        template <size_t N, typename... Ts>
-        struct repeat {
-            template <typename out, size_t I, typename... Us>
-            struct expand { using type = out; };
-            template <typename... out, size_t I, typename U, typename... Us>
-            struct expand<pack<out...>, I, U, Us...> {
-                using type = expand<pack<out..., U>, I - 1, U, Us...>::type;
-            };
-            template <typename... out, typename U, typename... Us>
-            struct expand<pack<out...>, 0, U, Us...> {
-                using type = expand<pack<out...>, N, Us...>::type;
-            };
-            using type = expand<pack<>, N, Ts...>::type;
-        };
+        template <typename out, size_t, size_t, typename...>
+        struct repeat { using type = out; };
+        template <typename... out, size_t N, typename T, typename... Ts>
+        struct repeat<pack<out...>, 0, N, T, Ts...> : repeat<pack<out..., T>, N, N, T, Ts...> {};
+        template <typename... out, size_t N, size_t I, typename T, typename... Ts>
+        struct repeat<pack<out...>, I, N, T, Ts...> : repeat<pack<out..., T>, I - 1, N, T, Ts...> {};
 
-        /// TODO: the cartesian product can be computed much more easily by just
-        /// generating a single index sequence over the product of the sizes and
-        /// then recursively dividing/moduloing the index by the product of the
-        /// sizes of each subsequent pack.
-
-        template <typename... packs>
-        struct product { using type = pack<>; };
-        template <typename... first, typename... rest>
-        struct product<pack<first...>, rest...> {
-            /* permute<> iterates from left to right along the packs. */
-            template <typename out, typename...>
+        template <typename, typename...>
+        struct product;
+        template <size_t... Is, typename... packs>
+        struct product<::std::index_sequence<Is...>, packs...> {
+            template <typename out, size_t, typename...>
             struct permute { using type = out; };
-            template <typename... out, typename... curr, typename... next>
-            struct permute<pack<out...>, pack<curr...>, next...> {
-    
-                /* accumulate<> iterates over the prior permutations and updates them
-                with the types at this index. */
-                template <typename result, typename...>
-                struct accumulate { using type = result; };
-                template <typename... result, typename P, typename... Ps>
-                struct accumulate<pack<result...>, P, Ps...> {
-
-                    /* extend<> iterates over the alternatives for the current pack,
-                    appending them to the accumulated output. */
-                    template <typename prev, typename...>
-                    struct extend { using type = prev; };
-                    template <typename... prev, typename U, typename... Us>
-                    struct extend<pack<prev...>, U, Us...> {
-                        using type = extend<
-                            pack<prev..., typename P::template append<U>>,
-                            Us...
-                        >::type;
-                    };
-
-                    using type = accumulate<
-                        typename extend<pack<result...>, curr...>::type,
-                        Ps...
-                    >::type;
-                };
-
-                /* accumulate<> has to rebuild the output pack at each iteration. */
-                using type = permute<
-                    typename accumulate<pack<>, out...>::type,
-                    next...
-                >::type;
-            };
-
-            /* The first pack is converted to a 2D pack to initialize the recursion. */
-            using type = permute<pack<pack<first>...>, rest...>::type;
+            template <typename... out, size_t I, typename curr, typename... next>
+            struct permute<pack<out...>, I, curr, next...> : permute<
+                pack<out..., typename curr::template at<I / (next::size() * ... * 1)>>,
+                I % (next::size() * ... * 1),
+                next...
+            > {};
+            using type = pack<typename permute<pack<>, Is, packs...>::type...>;
         };
 
         template <template <typename> class F, typename...>
@@ -568,14 +524,10 @@ namespace meta {
         template <template <typename> class F, typename out, typename...>
         struct filter { using type = out; };
         template <template <typename> class F, typename... out, typename U, typename... Us>
-        struct filter<F, pack<out...>, U, Us...> {
-            using type = filter<F, pack<out...>, Us...>::type;
-        };
+        struct filter<F, pack<out...>, U, Us...> : filter<F, pack<out...>, Us...> {};
         template <template <typename> class F, typename... out, typename U, typename... Us>
             requires (F<U>::value)
-        struct filter<F, pack<out...>, U, Us...> {
-            using type = filter<F, pack<out..., U>, Us...>::type;
-        };
+        struct filter<F, pack<out...>, U, Us...> : filter<F, pack<out..., U>, Us...> {};
 
         template <template <typename, typename> class F, typename...>
         constexpr bool left_foldable = false;
@@ -620,14 +572,10 @@ namespace meta {
         template <typename out, typename...>
         struct to_unique { using type = out; };
         template <typename... out, typename T, typename... Ts>
-        struct to_unique<pack<out...>, T, Ts...> {
-            using type = to_unique<pack<out..., T>, Ts...>::type;
-        };
+        struct to_unique<pack<out...>, T, Ts...> : to_unique<pack<out..., T>, Ts...> {};
         template <typename... out, typename T, typename... Ts>
             requires (::std::same_as<T, out> || ...)
-        struct to_unique<pack<out...>, T, Ts...> {
-            using type = to_unique<pack<out...>, Ts...>::type;
-        };
+        struct to_unique<pack<out...>, T, Ts...> : to_unique<pack<out...>, Ts...> {};
 
         template <typename...>
         constexpr bool consolidated = true;
@@ -638,19 +586,15 @@ namespace meta {
         template <typename out, typename...>
         struct consolidate { using type = out; };
         template <typename... out, typename U, typename... Us>
-        struct consolidate<pack<out...>, U, Us...> {
-            using type = consolidate<pack<out...>, Us...>::type;
-        };
+        struct consolidate<pack<out...>, U, Us...> : consolidate<pack<out...>, Us...> {};
         template <typename... out, typename U, typename... Us>
             requires ((!meta::is<U, out> && ...) && (!meta::is<U, Us> && ...))
-        struct consolidate<pack<out...>, U, Us...> {
-            using type = consolidate<pack<out..., U>, Us...>::type;
-        };
+        struct consolidate<pack<out...>, U, Us...> : consolidate<pack<out..., U>, Us...> {};
         template <typename... out, typename U, typename... Us>
         requires ((!meta::is<U, out> && ...) && (meta::is<U, Us> || ...))
-        struct consolidate<pack<out...>, U, Us...> {
-            using type = consolidate<pack<out..., unqualify<U>>, Us...>::type;
-        };
+        struct consolidate<pack<out...>, U, Us...> :
+            consolidate<pack<out..., unqualify<U>>, Us...>
+        {};
 
     }
 
@@ -676,12 +620,15 @@ namespace meta {
     /* Return a pack containing `N` consecutive repetitions for each type in
     `Ts...`. */
     template <size_t N, typename... Ts>
-    using repeat = detail::repeat<N, Ts...>::type;
+    using repeat = detail::repeat<pack<>, N, N, Ts...>::type;
 
     /* Get a pack of packs containing all unique permutations of the component packs,
     returning their Cartesian product.  */
     template <is_pack... packs>
-    using product = detail::product<unqualify<packs>...>::type;
+    using product = detail::product<
+        ::std::make_index_sequence<(unqualify<packs>::size() * ... * 1)>,
+        unqualify<packs>...
+    >::type;
 
     /* Return a pack containing only those types from `Ts...` that satisfy the
     `F<T>::value` condition. */
