@@ -255,12 +255,9 @@ namespace impl {
         -   `monad`: a boolean which exposes type `T` to bertrand's monadic operator
             interface.  This can be checked via the `meta::monad<T>` concept, which
             all monadic operators are constrained with.
+        -   `type`: an alias to the type being visited, which must be identical to `T`.
         -   `alternatives`: a `meta::pack<Ts...>` with one or more types, which
             represent the exact alternatives that the monad can dispatch to.
-
-    /// TODO: maybe if ::value is non-void, then it indicates that the type supports
-    /// pointer indirection returning the specified type?
-
         -   `value`: if the monad supports pointer-like dereference operators, then
             this must be an alias to the exact type returned by the `*` dereference
             operator.  Otherwise, it must be `void`.
@@ -303,8 +300,9 @@ namespace impl {
     struct visitable {
         static constexpr bool enable = false;
         static constexpr bool monad = false;
-        using alternatives = meta::pack<>;  // no alternatives to dispatch to
-        using value = T;  // TODO: should this be `void`?
+        using type = T;
+        using alternatives = meta::pack<T>;
+        using value = void;  // no pointer-like dereference operators
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
 
@@ -359,90 +357,10 @@ namespace meta {
 /// would also work, but none of these are currently available.
 
 
-/* A type-safe union capable of storing two or more arbitrarily-qualified types.
-
-This is similar to `std::variant<Ts...>`, but with the following changes:
-
-    1.  `Ts...` may have cvref qualifications, allowing the union to model references
-        and other cv-qualified types without requiring an extra copy or
-        `std::reference_wrapper` workaround.  Note that cvref qualifications may also
-        be forwarded from the union itself when accessed, and no attempt is made to
-        extend the lifetime of referenced objects, so all of the usual guidelines for
-        references still apply.
-    2.  The union can never be in an invalid state, meaning the index is always within
-        range and points to a valid alternative of the union.
-    3.  The constructor is more precise than `std::variant`, preferring exact matches
-        if possible, then the most proximal cvref-qualified alternative or base class,
-        with implicit conversions being considered only as a last resort.  If an
-        implicit conversion is selected, then it will always be the leftmost match in
-        the template signature.  The same is true for the default constructor, which
-        always constructs the leftmost default-constructible alternative.  A specific
-        alternative can be constructed by providing a `std::in_place_index<I>` or
-        `std::in_place_type<T>` tag as the first argument, whereby all other arguments
-        will be forwarded to the constructor of the selected alternative.
-    4.  All operators and members will be forwarded to the alternatives in monadic
-        fashion, assuming they all support them.  The only exception is `.__value`,
-        which provides access to the (unsafe) union internals, and is prefixed by
-        double underscores to avoid conflicts.  This maximizes the surface area for
-        automatically-generated member methods, which can be emitted via static
-        reflection.
-    5.  Basic pattern matching is supported using the `->*` operator, which takes a
-        visitor function that is invocable with a single argument representing each
-        alternative.  If any of the alternatives are nested monads, then the `->*`
-        operator will recursively apply over them, similar to `->`.  This may cause
-        product types to unpack to more or less than one argument, simulating a
-        structured binding, which is applied after unwrapping the outer union.
-    6.  Pointer-like dereference operators are supplied if and only if all alternatives
-        in the union have a common type, after accounting for the cvref qualifiers of
-        the union itself.  `*` returns that type directly, while `->` returns a proxy
-        that extends its lifetime for the duration of the access.
-    7.  Iterating over the union is possible, provided each of the alternatives are
-        iterable.  If so, and all types return the same iterator, then the result will
-        simply be that iterator, without any extra indirection.  Otherwise, if the
-        alternatives return multiple iterator types, then the result will be a wrapper
-        which acts like a union of the possible iterators, and retains as much shared
-        functionality as possible.  If all iterators dereference to the same type, then
-        so will the union iterator.  If they dereference to multiple types, then the
-        union iterator will dereference to a `bertrand::Union<Us...>`, where `Us...`
-        represent the dereferenced types of each iterator.
- */
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union;
 
 
-/* A wrapper for an arbitrarily qualified type that can also represent an empty state.
-
-This is identical to `Union<NoneType, T>`, except in the following cases:
-
-    1.  The implicit and explicit constructors always construct `T`, except for the
-        default constructor and implicit conversion conversion from `None` and
-        `std::nullopt` (assuming those are not valid constructors for `T`).
-    2.  Robust CTAD guides allow `T` to be omitted in many cases, and inferred from a
-        corresponding initializer.
-    3.  Pointer indirection assumes that the active member is not `NoneType`, and
-        always delegates to `T` directly.  A check confirming this will only be emitted
-        in debug builds, ensuring no overhead in release builds.
-    4.  If `T` is an lvalue reference (i.e. `T&`), then the optional supports
-        conversions both to and from `T*`, where the empty state maps to a null
-        pointer.  This allows `Optional<T&>` to be used as a drop-in replacement for
-        pointers in most cases, as long as pointer arithmetic is not required.
-    5.  The empty state can be omitted during monadic operations and `impl::visit()`
-        calls, in which case it will be implicitly propagated to the return type,
-        possibly promoting that type to an optional.  Note that this is not the case
-        for pattern matching via `->*`, which must exhaustively cover both states.
-    6.  Optionals are always iterable, with one of 2 behaviors depending on `T`:
-        -   If `T` is iterable, then the result is a forwarding adaptor for the
-            iterator(s) over `T`, which behave identically.  If the optional is in the
-            empty state, then the adaptor will be uninitialized, and will always
-            compare equal to its sentinel, yielding an empty range.
-        -   If `T` is not iterable, then the result is an iterator over a single
-            element, which is equivalent to a simple pointer to the contained value.
-            If the optional is in the empty state, then a one-past-the-end pointer will
-            be used instead.
-
-Note that because optional references are compatible with pointers, Bertrand's binding
-generators will emit them wherever a pointer is exposed to Python, or any other
-language that does not expose pointers as first-class citizens. */
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional;
 
@@ -459,47 +377,7 @@ template <typename T> requires (meta::not_void<typename impl::visitable<T>::empt
 Optional(T&&) -> Optional<typename impl::visitable<T>::value>;
 
 
-/* A wrapper for an arbitrarily qualified type that can also represent one or more
-possible error states.
-
-This is identical to `Union<T, E, Es...>`, except in the following case:
-
-    1.  The implicit and explicit constructors always prefer to construct `T` unless
-        the initializer(s) would be invalid, in which case the same rules apply as for
-        `Union<E, Es...>` (i.e. the most proximal cvref-qualified type or base class,
-        with implicit conversions only as a last resort).  Like `Union`, it is possible
-        to unambiguously specify an error by providing a `std::in_place_index<I>` or
-        `std::in_place_type<T>` tag as the first argument.
-    2.  `E` defaults to `Exception`, which is the base class for all Bertrand exception
-        types.  This allows CTAD guides based on an initializer similar to `Optional`,
-        at the cost of an overly-general error type.
-    3.  Pointer indirection assumes that the active member is not an error state.  If
-        it is, then attempting to dereference it will throw that state as an exception,
-        which can then be caught and analyzed using traditional try/catch semantics.
-        This will never be optimized out in debug builds, differentiating it from
-        `Optional`, at the cost of an extra branch in release builds.
-    4.  `T` may be `void`, which gets implicitly promoted to `NoneType`.  This allows
-        `Expected` to be used as an error-handling strategy for functions that may
-        fail, but otherwise do not return a value.
-    5.  The error state(s) can be omitted during monadic operations and
-        `impl::visit()` calls, in which case they will be implicitly propagated to the
-        return type, possibly promoting that type to an expected.  Note that this is
-        not the case for pattern matching via `->*`, which must exhaustively cover all
-        possible states.
-    6.  Expecteds are always iterable, with one of 2 behaviors depending on `T`:
-        -   If `T` is iterable, then the result is a forwarding adaptor for the
-            iterator(s) over `T`, which behave identically.  If the expected is in an
-            error state, then the adaptor will be uninitialized, and will always
-            compare equal to its sentinel, yielding an empty range.
-        -   If `T` is not iterable, then the result is an iterator over a single
-            element, which is equivalent to a simple pointer to the contained value.
-            If the expected is in an error state, then a one-past-the-end pointer will
-            be used instead.
-
-Note that the intended use for `Expected` is as a value-based error handling strategy,
-which can be used as a safer and more explicit alternative to `try/catch` blocks,
-promoting exhaustive error coverage via the type system. */
-template <typename T, typename E = Exception, typename... Es> requires (meta::unique<T, E, Es...>)
+template <typename T, typename E, typename... Es> requires (meta::unique<T, E, Es...>)
 struct Expected;
 
 
@@ -795,12 +673,12 @@ namespace meta {
         meaningless, since there are not enough visitables to satisfy them. */
         template <typename>
         constexpr size_t visit_max_k = 0;
-        template <typename... As>
-        constexpr size_t visit_max_k<meta::pack<As...>> = (
-            (meta::visitable<As> + visit_max_k<typename impl::visitable<As>::alternatives>) +
-            ... +
-            0
-        );
+        template <typename A, typename... As>
+        constexpr size_t visit_max_k<meta::pack<A, As...>> = visit_max_k<meta::pack<As...>>;
+        template <meta::visitable A, typename... As>
+        constexpr size_t visit_max_k<meta::pack<A, As...>> =
+            visit_max_k<typename impl::visitable<A>::alternatives> + 1 +
+            visit_max_k<meta::pack<As...>>;
 
         template <typename... A>
         struct visit_ctx {
@@ -1090,7 +968,7 @@ namespace impl {
 
     /* Invoke a function with the given arguments, unwrapping any sum types in the
     process.  This is similar to `std::visit()`, but with greatly expanded
-    metaprogramming capabilities to fit bertrand's overall monadic interface.
+    metaprogramming capabilities to fit Bertrand's overall monadic interface.
 
     A visitor is constructed from either a single function or a set of functions
     arranged into an overload set.  Any subsequent arguments will be passed to the
@@ -1121,11 +999,11 @@ namespace impl {
     `std::visit()`.
 
     Finally, note that the arguments are fully generic, and not strictly limited to
-    visitable types, in contrast to `std::visit()`.  If no unions are present, then
+    visitable types, in contrast to `std::visit()`.  If no visitables are present, then
     `visit()` devolves to an inline invocation of the visitor directly, without any
-    special handling.  Otherwise, the component unions are expanded according to the
-    semantics laid out in `bertrand::impl::visitable<T>`, which describes how to
-    register custom visitable types for use with this function. */
+    special handling.  Otherwise, the component visitables are expanded according to
+    the semantics laid out in `impl::visitable<T>`, which describes how to register
+    custom visitable types for use with this function. */
     template <typename F, typename... Args>
     [[gnu::always_inline]] constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
         noexcept (meta::nothrow::visit<F, Args...>)
@@ -1151,31 +1029,30 @@ namespace impl {
     struct variant_types;
     template <typename T, size_t... Is>
     struct variant_types<T, std::index_sequence<Is...>> {
-        using type = meta::pack<decltype(std::get<Is>(std::declval<T>()))...>;
+        using type = meta::pack<decltype((std::get<Is>(std::declval<T>())))...>;
     };
 
     template <meta::Union T>
     struct visitable<T> {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
-        using alternatives = union_storage_types<decltype((std::declval<T>()._value))>::type;
-        using value = T;
+        using type = T;
+        using alternatives = union_storage_types<decltype((std::declval<T>().__value))>::type;
+        using value = void;
         using empty = void;
         using errors = meta::pack<>;
 
-        /* Get the active index for a union of this type. */
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u)
-            noexcept (requires{{u._value.index()} noexcept;})
+            noexcept (requires{{u.__value.index()} noexcept;})
         {
-            return u._value.index();
+            return u.__value.index();
         }
 
-        /* Perfectly forward the member at index I for a union of this type. */
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
-            noexcept (requires{{std::forward<T>(u)._value.template get<I>()} noexcept;})
+            noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
         {
-            return (std::forward<T>(u)._value.template get<I>());
+            return (std::forward<T>(u).__value.template get<I>());
         }
     };
 
@@ -1183,21 +1060,22 @@ namespace impl {
     struct visitable<T> {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
+        using type = T;
         using alternatives = variant_types<T>::type;
+        using value = void;
         using empty = void;
         using errors = meta::pack<>;
 
-        /* Get the active index for a union of this type. */
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u)
             noexcept (requires{{u.index()} noexcept;})
         {
             return u.index();
         }
 
-        /* Perfectly forward the member at index I for a union of this type. */
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
-            noexcept (requires{{std::get<I>(std::forward<T>(u))} noexcept;}) {
+            noexcept (requires{{std::get<I>(std::forward<T>(u))} noexcept;})
+        {
             return (std::get<I>(std::forward<T>(u)));
         }
     };
@@ -1206,22 +1084,20 @@ namespace impl {
     struct visitable<T> {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
-        using value = decltype((*std::declval<T>()));
-        using alternatives = meta::pack<NoneType, value>;
-        using empty = NoneType;
+        using type = T;
+        using empty = decltype((std::declval<T>().__value.template get<0>()));
+        using value = decltype((std::declval<T>().__value.template get<1>()));
+        using alternatives = meta::pack<empty, value>;
         using errors = meta::pack<>;
 
-        /* The active index of an optional is 0 for the empty state and 1 for the
-        non-empty state. */
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
-            return u._value.index();
+            return u.__value.index();
         }
 
-        /* Perfectly forward the member at index I for an optional of this type. */
-        template <size_t I, meta::is<T> U> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u)
-            noexcept (requires{{std::forward<U>(u)._value.template get<I>()} noexcept;}) {
-            return (std::forward<U>(u)._value.template get<I>());
+        template <size_t I> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
+            noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;}) {
+            return (std::forward<T>(u).__value.template get<I>());
         }
     };
 
@@ -1229,24 +1105,21 @@ namespace impl {
     struct visitable<T> {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
+        using type = T;
+        using empty = const NoneType&;
         using value = decltype((*std::declval<T>()));
-        using alternatives = meta::pack<NoneType, value>;
-        using empty = NoneType;
+        using alternatives = meta::pack<const NoneType&, value>;
         using errors = meta::pack<>;
 
-        /* The active index of an optional is 0 for the empty state and 1 for the
-        non-empty state. */
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
-            return u.has_value();
+            return u.has__value();
         }
 
-        /* Perfectly forward the empty state. */
         template <size_t I> requires (I == 0)
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u) noexcept {
             return (None);
         }
 
-        /* Perfectly forward the non-empty state. */
         template <size_t I> requires (I == 1)
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
             noexcept (requires{{*std::forward<T>(u)} noexcept;})
@@ -1255,90 +1128,51 @@ namespace impl {
         }
     };
 
+    template <typename T, typename = std::make_index_sequence<meta::unqualify<T>::types::size() - 1>>
+    struct expected_errors;
+    template <typename T, size_t... Is>
+    struct expected_errors<T, std::index_sequence<Is...>> {
+        using type = meta::pack<decltype((std::declval<T>().__value.template get<Is + 1>()))...>;
+    };
+
     template <meta::Expected T>
     struct visitable<T> {
-    private:
-
-        template <typename V>
-        struct _wrapped { using type = void; };
-        template <meta::not_void V>
-        struct _wrapped<V> {
-            using type = decltype((std::declval<T>().storage.value()));
-        };
-
-    public:
         static constexpr bool enable = true;
         static constexpr bool monad = true;
-        using value = _wrapped<typename meta::unqualify<T>::types::template at<0>>::type;
-        using alternatives = visitable<decltype((std::declval<T>()._value))>::alternatives;
+        using type = T;
+        using alternatives = union_storage_types<decltype((std::declval<T>().__value))>::type;
+        using value = decltype((*std::declval<T>()));
         using empty = void;
-        using errors = meta::unqualify<T>::errors;
+        using errors = expected_errors<T>::type;
 
-        /// TODO: detect errors using decltype rather than using an alias in the
-        /// Expected context itself.
-
-
-
-        /* The active index of an expected is 0 for the empty state and > 0 for the
-        error state(s). */
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
-            return u._value.index();
+            return u.__value.index();
         }
 
-        /* Perfectly forward the member at index I for an expected of this type. */
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
-            noexcept (requires{{std::forward<T>(u)._value.template get<I>()} noexcept;})
+            noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
         {
-            return (std::forward<T>(u)._value.template get<I>());
+            return (std::forward<T>(u).__value.template get<I>());
         }
     };
 
-    /// TODO: std::expected is harder to work with, and will take some thinking.
-    /// -> expected_types similar to variant_types.
+    template <typename T>
+    struct std_expected_type { using type = decltype((*std::declval<T>())); };
+    template <typename T> requires (meta::is_void<typename meta::unqualify<T>::value_type>)
+    struct std_expected_type<T> { using type = NoneType; };
 
     template <meta::std::expected T>
     struct visitable<T> {
-    private:
-
-        template <typename V>
-        struct _wrapped { using type = void; };
-        template <meta::not_void V>
-        struct _wrapped<V> {
-            using type = decltype((std::declval<T>().value()));
-        };
-
-        template <typename U>
-        struct _pack { using type = meta::pack<decltype((std::declval<T>().value()))>; };
-        template <meta::is_void U>
-        struct _pack<U> { using type = meta::pack<NoneType>; };
-
-        template <typename... Errs>
-        struct _to_expected {
-            using type =
-                std::expected<typename meta::unqualify<T>::value_type, Union<Errs...>>;
-        };
-        template <typename E>
-        struct _to_expected<E> {
-            using type =
-                std::expected<typename meta::unqualify<T>::value_type, E>;
-        };
-
-    public:
         static constexpr bool enable = true;
         static constexpr bool monad = false;
-        using value = _wrapped<typename meta::unqualify<T>::value_type>::type;
-        using alternatives =
-            _pack<typename meta::unqualify<T>::value_type>::type::template concat<
-                typename visitable<decltype((std::declval<T>().error()))>::alternatives
-            >;
-        using empty = void;
+        using type = T;
+        using value = std_expected_type<typename meta::unqualify<T>::value_type>::type;
         using errors = visitable<decltype((std::declval<T>().error()))>::alternatives;
+        using alternatives = meta::concat<meta::pack<value>, errors>;
+        using empty = void;
 
-        /* The active index of an expected is 0 for the empty state and > 0 for the
-        error state(s). */
-        template <meta::is<T> U>
-        [[gnu::always_inline]] static constexpr size_t index(const U& u) noexcept {
+        [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             if constexpr (errors::size() > 1) {
                 return u.has_value() ?
                     0 :
@@ -1348,37 +1182,30 @@ namespace impl {
             }
         }
 
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U>
-            requires (
-                meta::not_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < alternatives::size()
-            )
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(std::forward<U>(u).value())
-        ) {
-            return (std::forward<U>(u).value());
+        template <size_t I>
+            requires (I == 0 && meta::not_void<typename meta::unqualify<T>::value_type>)
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
+            noexcept (requires{{*std::forward<T>(u)} noexcept;})
+        {
+            return (*std::forward<T>(u));
         }
 
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U>
-            requires (
-                meta::is_void<typename meta::unqualify<T>::value_type> &&
-                I == 0 && I < alternatives::size()
-            )
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept {
+        template <size_t I>
+            requires (I == 0 && meta::is_void<typename meta::unqualify<T>::value_type>)
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u) noexcept {
             return (None);
         }
 
-        /* Perfectly forward the member at index I for an expected of this type. */
-        template <size_t I, meta::is<T> U> requires (I > 0 && I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(U&& u) noexcept(
-            noexcept(visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
-                std::forward<U>(u).error()
-            ))
-        ) {
-            return (visitable<decltype((std::forward<U>(u).error()))>::template get<I - 1>(
-                std::forward<U>(u).error()
+        template <size_t I> requires (I > 0 && I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
+            noexcept (requires{{
+                visitable<decltype((std::forward<T>(u).error()))>::template get<I - 1>(
+                    std::forward<T>(u).error()
+                )} noexcept;
+            })
+        {
+            return (visitable<decltype((std::forward<T>(u).error()))>::template get<I - 1>(
+                std::forward<T>(u).error()
             ));
         }
     };
@@ -1391,16 +1218,23 @@ namespace impl {
         F func;
         template <typename Self, typename... A>
         constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{{
-                std::forward<Self>(self).func(std::forward<A>(args)...)
-            } noexcept;})
-            requires ((!meta::monad<A> && ...) && requires{{
-                std::forward<Self>(self).func(std::forward<A>(args)...)
-            };})
+            noexcept (requires{{std::forward<Self>(self).func(std::forward<A>(args)...)} noexcept;})
+            requires (
+                (!meta::monad<A> && ...) &&
+                requires{{std::forward<Self>(self).func(std::forward<A>(args)...)};
+            })
         {
             return (std::forward<Self>(self).func(std::forward<A>(args)...));
         }
     };
+
+    template <typename, typename>
+    constexpr bool _alternatives_are_formattable = false;
+    template <typename... Ts, typename Char> requires (meta::formattable<Ts, Char> && ...)
+    constexpr bool _alternatives_are_formattable<meta::pack<Ts...>, Char> = true;
+    template <meta::monad T, typename Char>
+    constexpr bool alternatives_are_formattable =
+        _alternatives_are_formattable<typename impl::visitable<T>::alternatives, Char>;
 
 }
 
@@ -1412,9 +1246,9 @@ namespace impl {
 
 namespace impl {
 
-    /* The tracking index stored within a `Union` is defined as the smallest unsigned
-    integer type big enough to hold all alternatives, in order to exploit favorable
-    packing dynamics with respect to the (aligned) contents. */
+    /* The tracking index for a union is defined as the smallest unsigned integer type
+    big enough to enumerate all alternatives, to exploit favorable packing dynamics
+    with respect to the (aligned) contents. */
     template <size_t N>
     struct _union_index_type { using type = size_t; };
     template <size_t N> requires (N <= std::numeric_limits<uint8_t>::max())
@@ -1446,9 +1280,10 @@ namespace impl {
 
     /* A basic tagged union of alternatives `Ts...`, which automatically forwards
     lvalue references and provides vtable-based copy, move, swap, and destruction
-    operators, as well as a `value()` accessor that walks the overall structure.
-    This is a fundamental building block for sum types, which can dramatically reduce
-    the amount of bookkeeping necessary to safely work with raw C unions. */
+    operators, as well as unsafe `index()` and `get<I>()` accessors that walk the
+    overall structure.  This is a fundamental building block for sum types, and can
+    dramatically reduce the amount of bookkeeping necessary to safely work with raw C
+    unions. */
     template <meta::not_void... Ts> requires ((sizeof...(Ts) > 1) && ... && !meta::rvalue<Ts>)
     struct union_storage : union_storage_tag {
         using indices = std::index_sequence_for<Ts...>;
@@ -1459,11 +1294,6 @@ namespace impl {
         using tag = std::in_place_index_t<I>;
 
     private:
-        /// NOTE: A recursive C union that stores each alternative as efficiently as
-        /// possible.  This class is essentially a wrapper around such a union that
-        /// makes it provably safe for the compiler to use without UB, including in
-        /// constexpr contexts.
-
         template <typename... Us>
         union _type { constexpr ~_type() noexcept {}; };
         template <typename U, typename... Us> requires (!meta::lvalue<U>)
@@ -1639,6 +1469,66 @@ namespace impl {
         template <size_t I, typename Self> requires (I < sizeof...(Ts))
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
             return (std::forward<Self>(self).m_data.template get<I>());
+        }
+
+        /* Access a specific type, assuming it is present in the union. */
+        template <typename T, typename Self> requires (types::template contains<T>())
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            return (std::forward<Self>(self).m_data.template get<meta::index_of<T, Ts...>>());
+        }
+
+        /* Get a pointer to a specific value by index if it is the active alternative.
+        Returns a null pointer otherwise. */
+        template <size_t I>
+            requires (
+                I < sizeof...(Ts) &&
+                meta::has_address<meta::as_lvalue<meta::unpack_type<I, Ts...>>>
+            )
+        [[nodiscard]] constexpr auto get_if() noexcept
+            -> meta::address_type<meta::as_lvalue<meta::unpack_type<I, Ts...>>>
+        {
+            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+        }
+
+        /* Get a pointer to a specific value by index if it is the active alternative.
+        Returns a null pointer otherwise. */
+        template <size_t I>
+            requires (
+                I < sizeof...(Ts) &&
+                meta::has_address<meta::as_const_ref<meta::unpack_type<I, Ts...>>>
+            )
+        [[nodiscard]] constexpr auto get_if() const noexcept
+            -> meta::address_type<meta::as_const_ref<meta::unpack_type<I, Ts...>>>
+        {
+            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+        }
+
+        /* Get a pointer to a specific type if it is the active alternative.  Returns
+        a null pointer otherwise. */
+        template <typename T>
+            requires (
+                types::template contains<T>() &&
+                meta::has_address<meta::as_lvalue<T>>
+            )
+        [[nodiscard]] constexpr auto get_if() noexcept
+            -> meta::address_type<meta::as_lvalue<T>>
+        {
+            constexpr size_t I = meta::index_of<T, Ts...>;
+            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+        }
+
+        /* Get a pointer to a specific type if it is the active alternative.  Returns
+        a null pointer otherwise. */
+        template <typename T>
+            requires (
+                types::template contains<T>() &&
+                meta::has_address<meta::as_const_ref<T>>
+            )
+        [[nodiscard]] constexpr auto get_if() const noexcept
+            -> meta::address_type<meta::as_const_ref<T>>
+        {
+            constexpr size_t I = meta::index_of<T, Ts...>;
+            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
         }
 
     private:
@@ -1890,11 +1780,11 @@ namespace impl {
         }
     };
 
-    /* Result 1: convert to proximal type */
+    /* Result 1: convert to proximal type. */
     template <typename from, typename proximal, typename convert, typename...>
     struct _union_convert_from { using type = proximal; };
 
-    /* Result 2: convert to first implicitly convertible type (void if none) */
+    /* Result 2: convert to first implicitly convertible type (void if none). */
     template <typename from, meta::is_void proximal, typename convert>
     struct _union_convert_from<from, proximal, convert> { using type = convert; };
 
@@ -1904,25 +1794,28 @@ namespace impl {
         meta::convertible_to<from, curr> &&
         (meta::lvalue<from> ? !meta::rvalue<curr> : !meta::lvalue<curr>);
 
+    template <typename from, typename proximal, typename curr>
+    using union_replace_proximal = std::conditional_t<
+        meta::is_void<proximal> ||
+        (meta::inherits<curr, proximal> && !meta::is<curr, proximal>) || (
+            meta::is<curr, proximal> && (
+                (meta::lvalue<curr> && !meta::lvalue<proximal>) ||
+                meta::more_qualified_than<proximal, curr>
+            )
+        ),
+        curr,
+        proximal
+    >;
+
     /* Recursive 1: prefer the most derived and least qualified matching alternative,
     with lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
     prvalues.  If the result type is void, the candidate is more derived than it, or
-    the candidate is less qualified, replace the intermediate result */
+    the candidate is less qualified, replace the intermediate result. */
     template <typename from, typename proximal, typename convert, typename curr, typename... next>
         requires (union_proximal<from, curr>)
     struct _union_convert_from<from, proximal, convert, curr, next...> : _union_convert_from<
         from,
-        std::conditional_t<
-            meta::is_void<proximal> ||
-            (meta::inherits<curr, proximal> && !meta::is<curr, proximal>) || (
-                meta::is<curr, proximal> && (
-                    (meta::lvalue<curr> && !meta::lvalue<proximal>) ||
-                    meta::more_qualified_than<proximal, curr>
-                )
-            ),
-            curr,
-            proximal
-        >,
+        union_replace_proximal<from, proximal, curr>,
         convert,
         next...
     > {};
@@ -1939,7 +1832,7 @@ namespace impl {
         _union_convert_from<from, proximal, curr, next...>
     {};
 
-    /* Recursive 3: no match at this index, discard curr */
+    /* Recursive 3: no match at this index, discard curr. */
     template <typename from, typename proximal, typename convert, typename curr, typename... next>
         requires (!union_proximal<from, curr> && !union_convertible<from, curr, convert>)
     struct _union_convert_from<from, proximal, convert, curr, next...> :
@@ -2002,13 +1895,13 @@ namespace impl {
         struct fn {
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<to>;})
                 requires (requires{{
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 } -> meta::convertible_to<to>;})
             {
-                return std::forward<Self>(self)._value.template get<I>();
+                return std::forward<Self>(self).__value.template get<I>();
             }
         };
 
@@ -2017,15 +1910,15 @@ namespace impl {
         >;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
     /* A special case of `union_convert_to` that corresponds to the result of the
-    dereference and arrow operators for `Union<Ts...>`. */
+    dereference and indirection operators for `Union<Ts...>`. */
     template <
         typename Self,
         typename = std::make_index_sequence<meta::unqualify<Self>::types::size()>
@@ -2033,11 +1926,11 @@ namespace impl {
     struct union_flatten {};
     template <typename Self, size_t... Is>
         requires (meta::has_common_type<
-            decltype((std::declval<Self>()._value.template get<Is>()))...
+            decltype((std::declval<Self>().__value.template get<Is>()))...
         >)
     struct union_flatten<Self, std::index_sequence<Is...>> : union_convert_to<
         Self,
-        meta::common_type<decltype((std::declval<Self>()._value.template get<Is>()))...>
+        meta::common_type<decltype((std::declval<Self>().__value.template get<Is>()))...>
     > {};
 
     /* A simple vtable that backs the explicit conversion operator from `Union<Ts...>`
@@ -2049,13 +1942,13 @@ namespace impl {
         struct fn {
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                    static_cast<to>(std::forward<Self>(self).__value.template get<I>())
                 } noexcept;})
                 requires (requires{{
-                    static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                    static_cast<to>(std::forward<Self>(self).__value.template get<I>())
                 };})
             {
-                return static_cast<to>(std::forward<Self>(self)._value.template get<I>());
+                return static_cast<to>(std::forward<Self>(self).__value.template get<I>());
             }
         };
 
@@ -2064,17 +1957,15 @@ namespace impl {
         >;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
     /* Union iterators can dereference to exactly one type or a `Union` of 2 or more
-    possible types, depending on the configuration of the input iterators.  The `->`
-    indirection operator is only enabled if all of the iterators support it and return
-    a consistent pointer type. */
+    possible types, depending on the configuration of the input iterators. */
     template <typename, typename...>
     struct _union_iterator_ref { using type = void; };
     template <typename out>
@@ -2112,11 +2003,11 @@ namespace impl {
         using iterator_category = meta::common_type<meta::iterator_category<Ts>...>;
         using difference_type = meta::common_type<meta::iterator_difference_type<Ts>...>;
         using reference = union_iterator_ref<Ts...>;
+        using value_type = meta::remove_reference<reference>;
         using arrow_type = impl::arrow_proxy<reference>;
         using pointer = arrow_type::type;
-        using value_type = meta::remove_reference<reference>;
 
-        union_storage<Ts...> _value;
+        union_storage<Ts...> __value;
 
     private:
         using indices = std::index_sequence_for<Ts...>;
@@ -2125,13 +2016,13 @@ namespace impl {
         struct _deref {
             static constexpr reference operator()(const union_iterator& self)
                 noexcept (requires{{
-                    *self._value.template get<I>()
+                    *self.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<reference>;})
                 requires (requires{
-                    {*self._value.template get<I>()} -> meta::convertible_to<reference>;
+                    {*self.__value.template get<I>()} -> meta::convertible_to<reference>;
                 })
             {
-                return *self._value.template get<I>();
+                return *self.__value.template get<I>();
             }
         };
         using deref = impl::vtable<_deref>::template dispatch<indices>;
@@ -2140,13 +2031,13 @@ namespace impl {
         struct _subscript {
             static constexpr reference operator()(const union_iterator& self, difference_type n)
                 noexcept (requires{{
-                    self._value.template get<I>()[n]
+                    self.__value.template get<I>()[n]
                 } noexcept -> meta::nothrow::convertible_to<reference>;})
                 requires (requires{
-                    {self._value.template get<I>()[n]} -> meta::convertible_to<reference>;
+                    {self.__value.template get<I>()[n]} -> meta::convertible_to<reference>;
                 })
             {
-                return self._value.template get<I>()[n];
+                return self.__value.template get<I>()[n];
             }
         };
         using subscript = impl::vtable<_subscript>::template dispatch<indices>;
@@ -2154,10 +2045,10 @@ namespace impl {
         template <size_t I>
         struct _increment {
             static constexpr void operator()(union_iterator& self)
-                noexcept (requires{{++self._value.template get<I>()} noexcept;})
-                requires (requires{{++self._value.template get<I>()};})
+                noexcept (requires{{++self.__value.template get<I>()} noexcept;})
+                requires (requires{{++self.__value.template get<I>()};})
             {
-                ++self._value.template get<I>();
+                ++self.__value.template get<I>();
             }
         };
         using increment = impl::vtable<_increment>::template dispatch<indices>;
@@ -2166,23 +2057,23 @@ namespace impl {
         struct _add {
             static constexpr union_iterator operator()(const union_iterator& self, difference_type n)
                 noexcept (requires{{
-                    union_iterator{{std::in_place_index<I>, self._value.template get<I>() + n}}
+                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() + n}}
                 } noexcept -> meta::nothrow::convertible_to<union_iterator>;})
                 requires (requires{{
-                    union_iterator{{std::in_place_index<I>, self._value.template get<I>() + n}}
+                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() + n}}
                 };})
             {
-                return {{std::in_place_index<I>, self._value.template get<I>() + n}};
+                return {{std::in_place_index<I>, self.__value.template get<I>() + n}};
             }
             static constexpr union_iterator operator()(difference_type n, const union_iterator& self)
                 noexcept (requires{{
-                    union_iterator{{std::in_place_index<I>, n + self._value.template get<I>()}}
+                    union_iterator{{std::in_place_index<I>, n + self.__value.template get<I>()}}
                 } noexcept -> meta::nothrow::convertible_to<union_iterator>;})
                 requires (requires{{
-                    union_iterator{{std::in_place_index<I>, n + self._value.template get<I>()}}
+                    union_iterator{{std::in_place_index<I>, n + self.__value.template get<I>()}}
                 };})
             {
-                return {{std::in_place_index<I>, n + self._value.template get<I>()}};
+                return {{std::in_place_index<I>, n + self.__value.template get<I>()}};
             }
         };
         using add = impl::vtable<_add>::template dispatch<indices>;
@@ -2190,10 +2081,10 @@ namespace impl {
         template <size_t I>
         struct _iadd {
             static constexpr void operator()(union_iterator& self, difference_type n)
-                noexcept (requires{{self._value.template get<I>() += n} noexcept;})
-                requires (requires{{self._value.template get<I>() += n};})
+                noexcept (requires{{self.__value.template get<I>() += n} noexcept;})
+                requires (requires{{self.__value.template get<I>() += n};})
             {
-                self._value.template get<I>() += n;
+                self.__value.template get<I>() += n;
             }
         };
         using iadd = impl::vtable<_iadd>::template dispatch<indices>;
@@ -2201,10 +2092,10 @@ namespace impl {
         template <size_t I>
         struct _decrement {
             static constexpr void operator()(union_iterator& self)
-                noexcept (requires{{--self._value.template get<I>()} noexcept;})
-                requires (requires{{--self._value.template get<I>()};})
+                noexcept (requires{{--self.__value.template get<I>()} noexcept;})
+                requires (requires{{--self.__value.template get<I>()};})
             {
-                --self._value.template get<I>();
+                --self.__value.template get<I>();
             }
         };
         using decrement = impl::vtable<_decrement>::template dispatch<indices>;
@@ -2213,13 +2104,13 @@ namespace impl {
         struct _subtract {
             static constexpr union_iterator operator()(const union_iterator& self, difference_type n)
                 noexcept (requires{{
-                    union_iterator{{std::in_place_index<I>, self._value.template get<I>() - n}}
+                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() - n}}
                 } noexcept -> meta::nothrow::convertible_to<union_iterator>;})
                 requires (requires{{
-                    union_iterator{{std::in_place_index<I>, self._value.template get<I>() - n}}
+                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() - n}}
                 };})
             {
-                return {{std::in_place_index<I>, self._value.template get<I>() - n}};
+                return {{std::in_place_index<I>, self.__value.template get<I>() - n}};
             }
         };
         using subtract = impl::vtable<_subtract>::template dispatch<indices>;
@@ -2227,10 +2118,10 @@ namespace impl {
         template <size_t I>
         struct _isub {
             static constexpr void operator()(union_iterator& self, difference_type n)
-                noexcept (requires{{self._value.template get<I>() -= n} noexcept;})
-                requires (requires{{self._value.template get<I>() -= n};})
+                noexcept (requires{{self.__value.template get<I>() -= n} noexcept;})
+                requires (requires{{self.__value.template get<I>() -= n};})
             {
-                self._value.template get<I>() -= n;
+                self.__value.template get<I>() -= n;
             }
         };
         using isub = impl::vtable<_isub>::template dispatch<indices>;
@@ -2240,25 +2131,25 @@ namespace impl {
             template <typename other>
             static constexpr difference_type operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() - rhs
+                    lhs.__value.template get<I>() - rhs
                 } noexcept -> meta::nothrow::convertible_to<difference_type>;})
                 requires (requires{{
-                    lhs._value.template get<I>() - rhs
+                    lhs.__value.template get<I>() - rhs
                 } -> meta::convertible_to<difference_type>;})
             {
-                return lhs._value.template get<I>() - rhs;
+                return lhs.__value.template get<I>() - rhs;
             }
 
             template <typename other>
             static constexpr difference_type operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs - rhs._value.template get<I>()
+                    lhs - rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<difference_type>;})
                 requires (requires{{
-                    lhs - rhs._value.template get<I>()
+                    lhs - rhs.__value.template get<I>()
                 } -> meta::convertible_to<difference_type>;})
             {
-                return lhs - rhs._value.template get<I>();
+                return lhs - rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2267,13 +2158,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() - rhs._value.template get<I>()
+                    lhs.__value.template get<I>() - rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<difference_type>;})
                 requires (requires{{
-                    lhs._value.template get<I>() - rhs._value.template get<I>()
+                    lhs.__value.template get<I>() - rhs.__value.template get<I>()
                 } -> meta::convertible_to<difference_type>;})
             {
-                return lhs._value.template get<I>() - rhs._value.template get<I>();
+                return lhs.__value.template get<I>() - rhs.__value.template get<I>();
             }
         };
         using distance = impl::vtable<_distance>::template dispatch<indices>;
@@ -2283,25 +2174,25 @@ namespace impl {
             template <typename other>
             static constexpr bool operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() < rhs
+                    lhs.__value.template get<I>() < rhs
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() < rhs
+                    lhs.__value.template get<I>() < rhs
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() < rhs;
+                return lhs.__value.template get<I>() < rhs;
             }
 
             template <typename other>
             static constexpr bool operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs < rhs._value.template get<I>()
+                    lhs < rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs < rhs._value.template get<I>()
+                    lhs < rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs < rhs._value.template get<I>();
+                return lhs < rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2310,13 +2201,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() < rhs._value.template get<I>()
+                    lhs.__value.template get<I>() < rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() < rhs._value.template get<I>()
+                    lhs.__value.template get<I>() < rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() < rhs._value.template get<I>();
+                return lhs.__value.template get<I>() < rhs.__value.template get<I>();
             }
         };
         using less = impl::vtable<_less>::template dispatch<indices>;
@@ -2326,25 +2217,25 @@ namespace impl {
             template <typename other>
             static constexpr bool operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() <= rhs
+                    lhs.__value.template get<I>() <= rhs
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() <= rhs
+                    lhs.__value.template get<I>() <= rhs
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() <= rhs;
+                return lhs.__value.template get<I>() <= rhs;
             }
 
             template <typename other>
             static constexpr bool operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs <= rhs._value.template get<I>()
+                    lhs <= rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs <= rhs._value.template get<I>()
+                    lhs <= rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs <= rhs._value.template get<I>();
+                return lhs <= rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2353,13 +2244,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() <= rhs._value.template get<I>()
+                    lhs.__value.template get<I>() <= rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() <= rhs._value.template get<I>()
+                    lhs.__value.template get<I>() <= rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() <= rhs._value.template get<I>();
+                return lhs.__value.template get<I>() <= rhs.__value.template get<I>();
             }
         };
         using less_equal = impl::vtable<_less_equal>::template dispatch<indices>;
@@ -2369,25 +2260,25 @@ namespace impl {
             template <typename other>
             static constexpr bool operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() == rhs
+                    lhs.__value.template get<I>() == rhs
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() == rhs
+                    lhs.__value.template get<I>() == rhs
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() == rhs;
+                return lhs.__value.template get<I>() == rhs;
             }
 
             template <typename other>
             static constexpr bool operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs == rhs._value.template get<I>()
+                    lhs == rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs == rhs._value.template get<I>()
+                    lhs == rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs == rhs._value.template get<I>();
+                return lhs == rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2396,13 +2287,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() == rhs._value.template get<I>()
+                    lhs.__value.template get<I>() == rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() == rhs._value.template get<I>()
+                    lhs.__value.template get<I>() == rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() == rhs._value.template get<I>();
+                return lhs.__value.template get<I>() == rhs.__value.template get<I>();
             }
         };
         using equal = impl::vtable<_equal>::template dispatch<indices>;
@@ -2412,25 +2303,25 @@ namespace impl {
             template <typename other>
             static constexpr bool operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() != rhs
+                    lhs.__value.template get<I>() != rhs
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() != rhs
+                    lhs.__value.template get<I>() != rhs
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() != rhs;
+                return lhs.__value.template get<I>() != rhs;
             }
 
             template <typename other>
             static constexpr bool operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs != rhs._value.template get<I>()
+                    lhs != rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs != rhs._value.template get<I>()
+                    lhs != rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs != rhs._value.template get<I>();
+                return lhs != rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2439,13 +2330,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() == rhs._value.template get<I>()
+                    lhs.__value.template get<I>() == rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() == rhs._value.template get<I>()
+                    lhs.__value.template get<I>() == rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() != rhs._value.template get<I>();
+                return lhs.__value.template get<I>() != rhs.__value.template get<I>();
             }
         };
         using unequal = impl::vtable<_unequal>::template dispatch<indices>;
@@ -2455,25 +2346,25 @@ namespace impl {
             template <typename other>
             static constexpr bool operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() >= rhs
+                    lhs.__value.template get<I>() >= rhs
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() >= rhs
+                    lhs.__value.template get<I>() >= rhs
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() >= rhs;
+                return lhs.__value.template get<I>() >= rhs;
             }
 
             template <typename other>
             static constexpr bool operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs >= rhs._value.template get<I>()
+                    lhs >= rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs >= rhs._value.template get<I>()
+                    lhs >= rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs >= rhs._value.template get<I>();
+                return lhs >= rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2482,13 +2373,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() >= rhs._value.template get<I>()
+                    lhs.__value.template get<I>() >= rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() >= rhs._value.template get<I>()
+                    lhs.__value.template get<I>() >= rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() >= rhs._value.template get<I>();
+                return lhs.__value.template get<I>() >= rhs.__value.template get<I>();
             }
         };
         using greater_equal = impl::vtable<_greater_equal>::template dispatch<indices>;
@@ -2498,25 +2389,25 @@ namespace impl {
             template <typename other>
             static constexpr bool operator()(const union_iterator& lhs, const other& rhs)
                 noexcept (requires{{
-                    lhs._value.template get<I>() > rhs
+                    lhs.__value.template get<I>() > rhs
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() > rhs
+                    lhs.__value.template get<I>() > rhs
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() > rhs;
+                return lhs.__value.template get<I>() > rhs;
             }
 
             template <typename other>
             static constexpr bool operator()(const other& lhs, const union_iterator& rhs)
                 noexcept (requires{{
-                    lhs > rhs._value.template get<I>()
+                    lhs > rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs > rhs._value.template get<I>()
+                    lhs > rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs > rhs._value.template get<I>();
+                return lhs > rhs.__value.template get<I>();
             }
 
             template <typename... Us> requires (sizeof...(Us) == sizeof...(Ts))
@@ -2525,13 +2416,13 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() > rhs._value.template get<I>()
+                    lhs.__value.template get<I>() > rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs._value.template get<I>() > rhs._value.template get<I>()
+                    lhs.__value.template get<I>() > rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
-                return lhs._value.template get<I>() > rhs._value.template get<I>();
+                return lhs.__value.template get<I>() > rhs.__value.template get<I>();
             }
         };
         using greater = impl::vtable<_greater>::template dispatch<indices>;
@@ -2572,10 +2463,10 @@ namespace impl {
                 const other& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() <=> rhs
+                    lhs.__value.template get<I>() <=> rhs
                 } noexcept -> meta::nothrow::convertible_to<forward_spaceship_type<other>>;})
             {
-                return lhs._value.template get<I>() <=> rhs;
+                return lhs.__value.template get<I>() <=> rhs;
             }
 
             template <typename other> requires (reverse_spaceship<other>)
@@ -2584,10 +2475,10 @@ namespace impl {
                 const union_iterator& rhs
             )
                 noexcept (requires{{
-                    lhs <=> rhs._value.template get<I>()
+                    lhs <=> rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<reverse_spaceship_type<other>>;})
             {
-                return lhs <=> rhs._value.template get<I>();
+                return lhs <=> rhs.__value.template get<I>();
             }
 
             template <typename... Us>
@@ -2597,22 +2488,22 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs._value.template get<I>() <=> rhs._value.template get<I>()
+                    lhs.__value.template get<I>() <=> rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<
                     forward_spaceship_type<union_iterator<Us...>>
                 >;})
             {
-                return lhs._value.template get<I>() <=> rhs._value.template get<I>();
+                return lhs.__value.template get<I>() <=> rhs.__value.template get<I>();
             }
         };
         using spaceship = impl::vtable<_spaceship>::template dispatch<indices>;
 
     public:
         [[nodiscard]] constexpr reference operator*() const
-            noexcept (requires{{deref{_value.index()}(*this)} noexcept;})
-            requires (requires{{deref{_value.index()}(*this)};})
+            noexcept (requires{{deref{__value.index()}(*this)} noexcept;})
+            requires (requires{{deref{__value.index()}(*this)};})
         {
-            return deref{_value.index()}(*this);
+            return deref{__value.index()}(*this);
         }
 
         [[nodiscard]] constexpr arrow_type operator->() const
@@ -2623,17 +2514,17 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const
-            noexcept (requires{{subscript{_value.index()}(*this)} noexcept;})
-            requires (requires{{subscript{_value.index()}(*this)};})
+            noexcept (requires{{subscript{__value.index()}(*this)} noexcept;})
+            requires (requires{{subscript{__value.index()}(*this)};})
         {
-            return subscript{_value.index()}(*this, n);
+            return subscript{__value.index()}(*this, n);
         }
 
         constexpr union_iterator& operator++()
-            noexcept (requires{{increment{_value.index()}(*this)} noexcept;})
-            requires (requires{{increment{_value.index()}(*this)};})
+            noexcept (requires{{increment{__value.index()}(*this)} noexcept;})
+            requires (requires{{increment{__value.index()}(*this)};})
         {
-            increment{_value.index()}(*this);
+            increment{__value.index()}(*this);
             return *this;
         }
 
@@ -2650,35 +2541,35 @@ namespace impl {
             const union_iterator& self,
             difference_type n
         )
-            noexcept (requires{{add{self._value.index()}(self, n)} noexcept;})
-            requires (requires{{add{self._value.index()}(self, n)};})
+            noexcept (requires{{add{self.__value.index()}(self, n)} noexcept;})
+            requires (requires{{add{self.__value.index()}(self, n)};})
         {
-            return add{self._value.index()}(self, n);
+            return add{self.__value.index()}(self, n);
         }
 
         [[nodiscard]] friend constexpr union_iterator operator+(
             difference_type n,
             const union_iterator& self
         )
-            noexcept (requires{{add{self._value.index()}(n, self)} noexcept;})
-            requires (requires{{add{self._value.index()}(n, self)};})
+            noexcept (requires{{add{self.__value.index()}(n, self)} noexcept;})
+            requires (requires{{add{self.__value.index()}(n, self)};})
         {
-            return add{self._value.index()}(n, self);
+            return add{self.__value.index()}(n, self);
         }
 
         constexpr union_iterator& operator+=(difference_type n)
-            noexcept (requires{{iadd{_value.index()}(*this, n)} noexcept;})
-            requires (requires{{iadd{_value.index()}(*this, n)};})
+            noexcept (requires{{iadd{__value.index()}(*this, n)} noexcept;})
+            requires (requires{{iadd{__value.index()}(*this, n)};})
         {
-            iadd{_value.index()}(*this, n);
+            iadd{__value.index()}(*this, n);
             return *this;
         }
 
         constexpr union_iterator& operator--()
-            noexcept (requires{{decrement{_value.index()}(*this)} noexcept;})
-            requires (requires{{decrement{_value.index()}(*this)};})
+            noexcept (requires{{decrement{__value.index()}(*this)} noexcept;})
+            requires (requires{{decrement{__value.index()}(*this)};})
         {
-            decrement{_value.index()}(*this);
+            decrement{__value.index()}(*this);
             return *this;
         }
 
@@ -2695,10 +2586,10 @@ namespace impl {
             const union_iterator& self,
             difference_type n
         )
-            noexcept (requires{{subtract{self._value.index()}(self, n)} noexcept;})
-            requires (requires{{subtract{self._value.index()}(self, n)};})
+            noexcept (requires{{subtract{self.__value.index()}(self, n)} noexcept;})
+            requires (requires{{subtract{self.__value.index()}(self, n)};})
         {
-            return subtract{self._value.index()}(self, n);
+            return subtract{self.__value.index()}(self, n);
         }
 
         template <typename other>
@@ -2706,10 +2597,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{distance{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{distance{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{distance{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{distance{lhs.__value.index()}(lhs, rhs)};})
         {
-            return distance{lhs._value.index()}(lhs, rhs);
+            return distance{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2717,17 +2608,17 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{distance{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{distance{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{distance{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{distance{rhs.__value.index()}(lhs, rhs)};})
         {
-            return distance{rhs._value.index()}(lhs, rhs);
+            return distance{rhs.__value.index()}(lhs, rhs);
         }
 
         constexpr union_iterator& operator-=(difference_type n)
-            noexcept (requires{{isub{_value.index()}(*this, n)} noexcept;})
-            requires (requires{{isub{_value.index()}(*this, n)};})
+            noexcept (requires{{isub{__value.index()}(*this, n)} noexcept;})
+            requires (requires{{isub{__value.index()}(*this, n)};})
         {
-            isub{_value.index()}(*this, n);
+            isub{__value.index()}(*this, n);
             return *this;
         }
 
@@ -2736,10 +2627,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{less{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{less{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{less{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{less{lhs.__value.index()}(lhs, rhs)};})
         {
-            return less{lhs._value.index()}(lhs, rhs);
+            return less{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2747,10 +2638,10 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{less{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{less{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{less{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{less{rhs.__value.index()}(lhs, rhs)};})
         {
-            return less{rhs._value.index()}(lhs, rhs);
+            return less{rhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2758,10 +2649,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{less_equal{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{less_equal{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{less_equal{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{less_equal{lhs.__value.index()}(lhs, rhs)};})
         {
-            return less_equal{lhs._value.index()}(lhs, rhs);
+            return less_equal{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2769,10 +2660,10 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{less_equal{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{less_equal{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{less_equal{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{less_equal{rhs.__value.index()}(lhs, rhs)};})
         {
-            return less_equal{rhs._value.index()}(lhs, rhs);
+            return less_equal{rhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2780,10 +2671,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{equal{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{equal{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{equal{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{equal{lhs.__value.index()}(lhs, rhs)};})
         {
-            return equal{lhs._value.index()}(lhs, rhs);
+            return equal{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2791,10 +2682,10 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{equal{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{equal{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{equal{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{equal{rhs.__value.index()}(lhs, rhs)};})
         {
-            return equal{rhs._value.index()}(lhs, rhs);
+            return equal{rhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2802,10 +2693,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{unequal{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{unequal{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{unequal{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{unequal{lhs.__value.index()}(lhs, rhs)};})
         {
-            return unequal{lhs._value.index()}(lhs, rhs);
+            return unequal{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2813,10 +2704,10 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{unequal{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{unequal{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{unequal{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{unequal{rhs.__value.index()}(lhs, rhs)};})
         {
-            return unequal{rhs._value.index()}(lhs, rhs);
+            return unequal{rhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2824,10 +2715,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{greater_equal{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{greater_equal{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{greater_equal{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{greater_equal{lhs.__value.index()}(lhs, rhs)};})
         {
-            return greater_equal{lhs._value.index()}(lhs, rhs);
+            return greater_equal{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2835,10 +2726,10 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{greater_equal{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{greater_equal{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{greater_equal{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{greater_equal{rhs.__value.index()}(lhs, rhs)};})
         {
-            return greater_equal{rhs._value.index()}(lhs, rhs);
+            return greater_equal{rhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2846,10 +2737,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{greater{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{greater{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{greater{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{greater{lhs.__value.index()}(lhs, rhs)};})
         {
-            return greater{lhs._value.index()}(lhs, rhs);
+            return greater{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2857,10 +2748,10 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{greater{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{greater{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{greater{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{greater{rhs.__value.index()}(lhs, rhs)};})
         {
-            return greater{rhs._value.index()}(lhs, rhs);
+            return greater{rhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2868,10 +2759,10 @@ namespace impl {
             const union_iterator& lhs,
             const other& rhs
         )
-            noexcept (requires{{spaceship{lhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{spaceship{lhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{spaceship{lhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{spaceship{lhs.__value.index()}(lhs, rhs)};})
         {
-            return spaceship{lhs._value.index()}(lhs, rhs);
+            return spaceship{lhs.__value.index()}(lhs, rhs);
         }
 
         template <typename other>
@@ -2879,19 +2770,19 @@ namespace impl {
             const other& lhs,
             const union_iterator& rhs
         )
-            noexcept (requires{{spaceship{rhs._value.index()}(lhs, rhs)} noexcept;})
-            requires (requires{{spaceship{rhs._value.index()}(lhs, rhs)};})
+            noexcept (requires{{spaceship{rhs.__value.index()}(lhs, rhs)} noexcept;})
+            requires (requires{{spaceship{rhs.__value.index()}(lhs, rhs)};})
         {
-            return spaceship{rhs._value.index()}(lhs, rhs);
+            return spaceship{rhs.__value.index()}(lhs, rhs);
         }
     };
 
     /* `make_union_iterator<Ts...>` accepts a union of types `Ts...` and composes a set
     of iterators over it, which can be used to traverse the union, possibly yielding
     further unions.  If all types share the same iterator type, then the iterator will
-    be returned directly.  Otherwise, a `union_iterator<Is...>` will be returned, where
-    `Is...` are the (index-aligned) iterator types that were detected. */
-    template <size_t, typename...>
+    be returned directly.  Otherwise, a `union_iterator<Iters...>` will be returned,
+    where `Iters...` are the (index-aligned) iterator types that were detected. */
+    template <size_t, typename, typename, typename, typename, typename>
     struct _make_union_iterator;
     template <size_t N, typename U, typename... B, typename... E, typename... RB, typename... RE>
     struct _make_union_iterator<
@@ -2921,20 +2812,20 @@ namespace impl {
         template <typename = std::make_index_sequence<N>>
         struct _size_type { using type = void; };
         template <size_t... Is>
-            requires (meta::has_size<decltype(std::declval<U>()._value.template get<Is>())> && ...)
+            requires (meta::has_size<decltype(std::declval<U>().__value.template get<Is>())> && ...)
         struct _size_type<std::index_sequence<Is...>> {
             using type = meta::common_type<
-                meta::size_type<decltype(std::declval<U>()._value.template get<Is>())>...
+                meta::size_type<decltype(std::declval<U>().__value.template get<Is>())>...
             >;
         };
 
         template <typename = std::make_index_sequence<N>>
         struct _ssize_type { using type = void; };
         template <size_t... Is>
-            requires (meta::has_ssize<decltype(std::declval<U>()._value.template get<Is>())> && ...)
+            requires (meta::has_ssize<decltype(std::declval<U>().__value.template get<Is>())> && ...)
         struct _ssize_type<std::index_sequence<Is...>> {
             using type = meta::common_type<
-                meta::ssize_type<decltype(std::declval<U>()._value.template get<Is>())>...
+                meta::ssize_type<decltype(std::declval<U>().__value.template get<Is>())>...
             >;
         };
 
@@ -2953,23 +2844,23 @@ namespace impl {
         struct begin_fn {
             static constexpr begin_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::begin(u._value.template get<I>())
+                    std::ranges::begin(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<begin_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::begin(u._value.template get<I>())
+                    std::ranges::begin(u.__value.template get<I>())
                 } -> meta::convertible_to<begin_type>;})
             {
-                return std::ranges::begin(u._value.template get<I>());
+                return std::ranges::begin(u.__value.template get<I>());
             }
             static constexpr begin_type operator()(U u)
                 noexcept (requires{{begin_type{
-                    {std::in_place_index<I>, std::ranges::begin(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{begin_type{
-                    {std::in_place_index<I>, std::ranges::begin(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::begin(u._value.template get<I>())}};
+                return {{std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}};
             }
         };
         using _begin = impl::vtable<begin_fn>::template dispatch<indices>;
@@ -2978,23 +2869,23 @@ namespace impl {
         struct end_fn {
             static constexpr end_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::end(u._value.template get<I>())
+                    std::ranges::end(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<end_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::end(u._value.template get<I>())
+                    std::ranges::end(u.__value.template get<I>())
                 } -> meta::convertible_to<end_type>;})
             {
-                return std::ranges::end(u._value.template get<I>());
+                return std::ranges::end(u.__value.template get<I>());
             }
             static constexpr end_type operator()(U u)
                 noexcept (requires{{end_type{
-                    {std::in_place_index<I>, std::ranges::end(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{end_type{
-                    {std::in_place_index<I>, std::ranges::end(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::end(u._value.template get<I>())}};
+                return {{std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}};
             }
         };
         using _end = impl::vtable<end_fn>::template dispatch<indices>;
@@ -3003,23 +2894,23 @@ namespace impl {
         struct rbegin_fn {
             static constexpr rbegin_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::rbegin(u._value.template get<I>())
+                    std::ranges::rbegin(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<rbegin_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::rbegin(u._value.template get<I>())
+                    std::ranges::rbegin(u.__value.template get<I>())
                 } -> meta::convertible_to<rbegin_type>;})
             {
-                return std::ranges::rbegin(u._value.template get<I>());
+                return std::ranges::rbegin(u.__value.template get<I>());
             }
             static constexpr rbegin_type operator()(U u)
                 noexcept (requires{{rbegin_type{
-                    {std::in_place_index<I>, std::ranges::rbegin(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rbegin_type{
-                    {std::in_place_index<I>, std::ranges::rbegin(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::rbegin(u._value.template get<I>())}};
+                return {{std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}};
             }
         };
         using _rbegin = impl::vtable<rbegin_fn>::template dispatch<indices>;
@@ -3028,23 +2919,23 @@ namespace impl {
         struct rend_fn {
             static constexpr rend_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::rend(u._value.template get<I>())
+                    std::ranges::rend(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<rend_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::rend(u._value.template get<I>())
+                    std::ranges::rend(u.__value.template get<I>())
                 } -> meta::convertible_to<rend_type>;})
             {
-                return std::ranges::rend(u._value.template get<I>());
+                return std::ranges::rend(u.__value.template get<I>());
             }
             static constexpr rend_type operator()(U u)
                 noexcept (requires{{rend_type{
-                    {std::in_place_index<I>, std::ranges::rend(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rend_type{
-                    {std::in_place_index<I>, std::ranges::rend(u._value.template get<I>())}
+                    {std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::rend(u._value.template get<I>())}};
+                return {{std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}};
             }
         };
         using _rend = impl::vtable<rend_fn>::template dispatch<indices>;
@@ -3053,13 +2944,13 @@ namespace impl {
         struct size_fn {
             static constexpr size_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::size(u._value.template get<I>())
+                    std::ranges::size(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<size_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::size(u._value.template get<I>())
+                    std::ranges::size(u.__value.template get<I>())
                 } -> meta::convertible_to<size_type>;})
             {
-                return std::ranges::size(u._value.template get<I>());
+                return std::ranges::size(u.__value.template get<I>());
             }
         };
         using _size = impl::vtable<size_fn>::template dispatch<indices>;
@@ -3068,13 +2959,13 @@ namespace impl {
         struct ssize_fn {
             static constexpr ssize_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::ssize(u._value.template get<I>())
+                    std::ranges::ssize(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<ssize_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::ssize(u._value.template get<I>())
+                    std::ranges::ssize(u.__value.template get<I>())
                 } -> meta::convertible_to<ssize_type>;})
             {
-                return std::ranges::ssize(u._value.template get<I>());
+                return std::ranges::ssize(u.__value.template get<I>());
             }
         };
         using _ssize = impl::vtable<ssize_fn>::template dispatch<indices>;
@@ -3083,65 +2974,65 @@ namespace impl {
         struct empty_fn {
             static constexpr bool operator()(U u)
                 noexcept (requires{{
-                    std::ranges::empty(u._value.template get<I>())
+                    std::ranges::empty(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::empty(u._value.template get<I>())
+                    std::ranges::empty(u.__value.template get<I>())
                 } -> meta::convertible_to<bool>;})
             {
-                return std::ranges::empty(u._value.template get<I>());
+                return std::ranges::empty(u.__value.template get<I>());
             }
         };
         using _empty = impl::vtable<empty_fn>::template dispatch<indices>;
 
     public:
         static constexpr begin_type begin(U u)
-            noexcept (requires{{_begin{u._value.index()}(u)} noexcept;})
-            requires (requires{{_begin{u._value.index()}(u)};})
+            noexcept (requires{{_begin{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_begin{u.__value.index()}(u)};})
         {
-            return _begin{u._value.index()}(u);
+            return _begin{u.__value.index()}(u);
         }
 
         static constexpr end_type end(U u)
-            noexcept (requires{{_end{u._value.index()}(u)} noexcept;})
-            requires (requires{{_end{u._value.index()}(u)};})
+            noexcept (requires{{_end{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_end{u.__value.index()}(u)};})
         {
-            return _end{u._value.index()}(u);
+            return _end{u.__value.index()}(u);
         }
 
         static constexpr rbegin_type rbegin(U u)
-            noexcept (requires{{_rbegin{u._value.index()}(u)} noexcept;})
-            requires (requires{{_rbegin{u._value.index()}(u)};})
+            noexcept (requires{{_rbegin{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_rbegin{u.__value.index()}(u)};})
         {
-            return _rbegin{u._value.index()}(u);
+            return _rbegin{u.__value.index()}(u);
         }
 
         static constexpr rend_type rend(U u)
-            noexcept (requires{{_rend{u._value.index()}(u)} noexcept;})
-            requires (requires{{_rend{u._value.index()}(u)};})
+            noexcept (requires{{_rend{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_rend{u.__value.index()}(u)};})
         {
-            return _rend{u._value.index()}(u);
+            return _rend{u.__value.index()}(u);
         }
 
         static constexpr size_type size(U u)
-            noexcept (requires{{_size{u._value.index()}(u)} noexcept;})
-            requires (requires{{_size{u._value.index()}(u)};})
+            noexcept (requires{{_size{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_size{u.__value.index()}(u)};})
         {
-            return _size{u._value.index()}(u);
+            return _size{u.__value.index()}(u);
         }
 
         static constexpr ssize_type ssize(U u)
-            noexcept (requires{{_ssize{u._value.index()}(u)} noexcept;})
-            requires (requires{{_ssize{u._value.index()}(u)};})
+            noexcept (requires{{_ssize{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_ssize{u.__value.index()}(u)};})
         {
-            return _ssize{u._value.index()}(u);
+            return _ssize{u.__value.index()}(u);
         }
 
         static constexpr bool empty(U u)
-            noexcept (requires{{_empty{u._value.index()}(u)} noexcept;})
-            requires (requires{{_empty{u._value.index()}(u)};})
+            noexcept (requires{{_empty{u.__value.index()}(u)} noexcept;})
+            requires (requires{{_empty{u.__value.index()}(u)};})
         {
-            return _empty{u._value.index()}(u);
+            return _empty{u.__value.index()}(u);
         }
     };
     template <
@@ -3153,8 +3044,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        meta::iterable<decltype(std::declval<U>()._value.template get<I>())> &&
-        meta::reverse_iterable<decltype(std::declval<U>()._value.template get<I>())>
+        meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
+        meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -3167,16 +3058,16 @@ namespace impl {
         I + 1,
         U,
         meta::pack<begin..., meta::unqualify<meta::begin_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>,
         meta::pack<end..., meta::unqualify<meta::end_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>,
         meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>,
         meta::pack<rend..., meta::unqualify<meta::rend_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>
     > {};
     template <
@@ -3188,8 +3079,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        meta::iterable<decltype(std::declval<U>()._value.template get<I>())> &&
-        !meta::reverse_iterable<decltype(std::declval<U>()._value.template get<I>())>
+        meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
+        !meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -3202,10 +3093,10 @@ namespace impl {
         I + 1,
         U,
         meta::pack<begin..., meta::unqualify<meta::begin_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>,
         meta::pack<end..., meta::unqualify<meta::end_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>,
         meta::pack<rbegin...>,
         meta::pack<rend...>
@@ -3219,8 +3110,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        !meta::iterable<decltype(std::declval<U>()._value.template get<I>())> &&
-        meta::reverse_iterable<decltype(std::declval<U>()._value.template get<I>())>
+        !meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
+        meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -3235,10 +3126,10 @@ namespace impl {
         meta::pack<begin...>,
         meta::pack<end...>,
         meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>,
         meta::pack<rend..., meta::unqualify<meta::rend_type<
-            decltype(std::declval<U>()._value.template get<I>())
+            decltype(std::declval<U>().__value.template get<I>())
         >>>
     > {};
     template <
@@ -3250,8 +3141,8 @@ namespace impl {
         typename... rend
     > requires (
         I < meta::remove_reference<U>::types::size() &&
-        !meta::iterable<decltype(std::declval<U>()._value.template get<I>())> &&
-        !meta::reverse_iterable<decltype(std::declval<U>()._value.template get<I>())>
+        !meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
+        !meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
     )
     struct _make_union_iterator<
         I,
@@ -3281,11 +3172,64 @@ namespace impl {
 }
 
 
+/* A type-safe union capable of storing two or more arbitrarily-qualified types.
+
+This is similar to `std::variant<Ts...>`, but with the following changes:
+
+    1.  `Ts...` may have cvref qualifications, allowing the union to model references
+        and other cv-qualified types without requiring an extra copy or
+        `std::reference_wrapper` workaround.  Note that cvref qualifications may also
+        be forwarded from the union itself when accessed, and no attempt is made to
+        extend the lifetime of referenced objects, so all of the usual guidelines for
+        references still apply.
+    2.  The union can never be in an invalid state, meaning the index is always within
+        range and points to a valid alternative of the union.
+    3.  The constructor is more precise than `std::variant`, preferring exact matches
+        if possible, then the most proximal cvref-qualified alternative or base class,
+        with implicit conversions being considered only as a last resort.  If an
+        implicit conversion is selected, then it will always be the leftmost match in
+        the template signature.  The same is true for the default constructor, which
+        always constructs the leftmost default-constructible alternative.  A specific
+        alternative can be constructed by providing a `std::in_place_index<I>` or
+        `std::in_place_type<T>` tag as the first argument, whereby all other arguments
+        will be forwarded to the constructor of the selected alternative.
+    4.  All operators and members will be forwarded to the alternatives in monadic
+        fashion, assuming they all support them.  The only exception is `.__value`,
+        which provides access to the (unsafe) union internals, and is prefixed by
+        double underscores to avoid conflicts.  This maximizes the surface area for
+        automatically-generated member methods, which can be emitted via static
+        reflection.
+    5.  `get<I>()`, and `get<T>()` are reserved for the forwarding interface, allowing
+        unions to model tuple-like behavior as long as all of their alternatives are
+        tuple-like and have the same size.  The results might be further unions, if
+        indexing via the tuple protocol results in multiple types.  If you need unsafe
+        access to the union types, then you can directly access the `.__value` member
+        instead, which obeys the same rules as `std::variant<Ts...>`.
+    6.  Basic pattern matching is supported using the `->*` operator, which takes a
+        visitor function that is invocable with a single argument representing each
+        alternative.  If any of the alternatives are nested monads, then the `->*`
+        operator will recursively apply over them, similar to `->`.  This may cause
+        product types to unpack to more or less than one argument, simulating a
+        structured binding, which is applied after unwrapping the outer union.
+    7.  Pointer-like dereference operators are supplied if and only if all alternatives
+        in the union have a common type, after accounting for the cvref qualifiers of
+        the union itself.  `*` returns that type directly, while `->` returns a proxy
+        that extends its lifetime for the duration of the access.
+    8.  Iterating over the union is possible, provided each of the alternatives are
+        iterable.  If so, and all types return the same iterator, then the result will
+        simply be that iterator, without any extra indirection.  Otherwise, if the
+        alternatives return multiple iterator types, then the result will be a wrapper
+        which acts like a union of the possible iterators, and retains as much shared
+        functionality as possible.  If all iterators dereference to the same type, then
+        so will the union iterator.  If they dereference to multiple types, then the
+        union iterator will dereference to a `bertrand::Union<Us...>`, where `Us...`
+        represent the dereferenced types of each iterator.
+ */
 template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts...>)
 struct Union : impl::union_tag {
     using types = meta::pack<Ts...>;
 
-    impl::union_storage<meta::remove_rvalue<Ts>...> _value;
+    impl::union_storage<meta::remove_rvalue<Ts>...> __value;
 
     /* Default constructor finds the first type in `Ts...` that can be default
     constructed.  If no such type exists, then the default constructor is disabled. */
@@ -3295,7 +3239,7 @@ struct Union : impl::union_tag {
         >)
         requires (impl::union_storage<meta::remove_rvalue<Ts>...>::default_constructible)
     :
-        _value()
+        __value()
     {}
 
     /* Converting constructor finds the most proximal type in `Ts...` that can be
@@ -3311,7 +3255,7 @@ struct Union : impl::union_tag {
         noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<types, from>, from>)
         requires (meta::visit_exhaustive<impl::union_convert_from<types, from>, from>)
     :
-        _value(impl::visit(impl::union_convert_from<types, from>{}, std::forward<from>(v)))
+        __value(impl::visit(impl::union_convert_from<types, from>{}, std::forward<from>(v)))
     {}
 
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
@@ -3328,7 +3272,7 @@ struct Union : impl::union_tag {
             meta::visit_exhaustive<impl::union_construct_from<Ts...>, A...>
         )
     :
-        _value(impl::visit(impl::union_construct_from<Ts...>{}, std::forward<A>(args)...))
+        __value(impl::visit(impl::union_construct_from<Ts...>{}, std::forward<A>(args)...))
     {}
 
     /* Explicitly construct a union with the alternative at index `I` using the
@@ -3339,7 +3283,7 @@ struct Union : impl::union_tag {
         noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
     :
-        _value{tag, std::forward<A>(args)...}
+        __value{tag, std::forward<A>(args)...}
     {}
 
     /* Explicitly construct a union with the specified alternative using the given
@@ -3350,17 +3294,17 @@ struct Union : impl::union_tag {
         noexcept (meta::nothrow::constructible_from<T, A...>)
         requires (meta::constructible_from<T, A...>)
     :
-        _value{std::in_place_index<meta::index_of<T, Ts...>>, std::forward<A>(args)...}
+        __value{std::in_place_index<meta::index_of<T, Ts...>>, std::forward<A>(args)...}
     {}
 
     /* Swap the contents of two unions as efficiently as possible.  This will use
     swap operators for the wrapped alternatives if possible, otherwise falling back to
     a 3-way move using a temporary of the same type. */
     constexpr void swap(Union& other)
-        noexcept (requires{{_value.swap(other._value)} noexcept;})
-        requires (requires{{_value.swap(other._value)};})
+        noexcept (requires{{__value.swap(other.__value)} noexcept;})
+        requires (requires{{__value.swap(other.__value)};})
     {
-        _value.swap(other._value);
+        __value.swap(other.__value);
     }
 
     /* Implicit conversion operator allows conversions toward any type to which all
@@ -3381,7 +3325,8 @@ struct Union : impl::union_tag {
     /* Explicit conversion operator allows functional-style conversions toward any type
     to which all alternatives can be explicitly converted.  This allows conversion to
     scalar types as well as union types (regardless of source) that satisfy the
-    conversion criteria. */
+    conversion criteria, and will only be considered if an implicit conversion would
+    be malformed. */
     template <typename Self, typename to>
     [[nodiscard]] constexpr explicit operator to(this Self&& self)
         noexcept (requires{{impl::union_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;})
@@ -3405,7 +3350,7 @@ struct Union : impl::union_tag {
         return (impl::union_flatten<Self>{}(std::forward<Self>(self)));
     }
 
-    /* Indirectly access an attribute of the flattened union type, assuming one exists.
+    /* Indirectly access a member of the flattened union type, assuming one exists.
     Fails to compile if no common type can be found.  Note that the contents will be
     perfectly forwarded according to their storage qualifiers as well as those of the
     union itself. */
@@ -3415,45 +3360,6 @@ struct Union : impl::union_tag {
         requires (requires{{impl::arrow_proxy(*std::forward<Self>(self))};})
     {
         return impl::arrow_proxy(*std::forward<Self>(self));
-    }
-
-    /* Monadic call operator.  If any of the union types are function-like objects that
-    are callable with the given arguments, then this will return the result of that
-    function, possibly wrapped in another union to represent heterogenous results.  If
-    some of the return types are `void` and others are not, then the result may be
-    converted to `Optional<R>`, where `R` is the return type(s) of the invocable
-    functions.  If not all of the union types are invocable with the given arguments,
-    then the result will be further wrapped in an `Expected<R, BadUnionAccess>`, just
-    as for `impl::visit()`. */
-    template <typename Self, typename... A>
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
-        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
-    {
-        return (impl::visit(
-            impl::monadic<impl::Call>{},
-            std::forward<Self>(self),
-            std::forward<A>(args)...
-        ));
-    }
-
-    /* Monadic subscript operator.  If any of the union types support indexing with the
-    given key, then this will return the result of that operation, possibly wrapped in
-    another union to represent heterogenous results.  If some of the return types are
-    `void` and others are not, then the result may be converted to `Optional<R>`, where
-    `R` is the return type(s) of the indexable types.  If not all of the union types
-    are indexable with the given arguments, then the result will be further wrapped in
-    an `Expected<R, BadUnionAccess>`, just as for `impl::visit()`. */
-    template <typename Self, typename... K>
-    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
-        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
-    {
-        return (impl::visit(
-            impl::monadic<impl::Subscript>{},
-            std::forward<Self>(self),
-            std::forward<K>(keys)...
-        ));
     }
 
     /* Returns the result of `std::ranges::size()` on the current alternative if it is
@@ -3593,6 +3499,30 @@ struct Union : impl::union_tag {
     {
         return impl::make_union_iterator<const Union&>::rend(*this);
     }
+
+    template <typename Self, typename... A>
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
+    {
+        return (impl::visit(
+            impl::monadic<impl::Call>{},
+            std::forward<Self>(self),
+            std::forward<A>(args)...
+        ));
+    }
+
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
+    {
+        return (impl::visit(
+            impl::monadic<impl::Subscript>{},
+            std::forward<Self>(self),
+            std::forward<K>(keys)...
+        ));
+    }
 };
 
 
@@ -3614,14 +3544,14 @@ constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
 
 namespace impl {
 
-    /* Return an informative error message if an optional is dereferenced while in the
-    empty state.  Note that these checks will be optimized out in release builds. */
+    /* Return a standardized error if an optional is dereferenced while in the empty
+    state.  Note that these checks will be optimized out in release builds. */
     template <typename curr> requires (DEBUG)
-    constexpr BadUnionAccess bad_optional_access() noexcept {
+    constexpr TypeError bad_optional_access() noexcept {
         static constexpr static_str msg =
             "'" + demangle<curr>() + "' is not the active type in the optional "
             "(active is 'NoneType')";
-        return BadUnionAccess(msg);
+        return TypeError(msg);
     }
 
     /* A special case of `union_storage` for optional references, which encode the
@@ -3632,12 +3562,12 @@ namespace impl {
         using indices = std::index_sequence_for<empty, ref>;
         using types = meta::pack<empty, ref>;
         using default_type = empty;
-        using type = meta::address_type<ref>;
+        using ptr = meta::address_type<ref>;
 
         template <size_t I> requires (I < 2)
         using tag = std::in_place_index_t<I>;
 
-        [[no_unique_address]] type m_data;
+        [[no_unique_address]] ptr m_data;
 
         /* Default constructor always initializes to the empty state. */
         [[nodiscard]] constexpr union_storage(tag<0> = tag<0>{}) noexcept : m_data(nullptr) {};
@@ -3652,7 +3582,7 @@ namespace impl {
 
         /* Special constructor that takes a pointer directly, enabling direct
         conversions. */
-        [[nodiscard]] explicit constexpr union_storage(type p) noexcept : m_data(p) {}
+        [[nodiscard]] explicit constexpr union_storage(ptr p) noexcept : m_data(p) {}
 
         /* Swap the contents of two unions as efficiently as possible. */
         constexpr void swap(union_storage& other) noexcept {
@@ -3755,16 +3685,16 @@ namespace impl {
         template <size_t I>
         struct fn {
             static constexpr bool convert = requires(meta::forward<Self> self) {{
-                std::forward<Self>(self)._value.template get<I>()
+                std::forward<Self>(self).__value.template get<I>()
             } -> meta::convertible_to<to>;};
 
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<to>;})
                 requires (convert)
             {
-                return std::forward<Self>(self)._value.template get<I>();
+                return std::forward<Self>(self).__value.template get<I>();
             }
 
             static constexpr to operator()(meta::forward<Self> self)
@@ -3792,10 +3722,10 @@ namespace impl {
         using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<2>>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -3816,16 +3746,16 @@ namespace impl {
         template <size_t I>
         struct fn {
             static constexpr bool convert = requires(meta::forward<Self> self) {{
-                static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                static_cast<to>(std::forward<Self>(self).__value.template get<I>())
             };};
 
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                    static_cast<to>(std::forward<Self>(self).__value.template get<I>())
                 } noexcept;})
                 requires (convert)
             {
-                return static_cast<to>(std::forward<Self>(self)._value.template get<I>());
+                return static_cast<to>(std::forward<Self>(self).__value.template get<I>());
             }
 
             static constexpr to operator()(meta::forward<Self> self)
@@ -3853,10 +3783,10 @@ namespace impl {
         using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<2>>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -3864,7 +3794,7 @@ namespace impl {
     raw pointer internally.  This is the iterator type for `Optional<T>` where `T` is
     not itself iterable.  Note that using a trivial wrapper rather than the pointer
     directly comes with some advantages regarding type safety, preventing accidental
-    conversions to pointer arguments, etc. */
+    conversions to pointer arguments, boolean conversions, placement new, etc. */
     template <meta::not_void T>
     struct single_iterator {
         using iterator_category = std::contiguous_iterator_tag;
@@ -3979,22 +3909,22 @@ namespace impl {
         };
 
         static constexpr storage copy(const optional_iterator& other)
-            noexcept (requires{{storage{other._value.iter}} noexcept;})
-            requires (requires{{storage{other._value.iter}};})
+            noexcept (requires{{storage{other.__value.iter}} noexcept;})
+            requires (requires{{storage{other.__value.iter}};})
         {
             if (other.initialized) {
-                return {other._value.iter};
+                return {other.__value.iter};
             } else {
                 return {};
             }
         }
 
         static constexpr storage move(optional_iterator&& other)
-            noexcept (requires{{storage{std::move(other)._value.iter}} noexcept;})
-            requires (requires{{storage{std::move(other)._value.iter}};})
+            noexcept (requires{{storage{std::move(other).__value.iter}} noexcept;})
+            requires (requires{{storage{std::move(other).__value.iter}};})
         {
             if (other.initialized) {
-                return {std::move(other)._value.iter};
+                return {std::move(other).__value.iter};
             } else {
                 return {};
             }
@@ -4007,7 +3937,7 @@ namespace impl {
         using reference = meta::iterator_reference_type<T>;
         using pointer = meta::iterator_pointer_type<T>;
 
-        [[no_unique_address]] storage _value;
+        [[no_unique_address]] storage __value;
         [[no_unique_address]] bool initialized;
 
         [[nodiscard]] constexpr optional_iterator() noexcept : initialized(false) {}
@@ -4016,7 +3946,7 @@ namespace impl {
             noexcept (meta::nothrow::copyable<T>)
             requires (meta::copyable<T>)
         :
-            _value(it),
+            __value(it),
             initialized(true)
         {}
 
@@ -4024,7 +3954,7 @@ namespace impl {
             noexcept (meta::nothrow::movable<T>)
             requires (meta::movable<T>)
         :
-            _value(std::move(it)),
+            __value(std::move(it)),
             initialized(true)
         {}
 
@@ -4032,7 +3962,7 @@ namespace impl {
             noexcept (meta::nothrow::copyable<T>)
             requires (meta::copyable<T>)
         :
-            _value(copy(other)),
+            __value(copy(other)),
             initialized(other.initialized)
         {}
 
@@ -4040,7 +3970,7 @@ namespace impl {
             noexcept (meta::nothrow::movable<T>)
             requires (meta::movable<T>)
         :
-            _value(move(std::move(other))),
+            __value(move(std::move(other))),
             initialized(other.initialized)
         {
             other.initialized = false;
@@ -4052,13 +3982,13 @@ namespace impl {
         {
             if (initialized && other.initialized) {
                 if (this != other) {
-                    _value.iter = other._value.iter;
+                    __value.iter = other.__value.iter;
                 }
             } else if (initialized) {
-                std::destroy_at(&_value.iter);
+                std::destroy_at(&__value.iter);
                 initialized = false;
             } else if (other.initialized) {
-                std::construct_at(&_value.iter, other._value.iter);
+                std::construct_at(&__value.iter, other.__value.iter);
                 initialized = true;
             }
             return *this;
@@ -4070,14 +4000,14 @@ namespace impl {
         {
             if (initialized && other.initialized) {
                 if (this != other) {
-                    _value.iter = std::move(other)._value.iter;
+                    __value.iter = std::move(other).__value.iter;
                     other.initialized = false;
                 }
             } else if (initialized) {
-                std::destroy_at(&_value.iter);
+                std::destroy_at(&__value.iter);
                 initialized = false;
             } else if (other.initialized) {
-                std::construct_at(&_value.iter, std::move(other)._value.iter);
+                std::construct_at(&__value.iter, std::move(other).__value.iter);
                 initialized = true;
                 other.initialized = false;
             }
@@ -4089,44 +4019,44 @@ namespace impl {
             requires (meta::destructible<T>)
         {
             if (initialized) {
-                std::destroy_at(&_value.iter);
+                std::destroy_at(&__value.iter);
             }
             initialized = false;
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self)._value.iter} noexcept;})
-            requires (requires{{*std::forward<Self>(self)._value.iter};})
+            noexcept (requires{{*std::forward<Self>(self).__value.iter} noexcept;})
+            requires (requires{{*std::forward<Self>(self).__value.iter};})
         {
-            return (*std::forward<Self>(self)._value.iter);
+            return (*std::forward<Self>(self).__value.iter);
         }
 
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{std::to_address(std::forward<Self>(self)._value.iter)} noexcept;})
-            requires (requires{{std::to_address(std::forward<Self>(self)._value.iter)};})
+            noexcept (requires{{std::to_address(std::forward<Self>(self).__value.iter)} noexcept;})
+            requires (requires{{std::to_address(std::forward<Self>(self).__value.iter)};})
         {
-            return std::to_address(std::forward<Self>(self)._value.iter);
+            return std::to_address(std::forward<Self>(self).__value.iter);
         }
 
         template <typename Self, typename V>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, V&& v)
             noexcept (requires{
-                {std::forward<Self>(self)._value.iter[std::forward<V>(v)]} noexcept;
+                {std::forward<Self>(self).__value.iter[std::forward<V>(v)]} noexcept;
             })
             requires (requires{
-                {std::forward<Self>(self)._value.iter[std::forward<V>(v)]};
+                {std::forward<Self>(self).__value.iter[std::forward<V>(v)]};
             })
         {
-            return (std::forward<Self>(self)._value.iter[std::forward<V>(v)]);
+            return (std::forward<Self>(self).__value.iter[std::forward<V>(v)]);
         }
 
         constexpr optional_iterator& operator++()
-            noexcept (requires{{++_value.iter} noexcept;})
-            requires (requires{{++_value.iter};})
+            noexcept (requires{{++__value.iter} noexcept;})
+            requires (requires{{++__value.iter};})
         {
-            ++_value.iter;
+            ++__value.iter;
             return *this;
         }
 
@@ -4149,35 +4079,35 @@ namespace impl {
             const optional_iterator& lhs,
             difference_type rhs
         )
-            noexcept (requires{{optional_iterator(lhs._value.iter + rhs)} noexcept;})
-            requires (requires{{optional_iterator(lhs._value.iter + rhs)};})
+            noexcept (requires{{optional_iterator(lhs.__value.iter + rhs)} noexcept;})
+            requires (requires{{optional_iterator(lhs.__value.iter + rhs)};})
         {
-            return optional_iterator(lhs._value.iter + rhs);
+            return optional_iterator(lhs.__value.iter + rhs);
         }
 
         [[nodiscard]] friend constexpr optional_iterator operator+(
             difference_type lhs,
             const optional_iterator& rhs
         )
-            noexcept (requires{{optional_iterator(lhs + rhs._value.iter)} noexcept;})
-            requires (requires{{optional_iterator(lhs + rhs._value.iter)};})
+            noexcept (requires{{optional_iterator(lhs + rhs.__value.iter)} noexcept;})
+            requires (requires{{optional_iterator(lhs + rhs.__value.iter)};})
         {
-            return optional_iterator(lhs + rhs._value.iter);
+            return optional_iterator(lhs + rhs.__value.iter);
         }
 
         constexpr optional_iterator& operator+=(difference_type n)
-            noexcept (requires{{_value.iter += n} noexcept;})
-            requires (requires{{_value.iter += n};})
+            noexcept (requires{{__value.iter += n} noexcept;})
+            requires (requires{{__value.iter += n};})
         {
-            _value.iter += n;
+            __value.iter += n;
             return *this;
         }
 
         constexpr optional_iterator& operator--()
-            noexcept (requires{{--_value.iter} noexcept;})
-            requires (requires{{--_value.iter};})
+            noexcept (requires{{--__value.iter} noexcept;})
+            requires (requires{{--__value.iter};})
         {
-            --_value.iter;
+            --__value.iter;
             return *this;
         }
 
@@ -4197,101 +4127,101 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr optional_iterator operator-(difference_type n) const
-            noexcept (requires{{optional_iterator(_value.iter - n)} noexcept;})
-            requires (requires{{optional_iterator(_value.iter - n)};})
+            noexcept (requires{{optional_iterator(__value.iter - n)} noexcept;})
+            requires (requires{{optional_iterator(__value.iter - n)};})
         {
-            return optional_iterator(_value.iter - n);
+            return optional_iterator(__value.iter - n);
         }
 
         [[nodiscard]] difference_type operator-(const optional_iterator& other) const
             noexcept (requires{{
-                _value.iter - other._value.iter
+                __value.iter - other.__value.iter
             } noexcept -> meta::nothrow::convertible_to<difference_type>;})
             requires (requires{{
-                _value.iter - other._value.iter
+                __value.iter - other.__value.iter
             } -> meta::convertible_to<difference_type>;})
         {
-            return _value.iter - other._value.iter;
+            return __value.iter - other.__value.iter;
         }
 
         constexpr optional_iterator& operator-=(difference_type n)
-            noexcept (requires{{_value.iter -= n} noexcept;})
-            requires (requires{{_value.iter -= n};})
+            noexcept (requires{{__value.iter -= n} noexcept;})
+            requires (requires{{__value.iter -= n};})
         {
-            _value.iter -= n;
+            __value.iter -= n;
             return *this;
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<(const optional_iterator<U>& other) const
             noexcept (requires{{
-                initialized && other.initialized && _value.iter < other._value.iter
+                initialized && other.initialized && __value.iter < other.__value.iter
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                initialized && other.initialized && _value.iter < other._value.iter
+                initialized && other.initialized && __value.iter < other.__value.iter
             } -> meta::convertible_to<bool>;})
         {
-            return initialized && other.initialized && _value.iter < other._value.iter;
+            return initialized && other.initialized && __value.iter < other.__value.iter;
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<=(const optional_iterator<U>& other) const
             noexcept (requires{{
-                !initialized || !other.initialized || _value.iter <= other._value.iter
+                !initialized || !other.initialized || __value.iter <= other.__value.iter
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                !initialized || !other.initialized || _value.iter <= other._value.iter
+                !initialized || !other.initialized || __value.iter <= other.__value.iter
             } -> meta::convertible_to<bool>;})
         {
-            return !initialized || !other.initialized || _value.iter <= other._value.iter;
+            return !initialized || !other.initialized || __value.iter <= other.__value.iter;
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator==(const optional_iterator<U>& other) const
             noexcept (requires{{
-                !initialized || !other.initialized || _value.iter == other._value.iter
+                !initialized || !other.initialized || __value.iter == other.__value.iter
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                !initialized || !other.initialized || _value.iter == other._value.iter
+                !initialized || !other.initialized || __value.iter == other.__value.iter
             } -> meta::convertible_to<bool>;})
         {
-            return !initialized || !other.initialized || _value.iter == other._value.iter;
+            return !initialized || !other.initialized || __value.iter == other.__value.iter;
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>=(const optional_iterator<U>& other) const
             noexcept (requires{{
-                !initialized || !other.initialized || _value.iter >= other._value.iter
+                !initialized || !other.initialized || __value.iter >= other.__value.iter
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                !initialized || !other.initialized || _value.iter >= other._value.iter
+                !initialized || !other.initialized || __value.iter >= other.__value.iter
             } -> meta::convertible_to<bool>;})
         {
-            return !initialized || !other.initialized || _value.iter >= other._value.iter;
+            return !initialized || !other.initialized || __value.iter >= other.__value.iter;
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>(const optional_iterator<U>& other) const
             noexcept (requires{{
-                initialized && other.initialized && _value.iter > other._value.iter
+                initialized && other.initialized && __value.iter > other.__value.iter
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                initialized && other.initialized && _value.iter > other._value.iter
+                initialized && other.initialized && __value.iter > other.__value.iter
             } -> meta::convertible_to<bool>;})
         {
-            return initialized && other.initialized && _value.iter > other._value.iter;
+            return initialized && other.initialized && __value.iter > other.__value.iter;
         }
 
         template <typename U>
         [[nodiscard]] constexpr auto operator<=>(const optional_iterator<U>& other) const
-            noexcept (requires{{_value.iter <=> other._value.iter} noexcept;})
-            requires (requires{{_value.iter <=> other._value.iter};})
+            noexcept (requires{{__value.iter <=> other.__value.iter} noexcept;})
+            requires (requires{{__value.iter <=> other.__value.iter};})
         {
-            using type = meta::unqualify<decltype(_value.iter <=> other._value.iter)>;
+            using type = meta::unqualify<decltype(__value.iter <=> other.__value.iter)>;
             if (!initialized || !other.initialized) {
                 return type::equivalent;
             }
-            return _value.iter <=> other._value.iter;
+            return __value.iter <=> other.__value.iter;
         }
     };
 
@@ -4315,10 +4245,14 @@ namespace impl {
     template <meta::reverse_iterable T>
     struct make_optional_rend<T> { using type = optional_iterator<meta::rend_type<T>>; };
 
+    /* `make_optional_iterator<T>` chooses the right iterator type to return for an
+    optional or expected type `T`.  If the value type for `T` is iterable, then this
+    will be an `optional_iterator` wrapper around the iterator type.  Otherwise, it
+    is a trivial `single_iterator`, which only yields a single value. */
     template <meta::lvalue T>
     struct make_optional_iterator {
         static constexpr bool trivial = true;
-        using type = decltype(std::declval<T>()._value.template get<1>());
+        using type = decltype(std::declval<T>().__value.template get<1>());
         using begin_type = single_iterator<type>;
         using end_type = begin_type;
         using rbegin_type = std::reverse_iterator<begin_type>;
@@ -4326,24 +4260,24 @@ namespace impl {
 
         static constexpr auto begin(T opt)
             noexcept (requires{
-                {begin_type(std::addressof(opt._value.template get<1>()) + !opt.has_value())} noexcept;
+                {begin_type(std::addressof(opt.__value.template get<1>()) + !opt.has_value())} noexcept;
             })
             requires (requires{
-                {begin_type(std::addressof(opt._value.template get<1>()) + !opt.has_value())};
+                {begin_type(std::addressof(opt.__value.template get<1>()) + !opt.has_value())};
             })
         {
-            return begin_type{std::addressof(opt._value.template get<1>()) + !opt.has_value()};
+            return begin_type{std::addressof(opt.__value.template get<1>()) + !opt.has_value()};
         }
 
         static constexpr auto end(T opt)
             noexcept (requires{
-                {end_type(std::addressof(opt._value.template get<1>()) + 1)} noexcept;
+                {end_type(std::addressof(opt.__value.template get<1>()) + 1)} noexcept;
             })
             requires (requires{
-                {end_type(std::addressof(opt._value.template get<1>()) + 1)};
+                {end_type(std::addressof(opt.__value.template get<1>()) + 1)};
             })
         {
-            return end_type{std::addressof(opt._value.template get<1>()) + 1};
+            return end_type{std::addressof(opt.__value.template get<1>()) + 1};
         }
 
         static constexpr auto rbegin(T opt)
@@ -4362,12 +4296,12 @@ namespace impl {
     };
     template <meta::lvalue T>
         requires (
-            meta::iterable<decltype(std::declval<T>()._value.template get<1>())> ||
-            meta::reverse_iterable<decltype(std::declval<T>()._value.template get<1>())>
+            meta::iterable<decltype(std::declval<T>().__value.template get<1>())> ||
+            meta::reverse_iterable<decltype(std::declval<T>().__value.template get<1>())>
         )
     struct make_optional_iterator<T> {
         static constexpr bool trivial = false;
-        using type = decltype(std::declval<T>()._value.template get<1>());
+        using type = decltype(std::declval<T>().__value.template get<1>());
         using begin_type = make_optional_begin<type>::type;
         using end_type = make_optional_end<type>::type;
         using rbegin_type = make_optional_rbegin<type>::type;
@@ -4375,16 +4309,16 @@ namespace impl {
 
         static constexpr auto begin(T opt)
             noexcept (requires{
-                {begin_type{std::ranges::begin(opt._value.template get<1>())}} noexcept;
+                {begin_type{std::ranges::begin(opt.__value.template get<1>())}} noexcept;
                 {begin_type{}} noexcept;
             })
             requires (requires{
-                {begin_type{std::ranges::begin(opt._value.template get<1>())}};
+                {begin_type{std::ranges::begin(opt.__value.template get<1>())}};
                 {begin_type{}};
             })
         {
             if (opt.has_value()) {
-                return begin_type{std::ranges::begin(opt._value.template get<1>())};
+                return begin_type{std::ranges::begin(opt.__value.template get<1>())};
             } else {
                 return begin_type{};
             }
@@ -4392,16 +4326,16 @@ namespace impl {
 
         static constexpr auto end(T opt)
             noexcept (requires{
-                {end_type{std::ranges::end(opt._value.template get<1>())}} noexcept;
+                {end_type{std::ranges::end(opt.__value.template get<1>())}} noexcept;
                 {end_type{}} noexcept;
             })
             requires (requires{
-                {end_type{std::ranges::end(opt._value.template get<1>())}};
+                {end_type{std::ranges::end(opt.__value.template get<1>())}};
                 {end_type{}};
             })
         {
             if (opt.has_value()) {
-                return end_type{std::ranges::end(opt._value.template get<1>())};
+                return end_type{std::ranges::end(opt.__value.template get<1>())};
             } else {
                 return end_type{};
             }
@@ -4409,16 +4343,16 @@ namespace impl {
 
         static constexpr auto rbegin(T opt)
             noexcept (requires{
-                {rbegin_type{std::ranges::rbegin(opt._value.template get<1>())}} noexcept;
+                {rbegin_type{std::ranges::rbegin(opt.__value.template get<1>())}} noexcept;
                 {rbegin_type{}} noexcept;
             })
             requires (requires{
-                {rbegin_type{std::ranges::rbegin(opt._value.template get<1>())}};
+                {rbegin_type{std::ranges::rbegin(opt.__value.template get<1>())}};
                 {rbegin_type{}};
             })
         {
             if (opt.has_value()) {
-                return rbegin_type{std::ranges::rbegin(opt._value.template get<1>())};
+                return rbegin_type{std::ranges::rbegin(opt.__value.template get<1>())};
             } else {
                 return rbegin_type{};
             }
@@ -4426,16 +4360,16 @@ namespace impl {
 
         static constexpr auto rend(T opt)
             noexcept (requires{
-                {rend_type{std::ranges::rend(opt._value.template get<1>())}} noexcept;
+                {rend_type{std::ranges::rend(opt.__value.template get<1>())}} noexcept;
                 {rend_type{}} noexcept;
             })
             requires (requires{
-                {rend_type{std::ranges::rend(opt._value.template get<1>())}};
+                {rend_type{std::ranges::rend(opt.__value.template get<1>())}};
                 {rend_type{}};
             })
         {
             if (opt.has_value()) {
-                return rend_type{std::ranges::rend(opt._value.template get<1>())};
+                return rend_type{std::ranges::rend(opt.__value.template get<1>())};
             } else {
                 return rend_type{};
             }
@@ -4445,11 +4379,44 @@ namespace impl {
 }
 
 
+/* A wrapper for an arbitrarily qualified type that can also represent an empty state.
+
+This is identical to `Union<NoneType, T>`, except in the following cases:
+
+    1.  The implicit and explicit constructors always construct `T`, except for the
+        default constructor and implicit conversion conversion from `None` and
+        `std::nullopt` (assuming those are not valid constructors for `T`).
+    2.  Robust CTAD guides allow `T` to be omitted in many cases, and inferred from a
+        corresponding initializer.
+    3.  Pointer indirection assumes that the active member is not `NoneType`, and
+        always delegates to `T` directly.  A check confirming this will only be emitted
+        in debug builds, ensuring no overhead in release builds.
+    4.  If `T` is an lvalue reference (i.e. `T&`), then the optional supports
+        conversions both to and from `T*`, where the empty state maps to a null
+        pointer.  This allows `Optional<T&>` to be used as a drop-in replacement for
+        pointers in most cases, as long as pointer arithmetic is not required.
+    5.  The empty state can be omitted during monadic operations and `impl::visit()`
+        calls, in which case it will be implicitly propagated to the return type,
+        possibly promoting that type to an optional.  Note that this is not the case
+        for pattern matching via `->*`, which must exhaustively cover both states.
+    6.  Optionals are always iterable, with one of 2 behaviors depending on `T`:
+        -   If `T` is iterable, then the result is a forwarding adaptor for the
+            iterator(s) over `T`, which behave identically.  If the optional is in the
+            empty state, then the adaptor will be uninitialized, and will always
+            compare equal to its sentinel, yielding an empty range.
+        -   If `T` is not iterable, then the result is an iterator over a single
+            element, which is equivalent to a simple pointer to the contained value.
+            If the optional is in the empty state, then a one-past-the-end pointer will
+            be used instead.
+
+Note that because optional references are compatible with pointers, Bertrand's binding
+generators will emit them wherever a pointer is exposed to Python, or any other
+language that does not expose pointers as first-class citizens. */
 template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
     using types = meta::pack<T>;
 
-    impl::union_storage<NoneType, meta::remove_rvalue<T>> _value;
+    impl::union_storage<NoneType, meta::remove_rvalue<T>> __value;
 
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
@@ -4465,7 +4432,7 @@ struct Optional : impl::optional_tag {
         noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
         requires (meta::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
     : 
-        _value(impl::visit(
+        __value(impl::visit(
             impl::optional_convert_from<T, from>{},
             std::forward<from>(v)
         ))
@@ -4482,7 +4449,7 @@ struct Optional : impl::optional_tag {
             meta::visit_exhaustive<impl::optional_construct_from<T>, A...>
         )
     :
-        _value(impl::visit(
+        __value(impl::visit(
             impl::optional_construct_from<T>{},
             std::forward<A>(args)...
         ))
@@ -4490,10 +4457,10 @@ struct Optional : impl::optional_tag {
 
     /* Swap the contents of two optionals as efficiently as possible. */
     constexpr void swap(Optional& other)
-        noexcept (requires{{_value.swap(other._value)} noexcept;})
-        requires (requires{{_value.swap(other._value)};})
+        noexcept (requires{{__value.swap(other.__value)} noexcept;})
+        requires (requires{{__value.swap(other.__value)};})
     {
-        _value.swap(other._value);
+        __value.swap(other.__value);
     }
 
     /* Implicit conversion from `Optional<T>` to any type that is convertible from both
@@ -4533,36 +4500,36 @@ struct Optional : impl::optional_tag {
     /* Contextually convert the optional to a boolean, where true indicates the
     presence of a value. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return _value.index();
+        return __value.index();
     }
     [[nodiscard, deprecated(
         "Contextual bool conversions are potentially ambiguous when used on optional "
         "booleans.  Consider an explicit comparison against `None`, a dereference "
         "with a leading `*`, or an exhaustive visitor using trailing `->*` instead. "
     )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
-        return _value.index();
+        return __value.index();
     }
 
     /* Dereference to obtain the stored value, perfectly forwarding it according to the
-    optional's current cvref qualifications.  A `BadUnionAccess` error will be thrown
-    if the program is compiled in debug mode and the optional is empty.  This check
-    requires a single extra conditional, which will be optimized out in release builds
-    to maintain zero overhead. */
+    optional's current cvref qualifications.  A `TypeError` will be thrown if the
+    program is compiled in debug mode and the optional is empty.  This requires a
+    single extra conditional, which will be optimized out in release builds to maintain
+    zero overhead. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept (!DEBUG) {
         if constexpr (DEBUG) {
-            if (self._value.index() == 0) {
+            if (self.__value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
-        return (std::forward<Self>(self)._value.template get<1>());
+        return (std::forward<Self>(self).__value.template get<1>());
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  A `BadUnionAccess` error will be
-    thrown if the program is compiled in debug mode and the optional is empty.  This
-    check requires a single extra conditional, which will be optimized out in release
-    builds to maintain zero overhead. */
+    or directly returning its address otherwise.  A `TypeError` error will be thrown if
+    the program is compiled in debug mode and the optional is empty.  This requires a
+    single extra conditional, which will be optimized out in release builds to maintain
+    zero overhead. */
     [[nodiscard]] constexpr auto operator->()
         noexcept (!DEBUG && (meta::nothrow::has_arrow<meta::as_lvalue<T>> || (
             !meta::has_arrow<meta::as_lvalue<T>> &&
@@ -4571,22 +4538,22 @@ struct Optional : impl::optional_tag {
         requires (meta::has_arrow<meta::as_lvalue<T>> || meta::has_address<meta::as_lvalue<T>>)
     {
         if constexpr (DEBUG) {
-            if (_value.index() == 0) {
+            if (__value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
         if constexpr (meta::has_arrow<meta::as_lvalue<T>>) {
-            return std::to_address(_value.template get<1>());
+            return std::to_address(__value.template get<1>());
         } else {
-            return std::addressof(_value.template get<1>());
+            return std::addressof(__value.template get<1>());
         }
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  A `BadUnionAccess` error will be
-    thrown if the program is compiled in debug mode and the optional is empty.  This
-    check requires a single extra conditional, which will be optimized out in release
-    builds to maintain zero overhead. */
+    or directly returning its address otherwise.  A `TypeError` error will be thrown if
+    the program is compiled in debug mode and the optional is empty.  This requires a
+    single extra conditional, which will be optimized out in release builds to maintain
+    zero overhead. */
     [[nodiscard]] constexpr auto operator->() const
         noexcept (!DEBUG && (meta::nothrow::has_arrow<meta::as_const_ref<T>> || (
             !meta::has_arrow<meta::as_const_ref<T>> &&
@@ -4595,27 +4562,27 @@ struct Optional : impl::optional_tag {
         requires (meta::has_arrow<meta::as_const_ref<T>> || meta::has_address<meta::as_const_ref<T>>)
     {
         if constexpr (DEBUG) {
-            if (_value.index() == 0) {
+            if (__value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
         if constexpr (meta::has_arrow<meta::as_const_ref<T>>) {
-            return std::to_address(_value.template get<1>());
+            return std::to_address(__value.template get<1>());
         } else {
-            return std::addressof(_value.template get<1>());
+            return std::addressof(__value.template get<1>());
         }
     }
 
     /* Explicitly check whether the optional is in the empty state by comparing against
     `None` or `std::nullopt`. */
     [[nodiscard]] friend constexpr bool operator==(const Optional& opt, NoneType) noexcept {
-        return opt._value.index() == 0;
+        return opt.__value.index() == 0;
     }
 
     /* Explicitly check whether the optional is in the empty state by comparing against
     `None` or `std::nullopt`. */
     [[nodiscard]] friend constexpr bool operator==(NoneType, const Optional& opt) noexcept {
-        return opt._value.index() == 0;
+        return opt.__value.index() == 0;
     }
 
     /* Explicitly check whether the optional is in the empty state by comparing against
@@ -4623,7 +4590,7 @@ struct Optional : impl::optional_tag {
     [[nodiscard]] friend constexpr bool operator==(const Optional& opt, std::nullptr_t) noexcept
         requires (meta::lvalue<T>)
     {
-        return opt._value.index() == 0;
+        return opt.__value.index() == 0;
     }
 
     /* Explicitly check whether the optional is in the empty state by comparing against
@@ -4631,19 +4598,19 @@ struct Optional : impl::optional_tag {
     [[nodiscard]] friend constexpr bool operator==(std::nullptr_t, const Optional& opt) noexcept
         requires (meta::lvalue<T>)
     {
-        return opt._value.index() == 0;
+        return opt.__value.index() == 0;
     }
 
     /* Explicitly check whether the optional is in the non-empty state by comparing
     against `None` or `std::nullopt`. */
     [[nodiscard]] friend constexpr bool operator!=(const Optional& opt, NoneType) noexcept {
-        return opt._value.index() != 0;
+        return opt.__value.index() != 0;
     }
 
     /* Explicitly check whether the optional is in the non-empty state by comparing
     against `None` or `std::nullopt`. */
     [[nodiscard]] friend constexpr bool operator!=(NoneType, const Optional& opt) noexcept {
-        return opt._value.index() != 0;
+        return opt.__value.index() != 0;
     }
 
     /* Explicitly check whether the optional is in the non-empty state by comparing
@@ -4651,7 +4618,7 @@ struct Optional : impl::optional_tag {
     [[nodiscard]] friend constexpr bool operator!=(const Optional& opt, std::nullptr_t) noexcept
         requires (meta::lvalue<T>)
     {
-        return opt._value.index() != 0;
+        return opt.__value.index() != 0;
     }
 
     /* Explicitly check whether the optional is in the non-empty state by comparing
@@ -4659,7 +4626,7 @@ struct Optional : impl::optional_tag {
     [[nodiscard]] friend constexpr bool operator!=(std::nullptr_t, const Optional& opt) noexcept
         requires (meta::lvalue<T>)
     {
-        return opt._value.index() != 0;
+        return opt.__value.index() != 0;
     }
 
     /* Monadic call operator.  If the optional type is a function-like object and is
@@ -4710,13 +4677,13 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_size<meta::as_const_ref<T>>) {
-            if (_value.index()) {
-                return std::ranges::size(_value.template get<1>());
+            if (__value.index()) {
+                return std::ranges::size(__value.template get<1>());
             } else {
                 return meta::size_type<T>(0);
             }
         } else {
-            return size_t(_value.index());
+            return size_t(__value.index());
         }
     }
 
@@ -4736,13 +4703,13 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_ssize<meta::as_const_ref<T>>) {
-            if (_value.index()) {
-                return std::ranges::ssize(_value.template get<1>());
+            if (__value.index()) {
+                return std::ranges::ssize(__value.template get<1>());
             } else {
                 return meta::ssize_type<T>(0);
             }
         } else {
-            return ssize_t(_value.index());
+            return ssize_t(__value.index());
         }
     }
 
@@ -4762,9 +4729,9 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_empty<meta::as_const_ref<T>>) {
-            return _value.index() ? std::ranges::empty(_value.template get<1>()) : true;
+            return __value.index() ? std::ranges::empty(__value.template get<1>()) : true;
         } else {
-            return !_value.index();
+            return !__value.index();
         }
     }
 
@@ -4892,26 +4859,30 @@ constexpr void swap(Optional<T>& a, Optional<T>& b)
 
 namespace impl {
 
-    /// TODO: don't check for explicit inheritance from an exception type.  Instead,
-    /// use the same deduction rules as for `Union<Ts...>`, where proximal matches are
-    /// preferred over implicit conversions.  I might skip the implicit conversions
-    /// in this case, however.
+    /* Expecteds can have void results, which get mapped to `None`. */
+    template <typename T>
+    using expected_value = std::conditional_t<meta::not_void<T>, T, NoneType>;
 
+    /* Result: convert to proximal type (void if none). */
+    template <typename from, typename proximal, typename...>
+    struct _expected_convert_from { using type = proximal; };
 
+    /* Recursive 1: prefer the most derived and least qualified matching error state,
+    with lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
+    prvalues.  If the result type is void, the candidate is more derived than it, or
+    the candidate is less qualified, replace the intermediate result. */
+    template <typename from, typename proximal, typename curr, typename... next>
+        requires (union_proximal<from, curr>)
+    struct _expected_convert_from<from, proximal, curr, next...> : _expected_convert_from<
+        from,
+        union_replace_proximal<from, curr, proximal>,
+        next...
+    > {};
 
-
-    /* Given an initializer that inherits from at least one expected exception type,
-    determine the most proximal exception to initialize. */
-    template <typename out, typename, typename...>
-    struct _expected_convert_from { using type = out; };
-    template <typename out, typename from, typename curr, typename... next>
-        requires (meta::inherits<from, curr> && (meta::is_void<out> || meta::inherits<curr, out>))
-    struct _expected_convert_from<out, from, curr, next...> :
-        _expected_convert_from<curr, from, next...>  // replace `out`
-    {};
-    template <typename out, typename from, typename curr, typename... next>
-    struct _expected_convert_from<out, from, curr, next...> :
-        _expected_convert_from<out, from, next...>  // keep `out`
+    /* Recursive 2: no match at this index, discard curr. */
+    template <typename from, typename proximal, typename curr, typename... next>
+    struct _expected_convert_from<from, proximal, curr, next...> :
+        _expected_convert_from<from, proximal, next...>
     {};
 
     /* A simple visitor that backs the implicit constructor for an `Expected<T, Es...>`
@@ -4920,32 +4891,27 @@ namespace impl {
     struct expected_convert_from {};
     template <typename T, typename... Es, typename in> requires (!meta::monad<in>)
     struct expected_convert_from<meta::pack<T, Es...>, in> {
-        using result = impl::union_storage<
-            meta::remove_rvalue<T>,
-            meta::remove_rvalue<Es>...
-        >;
+        using type = meta::remove_rvalue<expected_value<T>>;
+        using result = impl::union_storage<type, meta::remove_rvalue<Es>...>;
 
         // 1) prefer direct conversion to `out` if possible
         template <typename from>
         static constexpr result operator()(from&& arg)
-            noexcept (meta::nothrow::convertible_to<from, meta::remove_rvalue<T>>)
-            requires (meta::convertible_to<from, meta::remove_rvalue<T>>)
+            noexcept (meta::nothrow::convertible_to<from, type>)
+            requires (meta::convertible_to<from, type>)
         {
             return {std::in_place_index<0>, std::forward<from>(arg)};
         }
 
         template <typename from>
-        using err = _expected_convert_from<void, from, Es...>::type;
+        using err = _expected_convert_from<from, void, Es...>::type;
 
         // 2) otherwise, if the input inherits from one of the expected error types,
         // then we convert it to the most proximal such type.
         template <typename from>
         static constexpr result operator()(from&& arg)
             noexcept (meta::nothrow::convertible_to<from, err<from>>)
-            requires (
-                !meta::convertible_to<from, meta::remove_rvalue<T>> &&
-                meta::not_void<err<from>>
-            )
+            requires (!meta::convertible_to<from, type> && meta::not_void<err<from>>)
         {
             return {
                 std::in_place_index<meta::index_of<err<from>, Es...> + 1>,
@@ -4959,11 +4925,11 @@ namespace impl {
     this only applies if `expected_convert_from` is invalid. */
     template <typename T, typename... Es>
     struct expected_construct_from {
-        using type = meta::remove_rvalue<T>;
+        using type = meta::remove_rvalue<expected_value<T>>;
+        using result = impl::union_storage<type, meta::remove_rvalue<Es>...>;
+
         template <typename... A>
-        static constexpr impl::union_storage<type, meta::remove_rvalue<Es>...> operator()(
-            A&&... args
-        )
+        static constexpr result operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
@@ -4979,27 +4945,27 @@ namespace impl {
         template <size_t I>
         struct fn {
             static constexpr bool convert = requires(meta::forward<Self> self) {{
-                std::forward<Self>(self)._value.template get<I>()
+                std::forward<Self>(self).__value.template get<I>()
             } -> meta::convertible_to<to>;};
 
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<to>;})
                 requires (convert)
             {
-                return std::forward<Self>(self)._value.template get<I>();
+                return std::forward<Self>(self).__value.template get<I>();
             }
 
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    std::unexpected(std::forward<Self>(self)._value.template get<I>())
+                    std::unexpected(std::forward<Self>(self).__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<to>;})
                 requires (!convert && I > 0 && requires{{
-                    std::unexpected(std::forward<Self>(self)._value.template get<I>())
+                    std::unexpected(std::forward<Self>(self).__value.template get<I>())
                 } -> meta::convertible_to<to>;})
             {
-                return std::unexpected(std::forward<Self>(self)._value.template get<I>());
+                return std::unexpected(std::forward<Self>(self).__value.template get<I>());
             }
         };
 
@@ -5008,10 +4974,10 @@ namespace impl {
         >>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -5023,28 +4989,28 @@ namespace impl {
         template <size_t I>
         struct fn {
             static constexpr bool convert = requires(meta::forward<Self> self) {{
-                static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                static_cast<to>(std::forward<Self>(self).__value.template get<I>())
             };};
 
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    static_cast<to>(std::forward<Self>(self)._value.template get<I>())
+                    static_cast<to>(std::forward<Self>(self).__value.template get<I>())
                 } noexcept;})
                 requires (convert)
             {
-                return static_cast<to>(std::forward<Self>(self)._value.template get<I>());
+                return static_cast<to>(std::forward<Self>(self).__value.template get<I>());
             }
 
             static constexpr to operator()(meta::forward<Self> self)
                 noexcept (requires {{static_cast<to>(std::unexpected(
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 ))} noexcept;})
                 requires (!convert && I > 0 && requires {{static_cast<to>(std::unexpected(
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 ))};})
             {
                 return static_cast<to>(std::unexpected(
-                    std::forward<Self>(self)._value.template get<I>()
+                    std::forward<Self>(self).__value.template get<I>()
                 ));
             }
         };
@@ -5054,10 +5020,10 @@ namespace impl {
         >>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -5066,19 +5032,19 @@ namespace impl {
     value. */
     template <typename Self>
     struct expected_access {
-        using type = decltype((std::declval<Self>()._value.template get<0>()));
+        using type = decltype((std::declval<Self>().__value.template get<0>()));
 
         template <size_t I>
         struct fn {
             static constexpr type operator()(meta::forward<Self> self)
                 requires (I == 0)
             {
-                return (std::forward<Self>(self)._value.template get<0>());
+                return (std::forward<Self>(self).__value.template get<0>());
             }
             [[noreturn]] static constexpr type operator()(meta::forward<Self> self)
                 requires (I > 0)
             {
-                throw std::forward<Self>(self)._value.template get<I>();
+                throw std::forward<Self>(self).__value.template get<I>();
             }
         };
 
@@ -5087,31 +5053,68 @@ namespace impl {
         >>;
 
         [[nodiscard]] static constexpr type operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self._value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self._value.index()}(std::forward<Self>(self))};})
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
-            return dispatch{self._value.index()}(std::forward<Self>(self));
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
 }
 
 
+/* A wrapper for an arbitrarily qualified type that can also represent one or more
+possible error states.
+
+This is identical to `Union<T, E, Es...>`, except in the following case:
+
+    1.  The implicit and explicit constructors always prefer to construct `T` unless
+        the initializer(s) would be invalid, in which case the same rules apply as for
+        `Union<E, Es...>` (i.e. the most proximal cvref-qualified type or base class,
+        with implicit conversions only as a last resort).  Like `Union`, it is possible
+        to unambiguously specify an error by providing a `std::in_place_index<I>` or
+        `std::in_place_type<T>` tag as the first argument.
+    2.  Pointer indirection assumes that the active member is not an error state.  If
+        it is, then attempting to dereference it will throw that state as an exception,
+        which can then be caught and analyzed using traditional try/catch semantics.
+        This will never be optimized out in debug builds, differentiating it from
+        `Optional`, at the cost of an extra branch in release builds.
+    3.  `T` may be `void`, which is treated identically to `NoneType`.  This allows
+        `Expected` to be used as an error-handling strategy for functions that may
+        fail, but otherwise do not return a value.
+    4.  The error state(s) can be omitted during monadic operations and
+        `impl::visit()` calls, in which case they will be implicitly propagated to the
+        return type, possibly promoting that type to an expected.  Note that this is
+        not the case for pattern matching via `->*`, which must exhaustively cover all
+        possible states.
+    5.  Expecteds are always iterable, with one of 2 behaviors depending on `T`:
+        -   If `T` is iterable, then the result is a forwarding adaptor for the
+            iterator(s) over `T`, which behave identically.  If the expected is in an
+            error state, then the adaptor will be uninitialized, and will always
+            compare equal to its sentinel, yielding an empty range.
+        -   If `T` is not iterable, then the result is an iterator over a single
+            element, which is equivalent to a simple pointer to the contained value.
+            If the expected is in an error state, then a one-past-the-end pointer will
+            be used instead.
+
+Note that the intended use for `Expected` is as a value-based error handling strategy,
+which can be used as a safer and more explicit alternative to `try/catch` blocks,
+promoting exhaustive error coverage via the type system. */
 template <typename T, typename E, typename... Es> requires (meta::unique<T, E, Es...>)
 struct Expected : impl::expected_tag {
-    using types = meta::pack<T, E, Es...>;
+    using types = meta::pack<impl::expected_value<T>, E, Es...>;
 
     impl::union_storage<
-        meta::remove_rvalue<T>,
+        meta::remove_rvalue<impl::expected_value<T>>,
         meta::remove_rvalue<E>,
         meta::remove_rvalue<Es>...
-    > _value;
+    > __value;
 
-    /* Default constructor.  Enabled iff the result type is default constructible or
-    void. */
+    /* Default constructor.  Enabled if and only if the result type is default
+    constructible or void. */
     [[nodiscard]] constexpr Expected()
-        noexcept (meta::nothrow::default_constructible<meta::remove_rvalue<T>>)
-        requires (meta::default_constructible<meta::remove_rvalue<T>>)
+        noexcept (meta::nothrow::default_constructible<meta::remove_rvalue<impl::expected_value<T>>>)
+        requires (meta::default_constructible<meta::remove_rvalue<impl::expected_value<T>>>)
     {}
 
     /* Converting constructor.  Implicitly converts the input to the value type if
@@ -5122,7 +5125,7 @@ struct Expected : impl::expected_tag {
         noexcept (meta::nothrow::visit_exhaustive<impl::expected_convert_from<types, from>, from>)
         requires (meta::visit_exhaustive<impl::expected_convert_from<types, from>, from>)
     :
-        _value(impl::visit(
+        __value(impl::visit(
             impl::expected_convert_from<types, from>{},
             std::forward<from>(v)
         ))
@@ -5139,7 +5142,7 @@ struct Expected : impl::expected_tag {
             meta::visit_exhaustive<impl::expected_construct_from<T, E, Es...>, A...>
         )
     :
-        _value(impl::visit(
+        __value(impl::visit(
             impl::expected_construct_from<T, E, Es...>{},
             std::forward<A>(args)...
         ))
@@ -5182,90 +5185,65 @@ struct Expected : impl::expected_tag {
 
     /* Swap the contents of two expecteds as efficiently as possible. */
     constexpr void swap(Expected& other)
-        noexcept (requires{{_value.swap(other._value)} noexcept;})
-        requires (requires{{_value.swap(other._value)};})
+        noexcept (requires{{__value.swap(other.__value)} noexcept;})
+        requires (requires{{__value.swap(other.__value)};})
     {
         if (this != &other) {
-            _value.swap(other._value);
+            __value.swap(other.__value);
         }
     }
 
     /* Contextually convert the expected to a boolean, where true indicates the
     presence of a value. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
-        return _value.index() == 0;
+        return __value.index() == 0;
     }
     [[nodiscard, deprecated(
         "contextual bool conversions are potentially ambiguous when used on expected "
         "booleans.  Consider dereferencing with a leading `*`, or an exhaustive "
         "visitor using trailing `->*` instead. "
     )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
-        return _value.index() == 0;
+        return __value.index() == 0;
     }
 
-    /// TODO: this now throws the error state if the expected is in that state,
-    /// which should be reflected in the documentation.
-
     /* Dereference to obtain the stored value, perfectly forwarding it according to the
-    expected's current cvref qualifications.  A `BadUnionAccess` error will be thrown
-    if the program is compiled in debug mode and the expected is in an error state.
-    This check requires a single extra conditional, which will be optimized out in
-    release builds to maintain zero overhead. */
+    expected's current cvref qualifications.  If the expected is in an error state,
+    then the error will be thrown as an exception. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) {
         return (impl::expected_access<Self>{}(std::forward<Self>(self)));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  A `BadUnionAccess` error will be
-    thrown if the program is compiled in debug mode and the optional is in an error
-    state.  This check requires a single extra conditional, which will be optimized out
-    in release builds to maintain zero overhead. */
+    or directly returning its address otherwise.  If the expected is in an error state,
+    then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->()
-        requires (meta::has_arrow<meta::as_lvalue<T>> || meta::has_address<meta::as_lvalue<T>>)
+        requires (
+            meta::has_arrow<meta::as_lvalue<impl::expected_value<T>>> ||
+            meta::has_address<meta::as_lvalue<impl::expected_value<T>>>
+        )
     {
-        return impl::arrow_proxy{**this};
+        if constexpr (meta::has_arrow<meta::as_lvalue<impl::expected_value<T>>>) {
+            return std::to_address(impl::expected_access<Expected&>{}(*this));
+        } else {
+            return std::addressof(impl::expected_access<Expected&>{}(*this));
+        }
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  A `BadUnionAccess` error will be
-    thrown if the program is compiled in debug mode and the empty is in an error state.
-    This check requires a single extra conditional, which will be optimized out in
-    release builds to maintain zero overhead. */
+    or directly returning its address otherwise.  If the expected is in an error state,
+    then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->() const
-        requires (meta::has_arrow<meta::as_const_ref<T>> || meta::has_address<meta::as_const_ref<T>>)
+        requires (
+            meta::has_arrow<meta::as_const_ref<impl::expected_value<T>>> ||
+            meta::has_address<meta::as_const_ref<impl::expected_value<T>>>
+        )
     {
-        return impl::arrow_proxy{**this};
-    }
-
-    /* Monadic call operator.  If the expected type is a function-like object and is
-    not in the error state, then this will return the result of that function wrapped
-    in another expected.  Otherwise, it will propagate the error state. */
-    template <typename Self, typename... A>
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
-        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
-    {
-        return (impl::visit(
-            impl::monadic<impl::Call>{},
-            std::forward<Self>(self),
-            std::forward<A>(args)...
-        ));
-    }
-
-    /* Monadic subscript operator.  If the expected type is a container that supports
-    indexing with the given key, then this will return the result of the access wrapped
-    in another expected.  Otherwise, it will propagate the error state. */
-    template <typename Self, typename... K>
-    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
-        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
-    {
-        return (impl::visit(
-            impl::monadic<impl::Subscript>{},
-            std::forward<Self>(self),
-            std::forward<K>(keys)...
-        ));
+        if constexpr (meta::has_arrow<meta::as_const_ref<impl::expected_value<T>>>) {
+            return std::to_address(impl::expected_access<const Expected&>{}(*this));
+        } else {
+            return std::addressof(impl::expected_access<const Expected&>{}(*this));
+        }
     }
 
     /* Return 0 if the expected is empty or `std::ranges::size(value())` otherwise.
@@ -5275,22 +5253,22 @@ struct Expected : impl::expected_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
         noexcept (
-            meta::nothrow::has_size<meta::as_const_ref<T>> ||
+            meta::nothrow::has_size<meta::as_const_ref<impl::expected_value<T>>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
         requires (
-            meta::has_size<meta::as_const_ref<T>> ||
+            meta::has_size<meta::as_const_ref<impl::expected_value<T>>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
     {
-        if constexpr (meta::has_size<meta::as_const_ref<T>>) {
-            if (_value.index() == 0) {
-                return std::ranges::size(_value.template get<0>());
+        if constexpr (meta::has_size<meta::as_const_ref<impl::expected_value<T>>> ) {
+            if (__value.index() == 0) {
+                return std::ranges::size(__value.template get<0>());
             } else {
-                return meta::size_type<T>(0);
+                return meta::size_type<impl::expected_value<T>>(0);
             }
         } else {
-            return size_t(_value.index() == 0);
+            return size_t(__value.index() == 0);
         }
     }
 
@@ -5301,22 +5279,22 @@ struct Expected : impl::expected_tag {
     then this method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
         noexcept (
-            meta::nothrow::has_ssize<meta::as_const_ref<T>> ||
+            meta::nothrow::has_ssize<meta::as_const_ref<impl::expected_value<T>>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
         requires (
-            meta::has_ssize<meta::as_const_ref<T>> ||
+            meta::has_ssize<meta::as_const_ref<impl::expected_value<T>>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
     {
-        if constexpr (meta::has_ssize<meta::as_const_ref<T>>) {
-            if (_value.index() == 0) {
-                return std::ranges::ssize(_value.template get<0>());
+        if constexpr (meta::has_ssize<meta::as_const_ref<impl::expected_value<T>>>) {
+            if (__value.index() == 0) {
+                return std::ranges::ssize(__value.template get<0>());
             } else {
-                return meta::ssize_type<T>(0);
+                return meta::ssize_type<impl::expected_value<T>>(0);
             }
         } else {
-            return ssize_t(_value.index() == 0);
+            return ssize_t(__value.index() == 0);
         }
     }
 
@@ -5328,18 +5306,18 @@ struct Expected : impl::expected_tag {
     compile. */
     [[nodiscard]] constexpr bool empty() const
         noexcept (
-            meta::nothrow::has_empty<meta::as_const_ref<T>> ||
+            meta::nothrow::has_empty<meta::as_const_ref<impl::expected_value<T>>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
         requires (
-            meta::has_empty<meta::as_const_ref<T>> ||
+            meta::has_empty<meta::as_const_ref<impl::expected_value<T>>> ||
             impl::make_optional_iterator<const Expected&>::trivial
         )
     {
-        if constexpr (meta::has_empty<meta::as_const_ref<T>>) {
-            return _value.index() != 0 || std::ranges::empty(_value.template get<0>());
+        if constexpr (meta::has_empty<meta::as_const_ref<impl::expected_value<T>>>) {
+            return __value.index() != 0 || std::ranges::empty(__value.template get<0>());
         } else {
-            return _value.index() != 0;
+            return __value.index() != 0;
         }
     }
 
@@ -5445,6 +5423,30 @@ struct Expected : impl::expected_tag {
         })
     {
         return impl::make_optional_iterator<const Expected&>::rend(*this);
+    }
+
+    template <typename Self, typename... A>
+    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
+    {
+        return (impl::visit(
+            impl::monadic<impl::Call>{},
+            std::forward<Self>(self),
+            std::forward<A>(args)...
+        ));
+    }
+
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
+        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
+    {
+        return (impl::visit(
+            impl::monadic<impl::Subscript>{},
+            std::forward<Self>(self),
+            std::forward<K>(keys)...
+        ));
     }
 };
 
@@ -6012,49 +6014,6 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 }
 
 
-
-
-
-template <typename... Fs>
-struct overload : public Fs... { using Fs::operator()...; };
-
-
-static constexpr int x = 2;
-static constexpr Union<int, const int&> u = x;
-static constexpr int y = *u;
-static constexpr int z = u + 1;
-static_assert(u._value.index() == 1);
-static_assert(y == 2);
-static_assert(z == 3);
-
-
-/// static_assert(u ->* def{
-///     [](int i) { return 1; }
-///     [](const int& i) { return 2; }
-/// } == 2);
-static_assert(impl::visit(overload{
-    // [](int i) { return 1; },
-    [](const int& s) { return 2; }
-}, u) == 2);
-
-
-static constexpr Optional opt = 2;
-static constexpr auto opt2 = opt + 2;
-static constexpr Optional<int> opt3 = None;
-static_assert(opt3 + 2 == None);
-
-struct Foo {
-    int x;
-};
-
-struct Bar {};
-
-
-static constexpr Expected<Foo, Bar> foo = Foo{23};
-static_assert(foo->x == 23);
-
-
-
 }  // namespace bertrand
 
 
@@ -6080,11 +6039,46 @@ namespace std {
         }
     };
 
-    /// TODO: a standard formatter for union, optional, and expected types, the latter
-    /// of which would delegate to the underlying type's formatter, and just add the
-    /// extra state(s).
+    template <bertrand::meta::monad T, typename Char>
+        requires (bertrand::impl::alternatives_are_formattable<T, Char>)
+    struct formatter<T, Char> {
+    private:
+        using str = std::basic_string_view<Char>;
+        using parse_context = std::basic_format_parse_context<Char>;
+        template <typename out>
+        using format_context = std::basic_format_context<out, Char>;
 
+        str m_fmt;
 
+        struct fn {
+            template <typename A, typename out>
+                requires (!bertrand::meta::monad<A> && std::formattable<A, Char>)
+            static constexpr auto operator()(
+                const A& value,
+                format_context<out>& ctx,
+                parse_context& parse_ctx
+            ) {
+                std::formatter<A, Char> fmt;
+                auto it = fmt.parse(parse_ctx);
+                return fmt.format(value, ctx);
+            }
+        };
+
+    public:
+        constexpr auto parse(parse_context& ctx) {
+            auto it = ctx.begin();
+            auto end = ctx.end();
+            m_fmt = str(it, size_t(end - it));
+            while (it != end && *it != '}') ++it;
+            return it;
+        }
+
+        template <typename out>
+        constexpr auto format(const T& value, format_context<out>& ctx) const {
+            parse_context parse_ctx {m_fmt};
+            return bertrand::impl::visit(fn{}, value, ctx, parse_ctx);
+        }
+    };
 
     template <typename... Ts>
     struct variant_size<bertrand::Union<Ts...>> :
@@ -6116,6 +6110,44 @@ namespace std {
     struct variant_alternative<I, bertrand::Expected<T, Es...>> {
         using type = bertrand::Expected<T, Es...>::types::template at<I>;
     };
+
+    /* Unchecked `std::get<I>()` support for `bertrand::impl::union_storage`
+    objects. */
+    template <size_t I, bertrand::meta::union_storage U>
+    [[nodiscard]] constexpr decltype(auto) get(U&& u)
+        noexcept (requires{{std::forward<U>(u).template get<I>()} noexcept;})
+        requires (requires{{std::forward<U>(u).template get<I>()};})
+    {
+        return (std::forward<U>(u).template get<I>());
+    }
+
+    /* Unchecked `std::get<I>()` support for `bertrand::impl::union_storage`
+    objects. */
+    template <typename T, bertrand::meta::union_storage U>
+    [[nodiscard]] constexpr decltype(auto) get(U&& u)
+        noexcept (requires{{std::forward<U>(u).template get<T>()} noexcept;})
+        requires (requires{{std::forward<U>(u).template get<T>()};})
+    {
+        return (std::forward<U>(u).template get<T>());
+    }
+
+    /* `std::get_if<I>()` support for `bertrand::impl::union_storage` objects. */
+    template <size_t I, bertrand::meta::union_storage U>
+    [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
+        noexcept (requires{{std::forward<U>(u).template get_if<I>()} noexcept;})
+        requires (requires{{std::forward<U>(u).template get_if<I>()};})
+    {
+        return (std::forward<U>(u).template get_if<I>());
+    }
+
+    /* `std::get_if<I>()` support for `bertrand::impl::union_storage` objects. */
+    template <typename T, bertrand::meta::union_storage U>
+    [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
+        noexcept (requires{{std::forward<U>(u).template get_if<T>()} noexcept;})
+        requires (requires{{std::forward<U>(u).template get_if<T>()};})
+    {
+        return (std::forward<U>(u).template get_if<T>());
+    }
 
 }
 

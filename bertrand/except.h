@@ -9,8 +9,10 @@
 namespace bertrand {
 
 
+struct Exception;
+
+
 namespace impl {
-    struct Exception_tag {};
 
     /* In the event of a syscall error, get an explanatory error message in a
     thread-safe way. */
@@ -35,7 +37,7 @@ namespace impl {
 namespace meta {
 
     template <typename T>
-    concept Exception = meta::inherits<T, impl::Exception_tag>;
+    concept Exception = meta::inherits<T, bertrand::Exception>;
 
 }
 
@@ -708,9 +710,6 @@ BERTRAND_EXCEPTION(ValueError, Exception)
         // BERTRAND_EXCEPTION(UnicodeTranslateError, UnicodeError)
 
 
-BERTRAND_EXCEPTION(BadUnionAccess, TypeError)
-
-
 #undef BERTRAND_EXCEPTION
 
 
@@ -1034,22 +1033,15 @@ namespace std {
         }
     };
 
-    /// TODO: this seems to be broken in practice, but there doesn't seem to be a good
-    /// reason as to why.  There is active work being done to fix formatting in
-    /// general, so this might be resolved in a future libc++ update.
-
-    template <bertrand::meta::Exception T>
-    struct formatter<T> : public formatter<string> {
-        using const_reference = bertrand::meta::as_const<T>;
-
-        constexpr auto format(const_reference exc, format_context& ctx) const {
-            string temp;
-            std::format_to(std::back_inserter(temp), "{}", bertrand::demangle<T>());
-            string_view msg = exc.message();
-            if (!msg.empty()) {
-                std::format_to(std::back_inserter(temp), ": {}", msg);
-            }
-            return formatter<string>::format(temp, ctx);
+    template <bertrand::meta::Exception T, typename Char>
+    struct formatter<T, Char> : public formatter<std::basic_string<Char>, Char> {
+        using formatter<std::basic_string<Char>, Char>::parse;
+        constexpr auto format(const T& exc, auto& ctx) const {
+            using str = std::basic_string<Char>;
+            str temp = bertrand::demangle<std::remove_cvref_t<T>>();
+            temp += ": ";
+            temp += exc.message();
+            return formatter<str, Char>::format(temp, ctx);
         }
     };
 

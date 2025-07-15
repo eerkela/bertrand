@@ -2819,6 +2819,9 @@ namespace meta {
     ////    OPERATORS    ////
     /////////////////////////
 
+    template <typename T, typename Char = char>
+    concept formattable = ::std::formattable<T, Char>;
+
     template <typename T>
     concept has_operator_bool = requires(T t) {
         { static_cast<bool>(t) } -> convertible_to<bool>;
@@ -5494,6 +5497,14 @@ namespace std {
     struct hash<T> {
         [[nodiscard]] static constexpr size_t operator()(const T& value) noexcept {
             return std::bit_cast<size_t>(&bertrand::None);
+        }
+    };
+
+    template <bertrand::meta::is<bertrand::NoneType> T, typename Char>
+    struct formatter<T, Char> : public formatter<std::basic_string_view<Char>, Char> {
+        constexpr auto format(const T&, auto& ctx) const {
+            using str = std::basic_string_view<Char>;
+            return formatter<str, Char>::format(str{"None"}, ctx);
         }
     };
 
