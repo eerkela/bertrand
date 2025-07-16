@@ -377,7 +377,7 @@ template <typename T> requires (meta::not_void<typename impl::visitable<T>::empt
 Optional(T&&) -> Optional<typename impl::visitable<T>::value>;
 
 
-template <typename T, typename E, typename... Es> requires (meta::unique<T, E, Es...>)
+template <typename T, meta::not_void E, meta::not_void... Es> requires (meta::unique<T, E, Es...>)
 struct Expected;
 
 
@@ -948,16 +948,13 @@ namespace meta {
         constexpr bool prefer_constructor<bertrand::Expected<T, Es...>> = true;
 
         template <typename... Ts>
-        constexpr bool exact_size<bertrand::Union<Ts...>> =
-            (exact_size<meta::unqualify<Ts>> && ...);
+        constexpr bool exact_size<bertrand::Union<Ts...>> = (meta::exact_size<Ts> && ...);
 
         template <typename T>
-        constexpr bool exact_size<bertrand::Optional<T>> =
-            exact_size<meta::unqualify<T>>;
+        constexpr bool exact_size<bertrand::Optional<T>> = meta::exact_size<T>;
 
         template <typename T, typename... Es>
-        constexpr bool exact_size<bertrand::Expected<T, Es...>> =
-            exact_size<meta::unqualify<T>>;
+        constexpr bool exact_size<bertrand::Expected<T, Es...>> = meta::exact_size<T>;
 
     }
 
@@ -3791,95 +3788,94 @@ namespace impl {
         }
     };
 
-    /* A trivial iterator that only yields a single value, which is represented as a
-    raw pointer internally.  This is the iterator type for `Optional<T>` where `T` is
-    not itself iterable.  Note that using a trivial wrapper rather than the pointer
-    directly comes with some advantages regarding type safety, preventing accidental
-    conversions to pointer arguments, boolean conversions, placement new, etc. */
+    /* A trivial iterator that acts just like a raw pointer over contiguous storage.
+    Using a wrapper rather than the pointer directly comes with some advantages
+    regarding type safety, preventing accidental conversions to pointer arguments,
+    boolean conversions, placement new, etc. */
     template <meta::not_void T>
-    struct single_iterator {
+    struct contiguous_iterator {
         using iterator_category = std::contiguous_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = meta::remove_reference<T>;
         using reference = meta::as_lvalue<T>;
         using pointer = meta::as_pointer<reference>;
 
-        pointer value;
+        pointer ptr;
 
         [[nodiscard]] constexpr reference operator*() const noexcept {
-            return *value;
+            return *ptr;
         }
 
         [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return value;
+            return ptr;
         }
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return *(value + n);
+            return *(ptr + n);
         }
 
-        constexpr single_iterator& operator++() noexcept {
-            ++value;
+        constexpr contiguous_iterator& operator++() noexcept {
+            ++ptr;
             return *this;
         }
 
-        [[nodiscard]] constexpr single_iterator operator++(int) noexcept {
+        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
             auto tmp = *this;
-            ++value;
+            ++ptr;
             return tmp;
         }
 
-        [[nodiscard]] friend constexpr single_iterator operator+(
-            const single_iterator& self,
+        [[nodiscard]] friend constexpr contiguous_iterator operator+(
+            const contiguous_iterator& self,
             difference_type n
         ) noexcept {
-            return {self.value + n};
+            return {self.ptr + n};
         }
 
-        [[nodiscard]] friend constexpr single_iterator operator+(
+        [[nodiscard]] friend constexpr contiguous_iterator operator+(
             difference_type n,
-            const single_iterator& self
+            const contiguous_iterator& self
         ) noexcept {
-            return {self.value + n};
+            return {self.ptr + n};
         }
 
-        constexpr single_iterator& operator+=(difference_type n) noexcept {
-            value += n;
+        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
+            ptr += n;
             return *this;
         }
 
-        constexpr single_iterator& operator--() noexcept {
-            --value;
+        constexpr contiguous_iterator& operator--() noexcept {
+            --ptr;
             return *this;
         }
 
-        [[nodiscard]] constexpr single_iterator operator--(int) noexcept {
+        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
             auto tmp = *this;
-            --value;
+            --ptr;
             return tmp;
         }
 
-        [[nodiscard]] constexpr single_iterator operator-(difference_type n) const noexcept {
-            return {value - n};
+        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
+            return {ptr - n};
         }
 
         [[nodiscard]] constexpr difference_type operator-(
-            const single_iterator& other
+            const contiguous_iterator& other
         ) const noexcept {
-            return value - other.value;
+            return ptr - other.ptr;
         }
 
-        constexpr single_iterator& operator-=(difference_type n) noexcept {
-            value -= n;
+        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
+            ptr -= n;
             return *this;
         }
 
-        [[nodiscard]] constexpr bool operator==(const single_iterator& other) const noexcept {
-            return value == other.value;
+        [[nodiscard]] constexpr bool operator==(const contiguous_iterator& other) const noexcept {
+            return ptr == other.ptr;
         }
 
-        [[nodiscard]] constexpr auto operator<=>(const single_iterator& other) const noexcept {
-            return value <=> other.value;
+        [[nodiscard]] constexpr auto operator<=>(const contiguous_iterator& other) const noexcept {
+            return ptr <=> other.ptr;
         }
     };
 
@@ -4249,12 +4245,12 @@ namespace impl {
     /* `make_optional_iterator<T>` chooses the right iterator type to return for an
     optional or expected type `T`.  If the value type for `T` is iterable, then this
     will be an `optional_iterator` wrapper around the iterator type.  Otherwise, it
-    is a trivial `single_iterator`, which only yields a single value. */
+    is a trivial `contiguous_iterator`, which only yields a single value. */
     template <meta::lvalue T>
     struct make_optional_iterator {
         static constexpr bool trivial = true;
         using type = decltype(std::declval<T>().__value.template get<1>());
-        using begin_type = single_iterator<type>;
+        using begin_type = contiguous_iterator<type>;
         using end_type = begin_type;
         using rbegin_type = std::reverse_iterator<begin_type>;
         using rend_type = rbegin_type;
@@ -5093,7 +5089,7 @@ This is identical to `Union<T, E, Es...>`, except in the following case:
 Note that the intended use for `Expected` is as a value-based error handling strategy,
 which can be used as a safer and more explicit alternative to `try/catch` blocks,
 promoting exhaustive error coverage via the type system. */
-template <typename T, typename E, typename... Es> requires (meta::unique<T, E, Es...>)
+template <typename T, meta::not_void E, meta::not_void... Es> requires (meta::unique<T, E, Es...>)
 struct Expected : impl::expected_tag {
     using types = meta::pack<impl::expected_value<T>, E, Es...>;
 
@@ -5127,7 +5123,7 @@ struct Expected : impl::expected_tag {
     /* Explicit constructor.  Accepts arbitrary arguments to the result type's
     constructor, and initializes the expected with the result. */
     template <typename... A>
-    [[nodiscard]] constexpr explicit Expected(A&&... args)
+    [[nodiscard]] explicit constexpr Expected(A&&... args)
         noexcept (meta::nothrow::visit_exhaustive<impl::expected_construct_from<T, E, Es...>, A...>)
         requires (
             sizeof...(A) > 0 &&
@@ -5139,6 +5135,37 @@ struct Expected : impl::expected_tag {
             impl::expected_construct_from<T, E, Es...>{},
             std::forward<A>(args)...
         ))
+    {}
+
+    /* Explicitly construct an expected with the alternative at index `I` using the
+    provided arguments.  This is more explicit than using the standard constructors,
+    for cases where only a specific alternative should be considered. */
+    template <size_t I, typename... A> requires (I < types::size())
+    [[nodiscard]] explicit constexpr Expected(std::in_place_index_t<I> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<
+            meta::unpack_type<I, impl::expected_value<T>, E, Es...>,
+            A...
+        >)
+        requires (meta::constructible_from<
+            meta::unpack_type<I, impl::expected_value<T>, E, Es...>,
+            A...
+        >)
+    :
+        __value{tag, std::forward<A>(args)...}
+    {}
+
+    /* Explicitly construct an expected with the specified alternative using the given
+    arguments.  This is more explicit than using the standard constructors, for cases
+    where only a specific alternative should be considered. */
+    template <typename U, typename... A> requires (types::template contains<U>())
+    [[nodiscard]] explicit constexpr Expected(std::in_place_type_t<U> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<U, A...>)
+        requires (meta::constructible_from<U, A...>)
+    :
+        __value{
+            std::in_place_index<meta::index_of<U, impl::expected_value<T>, E, Es...>>,
+            std::forward<A>(args)...
+        }
     {}
 
     /* Implicitly convert the `Expected` to any other type to which all alternatives

@@ -2,7 +2,9 @@
 #define BERTRAND_STATIC_STRING_H
 
 #include "bertrand/common.h"
-#include "bertrand/iter.h"
+#include "bertrand/except.h"
+#include "bertrand/union.h"
+// #include "bertrand/iter.h"
 
 
 // avoid conflict with deprecated isascii() macro from <ctype.h> and assert() from
