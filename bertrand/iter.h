@@ -9,7 +9,25 @@
 namespace bertrand {
 
 
-struct slice;
+namespace impl {
+    struct range_tag {};
+    struct slice_tag {};
+    struct where_tag {};
+    struct comprehension_tag {};
+    struct tuple_storage_tag {};
+
+    template <typename Start, typename Stop, typename Step = void>
+    concept iota_spec =
+        meta::lt_returns<bool, meta::as_const_ref<Stop>, meta::as_const_ref<Start>> &&
+        (meta::is_void<Step> ?
+            meta::has_preincrement<meta::as_lvalue<Start>> :
+            meta::has_iadd<meta::as_lvalue<Start>, meta::as_const_ref<Step>>
+        );
+
+    template <typename Start, typename Stop, typename Step> requires (iota_spec<Start, Stop, Step>)
+    struct iota;
+
+}
 
 
 template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
@@ -17,33 +35,61 @@ struct range;
 
 
 /// TODO: maybe the iota mode can accept any object that is default constructible,
-/// incrementable, and comparable to the stop value
+/// incrementable, and comparable to the stop value.  The only problem with that is
+/// that it necessitates a stride view that screws up a bunch of stuff.  It will be
+/// better to write my own that only relies on integers, so that stride views become
+/// trivial.
+/// -> Actually, putting effort into making the only requirements be comparability
+/// and the existence of a `+=` operator with the step size, or `++` if no step size
+/// is given, which produces better code gen.
 
 
-template <meta::integer Stop>
-range(Stop) -> range<std::ranges::iota_view<Stop, Stop>>;
-
-
-template <typename C> requires (!meta::integer<C> && (meta::iterable<C> || meta::tuple_like<C>))
+template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
 range(C&&) -> range<meta::remove_rvalue<C>>;
 
 
-template <meta::integer Start, meta::integer Stop>
-range(Start, Stop) -> range<std::ranges::iota_view<Start, Stop>>;
+template <typename Stop>
+    requires (!meta::iterable<Stop> && !meta::tuple_like<Stop> && impl::iota_spec<Stop, Stop>)
+range(Stop&&) -> range<std::ranges::iota_view<Stop, Stop>>;
 
 
 template <meta::iterator Begin, meta::sentinel_for<Begin> End>
-    requires (!meta::integer<Begin> && !meta::integer<End>)
 range(Begin, End) -> range<std::ranges::subrange<Begin, End>>;
 
 
-// /// TODO: either use a stride view or write my own adaptor that applies a different
-// /// step size.  This could be similar to slice.
-// template <meta::integer Start, meta::integer Stop, meta::integer Step>
-// range(Start, Stop, Step) -> range<std::ranges::iota_view<Start, Stop>>;
+template <typename Start, typename Stop>
+    requires (
+        (!meta::iterator<Start> || !meta::sentinel_for<Stop, Start>) &&
+        impl::iota_spec<Start, Stop>
+    )
+range(Start&&, Stop&&) -> range<std::ranges::iota_view<Start, Stop>>;
 
 
-template <meta::not_void... Ts> requires (!meta::rvalue<Ts> && ...)
+template <typename Start, typename Stop, typename Step>
+    requires (impl::iota_spec<Start, Stop, Step>)
+range(Start&&, Stop&&, Step&&) -> range<impl::iota<Start, Stop, Step>>;
+
+
+struct slice;
+
+
+template <typename C>
+struct where;
+
+
+template <meta::boolean T>
+where(std::initializer_list<T>) -> where<std::initializer_list<meta::remove_rvalue<T>>>;
+
+
+template <meta::yields<bool> C>
+where(C&&) -> where<meta::remove_rvalue<C>>;
+
+
+template <typename F>
+where(F&&) -> where<meta::remove_rvalue<F>>;
+
+
+template <meta::not_void... Ts>
 struct Tuple;
 
 
@@ -51,12 +97,27 @@ template <meta::not_void... Ts>
 Tuple(Ts&&...) -> Tuple<meta::remove_rvalue<Ts>...>;
 
 
+/* A trivial subclass of `Tuple` that consists of `N` repretitions of a homogenous
+type.
+
+Note that `bertrand::Tuple` specializations will optimize to arrays internally as long
+as they contain only a single type.  Because this class guarantees that condition is
+always met, it will reliably trigger the optimization, and give the same behavior as a
+typical bounded array in addition to all the monadic properties of tuples, including
+the ability to use Python-style indexing, store references, build expression templates,
+and participate in pattern matching. */
+template <meta::not_void T, size_t N>
+struct Array : meta::repeat<N, T>::template eval<Tuple> {};
+
+
+template <meta::not_void T, meta::is<T>... Ts>
+Array(T&&, Ts&&...) -> Array<
+    meta::common_type<meta::remove_rvalue<T>, meta::remove_rvalue<Ts>...>,
+    sizeof...(Ts) + 1
+>;
+
+
 namespace impl {
-    struct range_tag {};
-    struct slice_tag {};
-    struct mask_tag {};
-    struct comprehension_tag {};
-    struct tuple_storage_tag {};
 
     /* A trivial subclass of `range` that allows the range to be destructured when
     used as an argument to a Bertrand function. */
@@ -75,15 +136,36 @@ namespace impl {
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     slice(C&&, bertrand::slice) -> slice<meta::remove_rvalue<C>>;
 
+
+    /// TODO: mask -> where, and then it can be part of the public API, as
+    ///    List list2 = List{1, 2, 3}[where{true, false, true}];
+    ///    List list2 = where{true, false, true}(std::vector{1, 2, 3});
+
+    /// TODO: maybe `mask` can also take a function that will be called for each
+    /// element, and the result of that function is used as the mask.
+    ///    List list2 = List{1, 2, 3}[where{[](int x) { return x % 2 == 0; }}];
+
+    /// TODO: bonus points if both the `where{}` and `slice{}` keyword objects can be
+    /// used along with function chaining, so that the following works as well:
+    ///     auto f = List{1, 2, 3} ->* where{[](int x) { return x % 2 == 0; }};
+    /// This would need to return an `impl::mask` type where `C` is the original
+    /// container, and `M` is an lvalue comprehension over it, which invokes the
+    /// supplied function.  `->*` would be special-cased to accept this and slices
+    /// in a similar fashion, which allows it to be used as a kind of universal
+    /// substitution operator, where unions stack overloads, tuples stack arguments,
+    /// ranges can produce either comprehensions, masks, or slices.
+
+
+
     /* A subclass of `range` that only represents a subset of the elements, which
     correspond to the `true` indices of a boolean mask.  The length of the range is
     given by the number of true values in the mask, or the size of the underlying
     container, whichever comes first. */
     template <typename C, meta::yields<bool> M> requires (meta::iterable<C> || meta::tuple_like<C>)
-    struct mask;
+    struct where;
 
     template <typename C, meta::yields<bool> M> requires (meta::iterable<C> || meta::tuple_like<C>)
-    mask(C&&, M&&) -> mask<meta::remove_rvalue<C>, meta::remove_rvalue<M>>;
+    where(C&&, M&&) -> where<meta::remove_rvalue<C>, meta::remove_rvalue<M>>;
 
 }
 
@@ -96,6 +178,8 @@ namespace meta {
         constexpr bool unpackable = false;
         template <typename C>
         constexpr bool unpackable<impl::unpack<C>> = true;
+
+        using where_true = range<::std::array<bool, 0>>;
 
     }
 
@@ -114,15 +198,53 @@ namespace meta {
     template <sliceable T>
     using slice_type = decltype(::std::declval<T>()[::std::declval<bertrand::slice>()]);
 
+    template <typename Ret, typename T>
+    concept slice_returns = sliceable<T> && convertible_to<slice_type<T>, Ret>;
+
     namespace nothrow {
 
         template <typename T>
         concept sliceable = requires(T t, bertrand::slice s) { { t[s] } noexcept -> meta::slice; };
 
+        template <nothrow::sliceable T>
+        using slice_type = meta::slice_type<T>;
+
+        template <typename Ret, typename T>
+        concept slice_returns =
+            nothrow::sliceable<T> && nothrow::convertible_to<nothrow::slice_type<T>, Ret>;
+
     }
 
     template <typename T>
-    concept mask = inherits<T, impl::mask_tag>;
+    concept where = inherits<T, impl::where_tag>;
+
+    template <typename T, typename M = detail::where_true>
+    concept has_where = requires(T t, M m) {
+        { ::std::forward<T>(t)[::std::forward<M>(m)] } -> meta::where;
+    };
+
+    template <has_where T, typename M = detail::where_true>
+    using where_type = decltype((::std::declval<T>()[::std::declval<M>()]));
+
+    template <typename Ret, typename T, typename M = detail::where_true>
+    concept where_returns = has_where<T, M> && convertible_to<where_type<T, M>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T, typename M = detail::where_true>
+        concept has_where = requires(T t, M m) {
+            { ::std::forward<T>(t)[::std::forward<M>(m)] } noexcept -> meta::where;
+        };
+
+        template <nothrow::has_where T, typename M = detail::where_true>
+        using where_type = meta::where_type<T, M>;
+
+        template <typename Ret, typename T, typename M = detail::where_true>
+        concept where_returns =
+            nothrow::has_where<T, M> &&
+            nothrow::convertible_to<nothrow::where_type<T, M>, Ret>;
+
+    }
 
     template <typename T>
     concept comprehension = inherits<T, impl::comprehension_tag>;
@@ -264,6 +386,123 @@ namespace meta {
 
 namespace impl {
 
+    template <typename Start, typename Stop, typename Step> requires (iota_spec<Start, Stop, Step>)
+    struct iota {
+        meta::remove_rvalue<Start> start;
+        meta::remove_rvalue<Stop> stop;
+        meta::remove_rvalue<Step> step;
+
+        [[nodiscard]] constexpr iota(meta::forward<Stop> stop)
+            noexcept (
+                meta::nothrow::default_constructible<meta::remove_rvalue<Start>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Step>, int>
+            )
+            requires (
+                meta::default_constructible<meta::remove_rvalue<Start>> &&
+                meta::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>> &&
+                meta::constructible_from<meta::remove_rvalue<Step>, int>
+            )
+        :
+            start(),
+            stop(std::forward<Stop>(stop)),
+            step(1)
+        {}
+
+        [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
+            noexcept (
+                meta::nothrow::constructible_from<meta::remove_rvalue<Start>, meta::forward<Start>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Step>, int>
+            )
+            requires (
+                meta::constructible_from<meta::remove_rvalue<Start>, meta::forward<Start>> &&
+                meta::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>> &&
+                meta::constructible_from<meta::remove_rvalue<Step>, int>
+            )
+        :
+            start(std::forward<Start>(start)),
+            stop(std::forward<Stop>(stop)),
+            step(1)
+        {}
+
+        [[nodiscard]] constexpr iota(
+            meta::forward<Start> start,
+            meta::forward<Stop> stop,
+            meta::forward<Step> step
+        )
+            noexcept (
+                !DEBUG &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Start>, meta::forward<Start>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Step>, meta::forward<Step>>
+            )
+            requires (
+                meta::constructible_from<meta::remove_rvalue<Start>, meta::forward<Start>> &&
+                meta::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>> &&
+                meta::constructible_from<meta::remove_rvalue<Step>, meta::forward<Step>>
+            )
+        :
+            start(std::forward<Start>(start)),
+            stop(std::forward<Stop>(stop)),
+            step(std::forward<Step>(step))
+        {
+            if constexpr (
+                DEBUG &&
+                meta::constructible_from<meta::remove_rvalue<Step>, int> &&
+                meta::eq_returns<bool, meta::as_lvalue<Step>, meta::as_lvalue<Step>>
+            ) {
+                meta::remove_rvalue<Step> zero(0);
+                if (step == zero) {
+                    throw ValueError("step size cannot be zero");
+                }
+            }
+        }
+
+        /// TODO: size(), empty(), front(), back(), operator[], iteration.  Slicing,
+        /// masking, assignment, and conversions will be synthesized by `range`.
+
+    };
+
+    template <typename Start, typename Stop, meta::is_void Step>
+        requires (iota_spec<Start, Stop, Step>)
+    struct iota<Start, Stop, Step> {
+        meta::remove_rvalue<Start> start;
+        meta::remove_rvalue<Stop> stop;
+
+        [[nodiscard]] constexpr iota(meta::forward<Stop> stop)
+            noexcept (
+                meta::nothrow::default_constructible<meta::remove_rvalue<Start>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>>
+            )
+            requires (
+                meta::default_constructible<meta::remove_rvalue<Start>> &&
+                meta::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>>
+            )
+        :
+            start(),
+            stop(std::forward<Stop>(stop))
+        {}
+
+        [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
+            noexcept (
+                meta::nothrow::constructible_from<meta::remove_rvalue<Start>, meta::forward<Start>> &&
+                meta::nothrow::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>>
+            )
+            requires (
+                meta::constructible_from<meta::remove_rvalue<Start>, meta::forward<Start>> &&
+                meta::constructible_from<meta::remove_rvalue<Stop>, meta::forward<Stop>>
+            )
+        :
+            start(std::forward<Start>(start)),
+            stop(std::forward<Stop>(stop))
+        {}
+
+        /// TODO: size(), empty(), front(), back(), operator[], iteration.  Slicing,
+        /// masking, assignment, and conversions will be synthesized by `range`.
+
+    };
+
     /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
     pointers if all elements unpack to the same lvalue type.  Otherwise, they must
     build a vtable and perform a dynamic dispatch to yield a proper value type, which
@@ -335,12 +574,6 @@ namespace impl {
         meta::tuple_like<T> &&
         tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
 
-    /// TODO: figure out how to properly handle arrows for tuple iterators.
-    /// -> use impl::arrow_proxy to extend the lifetime of the return value
-
-    /// TODO: tuple iterators are also apparently broken somehow, at least in the
-    /// array-based case.
-
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
     to iterable algorithms, as long as those algorithms are built to handle possible
@@ -357,7 +590,7 @@ namespace impl {
 
     private:
         using table = tuple_array<T>;
-        using indices = std::make_index_sequence<types::size()>;
+        using indices = std::make_index_sequence<meta::tuple_size<T>>;
         using storage = meta::as_pointer<T>;
 
         [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
@@ -386,7 +619,9 @@ namespace impl {
             return table::template tbl<>[index](*data);
         }
 
-        /// TODO: I can expose a perfectly normal operator->() if I wrap a reference
+        [[nodiscard]] constexpr auto operator->() const noexcept (table::nothrow) {
+            return impl::arrow_proxy(**this);
+        }
 
         [[nodiscard]] constexpr reference operator[](
             difference_type n
@@ -855,6 +1090,10 @@ struct range : impl::range_tag {
         __value(std::forward<C>(c))
     {}
 
+    /// TODO: update the CTAD constructors to use the new `iota` internal class, which
+    /// should be much more broadly applicable, and allow constructs of the form:
+    ///    for (auto i : range(1.2345, 9.8765, 0.12))
+
     /* CTAD constructor for `std::views::iota(0, stop)` ranges. */
     template <meta::integer Stop>
     [[nodiscard]] explicit constexpr range(Stop stop)
@@ -990,38 +1229,40 @@ struct range : impl::range_tag {
 
     /* Forwarding index operator for the underlying container, provided the container
     supports it. */
-    template <typename Self, meta::integer I>
-    constexpr decltype(auto) operator[](this Self&& self, I&& i)
-        noexcept (requires{{std::forward<Self>(self).__value[std::forward<I>(i)]} noexcept;})
-        requires (requires{{std::forward<Self>(self).__value[std::forward<I>(i)]};})
+    template <typename Self, typename... K>
+    constexpr decltype(auto) operator[](this Self&& self, K&&... k)
+        noexcept (requires{{std::forward<Self>(self).__value[std::forward<K>(k)...]} noexcept;})
+        requires (requires{{std::forward<Self>(self).__value[std::forward<K>(k)...]} ;})
     {
-        return (std::forward<Self>(self).__value[std::forward<I>(i)]);
+        return (std::forward<Self>(self).__value[std::forward<K>(k)...]);
     }
 
-    /* Slice operator, which returns a subset of the range according to Python-style
-    slicing semantics. */
+    /* Slice operator, which returns a subset of the range according to a Python-style
+    `slice` expression. */
     template <typename Self>
     constexpr auto operator[](this Self&& self, const bertrand::slice& s)
-        noexcept (requires{{impl::slice(std::forward<Self>(self).__value, s)} noexcept;})
-        requires (requires{{impl::slice(std::forward<Self>(self).__value, s)};})
+        noexcept (requires{{s(std::forward<Self>(self).__value, s)} noexcept;})
+        requires (
+            !requires{{std::forward<Self>(self).__value[s]};} &&
+            requires{{s(std::forward<Self>(self).__value, s)};}
+        )
     {
-        return impl::slice(std::forward<Self>(self).__value, s);
+        return s(std::forward<Self>(self).__value, s);
     }
 
-    /* Mask operator, which returns a subset of the range corresponding to the `true`
-    indices of another boolean range.  The length of the resulting range is given by
-    the number of true values in the mask, or the size of this range, whichever is
+    /* Where operator, which returns a subset of the range corresponding to the `true`
+    values of a `where` expression.  The length of the resulting range is given by the
+    number of true values in the mask or the size of this range, whichever is
     smaller. */
-    template <typename Self, meta::range M> requires (meta::yields<M, bool>)
+    template <typename Self, meta::where M>
     constexpr auto operator[](this Self&& self, M&& mask)
-        noexcept (requires{
-            {impl::mask(std::forward<Self>(self).__value, std::forward<M>(mask))} noexcept;
-        })
-        requires (requires{
-            {impl::mask(std::forward<Self>(self).__value, std::forward<M>(mask))};
-        })
+        noexcept (requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)} noexcept;})
+        requires (
+            !requires{{std::forward<Self>(self).__value[std::forward<M>(mask)]};} &&
+            requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)};}
+        )
     {
-        return impl::mask(std::forward<Self>(self).__value, std::forward<M>(mask));
+        return std::forward<M>(mask)(std::forward<Self>(self).__value);
     }
 
     /* Get a forward iterator to the start of the range. */
@@ -1041,7 +1282,7 @@ struct range : impl::range_tag {
         return (impl::make_range_iterator<const range&>::begin(*this));
     }
 
-    /* Get a one-past-the-end forward iterator for the range. */
+    /* Get a forward iterator to one past the last element of the range. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) end(this Self& self)
         noexcept (requires{{impl::make_range_iterator<Self&>::end(self)} noexcept;})
@@ -1050,7 +1291,7 @@ struct range : impl::range_tag {
         return (impl::make_range_iterator<Self&>::end(self));
     }
 
-    /* Get a one-past-the-end forward iterator for the range. */
+    /* Get a forward iterator to one past the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) cend() const
         noexcept (requires{{impl::make_range_iterator<const range&>::end(*this)} noexcept;})
         requires (requires{{impl::make_range_iterator<const range&>::end(*this)};})
@@ -1075,7 +1316,7 @@ struct range : impl::range_tag {
         return (impl::make_range_iterator<const range&>::rbegin(*this));
     }
 
-    /* Get a one-before-the-start reverse iterator for the range. */
+    /* Get a reverse iterator to one before the first element of the range. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
         noexcept (requires{{impl::make_range_iterator<Self&>::rend(self)} noexcept;})
@@ -1084,7 +1325,7 @@ struct range : impl::range_tag {
         return (impl::make_range_iterator<Self&>::rend(self));
     }
 
-    /* Get a one-before-the-start reverse iterator for the range. */
+    /* Get a reverse iterator to one before the first element of the range. */
     [[nodiscard]] constexpr decltype(auto) crend() const
         noexcept (requires{{impl::make_range_iterator<const range&>::rend(*this)} noexcept;})
         requires (requires{{impl::make_range_iterator<const range&>::rend(*this)};})
@@ -1096,6 +1337,12 @@ struct range : impl::range_tag {
     /// with the tuple contents (if C is a tuple), or via the range contents if C is an
     /// iterable with a `std::from_range` constructor or constructor from a pair of
     /// iterators.
+
+    /// TODO: I may also have to update the assignment operators to support elementwise
+    /// assignment as long as the iterators can be used as output iterators.
+
+    /// TODO: also a monadic call operator which returns a comprehension that invokes
+    /// each element of the range as a function with the given arguments.
 
 };
 
@@ -1245,12 +1492,43 @@ struct slice {
 };
 
 
+/////////////////////
+////    WHERE    ////
+/////////////////////
+
+
+/// TODO: where{}
+
+
+
+//////////////////////////////
+////    COMPREHENSIONS    ////
+//////////////////////////////
+
+
+
+
+/////////////////////////////////
+////    MONADIC OPERATORS    ////
+/////////////////////////////////
+
+
+
+
+
+
 
 
 
 /////////////////////
 ////    TUPLE    ////
 /////////////////////
+
+
+/// TODO: Tuples are defined in their own header, which is included just after
+/// static strings, in order to take advantage of named fields.  All I need for
+/// comprehensions is a forward declaration, and then it can assume the rest of the
+/// interface ahead of time.
 
 
 namespace impl {
@@ -1982,14 +2260,8 @@ namespace impl {
 }
 
 
-/// NOTE: `Tuple<Ts...>` is defined later in func.h so that it can take advantage of
-/// static strings to support named arguments.
 
 
-
-//////////////////////////////
-////    COMPREHENSIONS    ////
-//////////////////////////////
 
 
 
