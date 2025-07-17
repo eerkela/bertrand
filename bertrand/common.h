@@ -790,10 +790,13 @@ namespace meta {
 
     }
 
-    template <typename T> requires (detail::as_signed<T>::enable)
+    template <typename T>
+    concept has_signed = detail::as_signed<unqualify<T>>::enable;
+
+    template <has_signed T>
     using as_signed = qualify<typename detail::as_signed<unqualify<T>>::type, T>;
 
-    template <typename T> requires (detail::as_signed<T>::enable)
+    template <has_signed T>
     [[nodiscard]] constexpr auto to_signed(T value)
         noexcept (requires{{static_cast<as_signed<T>>(value)} noexcept;})
         requires (requires{{static_cast<as_signed<T>>(value)};})
@@ -801,11 +804,14 @@ namespace meta {
         return static_cast<as_signed<T>>(value);
     }
 
-    template <typename T> requires (detail::as_unsigned<T>::enable)
-    using as_unsigned = qualify<typename detail::as_unsigned<T>::type, T>;
+    template <typename T>
+    concept has_unsigned = detail::as_unsigned<unqualify<T>>::enable;
 
-    template <typename T> requires (detail::as_unsigned<T>::enable)
-    [[nodiscard]] constexpr auto to_signed(T value)
+    template <has_unsigned T>
+    using as_unsigned = qualify<typename detail::as_unsigned<unqualify<T>>::type, T>;
+
+    template <has_unsigned T>
+    [[nodiscard]] constexpr auto to_unsigned(T value)
         noexcept (requires{{static_cast<as_unsigned<T>>(value)} noexcept;})
         requires (requires{{static_cast<as_unsigned<T>>(value)};})
     {
