@@ -4029,6 +4029,7 @@ namespace impl {
             return (*std::forward<Self>(self).__value.iter);
         }
 
+        /// TODO: use meta::has_arrow<>T instead of a requires clause
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
             noexcept (requires{{std::to_address(std::forward<Self>(self).__value.iter)} noexcept;})
@@ -4522,28 +4523,23 @@ struct Optional : impl::optional_tag {
         return (std::forward<Self>(self).__value.template get<1>());
     }
 
+    /// TODO:
+
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
     or directly returning its address otherwise.  A `TypeError` error will be thrown if
     the program is compiled in debug mode and the optional is empty.  This requires a
     single extra conditional, which will be optimized out in release builds to maintain
     zero overhead. */
     [[nodiscard]] constexpr auto operator->()
-        noexcept (!DEBUG && (meta::nothrow::has_arrow<meta::as_lvalue<T>> || (
-            !meta::has_arrow<meta::as_lvalue<T>> &&
-            meta::nothrow::has_address<meta::as_lvalue<T>>
-        )))
-        requires (meta::has_arrow<meta::as_lvalue<T>> || meta::has_address<meta::as_lvalue<T>>)
+        noexcept (!DEBUG && requires{{meta::to_arrow(__value.template get<1>())} noexcept;})
+        requires (requires{{meta::to_arrow(__value.template get<1>())};})
     {
         if constexpr (DEBUG) {
             if (__value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
-        if constexpr (meta::has_arrow<meta::as_lvalue<T>>) {
-            return std::to_address(__value.template get<1>());
-        } else {
-            return std::addressof(__value.template get<1>());
-        }
+        return meta::to_arrow(__value.template get<1>());
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -4552,22 +4548,15 @@ struct Optional : impl::optional_tag {
     single extra conditional, which will be optimized out in release builds to maintain
     zero overhead. */
     [[nodiscard]] constexpr auto operator->() const
-        noexcept (!DEBUG && (meta::nothrow::has_arrow<meta::as_const_ref<T>> || (
-            !meta::has_arrow<meta::as_const_ref<T>> &&
-            meta::nothrow::has_address<meta::as_const_ref<T>>
-        )))
-        requires (meta::has_arrow<meta::as_const_ref<T>> || meta::has_address<meta::as_const_ref<T>>)
+        noexcept (!DEBUG && requires{{meta::to_arrow(__value.template get<1>())} noexcept;})
+        requires (requires{{meta::to_arrow(__value.template get<1>())};})
     {
         if constexpr (DEBUG) {
             if (__value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
-        if constexpr (meta::has_arrow<meta::as_const_ref<T>>) {
-            return std::to_address(__value.template get<1>());
-        } else {
-            return std::addressof(__value.template get<1>());
-        }
+        return meta::to_arrow(__value.template get<1>());
     }
 
     /* Explicitly check whether the optional is in the empty state by comparing against
@@ -5238,32 +5227,28 @@ struct Expected : impl::expected_tag {
     or directly returning its address otherwise.  If the expected is in an error state,
     then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->()
-        requires (
-            meta::has_arrow<meta::as_lvalue<impl::expected_value<T>>> ||
-            meta::has_address<meta::as_lvalue<impl::expected_value<T>>>
-        )
+        noexcept (requires{
+            {meta::to_arrow(impl::expected_access<Expected&>{}(*this))} noexcept;
+        })
+        requires (requires{
+            {meta::to_arrow(impl::expected_access<Expected&>{}(*this))};
+        })
     {
-        if constexpr (meta::has_arrow<meta::as_lvalue<impl::expected_value<T>>>) {
-            return std::to_address(impl::expected_access<Expected&>{}(*this));
-        } else {
-            return std::addressof(impl::expected_access<Expected&>{}(*this));
-        }
+        return meta::to_arrow(impl::expected_access<Expected&>{}(*this));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
     or directly returning its address otherwise.  If the expected is in an error state,
     then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->() const
-        requires (
-            meta::has_arrow<meta::as_const_ref<impl::expected_value<T>>> ||
-            meta::has_address<meta::as_const_ref<impl::expected_value<T>>>
-        )
+        noexcept (requires{
+            {meta::to_arrow(impl::expected_access<const Expected&>{}(*this))} noexcept;
+        })
+        requires (requires{
+            {meta::to_arrow(impl::expected_access<const Expected&>{}(*this))};
+        })
     {
-        if constexpr (meta::has_arrow<meta::as_const_ref<impl::expected_value<T>>>) {
-            return std::to_address(impl::expected_access<const Expected&>{}(*this));
-        } else {
-            return std::addressof(impl::expected_access<const Expected&>{}(*this));
-        }
+        return meta::to_arrow(impl::expected_access<const Expected&>{}(*this));
     }
 
     /* Return 0 if the expected is empty or `std::ranges::size(value())` otherwise.

@@ -75,6 +75,10 @@ template <typename C>
 struct where;
 
 
+/// TODO: this can possibly remove the extra initializer list, and just accept any
+/// number of booleans as arguments.
+
+
 template <meta::boolean T>
 where(std::initializer_list<T>) -> where<std::initializer_list<meta::remove_rvalue<T>>>;
 
@@ -120,7 +124,14 @@ namespace impl {
     /* A trivial subclass of `range` that allows the range to be destructured when
     used as an argument to a Bertrand function. */
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    struct unpack : range<C> { using range<C>::range; };
+    struct unpack : range<C> {
+        [[nodiscard]] explicit constexpr unpack(meta::forward<C> c)
+            noexcept (meta::nothrow::constructible_from<range<C>, meta::forward<C>>)
+            requires (meta::constructible_from<range<C>, meta::forward<C>>)
+        :
+            range<C>(std::forward<C>(c))
+        {}
+    };
 
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
@@ -516,12 +527,11 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr pointer operator->() const
-            noexcept (meta::nothrow::to_arrow<const Start&>)
-            requires (meta::to_arrow<const Start&>)
+            noexcept (requires{{meta::to_arrow(start)} noexcept;})
+            requires (requires{{meta::to_arrow(start)};})
         {
-            return meta::unpack_arrow(start);
+            return meta::to_arrow(start);
         }
-
 
         constexpr iota_iterator& operator++()
             noexcept (meta::nothrow::has_iadd<Start&, const Step&>)
@@ -758,10 +768,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr pointer operator->() const
-            noexcept (meta::nothrow::to_arrow<const Start&>)
-            requires (meta::to_arrow<const Start&>)
+            noexcept (requires{{meta::to_arrow(start)} noexcept;})
+            requires (requires{{meta::to_arrow(start)};})
         {
-            return meta::unpack_arrow(start);
+            return meta::to_arrow(start);
         }
 
         constexpr iota_iterator& operator++()
@@ -1109,7 +1119,7 @@ namespace impl {
         /* Get a sentinel for the end of the iota. */
         [[nodiscard]] constexpr NoneType cend() const noexcept { return None; }
 
-        /// TODO: at()
+        /// TODO: at()?
 
     };
 
@@ -1669,33 +1679,27 @@ namespace impl {
         using rend_type = rbegin_type;
 
         [[nodiscard]] static constexpr begin_type begin(T t)
-            noexcept (meta::nothrow::constructible_from<begin_type, T>)
+            noexcept (requires{{begin_type{t.__value}} noexcept;})
         {
             return begin_type(t.__value);
         }
 
         [[nodiscard]] static constexpr end_type end(T t)
-            noexcept (meta::nothrow::constructible_from<end_type, size_t>)
+            noexcept (requires{{end_type{}} noexcept;})
         {
-            return end_type();
+            return end_type{};
         }
 
         [[nodiscard]] static constexpr rbegin_type rbegin(T t)
-            noexcept (
-                meta::nothrow::constructible_from<tuple_iterator<C>, C, size_t> &&
-                meta::nothrow::constructible_from<rbegin_type, tuple_iterator<C>>
-            )
+            noexcept (requires{{rbegin_type{begin_type{t.__value, meta::tuple_size<C>}}} noexcept;})
         {
-            return rbegin_type(tuple_iterator<C>{t.__value, meta::tuple_size<C>});
+            return rbegin_type{begin_type{t.__value, meta::tuple_size<C>}};
         }
 
         [[nodiscard]] static constexpr rend_type rend(T t)
-            noexcept (
-                meta::nothrow::constructible_from<tuple_iterator<C>, size_t> &&
-                meta::nothrow::constructible_from<rend_type, tuple_iterator<C>>
-            )
+            noexcept (requires{{rend_type{begin_type{size_t(0)}}} noexcept;})
         {
-            return rend_type(tuple_iterator<C>(size_t(0)));
+            return rend_type{begin_type{size_t(0)}};
         }
     };
     template <meta::lvalue T> requires (meta::iterable<decltype((std::declval<T>().__value))>)
@@ -1739,8 +1743,27 @@ namespace impl {
         }
     };
 
-}
+    template <typename to, meta::tuple_like C, size_t... Is>
+    constexpr to range_tuple_conversion(C&& container, std::index_sequence<Is...>)
+        noexcept (requires{{to{meta::unpack_tuple<Is>(std::forward<C>(container))...}} noexcept;})
+        requires (requires{{to{meta::unpack_tuple<Is>(std::forward<C>(container))...}};})
+    {
+        return to{meta::unpack_tuple<Is>(std::forward<C>(container))...};
+    }
 
+    template <typename C, typename T, size_t... Is>
+    constexpr void range_tuple_assignment(C& container, T&& r, std::index_sequence<Is...>)
+        noexcept (requires{{
+            ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...)
+        } noexcept;})
+        requires (requires{{
+            ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...)
+        };})
+    {
+        ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...);
+    }
+
+}
 
 
 /* A wrapper for an arbitrary container type that can be used to form iterable
@@ -1815,15 +1838,11 @@ struct range : impl::range_tag {
 
     /* Forwarding constructor for the underlying container. */
     [[nodiscard]] explicit constexpr range(meta::forward<C> c)
-        noexcept(meta::nothrow::constructible_from<__type, meta::forward<C>>)
+        noexcept (meta::nothrow::constructible_from<__type, meta::forward<C>>)
         requires (meta::constructible_from<__type, meta::forward<C>>)
     :
         __value(std::forward<C>(c))
     {}
-
-    /// TODO: update the CTAD constructors to use the new `iota` internal class, which
-    /// should be much more broadly applicable, and allow constructs of the form:
-    ///    for (auto i : range(1.2345, 9.8765, 0.12))
 
     /* CTAD constructor for 1-argument iota ranges. */
     template <typename Stop>
@@ -1873,6 +1892,11 @@ struct range : impl::range_tag {
         __value(start, stop, step)
     {}
 
+    [[nodiscard]] constexpr range(const range&) = default;
+    [[nodiscard]] constexpr range(range&&) = default;
+    constexpr range& operator=(const range&) = default;
+    constexpr range& operator=(range&&) = default;
+
     /* `swap()` operator between ranges. */
     constexpr void swap(range& other)
         noexcept (meta::nothrow::swappable<__type>)
@@ -1885,46 +1909,26 @@ struct range : impl::range_tag {
     it to be destructured when used as an argument to a Bertrand function. */
     template <typename Self>
     [[nodiscard]] constexpr auto operator*(this Self&& self)
-        noexcept (requires{{impl::unpack(std::forward<Self>(self).__value)} noexcept;})
-        requires (requires{{impl::unpack(std::forward<Self>(self).__value)};})
+        noexcept (requires{{impl::unpack{std::forward<Self>(self).__value}} noexcept;})
+        requires (requires{{impl::unpack{std::forward<Self>(self).__value}};})
     {
-        return impl::unpack(std::forward<Self>(self).__value);
+        return impl::unpack{std::forward<Self>(self).__value};
     }
 
     /* Indirectly access a member of the wrapped container. */
     [[nodiscard]] constexpr auto operator->()
-        noexcept (meta::nothrow::has_arrow<meta::as_lvalue<C>> || (
-            !meta::has_arrow<meta::as_lvalue<C>> &&
-            meta::nothrow::has_address<meta::as_lvalue<C>>
-        ))
-        requires (
-            meta::has_arrow<meta::as_lvalue<C>> ||
-            meta::has_address<meta::as_lvalue<C>>
-        )
+        noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+        requires (requires{{meta::to_arrow(__value)};})
     {
-        if constexpr (meta::has_arrow<meta::as_lvalue<C>>) {
-            return std::to_address(__value);
-        } else {
-            return std::addressof(__value);
-        }
+        return meta::to_arrow(__value);
     }
 
     /* Indirectly access a member of the wrapped container. */
     [[nodiscard]] constexpr auto operator->() const
-        noexcept (meta::nothrow::has_arrow<meta::as_const_ref<C>> || (
-            !meta::has_arrow<meta::as_const_ref<C>> &&
-            meta::nothrow::has_address<meta::as_const_ref<C>>
-        ))
-        requires (
-            meta::has_arrow<meta::as_const_ref<C>> ||
-            meta::has_address<meta::as_const_ref<C>>
-        )
+        noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+        requires (requires{{meta::to_arrow(__value)};})
     {
-        if constexpr (meta::has_arrow<meta::as_const_ref<C>>) {
-            return std::to_address(__value);
-        } else {
-            return std::addressof(__value);
-        }
+        return meta::to_arrow(__value);
     }
 
     /* Forwarding `size()` operator for the underlying container, provided the
@@ -2070,16 +2074,128 @@ struct range : impl::range_tag {
         return (impl::make_range_iterator<const range&>::rend(*this));
     }
 
-    /// TODO: implicit conversion operators to any type that can be directly initialized
-    /// with the tuple contents (if C is a tuple), or via the range contents if C is an
-    /// iterable with a `std::from_range` constructor or constructor from a pair of
-    /// iterators.
+    /* If the range is tuple-like, then conversions are allowed to any other type that
+    can be directly constructed (via a braced initializer) from the perfectly-forwarded
+    contents.  Otherwise, if the destination type has a matching `std::from_range`
+    constructor, or constructor from a pair of iterators, then that constructor will be
+    used instead. */
+    template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
+    [[nodiscard]] constexpr operator to(this Self&& self)
+        noexcept (
+            requires{{impl::range_tuple_conversion<to>(
+                std::forward<Self>(self).__value,
+                std::make_index_sequence<meta::tuple_size<C>>{}
+            )} noexcept;} ||
+            (
+                !requires{{impl::range_tuple_conversion<to>(
+                    std::forward<Self>(self).__value,
+                    std::make_index_sequence<meta::tuple_size<C>>{}
+                )};} &&
+                requires{{to(std::from_range, std::forward<Self>(self))} noexcept;}
+            ) || (
+                !requires{{impl::range_tuple_conversion<to>(
+                    std::forward<Self>(self).__value,
+                    std::make_index_sequence<meta::tuple_size<C>>{}
+                )};} &&
+                !requires{{to(std::from_range, std::forward<Self>(self))};} &&
+                requires{{to(self.begin(), self.end())} noexcept;}
+            )
+        )
+        requires (
+            requires{{impl::range_tuple_conversion<to>(
+                std::forward<Self>(self).__value,
+                std::make_index_sequence<meta::tuple_size<C>>{}
+            )};} ||
+            requires{{to(std::from_range, std::forward<Self>(self))};} ||
+            requires{{to(self.begin(), self.end())};}
+        )
+    {
+        if constexpr (requires{{impl::range_tuple_conversion<to>(
+            std::forward<Self>(self).__value,
+            std::make_index_sequence<meta::tuple_size<C>>{}
+        )};}) {
+            return impl::range_tuple_conversion<to>(
+                std::forward<Self>(self).__value,
+                std::make_index_sequence<meta::tuple_size<C>>{}
+            );
 
-    /// TODO: I may also have to update the assignment operators to support elementwise
-    /// assignment as long as the iterators can be used as output iterators.
+        } else if constexpr (requires{{to(std::from_range, std::forward<Self>(self))};}) {
+            return to(std::from_range, std::forward<Self>(self));
+
+        } else {
+            return to(self.begin(), self.end());
+        }
+    }
+
+    /* Assigning a range to another range triggers elementwise assignment between their
+    contents.  If both ranges are tuple-like, then they must have the same size, such
+    that the assignment can be done via a single fold expression. */
+    template <meta::range T>
+    constexpr range& operator=(T&& other)
+        noexcept (requires{{impl::range_tuple_assignment(
+            __value,
+            std::forward<T>(other),
+            std::make_index_sequence<meta::tuple_size<C>>{}
+        )} noexcept;})
+        requires (
+            meta::tuple_like<C> && meta::tuple_like<T> &&
+            meta::tuple_size<C> == meta::tuple_size<T> &&
+            requires{{impl::range_tuple_assignment(
+                __value,
+                std::forward<T>(other),
+                std::make_index_sequence<meta::tuple_size<C>>{}
+            )};}
+        )
+    {
+        impl::range_tuple_assignment(
+            __value,
+            std::forward<T>(other),
+            std::make_index_sequence<meta::tuple_size<C>>{}
+        );
+        return *this;
+    }
+
+    /* Assigning a range to another range triggers elementwise assignment between their
+    contents.  If either range is not tuple-like, then the assignment must be done with
+    an elementwise loop. */
+    template <meta::range T>
+    constexpr range& operator=(T&& other)
+        requires (
+            (!meta::tuple_like<C> || !meta::tuple_like<T>) &&
+            requires(
+                decltype(begin()) this_it,
+                decltype(end()) this_end,
+                decltype(std::ranges::begin(other)) other_it,
+                decltype(std::ranges::end(other)) other_end
+            ){
+                {this_it != this_end};
+                {other_it != other_end};
+                {*this_it = *other_it};
+                {++this_it};
+                {++other_it};
+            }
+        )
+    {
+        auto this_it = begin();
+        auto this_end = end();
+        auto other_it = std::ranges::begin(other);
+        auto other_end = std::ranges::end(other);
+        while (this_it != this_end && other_it != other_end) {
+            *this_it = *other_it;
+            ++this_it;
+            ++other_it;
+        }
+        if (this_it != this_end || other_it != other_end) {
+            /// TODO: centralize this error message.
+            throw ValueError("range assignment size mismatch");
+        }
+        return *this;
+    }
 
     /// TODO: also a monadic call operator which returns a comprehension that invokes
     /// each element of the range as a function with the given arguments.
+    /// -> This requires some work on the `comprehension` class, such that I can
+    /// define the expression template operators.
 
 };
 
@@ -2094,7 +2210,12 @@ constexpr void swap(range<C>& lhs, range<C>& rhs)
 }
 
 
-/// TODO: maybe add a `reversed` subclass of `range`.
+/// TODO: maybe add a `reversed` subclass of `range`.  It would probably require
+/// another class more or less just like `range`, but with reversed iterators and
+/// indexing operators.
+/// -> indexing is computed as `operator[-n - 1]` (not really sure why the - 1 is
+/// there).  Also, I should probably just reduce ranges to only accepting integer
+/// indices, slices, and `where` masks.
 
 
 
@@ -2110,6 +2231,8 @@ static constexpr range r3(3);  // + 1 makes it equal to all the others.
 static constexpr range r4(1, 4);
 static constexpr range r5(arr.begin(), arr.end());
 
+static constexpr std::array<int, 3> arr2 = r1;
+
 static constexpr std::tuple tup {1, 2, 3};
 static constexpr range r6(tup);
 
@@ -2123,6 +2246,15 @@ static_assert([] {
             return false;
         }
     }
+
+    std::array a{1, 2, 3};
+    range{a} = range(std::vector{4, 5, 6});
+    for (auto&& i : range{a}) {
+        if (i != 4 && i != 5 && i != 6) {
+            return false;
+        }
+    }
+
     return true;
 }());
 
@@ -2663,6 +2795,7 @@ namespace impl {
                 return ptr->value;
             }
 
+            /// TODO: use meta::to_arrow instead
             [[nodiscard]] constexpr pointer operator->() const
                 noexcept (meta::nothrow::address_returns<pointer, reference>)
                 requires (meta::address_returns<pointer, reference>)
@@ -2745,6 +2878,7 @@ namespace impl {
                 return ptr->value;
             }
 
+            /// TODO: use meta::to_arrow instead
             [[nodiscard]] constexpr pointer operator->() const
                 noexcept (meta::nothrow::address_returns<pointer, reference>)
                 requires (meta::address_returns<pointer, reference>)
@@ -3129,6 +3263,7 @@ namespace impl {
                 return (*iter);
             }
 
+            /// TODO: use meta::to_arrow instead
             [[nodiscard]] constexpr decltype(auto) operator->()
                 noexcept(meta::nothrow::has_arrow<T>)
                 requires(meta::has_arrow<T>)
@@ -3136,6 +3271,7 @@ namespace impl {
                 return (iter.operator->());
             }
 
+            /// TODO: use meta::to_arrow instead
             [[nodiscard]] constexpr decltype(auto) operator->() const
                 noexcept(meta::nothrow::has_arrow<const T>)
                 requires(meta::has_arrow<const T>)
