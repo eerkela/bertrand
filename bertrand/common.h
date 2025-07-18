@@ -2872,6 +2872,54 @@ namespace meta {
 
     }
 
+    namespace detail {
+
+        template <typename T>
+        struct to_arrow { using type = meta::arrow_type<T>; };
+        template <meta::has_address T> requires (!meta::has_arrow<T>)
+        struct to_arrow<T> { using type = meta::address_type<T>; };
+
+        template <typename T>
+        struct nothrow_to_arrow { using type = meta::nothrow::arrow_type<T>; };
+        template <meta::nothrow::has_address T> requires (!meta::nothrow::has_arrow<T>)
+        struct nothrow_to_arrow<T> { using type = meta::nothrow::address_type<T>; };
+
+    }
+
+    template <typename T>
+    concept to_arrow = has_arrow<T> || has_address<T>;
+
+    template <typename T>
+    using to_arrow_type = detail::to_arrow<T>::type;
+
+    template <typename Ret, typename T>
+    concept to_arrow_returns = to_arrow<T> && convertible_to<to_arrow_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept to_arrow = nothrow::has_arrow<T> || nothrow::has_address<T>;
+
+        template <nothrow::to_arrow T>
+        using to_arrow_type = detail::nothrow_to_arrow<T>::type;
+
+        template <typename Ret, typename T>
+        concept to_arrow_returns =
+            nothrow::to_arrow<T> && nothrow::convertible_to<nothrow::to_arrow_type<T>, Ret>;
+
+    }
+
+    template <to_arrow T>
+    constexpr auto unpack_arrow(T&& value)
+        noexcept (nothrow::has_arrow<T> || (!has_arrow<T> && nothrow::has_address<T>))
+    {
+        if constexpr (has_arrow<T>) {
+            return ::std::to_address(::std::forward<T>(value));
+        } else {
+            return ::std::addressof(::std::forward<T>(value));
+        }
+    }
+
     template <typename L, typename R>
     concept has_arrow_dereference = requires(L l, R r) { l->*r; };
 
