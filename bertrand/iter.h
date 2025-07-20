@@ -1265,9 +1265,6 @@ namespace impl {
         EMPTY,
     };
 
-    /// TODO: this array has to be shared with the indexing operator, and can be
-    /// optimized using impl::vtable<> in the dynamic case.
-
     /* Indexing and/or iterating over a tuple requires the creation of some kind of
     array, which can either be a flat array of homogenous references or a vtable of
     function pointers that produce a common type (which may be a `Union`) to which all
@@ -1305,18 +1302,17 @@ namespace impl {
             typename meta::tuple_types<T>::template eval<meta::to_unique>
         >;
 
-    public:
-        using ptr = base::reference(*)(T) noexcept (base::nothrow);
-
         template <size_t I>
-        static constexpr base::reference fn(T t) noexcept (base::nothrow) {
-            return meta::unpack_tuple<I>(t);
-        }
+        struct fn {
+            static constexpr base::reference operator()(T t) noexcept (base::nothrow) {
+                return meta::unpack_tuple<I>(t);
+            }
+        };
 
-        template <typename = std::make_index_sequence<meta::tuple_size<T>>>
-        static constexpr ptr tbl[0] {};
-        template <size_t... Is>
-        static constexpr ptr tbl<std::index_sequence<Is...>>[sizeof...(Is)] { &fn<Is>... };
+    public:
+        using dispatch = impl::vtable<fn>::template dispatch<
+            std::make_index_sequence<meta::tuple_size<T>>
+        >;
     };
 
     template <typename>
@@ -1327,10 +1323,6 @@ namespace impl {
         meta::lvalue<T> &&
         meta::tuple_like<T> &&
         tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
-
-    /// TODO: the same array that backs these iterators has to also be used for
-    /// operator[] indexing.  Also, the dynamic case can probably be optimized using
-    /// impl::vtable<>.
 
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
@@ -1374,7 +1366,7 @@ namespace impl {
         {}
 
         [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
-            return table::template tbl<>[index](*data);
+            return typename table::dispatch{index}(*data);
         }
 
         [[nodiscard]] constexpr auto operator->() const noexcept (table::nothrow) {
@@ -1384,7 +1376,7 @@ namespace impl {
         [[nodiscard]] constexpr reference operator[](
             difference_type n
         ) const noexcept (table::nothrow) {
-            return table::template tbl<>[index + n](*data);
+            return typename table::dispatch{index + n}(*data);
         }
 
         constexpr tuple_iterator& operator++() noexcept {
@@ -2153,24 +2145,33 @@ struct range : impl::range_tag {
         return (meta::unpack_tuple<I>(std::forward<Self>(self).__value));
     }
 
-
-    /// TODO: in the case of tuples, this will need to use a vtable to allow runtime
-    /// indexing.
-
-    /* Forwarding index operator for the underlying container, provided the container
-    supports it.  Automatically applies Python-style wraparound for negative indices. */
+    /* Integer indexing operator.  Accepts a single signed integer and retrieves the
+    corresponding element from the underlying container after applying Python-style
+    wraparound for negative indices.  If the container does not support indexing, but
+    is otherwise tuple-like, then a vtable will be synthesized to back this
+    operator. */
     template <typename Self>
     constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
         noexcept (requires{{std::forward<Self>(self).__value[
-            size_t(impl::normalize_index(self.ssize(), i))]
-        } noexcept;})
+            size_t(impl::normalize_index(self.ssize(), i))
+        ]} noexcept;} || meta::tuple_like<C>)
         requires (requires{{std::forward<Self>(self).__value[
-            size_t(impl::normalize_index(self.ssize(), i))]
-        };})
+            size_t(impl::normalize_index(self.ssize(), i))
+        ]};} || meta::tuple_like<C>)
     {
-        return (std::forward<Self>(self).__value[
-            size_t(impl::normalize_index(self.ssize(), i))]
-        );
+        if constexpr (requires{{std::forward<Self>(self).__value[
+            size_t(impl::normalize_index(self.ssize(), i))
+        ]};}) {
+            return (std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), i))
+            ]);
+
+        } else {
+            using container = decltype((std::forward<Self>(self).__value));
+            return typename impl::tuple_array<container>::dispatch{
+                size_t(impl::normalize_index(self.ssize(), i))
+            }(std::forward<Self>(self).__value);
+        }
     }
 
     /* Slice operator, which returns a subset of the range according to a Python-style
@@ -2435,7 +2436,7 @@ static constexpr range r6(tup);
 static constexpr range r7(0, 4, 2);
 static constexpr reversed r8(tup);
 
-static_assert(r8[-1] == 1);
+static_assert(range(tup)[-1] == 3);
 
 
 
