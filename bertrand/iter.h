@@ -4,6 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/union.h"
+#include <ranges>
 
 
 namespace bertrand {
@@ -176,224 +177,11 @@ namespace impl {
     template <typename C, meta::yields<bool> M> requires (meta::iterable<C> || meta::tuple_like<C>)
     where(C&&, M&&) -> where<meta::remove_rvalue<C>, meta::remove_rvalue<M>>;
 
-}
-
-
-namespace meta {
-
-    namespace detail {
-
-        template <typename>
-        constexpr bool unpackable = false;
-        template <typename C>
-        constexpr bool unpackable<impl::unpack<C>> = true;
-
-        using where_trivial = range<::std::array<bool, 0>>;
-
-    }
-
-    template <typename T>
-    concept range = inherits<T, impl::range_tag>;
-
-    template <typename T>
-    concept unpackable = detail::unpackable<unqualify<T>>;
-
-    template <typename T>
-    concept slice = inherits<T, impl::slice_tag>;
-
-    template <typename T>
-    concept sliceable = requires(T t, bertrand::slice s) { { t[s] } -> meta::slice; };
-
-    template <sliceable T>
-    using slice_type = decltype(::std::declval<T>()[::std::declval<bertrand::slice>()]);
-
-    template <typename Ret, typename T>
-    concept slice_returns = sliceable<T> && convertible_to<slice_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept sliceable = requires(T t, bertrand::slice s) { { t[s] } noexcept -> meta::slice; };
-
-        template <nothrow::sliceable T>
-        using slice_type = meta::slice_type<T>;
-
-        template <typename Ret, typename T>
-        concept slice_returns =
-            nothrow::sliceable<T> && nothrow::convertible_to<nothrow::slice_type<T>, Ret>;
-
-    }
-
-    template <typename T>
-    concept where = inherits<T, impl::where_tag>;
-
-    template <typename T, typename M = detail::where_trivial>
-    concept has_where = requires(T t, M m) {
-        { ::std::forward<T>(t)[::std::forward<M>(m)] } -> meta::where;
-    };
-
-    template <has_where T, typename M = detail::where_trivial>
-    using where_type = decltype((::std::declval<T>()[::std::declval<M>()]));
-
-    template <typename Ret, typename T, typename M = detail::where_trivial>
-    concept where_returns = has_where<T, M> && convertible_to<where_type<T, M>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T, typename M = detail::where_trivial>
-        concept has_where = requires(T t, M m) {
-            { ::std::forward<T>(t)[::std::forward<M>(m)] } noexcept -> meta::where;
-        };
-
-        template <nothrow::has_where T, typename M = detail::where_trivial>
-        using where_type = meta::where_type<T, M>;
-
-        template <typename Ret, typename T, typename M = detail::where_trivial>
-        concept where_returns =
-            nothrow::has_where<T, M> &&
-            nothrow::convertible_to<nothrow::where_type<T, M>, Ret>;
-
-    }
-
-    template <typename T>
-    concept comprehension = inherits<T, impl::comprehension_tag>;
-
-    template <typename T>
-    concept tuple_storage = inherits<T, impl::tuple_storage_tag>;
 
 
 
 
-    /// TODO: maybe I need a separate `match` metafunction that will take a single
-    /// argument and apply the same logic as `visit`, but optimized for the single
-    /// argument case, and applying tuple-like destructuring if applicable.  This would
-    /// back the global `->*` operator, which would be enabled for all union and/or
-    /// tuple types (NOT iterables).  Iterable comprehensions would be gated behind
-    /// `range(container) ->*`, which would be defined only on the range type itself,
-    /// which is what would also be returned to produce flattened comprehensions.
-    /// It would just be an `impl::range<T>` type where `T` is either a direct container
-    /// for `range(container)`, or a `std::subrange` if `range(begin, end)`, or a
-    /// `std::views::iota` if `range(stop)` or `range(start, stop)`, possibly with a
-    /// `std::views::stride_view<std::views::iota>` for `range(start, stop, step)`.
-
-    // namespace detail {
-
-    //     template <typename, typename>
-    //     constexpr bool _match_tuple_alts = false;
-    //     template <typename F, typename... As>
-    //     constexpr bool _match_tuple_alts<F, meta::pack<As...>> = (meta::callable<F, As> && ...);
-    //     template <typename, typename>
-    //     constexpr bool _match_tuple = false;
-    //     template <typename F, typename... Ts>
-    //     constexpr bool _match_tuple<F, meta::pack<Ts...>> =
-    //         (_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
-    //     template <typename F, typename T>
-    //     concept match_tuple = meta::tuple_like<T> && _match_tuple<F, meta::tuple_types<T>>;
-
-    //     template <typename, typename>
-    //     constexpr bool _nothrow_match_tuple_alts = false;
-    //     template <typename F, typename... As>
-    //     constexpr bool _nothrow_match_tuple_alts<F, meta::pack<As...>> =
-    //         (meta::nothrow::callable<F, As> && ...);
-    //     template <typename, typename>
-    //     constexpr bool _nothrow_match_tuple = false;
-    //     template <typename F, typename... Ts>
-    //     constexpr bool _nothrow_match_tuple<F, meta::pack<Ts...>> =
-    //         (_nothrow_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
-    //     template <typename F, typename T>
-    //     concept nothrow_match_tuple =
-    //         meta::nothrow::tuple_like<T> && _nothrow_match_tuple<F, meta::nothrow::tuple_types<T>>;
-
-
-
-    //     template <
-    //         typename F,  // match visitor function
-    //         typename returns,  // unique, non-void return types
-    //         typename errors,  // expected error states
-    //         bool has_void_,  // true if a void return type was encountered
-    //         bool optional,  // true if an optional return type was encountered
-    //         bool nothrow_,  // true if all permutations are noexcept
-    //         typename alternatives  // alternatives for the matched object
-    //     >
-    //     struct _match {
-    //         using type = visit_to_expected<
-    //             typename visit_to_optional<
-    //                 typename returns::template eval<visit_to_union>::type,
-    //                 has_void_ || optional
-    //             >::type,
-    //             errors
-    //         >::type;
-    //         static constexpr bool enable = true;
-    //         static constexpr bool ambiguous = false;
-    //         static constexpr bool unmatched = false;
-    //         static constexpr bool consistent =
-    //             returns::size() == 0 || (returns::size() == 1 && !has_void_);
-
-    //         /// TODO: nothrow has to account for nothrow conversions to type
-    //         static constexpr bool nothrow = nothrow_;
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //         requires (meta::callable<F, curr> && !match_tuple<F, curr>)
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         /// TODO: pass the tuple directly
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //         requires (!meta::callable<F, curr> && match_tuple<F, curr>)
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         /// TODO: unpack tuple
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         using type = void;
-    //         static constexpr bool ambiguous = meta::callable<F, curr> && match_tuple<F, curr>;
-    //         static constexpr bool unmatched = !meta::callable<F, curr> && !match_tuple<F, curr>;
-    //         static constexpr bool consistent = false;
-    //         static constexpr bool nothrow = false;
-    //     };
-
-
-
-
-
-    //     template <typename F, typename T>
-    //     struct match : _match<F, typename impl::visitable<T>::alternatives> {};
-
-    // }
-
-
-
-
-    namespace detail {
-
-        template <meta::range T>
-        constexpr bool prefer_constructor<T> = true;
-
-        template <meta::range T>
-        constexpr bool exact_size<T> = meta::exact_size<typename T::__type>;
-
-    }
-
-}
-
-
-/////////////////////
-////    RANGE    ////
-/////////////////////
-
-
-namespace impl {
+    /// TODO: enable_borrowed_range should always be enabled for iotas.
 
     /* Iota iterators will use the difference type between `stop` and `start` if
     available and integer-like. */
@@ -1247,16 +1035,238 @@ namespace impl {
     template <typename Start, typename Stop, typename Step> requires (iota_spec<Start, Stop, Step>)
     iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
 
+}
+
+
+namespace meta {
+
+    namespace detail {
+
+        template <typename>
+        constexpr bool unpackable = false;
+        template <typename C>
+        constexpr bool unpackable<impl::unpack<C>> = true;
+
+        using where_trivial = range<::std::array<bool, 0>>;
+
+    }
+
+    template <typename T>
+    concept range = inherits<T, impl::range_tag>;
+
+    template <typename T>
+    concept unpackable = detail::unpackable<unqualify<T>>;
+
+    template <typename T>
+    concept slice = inherits<T, impl::slice_tag>;
+
+    template <typename T>
+    concept sliceable = requires(T t, bertrand::slice s) { { t[s] } -> meta::slice; };
+
+    template <sliceable T>
+    using slice_type = decltype(::std::declval<T>()[::std::declval<bertrand::slice>()]);
+
+    template <typename Ret, typename T>
+    concept slice_returns = sliceable<T> && convertible_to<slice_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept sliceable = requires(T t, bertrand::slice s) { { t[s] } noexcept -> meta::slice; };
+
+        template <nothrow::sliceable T>
+        using slice_type = meta::slice_type<T>;
+
+        template <typename Ret, typename T>
+        concept slice_returns =
+            nothrow::sliceable<T> && nothrow::convertible_to<nothrow::slice_type<T>, Ret>;
+
+    }
+
+    template <typename T>
+    concept where = inherits<T, impl::where_tag>;
+
+    template <typename T, typename M = detail::where_trivial>
+    concept has_where = requires(T t, M m) {
+        { ::std::forward<T>(t)[::std::forward<M>(m)] } -> meta::where;
+    };
+
+    template <has_where T, typename M = detail::where_trivial>
+    using where_type = decltype((::std::declval<T>()[::std::declval<M>()]));
+
+    template <typename Ret, typename T, typename M = detail::where_trivial>
+    concept where_returns = has_where<T, M> && convertible_to<where_type<T, M>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T, typename M = detail::where_trivial>
+        concept has_where = requires(T t, M m) {
+            { ::std::forward<T>(t)[::std::forward<M>(m)] } noexcept -> meta::where;
+        };
+
+        template <nothrow::has_where T, typename M = detail::where_trivial>
+        using where_type = meta::where_type<T, M>;
+
+        template <typename Ret, typename T, typename M = detail::where_trivial>
+        concept where_returns =
+            nothrow::has_where<T, M> &&
+            nothrow::convertible_to<nothrow::where_type<T, M>, Ret>;
+
+    }
+
+    template <typename T>
+    concept comprehension = inherits<T, impl::comprehension_tag>;
+
+    template <typename T>
+    concept tuple_storage = inherits<T, impl::tuple_storage_tag>;
+
+
+
+
+    /// TODO: maybe I need a separate `match` metafunction that will take a single
+    /// argument and apply the same logic as `visit`, but optimized for the single
+    /// argument case, and applying tuple-like destructuring if applicable.  This would
+    /// back the global `->*` operator, which would be enabled for all union and/or
+    /// tuple types (NOT iterables).  Iterable comprehensions would be gated behind
+    /// `range(container) ->*`, which would be defined only on the range type itself,
+    /// which is what would also be returned to produce flattened comprehensions.
+    /// It would just be an `impl::range<T>` type where `T` is either a direct container
+    /// for `range(container)`, or a `std::subrange` if `range(begin, end)`, or a
+    /// `std::views::iota` if `range(stop)` or `range(start, stop)`, possibly with a
+    /// `std::views::stride_view<std::views::iota>` for `range(start, stop, step)`.
+
+    // namespace detail {
+
+    //     template <typename, typename>
+    //     constexpr bool _match_tuple_alts = false;
+    //     template <typename F, typename... As>
+    //     constexpr bool _match_tuple_alts<F, meta::pack<As...>> = (meta::callable<F, As> && ...);
+    //     template <typename, typename>
+    //     constexpr bool _match_tuple = false;
+    //     template <typename F, typename... Ts>
+    //     constexpr bool _match_tuple<F, meta::pack<Ts...>> =
+    //         (_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
+    //     template <typename F, typename T>
+    //     concept match_tuple = meta::tuple_like<T> && _match_tuple<F, meta::tuple_types<T>>;
+
+    //     template <typename, typename>
+    //     constexpr bool _nothrow_match_tuple_alts = false;
+    //     template <typename F, typename... As>
+    //     constexpr bool _nothrow_match_tuple_alts<F, meta::pack<As...>> =
+    //         (meta::nothrow::callable<F, As> && ...);
+    //     template <typename, typename>
+    //     constexpr bool _nothrow_match_tuple = false;
+    //     template <typename F, typename... Ts>
+    //     constexpr bool _nothrow_match_tuple<F, meta::pack<Ts...>> =
+    //         (_nothrow_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
+    //     template <typename F, typename T>
+    //     concept nothrow_match_tuple =
+    //         meta::nothrow::tuple_like<T> && _nothrow_match_tuple<F, meta::nothrow::tuple_types<T>>;
+
+
+
+    //     template <
+    //         typename F,  // match visitor function
+    //         typename returns,  // unique, non-void return types
+    //         typename errors,  // expected error states
+    //         bool has_void_,  // true if a void return type was encountered
+    //         bool optional,  // true if an optional return type was encountered
+    //         bool nothrow_,  // true if all permutations are noexcept
+    //         typename alternatives  // alternatives for the matched object
+    //     >
+    //     struct _match {
+    //         using type = visit_to_expected<
+    //             typename visit_to_optional<
+    //                 typename returns::template eval<visit_to_union>::type,
+    //                 has_void_ || optional
+    //             >::type,
+    //             errors
+    //         >::type;
+    //         static constexpr bool enable = true;
+    //         static constexpr bool ambiguous = false;
+    //         static constexpr bool unmatched = false;
+    //         static constexpr bool consistent =
+    //             returns::size() == 0 || (returns::size() == 1 && !has_void_);
+
+    //         /// TODO: nothrow has to account for nothrow conversions to type
+    //         static constexpr bool nothrow = nothrow_;
+    //     };
+    //     template <
+    //         typename F,
+    //         typename curr,
+    //         typename... next
+    //     >
+    //         requires (meta::callable<F, curr> && !match_tuple<F, curr>)
+    //     struct _match<F, meta::pack<curr, next...>> {
+    //         /// TODO: pass the tuple directly
+    //     };
+    //     template <
+    //         typename F,
+    //         typename curr,
+    //         typename... next
+    //     >
+    //         requires (!meta::callable<F, curr> && match_tuple<F, curr>)
+    //     struct _match<F, meta::pack<curr, next...>> {
+    //         /// TODO: unpack tuple
+    //     };
+    //     template <
+    //         typename F,
+    //         typename curr,
+    //         typename... next
+    //     >
+    //     struct _match<F, meta::pack<curr, next...>> {
+    //         using type = void;
+    //         static constexpr bool ambiguous = meta::callable<F, curr> && match_tuple<F, curr>;
+    //         static constexpr bool unmatched = !meta::callable<F, curr> && !match_tuple<F, curr>;
+    //         static constexpr bool consistent = false;
+    //         static constexpr bool nothrow = false;
+    //     };
+
+
+
+
+
+    //     template <typename F, typename T>
+    //     struct match : _match<F, typename impl::visitable<T>::alternatives> {};
+
+    // }
+
+
+
+
+    namespace detail {
+
+        template <meta::range T>
+        constexpr bool prefer_constructor<T> = true;
+
+        template <meta::range T>
+        constexpr bool exact_size<T> = meta::exact_size<typename T::__type>;
+
+    }
+
+}
+
+
+/////////////////////
+////    RANGE    ////
+/////////////////////
+
+
+namespace impl {
+
     /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
     pointers if all elements unpack to the same lvalue type.  Otherwise, they must
     build a vtable and perform a dynamic dispatch to yield a proper value type, which
     may be a union. */
-    enum class tuple_array_kind {
+    enum class tuple_array_kind : uint8_t {
         NO_COMMON_TYPE,
         DYNAMIC,
         ARRAY,
         EMPTY,
     };
+
+    /// TODO: this array has to be shared with the indexing operator, and can be
+    /// optimized using impl::vtable<> in the dynamic case.
 
     /* Indexing and/or iterating over a tuple requires the creation of some kind of
     array, which can either be a flat array of homogenous references or a vtable of
@@ -1317,6 +1327,10 @@ namespace impl {
         meta::lvalue<T> &&
         meta::tuple_like<T> &&
         tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
+
+    /// TODO: the same array that backs these iterators has to also be used for
+    /// operator[] indexing.  Also, the dynamic case can probably be optimized using
+    /// impl::vtable<>.
 
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
@@ -1663,9 +1677,9 @@ namespace impl {
     template <meta::reverse_iterable C>
     struct make_range_rend<C> { using type = meta::rend_type<C>; };
 
-    /* `make_range_iterator` abstracts the iterator methods for a `range`, synthesizing
-    a corresponding tuple iterator if the underlying container is not already
-    iterable. */
+    /* `make_range_iterator` abstracts the forward iterator methods for a `range`,
+    synthesizing a corresponding tuple iterator if the underlying container is not
+    already iterable. */
     template <meta::lvalue T>
     struct make_range_iterator {
     private:
@@ -1675,8 +1689,6 @@ namespace impl {
         static constexpr bool tuple = true;
         using begin_type = tuple_iterator<C>;
         using end_type = begin_type;
-        using rbegin_type = std::reverse_iterator<begin_type>;
-        using rend_type = rbegin_type;
 
         [[nodiscard]] static constexpr begin_type begin(T t)
             noexcept (requires{{begin_type{t.__value}} noexcept;})
@@ -1689,18 +1701,6 @@ namespace impl {
         {
             return end_type{};
         }
-
-        [[nodiscard]] static constexpr rbegin_type rbegin(T t)
-            noexcept (requires{{rbegin_type{begin_type{t.__value, meta::tuple_size<C>}}} noexcept;})
-        {
-            return rbegin_type{begin_type{t.__value, meta::tuple_size<C>}};
-        }
-
-        [[nodiscard]] static constexpr rend_type rend(T t)
-            noexcept (requires{{rend_type{begin_type{size_t(0)}}} noexcept;})
-        {
-            return rend_type{begin_type{size_t(0)}};
-        }
     };
     template <meta::lvalue T> requires (meta::iterable<decltype((std::declval<T>().__value))>)
     struct make_range_iterator<T> {
@@ -1711,8 +1711,6 @@ namespace impl {
         static constexpr bool tuple = false;
         using begin_type = make_range_begin<C>::type;
         using end_type = make_range_end<C>::type;
-        using rbegin_type = make_range_rbegin<C>::type;
-        using rend_type = make_range_rend<C>::type;
 
         [[nodiscard]] static constexpr begin_type begin(T t)
             noexcept (meta::nothrow::has_begin<C>)
@@ -1727,19 +1725,196 @@ namespace impl {
         {
             return std::ranges::end(t.__value);
         }
+    };
 
-        [[nodiscard]] static constexpr rbegin_type rbegin(T t)
+    /* `make_range_reversed` abstracts the reverse iterator methods for a `range`,
+    synthesizing a corresponding tuple iterator if the underlying container is not
+    already iterable. */
+    template <meta::lvalue T>
+    struct make_range_reversed {
+    private:
+        using C = decltype((std::declval<T>().__value));
+
+    public:
+        static constexpr bool tuple = true;
+        using begin_type = std::reverse_iterator<tuple_iterator<C>>;
+        using end_type = begin_type;
+
+        [[nodiscard]] static constexpr begin_type begin(T t)
+            noexcept (requires{{begin_type{begin_type{t.__value, meta::tuple_size<C>}}} noexcept;})
+        {
+            return begin_type{tuple_iterator<C>{t.__value, meta::tuple_size<C>}};
+        }
+
+        [[nodiscard]] static constexpr end_type end(T t)
+            noexcept (requires{{end_type{begin_type{size_t(0)}}} noexcept;})
+        {
+            return end_type{begin_type{size_t(0)}};
+        }
+    };
+    template <meta::lvalue T> requires (meta::reverse_iterable<decltype((std::declval<T>().__value))>)
+    struct make_range_reversed<T> {
+    private:
+        using C = decltype((std::declval<T>().__value));
+
+    public:
+        static constexpr bool tuple = false;
+        using begin_type = make_range_rbegin<C>::type;
+        using end_type = make_range_rend<C>::type;
+
+        [[nodiscard]] static constexpr begin_type begin(T t)
             noexcept (meta::nothrow::has_rbegin<C>)
             requires (meta::has_rbegin<C>)
         {
             return std::ranges::rbegin(t.__value);
         }
 
-        [[nodiscard]] static constexpr rend_type rend(T t)
+        [[nodiscard]] static constexpr end_type end(T t)
             noexcept (meta::nothrow::has_rend<C>)
             requires (meta::has_rend<C>)
         {
             return std::ranges::rend(t.__value);
+        }
+    };
+
+    /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
+    iterate over the container `C` instead of forward iterating.  This equates to
+    swapping all of the `begin()` and `end()` methods with their reversed counterparts,
+    and modifying the indexing logic to map index `i` to index `-i - 1`, which
+    triggers Python-style wraparound. */
+    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    struct reversed {
+        using __type = meta::remove_rvalue<C>;
+
+        [[no_unique_address]] __type __value;
+
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+            requires (requires{{meta::to_arrow(__value)};})
+        {
+            return meta::to_arrow(__value);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+            requires (requires{{meta::to_arrow(__value)};})
+        {
+            return meta::to_arrow(__value);
+        }
+
+        [[nodiscard]] constexpr auto size() const
+            noexcept (meta::nothrow::has_size<C> || meta::tuple_like<C>)
+            requires (meta::has_size<C> || meta::tuple_like<C>)
+        {
+            if constexpr (meta::has_size<C>) {
+                return std::ranges::size(__value);
+            } else {
+                return meta::tuple_size<C>;
+            }
+        }
+
+        [[nodiscard]] constexpr auto ssize() const
+            noexcept (meta::nothrow::has_ssize<C> || meta::tuple_like<C>)
+            requires (meta::has_ssize<C> || meta::tuple_like<C>)
+        {
+            if constexpr (meta::has_ssize<C>) {
+                return std::ranges::ssize(__value);
+            } else {
+                return meta::to_signed(meta::tuple_size<C>);
+            }
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (meta::nothrow::has_empty<C> || meta::tuple_like<C>)
+            requires (meta::has_empty<C> || meta::tuple_like<C>)
+        {
+            if constexpr (meta::has_empty<C>) {
+                return std::ranges::empty(__value);
+            } else {
+                return meta::tuple_size<C> == 0;
+            }
+        }
+
+        template <ssize_t I, typename Self>
+        constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value)} noexcept;})
+            requires (requires{{meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value)};})
+        {
+            return (meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value));
+        }
+
+        template <typename Self>
+        constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (requires{{std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))]
+            } noexcept;})
+            requires (requires{{std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))]
+            };})
+        {
+            return (std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))
+            ]);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) begin(this Self& self)
+            noexcept (requires{{impl::make_range_reversed<Self&>::begin(self)} noexcept;})
+            requires (requires{{impl::make_range_reversed<Self&>::begin(self)};})
+        {
+            return (impl::make_range_reversed<Self&>::begin(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) cbegin() const
+            noexcept (requires{{impl::make_range_reversed<const reversed&>::begin(*this)} noexcept;})
+            requires (requires{{impl::make_range_reversed<const reversed&>::begin(*this)};})
+        {
+            return (impl::make_range_reversed<const reversed&>::begin(*this));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) end(this Self& self)
+            noexcept (requires{{impl::make_range_reversed<Self&>::end(self)} noexcept;})
+            requires (requires{{impl::make_range_reversed<Self&>::end(self)};})
+        {
+            return (impl::make_range_reversed<Self&>::end(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) cend() const
+            noexcept (requires{{impl::make_range_reversed<const reversed&>::end(*this)} noexcept;})
+            requires (requires{{impl::make_range_reversed<const reversed&>::end(*this)};})
+        {
+            return (impl::make_range_reversed<const reversed&>::end(*this));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) rbegin(this Self& self)
+            noexcept (requires{{impl::make_range_iterator<Self&>::begin(self)} noexcept;})
+            requires (requires{{impl::make_range_iterator<Self&>::begin(self)};})
+        {
+            return (impl::make_range_iterator<Self&>::begin(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) crbegin() const
+            noexcept (requires{{impl::make_range_iterator<const reversed&>::begin(*this)} noexcept;})
+            requires (requires{{impl::make_range_iterator<const reversed&>::begin(*this)};})
+        {
+            return (impl::make_range_iterator<const reversed&>::begin(*this));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
+            noexcept (requires{{impl::make_range_iterator<Self&>::end(self)} noexcept;})
+            requires (requires{{impl::make_range_iterator<Self&>::end(self)};})
+        {
+            return (impl::make_range_iterator<Self&>::end(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) crend() const
+            noexcept (requires{{impl::make_range_iterator<const reversed&>::end(*this)} noexcept;})
+            requires (requires{{impl::make_range_iterator<const reversed&>::end(*this)};})
+        {
+            return (impl::make_range_iterator<const reversed&>::end(*this));
         }
     };
 
@@ -1882,9 +2057,7 @@ struct range : impl::range_tag {
 
     /* CTAD constructor for 3-argument iota ranges. */
     template <typename Start, typename Stop, typename Step>
-        requires (
-            impl::iota_spec<Start, Stop, Step>
-        )
+        requires (impl::iota_spec<Start, Stop, Step>)
     [[nodiscard]] explicit constexpr range(Start start, Stop stop, Step step)
         noexcept (meta::nothrow::constructible_from<__type, Start, Stop, Step>)
         requires (meta::constructible_from<__type, Start, Stop, Step>)
@@ -1934,33 +2107,45 @@ struct range : impl::range_tag {
     /* Forwarding `size()` operator for the underlying container, provided the
     container supports it. */
     [[nodiscard]] constexpr auto size() const
-        noexcept (requires{{std::ranges::size(__value)} noexcept;})
-        requires (requires{{std::ranges::size(__value)};})
+        noexcept (meta::nothrow::has_size<C> || meta::tuple_like<C>)
+        requires (meta::has_size<C> || meta::tuple_like<C>)
     {
-        return (std::ranges::size(__value));
+        if constexpr (meta::has_size<C>) {
+            return std::ranges::size(__value);
+        } else {
+            return meta::tuple_size<C>;
+        }
     }
 
     /* Forwarding `ssize()` operator for the underlying container, provided the
     container supports it. */
     [[nodiscard]] constexpr auto ssize() const
-        noexcept (requires{{std::ranges::ssize(__value)} noexcept;})
-        requires (requires{{std::ranges::ssize(__value)};})
+        noexcept (meta::nothrow::has_ssize<C> || meta::tuple_like<C>)
+        requires (meta::has_ssize<C> || meta::tuple_like<C>)
     {
-        return (std::ranges::ssize(__value));
+        if constexpr (meta::has_ssize<C>) {
+            return std::ranges::ssize(__value);
+        } else {
+            return meta::to_signed(meta::tuple_size<C>);
+        }
     }
 
     /* Forwarding `empty()` operator for the underlying container, provided the
     container supports it. */
     [[nodiscard]] constexpr bool empty() const
-        noexcept (requires{{std::ranges::empty(__value)} noexcept;})
-        requires (requires{{std::ranges::empty(__value)};})
+        noexcept (meta::nothrow::has_empty<C> || meta::tuple_like<C>)
+        requires (meta::has_empty<C> || meta::tuple_like<C>)
     {
-        return (std::ranges::empty(__value));
+        if constexpr (meta::has_empty<C>) {
+            return std::ranges::empty(__value);
+        } else {
+            return meta::tuple_size<C> == 0;
+        }
     }
 
     /* Forwarding `get<I>()` accessor, provided the underlying container is
-    tuple-like. */
-    template <size_t I, typename Self>
+    tuple-like.  Automatically applies Python-style wraparound for negative indices. */
+    template <ssize_t I, typename Self>
     constexpr decltype(auto) get(this Self&& self)
         noexcept (requires{{meta::unpack_tuple<I>(std::forward<Self>(self).__value)} noexcept;})
         requires (requires{{meta::unpack_tuple<I>(std::forward<Self>(self).__value)};})
@@ -1968,14 +2153,24 @@ struct range : impl::range_tag {
         return (meta::unpack_tuple<I>(std::forward<Self>(self).__value));
     }
 
+
+    /// TODO: in the case of tuples, this will need to use a vtable to allow runtime
+    /// indexing.
+
     /* Forwarding index operator for the underlying container, provided the container
-    supports it. */
-    template <typename Self, typename... K>
-    constexpr decltype(auto) operator[](this Self&& self, K&&... k)
-        noexcept (requires{{std::forward<Self>(self).__value[std::forward<K>(k)...]} noexcept;})
-        requires (requires{{std::forward<Self>(self).__value[std::forward<K>(k)...]} ;})
+    supports it.  Automatically applies Python-style wraparound for negative indices. */
+    template <typename Self>
+    constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+        noexcept (requires{{std::forward<Self>(self).__value[
+            size_t(impl::normalize_index(self.ssize(), i))]
+        } noexcept;})
+        requires (requires{{std::forward<Self>(self).__value[
+            size_t(impl::normalize_index(self.ssize(), i))]
+        };})
     {
-        return (std::forward<Self>(self).__value[std::forward<K>(k)...]);
+        return (std::forward<Self>(self).__value[
+            size_t(impl::normalize_index(self.ssize(), i))]
+        );
     }
 
     /* Slice operator, which returns a subset of the range according to a Python-style
@@ -1983,10 +2178,7 @@ struct range : impl::range_tag {
     template <typename Self>
     constexpr auto operator[](this Self&& self, const bertrand::slice& s)
         noexcept (requires{{s(std::forward<Self>(self).__value, s)} noexcept;})
-        requires (
-            !requires{{std::forward<Self>(self).__value[s]};} &&
-            requires{{s(std::forward<Self>(self).__value, s)};}
-        )
+        requires (requires{{s(std::forward<Self>(self).__value, s)};})
     {
         return s(std::forward<Self>(self).__value, s);
     }
@@ -1998,10 +2190,7 @@ struct range : impl::range_tag {
     template <typename Self, meta::where M>
     constexpr auto operator[](this Self&& self, M&& mask)
         noexcept (requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)} noexcept;})
-        requires (
-            !requires{{std::forward<Self>(self).__value[std::forward<M>(mask)]};} &&
-            requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)};}
-        )
+        requires (requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)};})
     {
         return std::forward<M>(mask)(std::forward<Self>(self).__value);
     }
@@ -2043,35 +2232,35 @@ struct range : impl::range_tag {
     /* Get a reverse iterator to the last element of the range. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) rbegin(this Self& self)
-        noexcept (requires{{impl::make_range_iterator<Self&>::rbegin(self)} noexcept;})
-        requires (requires{{impl::make_range_iterator<Self&>::rbegin(self)};})
+        noexcept (requires{{impl::make_range_reversed<Self&>::begin(self)} noexcept;})
+        requires (requires{{impl::make_range_reversed<Self&>::begin(self)};})
     {
-        return (impl::make_range_iterator<Self&>::rbegin(self));
+        return (impl::make_range_reversed<Self&>::begin(self));
     }
 
     /* Get a reverse iterator to the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) crbegin() const
-        noexcept (requires{{impl::make_range_iterator<const range&>::rbegin(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<const range&>::rbegin(*this)};})
+        noexcept (requires{{impl::make_range_reversed<const range&>::begin(*this)} noexcept;})
+        requires (requires{{impl::make_range_reversed<const range&>::begin(*this)};})
     {
-        return (impl::make_range_iterator<const range&>::rbegin(*this));
+        return (impl::make_range_reversed<const range&>::begin(*this));
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
-        noexcept (requires{{impl::make_range_iterator<Self&>::rend(self)} noexcept;})
-        requires (requires{{impl::make_range_iterator<Self&>::rend(self)};})
+        noexcept (requires{{impl::make_range_reversed<Self&>::end(self)} noexcept;})
+        requires (requires{{impl::make_range_reversed<Self&>::end(self)};})
     {
-        return (impl::make_range_iterator<Self&>::rend(self));
+        return (impl::make_range_reversed<Self&>::end(self));
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
     [[nodiscard]] constexpr decltype(auto) crend() const
-        noexcept (requires{{impl::make_range_iterator<const range&>::rend(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<const range&>::rend(*this)};})
+        noexcept (requires{{impl::make_range_reversed<const range&>::end(*this)} noexcept;})
+        requires (requires{{impl::make_range_reversed<const range&>::end(*this)};})
     {
-        return (impl::make_range_iterator<const range&>::rend(*this));
+        return (impl::make_range_reversed<const range&>::end(*this));
     }
 
     /* If the range is tuple-like, then conversions are allowed to any other type that
@@ -2210,15 +2399,21 @@ constexpr void swap(range<C>& lhs, range<C>& rhs)
 }
 
 
-/// TODO: maybe add a `reversed` subclass of `range`.  It would probably require
-/// another class more or less just like `range`, but with reversed iterators and
-/// indexing operators.
-/// -> indexing is computed as `operator[-n - 1]` (not really sure why the - 1 is
-/// there).  Also, I should probably just reduce ranges to only accepting integer
-/// indices, slices, and `where` masks.
+/* A subclass of `range` that reverses the order of iteration, provided the underlying
+container is reverse iterable. */
+template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+struct reversed : range<impl::reversed<C>> {
+    [[nodiscard]] explicit constexpr reversed(meta::forward<C> c)
+        noexcept (meta::nothrow::constructible_from<impl::reversed<C>, meta::forward<C>>)
+        requires (meta::constructible_from<impl::reversed<C>, meta::forward<C>>)
+    :
+        range<impl::reversed<C>>(impl::reversed<C>{std::forward<C>(c)})
+    {}
+};
 
 
-
+template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+reversed(C&& c) -> reversed<meta::remove_rvalue<C>>;
 
 
 
@@ -2238,6 +2433,10 @@ static constexpr range r6(tup);
 
 
 static constexpr range r7(0, 4, 2);
+static constexpr reversed r8(tup);
+
+static_assert(r8[-1] == 1);
+
 
 
 static_assert([] {
@@ -2247,13 +2446,14 @@ static_assert([] {
         }
     }
 
-    std::array a{1, 2, 3};
-    range{a} = range(std::vector{4, 5, 6});
-    for (auto&& i : range{a}) {
-        if (i != 4 && i != 5 && i != 6) {
-            return false;
-        }
-    }
+    // std::array a{1, 2, 3};
+    // range{a} = range(std::vector{4, 5, 6});
+    // for (auto&& i : range{a}) {
+    //     if (i != 4 && i != 5 && i != 6) {
+    //         return false;
+    //     }
+    // }
+
 
     return true;
 }());

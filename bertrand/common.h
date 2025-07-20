@@ -33,6 +33,7 @@
 #endif
 
 
+// required for virtual memory management
 #ifdef _WIN32
     #include <windows.h>
     #include <errhandlingapi.h>
@@ -60,6 +61,9 @@
 namespace bertrand {
 
 
+/* Bertrand exposes as much information about the target platform and compiler as
+possible so that downstream code can access it in a standardized, constexpr-friendly
+manner. */
 #ifdef _WIN32
     constexpr bool WINDOWS = true;
     constexpr bool UNIX = false;
@@ -79,6 +83,7 @@ namespace bertrand {
 #endif
 
 
+/* The version specifier for the C++ standard library. */
 #ifdef _MSVC_LANG
     #define CXXSTD _MSVC_LANG
 #else
@@ -86,23 +91,85 @@ namespace bertrand {
 #endif
 
 
-#ifdef BERTRAND_DEBUG
-    constexpr bool DEBUG = true;
-#else
+/* A flag indicating whether the project is being built in debug mode (true) or
+release mode (false).  If true, then extra assertions will be inserted around common
+failure points, replacing undefined behavior with traced exceptions that are thrown
+using standard try/catch semantics.  If false, then these assertions will be optimized
+out, increasing performance at the cost of possible undefined behavior unless the
+conditions that trigger them have been explicitly handled.
+
+The state of this flag is determined by the presence of a `BERTRAND_RELEASE` macro,
+which will be injected by the build system when `bertrand build` is invoked with the
+`--release` flag.  If such a macro is present, then this flag will be false, otherwise
+it will be true (the default).
+
+Generally speaking, debug builds affect the following operations:
+
+    -   `operator*` and `operator->` dereferencing for `Optional` and `Expected`
+        monads, which will throw a `TypeError` if accessed in the empty or error state,
+        respectively.
+    -   `operator[]` indexing on containers, which will throw an `IndexError` if the
+        index is out of bounds after applying Python-style wraparound.
+
+    /// TODO: list some more operations that are affected by this flag.
+
+Note that this is not an exhaustive list, and downstream code may branch on this flag
+to enable further assertions as needed.
+
+Bertrand makes a concerted effort to make these assertions as cheap as possible, so
+that debug builds can maintain reasonable performance relative to their release
+counterparts.  Development should therefore always be done in a debug build first, in
+order to catch potential issues as early as possible, in conjunction with automated
+testing.  Once all possible sources of undefined behavior have been eliminated, then
+this flag can be set false as a final optimization before shipping the code to
+production, or simply left as true if the real-world performance impact is negligible.
+
+Users should take care not to assume the state of this flag in their own code, and not
+attempt to catch any of the exceptions that it produces, to avoid obfuscating the
+source of the error.  Bertrand's error handling philosophy dictates that exceptions are
+reserved for truly exceptional circumstances, which should bubble up and crash the
+program after closing any open resources.  For errors that may occur as a part of
+normal operation, and can therefore be handled gracefully, the `Expected` monad and
+errors-as-values paradigm should always be preferred, which allows them to be
+exhaustively enforced by the type system. */
+#ifdef BERTRAND_RELEASE
     constexpr bool DEBUG = false;
+#else
+    constexpr bool DEBUG = true;
 #endif
 
 
+/* Bertrand uses a large amount of template metaprogramming for its basic features,
+which can easily overflow the compiler's normal template recursion limits.  This should
+be rare, but can happen in some cases, forcing the user to manually increase the limit.
+This can be done by providing the `--template-recursion-limit=...` flag when invoking
+`bertrand build`, which sets the value of the following constant for use in C++. */
 #ifdef BERTRAND_TEMPLATE_RECURSION_LIMIT
     constexpr size_t TEMPLATE_RECURSION_LIMIT = BERTRAND_TEMPLATE_RECURSION_LIMIT;
 #else
     constexpr size_t TEMPLATE_RECURSION_LIMIT = 8192;
 #endif
-
-
 static_assert(
     TEMPLATE_RECURSION_LIMIT > 0,
     "Template recursion limit must be positive."
+);
+
+/* Bertrand emits internal vtables to handle algebraic types, such as unions and
+tuples.  As an optimization, these vtables will be omitted in favor of simple `if/else`
+chains as long as the total number of alternatives is less than this threshold, which
+is set by the `--min-vtable-size=...` flag when invoking `bertrand build`.
+
+Profile Guided Optimization (PGO) can be used to optimally select this threshold for a
+given architecture, as there is a hardware-dependent sweet spot based on the
+characteristics of the branch predictor and relative cost of vtable indirection. */
+#ifdef BERTRAND_MIN_VTABLE_SIZE
+    inline constexpr size_t MIN_VTABLE_SIZE = BERTRAND_MIN_VTABLE_SIZE;
+#else
+    inline constexpr size_t MIN_VTABLE_SIZE = 5;
+#endif
+static_assert(
+    MIN_VTABLE_SIZE >= 2,
+    "vtable sizes with fewer than 2 elements are not meaningful"
 );
 
 
@@ -2354,24 +2421,28 @@ namespace meta {
     }
 
     /* Do an integer-based `get<I>()` access on a tuple-like type by first checking for
-    a `t.get<I>()` member method. */
-    template <size_t I, tuple_like T>
+    a `t.get<I>()` member method.  Also applies Python-style wraparound for negative
+    indices. */
+    template <ssize_t I, tuple_like T>
     constexpr decltype(auto) unpack_tuple(T&& t)
-        noexcept(nothrow::has_member_get<T, I>)
-        requires(has_member_get<T, I>)
+        noexcept(nothrow::has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
+        requires(has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
     {
-        return (::std::forward<T>(t).template get<I>());
+        return (::std::forward<T>(t).template get<impl::normalize_index<meta::tuple_size<T>, I>()>());
     }
 
     /* If no `t.get<I>()` member method is found, attempt an ADL-enabled `get<I>(t)`
-    instead. */
-    template <size_t I, tuple_like T>
+    instead.  Also applies Python-style wraparound for negative indices. */
+    template <ssize_t I, tuple_like T>
     constexpr decltype(auto) unpack_tuple(T&& t)
-        noexcept(nothrow::has_adl_get<T, I>)
-        requires(!has_member_get<T, I> && has_adl_get<T, I>)
+        noexcept(nothrow::has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
+        requires(
+            !has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()> &&
+            has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>
+        )
     {
         using ::std::get;
-        return (get<I>(::std::forward<T>(t)));
+        return (get<impl::normalize_index<meta::tuple_size<T>, I>()>(::std::forward<T>(t)));
     }
 
     /////////////////////////
@@ -4643,6 +4714,96 @@ template <meta::hashable T>
 
 
 namespace impl {
+
+    /* A helper class that generates a manual vtable for a visitor function `F`, which
+    must be a template class that accepts a single `size_t` parameter representing the
+    index of the alternative being invoked.  Indexing the vtable object sets the
+    number of alternatives and requested index, and returns a function object that
+    performs the necessary dispatch.  Such vtables will automatically apply the
+    `MIN_VTABLE_SIZE` optimization where possible. */
+    template <template <size_t> typename F>
+    struct vtable {
+        template <typename>
+        struct dispatch;
+        template <size_t I, size_t... Is>
+        struct dispatch<std::index_sequence<I, Is...>> {
+            size_t index;
+
+            template <typename... A>
+            static constexpr bool nothrow = (
+                meta::nothrow::callable<F<I>, A...> &&
+                ... &&
+                meta::nothrow::callable<F<Is>, A...>
+            );
+
+            template <typename... A>
+            using type = meta::call_type<F<I>, A...>;
+
+            /* If the vtable size is less than `MIN_VTABLE_SIZE`, then we can optimize
+            the dispatch to a recursive `if` chain, which is easier for the compiler to
+            optimize. */
+            template <size_t J = 0, typename... A>
+            [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
+                noexcept (nothrow<A...>)
+                requires (
+                    sizeof...(Is) + 1 < MIN_VTABLE_SIZE &&
+                    (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
+                    (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
+                )
+            {
+                if constexpr (J < sizeof...(Is)) {
+                    if (index == J) {
+                        return F<J>{}(std::forward<A>(args)...);
+                    } else {
+                        return operator()<J + 1>(std::forward<A>(args)...);
+                    }
+                } else {
+                    return F<J>{}(std::forward<A>(args)...);                
+                }
+            }
+
+            template <typename... A>
+            using ptr = type<A...>(*)(A...) noexcept (nothrow<A...>);
+
+            template <size_t J, typename... A>
+            static constexpr type<A...> fn(A... args) noexcept (nothrow<A...>) {
+                return F<J>{}(std::forward<A>(args)...);
+            }
+
+            template <typename... A>
+            static constexpr ptr<A...> table[sizeof...(Is) + 1] {
+                &fn<I, A...>,
+                &fn<Is + 1, A...>...
+            };
+
+            /* Otherwise, a normal vtable will be emitted and stored in the binary. */
+            template <typename... A>
+            [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
+                noexcept (nothrow<A...>)
+                requires (
+                    sizeof...(Is) + 1 >= MIN_VTABLE_SIZE &&
+                    (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
+                    (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
+                )
+            {
+                return table<meta::forward<A>...>[index](std::forward<A>(args)...);
+            }
+        };
+
+        /* Set the vtable size to the index sequence set by the first argument, and
+        then select the alternative at the given index.  Returns a function object that
+        can invoked to perform the actual dispatch, passing the arguments to the
+        selected alternative.  This effectively promotes the runtime index to compile
+        time, encoding it in `Is...`, which can apply different logic for each
+        alternative.  Note that if the total number of alternatives is less than
+        `MIN_VTABLE_SIZE`, a recursive `if` chain will be generated instead of a full
+        vtable. */
+        template <size_t... Is>
+            requires ((sizeof...(Is) > 0) && ... && meta::default_constructible<F<Is>>)
+        static constexpr auto operator[](std::index_sequence<Is...>, size_t i) noexcept {
+            return dispatch<std::index_sequence<Is...>>{i};
+        }
+    };
 
     /* A helper for defining iterators and other objects that wish to expose the `->`
     operator, but dereference to a temporary value, whose address would otherwise not
