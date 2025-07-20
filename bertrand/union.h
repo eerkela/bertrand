@@ -1184,9 +1184,9 @@ namespace impl {
     private:
         template <typename... Us>
         union _type { constexpr ~_type() noexcept {}; };
-        template <typename U, typename... Us> requires (!meta::lvalue<U>)
+        template <typename U, typename... Us>
         union _type<U, Us...> {
-            [[no_unique_address]] U curr;
+            [[no_unique_address]] impl::store<U> curr;
             [[no_unique_address]] _type<Us...> rest;
 
             constexpr _type() noexcept {}
@@ -1211,7 +1211,7 @@ namespace impl {
             template <size_t I, typename Self>
             constexpr decltype(auto) get(this Self&& self) noexcept {
                 if constexpr (I == 0) {
-                    return (std::forward<Self>(self).curr);
+                    return (std::forward<Self>(self).curr.value);
                 } else {
                     return (std::forward<Self>(self).rest.template get<I - 1>());
                 }
@@ -1256,61 +1256,6 @@ namespace impl {
                     std::destroy_at(&curr);
                 }
             }
-
-            template <size_t I> requires (I > 0)
-            constexpr void destroy()
-                noexcept (requires{{rest.template destroy<I - 1>()} noexcept;})
-                requires (requires{{rest.template destroy<I - 1>()};})
-            {
-                rest.template destroy<I - 1>();
-            }
-        };
-        template <meta::lvalue U, typename... Us>
-        union _type<U, Us...> {
-            [[no_unique_address]] struct { U ref; } curr;
-            [[no_unique_address]] _type<Us...> rest;
-
-            constexpr _type() noexcept {}
-            constexpr ~_type() noexcept {}
-
-            constexpr _type(tag<0>, U value) noexcept : curr(value) {}
-
-            template <size_t I, typename... A> requires (I > 0)
-            constexpr _type(tag<I>, A&&... args)
-                noexcept (meta::nothrow::constructible_from<_type<Us...>, tag<I - 1>, A...>)
-                requires (meta::constructible_from<_type<Us...>, tag<I - 1>, A...>)
-            :
-                rest(tag<I - 1>{}, std::forward<A>(args)...)  // recur
-            {}
-
-            template <size_t I, typename Self>
-            constexpr decltype(auto) get(this Self&& self) noexcept {
-                if constexpr (I == 0) {
-                    return (std::forward<Self>(self).curr.ref);
-                } else {
-                    return (std::forward<Self>(self).rest.template get<I - 1>());
-                }
-            }
-
-            template <size_t I> requires (I == 0)
-            constexpr void construct(U other) noexcept {
-                std::construct_at(&curr, other.curr.ref);
-            }
-
-            template <size_t I, typename... A> requires (I > 0)
-            constexpr void construct(A&&... args)
-                noexcept (requires{
-                    {rest.template construct<I - 1>(std::forward<A>(args)...)} noexcept;
-                })
-                requires (requires{
-                    {rest.template construct<I - 1>(std::forward<A>(args)...)};
-                })
-            {
-                rest.template construct<I - 1>(std::forward<A>(args)...);
-            }
-
-            template <size_t I> requires (I == 0)
-            constexpr void destroy() noexcept {}  // trivially destructible
 
             template <size_t I> requires (I > 0)
             constexpr void destroy()

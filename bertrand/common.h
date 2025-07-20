@@ -105,11 +105,10 @@ it will be true (the default).
 
 Generally speaking, debug builds affect the following operations:
 
-    -   `operator*` and `operator->` dereferencing for `Optional` and `Expected`
-        monads, which will throw a `TypeError` if accessed in the empty or error state,
-        respectively.
-    -   `operator[]` indexing on containers, which will throw an `IndexError` if the
-        index is out of bounds after applying Python-style wraparound.
+    -   `operator*` and `operator->` dereferencing for `Optional`, which will throw a
+        `TypeError` if accessed in the empty state.
+    -   `operator[]` container indexing, which will throw an `IndexError` if the index
+        is out of bounds after applying Python-style wraparound.
 
     /// TODO: list some more operations that are affected by this flag.
 
@@ -4715,6 +4714,38 @@ template <meta::hashable T>
 
 namespace impl {
 
+    /* A simple wrapper for an arbitrarily-qualified type that strips rvalue
+    references - taking ownership over the referenced object - while preserving
+    lvalues - converting them into a copyable, assignable proxy. */
+    template <meta::not_void T>
+    struct store {
+        using type = meta::remove_rvalue<T>;
+        [[no_unique_address]] type value;
+        template <typename... A>
+        [[nodiscard]] constexpr store(A&&... args) 
+            noexcept (meta::nothrow::constructible_from<type, A...>)
+            requires (meta::constructible_from<type, A...>)
+        :
+            value(std::forward<A>(args)...)
+        {};
+    };
+
+    /* Specialization of `ref` for lvalue references.  Assigning to an lvalue reference
+    will rebind the reference itself, without affecting the referenced object. */
+    template <meta::not_void T> requires (meta::lvalue<T>)
+    struct store<T> {
+        using type = T;
+        type value;
+        constexpr store& operator=(const store& other) noexcept {
+            std::construct_at(this, other.value);
+            return *this;
+        }
+    };
+
+    /* CTAD allows reference types to be inferred from an initializer. */
+    template <typename T>
+    store(T&&) -> store<meta::remove_rvalue<T>>;
+
     /* A helper class that generates a manual vtable for a visitor function `F`, which
     must be a template class that accepts a single `size_t` parameter representing the
     index of the alternative being invoked.  Indexing the vtable object sets the
@@ -4890,6 +4921,9 @@ namespace impl {
         }
         return first;
     }
+
+    /// TODO: lowercase these?  They may also be merged into op.h when I finally finish
+    /// functions.
 
     template <typename T>
     struct Construct {
