@@ -47,8 +47,6 @@ template <static_str... Strings>
 struct string_list;
 
 
-template <size_t N>
-static_str(const char(&)[N]) -> static_str<N - 1>;
 template <meta::is<char> T>
 static_str(T) -> static_str<1>;
 template <auto S>

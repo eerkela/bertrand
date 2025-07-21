@@ -4,7 +4,6 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/union.h"
-#include <ranges>
 
 
 namespace bertrand {
@@ -138,41 +137,8 @@ namespace impl {
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
 
-    /// TODO: maybe I can eliminate the concept of a separate `slice_indices` class,
-    /// and can instead template `impl::slice` to only accept slices 
 
-    /* A normalized set of slice indices that can be used to initialize a proper slice
-    range.  An instance of this class must be provided to the `impl::slice`
-    constructor, and is usually produced by the `bertrand::slice{...}.normalize(ssize)`
-    helper method in the case of integer indices.  Containers that allow non-integer
-    indices can construct an instance of this within their own `operator[](slice)`
-    method to provide custom indexing, if needed. */
-    struct slice_indices {
-        ssize_t start = 0;
-        ssize_t stop = 0;
-        ssize_t step = 1;
 
-        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept {
-            ssize_t bias = step + (step < 0) - (step > 0);
-            ssize_t length = (stop - start + bias) / step;
-            return length * (length > 0);
-        }
-        [[nodiscard]] constexpr bool empty() const noexcept { return ssize() == 0; }
-    };
-
-    /// TODO: maybe `slice` needs to also be templated on the integer type that was
-    /// used for the indices.
-
-    /* A subclass of `range` that only represents a subset of the elements, according
-    to Python slicing semantics.  The indices are given in a `bertrand::slice` helper
-    struct, which serves as a factory for this type. */
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    struct slice;
-
-    template <typename C, meta::slice S>
-        requires ((meta::iterable<C> || meta::tuple_like<C>) && S::normalized)
-    slice(C&&, S) -> slice<meta::remove_rvalue<C>>;
 
 
     /// TODO: mask -> where, and then it can be part of the public API, as
@@ -930,10 +896,10 @@ namespace impl {
         }
 
         /* Get a sentinel for the end of the iota. */
-        [[nodiscard]] constexpr NoneType end() const noexcept { return None; }
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
 
         /* Get a sentinel for the end of the iota. */
-        [[nodiscard]] constexpr NoneType cend() const noexcept { return None; }
+        [[nodiscard]] static constexpr NoneType cend() noexcept { return {}; }
 
         /// TODO: at()?
 
@@ -1041,10 +1007,10 @@ namespace impl {
         }
 
         /* Get a sentinel for the end of the iota. */
-        [[nodiscard]] constexpr NoneType end() const noexcept { return None; }
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
 
         /* Get a sentinel for the end of the iota. */
-        [[nodiscard]] constexpr NoneType cend() const noexcept { return None; }
+        [[nodiscard]] static constexpr NoneType cend() noexcept { return {}; }
 
 
         /// TODO: at()
@@ -1756,146 +1722,19 @@ namespace impl {
         }
     };
 
-    /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
-    iterate over the container `C` instead of forward iterating.  This equates to
-    swapping all of the `begin()` and `end()` methods with their reversed counterparts,
-    and modifying the indexing logic to map index `i` to index `-i - 1`, which
-    triggers Python-style wraparound. */
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    struct reversed {
-        using __type = meta::remove_rvalue<C>;
-
-        [[no_unique_address]] __type __value;
-
-        [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
-            requires (requires{{meta::to_arrow(__value)};})
-        {
-            return meta::to_arrow(__value);
+    template <typename C>
+    constexpr decltype(auto) range_subscript(C&& container, size_t i)
+        noexcept (requires{{std::forward<C>(container)[i]} noexcept;} || meta::tuple_like<C>)
+        requires (requires{{std::forward<C>(container)[i]};} || meta::tuple_like<C>)
+    {
+        if constexpr (requires{{std::forward<C>(container)[i]};}) {
+            return (std::forward<C>(container)[i]);
+        } else {
+            return typename impl::tuple_array<meta::forward<C>>::dispatch{i}(
+                std::forward<C>(container)
+            );
         }
-
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
-            requires (requires{{meta::to_arrow(__value)};})
-        {
-            return meta::to_arrow(__value);
-        }
-
-        [[nodiscard]] constexpr auto size() const
-            noexcept (meta::nothrow::has_size<C> || meta::tuple_like<C>)
-            requires (meta::has_size<C> || meta::tuple_like<C>)
-        {
-            if constexpr (meta::has_size<C>) {
-                return std::ranges::size(__value);
-            } else {
-                return meta::tuple_size<C>;
-            }
-        }
-
-        [[nodiscard]] constexpr auto ssize() const
-            noexcept (meta::nothrow::has_ssize<C> || meta::tuple_like<C>)
-            requires (meta::has_ssize<C> || meta::tuple_like<C>)
-        {
-            if constexpr (meta::has_ssize<C>) {
-                return std::ranges::ssize(__value);
-            } else {
-                return meta::to_signed(meta::tuple_size<C>);
-            }
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (meta::nothrow::has_empty<C> || meta::tuple_like<C>)
-            requires (meta::has_empty<C> || meta::tuple_like<C>)
-        {
-            if constexpr (meta::has_empty<C>) {
-                return std::ranges::empty(__value);
-            } else {
-                return meta::tuple_size<C> == 0;
-            }
-        }
-
-        template <ssize_t I, typename Self>
-        constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value)} noexcept;})
-            requires (requires{{meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value)};})
-        {
-            return (meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value));
-        }
-
-        template <typename Self>
-        constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
-            noexcept (requires{{std::forward<Self>(self).__value[
-                size_t(impl::normalize_index(self.ssize(), -i - 1))]
-            } noexcept;})
-            requires (requires{{std::forward<Self>(self).__value[
-                size_t(impl::normalize_index(self.ssize(), -i - 1))]
-            };})
-        {
-            return (std::forward<Self>(self).__value[
-                size_t(impl::normalize_index(self.ssize(), -i - 1))
-            ]);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) begin(this Self& self)
-            noexcept (requires{{impl::make_range_reversed<Self&>::begin(self)} noexcept;})
-            requires (requires{{impl::make_range_reversed<Self&>::begin(self)};})
-        {
-            return (impl::make_range_reversed<Self&>::begin(self));
-        }
-
-        [[nodiscard]] constexpr decltype(auto) cbegin() const
-            noexcept (requires{{impl::make_range_reversed<const reversed&>::begin(*this)} noexcept;})
-            requires (requires{{impl::make_range_reversed<const reversed&>::begin(*this)};})
-        {
-            return (impl::make_range_reversed<const reversed&>::begin(*this));
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) end(this Self& self)
-            noexcept (requires{{impl::make_range_reversed<Self&>::end(self)} noexcept;})
-            requires (requires{{impl::make_range_reversed<Self&>::end(self)};})
-        {
-            return (impl::make_range_reversed<Self&>::end(self));
-        }
-
-        [[nodiscard]] constexpr decltype(auto) cend() const
-            noexcept (requires{{impl::make_range_reversed<const reversed&>::end(*this)} noexcept;})
-            requires (requires{{impl::make_range_reversed<const reversed&>::end(*this)};})
-        {
-            return (impl::make_range_reversed<const reversed&>::end(*this));
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) rbegin(this Self& self)
-            noexcept (requires{{impl::make_range_iterator<Self&>::begin(self)} noexcept;})
-            requires (requires{{impl::make_range_iterator<Self&>::begin(self)};})
-        {
-            return (impl::make_range_iterator<Self&>::begin(self));
-        }
-
-        [[nodiscard]] constexpr decltype(auto) crbegin() const
-            noexcept (requires{{impl::make_range_iterator<const reversed&>::begin(*this)} noexcept;})
-            requires (requires{{impl::make_range_iterator<const reversed&>::begin(*this)};})
-        {
-            return (impl::make_range_iterator<const reversed&>::begin(*this));
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
-            noexcept (requires{{impl::make_range_iterator<Self&>::end(self)} noexcept;})
-            requires (requires{{impl::make_range_iterator<Self&>::end(self)};})
-        {
-            return (impl::make_range_iterator<Self&>::end(self));
-        }
-
-        [[nodiscard]] constexpr decltype(auto) crend() const
-            noexcept (requires{{impl::make_range_iterator<const reversed&>::end(*this)} noexcept;})
-            requires (requires{{impl::make_range_iterator<const reversed&>::end(*this)};})
-        {
-            return (impl::make_range_iterator<const reversed&>::end(*this));
-        }
-    };
+    }
 
     template <typename to, meta::tuple_like C, size_t... Is>
     constexpr to range_tuple_conversion(C&& container, std::index_sequence<Is...>)
@@ -1915,6 +1754,13 @@ namespace impl {
         };})
     {
         ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...);
+    }
+
+    template <typename L, typename R>
+    consteval ValueError range_size_mismatch() noexcept {
+        static constexpr static_str msg =
+            "Size mismatch during range assignment: " + demangle<L>() + " = " + demangle<R>();
+        return ValueError(msg);
     }
 
 }
@@ -2066,10 +1912,10 @@ struct range : impl::range_tag {
     it to be destructured when used as an argument to a Bertrand function. */
     template <typename Self>
     [[nodiscard]] constexpr auto operator*(this Self&& self)
-        noexcept (requires{{impl::unpack{std::forward<Self>(self).__value}} noexcept;})
-        requires (requires{{impl::unpack{std::forward<Self>(self).__value}};})
+        noexcept (requires{{impl::unpack{std::forward<Self>(self)}} noexcept;})
+        requires (requires{{impl::unpack{std::forward<Self>(self)}};})
     {
-        return impl::unpack{std::forward<Self>(self).__value};
+        return impl::unpack{std::forward<Self>(self)};
     }
 
     /* Indirectly access a member of the wrapped container. */
@@ -2144,36 +1990,32 @@ struct range : impl::range_tag {
     operator. */
     template <typename Self>
     constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
-        noexcept (requires{{std::forward<Self>(self).__value[
+        noexcept (requires{{impl::range_subscript(
+            std::forward<Self>(self).__value,
             size_t(impl::normalize_index(self.ssize(), i))
-        ]} noexcept;} || meta::tuple_like<C>)
-        requires (requires{{std::forward<Self>(self).__value[
+        )} noexcept;})
+        requires (requires{{impl::range_subscript(
+            std::forward<Self>(self).__value,
             size_t(impl::normalize_index(self.ssize(), i))
-        ]};} || meta::tuple_like<C>)
+        )};})
     {
-        if constexpr (requires{{std::forward<Self>(self).__value[
+        return (impl::range_subscript(
+            std::forward<Self>(self).__value,
             size_t(impl::normalize_index(self.ssize(), i))
-        ]};}) {
-            return (std::forward<Self>(self).__value[
-                size_t(impl::normalize_index(self.ssize(), i))
-            ]);
-
-        } else {
-            using container = decltype((std::forward<Self>(self).__value));
-            return typename impl::tuple_array<container>::dispatch{
-                size_t(impl::normalize_index(self.ssize(), i))
-            }(std::forward<Self>(self).__value);
-        }
+        ));
     }
+
+    /// TODO: update this indexing operator to account for proper slice{}() semantics,
+    /// and possibly just construct an `impl::slice` object directly.
 
     /* Slice operator, which returns a subset of the range according to a Python-style
     `slice` expression. */
-    template <typename Self>
-    constexpr auto operator[](this Self&& self, const bertrand::slice& s)
-        noexcept (requires{{s(std::forward<Self>(self).__value, s)} noexcept;})
-        requires (requires{{s(std::forward<Self>(self).__value, s)};})
+    template <typename Self, meta::slice S>
+    [[nodiscard]] constexpr auto operator[](this Self&& self, S&& slice)
+        noexcept (requires{{std::forward<S>(slice)(std::forward<Self>(self), slice)} noexcept;})
+        requires (requires{{std::forward<S>(slice)(std::forward<Self>(self), slice)};})
     {
-        return s(std::forward<Self>(self).__value, s);
+        return std::forward<S>(slice)(std::forward<Self>(self), slice);
     }
 
     /* Where operator, which returns a subset of the range corresponding to the `true`
@@ -2181,20 +2023,27 @@ struct range : impl::range_tag {
     number of true values in the mask or the size of this range, whichever is
     smaller. */
     template <typename Self, meta::where M>
-    constexpr auto operator[](this Self&& self, M&& mask)
-        noexcept (requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)} noexcept;})
-        requires (requires{{std::forward<M>(mask)(std::forward<Self>(self).__value)};})
+    [[nodiscard]] constexpr auto operator[](this Self&& self, M&& mask)
+        noexcept (requires{{std::forward<M>(mask)(std::forward<Self>(self))} noexcept;})
+        requires (requires{{std::forward<M>(mask)(std::forward<Self>(self))};})
     {
-        return std::forward<M>(mask)(std::forward<Self>(self).__value);
+        return std::forward<M>(mask)(std::forward<Self>(self));
     }
 
     /* Get a forward iterator to the start of the range. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) begin(this Self& self)
-        noexcept (requires{{impl::make_range_iterator<Self&>::begin(self)} noexcept;})
-        requires (requires{{impl::make_range_iterator<Self&>::begin(self)};})
+    [[nodiscard]] constexpr decltype(auto) begin()
+        noexcept (requires{{impl::make_range_iterator<range&>::begin(*this)} noexcept;})
+        requires (requires{{impl::make_range_iterator<range&>::begin(*this)};})
     {
-        return (impl::make_range_iterator<Self&>::begin(self));
+        return (impl::make_range_iterator<range&>::begin(*this));
+    }
+
+    /* Get a forward iterator to the start of the range. */
+    [[nodiscard]] constexpr decltype(auto) begin() const
+        noexcept (requires{{impl::make_range_iterator<const range&>::begin(*this)} noexcept;})
+        requires (requires{{impl::make_range_iterator<const range&>::begin(*this)};})
+    {
+        return (impl::make_range_iterator<const range&>::begin(*this));
     }
 
     /* Get a forward iterator to the start of the range. */
@@ -2206,12 +2055,19 @@ struct range : impl::range_tag {
     }
 
     /* Get a forward iterator to one past the last element of the range. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) end(this Self& self)
-        noexcept (requires{{impl::make_range_iterator<Self&>::end(self)} noexcept;})
-        requires (requires{{impl::make_range_iterator<Self&>::end(self)};})
+    [[nodiscard]] constexpr decltype(auto) end()
+        noexcept (requires{{impl::make_range_iterator<range&>::end(*this)} noexcept;})
+        requires (requires{{impl::make_range_iterator<range&>::end(*this)};})
     {
-        return (impl::make_range_iterator<Self&>::end(self));
+        return (impl::make_range_iterator<range&>::end(*this));
+    }
+
+    /* Get a forward iterator to one past the last element of the range. */
+    [[nodiscard]] constexpr decltype(auto) end() const
+        noexcept (requires{{impl::make_range_iterator<const range&>::end(*this)} noexcept;})
+        requires (requires{{impl::make_range_iterator<const range&>::end(*this)};})
+    {
+        return (impl::make_range_iterator<const range&>::end(*this));
     }
 
     /* Get a forward iterator to one past the last element of the range. */
@@ -2223,12 +2079,19 @@ struct range : impl::range_tag {
     }
 
     /* Get a reverse iterator to the last element of the range. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) rbegin(this Self& self)
-        noexcept (requires{{impl::make_range_reversed<Self&>::begin(self)} noexcept;})
-        requires (requires{{impl::make_range_reversed<Self&>::begin(self)};})
+    [[nodiscard]] constexpr decltype(auto) rbegin()
+        noexcept (requires{{impl::make_range_reversed<range&>::begin(*this)} noexcept;})
+        requires (requires{{impl::make_range_reversed<range&>::begin(*this)};})
     {
-        return (impl::make_range_reversed<Self&>::begin(self));
+        return (impl::make_range_reversed<range&>::begin(*this));
+    }
+
+    /* Get a reverse iterator to the last element of the range. */
+    [[nodiscard]] constexpr decltype(auto) rbegin() const
+        noexcept (requires{{impl::make_range_reversed<const range&>::begin(*this)} noexcept;})
+        requires (requires{{impl::make_range_reversed<const range&>::begin(*this)};})
+    {
+        return (impl::make_range_reversed<const range&>::begin(*this));
     }
 
     /* Get a reverse iterator to the last element of the range. */
@@ -2240,12 +2103,19 @@ struct range : impl::range_tag {
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
-        noexcept (requires{{impl::make_range_reversed<Self&>::end(self)} noexcept;})
-        requires (requires{{impl::make_range_reversed<Self&>::end(self)};})
+    [[nodiscard]] constexpr decltype(auto) rend()
+        noexcept (requires{{impl::make_range_reversed<range&>::end(*this)} noexcept;})
+        requires (requires{{impl::make_range_reversed<range&>::end(*this)};})
     {
-        return (impl::make_range_reversed<Self&>::end(self));
+        return (impl::make_range_reversed<range&>::end(*this));
+    }
+
+    /* Get a reverse iterator to one before the first element of the range. */
+    [[nodiscard]] constexpr decltype(auto) rend() const
+        noexcept (requires{{impl::make_range_reversed<const range&>::end(*this)} noexcept;})
+        requires (requires{{impl::make_range_reversed<const range&>::end(*this)};})
+    {
+        return (impl::make_range_reversed<const range&>::end(*this));
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
@@ -2265,18 +2135,18 @@ struct range : impl::range_tag {
     [[nodiscard]] constexpr operator to(this Self&& self)
         noexcept (
             requires{{impl::range_tuple_conversion<to>(
-                std::forward<Self>(self).__value,
+                std::forward<Self>(self),
                 std::make_index_sequence<meta::tuple_size<C>>{}
             )} noexcept;} ||
             (
                 !requires{{impl::range_tuple_conversion<to>(
-                    std::forward<Self>(self).__value,
+                    std::forward<Self>(self),
                     std::make_index_sequence<meta::tuple_size<C>>{}
                 )};} &&
                 requires{{to(std::from_range, std::forward<Self>(self))} noexcept;}
             ) || (
                 !requires{{impl::range_tuple_conversion<to>(
-                    std::forward<Self>(self).__value,
+                    std::forward<Self>(self),
                     std::make_index_sequence<meta::tuple_size<C>>{}
                 )};} &&
                 !requires{{to(std::from_range, std::forward<Self>(self))};} &&
@@ -2285,7 +2155,7 @@ struct range : impl::range_tag {
         )
         requires (
             requires{{impl::range_tuple_conversion<to>(
-                std::forward<Self>(self).__value,
+                std::forward<Self>(self),
                 std::make_index_sequence<meta::tuple_size<C>>{}
             )};} ||
             requires{{to(std::from_range, std::forward<Self>(self))};} ||
@@ -2293,11 +2163,11 @@ struct range : impl::range_tag {
         )
     {
         if constexpr (requires{{impl::range_tuple_conversion<to>(
-            std::forward<Self>(self).__value,
+            std::forward<Self>(self),
             std::make_index_sequence<meta::tuple_size<C>>{}
         )};}) {
             return impl::range_tuple_conversion<to>(
-                std::forward<Self>(self).__value,
+                std::forward<Self>(self),
                 std::make_index_sequence<meta::tuple_size<C>>{}
             );
 
@@ -2312,66 +2182,117 @@ struct range : impl::range_tag {
     /* Assigning a range to another range triggers elementwise assignment between their
     contents.  If both ranges are tuple-like, then they must have the same size, such
     that the assignment can be done via a single fold expression. */
-    template <meta::range T>
-    constexpr range& operator=(T&& other)
+    template <typename L, meta::range R>
+    constexpr L operator=(this L&& lhs, R&& rhs)
         noexcept (requires{{impl::range_tuple_assignment(
-            __value,
-            std::forward<T>(other),
-            std::make_index_sequence<meta::tuple_size<C>>{}
+            lhs,
+            std::forward<R>(rhs),
+            std::make_index_sequence<meta::tuple_size<L>>{}
         )} noexcept;})
         requires (
-            meta::tuple_like<C> && meta::tuple_like<T> &&
-            meta::tuple_size<C> == meta::tuple_size<T> &&
+            meta::tuple_like<L> && meta::tuple_like<R> &&
+            meta::tuple_size<L> == meta::tuple_size<R> &&
             requires{{impl::range_tuple_assignment(
-                __value,
-                std::forward<T>(other),
-                std::make_index_sequence<meta::tuple_size<C>>{}
+                lhs,
+                std::forward<R>(rhs),
+                std::make_index_sequence<meta::tuple_size<L>>{}
             )};}
         )
     {
         impl::range_tuple_assignment(
-            __value,
-            std::forward<T>(other),
-            std::make_index_sequence<meta::tuple_size<C>>{}
+            lhs,
+            std::forward<R>(rhs),
+            std::make_index_sequence<meta::tuple_size<L>>{}
         );
-        return *this;
+        return std::forward<L>(lhs);
     }
 
     /* Assigning a range to another range triggers elementwise assignment between their
     contents.  If either range is not tuple-like, then the assignment must be done with
     an elementwise loop. */
-    template <meta::range T>
-    constexpr range& operator=(T&& other)
+    template <typename L, meta::range R>
+    constexpr L operator=(this L&& lhs, R&& rhs)
         requires (
-            (!meta::tuple_like<C> || !meta::tuple_like<T>) &&
+            (!meta::tuple_like<L> || !meta::tuple_like<R>) &&
             requires(
-                decltype(begin()) this_it,
-                decltype(end()) this_end,
-                decltype(std::ranges::begin(other)) other_it,
-                decltype(std::ranges::end(other)) other_end
+                decltype(std::ranges::begin(lhs)) lhs_it,
+                decltype(std::ranges::end(lhs)) lhs_end,
+                decltype(std::ranges::begin(rhs)) rhs_it,
+                decltype(std::ranges::end(rhs)) rhs_end
             ){
-                {this_it != this_end};
-                {other_it != other_end};
-                {*this_it = *other_it};
-                {++this_it};
-                {++other_it};
+                {lhs_it != lhs_end};
+                {rhs_it != rhs_end};
+                {*lhs_it = *rhs_it};
+                {++lhs_it};
+                {++rhs_it};
             }
         )
     {
-        auto this_it = begin();
-        auto this_end = end();
-        auto other_it = std::ranges::begin(other);
-        auto other_end = std::ranges::end(other);
-        while (this_it != this_end && other_it != other_end) {
-            *this_it = *other_it;
-            ++this_it;
-            ++other_it;
+        constexpr bool sized_lhs = meta::has_size<L> && meta::exact_size<L>;
+        constexpr bool sized_rhs = meta::has_size<R> && meta::exact_size<R>;
+
+        // ensure the sizes match if they can be determined in constant time
+        size_t lhs_size = 0;
+        size_t rhs_size = 0;
+        if constexpr (sized_lhs && sized_rhs) {
+            lhs_size = std::ranges::size(lhs);
+            rhs_size = std::ranges::size(rhs);
+            if (lhs_size != rhs_size) {
+                if consteval {
+                    throw impl::range_size_mismatch<L, R>();
+                } else {
+                    throw ValueError(
+                        "cannot assign a range of size " + std::to_string(rhs_size) +
+                        " to a slice of size " + std::to_string(lhs_size)
+                    );
+                }
+            }
+        } else if constexpr (sized_lhs) {
+            lhs_size = std::ranges::size(lhs);
+        } else if constexpr (sized_rhs) {
+            rhs_size = std::ranges::size(rhs);
         }
-        if (this_it != this_end || other_it != other_end) {
-            /// TODO: centralize this error message.
-            throw ValueError("range assignment size mismatch");
+
+        // iterate over the range and assign each element
+        auto lhs_it = std::ranges::begin(lhs);
+        auto lhs_end = std::ranges::end(lhs);
+        auto rhs_it = std::ranges::begin(rhs);
+        auto rhs_end = std::ranges::end(rhs);
+        while (lhs_it != lhs_end && rhs_it != rhs_end) {
+            *lhs_it = *rhs_it;
+            ++lhs_it;
+            ++rhs_it;
+            if constexpr (!sized_lhs) { ++lhs_size; }
+            if constexpr (!sized_rhs) { ++rhs_size; }
         }
-        return *this;
+
+        // if the observed sizes do not match, then throw an error
+        if constexpr (!sized_lhs || !sized_rhs) {
+            if (lhs_it != lhs_end || rhs_it != rhs_end) {
+                if consteval {
+                    throw impl::range_size_mismatch<L, R>();
+                } else {
+                    if constexpr (!sized_lhs) {
+                        while (lhs_it != lhs_end) {
+                            ++lhs_it;
+                            ++lhs_size;
+                        }
+                    }
+                    if constexpr (!sized_rhs) {
+                        while (rhs_it != rhs_end) {
+                            ++rhs_it;
+                            ++rhs_size;
+                        }
+                    }
+                    throw ValueError(
+                        "cannot assign a range of size " + std::to_string(rhs_size) +
+                        " to a slice of size " + std::to_string(lhs_size)
+                    );
+                }
+            }
+        }
+
+        return std::forward<L>(lhs);
     }
 
     /// TODO: also a monadic call operator which returns a comprehension that invokes
@@ -2389,6 +2310,157 @@ constexpr void swap(range<C>& lhs, range<C>& rhs)
     requires (requires{{lhs.swap(rhs)};})
 {
     lhs.swap(rhs);
+}
+
+
+////////////////////////
+////    REVERSED    ////
+////////////////////////
+
+
+namespace impl {
+
+    /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
+    iterate over the container `C` instead of forward iterating.  This equates to
+    swapping all of the `begin()` and `end()` methods with their reversed counterparts,
+    and modifying the indexing logic to map index `i` to index `-i - 1`, which
+    triggers Python-style wraparound. */
+    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    struct reversed {
+        using __type = meta::remove_rvalue<C>;
+
+        [[no_unique_address]] __type __value;
+
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+            requires (requires{{meta::to_arrow(__value)};})
+        {
+            return meta::to_arrow(__value);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+            requires (requires{{meta::to_arrow(__value)};})
+        {
+            return meta::to_arrow(__value);
+        }
+
+        [[nodiscard]] constexpr auto size() const
+            noexcept (meta::nothrow::has_size<C> || meta::tuple_like<C>)
+            requires (meta::has_size<C> || meta::tuple_like<C>)
+        {
+            if constexpr (meta::has_size<C>) {
+                return std::ranges::size(__value);
+            } else {
+                return meta::tuple_size<C>;
+            }
+        }
+
+        [[nodiscard]] constexpr auto ssize() const
+            noexcept (meta::nothrow::has_ssize<C> || meta::tuple_like<C>)
+            requires (meta::has_ssize<C> || meta::tuple_like<C>)
+        {
+            if constexpr (meta::has_ssize<C>) {
+                return std::ranges::ssize(__value);
+            } else {
+                return meta::to_signed(meta::tuple_size<C>);
+            }
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (meta::nothrow::has_empty<C> || meta::tuple_like<C>)
+            requires (meta::has_empty<C> || meta::tuple_like<C>)
+        {
+            if constexpr (meta::has_empty<C>) {
+                return std::ranges::empty(__value);
+            } else {
+                return meta::tuple_size<C> == 0;
+            }
+        }
+
+        template <ssize_t I, typename Self>
+        constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value)} noexcept;})
+            requires (requires{{meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value)};})
+        {
+            return (meta::unpack_tuple<-I - 1>(std::forward<Self>(self).__value));
+        }
+
+        template <typename Self>
+        constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (requires{{std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))]
+            } noexcept;})
+            requires (requires{{std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))]
+            };})
+        {
+            return (std::forward<Self>(self).__value[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))
+            ]);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) begin(this Self& self)
+            noexcept (requires{{impl::make_range_reversed<Self&>::begin(self)} noexcept;})
+            requires (requires{{impl::make_range_reversed<Self&>::begin(self)};})
+        {
+            return (impl::make_range_reversed<Self&>::begin(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) cbegin() const
+            noexcept (requires{{impl::make_range_reversed<const reversed&>::begin(*this)} noexcept;})
+            requires (requires{{impl::make_range_reversed<const reversed&>::begin(*this)};})
+        {
+            return (impl::make_range_reversed<const reversed&>::begin(*this));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) end(this Self& self)
+            noexcept (requires{{impl::make_range_reversed<Self&>::end(self)} noexcept;})
+            requires (requires{{impl::make_range_reversed<Self&>::end(self)};})
+        {
+            return (impl::make_range_reversed<Self&>::end(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) cend() const
+            noexcept (requires{{impl::make_range_reversed<const reversed&>::end(*this)} noexcept;})
+            requires (requires{{impl::make_range_reversed<const reversed&>::end(*this)};})
+        {
+            return (impl::make_range_reversed<const reversed&>::end(*this));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) rbegin(this Self& self)
+            noexcept (requires{{impl::make_range_iterator<Self&>::begin(self)} noexcept;})
+            requires (requires{{impl::make_range_iterator<Self&>::begin(self)};})
+        {
+            return (impl::make_range_iterator<Self&>::begin(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) crbegin() const
+            noexcept (requires{{impl::make_range_iterator<const reversed&>::begin(*this)} noexcept;})
+            requires (requires{{impl::make_range_iterator<const reversed&>::begin(*this)};})
+        {
+            return (impl::make_range_iterator<const reversed&>::begin(*this));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
+            noexcept (requires{{impl::make_range_iterator<Self&>::end(self)} noexcept;})
+            requires (requires{{impl::make_range_iterator<Self&>::end(self)};})
+        {
+            return (impl::make_range_iterator<Self&>::end(self));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) crend() const
+            noexcept (requires{{impl::make_range_iterator<const reversed&>::end(*this)} noexcept;})
+            requires (requires{{impl::make_range_iterator<const reversed&>::end(*this)};})
+        {
+            return (impl::make_range_iterator<const reversed&>::end(*this));
+        }
+    };
+
 }
 
 
@@ -2413,6 +2485,16 @@ template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>
 reversed(C&& c) -> reversed<meta::remove_rvalue<C>>;
 
 
+/* ADL `swap()` operator for reversed ranges. */
+template <typename C>
+constexpr void swap(reversed<C>& lhs, reversed<C>& rhs)
+    noexcept (requires{{lhs.swap(rhs)} noexcept;})
+    requires (requires{{lhs.swap(rhs)};})
+{
+    lhs.swap(rhs);
+}
+
+
 /////////////////////
 ////    SLICE    ////
 /////////////////////
@@ -2420,352 +2502,588 @@ reversed(C&& c) -> reversed<meta::remove_rvalue<C>>;
 
 namespace impl {
 
+    template <meta::lvalue Self>
+    struct slice_iterator;
 
-    template <typename T>
-    struct _slice_normalize { using type = meta::as_signed<meta::unqualify<T>>; };
-    template <meta::None T>
-    struct _slice_normalize<T> { using type = ssize_t; };
-    template <typename T> requires ((meta::integer<T> && meta::has_signed<T>) || meta::None<T>)
-    using slice_normalize = _slice_normalize<T>::type;
+    /* A normalized set of slice indices that can be used to initialize a proper slice
+    range.  An instance of this class must be provided to the `impl::slice`
+    constructor, and is usually produced by the `bertrand::slice{...}.normalize(ssize)`
+    helper method in the case of integer indices.  Containers that allow non-integer
+    indices can construct an instance of this within their own `operator[](slice)`
+    method to provide custom indexing, if needed. */
+    struct slice_indices {
+        ssize_t start = 0;
+        ssize_t stop = 0;
+        ssize_t step = 1;
 
-    template <typename... Ts> requires (meta::has_common_type<slice_normalize<Ts>...>)
-    using slice_index = meta::common_type<slice_normalize<Ts>...>;
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept {
+            ssize_t bias = step + (step < 0) - (step > 0);
+            ssize_t length = (stop - start + bias) / step;
+            return length * (length > 0);
+        }
+        [[nodiscard]] constexpr bool empty() const noexcept { return ssize() == 0; }
+    };
 
+    template <meta::slice S>
+    struct _slice_step { using type = meta::unqualify<typename meta::unqualify<S>::step_type>; };
+    template <meta::slice S> requires (meta::None<typename meta::unqualify<S>::step_type>)
+    struct _slice_step<S> { using type = size_t; };
+    template <meta::slice S>
+    using slice_step = _slice_step<S>::type;
 
+    /* An adaptor for a container that causes `range<impl::slice<C, Step>>` to iterate
+    over only a subset of the container according to Python-style slicing semantics.
+    A range of that form will be generated by calling the public `slice{}` helper
+    directly, using it to index a supported container type, or by including it in a
+    range comprehension.
 
+    The `Step` parameter represents the integer type of the step size for the slice,
+    which is used to optimize the iteration logic for the slices that are guaranteed
+    to have a positive step size.  This is true for any unsigned integer type as well
+    as an initial slice index of `None`, which translates to `size_t` in this context.
+    If the step size is signed and the underlying iterator is not random access, then
+    an extra branch will be added to the core loop to check whether the iterator must
+    be incremented or decremented, depending on the sign of the step size.  This is a
+    niche optimization for forward-only input ranges, but is completely transparent to
+    the user, and ensures zero overhead in almost all cases. */
+    template <typename C, meta::integer Step>
+        requires ((meta::iterable<C> && meta::has_ssize<C>) || meta::tuple_like<C>)
+    struct slice {
+        using __type = meta::remove_rvalue<C>;
 
-    /// TODO: when a `normalized` slice is passed to the impl::slice constructor,
-    /// that's when I check to make sure the step size is not zero.  I otherwise
-    /// assume everything has been previously normalized up to that point, so that
-    /// I never call `.normalize()` more than once.  It should therefore be possible
-    /// to implement slice in a somewhat recursive manner, whereby you accept a
-    /// slice with non-integer indices, translate them into integer indices, and
-    /// then construct an `impl::slice(*this, slice.normalize(ssize()))`, or
-    /// construct a normalized slice directly.
+        [[no_unique_address]] __type __value;
+        impl::slice_indices __indices;
+        ssize_t __size = __indices.ssize();
 
+        template <meta::slice S> requires (std::same_as<slice_step<S>, Step>)
+        [[nodiscard]] constexpr slice(meta::forward<C> c, S&& indices) :
+            __value(std::forward<C>(c)),
+            __indices(indices.normalize(std::ranges::ssize(__value))),
+            __size(__indices.ssize())
+        {
+            if (__indices.step == 0) {
+                throw ValueError("slice step size cannot be zero");
+            }
+        }
 
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+            requires (requires{{meta::to_arrow(__value)};})
+        {
+            return meta::to_arrow(__value);
+        }
 
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(__value)} noexcept;})
+            requires (requires{{meta::to_arrow(__value)};})
+        {
+            return meta::to_arrow(__value);
+        }
 
+        /* The normalized start index for the slice, as a signed integer.  This
+        represents the first element that will be included in the slice, assuming it is
+        not empty. */
+        [[nodiscard]] constexpr ssize_t start() const noexcept { return __indices.start; }
 
+        /* The normalized stop index for the slice, as a signed integer.  Elements at
+        or past this index will not be included in the slice, leading to a Python-style
+        half-open interval. */
+        [[nodiscard]] constexpr ssize_t stop() const noexcept { return __indices.stop; }
 
-    /// TODO: this slice object should be templated on the container type, which
-    /// may be an lvalue.  I'll need some kind of container abstraction that can
-    /// handle both cases, which can possibly be shared with the union types as well,
-    /// similar to vtables.
-    /// -> This exists in the `impl::store<T>` class, which standardizes this behavior.
+        /* The normalized step size for the slice, as a signed integer.  This is always
+        non-zero, and is positive for forward slices and negative for reverse slices.
+        The last included index is given by `start + step * ssize`, assuming the slice
+        is not empty. */
+        [[nodiscard]] constexpr ssize_t step() const noexcept { return __indices.step; }
 
-    /// TODO: slice does need its own iterator class, and will never be reverse
-    /// iterable.  Maybe I can use separate `slice` classes for slices with a step
-    /// size vs those without?  `.normalize()` would simply return a step size of 1,
-    /// and the call operator would produce a corresponding `slice` that can be
-    /// absolutely sure that the step size is never negative (and therefore usable
-    /// on forward-only ranges)?  Otherwise, if a negative step size is given, then
-    /// the container must be iterable in both directions.
-    /// -> Maybe the best way to handle this is just to have an if statement catch
-    /// the negative case where the container is not reverse iterable and convert it
-    /// into a debug assertion.
+        /* The total number of elements that will be included in the slice, as an
+        unsigned integer. */
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(__size); }
 
-    /// TODO: the primary difficulty for slices is obtaining an iterator to the
-    /// correct position.  In both cases, we get a `begin()` iterator and advance it
-    /// to `start` using either `+= start` or a chain of `++` increments, depending
-    /// on the capabilities of the iterator.  Then, we obtain each value by doing
-    /// `it += step` (where negative steps are handled automatically), or by a nested
-    /// `if` that selects between `++it` and `--it` depending on the sign of the step.
-    /// -> This is where knowing that the step is positive at compile time would be
-    /// helpful, since it avoids the if statement, and could allow faster iteration
-    /// in the default case.  The only concern is that it turns the public `slice{}`
-    /// helper into a template with 2 specializations.  Maybe this is a good thing
-    /// though, since I can also detect `None` initializers and efficiently convert
-    /// them into proper indices, without needing a special `missing` value.
+        /* The total number of elements that will be included in the slice, as a signed
+        integer. */
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return __size; }
 
+        /* True if the slice contains no elements.  False otherwise. */
+        [[nodiscard]] constexpr bool empty() const noexcept { return __size == 0; }
 
-    /// TODO: impl::slice_tag refers to the public `slice{}` helper, not the
-    /// `impl::slice` class, which just equates to a subclass of `range`.
+        /* Integer indexing operator.  Accepts a single signed integer and retrieves
+        the corresponding element from the underlying container after multiplying by
+        the step size and adding the start bias.  */
+        template <typename Self>
+        constexpr decltype(auto) operator[](this Self&& self, size_t i)
+            noexcept (requires{{impl::range_subscript(
+                std::forward<Self>(self).__value,
+                size_t(ssize_t(i) * self.step() + self.start())
+            )} noexcept;})
+            requires (requires{{impl::range_subscript(
+                std::forward<Self>(self).__value,
+                size_t(ssize_t(i) * self.step() + self.start())
+            )};})
+        {
+            return (impl::range_subscript(
+                std::forward<Self>(self).__value,
+                size_t(ssize_t(i) * self.step() + self.start())
+            ));
+        }
 
+        /* Get an iterator to the start of the slice.  Incrementing the iterator will
+        advance it by the given step size. */
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{impl::slice_iterator<slice&>{*this}} noexcept;})
+            requires (requires{{impl::slice_iterator<slice&>{*this}};})
+        {
+            return impl::slice_iterator<slice&>{*this};
+        }
 
-    /* A wrapper around a bidirectional iterator that yields a subset of a given
-    container within a specified start and stop interval, with an arbitrary step
-    size.  Containers can expose an `operator[]` overload that returns one of these
-    objects to allow Python-style slicing semantics in conjunction with the
-    `bertrand::slice` helper class, including basic iteration, assignment and
-    extraction via an implicit conversion operator. */
-    template <meta::unqualified T> requires (meta::bidirectional_iterator<T>)
-    struct slice : slice_tag {
+        /* Get an iterator to the start of the slice.  Incrementing the iterator will
+        advance it by the given step size. */
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{impl::slice_iterator<const slice&>{*this}} noexcept;})
+            requires (requires{{impl::slice_iterator<const slice&>{*this}};})
+        {
+            return impl::slice_iterator<const slice&>{*this};
+        }
+
+        /* Get an iterator to the start of the slice.  Incrementing the iterator will
+        advance it by the given step size. */
+        [[nodiscard]] constexpr auto cbegin() const
+            noexcept (requires{{impl::slice_iterator<const slice&>{*this}} noexcept;})
+            requires (requires{{impl::slice_iterator<const slice&>{*this}};})
+        {
+            return impl::slice_iterator<const slice&>{*this};
+        }
+
+        /* Return a sentinel representing the end of the slice. */
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+
+        /* Return a sentinel representing the end of the slice. */
+        [[nodiscard]] static constexpr NoneType cend() noexcept { return {}; }
+    };
+
+    template <typename>
+    constexpr bool slice_unsigned = false;
+    template <typename C, meta::unsigned_integer Step>
+    constexpr bool slice_unsigned<slice<C, Step>> = true;
+
+    template <meta::lvalue, typename>
+    constexpr bool slice_from_tail = false;
+    template <meta::lvalue Self, typename Iter>
+        requires (
+            requires(Self self) {{
+                impl::make_range_reversed<Self>::begin(self)
+            } -> meta::explicitly_convertible_to<Iter>;} ||
+            requires(Self self) {{
+                impl::make_range_reversed<Self>::begin(self).base()
+            } -> meta::explicitly_convertible_to<Iter>;}
+        )
+    constexpr bool slice_from_tail<Self, Iter> = true;
+
+    template <meta::lvalue, typename>
+    constexpr bool slice_nothrow_from_tail = false;
+    template <meta::lvalue Self, typename Iter>
+        requires (
+            requires(Self self) {{
+                impl::make_range_reversed<Self>::begin(self)
+            } noexcept -> meta::nothrow::explicitly_convertible_to<Iter>;} || (
+                !requires(Self self) {{
+                    impl::make_range_reversed<Self>::begin(self)
+                } -> meta::explicitly_convertible_to<Iter>;} &&
+                requires(Self self) {{
+                    impl::make_range_reversed<Self>::begin(self).base()
+                } noexcept -> meta::nothrow::explicitly_convertible_to<Iter>;}
+            )
+        )
+    constexpr bool slice_nothrow_from_tail<Self, Iter> = (
+        meta::has_size<typename meta::unqualify<Self>::__type> ||
+        meta::tuple_like<typename meta::unqualify<Self>::__type>
+    ) && requires(Self self) {{
+        impl::make_range_reversed<Self>::begin(self)
+    } -> meta::nothrow::has_preincrement;};
+
+    /* The overall slice iterator initializes to the start index of the slice, and
+    maintains a pointer to the original slice object, whose indices it can access.
+    Comparisons against other instances of the same type equate to comparisons between
+    their current indices, and equality comparisons against the `None` sentinel bound
+    the overall slice iteration.
+
+    If the wrapped iterator is a random access iterator, then each increment of the
+    slice iterator will equate to an `iter += step` operation on the wrapped iterator,
+    which is expected to handle negative step sizes naturally.  Otherwise, a choice
+    must be made between a series of `++iter` or `--iter` operations depending on the
+    sign of the step size, which requires an extra branch in the core loop (unless it
+    can be optimized out). */
+    template <meta::lvalue Self>
+    struct slice_iterator {
+        using wrapped = impl::make_range_iterator<Self>::begin_type;
+        using iterator_category = std::iterator_traits<wrapped>::iterator_category;
+        using difference_type = std::iterator_traits<wrapped>::difference_type;
+        using value_type = std::iterator_traits<wrapped>::value_type;
+        using reference = std::iterator_traits<wrapped>::reference;
+        using pointer = std::iterator_traits<wrapped>::pointer;
+
     private:
-        using normalized = bertrand::slice::normalized;
+        static constexpr bool unsigned_step = impl::slice_unsigned<meta::unqualify<Self>>;
+        static constexpr bool bidirectional = meta::bidirectional_iterator<wrapped>;
+        static constexpr bool random_access = meta::random_access_iterator<wrapped>;
+        static constexpr bool from_tail = impl::slice_from_tail<Self, wrapped>;
+        static constexpr bool nothrow_from_tail = impl::slice_nothrow_from_tail<Self, wrapped>;
 
-        T m_begin;
-        normalized m_indices;
+        meta::as_pointer<Self> slice = nullptr;
+        ssize_t index = slice->start();
+        wrapped iter;
+
+        constexpr wrapped get_begin()
+            noexcept (random_access ?
+                meta::nothrow::has_iadd<wrapped, ssize_t> :
+                (!from_tail || nothrow_from_tail) && meta::nothrow::has_preincrement<wrapped>
+            )
+            requires (random_access ?
+                meta::has_iadd<wrapped, ssize_t> :
+                meta::has_preincrement<wrapped>
+            )
+        {
+            using C = meta::as_lvalue<typename meta::unqualify<Self>::__type>;
+
+            // if the iterator supports random access, then we can just jump to the
+            // start index in constant time.
+            if constexpr (random_access) {
+                wrapped it = impl::make_range_iterator<Self>::begin(*slice);
+                it += index;
+                return it;
+
+            // otherwise, obtaining a begin iterator requires a series of increments
+            // or decrements, depending on the capabilities of the range and the
+            // position of the start index.
+            } else {
+                // if a reverse iterator is available and convertible to a forward
+                // iterator, and the start index is closer to the end than it is to
+                // beginning, then we can start from the end to minimize iterations.
+                if constexpr (from_tail) {
+                    size_t half;
+                    if constexpr (meta::has_size<C>) {
+                        half = (std::ranges::size(slice->__value) + 1) / 2;
+                    } else {
+                        half = (meta::tuple_size<C> + 1) / 2;
+                    }
+                    if (size_t(slice->start()) >= half) {
+                        auto it = impl::make_range_reversed<Self>::begin(*slice);
+                        for (ssize_t i = slice->ssize() - slice->start(); i-- > 0;) {
+                            ++it;
+                        }
+                        if constexpr (meta::explicitly_convertible_to<decltype((it)), wrapped>) {
+                            return wrapped(it);
+                        } else {
+                            ++it;  // it.base() trails the current element by 1
+                            return wrapped(it.base());
+                        }
+                    }
+                }
+
+                // start from the beginning and advance until the start index
+                wrapped it = impl::make_range_iterator<Self>::begin(*slice);
+                for (ssize_t i = 0; i < index; ++i) {
+                    ++it;
+                }
+                return it;
+            }
+        }
+
 
     public:
-        using value_type = std::iterator_traits<T>::value_type;
-        using reference = std::iterator_traits<T>::reference;
-        using const_reference = meta::as_const<reference>;
-        using pointer = std::iterator_traits<T>::pointer;
-        using const_pointer = meta::as_pointer<meta::as_const<meta::remove_pointer<pointer>>>;
-
-        struct iterator {
-            using iterator_category = std::conditional_t<
-                meta::output_iterator<T, slice::value_type>,
-                std::output_iterator_tag,
-                std::input_iterator_tag
-            >;
-            using difference_type = std::iterator_traits<T>::difference_type;
-            using value_type = slice::value_type;
-            using reference = slice::reference;
-            using const_reference = slice::const_reference;
-            using pointer = slice::pointer;
-            using const_pointer = slice::const_pointer;
-
-        private:
-            T iter;
-            ssize_t step;
-            ssize_t length;
-
-        public:
-            constexpr iterator() = default;
-            constexpr iterator(const T& iter, ssize_t step, ssize_t length)
-                noexcept(meta::nothrow::copyable<T>)
-                requires(meta::copyable<T>)
-            :
-                iter(iter),
-                step(step),
-                length(length)
-            {}
-
-            constexpr iterator(T&& iter, ssize_t step, ssize_t length)
-                noexcept(meta::nothrow::movable<T>)
-                requires(meta::movable<T>)
-            :
-                iter(std::move(iter)),
-                step(step),
-                length(length)
-            {}
-
-            [[nodiscard]] constexpr decltype(auto) operator*()
-                noexcept(meta::nothrow::has_dereference<T>)
-                requires(meta::has_dereference<T>)
-            {
-                return (*iter);
-            }
-
-            [[nodiscard]] constexpr decltype(auto) operator*() const
-                noexcept(meta::nothrow::has_dereference<const T>)
-                requires(meta::has_dereference<const T>)
-            {
-                return (*iter);
-            }
-
-            /// TODO: use meta::to_arrow instead
-            [[nodiscard]] constexpr decltype(auto) operator->()
-                noexcept(meta::nothrow::has_arrow<T>)
-                requires(meta::has_arrow<T>)
-            {
-                return (iter.operator->());
-            }
-
-            /// TODO: use meta::to_arrow instead
-            [[nodiscard]] constexpr decltype(auto) operator->() const
-                noexcept(meta::nothrow::has_arrow<const T>)
-                requires(meta::has_arrow<const T>)
-            {
-                return (iter.operator->());
-            }
-
-            constexpr iterator& operator++()
-                noexcept(
-                    meta::nothrow::has_preincrement<T> &&
-                    meta::nothrow::has_predecrement<T>
-                )
-                requires(
-                    meta::random_access_iterator<T> &&
-                    meta::has_iadd<T, ssize_t>
-                )
-            {
-                iter += step;
-                --length;
-                return *this;
-            }
-
-            constexpr iterator& operator++()
-                noexcept(
-                    meta::nothrow::has_preincrement<T> &&
-                    meta::nothrow::has_predecrement<T>
-                )
-                requires(
-                    !meta::random_access_iterator<T> &&
-                    meta::has_preincrement<T> &&
-                    meta::has_predecrement<T>
-                )
-            {
-                if (step > 0) {
-                    for (ssize_t i = 0; i < step; ++i) ++iter;
-                } else {
-                    for (ssize_t i = step; i < 0; ++i) --iter;
-                }
-                --length;
-                return *this;
-            }
-
-            [[nodiscard]] constexpr iterator operator++(int)
-                noexcept(
-                    meta::nothrow::copyable<iterator> &&
-                    meta::nothrow::has_preincrement<iterator>
-                )
-                requires(
-                    meta::copyable<iterator> &&
-                    meta::has_preincrement<iterator>
-                )
-            {
-                iterator copy = *this;
-                ++(*this);
-                return copy;
-            }
-
-            [[nodiscard]] constexpr bool operator==(const iterator& other) const
-                noexcept
-            {
-                return length == other.length;
-            }
-
-            [[nodiscard]] constexpr bool operator!=(const iterator& other) const
-                noexcept
-            {
-                return length != other.length;
-            }
-        };
-
-        using const_iterator = iterator;
-
-        template <meta::at_returns<T> C>
-        [[nodiscard]] constexpr slice(C& container, const normalized& indices)
-            noexcept(meta::nothrow::at_returns<C, T>)
+        [[nodiscard]] constexpr slice_iterator() = default;
+        [[nodiscard]] constexpr slice_iterator(Self self)
+            noexcept ((unsigned_step || bidirectional) && requires{{get_begin()} noexcept;})
         :
-            m_begin(container.at(indices.start)),
-            m_indices(indices)
-        {}
-
-        constexpr slice(const slice&) = delete;
-        constexpr slice(slice&&) = delete;
-        constexpr slice& operator=(const slice&) = delete;
-        constexpr slice& operator=(slice&&) = delete;
-
-        [[nodiscard]] constexpr const normalized& indices() const noexcept { return m_indices; }
-        [[nodiscard]] constexpr ssize_t start() const noexcept { return m_indices.start; }
-        [[nodiscard]] constexpr ssize_t stop() const noexcept { return m_indices.stop; }
-        [[nodiscard]] constexpr ssize_t step() const noexcept { return m_indices.step; }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return m_indices.length; }
-        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
-        [[nodiscard]] constexpr bool empty() const noexcept { return !ssize(); }
-        [[nodiscard]] constexpr iterator begin() const
-            noexcept(noexcept(iterator{m_begin, m_indices.step, m_indices.length}))
+            slice(std::addressof(self)),
+            index(self.start()),
+            iter(get_begin())
         {
-            return {m_begin, m_indices.step, m_indices.length};
-        }
-        [[nodiscard]] constexpr iterator begin() &&
-            noexcept(noexcept(iterator{
-                std::move(m_begin),
-                m_indices.step,
-                m_indices.length
-            }))
-        {
-            return {std::move(m_begin), m_indices.step, m_indices.length};
-        }
-        [[nodiscard]] constexpr iterator cbegin() const
-            noexcept(noexcept(iterator{m_begin, m_indices.step, m_indices.length}))
-        {
-            return {m_begin, m_indices.step, m_indices.length};
-        }
-        [[nodiscard]] constexpr iterator cbegin() &&
-            noexcept(noexcept(iterator{
-                std::move(m_begin),
-                m_indices.step,
-                m_indices.length
-            }))
-        {
-            return {std::move(m_begin), m_indices.step, m_indices.length};
-        }
-        [[nodiscard]] constexpr iterator end() const
-            noexcept(noexcept(iterator{T{}, m_indices.stop, 0}))
-        {
-            return {T{}, m_indices.step, 0};
-        }
-        [[nodiscard]] constexpr iterator cend() const
-            noexcept(noexcept(iterator{T{}, m_indices.stop, 0}))
-        {
-            return {T{}, m_indices.step, 0};
-        }
-
-        template <typename V>
-        [[nodiscard]] constexpr operator V() const
-            noexcept (requires{{V(std::from_range, *this)} noexcept;})
-            requires (requires{{V(std::from_range, *this)};})
-        {
-            return V(std::from_range, *this);
-        }
-
-        template <typename V>
-        [[nodiscard]] constexpr operator V() const
-            noexcept (requires{{V(begin(), end())} noexcept;})
-            requires (!requires{{V(std::from_range, *this)};} && requires{{V(begin(), end())};})
-        {
-            return V(begin(), end());
-        }
-
-        template <meta::iterable Range>
-        constexpr slice& operator=(Range&& range)
-            requires (meta::output_iterator<T, meta::yield_type<Range>>)
-        {
-            constexpr bool has_size = meta::has_size<meta::as_lvalue<Range>>;
-
-            // if the range has an explicit size, then we can check it ahead of time
-            // to ensure that it exactly matches that of the slice
-            if constexpr (has_size) {
-                if (std::ranges::size(range) != size()) {
-                    throw ValueError(
-                        "cannot assign a range of size " +
-                        std::to_string(std::ranges::size(range)) +
-                        " to a slice of size " + std::to_string(size())
-                    );
-                }
-            }
-
-            // If we checked the size above, we can avoid checking it again on each
-            // iteration
-            auto it = std::ranges::begin(range);
-            auto end = std::ranges::end(range);
-            auto output = begin();
-            for (ssize_t i = 0; i < m_indices.length; ++i) {
-                if constexpr (!has_size) {
-                    if (it == end) {
+            if constexpr (!unsigned_step && !bidirectional) {
+                if (self.step() < 0) {
+                    if consteval {
                         throw ValueError(
-                            "not enough values to fill slice of size " +
-                            std::to_string(size())
+                            "cannot iterate over a forward-only range using a slice "
+                            "with negative step size"
+                        );
+                    } else {
+                        throw ValueError(
+                            "cannot iterate over a forward-only range using a slice "
+                            "with negative step size: " + std::to_string(self.step())
                         );
                     }
                 }
-                *output = *it;
-                ++it;
-                ++output;
             }
+        }
 
-            if constexpr (!has_size) {
-                if (it != end) {
-                    throw ValueError(
-                        "range length exceeds slice of size " +
-                        std::to_string(size())
-                    );
+        [[nodiscard]] constexpr decltype(auto) operator*()
+            noexcept (meta::nothrow::has_dereference<wrapped&>)
+            requires (meta::has_dereference<wrapped&>)
+        {
+            return (*iter);
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator*() const
+            noexcept (meta::nothrow::has_dereference<const wrapped&>)
+            requires (meta::has_dereference<const wrapped&>)
+        {
+            return (*iter);
+        }
+
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(iter)} noexcept;})
+            requires (requires{{meta::to_arrow(iter)};})
+        {
+            return meta::to_arrow(iter);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(iter)} noexcept;})
+            requires (requires{{meta::to_arrow(iter)};})
+        {
+            return meta::to_arrow(iter);
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](difference_type i)
+            noexcept (requires{{iter[index + i * slice->step()]} noexcept;})
+            requires (requires{{iter[index + i * slice->step()]} ;})
+        {
+            return (iter[index + i * slice->step()]);
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](difference_type i) const
+            noexcept (requires{{iter[index + i * slice->step()]} noexcept;})
+            requires (requires{{iter[index + i * slice->step()]} ;})
+        {
+            return (iter[index + i * slice->step()]);
+        }
+
+        constexpr slice_iterator& operator++()
+            noexcept(random_access ?
+                meta::nothrow::has_iadd<wrapped, ssize_t> :
+                meta::nothrow::has_preincrement<wrapped> &&
+                (unsigned_step || meta::nothrow::has_predecrement<wrapped>)
+            )
+            requires (random_access ?
+                meta::has_iadd<wrapped, ssize_t> :
+                meta::has_preincrement<wrapped>
+            )
+        {
+            ssize_t step = slice->step();
+            if constexpr (random_access) {
+                iter += step;
+                index += step;
+            } else {
+                ssize_t end = index + step;
+                if constexpr (unsigned_step) {
+                    while (index < end) {
+                        ++iter;
+                        ++index;
+                    }
+                } else {
+                    if (step > 0) {
+                        while (index < end) {
+                            ++iter;
+                            ++index;
+                        }
+                    } else {
+                        /// NOTE: because we check on construction, we will never
+                        /// enter this branch unless `--iter` is well-formed.
+                        while (index > end) {
+                            --iter;
+                            --index;
+                        }
+                    }
                 }
             }
             return *this;
         }
+
+        [[nodiscard]] constexpr slice_iterator operator++(int)
+            noexcept(
+                meta::nothrow::copyable<slice_iterator> &&
+                meta::nothrow::has_preincrement<slice_iterator>
+            )
+            requires (meta::copyable<slice_iterator> && meta::has_preincrement<slice_iterator>)
+        {
+            slice_iterator copy = *this;
+            ++*this;
+            return copy;
+        }
+
+        [[nodiscard]] friend constexpr slice_iterator operator+(
+            const slice_iterator& self,
+            difference_type i
+        )
+            noexcept (requires{{self.iter + i * self.slice->step()} noexcept -> meta::is<wrapped>;})
+            requires (requires{{self.iter + i * self.slice->step()} -> meta::is<wrapped>;})
+        {
+            difference_type offset = i * self.slice->step();
+            return {
+                .slice = self.slice,
+                .index = self.index + offset,
+                .iter = self.iter + offset
+            };
+        }
+
+        [[nodiscard]] friend constexpr slice_iterator operator+(
+            difference_type i,
+            const slice_iterator& self
+        )
+            noexcept (requires{{self.iter + i * self.slice->step()} noexcept -> meta::is<wrapped>;})
+            requires (requires{{self.iter + i * self.slice->step()} -> meta::is<wrapped>;})
+        {
+            difference_type offset = i * self.slice->step();
+            return {
+                .slice = self.slice,
+                .index = self.index + offset,
+                .iter = self.iter + offset
+            };
+        }
+
+        constexpr slice_iterator& operator+=(difference_type i)
+            noexcept (requires{{iter += i * slice->step()} noexcept;})
+            requires (requires{{iter += i * slice->step()};})
+        {
+            difference_type offset = i * slice->step();
+            index += offset;
+            iter += offset;
+            return *this;
+        }
+
+        constexpr slice_iterator& operator--()
+            noexcept(random_access ?
+                meta::nothrow::has_isub<wrapped, ssize_t> :
+                meta::nothrow::has_predecrement<wrapped> &&
+                (unsigned_step || meta::nothrow::has_preincrement<wrapped>)
+            )
+            requires (random_access ?
+                meta::has_isub<wrapped, ssize_t> :
+                meta::has_predecrement<wrapped>
+            )
+        {
+            ssize_t step = slice->step();
+            if constexpr (random_access) {
+                iter -= step;
+                index -= step;
+            } else {
+                ssize_t end = index - step;
+                if constexpr (unsigned_step) {
+                    while (index > end) {
+                        --iter;
+                        --index;
+                    }
+                } else {
+                    if (step > 0) {
+                        while (index > end) {
+                            --iter;
+                            --index;
+                        }
+                    } else {
+                        /// NOTE: because we check on construction, we will never
+                        /// enter this branch unless `--iter` is well-formed.
+                        while (index < end) {
+                            ++iter;
+                            ++index;
+                        }
+                    }
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr slice_iterator operator--(int)
+            noexcept(
+                meta::nothrow::copyable<slice_iterator> &&
+                meta::nothrow::has_predecrement<slice_iterator>
+            )
+            requires (meta::copyable<slice_iterator> && meta::has_predecrement<slice_iterator>)
+        {
+            slice_iterator copy = *this;
+            --*this;
+            return copy;
+        }
+
+        [[nodiscard]] constexpr slice_iterator operator-(difference_type i) const
+            noexcept (requires{{iter - i * slice->step()} noexcept -> meta::is<wrapped>;})
+            requires (requires{{iter - i * slice->step()} -> meta::is<wrapped>;})
+        {
+            difference_type offset = i * slice->step();
+            return {
+                .slice = slice,
+                .index = index - offset,
+                .iter = iter - offset
+            };
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const slice_iterator& other) const
+            noexcept (requires{{
+                (iter - other.iter) / slice->step()
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (requires{{
+                (iter - other.iter) / slice->step()
+            } -> meta::convertible_to<difference_type>;})
+        {
+            return (iter - other.iter) / slice->step();
+        }
+
+        constexpr slice_iterator& operator-=(difference_type i)
+            noexcept (requires{{iter -= i * slice->step()} noexcept;})
+            requires (requires{{iter -= i * slice->step()};})
+        {
+            difference_type offset = i * slice->step();
+            index -= offset;
+            iter -= offset;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const slice_iterator& other) const noexcept {
+            return index == other.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const slice_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.index >= self.slice->stop();
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            NoneType,
+            const slice_iterator& self
+        ) noexcept {
+            return self.index >= self.slice->stop();
+        }
+
+        [[nodiscard]] constexpr bool operator!=(const slice_iterator& other) const noexcept {
+            return index != other.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const slice_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.index < self.slice->stop();
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            NoneType,
+            const slice_iterator& self
+        ) noexcept {
+            return self.index < self.slice->stop();
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const slice_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
     };
 
+    template <typename C, meta::slice S>
+        requires ((meta::iterable<C> && meta::has_ssize<C>) || meta::tuple_like<C>)
+    slice(C&&, S) -> slice<meta::remove_rvalue<C>, slice_step<S>>;
+
 }
-
-
-/// TODO: slice<Start, Stop, Step>, which records all the indices as template
-/// parameters, and do not necessarily have to be integers.
 
 
 /* A helper class that encapsulates the indices for a Python-style slice operator.
@@ -2803,41 +3121,15 @@ struct slice : impl::slice_tag {
     using start_type = meta::remove_rvalue<Start>;
     using stop_type = meta::remove_rvalue<Stop>;
     using step_type = meta::remove_rvalue<Step>;
+    using index_type = ssize_t;
+    using indices = impl::slice_indices;
 
     [[no_unique_address]] impl::store<start_type> start;
     [[no_unique_address]] impl::store<stop_type> stop;
     [[no_unique_address]] impl::store<step_type> step;
 
-    /* Slices are considered to be normalized if they populate all 3 fields to a
-    single, signed integer type, as indicated by this field.  If this is true, then
-    the slice can be used to initialize an `impl::slice` range, which implements the
-    range interface.  Otherwise, the `slice.normalize(ssize)` method can be used to
-    coerce the indices into a normalized form, or a normalized slice can be constructed
-    manually to implement custom indexing. */
-    static constexpr bool normalized =
-        std::same_as<Start, Stop> && std::same_as<Stop, Step> && meta::signed_integer<Start>;
-
-    /* If the slice is normalized, then get the total number of elements that will
-    be included within it as an unsigned integer. */
-    [[nodiscard]] constexpr auto size() const noexcept requires (normalized) {
-        return meta::to_unsigned(ssize());
-    }
-
-    /* If the slice is normalized, then get the total number of elements that will
-    be included within it as a signed integer. */
-    [[nodiscard]] constexpr Start ssize() const noexcept requires (normalized) {
-        Start bias = step.value + (step.value < 0) - (step.value > 0);
-        Start length = (stop.value - start.value + bias) / step.value;
-        return length * (length > 0);
-    }
-
-    /* If the slice is normalized, check to see if it contains no elements. */
-    [[nodiscard]] constexpr bool empty() const noexcept requires (normalized) {
-        return ssize() == 0;
-    }
-
-    /// TODO: determine the common signed integer type between start, stop, and step,
-    /// excluding any that are None, and defaulting to `ssize_t` if all are none.
+    /// TODO: this slice object should also be able to be piped with other view
+    /// operators?
 
     /* Normalize the provided indices against a container of a given size, returning a
     4-tuple with members `start`, `stop`, `step`, and `length` in that order, and
@@ -2846,22 +3138,14 @@ struct slice : impl::slice_tag {
     according to the size, and will be truncated to the nearest end if they are out
     of bounds.  `length` stores the total number of elements that will be included in
     the slice */
-    [[nodiscard]] constexpr auto normalize(
-        impl::slice_index<Start, Stop, Step> size
-    ) const noexcept
+    [[nodiscard]] constexpr indices normalize(index_type size) const noexcept
         requires (
             ((meta::integer<start_type> && meta::has_signed<start_type>) || meta::None<start_type>) &&
             ((meta::integer<stop_type> && meta::has_signed<stop_type>) || meta::None<stop_type>) &&
-            ((meta::integer<step_type> && meta::has_signed<step_type>) || meta::None<step_type>) &&
-            meta::has_common_type<
-                impl::slice_normalize<Start>,
-                impl::slice_normalize<Stop>,
-                impl::slice_normalize<Step>
-            >
+            ((meta::integer<step_type> && meta::has_signed<step_type>) || meta::None<step_type>)
         )
     {
-        using index = impl::slice_index<Start, Stop, Step>;
-        slice<index, index, index> result {
+        indices result {
             .start = 0,
             .stop = size,
             .step = 1
@@ -2872,7 +3156,7 @@ struct slice : impl::slice_tag {
         if constexpr (meta::None<step_type>) {
             // normalize and truncate start
             if constexpr (meta::integer<start_type>) {
-                result.start = index(start.value);
+                result.start = index_type(start.value);
                 result.start += size * (result.start < 0);
                 if (result.start < 0) {
                     result.start = 0;
@@ -2883,7 +3167,7 @@ struct slice : impl::slice_tag {
 
             // normalize and truncate stop
             if constexpr (meta::integer<stop_type>) {
-                result.stop = index(stop.value);
+                result.stop = index_type(stop.value);
                 result.stop += size * (result.stop < 0);
                 if (result.stop < 0) {
                     result.stop = 0;
@@ -2895,14 +3179,14 @@ struct slice : impl::slice_tag {
         // otherwise, the step size may be negative, which requires extra logic to
         // handle the wraparound and truncation correctly
         } else {
-            result.step = index(step.value);
+            result.step = index_type(step.value);
             bool sign = result.step < 0;
 
             // normalize and truncate start
             if constexpr (meta::None<start_type>) {
                 result.start = (size - 1) * sign;  // neg: size - 1 | pos: 0
             } else {
-                result.start = index(start.value);
+                result.start = index_type(start.value);
                 result.start += size * (result.start < 0);
                 if (result.start < 0) {
                     result.start = -sign;  // neg: -1 | pos: 0
@@ -2915,7 +3199,7 @@ struct slice : impl::slice_tag {
             if constexpr (meta::None<stop_type>) {
                 result.stop = size * !sign - sign;  // neg: -1 | pos: size
             } else {
-                result.stop = index(stop.value);
+                result.stop = index_type(stop.value);
                 result.stop += size * (result.stop < 0);
                 if (result.stop < 0) {
                     result.stop = -sign;  // neg: -1 | pos: 0
@@ -2926,6 +3210,45 @@ struct slice : impl::slice_tag {
         }
 
         return result;
+    }
+
+    /* Promote slice consisting of only integers and/or `None` into a proper range
+    subclass.  Fails to compile if the slice contains at least one non-integer
+    value.
+
+    This is identical to the fallback case for `operator()`, but is provided
+    as a separate method in order to simplify custom slice operators for user-defined
+    classes.  A basic implementation of such an operator could look something like
+    this:
+    
+        ```
+        struct Foo {
+            // ...
+
+            template <typename Start, typename Stop, typename Step>
+            constexpr auto operator[](const slice<Start, Stop, Step>& s) const {
+                return s.range(*this);
+            }
+
+            // ...
+        };
+        ```
+
+    Note that such an operator does not need to accept integer indices, and can
+    implement arbitrary conversion logic by mapping the non-integer indices onto
+    integer indices, and then calling this method to obtain a proper range.  Once
+    defined, this class's call operator will automatically delegate to the custom
+    slice operator, bypassing the usual fallback behavior. */
+    template <typename C>
+    [[nodiscard]] constexpr auto range(C&& container) const
+        requires (
+            ((meta::iterable<C> && meta::has_ssize<C>) || meta::tuple_like<C>) &&
+            (meta::integer<start_type> || meta::None<start_type>) &&
+            (meta::integer<stop_type> || meta::None<stop_type>) &&
+            (meta::integer<step_type> || meta::None<step_type>)
+        )
+    {
+        return bertrand::range(impl::slice(std::forward<C>(container), *this));
     }
 
     /* Forwarding call operator.  Searches for an `operator[]` overload that matches
@@ -2951,20 +3274,8 @@ struct slice : impl::slice_tag {
             (meta::integer<step_type> || meta::None<step_type>)
         )
     {
-        /// TODO: call the constructor for `impl::slice` with the result of
-        /// `normalize(std::ranges::ssize(container))` or `normalize(meta::tuple_size<C>)`
+        return range(std::forward<C>(container));
     }
-
-
-    /// TODO: .range(container, indices).  Maybe this can just be a 2-argument
-    /// call operator?  Or maybe just the constructor for `impl::slice` directly?
-    /// The second option is probably better, since I'll have to call that anyways,
-    /// and it doesn't clutter the interface for this class.
-
-
-    /// TODO: call operator that applies the slice to a container, returning an
-    /// impl::slice range type.
-
 };
 
 
@@ -2974,6 +3285,14 @@ struct slice : impl::slice_tag {
 
 
 /// TODO: where{}
+
+
+///////////////////
+////    ZIP    ////
+///////////////////
+
+
+/// TODO: zip{}
 
 
 

@@ -5388,6 +5388,10 @@ template <size_t N = 0>
 struct static_str;
 
 
+template <size_t N>
+static_str(const char(&)[N]) -> static_str<N - 1>;
+
+
 namespace impl {
 
     /// TODO: float_to_string and int_to_string may need to account for the new,
