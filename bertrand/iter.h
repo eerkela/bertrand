@@ -11,7 +11,6 @@ namespace bertrand {
 
 namespace impl {
     struct range_tag {};
-    struct slice_tag {};
     struct where_tag {};
     struct comprehension_tag {};
     struct tuple_storage_tag {};
@@ -1625,102 +1624,100 @@ namespace impl {
     /* `make_range_iterator` abstracts the forward iterator methods for a `range`,
     synthesizing a corresponding tuple iterator if the underlying container is not
     already iterable. */
-    template <meta::lvalue T>
+    template <meta::lvalue C>
     struct make_range_iterator {
-    private:
-        using C = decltype((std::declval<T>().__value));
-
-    public:
         static constexpr bool tuple = true;
         using begin_type = tuple_iterator<C>;
         using end_type = begin_type;
 
-        [[nodiscard]] static constexpr begin_type begin(T t)
-            noexcept (requires{{begin_type{t.__value}} noexcept;})
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{begin_type{container}} noexcept;})
         {
-            return begin_type(t.__value);
+            return begin_type(container);
         }
 
-        [[nodiscard]] static constexpr end_type end(T t)
+        [[nodiscard]] constexpr end_type end()
             noexcept (requires{{end_type{}} noexcept;})
         {
             return end_type{};
         }
     };
-    template <meta::lvalue T> requires (meta::iterable<decltype((std::declval<T>().__value))>)
-    struct make_range_iterator<T> {
-    private:
-        using C = decltype((std::declval<T>().__value));
-
-    public:
+    template <meta::lvalue C> requires (meta::iterable<C>)
+    struct make_range_iterator<C> {
         static constexpr bool tuple = false;
         using begin_type = make_range_begin<C>::type;
         using end_type = make_range_end<C>::type;
 
-        [[nodiscard]] static constexpr begin_type begin(T t)
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
             noexcept (meta::nothrow::has_begin<C>)
             requires (meta::has_begin<C>)
         {
-            return std::ranges::begin(t.__value);
+            return std::ranges::begin(container);
         }
 
-        [[nodiscard]] static constexpr end_type end(T t)
+        [[nodiscard]] constexpr end_type end()
             noexcept (meta::nothrow::has_end<C>)
             requires (meta::has_end<C>)
         {
-            return std::ranges::end(t.__value);
+            return std::ranges::end(container);
         }
     };
+
+    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    make_range_iterator(C&) -> make_range_iterator<C&>;
 
     /* `make_range_reversed` abstracts the reverse iterator methods for a `range`,
     synthesizing a corresponding tuple iterator if the underlying container is not
     already iterable. */
-    template <meta::lvalue T>
+    template <meta::lvalue C>
     struct make_range_reversed {
-    private:
-        using C = decltype((std::declval<T>().__value));
-
-    public:
         static constexpr bool tuple = true;
         using begin_type = std::reverse_iterator<tuple_iterator<C>>;
         using end_type = begin_type;
 
-        [[nodiscard]] static constexpr begin_type begin(T t)
-            noexcept (requires{{begin_type{begin_type{t.__value, meta::tuple_size<C>}}} noexcept;})
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{begin_type{begin_type{container, meta::tuple_size<C>}}} noexcept;})
         {
-            return begin_type{tuple_iterator<C>{t.__value, meta::tuple_size<C>}};
+            return begin_type{tuple_iterator<C>{container, meta::tuple_size<C>}};
         }
 
-        [[nodiscard]] static constexpr end_type end(T t)
+        [[nodiscard]] constexpr end_type end()
             noexcept (requires{{end_type{begin_type{size_t(0)}}} noexcept;})
         {
             return end_type{begin_type{size_t(0)}};
         }
     };
-    template <meta::lvalue T> requires (meta::reverse_iterable<decltype((std::declval<T>().__value))>)
-    struct make_range_reversed<T> {
-    private:
-        using C = decltype((std::declval<T>().__value));
-
-    public:
+    template <meta::lvalue C> requires (meta::reverse_iterable<C>)
+    struct make_range_reversed<C> {
         static constexpr bool tuple = false;
         using begin_type = make_range_rbegin<C>::type;
         using end_type = make_range_rend<C>::type;
 
-        [[nodiscard]] static constexpr begin_type begin(T t)
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
             noexcept (meta::nothrow::has_rbegin<C>)
             requires (meta::has_rbegin<C>)
         {
-            return std::ranges::rbegin(t.__value);
+            return std::ranges::rbegin(container);
         }
 
-        [[nodiscard]] static constexpr end_type end(T t)
+        [[nodiscard]] constexpr end_type end()
             noexcept (meta::nothrow::has_rend<C>)
             requires (meta::has_rend<C>)
         {
-            return std::ranges::rend(t.__value);
+            return std::ranges::rend(container);
         }
     };
+
+    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    make_range_reversed(C&) -> make_range_reversed<C&>;
 
     template <typename C>
     constexpr decltype(auto) range_subscript(C&& container, size_t i)
@@ -2032,98 +2029,98 @@ struct range : impl::range_tag {
 
     /* Get a forward iterator to the start of the range. */
     [[nodiscard]] constexpr decltype(auto) begin()
-        noexcept (requires{{impl::make_range_iterator<range&>::begin(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<range&>::begin(*this)};})
+        noexcept (requires{{impl::make_range_iterator{__value}.begin()} noexcept;})
+        requires (requires{{impl::make_range_iterator{__value}.begin()};})
     {
-        return (impl::make_range_iterator<range&>::begin(*this));
+        return (impl::make_range_iterator{__value}.begin());
     }
 
     /* Get a forward iterator to the start of the range. */
     [[nodiscard]] constexpr decltype(auto) begin() const
-        noexcept (requires{{impl::make_range_iterator<const range&>::begin(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<const range&>::begin(*this)};})
+        noexcept (requires{{impl::make_range_iterator{__value}.begin()} noexcept;})
+        requires (requires{{impl::make_range_iterator{__value}.begin()};})
     {
-        return (impl::make_range_iterator<const range&>::begin(*this));
+        return (impl::make_range_iterator{__value}.begin());
     }
 
     /* Get a forward iterator to the start of the range. */
     [[nodiscard]] constexpr decltype(auto) cbegin() const
-        noexcept (requires{{impl::make_range_iterator<const range&>::begin(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<const range&>::begin(*this)};})
+        noexcept (requires{{impl::make_range_iterator{__value}.begin()} noexcept;})
+        requires (requires{{impl::make_range_iterator{__value}.begin()};})
     {
-        return (impl::make_range_iterator<const range&>::begin(*this));
+        return (impl::make_range_iterator{__value}.begin());
     }
 
     /* Get a forward iterator to one past the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) end()
-        noexcept (requires{{impl::make_range_iterator<range&>::end(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<range&>::end(*this)};})
+        noexcept (requires{{impl::make_range_iterator{__value}.end()} noexcept;})
+        requires (requires{{impl::make_range_iterator{__value}.end()};})
     {
-        return (impl::make_range_iterator<range&>::end(*this));
+        return (impl::make_range_iterator{__value}.end());
     }
 
     /* Get a forward iterator to one past the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) end() const
-        noexcept (requires{{impl::make_range_iterator<const range&>::end(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<const range&>::end(*this)};})
+        noexcept (requires{{impl::make_range_iterator{__value}.end()} noexcept;})
+        requires (requires{{impl::make_range_iterator{__value}.end()};})
     {
-        return (impl::make_range_iterator<const range&>::end(*this));
+        return (impl::make_range_iterator{__value}.end());
     }
 
     /* Get a forward iterator to one past the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) cend() const
-        noexcept (requires{{impl::make_range_iterator<const range&>::end(*this)} noexcept;})
-        requires (requires{{impl::make_range_iterator<const range&>::end(*this)};})
+        noexcept (requires{{impl::make_range_iterator{__value}.end()} noexcept;})
+        requires (requires{{impl::make_range_iterator{__value}.end()};})
     {
-        return (impl::make_range_iterator<const range&>::end(*this));
+        return (impl::make_range_iterator{__value}.end());
     }
 
     /* Get a reverse iterator to the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) rbegin()
-        noexcept (requires{{impl::make_range_reversed<range&>::begin(*this)} noexcept;})
-        requires (requires{{impl::make_range_reversed<range&>::begin(*this)};})
+        noexcept (requires{{impl::make_range_reversed{__value}.begin()} noexcept;})
+        requires (requires{{impl::make_range_reversed{__value}.begin()};})
     {
-        return (impl::make_range_reversed<range&>::begin(*this));
+        return (impl::make_range_reversed{__value}.begin());
     }
 
     /* Get a reverse iterator to the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) rbegin() const
-        noexcept (requires{{impl::make_range_reversed<const range&>::begin(*this)} noexcept;})
-        requires (requires{{impl::make_range_reversed<const range&>::begin(*this)};})
+        noexcept (requires{{impl::make_range_reversed{__value}.begin()} noexcept;})
+        requires (requires{{impl::make_range_reversed{__value}.begin()};})
     {
-        return (impl::make_range_reversed<const range&>::begin(*this));
+        return (impl::make_range_reversed{__value}.begin());
     }
 
     /* Get a reverse iterator to the last element of the range. */
     [[nodiscard]] constexpr decltype(auto) crbegin() const
-        noexcept (requires{{impl::make_range_reversed<const range&>::begin(*this)} noexcept;})
-        requires (requires{{impl::make_range_reversed<const range&>::begin(*this)};})
+        noexcept (requires{{impl::make_range_reversed{__value}.begin()} noexcept;})
+        requires (requires{{impl::make_range_reversed{__value}.begin()};})
     {
-        return (impl::make_range_reversed<const range&>::begin(*this));
+        return (impl::make_range_reversed{__value}.begin());
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
     [[nodiscard]] constexpr decltype(auto) rend()
-        noexcept (requires{{impl::make_range_reversed<range&>::end(*this)} noexcept;})
-        requires (requires{{impl::make_range_reversed<range&>::end(*this)};})
+        noexcept (requires{{impl::make_range_reversed{__value}.end()} noexcept;})
+        requires (requires{{impl::make_range_reversed{__value}.end()};})
     {
-        return (impl::make_range_reversed<range&>::end(*this));
+        return (impl::make_range_reversed{__value}.end());
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
     [[nodiscard]] constexpr decltype(auto) rend() const
-        noexcept (requires{{impl::make_range_reversed<const range&>::end(*this)} noexcept;})
-        requires (requires{{impl::make_range_reversed<const range&>::end(*this)};})
+        noexcept (requires{{impl::make_range_reversed{__value}.end()} noexcept;})
+        requires (requires{{impl::make_range_reversed{__value}.end()};})
     {
-        return (impl::make_range_reversed<const range&>::end(*this));
+        return (impl::make_range_reversed{__value}.end());
     }
 
     /* Get a reverse iterator to one before the first element of the range. */
     [[nodiscard]] constexpr decltype(auto) crend() const
-        noexcept (requires{{impl::make_range_reversed<const range&>::end(*this)} noexcept;})
-        requires (requires{{impl::make_range_reversed<const range&>::end(*this)};})
+        noexcept (requires{{impl::make_range_reversed{__value}.end()} noexcept;})
+        requires (requires{{impl::make_range_reversed{__value}.end()};})
     {
-        return (impl::make_range_reversed<const range&>::end(*this));
+        return (impl::make_range_reversed{__value}.end());
     }
 
     /* If the range is tuple-like, then conversions are allowed to any other type that
@@ -2400,64 +2397,88 @@ namespace impl {
             ]);
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) begin(this Self& self)
-            noexcept (requires{{impl::make_range_reversed<Self&>::begin(self)} noexcept;})
-            requires (requires{{impl::make_range_reversed<Self&>::begin(self)};})
+        [[nodiscard]] constexpr decltype(auto) begin()
+            noexcept (requires{{impl::make_range_reversed{__value}.begin()} noexcept;})
+            requires (requires{{impl::make_range_reversed{__value}.begin()};})
         {
-            return (impl::make_range_reversed<Self&>::begin(self));
+            return (impl::make_range_reversed{__value}.begin());
+        }
+
+        [[nodiscard]] constexpr decltype(auto) begin() const
+            noexcept (requires{{impl::make_range_reversed{__value}.begin()} noexcept;})
+            requires (requires{{impl::make_range_reversed{__value}.begin()};})
+        {
+            return (impl::make_range_reversed{__value}.begin());
         }
 
         [[nodiscard]] constexpr decltype(auto) cbegin() const
-            noexcept (requires{{impl::make_range_reversed<const reversed&>::begin(*this)} noexcept;})
-            requires (requires{{impl::make_range_reversed<const reversed&>::begin(*this)};})
+            noexcept (requires{{impl::make_range_reversed{__value}.begin()} noexcept;})
+            requires (requires{{impl::make_range_reversed{__value}.begin()};})
         {
-            return (impl::make_range_reversed<const reversed&>::begin(*this));
+            return (impl::make_range_reversed{__value}.begin());
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) end(this Self& self)
-            noexcept (requires{{impl::make_range_reversed<Self&>::end(self)} noexcept;})
-            requires (requires{{impl::make_range_reversed<Self&>::end(self)};})
+        [[nodiscard]] constexpr decltype(auto) end()
+            noexcept (requires{{impl::make_range_reversed{__value}.end()} noexcept;})
+            requires (requires{{impl::make_range_reversed{__value}.end()};})
         {
-            return (impl::make_range_reversed<Self&>::end(self));
+            return (impl::make_range_reversed{__value}.end());
+        }
+
+        [[nodiscard]] constexpr decltype(auto) end() const
+            noexcept (requires{{impl::make_range_reversed{__value}.end()} noexcept;})
+            requires (requires{{impl::make_range_reversed{__value}.end()};})
+        {
+            return (impl::make_range_reversed{__value}.end());
         }
 
         [[nodiscard]] constexpr decltype(auto) cend() const
-            noexcept (requires{{impl::make_range_reversed<const reversed&>::end(*this)} noexcept;})
-            requires (requires{{impl::make_range_reversed<const reversed&>::end(*this)};})
+            noexcept (requires{{impl::make_range_reversed{__value}.end()} noexcept;})
+            requires (requires{{impl::make_range_reversed{__value}.end()};})
         {
-            return (impl::make_range_reversed<const reversed&>::end(*this));
+            return (impl::make_range_reversed{__value}.end());
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) rbegin(this Self& self)
-            noexcept (requires{{impl::make_range_iterator<Self&>::begin(self)} noexcept;})
-            requires (requires{{impl::make_range_iterator<Self&>::begin(self)};})
+        [[nodiscard]] constexpr decltype(auto) rbegin()
+            noexcept  (requires{{impl::make_range_iterator{__value}.begin()} noexcept;})
+            requires (requires{{impl::make_range_iterator{__value}.begin()};})
         {
-            return (impl::make_range_iterator<Self&>::begin(self));
+            return (impl::make_range_iterator{__value}.begin());
+        }
+
+        [[nodiscard]] constexpr decltype(auto) rbegin() const
+            noexcept (requires{{impl::make_range_iterator{__value}.begin()} noexcept;})
+            requires (requires{{impl::make_range_iterator{__value}.begin()};})
+        {
+            return (impl::make_range_iterator{__value}.begin());
         }
 
         [[nodiscard]] constexpr decltype(auto) crbegin() const
-            noexcept (requires{{impl::make_range_iterator<const reversed&>::begin(*this)} noexcept;})
-            requires (requires{{impl::make_range_iterator<const reversed&>::begin(*this)};})
+            noexcept (requires{{impl::make_range_iterator{__value}.begin()} noexcept;})
+            requires (requires{{impl::make_range_iterator{__value}.begin()};})
         {
-            return (impl::make_range_iterator<const reversed&>::begin(*this));
+            return (impl::make_range_iterator{__value}.begin());
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) rend(this Self& self)
-            noexcept (requires{{impl::make_range_iterator<Self&>::end(self)} noexcept;})
-            requires (requires{{impl::make_range_iterator<Self&>::end(self)};})
+        [[nodiscard]] constexpr decltype(auto) rend()
+            noexcept (requires{{impl::make_range_iterator{__value}.end()} noexcept;})
+            requires  (requires{{impl::make_range_iterator{__value}.end()};})
         {
-            return (impl::make_range_iterator<Self&>::end(self));
+            return (impl::make_range_iterator{__value}.end());
+        }
+
+        [[nodiscard]] constexpr decltype(auto) rend() const
+            noexcept (requires{{impl::make_range_iterator{__value}.end()} noexcept;})
+            requires (requires{{impl::make_range_iterator{__value}.end()};})
+        {
+            return (impl::make_range_iterator{__value}.end());
         }
 
         [[nodiscard]] constexpr decltype(auto) crend() const
-            noexcept (requires{{impl::make_range_iterator<const reversed&>::end(*this)} noexcept;})
-            requires (requires{{impl::make_range_iterator<const reversed&>::end(*this)};})
+            noexcept (requires{{impl::make_range_iterator{__value}.end()} noexcept;})
+            requires (requires{{impl::make_range_iterator{__value}.end()};})
         {
-            return (impl::make_range_iterator<const reversed&>::end(*this));
+            return (impl::make_range_iterator{__value}.end());
         }
     };
 
@@ -2493,6 +2514,19 @@ constexpr void swap(reversed<C>& lhs, reversed<C>& rhs)
 {
     lhs.swap(rhs);
 }
+
+
+//////////////////////
+////    REPEAT    ////
+//////////////////////
+
+
+
+/// TODO: maybe a repeat{N} monad that repeats a range `N` times, by simply
+/// encapsulating a begin iterator and resetting it to the start after each iteration.
+/// That's the behavior when used on ranges, but when used on non-ranges, it will
+/// simply form a range out of them that effectively broadcasts.
+
 
 
 /////////////////////
@@ -2667,40 +2701,143 @@ namespace impl {
     template <typename C, meta::unsigned_integer Step>
     constexpr bool slice_unsigned<slice<C, Step>> = true;
 
-    template <meta::lvalue, typename>
-    constexpr bool slice_from_tail = false;
-    template <meta::lvalue Self, typename Iter>
-        requires (
-            requires(Self self) {{
-                impl::make_range_reversed<Self>::begin(self)
-            } -> meta::explicitly_convertible_to<Iter>;} ||
-            requires(Self self) {{
-                impl::make_range_reversed<Self>::begin(self).base()
-            } -> meta::explicitly_convertible_to<Iter>;}
-        )
-    constexpr bool slice_from_tail<Self, Iter> = true;
+    template <typename C>
+    concept slice_bidirectional =
+        (meta::iterable<C> || meta::tuple_like<C>) &&
+        meta::bidirectional_iterator<typename impl::make_range_iterator<C>::begin_type>;
 
-    template <meta::lvalue, typename>
+    template <typename C>
+    concept slice_random_access =
+        (meta::iterable<C> || meta::tuple_like<C>) &&
+        meta::random_access_iterator<typename impl::make_range_iterator<C>::begin_type>;
+
+    template <meta::lvalue C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    constexpr bool slice_from_tail = false;
+    template <meta::lvalue C>
+        requires ((meta::iterable<C> || meta::tuple_like<C>) && (
+            requires(C c) {{
+                impl::make_range_reversed{c}.begin()
+            } -> meta::explicitly_convertible_to<typename impl::make_range_iterator<C>::begin_type>;} ||
+            requires(C c) {{
+                impl::make_range_reversed{c}.begin().base()
+            } -> meta::explicitly_convertible_to<typename impl::make_range_iterator<C>::begin_type>;}
+        ))
+    constexpr bool slice_from_tail<C> = true;
+
+    template <meta::lvalue C> requires (meta::iterable<C> || meta::tuple_like<C>)
     constexpr bool slice_nothrow_from_tail = false;
-    template <meta::lvalue Self, typename Iter>
-        requires (
-            requires(Self self) {{
-                impl::make_range_reversed<Self>::begin(self)
-            } noexcept -> meta::nothrow::explicitly_convertible_to<Iter>;} || (
-                !requires(Self self) {{
-                    impl::make_range_reversed<Self>::begin(self)
-                } -> meta::explicitly_convertible_to<Iter>;} &&
-                requires(Self self) {{
-                    impl::make_range_reversed<Self>::begin(self).base()
-                } noexcept -> meta::nothrow::explicitly_convertible_to<Iter>;}
+    template <meta::lvalue C>
+        requires ((meta::iterable<C> || meta::tuple_like<C>) && (
+            requires(C c) {{
+                impl::make_range_reversed{c}.begin()
+            } noexcept -> meta::nothrow::explicitly_convertible_to<
+                typename impl::make_range_iterator<C>::begin_type
+            >;} || (
+                !requires(C c) {{
+                    impl::make_range_reversed{c}.begin()
+                } -> meta::explicitly_convertible_to<
+                    typename impl::make_range_iterator<C>::begin_type
+                >;} &&
+                requires(C c) {{
+                    impl::make_range_reversed{c}.begin().base()
+                } noexcept -> meta::nothrow::explicitly_convertible_to<
+                    typename impl::make_range_iterator<C>::begin_type
+                >;}
+            )
+        ))
+    constexpr bool slice_nothrow_from_tail<C> =
+        (meta::nothrow::has_size<C> || (!meta::has_size<C> && meta::tuple_like<C>)) &&
+        requires(C c) {
+            {impl::make_range_reversed{c}.begin()} noexcept -> meta::nothrow::has_preincrement;
+        };
+
+    /* Get an iterator to the given index of an iterable or tuple-like container with a
+    known size.  Note that the index is assumed to have been already normalized via
+    `impl::normalize_index()` or some other means.
+
+    This will attempt to choose the most efficient method of obtaining the
+    iterator, depending on the characteristics of the container and the index.
+
+        1.  If the iterator type is random access, then a `begin()` iterator will be
+            advanced to the index in constant time.
+        2.  If the iterator type is bidirectional, and reverse iterators are
+            convertible to forward iterators or posses a `base()` method that returns
+            a forward iterator (as is the case for `std::reverse_iterator` instances),
+            and the index is closer to the end than it is to the beginning, then a
+            reverse iterator will be obtained and advanced to the index before being
+            converted to a forward iterator.
+        3.  Otherwise, a `begin()` iterator will be obtained and advanced to the index
+            using a series of increments.
+
+    The second case ensures that as long as the preconditions are met, the worst-case
+    time complexity of this operation is `O(n/2)`.  Without it, the complexity rises to
+    `O(n)`.
+
+    Implementing this operation as a free method allows it to be abstracted over any
+    container (which is important for the `slice_iterator` class) and greatly
+    simplifies the implementation of custom `at()` methods for user-defined types,
+    which will apply the same optimizations automatically. */
+    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    [[nodiscard]] constexpr auto at(C& container, ssize_t index)
+        noexcept (
+            requires{{impl::make_range_iterator{container}.begin()} noexcept;} && (
+            slice_random_access<C&> ?
+                meta::nothrow::has_iadd<typename impl::make_range_iterator<C&>::begin_type, ssize_t> :
+                (!slice_from_tail<C&> || slice_nothrow_from_tail<C&>) &&
+                meta::nothrow::has_preincrement<typename impl::make_range_iterator<C&>::begin_type>
             )
         )
-    constexpr bool slice_nothrow_from_tail<Self, Iter> = (
-        meta::has_size<typename meta::unqualify<Self>::__type> ||
-        meta::tuple_like<typename meta::unqualify<Self>::__type>
-    ) && requires(Self self) {{
-        impl::make_range_reversed<Self>::begin(self)
-    } -> meta::nothrow::has_preincrement;};
+        requires (slice_random_access<C&> ?
+            meta::has_iadd<typename impl::make_range_iterator<C&>::begin_type, ssize_t> :
+            meta::has_preincrement<typename impl::make_range_iterator<C&>::begin_type>
+        )
+    {
+        using wrapped = impl::make_range_iterator<C&>::begin_type;
+
+        // if the iterator supports random access, then we can just jump to the
+        // start index in constant time.
+        if constexpr (meta::random_access_iterator<wrapped>) {
+            wrapped it = impl::make_range_iterator{container}.begin();
+            it += index;
+            return it;
+
+        // otherwise, obtaining a begin iterator requires a series of increments
+        // or decrements, depending on the capabilities of the range and the
+        // position of the start index.
+        } else {
+            // if a reverse iterator is available and convertible to a forward
+            // iterator, and the start index is closer to the end than it is to
+            // beginning, then we can start from the end to minimize iterations.
+            if constexpr (slice_from_tail<C&>) {
+                ssize_t size;
+                if constexpr (meta::has_size<C&>) {
+                    size = ssize_t(std::ranges::size(container));
+                } else {
+                    size = ssize_t(meta::tuple_size<C&>);
+                }
+                if (index >= ((size + 1) / 2)) {
+                    auto it = impl::make_range_reversed{container}.begin();
+                    for (ssize_t i = size - index; i-- > 0;) {
+                        ++it;
+                    }
+                    if constexpr (meta::explicitly_convertible_to<decltype((it)), wrapped>) {
+                        return wrapped(it);
+                    } else {
+                        ++it;  // it.base() trails the current element by 1
+                        return wrapped(it.base());
+                    }
+                }
+            }
+
+            // start from the beginning and advance until the start index
+            wrapped it = impl::make_range_iterator{container}.begin();
+            for (ssize_t i = 0; i < index; ++i) {
+                ++it;
+            }
+            return it;
+        }
+    }
+
 
     /* The overall slice iterator initializes to the start index of the slice, and
     maintains a pointer to the original slice object, whose indices it can access.
@@ -2716,7 +2853,8 @@ namespace impl {
     can be optimized out). */
     template <meta::lvalue Self>
     struct slice_iterator {
-        using wrapped = impl::make_range_iterator<Self>::begin_type;
+        using wrapped =
+            impl::make_range_iterator<decltype((std::declval<Self>().__value))>::begin_type;
         using iterator_category = std::iterator_traits<wrapped>::iterator_category;
         using difference_type = std::iterator_traits<wrapped>::difference_type;
         using value_type = std::iterator_traits<wrapped>::value_type;
@@ -2727,78 +2865,34 @@ namespace impl {
         static constexpr bool unsigned_step = impl::slice_unsigned<meta::unqualify<Self>>;
         static constexpr bool bidirectional = meta::bidirectional_iterator<wrapped>;
         static constexpr bool random_access = meta::random_access_iterator<wrapped>;
-        static constexpr bool from_tail = impl::slice_from_tail<Self, wrapped>;
-        static constexpr bool nothrow_from_tail = impl::slice_nothrow_from_tail<Self, wrapped>;
 
         meta::as_pointer<Self> slice = nullptr;
-        ssize_t index = slice->start();
+        ssize_t size = 0;
         wrapped iter;
 
-        constexpr wrapped get_begin()
-            noexcept (random_access ?
-                meta::nothrow::has_iadd<wrapped, ssize_t> :
-                (!from_tail || nothrow_from_tail) && meta::nothrow::has_preincrement<wrapped>
-            )
-            requires (random_access ?
-                meta::has_iadd<wrapped, ssize_t> :
-                meta::has_preincrement<wrapped>
-            )
-        {
-            using C = meta::as_lvalue<typename meta::unqualify<Self>::__type>;
-
-            // if the iterator supports random access, then we can just jump to the
-            // start index in constant time.
-            if constexpr (random_access) {
-                wrapped it = impl::make_range_iterator<Self>::begin(*slice);
-                it += index;
-                return it;
-
-            // otherwise, obtaining a begin iterator requires a series of increments
-            // or decrements, depending on the capabilities of the range and the
-            // position of the start index.
-            } else {
-                // if a reverse iterator is available and convertible to a forward
-                // iterator, and the start index is closer to the end than it is to
-                // beginning, then we can start from the end to minimize iterations.
-                if constexpr (from_tail) {
-                    size_t half;
-                    if constexpr (meta::has_size<C>) {
-                        half = (std::ranges::size(slice->__value) + 1) / 2;
-                    } else {
-                        half = (meta::tuple_size<C> + 1) / 2;
-                    }
-                    if (size_t(slice->start()) >= half) {
-                        auto it = impl::make_range_reversed<Self>::begin(*slice);
-                        for (ssize_t i = slice->ssize() - slice->start(); i-- > 0;) {
-                            ++it;
-                        }
-                        if constexpr (meta::explicitly_convertible_to<decltype((it)), wrapped>) {
-                            return wrapped(it);
-                        } else {
-                            ++it;  // it.base() trails the current element by 1
-                            return wrapped(it.base());
-                        }
-                    }
-                }
-
-                // start from the beginning and advance until the start index
-                wrapped it = impl::make_range_iterator<Self>::begin(*slice);
-                for (ssize_t i = 0; i < index; ++i) {
-                    ++it;
-                }
-                return it;
-            }
-        }
-
+        [[nodiscard]] constexpr slice_iterator(
+            meta::as_pointer<Self> slice,
+            ssize_t size,
+            wrapped&& iter
+        )
+            noexcept (meta::nothrow::movable<wrapped>)
+        :
+            slice(slice),
+            size(size),
+            iter(std::move(iter))
+        {}
 
     public:
         [[nodiscard]] constexpr slice_iterator() = default;
         [[nodiscard]] constexpr slice_iterator(Self self)
-            noexcept ((unsigned_step || bidirectional) && requires{{get_begin()} noexcept;})
+            noexcept (
+                (unsigned_step || bidirectional) &&
+                requires{{impl::at(slice->__value, self.start())} noexcept;}
+            )
         :
             slice(std::addressof(self)),
-            index(self.start()),
-            iter(get_begin())
+            size(self.ssize()),
+            iter(impl::at(slice->__value, self.start()))
         {
             if constexpr (!unsigned_step && !bidirectional) {
                 if (self.step() < 0) {
@@ -2846,17 +2940,17 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type i)
-            noexcept (requires{{iter[index + i * slice->step()]} noexcept;})
-            requires (requires{{iter[index + i * slice->step()]} ;})
+            noexcept (requires{{iter[i * slice->step()]} noexcept;})
+            requires (requires{{iter[i * slice->step()]};})
         {
-            return (iter[index + i * slice->step()]);
+            return (iter[i * slice->step()]);
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type i) const
-            noexcept (requires{{iter[index + i * slice->step()]} noexcept;})
-            requires (requires{{iter[index + i * slice->step()]} ;})
+            noexcept (requires{{iter[i * slice->step()]} noexcept;})
+            requires (requires{{iter[i * slice->step()]};})
         {
-            return (iter[index + i * slice->step()]);
+            return (iter[i * slice->step()]);
         }
 
         constexpr slice_iterator& operator++()
@@ -2870,29 +2964,25 @@ namespace impl {
                 meta::has_preincrement<wrapped>
             )
         {
-            ssize_t step = slice->step();
-            if constexpr (random_access) {
-                iter += step;
-                index += step;
-            } else {
-                ssize_t end = index + step;
-                if constexpr (unsigned_step) {
-                    while (index < end) {
+            --size;
+            if (size > 0) {
+                ssize_t step = slice->step();
+                if constexpr (random_access) {
+                    iter += step;
+                } else if constexpr (unsigned_step) {
+                    for (ssize_t i = 0; i < step; ++i) {
                         ++iter;
-                        ++index;
                     }
                 } else {
-                    if (step > 0) {
-                        while (index < end) {
-                            ++iter;
-                            ++index;
-                        }
-                    } else {
+                    if (step < 0) {
                         /// NOTE: because we check on construction, we will never
                         /// enter this branch unless `--iter` is well-formed.
-                        while (index > end) {
+                        for (ssize_t i = 0; i > step; --i) {
                             --iter;
-                            --index;
+                        }
+                    } else {
+                        for (ssize_t i = 0; i < step; ++i) {
+                            ++iter;
                         }
                     }
                 }
@@ -2919,12 +3009,7 @@ namespace impl {
             noexcept (requires{{self.iter + i * self.slice->step()} noexcept -> meta::is<wrapped>;})
             requires (requires{{self.iter + i * self.slice->step()} -> meta::is<wrapped>;})
         {
-            difference_type offset = i * self.slice->step();
-            return {
-                .slice = self.slice,
-                .index = self.index + offset,
-                .iter = self.iter + offset
-            };
+            return {self.slice, self.size - i, self.iter + i * self.slice->step()};
         }
 
         [[nodiscard]] friend constexpr slice_iterator operator+(
@@ -2934,21 +3019,15 @@ namespace impl {
             noexcept (requires{{self.iter + i * self.slice->step()} noexcept -> meta::is<wrapped>;})
             requires (requires{{self.iter + i * self.slice->step()} -> meta::is<wrapped>;})
         {
-            difference_type offset = i * self.slice->step();
-            return {
-                .slice = self.slice,
-                .index = self.index + offset,
-                .iter = self.iter + offset
-            };
+            return {self.slice, self.size - i, self.iter + i * self.slice->step()};
         }
 
         constexpr slice_iterator& operator+=(difference_type i)
             noexcept (requires{{iter += i * slice->step()} noexcept;})
             requires (requires{{iter += i * slice->step()};})
         {
-            difference_type offset = i * slice->step();
-            index += offset;
-            iter += offset;
+            size -= i;
+            iter += i * slice->step();
             return *this;
         }
 
@@ -2963,29 +3042,23 @@ namespace impl {
                 meta::has_predecrement<wrapped>
             )
         {
-            ssize_t step = slice->step();
-            if constexpr (random_access) {
-                iter -= step;
-                index -= step;
-            } else {
-                ssize_t end = index - step;
-                if constexpr (unsigned_step) {
-                    while (index > end) {
+            ++size;
+            if (size <= slice->ssize()) {
+                ssize_t step = slice->step();
+                if constexpr (random_access) {
+                    iter -= step;
+                } else if constexpr (unsigned_step) {
+                    for (ssize_t i = 0; i < step; ++i) {
                         --iter;
-                        --index;
                     }
                 } else {
-                    if (step > 0) {
-                        while (index > end) {
-                            --iter;
-                            --index;
+                    if (step < 0) {
+                        for (ssize_t i = 0; i > step; --i) {
+                            ++iter;
                         }
                     } else {
-                        /// NOTE: because we check on construction, we will never
-                        /// enter this branch unless `--iter` is well-formed.
-                        while (index < end) {
-                            ++iter;
-                            ++index;
+                        for (ssize_t i = 0; i < step; ++i) {
+                            --iter;
                         }
                     }
                 }
@@ -3009,12 +3082,7 @@ namespace impl {
             noexcept (requires{{iter - i * slice->step()} noexcept -> meta::is<wrapped>;})
             requires (requires{{iter - i * slice->step()} -> meta::is<wrapped>;})
         {
-            difference_type offset = i * slice->step();
-            return {
-                .slice = slice,
-                .index = index - offset,
-                .iter = iter - offset
-            };
+            return {slice, size + i, iter - i * slice->step()};
         }
 
         [[nodiscard]] constexpr difference_type operator-(const slice_iterator& other) const
@@ -3032,50 +3100,51 @@ namespace impl {
             noexcept (requires{{iter -= i * slice->step()} noexcept;})
             requires (requires{{iter -= i * slice->step()};})
         {
-            difference_type offset = i * slice->step();
-            index -= offset;
-            iter -= offset;
+            size += i;
+            iter -= i * slice->step();
             return *this;
         }
 
         [[nodiscard]] constexpr bool operator==(const slice_iterator& other) const noexcept {
-            return index == other.index;
+            return size == other.size;
         }
 
         [[nodiscard]] friend constexpr bool operator==(
             const slice_iterator& self,
             NoneType
         ) noexcept {
-            return self.index >= self.slice->stop();
+            return self.size <= 0;
         }
 
         [[nodiscard]] friend constexpr bool operator==(
             NoneType,
             const slice_iterator& self
         ) noexcept {
-            return self.index >= self.slice->stop();
+            return self.size <= 0;
         }
 
         [[nodiscard]] constexpr bool operator!=(const slice_iterator& other) const noexcept {
-            return index != other.index;
+            return size != other.size;
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
             const slice_iterator& self,
             NoneType
         ) noexcept {
-            return self.index < self.slice->stop();
+            return self.size > 0;
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
             NoneType,
             const slice_iterator& self
         ) noexcept {
-            return self.index < self.slice->stop();
+            return self.size > 0;
         }
 
         [[nodiscard]] constexpr auto operator<=>(const slice_iterator& other) const noexcept {
-            return index <=> other.index;
+            /// NOTE: higher size means the iterator is closer to the start, and should
+            /// compare less than the other iterator
+            return other.size <=> size;
         }
     };
 
@@ -3117,16 +3186,16 @@ template <
     meta::not_void Stop = NoneType,
     meta::not_void Step = NoneType
 >
-struct slice : impl::slice_tag {
+struct slice {
     using start_type = meta::remove_rvalue<Start>;
     using stop_type = meta::remove_rvalue<Stop>;
     using step_type = meta::remove_rvalue<Step>;
     using index_type = ssize_t;
     using indices = impl::slice_indices;
 
-    [[no_unique_address]] impl::store<start_type> start;
-    [[no_unique_address]] impl::store<stop_type> stop;
-    [[no_unique_address]] impl::store<step_type> step;
+    [[no_unique_address]] start_type start;
+    [[no_unique_address]] stop_type stop;
+    [[no_unique_address]] step_type step;
 
     /// TODO: this slice object should also be able to be piped with other view
     /// operators?
@@ -3156,7 +3225,7 @@ struct slice : impl::slice_tag {
         if constexpr (meta::None<step_type>) {
             // normalize and truncate start
             if constexpr (meta::integer<start_type>) {
-                result.start = index_type(start.value);
+                result.start = index_type(start);
                 result.start += size * (result.start < 0);
                 if (result.start < 0) {
                     result.start = 0;
@@ -3167,7 +3236,7 @@ struct slice : impl::slice_tag {
 
             // normalize and truncate stop
             if constexpr (meta::integer<stop_type>) {
-                result.stop = index_type(stop.value);
+                result.stop = index_type(stop);
                 result.stop += size * (result.stop < 0);
                 if (result.stop < 0) {
                     result.stop = 0;
@@ -3179,14 +3248,14 @@ struct slice : impl::slice_tag {
         // otherwise, the step size may be negative, which requires extra logic to
         // handle the wraparound and truncation correctly
         } else {
-            result.step = index_type(step.value);
+            result.step = index_type(step);
             bool sign = result.step < 0;
 
             // normalize and truncate start
             if constexpr (meta::None<start_type>) {
                 result.start = (size - 1) * sign;  // neg: size - 1 | pos: 0
             } else {
-                result.start = index_type(start.value);
+                result.start = index_type(start);
                 result.start += size * (result.start < 0);
                 if (result.start < 0) {
                     result.start = -sign;  // neg: -1 | pos: 0
@@ -3199,7 +3268,7 @@ struct slice : impl::slice_tag {
             if constexpr (meta::None<stop_type>) {
                 result.stop = size * !sign - sign;  // neg: -1 | pos: size
             } else {
-                result.stop = index_type(stop.value);
+                result.stop = index_type(stop);
                 result.stop += size * (result.stop < 0);
                 if (result.stop < 0) {
                     result.stop = -sign;  // neg: -1 | pos: 0
@@ -3277,6 +3346,37 @@ struct slice : impl::slice_tag {
         return range(std::forward<C>(container));
     }
 };
+
+
+template <typename Start = NoneType, typename Stop = NoneType, typename Step = NoneType>
+slice(Start&& = {}, Stop&& = {}, Step&& = {}) -> slice<
+    meta::remove_rvalue<Start>,
+    meta::remove_rvalue<Stop>,
+    meta::remove_rvalue<Step>
+>;
+
+
+
+static constexpr std::array arr {1, 2, 3};
+static constexpr slice s {{}, 2};
+static_assert(s.stop == 2);
+static_assert(s(arr).size() == 2);
+static_assert([] {
+    auto r = slice{{}, {}, 2}(arr);
+    auto it = r.begin();
+    ++it;
+    if (it[0] != 3) {
+        return false;
+    }
+
+    for (int x : slice{{}, {}, 2}(arr)) {
+        if (x != 1 && x != 2 && x != 3) {
+            return false;
+        }
+    }
+    return true;
+}());
+static_assert(meta::random_access_iterator<decltype(s(arr).begin())>);
 
 
 /////////////////////
