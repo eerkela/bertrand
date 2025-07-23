@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <concepts>
@@ -251,6 +252,9 @@ namespace meta {
     concept lvalue = detail::lvalue<T>;
 
     template <typename T>
+    concept not_lvalue = !lvalue<T>;
+
+    template <typename T>
     using as_lvalue = ::std::add_lvalue_reference_t<T>;
 
     template <typename T>
@@ -258,6 +262,9 @@ namespace meta {
 
     template <typename T>
     concept rvalue = detail::rvalue<T>;
+
+    template <typename T>
+    concept not_rvalue = !rvalue<T>;
 
     template <typename T>
     using as_rvalue = ::std::add_rvalue_reference_t<T>;
@@ -269,7 +276,13 @@ namespace meta {
     concept reference = lvalue<T> || rvalue<T>;
 
     template <typename T>
+    concept not_reference = !reference<T>;
+
+    template <typename T>
     concept pointer = detail::pointer<T>;
+
+    template <typename T>
+    concept not_pointer = !pointer<T>;
 
     template <typename T>
     using as_pointer = ::std::add_pointer_t<T>;
@@ -318,6 +331,9 @@ namespace meta {
         >,
         T
     >;
+
+    template <typename T>
+    concept const_ref = is_const<T> && lvalue<T>;
 
     template <typename T>
     using as_const_ref = as_const<as_lvalue<T>>;
