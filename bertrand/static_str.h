@@ -4,7 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/union.h"
-// #include "bertrand/iter.h"
+#include "bertrand/iter.h"
 
 
 // avoid conflict with deprecated isascii() macro from <ctype.h> and assert() from
@@ -194,9 +194,13 @@ namespace meta {
 
     }
 
+    /// TODO: delete unpack_string and just use `meta::unpack_value` instead
+
     template <size_t I, bertrand::static_str... Strs>
     constexpr bertrand::static_str unpack_string =
         detail::_unpack_string<I, Strs...>::value;
+
+    /// TODO: strings_are_unique should be in impl::, not meta::
 
     template <bertrand::static_str... Strings>
     concept strings_are_unique = detail::strings_are_unique<Strings...>;
@@ -204,6 +208,22 @@ namespace meta {
 }
 
 
+/* A compile-time string literal type that can be used as a non-type template
+parameter.
+
+This class allows string literals to be encoded directly into C++'s type system,
+consistent with other consteval language constructs.  That means they can be used to
+specialize templates and trigger arbitrarily complex metafunctions at compile time,
+without any impact on the final binary.  Such metafunctions are used internally to
+implement zero-cost keyword arguments for C++ functions, full static type safety for
+Python attributes, and minimal perfect hash tables for arbitrary data.
+
+Users can leverage these strings for their own metaprogramming needs as well; the class
+implements the full Python string interface as consteval member methods, and even
+supports regular expressions through the CTRE library.  This can serve as a powerful
+base for user-defined metaprogramming facilities, up to and including full
+Domain-Specific Languages (DSLs) that can be parsed at compile time and subjected to
+exhaustive static analysis. */
 template <size_t N>
 struct static_str {
     using value_type = const char;
@@ -218,8 +238,6 @@ struct static_str {
     using const_iterator = iterator;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-    using slice = impl::slice<iterator>;
-    using const_slice = impl::slice<const_iterator>;
 
 private:
     template <size_t M>
@@ -349,10 +367,11 @@ public:
     initializing it to `bertrand::None` (aka `std::nullopt`), which is equivalent to an
     empty slice index in Python.  Applies Python-style wraparound to both `start` and
     `stop`. */
-    [[nodiscard]] constexpr slice operator[](bertrand::slice s) const noexcept(
-        noexcept(slice{*this, s.normalize(ssize())})
-    ) {
-        return {*this, s.normalize(ssize())};
+    template <meta::slice S>
+    [[nodiscard]] constexpr auto operator[](S&& s) const
+        noexcept (requires{{std::forward<S>(s).range(*this)} noexcept;})
+    {
+        return std::forward<S>(s).range(*this);
     }
 
     /* Get an iterator to the character at index `i`.  Applies Python-style wraparound

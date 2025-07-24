@@ -143,8 +143,8 @@ namespace impl {
         -   `enable`: a boolean which must be set to `true` for all custom
             specializations.  Controls the output of the `meta::visitable<T>` concept.
         -   `monad`: a boolean which exposes type `T` to bertrand's monadic operator
-            interface.  This can be checked via the `meta::monad<T>` concept, which
-            all monadic operators are constrained with.
+            interface.  This can be checked via the `meta::visit_monad<T>` concept,
+            which all monadic operators are constrained with.
         -   `type`: an alias to the type being visited, which must be identical to `T`.
         -   `alternatives`: a `meta::pack<Ts...>` with one or more types, which
             represent the exact alternatives that the monad can dispatch to.
@@ -218,7 +218,7 @@ namespace meta {
 
     /* True for types where `impl::visitable<T>::monad` is set to true. */
     template <typename T>
-    concept monad = impl::visitable<T>::monad;
+    concept visit_monad = impl::visitable<T>::monad;
 
     template <typename T>
     concept union_storage = inherits<T, impl::union_storage_tag>;
@@ -1101,17 +1101,45 @@ namespace impl {
     interface.  This recursively unpacks until the arguments are no longer monads, in
     order to prevent circular definitions in the monadic interface. */
     template <typename F>
-    struct monadic {
+    struct visit_fn {
         F func;
         template <typename Self, typename... A>
         constexpr decltype(auto) operator()(this Self&& self, A&&... args)
             noexcept (requires{{std::forward<Self>(self).func(std::forward<A>(args)...)} noexcept;})
             requires (
-                (!meta::monad<A> && ...) &&
+                (!meta::visit_monad<A> && ...) &&
                 requires{{std::forward<Self>(self).func(std::forward<A>(args)...)};
             })
         {
             return (std::forward<Self>(self).func(std::forward<A>(args)...));
+        }
+    };
+
+    /* A generic visitor that backs the `->*` pattern matching operator for visitable
+    types. */
+    template <typename F>
+    struct visit_pattern {
+        /* Base: if the function to the right of `->*` is directly callable with the
+        current alternative, prefer that and terminate recursion. */
+        template <typename A>
+        static constexpr decltype(auto) operator()(meta::forward<F> f, A&& alt)
+            noexcept (requires{{std::forward<F>(f)(std::forward<A>(alt))} noexcept;})
+            requires (requires{{std::forward<F>(f)(std::forward<A>(alt))};})
+        {
+            return (std::forward<F>(f)(std::forward<A>(alt)));
+        }
+
+        /* Recursive: If the function is not directly callable, attempt to recursively
+        apply the `->*` operator on the alternative, allowing for nested patterns. */
+        template <typename A>
+        static constexpr decltype(auto) operator()(meta::forward<F> f, A&& alt)
+            noexcept (requires{{std::forward<A>(alt)->*std::forward<F>(f)} noexcept;})
+            requires (
+                !requires{{std::forward<F>(f)(std::forward<A>(alt))};} &&
+                requires{{std::forward<A>(alt)->*std::forward<F>(f)};}
+            )
+        {
+            return (std::forward<A>(alt)->*std::forward<F>(f));
         }
     };
 
@@ -1120,7 +1148,7 @@ namespace impl {
     constexpr bool _alternatives_are_formattable = false;
     template <typename... Ts, typename Char> requires (meta::formattable<Ts, Char> && ...)
     constexpr bool _alternatives_are_formattable<meta::pack<Ts...>, Char> = true;
-    template <meta::monad T, typename Char>
+    template <meta::visit_monad T, typename Char>
     constexpr bool alternatives_are_formattable =
         _alternatives_are_formattable<typename impl::visitable<T>::alternatives, Char>;
 
@@ -1676,7 +1704,7 @@ namespace impl {
     object, returning a corresponding `impl::union_storage` primitive type. */
     template <typename, typename...>
     struct union_convert_from {};
-    template <typename... Ts, typename in> requires (!meta::monad<in>)
+    template <typename... Ts, typename in> requires (!meta::visit_monad<in>)
     struct union_convert_from<meta::pack<Ts...>, in> {
         template <typename from>
         using type = _union_convert_from<from, void, void, Ts...>::type;
@@ -3335,11 +3363,11 @@ struct Union : impl::union_tag {
 
     template <typename Self, typename... A>
     constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
-        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
+        noexcept (meta::nothrow::visit<impl::visit_fn<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::visit_fn<impl::Call>, Self, A...>)
     {
         return (impl::visit(
-            impl::monadic<impl::Call>{},
+            impl::visit_fn<impl::Call>{},
             std::forward<Self>(self),
             std::forward<A>(args)...
         ));
@@ -3347,11 +3375,11 @@ struct Union : impl::union_tag {
 
     template <typename Self, typename... K>
     constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
-        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        noexcept (meta::nothrow::visit<impl::visit_fn<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::visit_fn<impl::Subscript>, Self, K...>)
     {
         return (impl::visit(
-            impl::monadic<impl::Subscript>{},
+            impl::visit_fn<impl::Subscript>{},
             std::forward<Self>(self),
             std::forward<K>(keys)...
         ));
@@ -3441,7 +3469,7 @@ namespace impl {
     object, returning a corresponding `impl::union_storage` primitive type. */
     template <typename T, typename...>
     struct optional_convert_from {};
-    template <typename T, typename in> requires (!meta::monad<in>)
+    template <typename T, typename in> requires (!meta::visit_monad<in>)
     struct optional_convert_from<T, in> {
         using type = meta::remove_rvalue<T>;
         using empty = impl::visitable<in>::empty;
@@ -3623,97 +3651,6 @@ namespace impl {
         }
     };
 
-    /* A trivial iterator that acts just like a raw pointer over contiguous storage.
-    Using a wrapper rather than the pointer directly comes with some advantages
-    regarding type safety, preventing accidental conversions to pointer arguments,
-    boolean conversions, placement new, etc. */
-    template <meta::not_void T>
-    struct contiguous_iterator {
-        using iterator_category = std::contiguous_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = meta::remove_reference<T>;
-        using reference = meta::as_lvalue<T>;
-        using pointer = meta::as_pointer<reference>;
-
-        pointer ptr;
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return *ptr;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return ptr;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return *(ptr + n);
-        }
-
-        constexpr contiguous_iterator& operator++() noexcept {
-            ++ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
-            auto tmp = *this;
-            ++ptr;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr contiguous_iterator operator+(
-            const contiguous_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.ptr + n};
-        }
-
-        [[nodiscard]] friend constexpr contiguous_iterator operator+(
-            difference_type n,
-            const contiguous_iterator& self
-        ) noexcept {
-            return {self.ptr + n};
-        }
-
-        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
-            ptr += n;
-            return *this;
-        }
-
-        constexpr contiguous_iterator& operator--() noexcept {
-            --ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
-            auto tmp = *this;
-            --ptr;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
-            return {ptr - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const contiguous_iterator& other
-        ) const noexcept {
-            return ptr - other.ptr;
-        }
-
-        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
-            ptr -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const contiguous_iterator& other) const noexcept {
-            return ptr == other.ptr;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const contiguous_iterator& other) const noexcept {
-            return ptr <=> other.ptr;
-        }
-    };
-
     /* A wrapper for an arbitrary iterator that allows it to be constructed in an empty
     state in order to represent empty optionals.  This is the iterator type for
     `Optional<T>`, where `T` is iterable.  In that case, this iterator behaves exactly
@@ -3864,7 +3801,6 @@ namespace impl {
             return (*std::forward<Self>(self).__value.iter);
         }
 
-        /// TODO: use meta::has_arrow<>T instead of a requires clause
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
             noexcept (requires{{std::to_address(std::forward<Self>(self).__value.iter)} noexcept;})
@@ -4358,8 +4294,6 @@ struct Optional : impl::optional_tag {
         return (std::forward<Self>(self).__value.template get<1>());
     }
 
-    /// TODO:
-
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
     or directly returning its address otherwise.  A `TypeError` error will be thrown if
     the program is compiled in debug mode and the optional is empty.  This requires a
@@ -4630,11 +4564,11 @@ struct Optional : impl::optional_tag {
 
     template <typename Self, typename... A>
     constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
-        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
+        noexcept (meta::nothrow::visit<impl::visit_fn<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::visit_fn<impl::Call>, Self, A...>)
     {
         return (impl::visit(
-            impl::monadic<impl::Call>{},
+            impl::visit_fn<impl::Call>{},
             std::forward<Self>(self),
             std::forward<A>(args)...
         ));
@@ -4642,11 +4576,11 @@ struct Optional : impl::optional_tag {
 
     template <typename Self, typename... K>
     constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
-        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        noexcept (meta::nothrow::visit<impl::visit_fn<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::visit_fn<impl::Subscript>, Self, K...>)
     {
         return (impl::visit(
-            impl::monadic<impl::Subscript>{},
+            impl::visit_fn<impl::Subscript>{},
             std::forward<Self>(self),
             std::forward<K>(keys)...
         ));
@@ -4702,7 +4636,7 @@ namespace impl {
     object, returning a corresponding `impl::union_storage` primitive type. */
     template <typename, typename...>
     struct expected_convert_from {};
-    template <typename T, typename... Es, typename in> requires (!meta::monad<in>)
+    template <typename T, typename... Es, typename in> requires (!meta::visit_monad<in>)
     struct expected_convert_from<meta::pack<T, Es...>, in> {
         using type = meta::remove_rvalue<expected_value<T>>;
         using result = impl::union_storage<type, meta::remove_rvalue<Es>...>;
@@ -5267,11 +5201,11 @@ struct Expected : impl::expected_tag {
 
     template <typename Self, typename... A>
     constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Call>, Self, A...>)
-        requires (meta::visit<impl::monadic<impl::Call>, Self, A...>)
+        noexcept (meta::nothrow::visit<impl::visit_fn<impl::Call>, Self, A...>)
+        requires (meta::visit<impl::visit_fn<impl::Call>, Self, A...>)
     {
         return (impl::visit(
-            impl::monadic<impl::Call>{},
+            impl::visit_fn<impl::Call>{},
             std::forward<Self>(self),
             std::forward<A>(args)...
         ));
@@ -5279,11 +5213,11 @@ struct Expected : impl::expected_tag {
 
     template <typename Self, typename... K>
     constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::visit<impl::monadic<impl::Subscript>, Self, K...>)
-        requires (meta::visit<impl::monadic<impl::Subscript>, Self, K...>)
+        noexcept (meta::nothrow::visit<impl::visit_fn<impl::Subscript>, Self, K...>)
+        requires (meta::visit<impl::visit_fn<impl::Subscript>, Self, K...>)
     {
         return (impl::visit(
-            impl::monadic<impl::Subscript>{},
+            impl::visit_fn<impl::Subscript>{},
             std::forward<Self>(self),
             std::forward<K>(keys)...
         ));
@@ -5307,36 +5241,69 @@ constexpr void swap(Expected<T, Es...>& a, Expected<T, Es...>& b)
 /////////////////////////////////
 
 
-/// NOTE: All operators are conditionally supported for union types, but only if the
-/// underlying type(s) also support them according to the semantics of the wrapper.
+/* Pattern matching operator for union monads.  A visitor function must be provided on
+the right hand side of this operator, which must be callable using all alternatives
+of the monad on the left.  Nested monads will be recursively expanded into their
+alternatives before attempting to invoke the visitor.
+
+Similar to the built-in `->` indirection operator, this operator will attempt to
+recursively call itself in order to match nested patterns involving other monads.
+Namely, if an alternative `A` is not directly handled by the visitor `F`, and the
+expression `A->*F` is valid, then the operator will fall back to that form.  This
+means a single visitor can cover both direct and nested patterns, preferring the
+former over the latter.  If neither are satisfied, then the operator will fail to
+compile. */
+template <meta::visit_monad T, typename F>
+constexpr decltype(auto) operator->*(T&& val, F&& func)
+    noexcept (meta::nothrow::visit_exhaustive<impl::visit_fn<impl::visit_pattern<F>>, F, T>)
+    requires (meta::visit_exhaustive<impl::visit_fn<impl::visit_pattern<F>>, F, T>)
+{
+    return (impl::visit(
+        impl::visit_fn<impl::visit_pattern<F>>{},
+        std::forward<F>(func),
+        std::forward<T>(val)
+    ));
+}
+
+
+/// TODO: there appears to be something wrong with the Union<> constructor in the case
+/// of `Union<Optional<int>, const char*> u = Optional(2)`, where visitors aren't being
+/// properly invoked from the optional to the nested union.  The expected behavior is
+/// that the union should be initialized to the first alternative.
+// static constexpr Union<Optional<int>, const char*> u = Optional(2);
+
+
+
+/// NOTE: All other operators are conditionally supported for union types, but only if
+/// the underlying type(s) also support them according to the semantics of the wrapper.
 /// These all basically boil down to visitors that take advantage of the implicit
 /// propagation semantics of `impl::visit`, meaning the visitor only needs to handle
 /// the raw operation on the underlying types, and the rest is handled for free by the
 /// same visitor logic as everything else.
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator!(T&& val)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::LogicalNot>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::LogicalNot>, T>)
     requires (
         !meta::explicitly_convertible_to<T, bool> &&
-        meta::visit<impl::monadic<impl::LogicalNot>, T>
+        meta::visit<impl::visit_fn<impl::LogicalNot>, T>
     )
 {
-    return (impl::visit(impl::monadic<impl::LogicalNot>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::LogicalNot>{}, std::forward<T>(val)));
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::LogicalAnd>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::LogicalAnd>, L, R>)
     requires ((
-        (meta::monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
-        (meta::monad<R> && !meta::explicitly_convertible_to<R, bool>)
-    ) && meta::visit<impl::monadic<impl::LogicalAnd>, L, R>)
+        (meta::visit_monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
+        (meta::visit_monad<R> && !meta::explicitly_convertible_to<R, bool>)
+    ) && meta::visit<impl::visit_fn<impl::LogicalAnd>, L, R>)
 {
     return (impl::visit(
-        impl::monadic<impl::LogicalAnd>{},
+        impl::visit_fn<impl::LogicalAnd>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5345,14 +5312,14 @@ constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::LogicalOr>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::LogicalOr>, L, R>)
     requires ((
-        (meta::monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
-        (meta::monad<R> && !meta::explicitly_convertible_to<R, bool>)
-    ) && meta::visit<impl::monadic<impl::LogicalOr>, L, R>)
+        (meta::visit_monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
+        (meta::visit_monad<R> && !meta::explicitly_convertible_to<R, bool>)
+    ) && meta::visit<impl::visit_fn<impl::LogicalOr>, L, R>)
 {
     return (impl::visit(
-        impl::monadic<impl::LogicalOr>{},
+        impl::visit_fn<impl::LogicalOr>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5361,14 +5328,14 @@ constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Less>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Less>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Less>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Less>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Less>{},
+        impl::visit_fn<impl::Less>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5377,14 +5344,14 @@ constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::LessEqual>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::LessEqual>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::LessEqual>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::LessEqual>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::LessEqual>{},
+        impl::visit_fn<impl::LessEqual>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5393,14 +5360,14 @@ constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Equal>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Equal>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Equal>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Equal>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Equal>{},
+        impl::visit_fn<impl::Equal>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5409,14 +5376,14 @@ constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::NotEqual>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::NotEqual>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::NotEqual>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::NotEqual>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::NotEqual>{},
+        impl::visit_fn<impl::NotEqual>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5425,14 +5392,14 @@ constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::GreaterEqual>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::GreaterEqual>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::GreaterEqual>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::GreaterEqual>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::GreaterEqual>{},
+        impl::visit_fn<impl::GreaterEqual>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5441,14 +5408,14 @@ constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Greater>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Greater>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Greater>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Greater>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Greater>{},
+        impl::visit_fn<impl::Greater>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5457,84 +5424,84 @@ constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Spaceship>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Spaceship>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Spaceship>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Spaceship>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Spaceship>{},
+        impl::visit_fn<impl::Spaceship>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator+(T&& val)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Pos>, T>)
-    requires (meta::visit<impl::monadic<impl::Pos>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Pos>, T>)
+    requires (meta::visit<impl::visit_fn<impl::Pos>, T>)
 {
-    return (impl::visit(impl::monadic<impl::Pos>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::Pos>{}, std::forward<T>(val)));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator-(T&& val)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Neg>, T>)
-    requires (meta::visit<impl::monadic<impl::Neg>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Neg>, T>)
+    requires (meta::visit<impl::visit_fn<impl::Neg>, T>)
 {
-    return (impl::visit(impl::monadic<impl::Neg>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::Neg>{}, std::forward<T>(val)));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator++(T&& val)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::PreIncrement>, T>)
-    requires (meta::visit<impl::monadic<impl::PreIncrement>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::PreIncrement>, T>)
+    requires (meta::visit<impl::visit_fn<impl::PreIncrement>, T>)
 {
-    return (impl::visit(impl::monadic<impl::PreIncrement>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::PreIncrement>{}, std::forward<T>(val)));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator++(T&& val, int)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::PostIncrement>, T>)
-    requires (meta::visit<impl::monadic<impl::PostIncrement>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::PostIncrement>, T>)
+    requires (meta::visit<impl::visit_fn<impl::PostIncrement>, T>)
 {
-    return (impl::visit(impl::monadic<impl::PostIncrement>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::PostIncrement>{}, std::forward<T>(val)));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator--(T&& val)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::PreDecrement>, T>)
-    requires (meta::visit<impl::monadic<impl::PreDecrement>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::PreDecrement>, T>)
+    requires (meta::visit<impl::visit_fn<impl::PreDecrement>, T>)
 {
-    return (impl::visit(impl::monadic<impl::PreDecrement>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::PreDecrement>{}, std::forward<T>(val)));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator--(T&& val, int)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::PostDecrement>, T>)
-    requires (meta::visit<impl::monadic<impl::PostDecrement>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::PostDecrement>, T>)
+    requires (meta::visit<impl::visit_fn<impl::PostDecrement>, T>)
 {
-    return (impl::visit(impl::monadic<impl::PostDecrement>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::PostDecrement>{}, std::forward<T>(val)));
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Add>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Add>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Add>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Add>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Add>{},
+        impl::visit_fn<impl::Add>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5543,14 +5510,14 @@ constexpr decltype(auto) operator+(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceAdd>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceAdd>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceAdd>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceAdd>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceAdd>{},
+        impl::visit_fn<impl::InplaceAdd>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5559,14 +5526,14 @@ constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Subtract>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Subtract>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Subtract>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Subtract>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Subtract>{},
+        impl::visit_fn<impl::Subtract>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5575,14 +5542,14 @@ constexpr decltype(auto) operator-(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceSubtract>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceSubtract>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceSubtract>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceSubtract>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceSubtract>{},
+        impl::visit_fn<impl::InplaceSubtract>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5591,14 +5558,14 @@ constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Multiply>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Multiply>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Multiply>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Multiply>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Multiply>{},
+        impl::visit_fn<impl::Multiply>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5607,14 +5574,14 @@ constexpr decltype(auto) operator*(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceMultiply>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceMultiply>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceMultiply>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceMultiply>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceMultiply>{},
+        impl::visit_fn<impl::InplaceMultiply>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5623,14 +5590,14 @@ constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Divide>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Divide>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Divide>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Divide>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Divide>{},
+        impl::visit_fn<impl::Divide>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5639,14 +5606,14 @@ constexpr decltype(auto) operator/(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceDivide>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceDivide>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceDivide>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceDivide>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceDivide>{},
+        impl::visit_fn<impl::InplaceDivide>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5655,14 +5622,14 @@ constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::Modulus>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::Modulus>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::Modulus>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::Modulus>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::Modulus>{},
+        impl::visit_fn<impl::Modulus>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5671,14 +5638,14 @@ constexpr decltype(auto) operator%(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceModulus>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceModulus>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceModulus>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceModulus>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceModulus>{},
+        impl::visit_fn<impl::InplaceModulus>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5687,14 +5654,14 @@ constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<<(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::LeftShift>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::LeftShift>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::LeftShift>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::LeftShift>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::LeftShift>{},
+        impl::visit_fn<impl::LeftShift>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5703,14 +5670,14 @@ constexpr decltype(auto) operator<<(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceLeftShift>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceLeftShift>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceLeftShift>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceLeftShift>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceLeftShift>{},
+        impl::visit_fn<impl::InplaceLeftShift>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5719,14 +5686,14 @@ constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator>>(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::RightShift>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::RightShift>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::RightShift>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::RightShift>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::RightShift>{},
+        impl::visit_fn<impl::RightShift>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5735,39 +5702,39 @@ constexpr decltype(auto) operator>>(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceRightShift>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceRightShift>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceRightShift>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceRightShift>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceRightShift>{},
+        impl::visit_fn<impl::InplaceRightShift>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
 }
 
 
-template <meta::monad T>
+template <meta::visit_monad T>
 constexpr decltype(auto) operator~(T&& val)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::BitwiseNot>, T>)
-    requires (meta::visit<impl::monadic<impl::BitwiseNot>, T>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::BitwiseNot>, T>)
+    requires (meta::visit<impl::visit_fn<impl::BitwiseNot>, T>)
 {
-    return (impl::visit(impl::monadic<impl::BitwiseNot>{}, std::forward<T>(val)));
+    return (impl::visit(impl::visit_fn<impl::BitwiseNot>{}, std::forward<T>(val)));
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::BitwiseAnd>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::BitwiseAnd>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::BitwiseAnd>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::BitwiseAnd>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::BitwiseAnd>{},
+        impl::visit_fn<impl::BitwiseAnd>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5776,14 +5743,14 @@ constexpr decltype(auto) operator&(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceBitwiseAnd>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceBitwiseAnd>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceBitwiseAnd>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceBitwiseAnd>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceBitwiseAnd>{},
+        impl::visit_fn<impl::InplaceBitwiseAnd>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5792,14 +5759,14 @@ constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::BitwiseOr>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::BitwiseOr>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::BitwiseOr>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::BitwiseOr>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::BitwiseOr>{},
+        impl::visit_fn<impl::BitwiseOr>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5808,14 +5775,14 @@ constexpr decltype(auto) operator|(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceBitwiseOr>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceBitwiseOr>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceBitwiseOr>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceBitwiseOr>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceBitwiseOr>{},
+        impl::visit_fn<impl::InplaceBitwiseOr>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5824,14 +5791,14 @@ constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::BitwiseXor>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::BitwiseXor>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::BitwiseXor>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::BitwiseXor>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::BitwiseXor>{},
+        impl::visit_fn<impl::BitwiseXor>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5840,14 +5807,14 @@ constexpr decltype(auto) operator^(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::visit<impl::monadic<impl::InplaceBitwiseXor>, L, R>)
+    noexcept (meta::nothrow::visit<impl::visit_fn<impl::InplaceBitwiseXor>, L, R>)
     requires (
-        (meta::monad<L> || meta::monad<R>) &&
-        meta::visit<impl::monadic<impl::InplaceBitwiseXor>, L, R>
+        (meta::visit_monad<L> || meta::visit_monad<R>) &&
+        meta::visit<impl::visit_fn<impl::InplaceBitwiseXor>, L, R>
     )
 {
     return (impl::visit(
-        impl::monadic<impl::InplaceBitwiseXor>{},
+        impl::visit_fn<impl::InplaceBitwiseXor>{},
         std::forward<L>(lhs),
         std::forward<R>(rhs)
     ));
@@ -5859,27 +5826,27 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 
 namespace std {
 
-    template <bertrand::meta::monad T>
-        requires (bertrand::meta::visit<bertrand::impl::monadic<bertrand::impl::Hash>, T>)
+    template <bertrand::meta::visit_monad T>
+        requires (bertrand::meta::visit<bertrand::impl::visit_fn<bertrand::impl::Hash>, T>)
     struct hash<T> {
         static constexpr auto operator()(bertrand::meta::as_const_ref<T> value)
             noexcept (bertrand::meta::nothrow::visit<
-                bertrand::impl::monadic<bertrand::impl::Hash>,
+                bertrand::impl::visit_fn<bertrand::impl::Hash>,
                 bertrand::meta::as_const_ref<T>
             >)
             requires (bertrand::meta::visit<
-                bertrand::impl::monadic<bertrand::impl::Hash>,
+                bertrand::impl::visit_fn<bertrand::impl::Hash>,
                 bertrand::meta::as_const_ref<T>
             >)
         {
             return bertrand::impl::visit(
-                bertrand::impl::monadic<bertrand::impl::Hash>{},
+                bertrand::impl::visit_fn<bertrand::impl::Hash>{},
                 value
             );
         }
     };
 
-    template <bertrand::meta::monad T, typename Char>
+    template <bertrand::meta::visit_monad T, typename Char>
         requires (bertrand::impl::alternatives_are_formattable<T, Char>)
     struct formatter<T, Char> {
     private:
@@ -5892,7 +5859,7 @@ namespace std {
 
         struct fn {
             template <typename A, typename out>
-                requires (!bertrand::meta::monad<A> && std::formattable<A, Char>)
+                requires (!bertrand::meta::visit_monad<A> && std::formattable<A, Char>)
             static constexpr auto operator()(
                 const A& value,
                 format_context<out>& ctx,

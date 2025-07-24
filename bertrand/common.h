@@ -4789,6 +4789,195 @@ namespace impl {
     template <typename T>
     arrow_proxy(T&&) -> arrow_proxy<T>;
 
+    /* A trivial iterator that acts just like a raw pointer over contiguous storage.
+    Using a wrapper rather than the pointer directly comes with some advantages
+    regarding type safety, preventing accidental conversions to pointer arguments,
+    boolean conversions, placement new, etc. */
+    template <meta::not_void T>
+    struct contiguous_iterator {
+        using iterator_category = std::contiguous_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = meta::remove_reference<T>;
+        using reference = meta::as_lvalue<T>;
+        using pointer = meta::as_pointer<reference>;
+
+        pointer ptr;
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return *ptr;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            return ptr;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
+            return *(ptr + n);
+        }
+
+        constexpr contiguous_iterator& operator++() noexcept {
+            ++ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
+            auto tmp = *this;
+            ++ptr;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr contiguous_iterator operator+(
+            const contiguous_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.ptr + n};
+        }
+
+        [[nodiscard]] friend constexpr contiguous_iterator operator+(
+            difference_type n,
+            const contiguous_iterator& self
+        ) noexcept {
+            return {self.ptr + n};
+        }
+
+        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
+            ptr += n;
+            return *this;
+        }
+
+        constexpr contiguous_iterator& operator--() noexcept {
+            --ptr;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
+            auto tmp = *this;
+            --ptr;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
+            return {ptr - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const contiguous_iterator& other
+        ) const noexcept {
+            return ptr - other.ptr;
+        }
+
+        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
+            ptr -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const contiguous_iterator& other) const noexcept {
+            return ptr == other.ptr;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const contiguous_iterator& other) const noexcept {
+            return ptr <=> other.ptr;
+        }
+    };
+
+    /* A generic overload set implemented using recursive inheritance.  This allows the
+    overload set to accept functions by reference, as well as index into them as if
+    they were a tuple.  Calling the overload set will invoke the appropriate function
+    just like any other overloaded function call. */
+    template <typename...>
+    struct overloads {
+        constexpr void swap(overloads&) noexcept {}
+        template <size_t I, typename Self> requires (false)  // never actually called
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept;
+    };
+    template <typename T, typename... Ts>
+    struct overloads<T, Ts...> : overloads<Ts...> {
+    private:
+        using type = meta::remove_rvalue<T>;
+
+    public:
+        [[no_unique_address]] store<type> data;
+
+        [[nodiscard]] constexpr overloads() = default;
+        [[nodiscard]] constexpr overloads(T val, Ts... rest)
+            noexcept (
+                meta::nothrow::convertible_to<T, type> &&
+                meta::nothrow::constructible_from<overloads<Ts...>, Ts...>
+            )
+            requires (
+                meta::convertible_to<T, type> &&
+                meta::constructible_from<overloads<Ts...>, Ts...>
+            )
+        :
+            overloads<Ts...>(std::forward<Ts>(rest)...),
+            data(std::forward<T>(val))
+        {}
+
+        constexpr void swap(overloads& other)
+            noexcept (
+                (meta::lvalue<type> || meta::nothrow::swappable<type>) &&
+                meta::nothrow::swappable<overloads<Ts...>>
+            )
+            requires (
+                (meta::lvalue<type> || meta::swappable<type>) &&
+                meta::swappable<overloads<Ts...>>
+            )
+        {
+            overloads<Ts...>::swap(other);
+            if constexpr (meta::lvalue<T>) {
+                store<type> tmp = data;
+                std::construct_at(&data, other.data);
+                std::construct_at(&other.data, tmp);
+            } else {
+                std::ranges::swap(data.value, other.data.value);
+            }
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{
+                {std::forward<Self>(self).data.value(std::forward<A>(args)...)} noexcept;
+            })
+            requires (
+                requires{{std::forward<Self>(self).data.value(std::forward<A>(args)...)};} &&
+                !requires{{std::forward<meta::qualify<overloads<Ts...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            return (std::forward<Self>(self).data.value(std::forward<A>(args)...));
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<meta::qualify<overloads<Ts...>, Self>>(self)(
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (
+                !requires{{std::forward<Self>(self).data.value(std::forward<A>(args)...)};} &&
+                requires{{std::forward<meta::qualify<overloads<Ts...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            using base = meta::qualify<overloads<Ts...>, Self>;
+            return (std::forward<base>(self)(std::forward<A>(args)...));
+        }
+
+        template <size_t I, typename Self> requires (I < sizeof...(Ts) + 1)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<Self>(self).data.value);
+            } else {
+                using base = meta::qualify<overloads<Ts...>, Self>;
+                return (std::forward<base>(self).template get<I - 1>());
+            }
+        }
+    };
+
+    template <typename... Fs>
+    overloads(Fs&&...) -> overloads<meta::remove_rvalue<Fs>...>;
+
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
     struct fnv1a {
@@ -5286,22 +5475,6 @@ namespace impl {
 /// TODO: static_str -> StaticStr?
 
 
-/* A compile-time string literal type that can be used as a non-type template
-parameter.
-
-This class allows string literals to be encoded directly into C++'s type system,
-consistent with other consteval language constructs.  That means they can be used to
-specialize templates and trigger arbitrarily complex metafunctions at compile time,
-without any impact on the final binary.  Such metafunctions are used internally to
-implement zero-cost keyword arguments for C++ functions, full static type safety for
-Python attributes, and minimal perfect hash tables for arbitrary data.
-
-Users can leverage these strings for their own metaprogramming needs as well; the class
-implements the full Python string interface as consteval member methods, and even
-supports regular expressions through the CTRE library.  This can serve as a powerful
-base for user-defined metaprogramming facilities, up to and including full
-Domain-Specific Languages (DSLs) that can be parsed at compile time and subjected to
-exhaustive static analysis. */
 template <size_t N = 0>
 struct static_str;
 
@@ -5506,7 +5679,6 @@ namespace meta {
         constexpr bool static_str = false;
         template <size_t N>
         constexpr bool static_str<bertrand::static_str<N>> = true;
-
 
     }
 

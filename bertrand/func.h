@@ -3073,10 +3073,10 @@ namespace impl {
             std::forward<F>(func),
             unpack(std::forward<T>(container))
         }} noexcept;})
-        // requires (requires{{bertrand::comprehension{
-        //     std::forward<F>(func),
-        //     unpack(std::forward<T>(container))
-        // }};})
+        requires (requires{{bertrand::comprehension{
+            std::forward<F>(func),
+            unpack(std::forward<T>(container))
+        }};})
     {
         return bertrand::comprehension{
             std::forward<F>(func),
