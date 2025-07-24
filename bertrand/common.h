@@ -4883,29 +4883,37 @@ namespace impl {
     /* A generic overload set implemented using recursive inheritance.  This allows the
     overload set to accept functions by reference, as well as index into them as if
     they were a tuple.  Calling the overload set will invoke the appropriate function
-    just like any other overloaded function call. */
-    template <typename...>
+    just like any other overloaded function call.
+
+    This class is also a convenient, minimal implementation of a raw tuple, which can
+    be used as a building block for more complex data structures that potentially
+    need to store multiple values of different types, some of which may be lvalues,
+    which should be stored by reference rather than by value. */
+    template <meta::not_rvalue...>
     struct overloads {
+        [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return true; }
         constexpr void swap(overloads&) noexcept {}
         template <size_t I, typename Self> requires (false)  // never actually called
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept;
     };
-    template <typename T, typename... Ts>
+    template <meta::not_rvalue T, meta::not_rvalue... Ts>
     struct overloads<T, Ts...> : overloads<Ts...> {
-    private:
-        using type = meta::remove_rvalue<T>;
+        [[no_unique_address]] store<T> data;
 
-    public:
-        [[no_unique_address]] store<type> data;
+        [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts) + 1; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return sizeof...(Ts) + 1; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
 
         [[nodiscard]] constexpr overloads() = default;
-        [[nodiscard]] constexpr overloads(T val, Ts... rest)
+        [[nodiscard]] constexpr overloads(meta::forward<T> val, meta::forward<Ts>... rest)
             noexcept (
-                meta::nothrow::convertible_to<T, type> &&
+                meta::nothrow::convertible_to<meta::forward<T>, T> &&
                 meta::nothrow::constructible_from<overloads<Ts...>, Ts...>
             )
             requires (
-                meta::convertible_to<T, type> &&
+                meta::convertible_to<meta::forward<T>, T> &&
                 meta::constructible_from<overloads<Ts...>, Ts...>
             )
         :
@@ -4915,17 +4923,14 @@ namespace impl {
 
         constexpr void swap(overloads& other)
             noexcept (
-                (meta::lvalue<type> || meta::nothrow::swappable<type>) &&
+                (meta::lvalue<T> || meta::nothrow::swappable<T>) &&
                 meta::nothrow::swappable<overloads<Ts...>>
             )
-            requires (
-                (meta::lvalue<type> || meta::swappable<type>) &&
-                meta::swappable<overloads<Ts...>>
-            )
+            requires ((meta::lvalue<T> || meta::swappable<T>) && meta::swappable<overloads<Ts...>>)
         {
             overloads<Ts...>::swap(other);
             if constexpr (meta::lvalue<T>) {
-                store<type> tmp = data;
+                store<T> tmp = data;
                 std::construct_at(&data, other.data);
                 std::construct_at(&other.data, tmp);
             } else {
@@ -4964,7 +4969,7 @@ namespace impl {
             return (std::forward<base>(self)(std::forward<A>(args)...));
         }
 
-        template <size_t I, typename Self> requires (I < sizeof...(Ts) + 1)
+        template <size_t I, typename Self> requires (I < size())
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
             if constexpr (I == 0) {
                 return (std::forward<Self>(self).data.value);
