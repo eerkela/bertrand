@@ -4646,6 +4646,12 @@ namespace impl {
         :
             value(std::forward<A>(args)...)
         {};
+        constexpr void swap(store& other)
+            noexcept (meta::nothrow::swappable<type>)
+            requires (meta::swappable<type>)
+        {
+            std::ranges::swap(value, other.value);
+        }
     };
 
     /* Specialization of `ref` for lvalue references.  Assigning to an lvalue reference
@@ -4658,11 +4664,25 @@ namespace impl {
             std::construct_at(this, other.value);
             return *this;
         }
+        constexpr void swap(store& other) noexcept {
+            store tmp{*this};
+            std::construct_at(this, other.value);
+            std::construct_at(&other, tmp.value);
+        }
     };
 
     /* CTAD allows reference types to be inferred from an initializer. */
     template <typename T>
     store(T&&) -> store<meta::remove_rvalue<T>>;
+
+    /* ADL swap() operator for `impl::store<T>`. */
+    template <typename T>
+    constexpr void swap(store<T>& a, store<T>& b)
+        noexcept (requires{{a.swap(b)} noexcept;})
+        requires (requires{{a.swap(b)};})
+    {
+        a.swap(b);
+    }
 
     /* A helper class that generates a manual vtable for a visitor function `F`, which
     must be a template class that accepts a single `size_t` parameter representing the
