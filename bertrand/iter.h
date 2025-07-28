@@ -750,7 +750,6 @@ namespace meta {
 
 namespace impl {
 
-
     /// TODO: enable_borrowed_range should always be enabled for iotas.
 
     /* Iota iterators will use the difference type between `stop` and `start` if
@@ -2008,6 +2007,10 @@ struct range : impl::range_tag {
             return meta::tuple_size<C> == 0;
         }
     }
+
+
+    /// TODO: `get<slice>()` and `get<*mask>()` can allow indexing into a range at
+    /// compile time using the same semantics as `operator[]`.
 
     /* Forwarding `get<I>()` accessor, provided the underlying container is
     tuple-like.  Automatically applies Python-style wraparound for negative indices. */
@@ -3451,26 +3454,6 @@ public:
 };
 
 
-////////////////////
-////    JOIN    ////
-////////////////////
-
-
-/// TODO: `join{}` is quite challenging to implement.  It basically requires the range
-/// adaptor to store an `impl::overloads` of the initializing ranges, and then the
-/// iterator would store an `impl::union_storage<Iters...>` where the active index
-/// determines which range is currently being iterated over.  If the ranges yield
-/// multiple distinct types, then the overall yield type from the iterator will be
-/// a `Union<Ts...>`.
-
-/// TODO: I'm also not entirely sure how to handle unpacking operators in this case.
-/// They should either expand horizontally or cause nested ranges to be flattened,
-/// which may end up being the default behavior.  Just yield a non-range if you want
-/// to avoid flattening.
-
-
-
-
 ///////////////////
 ////    ZIP    ////
 ///////////////////
@@ -4171,6 +4154,13 @@ namespace impl {
     /// TODO: if the function is const, then the return type might change, so there
     /// needs to be some generalization here to support that.
 
+    /// TODO: there may need to be 2 separate specializations of zip_iterator, one for
+    /// normal transformations and one for nested transformations, where the visitor's
+    /// return type is another range.
+    /// -> Not sure how random access iterators would be handled in the latter case,
+    /// especially since the overall size of the range may not be known in constant
+    /// time.
+
     /* Iterators over zipped ranges store tuples of iterator and broadcasted value
     types, and invoke the function stored in the zipped range until at least one of the
     iterators compares equal to its respective end iterator, which is modeled as
@@ -4196,7 +4186,7 @@ namespace impl {
 
     private:
         template <size_t I, typename T>
-        [[nodiscard]] static constexpr decltype(auto) _call(T&& value)
+        static constexpr decltype(auto) _deref(T&& value)
             noexcept (!Self::template is_range<I> || requires{{*std::forward<T>(value)} noexcept;})
             requires (!Self::template is_range<I> || requires{{*std::forward<T>(value)};})
         {
@@ -4208,21 +4198,21 @@ namespace impl {
         }
 
         template <typename Self, size_t... Is>
-        [[nodiscard]] static constexpr decltype(auto) call(Self&& self, std::index_sequence<Is...>)
-            noexcept (requires{{self.self->m_func(_call<Is>(
+        static constexpr decltype(auto) deref(std::index_sequence<Is...>, Self&& self)
+            noexcept (requires{{self.self->m_func(_deref<Is>(
                 std::forward<Self>(self).iters.template get<Is>()
             )...)} noexcept;})
-            requires (requires{{self.self->m_func(_call<Is>(
+            requires (requires{{self.self->m_func(_deref<Is>(
                 std::forward<Self>(self).iters.template get<Is>()
             )...)};})
         {
-            return (self.self->m_func(_call<Is>(
+            return (self.self->m_func(_deref<Is>(
                 std::forward<Self>(self).iters.template get<Is>())...
             ));
         }
 
         template <size_t I, typename T>
-        [[nodiscard]] static constexpr decltype(auto) _subscript(T&& value, difference_type i)
+        static constexpr decltype(auto) _subscript(T&& value, difference_type i)
             noexcept (!Self::template is_range<I> || requires{{std::forward<T>(value)[i]} noexcept;})
             requires (!Self::template is_range<I> || requires{{std::forward<T>(value)[i]};})
         {
@@ -4234,9 +4224,9 @@ namespace impl {
         }
 
         template <typename Self, size_t... Is>
-        [[nodiscard]] static constexpr decltype(auto) subscript(
-            Self&& self,
+        static constexpr decltype(auto) subscript(
             std::index_sequence<Is...>,
+            Self&& self,
             difference_type i
         )
             noexcept (requires{{self.self->m_func(_subscript<Is>(
@@ -4248,7 +4238,7 @@ namespace impl {
                 i
             )...)};})
         {
-            return (self.self->m_func(_call<Is>(
+            return (self.self->m_func(_subscript<Is>(
                 std::forward<Self>(self).iters.template get<Is>(),
                 i
             )...));
@@ -4262,7 +4252,34 @@ namespace impl {
             ((++iters.template get<Is>()), ...);
         }
 
-        /// TODO: add()
+        template <size_t I, typename T>
+        static constexpr zip_iterator _add(T&& value, difference_type i)
+            noexcept (!Self::template is_range<I> || requires{{std::forward<T>(value) + i} noexcept;})
+            requires (!Self::template is_range<I> || requires{{std::forward<T>(value) + i};})
+        {
+            if constexpr (Self::template is_range<I>) {
+                return (std::forward<T>(value) + i);
+            } else {
+                return (std::forward<T>(value));
+            }
+        }
+
+        template <size_t... Is>
+        constexpr zip_iterator add(std::index_sequence<Is...>, difference_type i) const
+            noexcept (requires{{zip_iterator{
+                .self = self,
+                .iters = {_add<Is>(iters.template get<Is>(), i)...}
+            }} noexcept;})
+            requires (requires{{zip_iterator{
+                .self = self,
+                .iters = {_add<Is>(iters.template get<Is>(), i)...}
+            }};})
+        {
+            return {
+                .self = self,
+                .iters = {_add<Is>(iters.template get<Is>(), i)...}
+            };
+        }
 
         template <size_t... Is>
         constexpr void iadd(std::index_sequence<Is...>, difference_type i)
@@ -4280,9 +4297,86 @@ namespace impl {
             ((--iters.template get<Is>()), ...);
         }
 
-        /// TODO: sub(), distance()  <- this should be guaranteed to all return the
-        /// same value, so it might only need to check the first iterator.
+        template <size_t I, typename T>
+        static constexpr zip_iterator _sub(T&& value, difference_type i)
+            noexcept (!Self::template is_range<I> || requires{{std::forward<T>(value) - i} noexcept;})
+            requires (!Self::template is_range<I> || requires{{std::forward<T>(value) - i};})
+        {
+            if constexpr (Self::template is_range<I>) {
+                return (std::forward<T>(value) - i);
+            } else {
+                return (std::forward<T>(value));
+            }
+        }
 
+        template <size_t... Is>
+        constexpr zip_iterator sub(std::index_sequence<Is...>, difference_type i) const
+            noexcept (requires{{zip_iterator{
+                .self = self,
+                .iters = {_sub<Is>(iters.template get<Is>(), i)...}
+            }} noexcept;})
+            requires (requires{{zip_iterator{
+                .self = self,
+                .iters = {_sub<Is>(iters.template get<Is>(), i)...}
+            }};})
+        {
+            return {
+                .self = self,
+                .iters = {_sub<Is>(iters.template get<Is>(), i)...}
+            };
+        }
+
+        template <typename T, typename U>
+        static constexpr void _distance(difference_type d, T&& it, U&& other)
+            noexcept (requires{
+                {it - other} noexcept -> meta::nothrow::convertible_to<difference_type>;
+            })
+            requires (requires{
+                {it - other} -> meta::convertible_to<difference_type>;
+            })
+        {
+            difference_type dist = it - other;
+            if (dist < 0) {
+                if (dist > d) {
+                    d = dist;
+                }
+            } else {
+                if (dist < d) {
+                    d = dist;
+                }
+            }
+        }
+
+        /// TODO: what about distance between zip_iterators over purely scalar values?
+        /// They would always end up with a distance of 0 or +/- 1.
+        /// -> Maybe the most reasonable thing would be to force there to be at least
+        /// one range in the zip?  The only other alternative is to write a special
+        /// iterator type that accounts for this.
+
+        /// TODO: maybe using an integer index and incrementing/decrementing it will
+        /// cover this?  The no-range case would always fall into this, and would
+        /// always have an index of either 0 or 1, and would always be random access.
+
+        template <size_t... Is, typename... Ts>
+        constexpr difference_type distance(
+            std::index_sequence<Is...>,
+            const zip_iterator<S, Ts...>& other
+        ) const
+            noexcept (requires{
+                {((iters.template get<Is>() - other.iters.template get<Is>()), ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() - other.iters.template get<Is>()), ...)};
+            })
+        {
+            difference_type result = std::numeric_limits<difference_type>::max();
+            ((_distance(
+                result,
+                iters.template get<Is>(),
+                other.iters.template get<Is>()
+            )), ...);
+            return result;
+        }
 
         template <size_t... Is>
         constexpr void isub(std::index_sequence<Is...>, difference_type i)
@@ -4292,16 +4386,87 @@ namespace impl {
             ((iters.template get<Is>() -= i), ...);
         }
 
+        template <size_t... Is, typename... Ts>
+        constexpr bool lt(std::index_sequence<Is...>, const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{
+                {((iters.template get<Is>() < other.iters.template get<Is>()) && ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() < other.iters.template get<Is>()) && ...)};
+            })
+        {
+            return ((iters.template get<Is>() < other.iters.template get<Is>()) && ...);
+        }
 
-        /// TODO: comparisons (lt, le, eq, ne, ge, gt, spaceship)
+        template <size_t... Is, typename... Ts>
+        constexpr bool le(std::index_sequence<Is...>, const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{
+                {((iters.template get<Is>() <= other.iters.template get<Is>()) && ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() <= other.iters.template get<Is>()) && ...)};
+            })
+        {
+            return ((iters.template get<Is>() <= other.iters.template get<Is>()) && ...);
+        }
+
+        template <size_t... Is, typename... Ts>
+        constexpr bool eq(std::index_sequence<Is...>, const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{
+                {((iters.template get<Is>() == other.iters.template get<Is>()) && ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() == other.iters.template get<Is>()) && ...)};
+            })
+        {
+            return ((iters.template get<Is>() == other.iters.template get<Is>()) && ...);
+        }
+
+        template <size_t... Is, typename... Ts>
+        constexpr bool ne(std::index_sequence<Is...>, const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{
+                {((iters.template get<Is>() != other.iters.template get<Is>()) && ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() != other.iters.template get<Is>()) && ...)};
+            })
+        {
+            return ((iters.template get<Is>() != other.iters.template get<Is>()) && ...);
+        }
+
+        template <size_t... Is, typename... Ts>
+        constexpr bool ge(std::index_sequence<Is...>, const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{
+                {((iters.template get<Is>() >= other.iters.template get<Is>()) && ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() >= other.iters.template get<Is>()) && ...)};
+            })
+        {
+            return ((iters.template get<Is>() >= other.iters.template get<Is>()) && ...);
+        }
+
+        template <size_t... Is, typename... Ts>
+        constexpr bool gt(std::index_sequence<Is...>, const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{
+                {((iters.template get<Is>() > other.iters.template get<Is>()) && ...)} noexcept;
+            })
+            requires (requires{
+                {((iters.template get<Is>() > other.iters.template get<Is>()) && ...)};
+            })
+        {
+            return ((iters.template get<Is>() > other.iters.template get<Is>()) && ...);
+        }
+
+        /// TODO: spaceship operator?
 
     public:
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{call(std::forward<Self>(self), indices{})} noexcept;})
-            requires (requires{{call(std::forward<Self>(self), indices{})};})
+            noexcept (requires{{deref(indices{}, std::forward<Self>(self))} noexcept;})
+            requires (requires{{deref(indices{}, std::forward<Self>(self))};})
         {
-            return (call(std::forward<Self>(self), indices{}));
+            return (deref(indices{}, std::forward<Self>(self)));
         }
 
         template <typename Self>
@@ -4314,17 +4479,17 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
-            noexcept (requires{{subscript(std::forward<Self>(self), indices{}, i)} noexcept;})
-            requires (requires{{subscript(std::forward<Self>(self), indices{}, i)};})
+            noexcept (requires{{subscript(indices{}, std::forward<Self>(self), i)} noexcept;})
+            requires (requires{{subscript(indices{}, std::forward<Self>(self), i)};})
         {
-            return (subscript(std::forward<Self>(self), indices{}, i));
+            return (subscript(indices{}, std::forward<Self>(self), i));
         }
 
         constexpr zip_iterator& operator++()
-            noexcept (requires{{increment(indices{})} noexcept;})
-            requires (requires{{increment(indices{})};})
+            noexcept (requires{{increment(ranges{})} noexcept;})
+            requires (requires{{increment(ranges{})};})
         {
-            increment(indices{});
+            increment(ranges{});
             return *this;
         }
 
@@ -4343,23 +4508,39 @@ namespace impl {
             return copy;
         }
 
-        /// TODO: random-access addition is basically the same pattern, but it has
-        /// to iterate over the full indices in order to construct the copy's `.iters`.
+        [[nodiscard]] friend constexpr zip_iterator operator+(
+            const zip_iterator& self,
+            difference_type i
+        )
+            noexcept (requires{{self.add(indices{}, i)} noexcept;})
+            requires (requires{{self.add(indices{}, i)};})
+        {
+            return self.add(indices{}, i);
+        }
 
+        [[nodiscard]] friend constexpr zip_iterator operator+(
+            difference_type i,
+            const zip_iterator& self
+        )
+            noexcept (requires{{self.add(indices{}, i)} noexcept;})
+            requires (requires{{self.add(indices{}, i)};})
+        {
+            return self.add(indices{}, i);
+        }
 
         constexpr zip_iterator& operator+=(difference_type i)
-            noexcept (requires{{iadd(indices{}, i)} noexcept;})
-            requires (requires{{iadd(indices{}, i)};})
+            noexcept (requires{{iadd(ranges{}, i)} noexcept;})
+            requires (requires{{iadd(ranges{}, i)};})
         {
-            iadd(indices{}, i);
+            iadd(ranges{}, i);
             return *this;
         }
 
         constexpr zip_iterator& operator--()
-            noexcept (requires{{decrement(indices{})} noexcept;})
-            requires (requires{{decrement(indices{})};})
+            noexcept (requires{{decrement(ranges{})} noexcept;})
+            requires (requires{{decrement(ranges{})};})
         {
-            decrement(indices{});
+            decrement(ranges{});
             return *this;
         }
 
@@ -4378,13 +4559,26 @@ namespace impl {
             return copy;
         }
 
-        /// TODO: random-access subtraction + distance
+        [[nodiscard]] constexpr zip_iterator operator-(difference_type i) const
+            noexcept (requires{{sub(indices{}, i)} noexcept;})
+            requires (requires{{sub(indices{}, i)};})
+        {
+            return sub(indices{}, i);
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr difference_type operator-(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{distance(ranges{}, other)} noexcept;})
+            requires (requires{{distance(ranges{}, other)};})
+        {
+            return distance(ranges{}, other);
+        }
 
         constexpr zip_iterator& operator-=(difference_type i)
-            noexcept (requires{{isub(indices{}, i)} noexcept;})
-            requires (requires{{isub(indices{}, i)};})
+            noexcept (requires{{isub(ranges{}, i)} noexcept;})
+            requires (requires{{isub(ranges{}, i)};})
         {
-            isub(indices{}, i);
+            isub(ranges{}, i);
             return *this;
         }
 
@@ -4399,30 +4593,60 @@ namespace impl {
         /// -> Actually, this criteria doesn't depend on the presence of the size()
         /// method, but rather whether the storage type compiled an m_size member,
         /// which is true if and only if none of the arguments are unsized ranges.
-        /// That sets the counter and allows us to forego the end iterators within
-        /// this iterator base.
 
 
-        /// TODO: maybe it's a better implementation to just have the begin() iterator
-        /// return this class, which holds only the beginning iterators/references and
-        /// a reference to the parent zip container, and the end() iterator would hold
-        /// the end iterators/values and a similar reference.  Both types would be
-        /// the same if all of the iterator types are the same, and would allow
-        /// arbitrary iteration logic, not limited to forward iteration.  The overall
-        /// zip iterators could be completely random access.  There would need to be
-        /// a special `zip_end` that would be emitted if any of the begin/end
-        /// iterator types are different.
+
 
 
         template <typename... Ts>
-        [[nodiscard]] constexpr bool operator==(const zip_iterator<Self, Ts...>& other) const
-            
+        [[nodiscard]] constexpr bool operator<(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{lt(ranges{}, other)} noexcept;})
+            requires (requires{{lt(ranges{}, other)};})
         {
-            /// TODO: invoke the equality operator on each of the range iterators.
-            /// If there are no ranges, then this will always return true.
+            return lt(ranges{}, other);
         }
 
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator<=(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{le(ranges{}, other)} noexcept;})
+            requires (requires{{le(ranges{}, other)};})
+        {
+            return le(ranges{}, other);
+        }
 
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator==(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{eq(ranges{}, other)} noexcept;})
+            requires (requires{{eq(ranges{}, other)};})
+        {
+            return eq(ranges{}, other);
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator!=(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{ne(ranges{}, other)} noexcept;})
+            requires (requires{{ne(ranges{}, other)};})
+        {
+            return ne(ranges{}, other);
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator>=(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{ge(ranges{}, other)} noexcept;})
+            requires (requires{{ge(ranges{}, other)};})
+        {
+            return ge(ranges{}, other);
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator>(const zip_iterator<S, Ts...>& other) const
+            noexcept (requires{{gt(ranges{}, other)} noexcept;})
+            requires (requires{{gt(ranges{}, other)};})
+        {
+            return gt(ranges{}, other);
+        }
+
+        /// TODO: spaceship operator?
     };
 
     /* If no visitor function is provided, then `zip{}` will default to returning each
@@ -4452,22 +4676,22 @@ private:
     using range = bertrand::range<container<A...>>;
 
 public:
-    [[no_unique_addres]] F f;
+    [[no_unique_addres]] F func;
 
     template <typename Self, typename... A>
         requires (meta::callable<meta::as_lvalue<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
     [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... args)
         noexcept (requires{{range<A...>{container<A...>{
-            std::forward<Self>(self).f,
+            std::forward<Self>(self).func,
             std::forward<A>(args)...
         }}} noexcept;})
         requires (requires{{range<A...>{container<A...>{
-            std::forward<Self>(self).f,
+            std::forward<Self>(self).func,
             std::forward<A>(args)...
         }}};})
     {
         return range<A...>{container<A...>{
-            std::forward<Self>(self).f,
+            std::forward<Self>(self).func,
             std::forward<A>(args)...
         }};
     }
@@ -4484,22 +4708,22 @@ private:
     using range = bertrand::range<container<A...>>;
 
 public:
-    [[no_unique_addres]] F f;
+    [[no_unique_addres]] F func;
 
     template <typename Self, typename... A>
         requires (meta::callable<meta::as_lvalue<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
     [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... args)
         noexcept (requires{{range<A...>{container<A...>{
-            std::forward<Self>(self).f,
+            std::forward<Self>(self).func,
             std::forward<A>(args)...
         }}} noexcept;})
         requires (requires{{range<A...>{container<A...>{
-            std::forward<Self>(self).f,
+            std::forward<Self>(self).func,
             std::forward<A>(args)...
         }}};})
     {
         return range<A...>{container<A...>{
-            std::forward<Self>(self).f,
+            std::forward<Self>(self).func,
             std::forward<A>(args)...
         }};
     }
@@ -4518,21 +4742,43 @@ private:
     using range = bertrand::range<container<A...>>;
 
 public:
-    static constexpr F f;
+    static constexpr F func;
 
     template <typename... A>
         requires (meta::callable<meta::as_const_ref<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
     [[nodiscard]] static constexpr auto operator()(A&&... args)
-        noexcept (requires{{range<A...>{container<A...>{f, std::forward<A>(args)...}}} noexcept;})
-        requires (requires{{range<A...>{container<A...>{f, std::forward<A>(args)...}}};})
+        noexcept (requires{{range<A...>{container<A...>{func, std::forward<A>(args)...}}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{func, std::forward<A>(args)...}}};})
     {
-        return range<A...>{container<A...>{f, std::forward<A>(args)...}};
+        return range<A...>{container<A...>{func, std::forward<A>(args)...}};
     }
 };
 
 
 template <typename... Fs>
 zip(Fs&&...) -> zip<meta::remove_rvalue<Fs>...>;
+
+
+////////////////////
+////    JOIN    ////
+////////////////////
+
+
+/// TODO: `join{}` is quite challenging to implement.  It basically requires the range
+/// adaptor to store an `impl::overloads` of the initializing ranges, and then the
+/// iterator would store an `impl::union_storage<Iters...>` where the active index
+/// determines which range is currently being iterated over.  If the ranges yield
+/// multiple distinct types, then the overall yield type from the iterator will be
+/// a `Union<Ts...>`.
+
+/// TODO: I'm also not entirely sure how to handle unpacking operators in this case.
+/// They should either expand horizontally or cause nested ranges to be flattened,
+/// which may end up being the default behavior.  Just yield a non-range if you want
+/// to avoid flattening.
+
+
+
+
 
 
 //////////////////////
@@ -6546,7 +6792,8 @@ static_assert(s[1] == 3);
 
 namespace std {
 
-    /// TODO: remember to do enable borrowed ranges for all ranges
+    /// TODO: remember to enable borrowed ranges for all ranges.  This requires some
+    /// care to make sure the intended semantics are always observed.
 
     /* Specializing `std::ranges::enable_borrowed_range` ensures that iterators over
     slices are not tied to the lifetime of the slice itself, but rather to that of the
