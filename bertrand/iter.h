@@ -143,9 +143,612 @@ namespace impl {
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
 
+    /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
+    pointers if all elements unpack to the same lvalue type.  Otherwise, they must
+    build a vtable and perform a dynamic dispatch to yield a proper value type, which
+    may be a union. */
+    enum class tuple_array_kind : uint8_t {
+        NO_COMMON_TYPE,
+        DYNAMIC,
+        ARRAY,
+        EMPTY,
+    };
+
+    /* Indexing and/or iterating over a tuple requires the creation of some kind of
+    array, which can either be a flat array of homogenous references or a vtable of
+    function pointers that produce a common type (which may be a `Union`) to which all
+    results are convertible. */
+    template <typename, typename>
+    struct _tuple_array {
+        using types = meta::pack<>;
+        using reference = const NoneType&;
+        static constexpr tuple_array_kind kind = tuple_array_kind::EMPTY;
+        static constexpr bool nothrow = true;
+    };
+    template <typename in, typename T>
+    struct _tuple_array<in, meta::pack<T>> {
+        using types = meta::pack<T>;
+        using reference = T;
+        static constexpr tuple_array_kind kind = meta::lvalue<T> && meta::has_address<T> ?
+            tuple_array_kind::ARRAY : tuple_array_kind::DYNAMIC;
+        static constexpr bool nothrow = true;
+    };
+    template <typename in, typename... Ts> requires (sizeof...(Ts) > 1)
+    struct _tuple_array<in, meta::pack<Ts...>> {
+        using types = meta::pack<Ts...>;
+        using reference = bertrand::Union<Ts...>;
+        static constexpr tuple_array_kind kind = (meta::convertible_to<Ts, reference> && ...) ?
+            tuple_array_kind::DYNAMIC : tuple_array_kind::NO_COMMON_TYPE;
+        static constexpr bool nothrow = (meta::nothrow::convertible_to<Ts, reference> && ...);
+    };
+    template <meta::tuple_like T>
+    struct tuple_array :
+        _tuple_array<T, typename meta::tuple_types<T>::template eval<meta::to_unique>>
+    {
+    private:
+        using base = _tuple_array<
+            T,
+            typename meta::tuple_types<T>::template eval<meta::to_unique>
+        >;
+
+        template <size_t I>
+        struct fn {
+            static constexpr base::reference operator()(T t) noexcept (base::nothrow) {
+                return meta::unpack_tuple<I>(t);
+            }
+        };
+
+    public:
+        using dispatch = impl::vtable<fn>::template dispatch<
+            std::make_index_sequence<meta::tuple_size<T>>
+        >;
+    };
+
+    template <typename>
+    struct tuple_iterator {};
+
+    template <typename T>
+    concept enable_tuple_iterator =
+        meta::lvalue<T> &&
+        meta::tuple_like<T> &&
+        tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
+
+    /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
+    of callback functions yielding each value.  This allows tuples to be used as inputs
+    to iterable algorithms, as long as those algorithms are built to handle possible
+    `Union` values. */
+    template <enable_tuple_iterator T>
+        requires (tuple_array<T>::kind == tuple_array_kind::DYNAMIC)
+    struct tuple_iterator<T> {
+        using types = tuple_array<T>::types;
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using reference = tuple_array<T>::reference;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::as_pointer<value_type>;
+
+    private:
+        using table = tuple_array<T>;
+        using indices = std::make_index_sequence<meta::tuple_size<T>>;
+        using storage = meta::as_pointer<T>;
+
+        [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
+            data(data),
+            index(index)
+        {}
+
+    public:
+        storage data;
+        difference_type index;
+
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0) noexcept :
+            data(nullptr),
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr tuple_iterator(T tuple, difference_type index = 0)
+            noexcept (meta::nothrow::address_returns<storage, T>)
+            requires (meta::address_returns<storage, T>)
+        :
+            data(std::addressof(tuple)),
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
+            return typename table::dispatch{index}(*data);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const noexcept (table::nothrow) {
+            return impl::arrow_proxy(**this);
+        }
+
+        [[nodiscard]] constexpr reference operator[](
+            difference_type n
+        ) const noexcept (table::nothrow) {
+            return typename table::dispatch{index + n}(*data);
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            tuple_iterator tmp = *this;
+            ++index;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.data, self.index + n};
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type n,
+            const tuple_iterator& self
+        ) noexcept {
+            return {self.data, self.index + n};
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            tuple_iterator tmp = *this;
+            --index;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
+            return {data, index - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const tuple_iterator& other
+        ) const noexcept {
+            return index - other.index;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
+            return index == other.index;
+        }
+    };
+
+    /* A special case of `tuple_iterator` for tuples where all elements share the
+    same addressable type.  In this case, the vtable is reduced to a simple array of
+    pointers that are initialized on construction, without requiring dynamic
+    dispatch. */
+    template <enable_tuple_iterator T>
+        requires (tuple_array<T>::kind == tuple_array_kind::ARRAY)
+    struct tuple_iterator<T> {
+        using types = tuple_array<T>::types;
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using reference = tuple_array<T>::reference;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::address_type<reference>;
+
+    private:
+        using indices = std::make_index_sequence<meta::tuple_size<T>>;
+        using array = std::array<pointer, meta::tuple_size<T>>;
+
+        template <size_t... Is>
+        static constexpr array init(std::index_sequence<Is...>, T t)
+            noexcept ((requires{{
+                std::addressof(meta::unpack_tuple<Is>(t))
+            } noexcept -> meta::nothrow::convertible_to<pointer>;} && ...))
+        {
+            return {std::addressof(meta::unpack_tuple<Is>(t))...};
+        }
+
+        [[nodiscard]] constexpr tuple_iterator(const array& arr, difference_type index) noexcept :
+            arr(arr),
+            index(index)
+        {}
+
+    public:
+        array arr;
+        difference_type index;
+
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
+            arr{},
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index = 0)
+            noexcept (requires{{init(indices{}, t)} noexcept;})
+        :
+            arr(init(indices{}, t)),
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return *arr[index];
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            return arr[index];
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
+            return *arr[index + n];
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            auto tmp = *this;
+            ++index;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.arr, self.index + n};
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type n,
+            const tuple_iterator& self
+        ) noexcept {
+            return {self.arr, self.index + n};
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            auto tmp = *this;
+            --index;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
+            return {arr, index - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
+            return index - index;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
+            return index == other.index;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
+    };
+
+    /* A special case of `tuple_iterator` for empty tuples, which do not yield any
+    results, and are optimized away by the compiler. */
+    template <enable_tuple_iterator T>
+        requires (tuple_array<T>::kind == tuple_array_kind::EMPTY)
+    struct tuple_iterator<T> {
+        using types = meta::pack<>;
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = const NoneType;
+        using pointer = const NoneType*;
+        using reference = const NoneType&;
+
+        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
+        [[nodiscard]] constexpr tuple_iterator(T, difference_type = 0) noexcept {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return None;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            return &None;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
+            return None;
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type
+        ) noexcept {
+            return self;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type,
+            const tuple_iterator& self
+        ) noexcept {
+            return self;
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type) noexcept {
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
+            return 0;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
+            return std::strong_ordering::equal;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
+            return true;
+        }
+    };
+
+    template <typename C>
+    struct make_range_begin { using type = void; };
+    template <meta::iterable C>
+    struct make_range_begin<C> { using type = meta::begin_type<C>; };
+
+    template <typename C>
+    struct make_range_end { using type = void; };
+    template <meta::iterable C>
+    struct make_range_end<C> { using type = meta::end_type<C>; };
+
+    template <typename C>
+    struct make_range_rbegin { using type = void; };
+    template <meta::reverse_iterable C>
+    struct make_range_rbegin<C> { using type = meta::rbegin_type<C>; };
+
+    template <typename C>
+    struct make_range_rend { using type = void; };
+    template <meta::reverse_iterable C>
+    struct make_range_rend<C> { using type = meta::rend_type<C>; };
+
+    /* `make_range_iterator` abstracts the forward iterator methods for a `range`,
+    synthesizing a corresponding tuple iterator if the underlying container is not
+    already iterable. */
+    template <meta::lvalue C>
+    struct make_range_iterator {
+        static constexpr bool tuple = true;
+        using begin_type = tuple_iterator<C>;
+        using end_type = begin_type;
+
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{begin_type{container}} noexcept;})
+        {
+            return begin_type(container);
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (requires{{end_type{}} noexcept;})
+        {
+            return end_type{};
+        }
+    };
+    template <meta::lvalue C> requires (meta::iterable<C>)
+    struct make_range_iterator<C> {
+        static constexpr bool tuple = false;
+        using begin_type = make_range_begin<C>::type;
+        using end_type = make_range_end<C>::type;
+
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (meta::nothrow::has_begin<C>)
+            requires (meta::has_begin<C>)
+        {
+            return std::ranges::begin(container);
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (meta::nothrow::has_end<C>)
+            requires (meta::has_end<C>)
+        {
+            return std::ranges::end(container);
+        }
+    };
+
+    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    make_range_iterator(C&) -> make_range_iterator<C&>;
+
+    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    using range_begin = make_range_iterator<meta::as_lvalue<C>>::begin_type;
+
+    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    using range_end = make_range_iterator<meta::as_lvalue<C>>::end_type;
+
+    /* `make_range_reversed` abstracts the reverse iterator methods for a `range`,
+    synthesizing a corresponding tuple iterator if the underlying container is not
+    already iterable. */
+    template <meta::lvalue C>
+    struct make_range_reversed {
+        static constexpr bool tuple = true;
+        using begin_type = std::reverse_iterator<tuple_iterator<C>>;
+        using end_type = begin_type;
+
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{begin_type{begin_type{container, meta::tuple_size<C>}}} noexcept;})
+        {
+            return begin_type{tuple_iterator<C>{container, meta::tuple_size<C>}};
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (requires{{end_type{begin_type{size_t(0)}}} noexcept;})
+        {
+            return end_type{begin_type{size_t(0)}};
+        }
+    };
+    template <meta::lvalue C> requires (meta::reverse_iterable<C>)
+    struct make_range_reversed<C> {
+        static constexpr bool tuple = false;
+        using begin_type = make_range_rbegin<C>::type;
+        using end_type = make_range_rend<C>::type;
+
+        C container;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (meta::nothrow::has_rbegin<C>)
+            requires (meta::has_rbegin<C>)
+        {
+            return std::ranges::rbegin(container);
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (meta::nothrow::has_rend<C>)
+            requires (meta::has_rend<C>)
+        {
+            return std::ranges::rend(container);
+        }
+    };
+
+    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    make_range_reversed(C&) -> make_range_reversed<C&>;
+
+    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    using range_rbegin = make_range_reversed<meta::as_lvalue<C>>::begin_type;
+
+    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    using range_rend = make_range_reversed<meta::as_lvalue<C>>::end_type;
+
+}
 
 
+namespace meta {
 
+    namespace detail {
+
+        template <typename>
+        constexpr bool unpack = false;
+        template <typename C>
+        constexpr bool unpack<impl::unpack<C>> = true;
+
+        template <typename T, bool done, size_t I, typename... Rs>
+        constexpr bool _unpack_convert = done;
+        template <typename T, bool done, size_t I, typename R> requires (I < meta::tuple_size<T>)
+        constexpr bool _unpack_convert<T, done, I, R> =
+            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, true, I + 1, R>;
+        template <typename T, bool done, size_t I, typename R, typename... Rs>
+            requires (I < meta::tuple_size<T>)
+        constexpr bool _unpack_convert<T, done, I, R, Rs...> =
+            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, done, I + 1, Rs...>;
+        template <typename T, typename... Rs>
+        constexpr bool unpack_convert = _unpack_convert<T, false, 0, Rs...>;
+
+        template <typename>
+        constexpr bool slice = false;
+        template <typename... Ts>
+        constexpr bool slice<bertrand::slice<Ts...>> = true;
+
+    }
+
+    /// TODO: this idea is actually fantastic, and can be scaled to all other types
+    /// as well.  The idea is that for every class, you would have a meta:: concept
+    /// that takes the class as the first template argument, and then optionally
+    /// takes any number of additional template arguments, which would mirror the
+    /// exact signature of the class.
+
+    template <typename T, typename R = void>
+    concept range = inherits<T, impl::range_tag> && (is_void<R> || yields<T, R>);
+
+    template <typename T, typename R = void>
+    concept sequence = range<T, R> && inherits<T, impl::sequence_tag>;
+
+    template <typename T, typename R = void>
+    concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
+
+    template <typename T, typename... Rs>
+    concept unpack_to = detail::unpack<unqualify<T>> && (
+        (tuple_like<T> && tuple_size<T> == sizeof...(Rs) && detail::unpack_convert<T, Rs...>) ||
+        (!tuple_like<T> && ... && yields<T, Rs>)
+    );
+
+    template <typename T>
+    concept slice = detail::slice<unqualify<T>>;
+
+
+    // template <typename T>
+    // concept comprehension = inherits<T, impl::comprehension_tag>;
+
+    template <typename T>
+    concept tuple_storage = inherits<T, impl::tuple_storage_tag>;
+
+    namespace detail {
+
+        template <meta::range T>
+        constexpr bool prefer_constructor<T> = true;
+
+        template <meta::range T>
+        constexpr bool exact_size<T> = meta::exact_size<typename T::__type>;
+
+    }
+
+}
+
+
+/////////////////////
+////    RANGE    ////
+/////////////////////
+
+
+namespace impl {
 
 
     /// TODO: enable_borrowed_range should always be enabled for iotas.
@@ -1115,613 +1718,6 @@ namespace impl {
 
     template <typename Start, typename Stop, typename Step> requires (iota_spec<Start, Stop, Step>)
     iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
-
-}
-
-
-namespace meta {
-
-    namespace detail {
-
-        template <typename>
-        constexpr bool unpack = false;
-        template <typename C>
-        constexpr bool unpack<impl::unpack<C>> = true;
-
-        template <typename T, bool done, size_t I, typename... Rs>
-        constexpr bool _unpack_convert = done;
-        template <typename T, bool done, size_t I, typename R> requires (I < meta::tuple_size<T>)
-        constexpr bool _unpack_convert<T, done, I, R> =
-            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, true, I + 1, R>;
-        template <typename T, bool done, size_t I, typename R, typename... Rs>
-            requires (I < meta::tuple_size<T>)
-        constexpr bool _unpack_convert<T, done, I, R, Rs...> =
-            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, done, I + 1, Rs...>;
-        template <typename T, typename... Rs>
-        constexpr bool unpack_convert = _unpack_convert<T, false, 0, Rs...>;
-
-        template <typename>
-        constexpr bool slice = false;
-        template <typename... Ts>
-        constexpr bool slice<bertrand::slice<Ts...>> = true;
-
-    }
-
-    /// TODO: this idea is actually fantastic, and can be scaled to all other types
-    /// as well.  The idea is that for every class, you would have a meta:: concept
-    /// that takes the class as the first template argument, and then optionally
-    /// takes any number of additional template arguments, which would mirror the
-    /// exact signature of the class.
-
-    template <typename T, typename R = void>
-    concept range = inherits<T, impl::range_tag> && (is_void<R> || yields<T, R>);
-
-    template <typename T, typename R = void>
-    concept sequence = range<T, R> && inherits<T, impl::sequence_tag>;
-
-    template <typename T, typename R = void>
-    concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
-
-    template <typename T, typename... Rs>
-    concept unpack_to = detail::unpack<unqualify<T>> && (
-        (tuple_like<T> && tuple_size<T> == sizeof...(Rs) && detail::unpack_convert<T, Rs...>) ||
-        (!tuple_like<T> && ... && yields<T, Rs>)
-    );
-
-    template <typename T>
-    concept slice = detail::slice<unqualify<T>>;
-
-
-    // template <typename T>
-    // concept comprehension = inherits<T, impl::comprehension_tag>;
-
-    template <typename T>
-    concept tuple_storage = inherits<T, impl::tuple_storage_tag>;
-
-    namespace detail {
-
-        template <meta::range T>
-        constexpr bool prefer_constructor<T> = true;
-
-        template <meta::range T>
-        constexpr bool exact_size<T> = meta::exact_size<typename T::__type>;
-
-    }
-
-}
-
-
-/////////////////////
-////    RANGE    ////
-/////////////////////
-
-
-namespace impl {
-
-    /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
-    pointers if all elements unpack to the same lvalue type.  Otherwise, they must
-    build a vtable and perform a dynamic dispatch to yield a proper value type, which
-    may be a union. */
-    enum class tuple_array_kind : uint8_t {
-        NO_COMMON_TYPE,
-        DYNAMIC,
-        ARRAY,
-        EMPTY,
-    };
-
-    /* Indexing and/or iterating over a tuple requires the creation of some kind of
-    array, which can either be a flat array of homogenous references or a vtable of
-    function pointers that produce a common type (which may be a `Union`) to which all
-    results are convertible. */
-    template <typename, typename>
-    struct _tuple_array {
-        using types = meta::pack<>;
-        using reference = const NoneType&;
-        static constexpr tuple_array_kind kind = tuple_array_kind::EMPTY;
-        static constexpr bool nothrow = true;
-    };
-    template <typename in, typename T>
-    struct _tuple_array<in, meta::pack<T>> {
-        using types = meta::pack<T>;
-        using reference = T;
-        static constexpr tuple_array_kind kind = meta::lvalue<T> && meta::has_address<T> ?
-            tuple_array_kind::ARRAY : tuple_array_kind::DYNAMIC;
-        static constexpr bool nothrow = true;
-    };
-    template <typename in, typename... Ts> requires (sizeof...(Ts) > 1)
-    struct _tuple_array<in, meta::pack<Ts...>> {
-        using types = meta::pack<Ts...>;
-        using reference = bertrand::Union<Ts...>;
-        static constexpr tuple_array_kind kind = (meta::convertible_to<Ts, reference> && ...) ?
-            tuple_array_kind::DYNAMIC : tuple_array_kind::NO_COMMON_TYPE;
-        static constexpr bool nothrow = (meta::nothrow::convertible_to<Ts, reference> && ...);
-    };
-    template <meta::tuple_like T>
-    struct tuple_array :
-        _tuple_array<T, typename meta::tuple_types<T>::template eval<meta::to_unique>>
-    {
-    private:
-        using base = _tuple_array<
-            T,
-            typename meta::tuple_types<T>::template eval<meta::to_unique>
-        >;
-
-        template <size_t I>
-        struct fn {
-            static constexpr base::reference operator()(T t) noexcept (base::nothrow) {
-                return meta::unpack_tuple<I>(t);
-            }
-        };
-
-    public:
-        using dispatch = impl::vtable<fn>::template dispatch<
-            std::make_index_sequence<meta::tuple_size<T>>
-        >;
-    };
-
-    template <typename>
-    struct tuple_iterator {};
-
-    template <typename T>
-    concept enable_tuple_iterator =
-        meta::lvalue<T> &&
-        meta::tuple_like<T> &&
-        tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
-
-    /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
-    of callback functions yielding each value.  This allows tuples to be used as inputs
-    to iterable algorithms, as long as those algorithms are built to handle possible
-    `Union` values. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::DYNAMIC)
-    struct tuple_iterator<T> {
-        using types = tuple_array<T>::types;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using reference = tuple_array<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::as_pointer<value_type>;
-
-    private:
-        using table = tuple_array<T>;
-        using indices = std::make_index_sequence<meta::tuple_size<T>>;
-        using storage = meta::as_pointer<T>;
-
-        [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
-            data(data),
-            index(index)
-        {}
-
-    public:
-        storage data;
-        difference_type index;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0) noexcept :
-            data(nullptr),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr tuple_iterator(T tuple, difference_type index = 0)
-            noexcept (meta::nothrow::address_returns<storage, T>)
-            requires (meta::address_returns<storage, T>)
-        :
-            data(std::addressof(tuple)),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
-            return typename table::dispatch{index}(*data);
-        }
-
-        [[nodiscard]] constexpr auto operator->() const noexcept (table::nothrow) {
-            return impl::arrow_proxy(**this);
-        }
-
-        [[nodiscard]] constexpr reference operator[](
-            difference_type n
-        ) const noexcept (table::nothrow) {
-            return typename table::dispatch{index + n}(*data);
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            tuple_iterator tmp = *this;
-            ++index;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.data, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type n,
-            const tuple_iterator& self
-        ) noexcept {
-            return {self.data, self.index + n};
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            tuple_iterator tmp = *this;
-            --index;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {data, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const tuple_iterator& other
-        ) const noexcept {
-            return index - other.index;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
-            return index == other.index;
-        }
-    };
-
-    /* A special case of `tuple_iterator` for tuples where all elements share the
-    same addressable type.  In this case, the vtable is reduced to a simple array of
-    pointers that are initialized on construction, without requiring dynamic
-    dispatch. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::ARRAY)
-    struct tuple_iterator<T> {
-        using types = tuple_array<T>::types;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using reference = tuple_array<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::address_type<reference>;
-
-    private:
-        using indices = std::make_index_sequence<meta::tuple_size<T>>;
-        using array = std::array<pointer, meta::tuple_size<T>>;
-
-        template <size_t... Is>
-        static constexpr array init(std::index_sequence<Is...>, T t)
-            noexcept ((requires{{
-                std::addressof(meta::unpack_tuple<Is>(t))
-            } noexcept -> meta::nothrow::convertible_to<pointer>;} && ...))
-        {
-            return {std::addressof(meta::unpack_tuple<Is>(t))...};
-        }
-
-        [[nodiscard]] constexpr tuple_iterator(const array& arr, difference_type index) noexcept :
-            arr(arr),
-            index(index)
-        {}
-
-    public:
-        array arr;
-        difference_type index;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
-            arr{},
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index = 0)
-            noexcept (requires{{init(indices{}, t)} noexcept;})
-        :
-            arr(init(indices{}, t)),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return *arr[index];
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return arr[index];
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return *arr[index + n];
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            auto tmp = *this;
-            ++index;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.arr, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type n,
-            const tuple_iterator& self
-        ) noexcept {
-            return {self.arr, self.index + n};
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            auto tmp = *this;
-            --index;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {arr, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
-            return index - index;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
-            return index == other.index;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-    };
-
-    /* A special case of `tuple_iterator` for empty tuples, which do not yield any
-    results, and are optimized away by the compiler. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::EMPTY)
-    struct tuple_iterator<T> {
-        using types = meta::pack<>;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = const NoneType;
-        using pointer = const NoneType*;
-        using reference = const NoneType&;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
-        [[nodiscard]] constexpr tuple_iterator(T, difference_type = 0) noexcept {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return None;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return &None;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
-            return None;
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type
-        ) noexcept {
-            return self;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type,
-            const tuple_iterator& self
-        ) noexcept {
-            return self;
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type) noexcept {
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
-            return 0;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
-            return std::strong_ordering::equal;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
-            return true;
-        }
-    };
-
-    template <typename C>
-    struct make_range_begin { using type = void; };
-    template <meta::iterable C>
-    struct make_range_begin<C> { using type = meta::begin_type<C>; };
-
-    template <typename C>
-    struct make_range_end { using type = void; };
-    template <meta::iterable C>
-    struct make_range_end<C> { using type = meta::end_type<C>; };
-
-    template <typename C>
-    struct make_range_rbegin { using type = void; };
-    template <meta::reverse_iterable C>
-    struct make_range_rbegin<C> { using type = meta::rbegin_type<C>; };
-
-    template <typename C>
-    struct make_range_rend { using type = void; };
-    template <meta::reverse_iterable C>
-    struct make_range_rend<C> { using type = meta::rend_type<C>; };
-
-    /* `make_range_iterator` abstracts the forward iterator methods for a `range`,
-    synthesizing a corresponding tuple iterator if the underlying container is not
-    already iterable. */
-    template <meta::lvalue C>
-    struct make_range_iterator {
-        static constexpr bool tuple = true;
-        using begin_type = tuple_iterator<C>;
-        using end_type = begin_type;
-
-        C container;
-
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (requires{{begin_type{container}} noexcept;})
-        {
-            return begin_type(container);
-        }
-
-        [[nodiscard]] constexpr end_type end()
-            noexcept (requires{{end_type{}} noexcept;})
-        {
-            return end_type{};
-        }
-    };
-    template <meta::lvalue C> requires (meta::iterable<C>)
-    struct make_range_iterator<C> {
-        static constexpr bool tuple = false;
-        using begin_type = make_range_begin<C>::type;
-        using end_type = make_range_end<C>::type;
-
-        C container;
-
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (meta::nothrow::has_begin<C>)
-            requires (meta::has_begin<C>)
-        {
-            return std::ranges::begin(container);
-        }
-
-        [[nodiscard]] constexpr end_type end()
-            noexcept (meta::nothrow::has_end<C>)
-            requires (meta::has_end<C>)
-        {
-            return std::ranges::end(container);
-        }
-    };
-
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    make_range_iterator(C&) -> make_range_iterator<C&>;
-
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    using range_begin = make_range_iterator<meta::as_lvalue<C>>::begin_type;
-
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    using range_end = make_range_iterator<meta::as_lvalue<C>>::end_type;
-
-    /* `make_range_reversed` abstracts the reverse iterator methods for a `range`,
-    synthesizing a corresponding tuple iterator if the underlying container is not
-    already iterable. */
-    template <meta::lvalue C>
-    struct make_range_reversed {
-        static constexpr bool tuple = true;
-        using begin_type = std::reverse_iterator<tuple_iterator<C>>;
-        using end_type = begin_type;
-
-        C container;
-
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (requires{{begin_type{begin_type{container, meta::tuple_size<C>}}} noexcept;})
-        {
-            return begin_type{tuple_iterator<C>{container, meta::tuple_size<C>}};
-        }
-
-        [[nodiscard]] constexpr end_type end()
-            noexcept (requires{{end_type{begin_type{size_t(0)}}} noexcept;})
-        {
-            return end_type{begin_type{size_t(0)}};
-        }
-    };
-    template <meta::lvalue C> requires (meta::reverse_iterable<C>)
-    struct make_range_reversed<C> {
-        static constexpr bool tuple = false;
-        using begin_type = make_range_rbegin<C>::type;
-        using end_type = make_range_rend<C>::type;
-
-        C container;
-
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (meta::nothrow::has_rbegin<C>)
-            requires (meta::has_rbegin<C>)
-        {
-            return std::ranges::rbegin(container);
-        }
-
-        [[nodiscard]] constexpr end_type end()
-            noexcept (meta::nothrow::has_rend<C>)
-            requires (meta::has_rend<C>)
-        {
-            return std::ranges::rend(container);
-        }
-    };
-
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    make_range_reversed(C&) -> make_range_reversed<C&>;
-
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    using range_rbegin = make_range_reversed<meta::as_lvalue<C>>::begin_type;
-
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    using range_rend = make_range_reversed<meta::as_lvalue<C>>::end_type;
 
     template <typename C>
     constexpr decltype(auto) range_subscript(C&& container, size_t i)
@@ -2987,6 +2983,14 @@ namespace impl {
         constexpr ptr fn = &_fn<Begin, End>;
     }
 
+    /// TODO: it might be best to have sequence model `std::common_range` (i.e. make
+    /// the begin and end iterators always the same type).  That would require some
+    /// careful design, but would make sequences more compatible with the standard
+    /// library algorithms if possible.
+    /// -> sequence_iter_storage would only have to store a single iterator, and the
+    /// overall iterator would be initialized with the required function pointers,
+    /// which would be manually generated in both cases with the right semantics.
+
     /* A type-erased wrapper for an iterator that dereferences to type `T` and its
     corresponding sentinel.  This is the type of iterator returned by a `sequence<T>`
     range, and always models `std::input_iterator`, as well as possibly
@@ -3447,9 +3451,1103 @@ public:
 };
 
 
+////////////////////
+////    JOIN    ////
+////////////////////
+
+
+/// TODO: `join{}` is quite challenging to implement.  It basically requires the range
+/// adaptor to store an `impl::overloads` of the initializing ranges, and then the
+/// iterator would store an `impl::union_storage<Iters...>` where the active index
+/// determines which range is currently being iterated over.  If the ranges yield
+/// multiple distinct types, then the overall yield type from the iterator will be
+/// a `Union<Ts...>`.
+
+/// TODO: I'm also not entirely sure how to handle unpacking operators in this case.
+/// They should either expand horizontally or cause nested ranges to be flattened,
+/// which may end up being the default behavior.  Just yield a non-range if you want
+/// to avoid flattening.
+
+
+
+
+///////////////////
+////    ZIP    ////
+///////////////////
+
+
+/// TODO: in the `zip{}` case, all the results are guaranteed to be the same type.
+/// if that type is a range, then the iterator can just store it as well as its
+/// begin and end iterators, and flattening can be done relatively easily.
+
+
+namespace meta {
+
+    /// TODO: maybe I need a separate `match` metafunction that will take a single
+    /// argument and apply the same logic as `visit`, but optimized for the single
+    /// argument case, and applying tuple-like destructuring if applicable.  This would
+    /// back the global `->*` operator, which would be enabled for all union and/or
+    /// tuple types (NOT iterables).  Iterable comprehensions would be gated behind
+    /// `range(container) ->*`, which would be defined only on the range type itself,
+    /// which is what would also be returned to produce flattened comprehensions.
+    /// It would just be an `impl::range<T>` type where `T` is either a direct container
+    /// for `range(container)`, or a `std::subrange` if `range(begin, end)`, or a
+    /// `std::views::iota` if `range(stop)` or `range(start, stop)`, possibly with a
+    /// `std::views::stride_view<std::views::iota>` for `range(start, stop, step)`.
+
+    // namespace detail {
+
+    //     template <typename, typename>
+    //     constexpr bool _match_tuple_alts = false;
+    //     template <typename F, typename... As>
+    //     constexpr bool _match_tuple_alts<F, meta::pack<As...>> = (meta::callable<F, As> && ...);
+    //     template <typename, typename>
+    //     constexpr bool _match_tuple = false;
+    //     template <typename F, typename... Ts>
+    //     constexpr bool _match_tuple<F, meta::pack<Ts...>> =
+    //         (_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
+    //     template <typename F, typename T>
+    //     concept match_tuple = meta::tuple_like<T> && _match_tuple<F, meta::tuple_types<T>>;
+
+    //     template <typename, typename>
+    //     constexpr bool _nothrow_match_tuple_alts = false;
+    //     template <typename F, typename... As>
+    //     constexpr bool _nothrow_match_tuple_alts<F, meta::pack<As...>> =
+    //         (meta::nothrow::callable<F, As> && ...);
+    //     template <typename, typename>
+    //     constexpr bool _nothrow_match_tuple = false;
+    //     template <typename F, typename... Ts>
+    //     constexpr bool _nothrow_match_tuple<F, meta::pack<Ts...>> =
+    //         (_nothrow_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
+    //     template <typename F, typename T>
+    //     concept nothrow_match_tuple =
+    //         meta::nothrow::tuple_like<T> && _nothrow_match_tuple<F, meta::nothrow::tuple_types<T>>;
+
+
+
+    //     template <
+    //         typename F,  // match visitor function
+    //         typename returns,  // unique, non-void return types
+    //         typename errors,  // expected error states
+    //         bool has_void_,  // true if a void return type was encountered
+    //         bool optional,  // true if an optional return type was encountered
+    //         bool nothrow_,  // true if all permutations are noexcept
+    //         typename alternatives  // alternatives for the matched object
+    //     >
+    //     struct _match {
+    //         using type = visit_to_expected<
+    //             typename visit_to_optional<
+    //                 typename returns::template eval<visit_to_union>::type,
+    //                 has_void_ || optional
+    //             >::type,
+    //             errors
+    //         >::type;
+    //         static constexpr bool enable = true;
+    //         static constexpr bool ambiguous = false;
+    //         static constexpr bool unmatched = false;
+    //         static constexpr bool consistent =
+    //             returns::size() == 0 || (returns::size() == 1 && !has_void_);
+
+    //         /// TODO: nothrow has to account for nothrow conversions to type
+    //         static constexpr bool nothrow = nothrow_;
+    //     };
+    //     template <
+    //         typename F,
+    //         typename curr,
+    //         typename... next
+    //     >
+    //         requires (meta::callable<F, curr> && !match_tuple<F, curr>)
+    //     struct _match<F, meta::pack<curr, next...>> {
+    //         /// TODO: pass the tuple directly
+    //     };
+    //     template <
+    //         typename F,
+    //         typename curr,
+    //         typename... next
+    //     >
+    //         requires (!meta::callable<F, curr> && match_tuple<F, curr>)
+    //     struct _match<F, meta::pack<curr, next...>> {
+    //         /// TODO: unpack tuple
+    //     };
+    //     template <
+    //         typename F,
+    //         typename curr,
+    //         typename... next
+    //     >
+    //     struct _match<F, meta::pack<curr, next...>> {
+    //         using type = void;
+    //         static constexpr bool ambiguous = meta::callable<F, curr> && match_tuple<F, curr>;
+    //         static constexpr bool unmatched = !meta::callable<F, curr> && !match_tuple<F, curr>;
+    //         static constexpr bool consistent = false;
+    //         static constexpr bool nothrow = false;
+    //     };
+
+
+
+
+
+    //     template <typename F, typename T>
+    //     struct match : _match<F, typename impl::visitable<T>::alternatives> {};
+
+    // }
+
+}
+
+
+namespace impl {
+
+
+
+    /// TODO: zip{} should only have a definite size if all of the arguments are
+    /// are either sized ranges or non-ranges that will be broadcasted, and the
+    /// function does not return a range.  If all of those conditions are met,
+    /// then the zip{} container will compile with an m_size member and corresponding
+    /// size() method.  Otherwise, it will be omitted.  That can possibly eliminate
+    /// any need for a `meta::exact_size` helper, since any range that doesn't have an
+    /// exact size will not simply not provide a size() method.
+    /// -> Maybe infinite iota ranges are a special case, in order to allow enumeration
+    /// style zips: `zip{}(range(0, None), range(container))`
+
+
+
+
+    template <meta::lvalue Self, meta::not_rvalue... Iters>
+    struct zip_iterator;
+
+    template <meta::lvalue T>
+    struct make_zip_begin {
+        using type = T;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_zip_begin<T> {
+        using type = meta::begin_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.begin()} noexcept;})
+            requires (requires{{arg.begin()};})
+        {
+            return arg.begin();
+        }
+    };
+    template <typename T>
+    make_zip_begin(T&) -> make_zip_begin<T&>;
+
+    template <meta::lvalue T>
+    struct make_zip_end {
+        using type = T;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_zip_end<T> {
+        using type = meta::end_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.end()} noexcept;})
+            requires (requires{{arg.end()};})
+        {
+            return arg.end();
+        }
+    };
+    template <typename T>
+    make_zip_end(T&) -> make_zip_end<T&>;
+
+    /* Forward iterators over `zip` ranges consist of an inner tuple holding either a
+    reference to a non-range argument or an appropriate range iterator at each index.
+    If all ranges use the same begin and end types, then the overall zip iterators will
+    also match. */
+    template <meta::lvalue Self, typename>
+    struct _make_zip_iterator;
+    template <meta::lvalue Self, typename... A>
+    struct _make_zip_iterator<Self, meta::pack<A...>> {
+        using begin = zip_iterator<Self, typename make_zip_begin<meta::as_lvalue<A>>::type...>;
+        using end = zip_iterator<Self, typename make_zip_end<meta::as_lvalue<A>>::type...>;
+    };
+    template <meta::lvalue Self>
+    struct make_zip_iterator {
+        Self self;
+
+    private:
+        using arguments = meta::unqualify<Self>::argument_types;
+        using indices = meta::unqualify<Self>::indices;
+        using type = _make_zip_iterator<Self, arguments>;
+
+        template <size_t... Is>
+        constexpr type::begin _begin(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::begin{
+                .self = std::addressof(self),
+                .iters = {make_zip_begin{self.m_args.template get<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::begin{
+                .self = std::addressof(self),
+                .iters = {make_zip_begin{self.m_args.template get<Is>()}()...}
+            }};})
+        {
+            return {
+                .self = std::addressof(self),
+                .iters = {make_zip_begin{self.m_args.template get<Is>()}()...}
+            };
+        }
+
+        template <size_t... Is>
+        constexpr type::end _end(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::end{
+                .self = std::addressof(self),
+                .iters = {make_zip_end{self.m_args.template get<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::end{
+                .self = std::addressof(self),
+                .iters = {make_zip_end{self.m_args.template get<Is>()}()...}
+            }};})
+        {
+            return {
+                .self = std::addressof(self),
+                .iters = {make_zip_end{self.m_args.template get<Is>()}()...}
+            };
+        }
+
+    public:
+        using begin_type = type::begin;
+        using end_type = type::end;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{_begin(indices{})} noexcept;})
+            requires (requires{{_begin(indices{})};})
+        {
+            return _begin(indices{});
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (requires{{_end(indices{})} noexcept;})
+            requires (requires{{_end(indices{})};})
+        {
+            return _end(indices{});
+        }
+    };
+    template <typename Self>
+    make_zip_iterator(Self& self) -> make_zip_iterator<Self&>;
+
+    template <typename>
+    constexpr bool zip_reverse_iterable = false;
+    template <typename... A>
+        requires ((!meta::range<A> || meta::reverse_iterable<meta::as_lvalue<A>>) && ...)
+    constexpr bool zip_reverse_iterable<meta::pack<A...>> = true;
+
+    template <meta::lvalue T>
+    struct make_zip_rbegin {
+        using type = meta::as_lvalue<T>;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_zip_rbegin<T> {
+        using type = meta::rbegin_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.rbegin()} noexcept;})
+            requires (requires{{arg.rbegin()};})
+        {
+            return arg.rbegin();
+        }
+    };
+    template <meta::lvalue T>
+    make_zip_rbegin(T&) -> make_zip_rbegin<T&>;
+
+    template <meta::lvalue T>
+    struct make_zip_rend {
+        using type = meta::as_lvalue<T>;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_zip_rend<T> {
+        using type = meta::rend_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.rend()} noexcept;})
+            requires (requires{{arg.rend()};})
+        {
+            return arg.rend();
+        }
+    };
+    template <meta::lvalue T>
+    make_zip_rend(T&) -> make_zip_rend<T&>;
+
+    /* If all of the input ranges happen to be reverse iterable, then the zipped range
+    will also be reverse iterable, and the rbegin and rend iterators will match if
+    all of the input ranges use the same rbegin and rend types. */
+    template <meta::lvalue Self, typename>
+    struct _make_zip_reversed;
+    template <meta::lvalue Self, typename... A>
+    struct _make_zip_reversed<Self, meta::pack<A...>> {
+        using begin = zip_iterator<Self, typename make_zip_rbegin<meta::as_lvalue<A>>::type...>;
+        using end = zip_iterator<Self, typename make_zip_rend<meta::as_lvalue<A>>::type...>;
+    };
+    template <meta::lvalue Self>
+        requires (zip_reverse_iterable<typename meta::unqualify<Self>::argument_types>)
+    struct make_zip_reversed {
+        Self self;
+
+    private:
+        using arguments = meta::unqualify<Self>::argument_types;
+        using indices = meta::unqualify<Self>::indices;
+        using type = _make_zip_reversed<Self, arguments>;
+
+        template <size_t... Is>
+        constexpr type::begin _begin(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::begin{
+                .self = std::addressof(self),
+                .iters = {make_zip_rbegin{self.m_args.template get<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::begin{
+                .self = std::addressof(self),
+                .iters = {make_zip_rbegin{self.m_args.template get<Is>()}()...}
+            }};})
+        {
+            return {
+                .self = std::addressof(self),
+                .iters = {make_zip_rbegin{self.m_args.template get<Is>()}()...}
+            };
+        }
+
+        template <size_t... Is>
+        constexpr type::end _end(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::end{
+                .self = std::addressof(self),
+                .iters = {make_zip_rend{self.m_args.template get<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::end{
+                .self = std::addressof(self),
+                .iters = {make_zip_rend{self.m_args.template get<Is>()}()...}
+            }};})
+        {
+            return {
+                .self = std::addressof(self),
+                .iters = {make_zip_rend{self.m_args.template get<Is>()}()...}
+            };
+        }
+
+    public:
+        using begin_type = type::begin;
+        using end_type = type::end;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{_begin(indices{})} noexcept;})
+            requires (requires{{_begin(indices{})};})
+        {
+            return _begin(indices{});
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (requires{{_end(indices{})} noexcept;})
+            requires (requires{{_end(indices{})};})
+        {
+            return _end(indices{});
+        }
+    };
+    template <typename Self>
+    make_zip_reversed(Self& self) -> make_zip_reversed<Self&>;
+
+    /* Arguments to a zip function will be yielded elementwise if they come from
+    ranges, or broadcasted as lvalues otherwise. */
+    template <meta::lvalue T>
+    struct _zip_arg { using type = meta::as_lvalue<T>; };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct _zip_arg<T> { using type = meta::yield_type<T>; };
+    template <meta::lvalue T>
+    using zip_arg = _zip_arg<T>::type;
+
+    /* An index sequence records the positions of the incoming ranges. */
+    template <typename out, size_t, typename...>
+    struct _zip_indices { using type = out; };
+    template <size_t... Is, size_t I, typename T, typename... Ts>
+    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _zip_indices<std::index_sequence<Is...>, I + 1, Ts...>
+    {};
+    template <size_t... Is, size_t I, meta::range T, typename... Ts>
+    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _zip_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
+    {};
+    template <meta::not_rvalue... A>
+    using zip_indices = _zip_indices<std::index_sequence<>, 0, A...>::type;
+
+    /* Zipped ranges have definite sizes if and only if all of the input ranges are
+    sized, and the function's return type is not a nested range, or is a range tuple
+    whose final size can be known ahead of time. */
+    template <typename... A>
+    concept zip_has_size = ((!meta::range<A> || (!meta::sequence<A> &&meta::has_size<A>)) && ...);
+
+    /* Zipped ranges store an arbitrary set of argument types as well as a function to
+    apply over them.  The arguments are not required to be ranges, and will be
+    broadcasted as lvalues over the length of the range.  If any of the arguments are
+    ranges, then they will be iterated over like normal. */
+    template <meta::not_void F, meta::not_void... A>
+        requires (
+            (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
+            meta::callable<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>
+        )
+    struct zip {
+        using function_type = F;
+        using argument_types = meta::pack<A...>;
+        using return_type = meta::call_type<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>;
+        using size_type = size_t;
+        using index_type = ssize_t;
+
+    private:
+        using indices = std::make_index_sequence<sizeof...(A)>;
+        using range_indices = zip_indices<A...>;
+
+        template <size_t I> requires (I < sizeof...(A))
+        static constexpr bool is_range = meta::range<meta::unpack_type<I, A...>>;
+
+        template <meta::lvalue Self, meta::not_rvalue... Iters>
+        friend struct impl::zip_iterator;
+        template <meta::lvalue Self>
+        friend struct impl::make_zip_iterator;
+        template <meta::lvalue Self> requires (impl::zip_reverse_iterable<argument_types>)
+        friend struct impl::make_zip_reversed;
+
+        size_type m_size = (meta::range<A> || ...) ? std::numeric_limits<size_type>::max() : 1;
+        [[no_unique_addres]] impl::store<F> m_func;
+        [[no_unique_addres]] impl::overloads<A...> m_args;
+
+        template <typename T>
+        constexpr void get_size(T&&) noexcept {}
+        template <meta::range T>
+        constexpr void get_size(T&& range) noexcept (meta::nothrow::has_size<T>) {
+            if (auto n = range.size(); n < m_size) {
+                m_size = n;
+            }
+        }
+
+        template <size_t I, typename T>
+        [[nodiscard]] static constexpr decltype(auto) _get_impl(T&& value)
+            noexcept (!meta::range<T> || requires{
+                {std::forward<T>(value).template get<I>()} noexcept;
+            })
+            requires (!meta::range<T> || requires{
+                {std::forward<T>(value).template get<I>()};
+            })
+        {
+            if constexpr (meta::range<T>) {
+                return (std::forward<T>(value).template get<I>());
+            } else {
+                return (std::forward<T>(value));
+            }
+        }
+
+        template <size_t I, typename Self, size_type... Is>
+        [[nodiscard]] static constexpr decltype(auto) _get(Self&& self, std::index_sequence<Is...>)
+            noexcept (requires{{std::forward<Self>(self).m_func(
+                _get_impl<Is>(std::forward<Self>(self).m_args.template get<Is>())...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).m_func(
+                _get_impl<Is>(std::forward<Self>(self).m_args.template get<Is>())...
+            )};})
+        {
+            return (std::forward<Self>(self).m_func(
+                _get_impl<Is>(std::forward<Self>(self).m_args.template get<Is>())...
+            ));
+        }
+
+        template <typename T>
+        [[nodiscard]] static constexpr decltype(auto) _subscript_impl(T&& value, size_type i)
+            noexcept (!meta::range<T> || requires{{std::forward<T>(value)[i]} noexcept;})
+            requires (!meta::range<T> || requires{{std::forward<T>(value)[i]};})
+        {
+            if constexpr (meta::range<T>) {
+                return (std::forward<T>(value)[i]);
+            } else {
+                return (std::forward<T>(value));
+            }
+        }
+
+        template <typename Self, size_type... Is>
+        [[nodiscard]] static constexpr decltype(auto) _subscript(
+            Self&& self,
+            std::index_sequence<Is...>,
+            size_type i
+        )
+            noexcept (requires{{std::forward<Self>(self).m_func(
+                _subscript_impl(std::forward<Self>(self).m_args.template get<Is>(), i)...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).m_func(
+                _subscript_impl(std::forward<Self>(self).m_args.template get<Is>(), i)...
+            )};})
+        {
+            return (std::forward<Self>(self).m_func(
+                _subscript_impl(std::forward<Self>(self).m_args.template get<Is>(), i)...
+            ));
+        }
+
+    public:
+        [[nodiscard]] constexpr zip(meta::forward<F> func, meta::forward<A>... args)
+            noexcept (requires{
+                {impl::store<F>{std::forward<F>(func)}} noexcept;
+                {impl::overloads<A...>{std::forward<A>(args)...}} noexcept;
+            } && (
+                !zip_has_size<A...> ||
+                requires{{(get_size(std::forward<A>(args)), ...)} noexcept;}
+            ))
+            requires (requires{
+                {impl::store<F>{std::forward<F>(func)}};
+                {impl::overloads<A...>{std::forward<A>(args)...}};
+            })
+        :
+            m_func(std::forward<F>(func)),
+            m_args(std::forward<A>(args)...)
+        {
+            if constexpr (zip_has_size<A...>) {
+                (get_size(std::forward<A>(args)), ...);
+            }
+        }
+
+        /* The overall size of the zipped range as an unsigned integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs,
+        and the visitor function yields either scalar values or tuple-like ranges with
+        a consistent size. */
+        [[nodiscard]] constexpr size_type size() const noexcept
+            requires (
+                zip_has_size<A...> &&
+                (!meta::range<return_type> || meta::tuple_like<return_type>)
+            )
+        {
+            if constexpr (!meta::range<return_type>) {
+                return m_size;
+            } else {
+                return m_size * meta::tuple_size<return_type>;
+            }
+        }
+
+        /* The overall size of the zipped range as a signed integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs,
+        and the visitor function yields either scalar values or tuple-like ranges with
+        a consistent size. */
+        [[nodiscard]] constexpr index_type ssize() const noexcept
+            requires (
+                zip_has_size<A...> &&
+                (!meta::range<return_type> || meta::tuple_like<return_type>)
+            )
+        {
+            return index_type(size());
+        }
+
+        /* True if the zipped range contains no elements.  False otherwise. */
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (zip_has_size<A...> || requires{{begin() == end()} noexcept;})
+        {
+            if constexpr (zip_has_size<A...>) {
+                if constexpr (!meta::range<return_type>) {
+                    return m_size == 0;
+                } else if constexpr (meta::tuple_like<return_type>) {
+                    return m_size == 0 || meta::tuple_size<return_type> == 0;
+                }
+            } else {
+                return begin() == end();
+            }
+        }
+
+        /* Access the `I`-th element of a tuple-like, zipped range, passing the
+        unpacked arguments into the transformation function.  Non-range arguments will
+        be forwarded according to the current cvref qualifications of the `zip` range,
+        while range arguments will be accessed using the provided index before
+        forwarding.  If the index is invalid for one or more of the input ranges, or
+        the forwarded arguments are not valid inputs to the visitor function, then this
+        method will fail to compile. */
+        template <size_t I, typename Self>
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{_get<I>(std::forward<Self>(self), indices{})} noexcept;})
+            requires (
+                ((I == 0) || ... || meta::range<A>) &&
+                requires{{_get<I>(std::forward<Self>(self), indices{})};}
+            )
+        {
+            return (_get<I>(std::forward<Self>(self), indices{}));
+        }
+
+        /* Index into the zipped range, passing the indexed arguments into the
+        transformation function.  None-range arguments will be forwarded according to
+        the current cvref qualifications of the `zip` range, while range arguments will
+        be accessed using the provided index before forwarding.  If the index is not
+        supported for one or more of the input ranges, or the forwarded arguments are
+        not valid inputs to the visitor function, then this method will fail to
+        compile. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_type i)
+            noexcept (requires{{_subscript(std::forward<Self>(self), indices{}, i)} noexcept;})
+            requires (
+                (meta::range<A> || ...) &&
+                requires{{_subscript(std::forward<Self>(self), indices{}, i)};}
+            )
+        {
+            return (_subscript(std::forward<Self>(self), indices{}, i));
+        }
+
+        /* Get a forward iterator over the zipped range. */
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{make_zip_iterator{*this}.begin()} noexcept;})
+            requires (requires{{make_zip_iterator{*this}.begin()};})
+        {
+            return make_zip_iterator{*this}.begin();
+        }
+
+        /* Get a forward iterator over the zipped range. */
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{make_zip_iterator{*this}.begin()} noexcept;})
+            requires (requires{{make_zip_iterator{*this}.begin()};})
+        {
+            return make_zip_iterator{*this}.begin();
+        }
+
+        /* Get a forward sentinel one past the end of the zipped range. */
+        [[nodiscard]] constexpr auto end()
+            noexcept (requires{{make_zip_iterator{*this}.end()} noexcept;})
+            requires (requires{{make_zip_iterator{*this}.end()};})
+        {
+            return make_zip_iterator{*this}.end();
+        }
+
+        /* Get a forward sentinel one past the end of the zipped range. */
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{make_zip_iterator{*this}.end()} noexcept;})
+            requires (requires{{make_zip_iterator{*this}.end()};})
+        {
+            return make_zip_iterator{*this}.end();
+        }
+
+        /* Get a reverse iterator over the zipped range. */
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires{{make_zip_reversed{*this}.begin()} noexcept;})
+            requires (requires{{make_zip_reversed{*this}.begin()};})
+        {
+            return make_zip_reversed{*this}.begin();
+        }
+
+        /* Get a reverse iterator over the zipped range. */
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{make_zip_reversed{*this}.begin()} noexcept;})
+            requires (requires{{make_zip_reversed{*this}.begin()};})
+        {
+            return make_zip_reversed{*this}.begin();
+        }
+
+        /* Get a reverse sentinel one before the beginning of the zipped range. */
+        [[nodiscard]] constexpr auto rend()
+            noexcept (requires{{make_zip_reversed{*this}.end()} noexcept;})
+            requires (requires{{make_zip_reversed{*this}.end()};})
+        {
+            return make_zip_reversed{*this}.end();
+        }
+
+        /* Get a reverse sentinel one before the beginning of the zipped range. */
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (requires{{make_zip_reversed{*this}.end()} noexcept;})
+            requires (requires{{make_zip_reversed{*this}.end()};})
+        {
+            return make_zip_reversed{*this}.end();
+        }
+    };
+
+    template <typename, meta::not_rvalue... Iters>
+    struct zip_category { using type = std::random_access_iterator_tag; };
+    template <size_t... Is, meta::not_rvalue... Iters> requires (sizeof...(Is) > 0)
+    struct zip_category<std::index_sequence<Is...>, Iters...> {
+        using type = meta::common_type<
+            meta::iterator_category<meta::unpack_type<Is, Iters...>>...
+        >;
+    };
+
+    template <typename, meta::not_rvalue... Iters>
+    struct zip_difference { using type = std::ptrdiff_t; };
+    template <size_t... Is, meta::not_rvalue... Iters> requires (sizeof...(Is) > 0)
+    struct zip_difference<std::index_sequence<Is...>, Iters...> {
+        using type = meta::common_type<
+            meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
+        >;
+    };
+
+    /// TODO: if the function is const, then the return type might change, so there
+    /// needs to be some generalization here to support that.
+
+    /* Iterators over zipped ranges store tuples of iterator and broadcasted value
+    types, and invoke the function stored in the zipped range until at least one of the
+    iterators compares equal to its respective end iterator, which is modeled as
+    another instance of this class, allowing the overall zip iterator to retain all
+    the capabilities that are shared by each of its respective iterator types.  If all
+    iterators support random access, then the overall zip iterator should as well. */
+    template <meta::lvalue S, meta::not_rvalue... Iters>
+    struct zip_iterator {
+    private:
+        using Self = meta::unqualify<S>;
+        using indices = meta::unqualify<Self>::indices;
+        using ranges = meta::unqualify<Self>::range_indices;
+
+    public:
+        using iterator_category = zip_category<ranges, Iters...>::type;
+        using difference_type = zip_difference<ranges, Iters...>::type;
+        using reference = meta::unqualify<Self>::return_type;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::as_pointer<reference>;  /// TODO: think about this
+
+        [[no_unique_address]] meta::as_pointer<S> self = nullptr;
+        [[no_unique_address]] impl::overloads<Iters...> iters;
+
+    private:
+        template <size_t I, typename T>
+        [[nodiscard]] static constexpr decltype(auto) _call(T&& value)
+            noexcept (!Self::template is_range<I> || requires{{*std::forward<T>(value)} noexcept;})
+            requires (!Self::template is_range<I> || requires{{*std::forward<T>(value)};})
+        {
+            if constexpr (Self::template is_range<I>) {
+                return (*std::forward<T>(value));
+            } else {
+                return (std::forward<T>(value));
+            }
+        }
+
+        template <typename Self, size_t... Is>
+        [[nodiscard]] static constexpr decltype(auto) call(Self&& self, std::index_sequence<Is...>)
+            noexcept (requires{{self.self->m_func(_call<Is>(
+                std::forward<Self>(self).iters.template get<Is>()
+            )...)} noexcept;})
+            requires (requires{{self.self->m_func(_call<Is>(
+                std::forward<Self>(self).iters.template get<Is>()
+            )...)};})
+        {
+            return (self.self->m_func(_call<Is>(
+                std::forward<Self>(self).iters.template get<Is>())...
+            ));
+        }
+
+        template <size_t I, typename T>
+        [[nodiscard]] static constexpr decltype(auto) _subscript(T&& value, difference_type i)
+            noexcept (!Self::template is_range<I> || requires{{std::forward<T>(value)[i]} noexcept;})
+            requires (!Self::template is_range<I> || requires{{std::forward<T>(value)[i]};})
+        {
+            if constexpr (Self::template is_range<I>) {
+                return (std::forward<T>(value)[i]);
+            } else {
+                return (std::forward<T>(value));
+            }
+        }
+
+        template <typename Self, size_t... Is>
+        [[nodiscard]] static constexpr decltype(auto) subscript(
+            Self&& self,
+            std::index_sequence<Is...>,
+            difference_type i
+        )
+            noexcept (requires{{self.self->m_func(_subscript<Is>(
+                std::forward<Self>(self).iters.template get<Is>(),
+                i
+            )...)} noexcept;})
+            requires (requires{{self.self->m_func(_subscript<Is>(
+                std::forward<Self>(self).iters.template get<Is>(),
+                i
+            )...)};})
+        {
+            return (self.self->m_func(_call<Is>(
+                std::forward<Self>(self).iters.template get<Is>(),
+                i
+            )...));
+        }
+
+        template <size_t... Is>
+        constexpr void increment(std::index_sequence<Is...>)
+            noexcept (requires{{((++iters.template get<Is>()), ...)} noexcept;})
+            requires (requires{{((++iters.template get<Is>()), ...)};})
+        {
+            ((++iters.template get<Is>()), ...);
+        }
+
+        /// TODO: add()
+
+        template <size_t... Is>
+        constexpr void iadd(std::index_sequence<Is...>, difference_type i)
+            noexcept (requires{{((iters.template get<Is>() += i), ...)} noexcept;})
+            requires (requires{{((iters.template get<Is>() += i), ...)};})
+        {
+            ((iters.template get<Is>() += i), ...);
+        }
+
+        template <size_t... Is>
+        constexpr void decrement(std::index_sequence<Is...>)
+            noexcept (requires{{((--iters.template get<Is>()), ...)} noexcept;})
+            requires (requires{{((--iters.template get<Is>()), ...)};})
+        {
+            ((--iters.template get<Is>()), ...);
+        }
+
+        /// TODO: sub(), distance()  <- this should be guaranteed to all return the
+        /// same value, so it might only need to check the first iterator.
+
+
+        template <size_t... Is>
+        constexpr void isub(std::index_sequence<Is...>, difference_type i)
+            noexcept (requires{{((iters.template get<Is>() -= i), ...)} noexcept;})
+            requires (requires{{((iters.template get<Is>() -= i), ...)};})
+        {
+            ((iters.template get<Is>() -= i), ...);
+        }
+
+
+        /// TODO: comparisons (lt, le, eq, ne, ge, gt, spaceship)
+
+    public:
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires{{call(std::forward<Self>(self), indices{})} noexcept;})
+            requires (requires{{call(std::forward<Self>(self), indices{})};})
+        {
+            return (call(std::forward<Self>(self), indices{}));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{impl::arrow_proxy{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{impl::arrow_proxy{*std::forward<Self>(self)}};})
+        {
+            return impl::arrow_proxy{*std::forward<Self>(self)};
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
+            noexcept (requires{{subscript(std::forward<Self>(self), indices{}, i)} noexcept;})
+            requires (requires{{subscript(std::forward<Self>(self), indices{}, i)};})
+        {
+            return (subscript(std::forward<Self>(self), indices{}, i));
+        }
+
+        constexpr zip_iterator& operator++()
+            noexcept (requires{{increment(indices{})} noexcept;})
+            requires (requires{{increment(indices{})};})
+        {
+            increment(indices{});
+            return *this;
+        }
+
+        [[nodiscard]] constexpr zip_iterator operator++(int)
+            noexcept (
+                meta::nothrow::copyable<zip_iterator> &&
+                meta::nothrow::has_preincrement<zip_iterator&>
+            )
+            requires (
+                meta::copyable<zip_iterator> &&
+                meta::has_preincrement<zip_iterator&>
+            )
+        {
+            zip_iterator copy = *this;
+            ++*this;
+            return copy;
+        }
+
+        /// TODO: random-access addition is basically the same pattern, but it has
+        /// to iterate over the full indices in order to construct the copy's `.iters`.
+
+
+        constexpr zip_iterator& operator+=(difference_type i)
+            noexcept (requires{{iadd(indices{}, i)} noexcept;})
+            requires (requires{{iadd(indices{}, i)};})
+        {
+            iadd(indices{}, i);
+            return *this;
+        }
+
+        constexpr zip_iterator& operator--()
+            noexcept (requires{{decrement(indices{})} noexcept;})
+            requires (requires{{decrement(indices{})};})
+        {
+            decrement(indices{});
+            return *this;
+        }
+
+        [[nodiscard]] constexpr zip_iterator operator--(int)
+            noexcept (
+                meta::nothrow::copyable<zip_iterator> &&
+                meta::nothrow::has_predecrement<zip_iterator&>
+            )
+            requires (
+                meta::copyable<zip_iterator> &&
+                meta::has_predecrement<zip_iterator&>
+            )
+        {
+            zip_iterator copy = *this;
+            --*this;
+            return copy;
+        }
+
+        /// TODO: random-access subtraction + distance
+
+        constexpr zip_iterator& operator-=(difference_type i)
+            noexcept (requires{{isub(indices{}, i)} noexcept;})
+            requires (requires{{isub(indices{}, i)};})
+        {
+            isub(indices{}, i);
+            return *this;
+        }
+
+
+
+
+        /// TODO: if the parent `zip` container has a size(), then this iterator will
+        /// use a simple integer counter to track the current index, and will iterate
+        /// until the counter reaches zero.  Otherwise, if there is no size(), then
+        /// we need to fold over each iterator and check if it is equal to its end
+        /// iterator.
+        /// -> Actually, this criteria doesn't depend on the presence of the size()
+        /// method, but rather whether the storage type compiled an m_size member,
+        /// which is true if and only if none of the arguments are unsized ranges.
+        /// That sets the counter and allows us to forego the end iterators within
+        /// this iterator base.
+
+
+        /// TODO: maybe it's a better implementation to just have the begin() iterator
+        /// return this class, which holds only the beginning iterators/references and
+        /// a reference to the parent zip container, and the end() iterator would hold
+        /// the end iterators/values and a similar reference.  Both types would be
+        /// the same if all of the iterator types are the same, and would allow
+        /// arbitrary iteration logic, not limited to forward iteration.  The overall
+        /// zip iterators could be completely random access.  There would need to be
+        /// a special `zip_end` that would be emitted if any of the begin/end
+        /// iterator types are different.
+
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator==(const zip_iterator<Self, Ts...>& other) const
+            
+        {
+            /// TODO: invoke the equality operator on each of the range iterators.
+            /// If there are no ranges, then this will always return true.
+        }
+
+
+    };
+
+    /* If no visitor function is provided, then `zip{}` will default to returning each
+    value as a `Tuple`, similar to `std::views::zip` or `zip()` in Python. */
+    struct zip_tuple {
+        template <typename... A> requires (!meta::range<A> && ...)
+        [[nodiscard]] constexpr auto operator()(A&&... args)
+            noexcept (requires{{Tuple{std::forward<A>(args)...}} noexcept;})
+            requires (requires{{Tuple{std::forward<A>(args)...}};})
+        {
+            return Tuple{std::forward<A>(args)...};
+        }
+    };
+
+}
+
+
+template <meta::not_void... Fs> requires (meta::not_rvalue<Fs> && ...)
+struct zip {
+private:
+    using F = impl::overloads<Fs...>;
+
+    template <typename... A>
+    using container = impl::zip<F, meta::remove_rvalue<A>...>;
+
+    template <typename... A>
+    using range = bertrand::range<container<A...>>;
+
+public:
+    [[no_unique_addres]] F f;
+
+    template <typename Self, typename... A>
+        requires (meta::callable<meta::as_lvalue<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
+    [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... args)
+        noexcept (requires{{range<A...>{container<A...>{
+            std::forward<Self>(self).f,
+            std::forward<A>(args)...
+        }}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{
+            std::forward<Self>(self).f,
+            std::forward<A>(args)...
+        }}};})
+    {
+        return range<A...>{container<A...>{
+            std::forward<Self>(self).f,
+            std::forward<A>(args)...
+        }};
+    }
+};
+
+
+template <meta::not_void F> requires (meta::not_rvalue<F>)
+struct zip<F> {
+private:
+    template <typename... A>
+    using container = impl::zip<F, meta::remove_rvalue<A>...>;
+
+    template <typename... A>
+    using range = bertrand::range<container<A...>>;
+
+public:
+    [[no_unique_addres]] F f;
+
+    template <typename Self, typename... A>
+        requires (meta::callable<meta::as_lvalue<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
+    [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... args)
+        noexcept (requires{{range<A...>{container<A...>{
+            std::forward<Self>(self).f,
+            std::forward<A>(args)...
+        }}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{
+            std::forward<Self>(self).f,
+            std::forward<A>(args)...
+        }}};})
+    {
+        return range<A...>{container<A...>{
+            std::forward<Self>(self).f,
+            std::forward<A>(args)...
+        }};
+    }
+};
+
+
+template <>
+struct zip<> {
+private:
+    using F = impl::zip_tuple;
+
+    template <typename... A>
+    using container = impl::zip<meta::as_const_ref<F>, meta::remove_rvalue<A>...>;
+
+    template <typename... A>
+    using range = bertrand::range<container<A...>>;
+
+public:
+    static constexpr F f;
+
+    template <typename... A>
+        requires (meta::callable<meta::as_const_ref<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
+    [[nodiscard]] static constexpr auto operator()(A&&... args)
+        noexcept (requires{{range<A...>{container<A...>{f, std::forward<A>(args)...}}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{f, std::forward<A>(args)...}}};})
+    {
+        return range<A...>{container<A...>{f, std::forward<A>(args)...}};
+    }
+};
+
+
+template <typename... Fs>
+zip(Fs&&...) -> zip<meta::remove_rvalue<Fs>...>;
+
+
 //////////////////////
 ////    REPEAT    ////
 //////////////////////
+
+
+/// TODO: it may be possible to turn `repeat{}` ranges into common ranges, where
+/// the begin and end iterators are the same type.
+
+
+/// TODO: a static repeat count of 1 is identical to the original range, so that may
+/// be worth optimizing.  Maybe the `repeat{}` adaptor should special-case that in the
+/// call operator and just return the original range (or convert to a range if it was
+/// not one already).
 
 
 namespace impl {
@@ -4394,566 +5492,9 @@ template <meta::integer T>
 repeat(T n) -> repeat<None>;
 
 
-///////////////////
-////    ZIP    ////
-///////////////////
-
-
-namespace meta {
-
-    /// TODO: maybe I need a separate `match` metafunction that will take a single
-    /// argument and apply the same logic as `visit`, but optimized for the single
-    /// argument case, and applying tuple-like destructuring if applicable.  This would
-    /// back the global `->*` operator, which would be enabled for all union and/or
-    /// tuple types (NOT iterables).  Iterable comprehensions would be gated behind
-    /// `range(container) ->*`, which would be defined only on the range type itself,
-    /// which is what would also be returned to produce flattened comprehensions.
-    /// It would just be an `impl::range<T>` type where `T` is either a direct container
-    /// for `range(container)`, or a `std::subrange` if `range(begin, end)`, or a
-    /// `std::views::iota` if `range(stop)` or `range(start, stop)`, possibly with a
-    /// `std::views::stride_view<std::views::iota>` for `range(start, stop, step)`.
-
-    // namespace detail {
-
-    //     template <typename, typename>
-    //     constexpr bool _match_tuple_alts = false;
-    //     template <typename F, typename... As>
-    //     constexpr bool _match_tuple_alts<F, meta::pack<As...>> = (meta::callable<F, As> && ...);
-    //     template <typename, typename>
-    //     constexpr bool _match_tuple = false;
-    //     template <typename F, typename... Ts>
-    //     constexpr bool _match_tuple<F, meta::pack<Ts...>> =
-    //         (_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
-    //     template <typename F, typename T>
-    //     concept match_tuple = meta::tuple_like<T> && _match_tuple<F, meta::tuple_types<T>>;
-
-    //     template <typename, typename>
-    //     constexpr bool _nothrow_match_tuple_alts = false;
-    //     template <typename F, typename... As>
-    //     constexpr bool _nothrow_match_tuple_alts<F, meta::pack<As...>> =
-    //         (meta::nothrow::callable<F, As> && ...);
-    //     template <typename, typename>
-    //     constexpr bool _nothrow_match_tuple = false;
-    //     template <typename F, typename... Ts>
-    //     constexpr bool _nothrow_match_tuple<F, meta::pack<Ts...>> =
-    //         (_nothrow_match_tuple_alts<F, typename impl::visitable<Ts>::alternatives> && ...);
-    //     template <typename F, typename T>
-    //     concept nothrow_match_tuple =
-    //         meta::nothrow::tuple_like<T> && _nothrow_match_tuple<F, meta::nothrow::tuple_types<T>>;
-
-
-
-    //     template <
-    //         typename F,  // match visitor function
-    //         typename returns,  // unique, non-void return types
-    //         typename errors,  // expected error states
-    //         bool has_void_,  // true if a void return type was encountered
-    //         bool optional,  // true if an optional return type was encountered
-    //         bool nothrow_,  // true if all permutations are noexcept
-    //         typename alternatives  // alternatives for the matched object
-    //     >
-    //     struct _match {
-    //         using type = visit_to_expected<
-    //             typename visit_to_optional<
-    //                 typename returns::template eval<visit_to_union>::type,
-    //                 has_void_ || optional
-    //             >::type,
-    //             errors
-    //         >::type;
-    //         static constexpr bool enable = true;
-    //         static constexpr bool ambiguous = false;
-    //         static constexpr bool unmatched = false;
-    //         static constexpr bool consistent =
-    //             returns::size() == 0 || (returns::size() == 1 && !has_void_);
-
-    //         /// TODO: nothrow has to account for nothrow conversions to type
-    //         static constexpr bool nothrow = nothrow_;
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //         requires (meta::callable<F, curr> && !match_tuple<F, curr>)
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         /// TODO: pass the tuple directly
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //         requires (!meta::callable<F, curr> && match_tuple<F, curr>)
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         /// TODO: unpack tuple
-    //     };
-    //     template <
-    //         typename F,
-    //         typename curr,
-    //         typename... next
-    //     >
-    //     struct _match<F, meta::pack<curr, next...>> {
-    //         using type = void;
-    //         static constexpr bool ambiguous = meta::callable<F, curr> && match_tuple<F, curr>;
-    //         static constexpr bool unmatched = !meta::callable<F, curr> && !match_tuple<F, curr>;
-    //         static constexpr bool consistent = false;
-    //         static constexpr bool nothrow = false;
-    //     };
-
-
-
-
-
-    //     template <typename F, typename T>
-    //     struct match : _match<F, typename impl::visitable<T>::alternatives> {};
-
-    // }
-
-}
-
-
-namespace impl {
-
-
-
-    /// TODO: zip{} should only have a definite size if all of the arguments are
-    /// are either sized ranges or non-ranges that will be broadcasted, and the
-    /// function does not return a range.  If all of those conditions are met,
-    /// then the zip{} container will compile with an m_size member and corresponding
-    /// size() method.  Otherwise, it will be omitted.  That can possibly eliminate
-    /// any need for a `meta::exact_size` helper, since any range that doesn't have an
-    /// exact size will not simply not provide a size() method.
-    /// -> Maybe infinite iota ranges are a special case, in order to allow enumeration
-    /// style zips: `zip{}(range(0, None), range(container))`
-
-
-
-
-    template <meta::lvalue Self, meta::not_rvalue... Iters>
-    struct zip_iterator;
-
-    template <meta::lvalue T>
-    struct make_zip_begin {
-        using type = T;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_zip_begin<T> {
-        using type = meta::begin_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.begin()} noexcept;})
-            requires (requires{{arg.begin()};})
-        {
-            return arg.begin();
-        }
-    };
-    template <typename T>
-    make_zip_begin(T&) -> make_zip_begin<T&>;
-
-    template <meta::lvalue T>
-    struct make_zip_end {
-        using type = T;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_zip_end<T> {
-        using type = meta::end_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.end()} noexcept;})
-            requires (requires{{arg.end()};})
-        {
-            return arg.end();
-        }
-    };
-    template <typename T>
-    make_zip_end(T&) -> make_zip_end<T&>;
-
-    /* Forward iterators over `zip` ranges essentially consist of an inner tuple
-    holding either a reference to a non-range argument or an appropriate range iterator
-    at each index.  If all ranges use the same begin and end types, then the overall
-    zip iterators will also match. */
-    template <meta::lvalue Self, typename>
-    struct _make_zip_iterator;
-    template <meta::lvalue Self, typename... A>
-    struct _make_zip_iterator<Self, meta::pack<A...>> {
-        using begin = zip_iterator<Self, typename make_zip_begin<meta::as_lvalue<A>>::type...>;
-        using end = zip_iterator<Self, typename make_zip_end<meta::as_lvalue<A>>::type...>;
-    };
-    template <meta::lvalue Self>
-    struct make_zip_iterator {
-    private:
-        using arguments = meta::unqualify<Self>::argument_types;
-        using indices = std::make_index_sequence<arguments::size()>;
-        using type = _make_zip_iterator<Self, arguments>;
-
-        template <size_t... Is>
-        static constexpr type::begin _begin(Self self, std::index_sequence<Is...>)
-            noexcept (requires{{typename type::begin{
-                self,
-                make_zip_begin{self.m_args.template get<Is>()}()...
-            }} noexcept;})
-            requires (requires{{typename type::begin{
-                self,
-                make_zip_begin{self.m_args.template get<Is>()}()...
-            }};})
-        {
-            return {self, make_zip_begin{self.m_args.template get<Is>()}()...};
-        }
-
-        template <size_t... Is>
-        static constexpr type::end _end(Self self, std::index_sequence<Is...>)
-            noexcept (requires{{typename type::end{
-                self,
-                make_zip_end{self.m_args.template get<Is>()}()...
-            }} noexcept;})
-            requires (requires{{typename type::end{
-                self,
-                make_zip_end{self.m_args.template get<Is>()}()...
-            }};})
-        {
-            return {self, make_zip_end{self.m_args.template get<Is>()}()...};
-        }
-
-    public:
-        using begin_type = type::begin;
-        using end_type = type::end;
-
-        [[nodiscard]] static constexpr begin_type begin(Self self)
-            noexcept (requires{{_begin(self, indices{})} noexcept;})
-            requires (requires{{_begin(self, indices{})};})
-        {
-            return _begin(self, indices{});
-        }
-
-        [[nodiscard]] static constexpr end_type end(Self self)
-            noexcept (requires{{_end(self, indices{})} noexcept;})
-            requires (requires{{_end(self, indices{})};})
-        {
-            return _end(self, indices{});
-        }
-    };
-
-    template <typename>
-    constexpr bool zip_reverse_iterable = false;
-    template <typename... A>
-        requires ((!meta::range<A> || meta::reverse_iterable<meta::as_lvalue<A>>) && ...)
-    constexpr bool zip_reverse_iterable<meta::pack<A...>> = true;
-
-    template <meta::lvalue T>
-    struct make_zip_rbegin {
-        using type = meta::as_lvalue<T>;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_zip_rbegin<T> {
-        using type = meta::rbegin_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.rbegin()} noexcept;})
-            requires (requires{{arg.rbegin()};})
-        {
-            return arg.rbegin();
-        }
-    };
-    template <meta::lvalue T>
-    make_zip_rbegin(T&) -> make_zip_rbegin<T&>;
-
-    template <meta::lvalue T>
-    struct make_zip_rend {
-        using type = meta::as_lvalue<T>;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_zip_rend<T> {
-        using type = meta::rend_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.rend()} noexcept;})
-            requires (requires{{arg.rend()};})
-        {
-            return arg.rend();
-        }
-    };
-    template <meta::lvalue T>
-    make_zip_rend(T&) -> make_zip_rend<T&>;
-
-    /* If all of the input ranges happen to be reverse iterable, then the zipped range
-    will also be reverse iterable, and the rbegin and rend iterators will match if
-    all of the input ranges use the same rbegin and rend types. */
-    template <meta::lvalue Self, typename>
-    struct _make_zip_reversed;
-    template <meta::lvalue Self, typename... A>
-    struct _make_zip_reversed<Self, meta::pack<A...>> {
-        using begin = zip_iterator<Self, typename make_zip_rbegin<meta::as_lvalue<A>>::type...>;
-        using end = zip_iterator<Self, typename make_zip_rend<meta::as_lvalue<A>>::type...>;
-    };
-    template <meta::lvalue Self>
-        requires (zip_reverse_iterable<typename meta::unqualify<Self>::argument_types>)
-    struct make_zip_reversed {
-    private:
-        using arguments = meta::unqualify<Self>::argument_types;
-        using indices = std::make_index_sequence<arguments::size()>;
-        using type = _make_zip_reversed<Self, arguments>;
-
-        template <size_t... Is>
-        static constexpr type::begin _begin(Self self, std::index_sequence<Is...>)
-            noexcept (requires{{typename type::begin{
-                self,
-                make_zip_rbegin{self.m_args.template get<Is>()}()...
-            }} noexcept;})
-            requires (requires{{typename type::begin{
-                self,
-                make_zip_rbegin{self.m_args.template get<Is>()}()...
-            }};})
-        {
-            return {self, make_zip_rbegin{self.m_args.template get<Is>()}()...};
-        }
-
-        template <size_t... Is>
-        static constexpr type::end _end(Self self, std::index_sequence<Is...>)
-            noexcept (requires{{typename type::end{
-                self,
-                make_zip_rend{self.m_args.template get<Is>()}()...
-            }} noexcept;})
-            requires (requires{{typename type::end{
-                self,
-                make_zip_rend{self.m_args.template get<Is>()}()...
-            }};})
-        {
-            return {self, make_zip_rend{self.m_args.template get<Is>()}()...};
-        }
-
-    public:
-        using begin_type = type::begin;
-        using end_type = type::end;
-
-        [[nodiscard]] static constexpr begin_type begin(Self self)
-            noexcept (requires{{_begin(self, indices{})} noexcept;})
-            requires (requires{{_begin(self, indices{})};})
-        {
-            return _begin(self, indices{});
-        }
-
-        [[nodiscard]] static constexpr end_type end(Self self)
-            noexcept (requires{{_end(self, indices{})} noexcept;})
-            requires (requires{{_end(self, indices{})};})
-        {
-            return _end(self, indices{});
-        }
-    };
-
-    /* Zipped arguments will be yielded elementwise if they are ranges, or broadcasted
-    as lvalues otherwise. */
-    template <meta::lvalue T>
-    struct _zip_arg { using type = meta::as_lvalue<T>; };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct _zip_arg<T> { using type = meta::yield_type<T>; };
-    template <meta::lvalue T>
-    using zip_arg = _zip_arg<T>::type;
-
-    /* Zipped ranges have definite sizes if and only if all of the input ranges are
-    sized, and the function's return type is not a nested range, or is a range tuple
-    whose final size can be known ahead of time. */
-    template <typename... A>
-    concept zip_size = ((!meta::range<A> || (!meta::sequence<A> &&meta::has_size<A>)) && ...);
-
-    /* Zipped ranges store an arbitrary set of argument types as well as a function to
-    apply over them.  The arguments are not required to be ranges, and will be
-    broadcasted as lvalues over the length of the range.  If any of the arguments are
-    ranges, then they will be iterated over like normal. */
-    template <meta::not_void F, meta::not_void... A>
-        requires (
-            (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
-            meta::callable<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>
-        )
-    struct zip {
-        using function_type = F;
-        using argument_types = meta::pack<A...>;
-        using return_type = meta::call_type<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>;
-        using size_type = size_t;
-        using index_type = ssize_t;
-
-    private:
-        template <meta::lvalue Self>
-        friend struct make_zip_iterator;
-        template <meta::lvalue Self> requires (zip_reverse_iterable<argument_types>)
-        friend struct make_zip_reversed;
-
-        size_type m_size = (!meta::range<A> && ...) ? 1 : std::numeric_limits<size_type>::max();
-        impl::store<F> m_func;
-        impl::overloads<A...> m_args;
-
-        template <typename T>
-        constexpr void get_size(T&&) noexcept {}
-        template <meta::range T>
-        constexpr void get_size(T&& range) noexcept (meta::nothrow::has_size<T>) {
-            if (auto n = range.size(); n < m_size) {
-                m_size = n;
-            }
-        }
-
-    public:
-        [[nodiscard]] constexpr zip(meta::forward<F> func, meta::forward<A>... args)
-            noexcept (requires{
-                {impl::store<F>{std::forward<F>(func)}} noexcept;
-                {impl::overloads<A...>{std::forward<A>(args)...}} noexcept;
-            } && (!zip_size<A...> || requires{
-                {(get_size(std::forward<A>(args)), ...)} noexcept;
-            }))
-            requires (requires{
-                {impl::store<F>{std::forward<F>(func)}};
-                {impl::overloads<A...>{std::forward<A>(args)...}};
-            })
-        :
-            m_func(std::forward<F>(func)),
-            m_args(std::forward<A>(args)...)
-        {
-            if constexpr (zip_size<A...>) {
-                (get_size(std::forward<A>(args)), ...);
-            }
-        }
-
-        /// TODO: size() should only be enabled if the function does not return a
-        /// range, or the range that it returns is tuple-like, and thus the final size
-        /// can be determined by multiplying m_size by the tuple size of the result.
-
-        [[nodiscard]] constexpr size_type size() const noexcept requires (zip_size<A...>) {
-            return m_size;
-        }
-
-        [[nodiscard]] constexpr index_type ssize() const noexcept requires (zip_size<A...>) {
-            return index_type(m_size);
-        }
-
-        [[nodiscard]] constexpr bool empty() const noexcept requires (zip_size<A...>) {
-            return m_size == 0;
-        }
-
-        /// TODO: get<I>() for tuple-like access, as long as all of the zipped ranges
-        /// are tuple-like, and the visitor is callable with their exact types, rather
-        /// than the iterated type.
-
-
-        /// TODO: operator[] if the ranges all support it, and the results are valid
-        /// inputs to the visitor function.
-
-        /// TODO: begin() and end(), which return zip_iterators.  If `zip_iterator`
-        /// is bidirectional, then rbegin() and rend() should also be defined, allowing
-        /// you to reverse iterate over a comprehension.
-
-    };
-
-
-    /// TODO: I will need some metaprogramming to detect the proper iterator category
-    /// and difference type.  The value, reference, and
-
-    /* Iterators over zipped ranges store tuples of iterator and broadcasted value
-    types, and invoke the function stored in the zipped range until at least one of the
-    iterators compares equal to its respective end iterator, which is modeled as
-    another instance of this class, allowing the overall zip iterator to retain all
-    the capabilities that are shared by each of its respective iterator types.  If all
-    iterators support random access, then the overall zip iterator should as well. */
-    template <meta::lvalue Self, meta::not_rvalue... Iters>
-    struct zip_iterator {
-
-        using reference = meta::unqualify<Self>::return_type;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::as_pointer<reference>;  /// TODO: think about this
-
-
-        /// TODO: the constructor must take Self and the forwarded iterator types.
-
-        /// TODO: we should also generate a minimal index sequence that only references
-        /// the indices in Iters... that correspond to ranges in the zipped range.
-        /// That makes iterator comparisons and increments as fast as possible.
-
-
-
-
-
-        /// TODO: this iterator stores an impl::overloads holding the iterator types
-        /// for each of the arguments, or a reference to the argument directly if it
-        /// is not a range.
-
-        /// TODO: if the parent `zip` container has a size(), then this iterator will
-        /// use a simple integer counter to track the current index, and will iterate
-        /// until the counter reaches zero.  Otherwise, if there is no size(), then
-        /// we need to fold over each iterator and check if it is equal to its end
-        /// iterator.
-        /// -> Actually, this criteria doesn't depend on the presence of the size()
-        /// method, but rather whether the storage type compiled an m_size member,
-        /// which is true if and only if none of the arguments are unsized ranges.
-        /// That sets the counter and allows us to forego the end iterators within
-        /// this iterator base.
-
-
-        /// TODO: maybe it's a better implementation to just have the begin() iterator
-        /// return this class, which holds only the beginning iterators/references and
-        /// a reference to the parent zip container, and the end() iterator would hold
-        /// the end iterators/values and a similar reference.  Both types would be
-        /// the same if all of the iterator types are the same, and would allow
-        /// arbitrary iteration logic, not limited to forward iteration.  The overall
-        /// zip iterators could be completely random access.  There would need to be
-        /// a special `zip_end` that would be emitted if any of the begin/end
-        /// iterator types are different.
-
-    };
-
-
-
-    struct zip_tuple {
-        /// TODO: a default function to use if no other functions are provided.  This
-        /// simply takes generic arguments of any number (as long as none are ranges)
-        /// and packages them into a tuple, which is then yielded by the iterator.
-    };
-
-}
-
-
-template <meta::not_void... Fs> requires (meta::not_rvalue<Fs> && ...)
-struct zip {
-    impl::overloads<Fs...> f;
-
-    /// TODO: constructor would form an overload set using `impl::tuple_storage`.
-
-    /// TODO: call operator would take a number of arguments and form a zipped range
-    /// with the given overload set.  Iterating over the range would gather the
-    /// arguments and then invoke the overload set with the gathered arguments.
-    /// If it is empty, then we simply package the gathered arguments into a
-    /// tuple and yield that.
-
-    /// TODO: It may be the case that no ranges are provided to the call operator,
-    /// in which case we produce a range with only a single element.
-
-
-};
-
-
-template <meta::not_void F> requires (meta::not_rvalue<F>)
-struct zip<F> {
-    F f;
-
-};
-
-
-template <>
-struct zip<> {
-    static constexpr impl::zip_tuple f;
-
-    /// TODO: calling the zip{} object with arguments will produce a
-    /// range<impl::zip<F, A...>>.
-
-};
-
-
-template <typename... Fs>
-zip(Fs&&...) -> zip<meta::remove_rvalue<Fs>...>;
+/////////////////////
+////    SPLIT    ////
+/////////////////////
 
 
 
@@ -5933,15 +6474,7 @@ static_assert(s[1] == 3);
 
 
 
-//////////////////////
-////    REPEAT    ////
-//////////////////////
 
-
-/// TODO: maybe a repeat{N} monad that repeats a range `N` times, by simply
-/// encapsulating a begin iterator and resetting it to the start after each iteration.
-/// That's the behavior when used on ranges, but when used on non-ranges, it will
-/// simply form a range out of them that effectively broadcasts.
 
 
 
