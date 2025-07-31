@@ -174,7 +174,7 @@ static_assert(
 
 
 namespace impl {
-    struct wrapper_tag {};
+    struct basic_tuple_tag {};
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
@@ -4529,9 +4529,6 @@ namespace meta {
     ////    CUSTOMIZATION POINTS    ////
     ////////////////////////////////////
 
-    template <typename T>
-    concept wrapper = inherits<T, impl::wrapper_tag>;
-
     namespace detail {
 
         /// NOTE: in all cases, cvref qualifiers will be stripped from the input
@@ -4631,58 +4628,235 @@ template <meta::hashable T>
 
 
 namespace impl {
+    
 
-    /* A simple wrapper for an arbitrarily-qualified type that strips rvalue
-    references - taking ownership over the referenced object - while preserving
-    lvalues - converting them into a copyable, assignable proxy. */
+    /* A helper for defining iterators and other objects that wish to expose the `->`
+    operator, but may dereference to a temporary result, which would otherwise
+    encounter lifetime issues.  Because the built-in `operator->` recursively invokes
+    itself on the return value, this proxy will guarantee that the address of the
+    temporary remains valid for the full duration of the `->` expression, and then be
+    released immediately afterwards. */
+    template <typename T>
+    struct arrow_proxy {
+        meta::remove_rvalue<T> value;
+        constexpr auto operator->() &&
+            noexcept (requires{{meta::to_arrow(value)} noexcept;})
+            requires (requires{{meta::to_arrow(value)};})
+        {
+            return meta::to_arrow(value);
+        }
+    };
+
+    template <typename T>
+    arrow_proxy(T&&) -> arrow_proxy<T>;
+
+    /* A simple wrapper for an arbitrarily-qualified type that strips rvalue references
+    (taking ownership over the referenced object) and preserves lvalues (converting
+    them into copyable, assignable, default-constructible proxies).  Dereferencing the
+    `ref` object will perfectly forward the value according to both its original cvref
+    qualifications as well as those of the `ref` object itself.  Containers can use
+    this as an elementwise storage type to allow storage of arbitrarily-qualified
+    types. */
     template <meta::not_void T>
-    struct store {
+    struct ref {
         using type = meta::remove_rvalue<T>;
-        [[no_unique_address]] type value;
+
+        [[no_unique_address]] type data;
+
         template <typename... A>
-        [[nodiscard]] constexpr store(A&&... args) 
+        [[nodiscard]] constexpr ref(A&&... args) 
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         :
-            value(std::forward<A>(args)...)
+            data(std::forward<A>(args)...)
         {};
-        constexpr void swap(store& other)
+
+        constexpr void swap(ref& other)
             noexcept (meta::nothrow::swappable<type>)
             requires (meta::swappable<type>)
         {
-            std::ranges::swap(value, other.value);
+            std::ranges::swap(data, other.data);
+        }
+
+        template <typename Self>
+        constexpr decltype(auto) operator*(this Self&& self) noexcept {
+            return (std::forward<Self>(self).data);
+        }
+
+        template <typename Self>
+        constexpr auto operator->(this Self&& self)
+            noexcept (requires{{arrow_proxy{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{arrow_proxy{*std::forward<Self>(self)}};})
+        {
+            return arrow_proxy{*std::forward<Self>(self)};
         }
     };
 
     /* Specialization of `ref` for lvalue references.  Assigning to an lvalue reference
-    will rebind the reference itself, without affecting the referenced object. */
+    will rebind the reference itself, without affecting the referenced object.  The
+    reference can also be default-constructed, placing it in a null state that can be
+    assigned to later. */
     template <meta::not_void T> requires (meta::lvalue<T>)
-    struct store<T> {
+    struct ref<T> {
         using type = T;
-        type value;
-        constexpr store& operator=(const store& other) noexcept {
-            std::construct_at(this, other.value);
+
+    private:
+        union maybe_null {
+            struct { type value; } wrapper;
+            constexpr maybe_null() noexcept {}
+            constexpr maybe_null(type v) noexcept : wrapper(v) {}
+            constexpr maybe_null(const maybe_null& other) noexcept :
+                wrapper(other.wrapper.value)
+            {}
+            constexpr maybe_null& operator=(const maybe_null& other) noexcept {
+                std::construct_at(this, other.wrapper.value);
+                return *this;
+            }
+            constexpr ~maybe_null() noexcept {}
+        };
+
+    public:
+        maybe_null data;
+
+        constexpr ref() noexcept : data{} {}
+        constexpr ref(type v) noexcept : data{v} {}
+        constexpr ref(const ref& other) noexcept : data{*other} {}
+
+        constexpr ref& operator=(const ref& other) noexcept {
+            data = other.data;
             return *this;
         }
-        constexpr void swap(store& other) noexcept {
-            store tmp{*this};
-            std::construct_at(this, other.value);
-            std::construct_at(&other, tmp.value);
+
+        constexpr ~ref() noexcept {}
+
+        constexpr void swap(ref& other) noexcept {
+            ref tmp{*this};
+            data = other.data;
+            other.data = tmp.data;
+        }
+
+        template <typename Self>
+        constexpr decltype(auto) operator*(this Self&& self) noexcept {
+            return (std::forward<Self>(self).data.wrapper.value);
+        }
+
+        template <typename Self>
+        constexpr auto operator->(this Self&& self)
+            noexcept (requires{{arrow_proxy{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{arrow_proxy{*std::forward<Self>(self)}};})
+        {
+            return arrow_proxy{*std::forward<Self>(self)};
         }
     };
 
     /* CTAD allows reference types to be inferred from an initializer. */
     template <typename T>
-    store(T&&) -> store<meta::remove_rvalue<T>>;
+    ref(T&&) -> ref<meta::remove_rvalue<T>>;
 
-    /* ADL swap() operator for `impl::store<T>`. */
+    /* ADL swap() operator for `impl::ref<T>`. */
     template <typename T>
-    constexpr void swap(store<T>& a, store<T>& b)
+    constexpr void swap(ref<T>& a, ref<T>& b)
         noexcept (requires{{a.swap(b)} noexcept;})
         requires (requires{{a.swap(b)};})
     {
         a.swap(b);
     }
+
+    /* A generic overload set implemented using recursive inheritance.  This allows the
+    overload set to accept functions by reference, as well as index into them as if
+    they were a tuple.  Calling the overload set will invoke the appropriate function
+    just like any other overloaded function call.
+
+    This class is also a convenient, minimal implementation of a raw tuple, which can
+    be used as a building block for more complex data structures that potentially
+    need to store multiple values of different types, some of which may be lvalues,
+    which should be stored by reference rather than by value. */
+    template <meta::not_rvalue...>
+    struct basic_tuple : impl::basic_tuple_tag {
+        [[nodiscard]] constexpr basic_tuple() noexcept {};
+        [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+        constexpr void swap(basic_tuple&) noexcept {}
+        template <size_t I, typename Self> requires (false)  // never actually called
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept;
+    };
+    template <meta::not_rvalue T, meta::not_rvalue... Ts>
+    struct basic_tuple<T, Ts...> : basic_tuple<Ts...> {
+        [[no_unique_address]] ref<T> data;
+
+        [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts) + 1; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return sizeof...(Ts) + 1; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
+
+        [[nodiscard]] constexpr basic_tuple() = default;
+        [[nodiscard]] constexpr basic_tuple(meta::forward<T> first, meta::forward<Ts>... rest)
+            noexcept (
+                meta::nothrow::convertible_to<meta::forward<T>, T> &&
+                meta::nothrow::constructible_from<basic_tuple<Ts...>, Ts...>
+            )
+            requires (
+                meta::convertible_to<meta::forward<T>, T> &&
+                meta::constructible_from<basic_tuple<Ts...>, Ts...>
+            )
+        :
+            basic_tuple<Ts...>(std::forward<Ts>(rest)...),
+            data(std::forward<T>(first))
+        {}
+
+        constexpr void swap(basic_tuple& other)
+            noexcept (
+                (meta::lvalue<T> || meta::nothrow::swappable<T>) &&
+                meta::nothrow::swappable<basic_tuple<Ts...>>
+            )
+            requires (
+                (meta::lvalue<T> || meta::swappable<T>) &&
+                meta::swappable<basic_tuple<Ts...>>
+            )
+        {
+            basic_tuple<Ts...>::swap(other);
+            data.swap(other.data);
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{
+                {(*std::forward<Self>(self).data)(std::forward<A>(args)...)} noexcept;
+            })
+            requires (requires{{(*std::forward<Self>(self).data)(std::forward<A>(args)...)};})
+        {
+            return ((*std::forward<Self>(self).data)(std::forward<A>(args)...));
+        }
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<meta::qualify<basic_tuple<Ts...>, Self>>(self)(
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (
+                !requires{{(*std::forward<Self>(self).data)(std::forward<A>(args)...)};} &&
+                requires{{std::forward<meta::qualify<basic_tuple<Ts...>, Self>>(self)(
+                    std::forward<A>(args)...
+                )};}
+            )
+        {
+            using base = meta::qualify<basic_tuple<Ts...>, Self>;
+            return (std::forward<base>(self)(std::forward<A>(args)...));
+        }
+
+        template <size_t I, typename Self> requires (I < size())
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            if constexpr (I == 0) {
+                return (*std::forward<Self>(self).data);
+            } else {
+                using base = meta::qualify<basic_tuple<Ts...>, Self>;
+                return (std::forward<base>(self).template get<I - 1>());
+            }
+        }
+    };
+
+    template <typename... Fs>
+    basic_tuple(Fs&&...) -> basic_tuple<meta::remove_rvalue<Fs>...>;
 
     /* A helper class that generates a manual vtable for a visitor function `F`, which
     must be a template class that accepts a single `size_t` parameter representing the
@@ -4774,41 +4948,6 @@ namespace impl {
         }
     };
 
-    /* A helper for defining iterators and other objects that wish to expose the `->`
-    operator, but dereference to a temporary value, whose address would otherwise not
-    be valid.  Because the built-in `operator->` recursively invokes itself on the
-    return value, this proxy will guarantee that the address of the temporary remains
-    valid for the full duration of the expression in which it is used. */
-    template <typename T>
-    struct arrow_proxy {
-        using type = meta::arrow_type<T>;
-        meta::remove_rvalue<T> value;
-        constexpr type operator->() &&
-            noexcept (requires{{std::to_address(value)} noexcept;})
-            requires (requires{{std::to_address(value)};})
-        {
-            return std::to_address(value);
-        }
-    };
-
-    /* A special case of `arrow_proxy` that represents a terminal case, where the
-    input is both not a pointer, and does not expose an arrow operator.  In this case,
-    we simply take the address of the value directly. */
-    template <meta::has_address T> requires (!meta::has_arrow<T>)
-    struct arrow_proxy<T> {
-        using type = meta::address_type<T>;
-        meta::remove_rvalue<T> value;
-        constexpr type operator->() &&
-            noexcept (requires{{std::addressof(value)} noexcept;})
-            requires (requires{{std::addressof(value)};})
-        {
-            return std::addressof(value);
-        }
-    };
-
-    template <typename T>
-    arrow_proxy(T&&) -> arrow_proxy<T>;
-
     /* A trivial iterator that acts just like a raw pointer over contiguous storage.
     Using a wrapper rather than the pointer directly comes with some advantages
     regarding type safety, preventing accidental conversions to pointer arguments,
@@ -4899,109 +5038,6 @@ namespace impl {
             return ptr <=> other.ptr;
         }
     };
-
-    /* A generic overload set implemented using recursive inheritance.  This allows the
-    overload set to accept functions by reference, as well as index into them as if
-    they were a tuple.  Calling the overload set will invoke the appropriate function
-    just like any other overloaded function call.
-
-    This class is also a convenient, minimal implementation of a raw tuple, which can
-    be used as a building block for more complex data structures that potentially
-    need to store multiple values of different types, some of which may be lvalues,
-    which should be stored by reference rather than by value. */
-    template <meta::not_rvalue...>
-    struct overloads {
-        [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
-        [[nodiscard]] static constexpr bool empty() noexcept { return true; }
-        constexpr void swap(overloads&) noexcept {}
-        template <size_t I, typename Self> requires (false)  // never actually called
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept;
-    };
-    template <meta::not_rvalue T, meta::not_rvalue... Ts>
-    struct overloads<T, Ts...> : overloads<Ts...> {
-        [[no_unique_address]] store<T> data;
-
-        [[nodiscard]] static constexpr size_t size() noexcept { return sizeof...(Ts) + 1; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return sizeof...(Ts) + 1; }
-        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-
-        [[nodiscard]] constexpr overloads() = default;
-        [[nodiscard]] constexpr overloads(meta::forward<T> val, meta::forward<Ts>... rest)
-            noexcept (
-                meta::nothrow::convertible_to<meta::forward<T>, T> &&
-                meta::nothrow::constructible_from<overloads<Ts...>, Ts...>
-            )
-            requires (
-                meta::convertible_to<meta::forward<T>, T> &&
-                meta::constructible_from<overloads<Ts...>, Ts...>
-            )
-        :
-            overloads<Ts...>(std::forward<Ts>(rest)...),
-            data(std::forward<T>(val))
-        {}
-
-        constexpr void swap(overloads& other)
-            noexcept (
-                (meta::lvalue<T> || meta::nothrow::swappable<T>) &&
-                meta::nothrow::swappable<overloads<Ts...>>
-            )
-            requires ((meta::lvalue<T> || meta::swappable<T>) && meta::swappable<overloads<Ts...>>)
-        {
-            overloads<Ts...>::swap(other);
-            if constexpr (meta::lvalue<T>) {
-                store<T> tmp = data;
-                std::construct_at(&data, other.data);
-                std::construct_at(&other.data, tmp);
-            } else {
-                std::ranges::swap(data.value, other.data.value);
-            }
-        }
-
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{
-                {std::forward<Self>(self).data.value(std::forward<A>(args)...)} noexcept;
-            })
-            requires (
-                requires{{std::forward<Self>(self).data.value(std::forward<A>(args)...)};} &&
-                !requires{{std::forward<meta::qualify<overloads<Ts...>, Self>>(self)(
-                    std::forward<A>(args)...
-                )};}
-            )
-        {
-            return (std::forward<Self>(self).data.value(std::forward<A>(args)...));
-        }
-
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{{std::forward<meta::qualify<overloads<Ts...>, Self>>(self)(
-                std::forward<A>(args)...
-            )} noexcept;})
-            requires (
-                !requires{{std::forward<Self>(self).data.value(std::forward<A>(args)...)};} &&
-                requires{{std::forward<meta::qualify<overloads<Ts...>, Self>>(self)(
-                    std::forward<A>(args)...
-                )};}
-            )
-        {
-            using base = meta::qualify<overloads<Ts...>, Self>;
-            return (std::forward<base>(self)(std::forward<A>(args)...));
-        }
-
-        template <size_t I, typename Self> requires (I < size())
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            if constexpr (I == 0) {
-                return (std::forward<Self>(self).data.value);
-            } else {
-                using base = meta::qualify<overloads<Ts...>, Self>;
-                return (std::forward<base>(self).template get<I - 1>());
-            }
-        }
-    };
-
-    template <typename... Fs>
-    overloads(Fs&&...) -> overloads<meta::remove_rvalue<Fs>...>;
 
     /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
     algorithm, which is stable at both compile time and runtime. */
@@ -5698,6 +5734,9 @@ namespace impl {
 
 namespace meta {
 
+    template <typename T>
+    concept basic_tuple = inherits<T, impl::basic_tuple_tag>;
+
     namespace detail {
 
         template <typename T>
@@ -5772,19 +5811,31 @@ constexpr auto demangle() noexcept(noexcept(impl::type_name_impl<T>())) {
 
 namespace std {
 
-    template <bertrand::meta::is<bertrand::NoneType> T>
+    template <bertrand::meta::None T>
     struct hash<T> {
         [[nodiscard]] static constexpr size_t operator()(const T& value) noexcept {
             return std::bit_cast<size_t>(&bertrand::None);
         }
     };
 
-    template <bertrand::meta::is<bertrand::NoneType> T, typename Char>
+    template <bertrand::meta::None T, typename Char>
     struct formatter<T, Char> : public formatter<std::basic_string_view<Char>, Char> {
         constexpr auto format(const T&, auto& ctx) const {
             using str = std::basic_string_view<Char>;
             return formatter<str, Char>::format(str{"None"}, ctx);
         }
+    };
+
+    template <bertrand::meta::basic_tuple T>
+    struct tuple_size<T> {
+        static constexpr size_t value = bertrand::meta::unqualify<T>::size();
+    };
+
+    template <size_t I, bertrand::meta::basic_tuple T>
+    struct tuple_element<I, T> {
+        using type = bertrand::meta::remove_rvalue<
+            decltype((std::declval<T>().template get<I>()))
+        >;
     };
 
 }

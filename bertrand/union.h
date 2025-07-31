@@ -1214,7 +1214,7 @@ namespace impl {
         union _type { constexpr ~_type() noexcept {}; };
         template <typename U, typename... Us>
         union _type<U, Us...> {
-            [[no_unique_address]] impl::store<U> curr;
+            [[no_unique_address]] impl::ref<U> curr;
             [[no_unique_address]] _type<Us...> rest;
 
             constexpr _type() noexcept {}
@@ -1239,7 +1239,7 @@ namespace impl {
             template <size_t I, typename Self>
             constexpr decltype(auto) get(this Self&& self) noexcept {
                 if constexpr (I == 0) {
-                    return (std::forward<Self>(self).curr.value);
+                    return (*std::forward<Self>(self).curr);
                 } else {
                     return (std::forward<Self>(self).rest.template get<I - 1>());
                 }
