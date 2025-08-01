@@ -130,7 +130,7 @@ namespace bertrand {
 
 
 namespace impl {
-    struct union_storage_tag {};
+    struct basic_union_tag {};
     struct union_tag {};
     struct optional_tag {};
     struct expected_tag {};
@@ -221,7 +221,7 @@ namespace meta {
     concept visit_monad = impl::visitable<T>::monad;
 
     template <typename T>
-    concept union_storage = inherits<T, impl::union_storage_tag>;
+    concept basic_union = inherits<T, impl::basic_union_tag>;
 
     template <typename T>
     concept Union = inherits<T, impl::union_tag>;
@@ -903,9 +903,9 @@ namespace impl {
     }
 
     template <typename T, typename = std::make_index_sequence<meta::unqualify<T>::types::size()>>
-    struct union_storage_types;
+    struct basic_union_types;
     template <typename T, size_t... Is>
-    struct union_storage_types<T, std::index_sequence<Is...>> {
+    struct basic_union_types<T, std::index_sequence<Is...>> {
         using type = meta::pack<decltype((std::declval<T>().template get<Is>()))...>;
     };
 
@@ -924,7 +924,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
-        using alternatives = union_storage_types<decltype((std::declval<T>().__value))>::type;
+        using alternatives = basic_union_types<decltype((std::declval<T>().__value))>::type;
         using value = void;
         using empty = void;
         using errors = meta::pack<>;
@@ -1027,7 +1027,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
-        using alternatives = union_storage_types<decltype((std::declval<T>().__value))>::type;
+        using alternatives = basic_union_types<decltype((std::declval<T>().__value))>::type;
         using value = decltype((*std::declval<T>()));
         using empty = void;
         using errors = expected_errors<T>::type;
@@ -1201,7 +1201,7 @@ namespace impl {
     dramatically reduce the amount of bookkeeping necessary to safely work with raw C
     unions. */
     template <meta::not_void... Ts> requires ((sizeof...(Ts) > 1) && ... && !meta::rvalue<Ts>)
-    struct union_storage : union_storage_tag {
+    struct basic_union : basic_union_tag {
         using indices = std::index_sequence_for<Ts...>;
         using types = meta::pack<Ts...>;
         using default_type = impl::union_default_type<Ts...>;
@@ -1301,7 +1301,7 @@ namespace impl {
 
         /* Default constructor selects the first default-constructible type in `Ts...`,
         and initializes the union to that type. */
-        [[nodiscard]] constexpr union_storage()
+        [[nodiscard]] constexpr basic_union()
             noexcept (meta::nothrow::default_constructible<default_type>)
             requires (meta::not_void<default_type>)
         :
@@ -1312,7 +1312,7 @@ namespace impl {
         /* Tagged constructor specifically initializes the alternative at index `I`
         with the given arguments. */
         template <size_t I, typename... A>
-        [[nodiscard]] constexpr union_storage(tag<I> t, A&&... args)
+        [[nodiscard]] constexpr basic_union(tag<I> t, A&&... args)
             noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
             requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         :
@@ -1422,7 +1422,7 @@ namespace impl {
             )
         )) && ...);
 
-        [[gnu::always_inline]] static constexpr type trivial_copy(const union_storage& other)
+        [[gnu::always_inline]] static constexpr type trivial_copy(const basic_union& other)
             noexcept
             requires (trivially_copyable)
         {
@@ -1433,7 +1433,7 @@ namespace impl {
 
         template <size_t I>
         struct copy {
-            static constexpr type operator()(const union_storage& other)
+            static constexpr type operator()(const basic_union& other)
                 noexcept (nothrow_copyable)
             {
                 return {tag<I>{}, other.m_data.template get<I>()};
@@ -1442,7 +1442,7 @@ namespace impl {
 
         template <size_t I>
         struct move {
-            static constexpr type operator()(union_storage&& other)
+            static constexpr type operator()(basic_union&& other)
                 noexcept (nothrow_movable)
             {
                 return {tag<I>{}, std::move(other).m_data.template get<I>()};
@@ -1451,7 +1451,7 @@ namespace impl {
 
         template <size_t I>
         struct destroy {
-            static constexpr void operator()(union_storage& self)
+            static constexpr void operator()(basic_union& self)
                 noexcept (nothrow_destructible)
             {
                 self.m_data.template destroy<I>();
@@ -1460,7 +1460,7 @@ namespace impl {
 
         template <size_t I>
         struct _swap {
-            static constexpr void operator()(union_storage& self, union_storage& other)
+            static constexpr void operator()(basic_union& self, basic_union& other)
                 noexcept (nothrow_swappable)
             {
                 static constexpr size_t J = I / sizeof...(Ts);
@@ -1522,7 +1522,7 @@ namespace impl {
             }
         };
 
-        static constexpr type dispatch_copy(const union_storage& other)
+        static constexpr type dispatch_copy(const basic_union& other)
             noexcept (nothrow_copyable)
             requires (copyable)
         {
@@ -1537,7 +1537,7 @@ namespace impl {
             }
         }
 
-        static constexpr type dispatch_move(union_storage&& other)
+        static constexpr type dispatch_move(basic_union&& other)
             noexcept (nothrow_movable)
             requires (movable)
         {
@@ -1552,7 +1552,7 @@ namespace impl {
             }
         }
 
-        static constexpr void dispatch_destroy(union_storage& self)
+        static constexpr void dispatch_destroy(basic_union& self)
             noexcept (nothrow_destructible)
             requires (destructible)
         {
@@ -1561,7 +1561,7 @@ namespace impl {
             }
         }
 
-        static constexpr void dispatch_swap(union_storage& lhs, union_storage& rhs)
+        static constexpr void dispatch_swap(basic_union& lhs, basic_union& rhs)
             noexcept (nothrow_swappable)
             requires (swappable)
         {
@@ -1572,9 +1572,9 @@ namespace impl {
                 ](lhs, rhs);
             } else {
                 if constexpr (trivially_copyable) {
-                    union_storage temp = lhs;
-                    std::memcpy(&lhs, &rhs, sizeof(union_storage));
-                    std::memcpy(&rhs, &temp, sizeof(union_storage));
+                    basic_union temp = lhs;
+                    std::memcpy(&lhs, &rhs, sizeof(basic_union));
+                    std::memcpy(&rhs, &temp, sizeof(basic_union));
                 } else {
                     return impl::vtable<_swap>{}[
                         std::make_index_sequence<sizeof...(Ts) * sizeof...(Ts)>{},
@@ -1585,7 +1585,7 @@ namespace impl {
         }
 
     public:
-        [[nodiscard]] constexpr union_storage(const union_storage& other)
+        [[nodiscard]] constexpr basic_union(const basic_union& other)
             noexcept (nothrow_copyable)
             requires (copyable)
         :
@@ -1593,7 +1593,7 @@ namespace impl {
             m_index(other.m_index)
         {}
 
-        [[nodiscard]] constexpr union_storage(union_storage&& other)
+        [[nodiscard]] constexpr basic_union(basic_union&& other)
             noexcept (nothrow_movable)
             requires (movable)
         :
@@ -1601,29 +1601,29 @@ namespace impl {
             m_index(other.m_index)
         {}
 
-        constexpr union_storage& operator=(const union_storage& other)
+        constexpr basic_union& operator=(const basic_union& other)
             noexcept (nothrow_copyable && nothrow_swappable)
             requires (copyable && swappable)
         {
             if (this != &other) {
-                union_storage temp(other);
+                basic_union temp(other);
                 dispatch_swap(*this, temp);
             }
             return *this;
         }
 
-        constexpr union_storage& operator=(union_storage&& other)
+        constexpr basic_union& operator=(basic_union&& other)
             noexcept (nothrow_movable && nothrow_swappable)
             requires (movable && swappable)
         {
             if (this != &other) {
-                union_storage temp(std::move(other));
+                basic_union temp(std::move(other));
                 dispatch_swap(*this, temp);
             }
             return *this;
         }
 
-        constexpr ~union_storage()
+        constexpr ~basic_union()
             noexcept (nothrow_destructible)
             requires (destructible)
         {
@@ -1631,7 +1631,7 @@ namespace impl {
             dispatch_destroy(*this);
         }
 
-        constexpr void swap(union_storage& other)
+        constexpr void swap(basic_union& other)
             noexcept (nothrow_swappable)
             requires (swappable)
         {
@@ -1701,7 +1701,7 @@ namespace impl {
     {};
 
     /* A simple visitor that backs the implicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::union_storage` primitive type. */
+    object, returning a corresponding `impl::basic_union` primitive type. */
     template <typename, typename...>
     struct union_convert_from {};
     template <typename... Ts, typename in> requires (!meta::visit_monad<in>)
@@ -1709,7 +1709,7 @@ namespace impl {
         template <typename from>
         using type = _union_convert_from<from, void, void, Ts...>::type;
         template <typename from>
-        static constexpr impl::union_storage<meta::remove_rvalue<Ts>...> operator()(from&& arg)
+        static constexpr impl::basic_union<meta::remove_rvalue<Ts>...> operator()(from&& arg)
             noexcept (meta::nothrow::convertible_to<from, type<from>>)
             requires (meta::not_void<type<from>>)
         {
@@ -1721,7 +1721,7 @@ namespace impl {
     };
 
     /* A simple visitor that backs the explicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::union_storage` primitive type.  Note that
+    object, returning a corresponding `impl::basic_union` primitive type.  Note that
     this only applies if `union_convert_from` would be invalid. */
     template <typename... A>
     struct _union_construct_from {
@@ -1737,7 +1737,7 @@ namespace impl {
         template <typename... A>
         using type = _union_construct_from<A...>::template select<Ts...>::type;
         template <typename... A>
-        static constexpr impl::union_storage<meta::remove_rvalue<Ts>...> operator()(A&&... args)
+        static constexpr impl::basic_union<meta::remove_rvalue<Ts>...> operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type<A...>, A...>)
             requires (meta::not_void<type<A...>>)
         {
@@ -1868,7 +1868,7 @@ namespace impl {
         using arrow_type = impl::arrow_proxy<reference>;
         using pointer = arrow_type::type;
 
-        union_storage<Ts...> __value;
+        basic_union<Ts...> __value;
 
     private:
         using indices = std::index_sequence_for<Ts...>;
@@ -3090,15 +3090,15 @@ template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts..
 struct Union : impl::union_tag {
     using types = meta::pack<Ts...>;
 
-    impl::union_storage<meta::remove_rvalue<Ts>...> __value;
+    impl::basic_union<meta::remove_rvalue<Ts>...> __value;
 
     /* Default constructor finds the first type in `Ts...` that can be default
     constructed.  If no such type exists, then the default constructor is disabled. */
     [[nodiscard]] constexpr Union()
         noexcept (meta::nothrow::default_constructible<
-            impl::union_storage<meta::remove_rvalue<Ts>...>
+            impl::basic_union<meta::remove_rvalue<Ts>...>
         >)
-        requires (impl::union_storage<meta::remove_rvalue<Ts>...>::default_constructible)
+        requires (impl::basic_union<meta::remove_rvalue<Ts>...>::default_constructible)
     :
         __value()
     {}
@@ -3415,11 +3415,11 @@ namespace impl {
         return TypeError(msg);
     }
 
-    /* A special case of `union_storage` for optional references, which encode the
+    /* A special case of `basic_union` for optional references, which encode the
     reference as a raw pointer, with null representing the empty state.  This removes
     the need for an additional tracking index. */
     template <meta::None empty, meta::lvalue ref> requires (meta::has_address<ref>)
-    struct union_storage<empty, ref> {
+    struct basic_union<empty, ref> {
         using indices = std::index_sequence_for<empty, ref>;
         using types = meta::pack<empty, ref>;
         using default_type = empty;
@@ -3431,11 +3431,11 @@ namespace impl {
         [[no_unique_address]] ptr m_data;
 
         /* Default constructor always initializes to the empty state. */
-        [[nodiscard]] constexpr union_storage(tag<0> = tag<0>{}) noexcept : m_data(nullptr) {};
+        [[nodiscard]] constexpr basic_union(tag<0> = tag<0>{}) noexcept : m_data(nullptr) {};
 
         /* Tagged constructor specifically initializes the alternative at index `I`
         with the given arguments. */
-        [[nodiscard]] explicit constexpr union_storage(tag<1>, ref r)
+        [[nodiscard]] explicit constexpr basic_union(tag<1>, ref r)
             noexcept (meta::nothrow::has_address<ref>)
         :
             m_data(std::addressof(r))
@@ -3443,10 +3443,10 @@ namespace impl {
 
         /* Special constructor that takes a pointer directly, enabling direct
         conversions. */
-        [[nodiscard]] explicit constexpr union_storage(ptr p) noexcept : m_data(p) {}
+        [[nodiscard]] explicit constexpr basic_union(ptr p) noexcept : m_data(p) {}
 
         /* Swap the contents of two unions as efficiently as possible. */
-        constexpr void swap(union_storage& other) noexcept {
+        constexpr void swap(basic_union& other) noexcept {
             std::swap(m_data, other.m_data);
         }
 
@@ -3466,14 +3466,14 @@ namespace impl {
     };
 
     /* A simple visitor that backs the implicit constructor for an `Optional<T>`
-    object, returning a corresponding `impl::union_storage` primitive type. */
+    object, returning a corresponding `impl::basic_union` primitive type. */
     template <typename T, typename...>
     struct optional_convert_from {};
     template <typename T, typename in> requires (!meta::visit_monad<in>)
     struct optional_convert_from<T, in> {
         using type = meta::remove_rvalue<T>;
         using empty = impl::visitable<in>::empty;
-        using result = impl::union_storage<NoneType, type>;
+        using result = impl::basic_union<NoneType, type>;
 
         // 1) prefer direct conversion to `T` if possible
         template <typename alt>
@@ -3486,10 +3486,10 @@ namespace impl {
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
         // `impl::visitable` specification, or is given as a none sentinel, then we
-        // return it as an empty `union_storage` object. 
+        // return it as an empty `basic_union` object. 
         template <typename alt>
         static constexpr result operator()(alt&&)
-            noexcept (meta::nothrow::default_constructible<impl::union_storage<NoneType, type>>)
+            noexcept (meta::nothrow::default_constructible<impl::basic_union<NoneType, type>>)
             requires (
                 !meta::convertible_to<alt, type> &&
                 (meta::is<alt, empty> || meta::None<alt> || meta::is<alt, std::nullopt_t>)
@@ -3499,7 +3499,7 @@ namespace impl {
         }
 
         // 3) if `out` is an lvalue, then an extra conversion is enabled from raw
-        // pointers, where nullptr gets translated into an empty `union_storage`
+        // pointers, where nullptr gets translated into an empty `basic_union`
         // object, exploiting the pointer optimization.
         template <typename alt>
         static constexpr result operator()(alt&& p)
@@ -3517,13 +3517,13 @@ namespace impl {
     };
 
     /* A simple visitor that backs the explicit constructor for an `Optional<T>`
-    object, returning a corresponding `impl::union_storage` primitive type.  Note that
+    object, returning a corresponding `impl::basic_union` primitive type.  Note that
     this only applies if `optional_convert_from` is invalid. */
     template <typename T>
     struct optional_construct_from {
         using type = meta::remove_rvalue<T>;
         template <typename... A>
-        static constexpr impl::union_storage<NoneType, type> operator()(A&&... args)
+        static constexpr impl::basic_union<NoneType, type> operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
@@ -4185,7 +4185,7 @@ template <meta::not_void T> requires (!meta::None<T>)
 struct Optional : impl::optional_tag {
     using types = meta::pack<T>;
 
-    impl::union_storage<NoneType, meta::remove_rvalue<T>> __value;
+    impl::basic_union<NoneType, meta::remove_rvalue<T>> __value;
 
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
@@ -4633,13 +4633,13 @@ namespace impl {
     {};
 
     /* A simple visitor that backs the implicit constructor for an `Expected<T, Es...>`
-    object, returning a corresponding `impl::union_storage` primitive type. */
+    object, returning a corresponding `impl::basic_union` primitive type. */
     template <typename, typename...>
     struct expected_convert_from {};
     template <typename T, typename... Es, typename in> requires (!meta::visit_monad<in>)
     struct expected_convert_from<meta::pack<T, Es...>, in> {
         using type = meta::remove_rvalue<expected_value<T>>;
-        using result = impl::union_storage<type, meta::remove_rvalue<Es>...>;
+        using result = impl::basic_union<type, meta::remove_rvalue<Es>...>;
 
         // 1) prefer direct conversion to `out` if possible
         template <typename from>
@@ -4668,12 +4668,12 @@ namespace impl {
     };
 
     /* A simple visitor that backs the explicit constructor for an `Expected<T, Es...>`
-    object, returning a corresponding `impl::union_storage` primitive type.  Note that
+    object, returning a corresponding `impl::basic_union` primitive type.  Note that
     this only applies if `expected_convert_from` is invalid. */
     template <typename T, typename... Es>
     struct expected_construct_from {
         using type = meta::remove_rvalue<expected_value<T>>;
-        using result = impl::union_storage<type, meta::remove_rvalue<Es>...>;
+        using result = impl::basic_union<type, meta::remove_rvalue<Es>...>;
 
         template <typename... A>
         static constexpr result operator()(A&&... args)
@@ -4851,7 +4851,7 @@ template <typename T, meta::not_void E, meta::not_void... Es> requires (meta::un
 struct Expected : impl::expected_tag {
     using types = meta::pack<impl::expected_value<T>, E, Es...>;
 
-    impl::union_storage<
+    impl::basic_union<
         meta::remove_rvalue<impl::expected_value<T>>,
         meta::remove_rvalue<E>,
         meta::remove_rvalue<Es>...
@@ -5888,8 +5888,8 @@ namespace std {
     };
 
     template <typename... Ts>
-    struct variant_size<bertrand::impl::union_storage<Ts...>> :
-        std::integral_constant<size_t, bertrand::impl::union_storage<Ts...>::types::size()>
+    struct variant_size<bertrand::impl::basic_union<Ts...>> :
+        std::integral_constant<size_t, bertrand::impl::basic_union<Ts...>::types::size()>
     {};
 
     template <typename... Ts>
@@ -5908,9 +5908,9 @@ namespace std {
     {};
 
     template <size_t I, typename... Ts>
-        requires (I < variant_size<bertrand::impl::union_storage<Ts...>>::value)
-    struct variant_alternative<I, bertrand::impl::union_storage<Ts...>> {
-        using type = bertrand::impl::union_storage<Ts...>::types::template at<I>;
+        requires (I < variant_size<bertrand::impl::basic_union<Ts...>>::value)
+    struct variant_alternative<I, bertrand::impl::basic_union<Ts...>> {
+        using type = bertrand::impl::basic_union<Ts...>::types::template at<I>;
     };
 
     template <size_t I, typename... Ts> requires (I < variant_size<bertrand::Union<Ts...>>::value)
@@ -5929,9 +5929,9 @@ namespace std {
         using type = bertrand::Expected<T, Es...>::types::template at<I>;
     };
 
-    /* Unchecked `std::get<I>()` support for `bertrand::impl::union_storage`
+    /* Unchecked `std::get<I>()` support for `bertrand::impl::basic_union`
     objects. */
-    template <size_t I, bertrand::meta::union_storage U>
+    template <size_t I, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get(U&& u)
         noexcept (requires{{std::forward<U>(u).template get<I>()} noexcept;})
         requires (requires{{std::forward<U>(u).template get<I>()};})
@@ -5939,9 +5939,9 @@ namespace std {
         return (std::forward<U>(u).template get<I>());
     }
 
-    /* Unchecked `std::get<I>()` support for `bertrand::impl::union_storage`
+    /* Unchecked `std::get<I>()` support for `bertrand::impl::basic_union`
     objects. */
-    template <typename T, bertrand::meta::union_storage U>
+    template <typename T, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get(U&& u)
         noexcept (requires{{std::forward<U>(u).template get<T>()} noexcept;})
         requires (requires{{std::forward<U>(u).template get<T>()};})
@@ -5949,8 +5949,8 @@ namespace std {
         return (std::forward<U>(u).template get<T>());
     }
 
-    /* `std::get_if<I>()` support for `bertrand::impl::union_storage` objects. */
-    template <size_t I, bertrand::meta::union_storage U>
+    /* `std::get_if<I>()` support for `bertrand::impl::basic_union` objects. */
+    template <size_t I, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
         noexcept (requires{{std::forward<U>(u).template get_if<I>()} noexcept;})
         requires (requires{{std::forward<U>(u).template get_if<I>()};})
@@ -5958,8 +5958,8 @@ namespace std {
         return (std::forward<U>(u).template get_if<I>());
     }
 
-    /* `std::get_if<I>()` support for `bertrand::impl::union_storage` objects. */
-    template <typename T, bertrand::meta::union_storage U>
+    /* `std::get_if<I>()` support for `bertrand::impl::basic_union` objects. */
+    template <typename T, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
         noexcept (requires{{std::forward<U>(u).template get_if<T>()} noexcept;})
         requires (requires{{std::forward<U>(u).template get_if<T>()};})

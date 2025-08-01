@@ -3214,6 +3214,10 @@ constexpr void swap(sequence<T>& lhs, sequence<T>& rhs)
 /// TODO: swap() operators for all ranges and all public range adaptors.
 
 
+/// TODO: if the adapted container for reverse() is a sequence, then I may need to
+/// emit has_size() and a size() method that can possibly throw.
+
+
 namespace impl {
 
     /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
@@ -3467,14 +3471,53 @@ public:
 
 namespace impl {
 
+    /* Arguments to a zip function will be yielded elementwise if they come from
+    ranges, or broadcasted as lvalues otherwise. */
+    template <meta::lvalue T>
+    struct _zip_arg { using type = meta::as_lvalue<T>; };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct _zip_arg<T> { using type = meta::yield_type<T>; };
+    template <meta::lvalue T>
+    using zip_arg = _zip_arg<T>::type;
+
+    template <typename F, typename... A>
+    concept zip_concept =
+        (meta::not_void<F> && ... && meta::not_void<A>) &&
+        (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
+        (meta::range<A> || ...) &&
+        meta::callable<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>;
+
     template <typename C, size_t I>
     concept zip_broadcast =
         !meta::range<typename meta::unqualify<C>::argument_types::template at<I>>;
 
     template <typename C, size_t I>
     concept zip_unpack =
-        meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>>;
+        meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>> &&
+        meta::tuple_like<meta::yield_type<
+            typename meta::unqualify<C>::argument_types::template at<I>
+        >>;
 
+    template <typename C, size_t I> requires (zip_unpack<C, I>)
+    using zip_unpack_types = meta::tuple_types<meta::yield_type<
+        typename meta::unqualify<C>::argument_types::template at<I>
+    >>;
+
+    /* An index sequence records the positions of the incoming ranges. */
+    template <typename out, size_t, typename...>
+    struct _zip_indices { using type = out; };
+    template <size_t... Is, size_t I, typename T, typename... Ts>
+    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _zip_indices<std::index_sequence<Is...>, I + 1, Ts...>
+    {};
+    template <size_t... Is, size_t I, meta::range T, typename... Ts>
+    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _zip_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
+    {};
+    template <meta::not_rvalue... A>
+    using zip_indices = _zip_indices<std::index_sequence<>, 0, A...>::type;
+
+    /* Zip iterators preserve as much of the iterator interface as possible. */
     template <typename, meta::not_rvalue... Iters>
     struct zip_category { using type = std::random_access_iterator_tag; };
     template <size_t... Is, meta::not_rvalue... Iters> requires (sizeof...(Is) > 0)
@@ -3484,6 +3527,8 @@ namespace impl {
         >;
     };
 
+    /* The difference type between zip iterators (if any) is the common type for all
+    constituent ranges. */
     template <typename, meta::not_rvalue... Iters>
     struct zip_difference { using type = std::ptrdiff_t; };
     template <size_t... Is, meta::not_rvalue... Iters> requires (sizeof...(Is) > 0)
@@ -3493,6 +3538,9 @@ namespace impl {
         >;
     };
 
+    /* Zip iterators dereference to the return type of the perfectly-forwarded
+    transformation function invoked with the broadcasted scalar references and the
+    dereference types of each of the constituent range iterators. */
     template <typename out, typename C, size_t I, typename...>
     struct _zip_call { static constexpr bool enable = false; };
     template <typename... out, typename C, size_t I>
@@ -3505,12 +3553,17 @@ namespace impl {
     };
     template <typename... out, typename C, size_t I, typename curr, typename... next>
     struct _zip_call<meta::pack<out...>, C, I, curr, next...> :
-        _zip_call<meta::pack<out..., curr>, C, I + 1, next...>
+        _zip_call<meta::pack<out..., meta::dereference_type<curr>>, C, I + 1, next...>
     {};
     template <typename... out, typename C, size_t I, typename curr, typename... next>
-        requires (!zip_broadcast<C, I>)
+        requires (zip_broadcast<C, I>)
     struct _zip_call<meta::pack<out...>, C, I, curr, next...> :
-        _zip_call<meta::pack<out..., meta::dereference_type<curr>>, C, I + 1, next...>
+        _zip_call<meta::pack<out..., curr>, C, I + 1, next...>
+    {};
+    template <typename out, typename C, size_t I, typename curr, typename... next>
+        requires (zip_unpack<C, I>)
+    struct _zip_call<out, C, I, curr, next...> :
+        _zip_call<meta::concat<out, zip_unpack_types<C, I>>, C, I + 1, next...>
     {};
     template <typename C, typename... Iters>
     using zip_call = _zip_call<meta::pack<>, C, 0, Iters...>;
@@ -4108,8 +4161,7 @@ namespace impl {
 
     template <typename>
     constexpr bool zip_reverse_iterable = false;
-    template <typename... A>
-        requires ((!meta::range<A> || meta::reverse_iterable<meta::as_lvalue<A>>) && ...)
+    template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
     constexpr bool zip_reverse_iterable<meta::pack<A...>> = true;
 
     template <meta::lvalue T>
@@ -4227,39 +4279,33 @@ namespace impl {
     template <typename Self>
     make_zip_reversed(Self& self) -> make_zip_reversed<Self&>;
 
-    /* Arguments to a zip function will be yielded elementwise if they come from
-    ranges, or broadcasted as lvalues otherwise. */
-    template <meta::lvalue T>
-    struct _zip_arg { using type = meta::as_lvalue<T>; };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct _zip_arg<T> { using type = meta::yield_type<T>; };
-    template <meta::lvalue T>
-    using zip_arg = _zip_arg<T>::type;
 
-    /* An index sequence records the positions of the incoming ranges. */
-    template <typename out, size_t, typename...>
-    struct _zip_indices { using type = out; };
-    template <size_t... Is, size_t I, typename T, typename... Ts>
-    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
-        _zip_indices<std::index_sequence<Is...>, I + 1, Ts...>
-    {};
-    template <size_t... Is, size_t I, meta::range T, typename... Ts>
-    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
-        _zip_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
-    {};
-    template <meta::not_rvalue... A>
-    using zip_indices = _zip_indices<std::index_sequence<>, 0, A...>::type;
+
+    /// TODO: actually what's better is if I just compute the size on demand rather
+    /// than storing it.  I should also be able to handle type-erased sequences, which
+    /// checks .has_size() first and otherwise skips the sequence in the size
+    /// calculation.  If the only sized candidates are sequences, then I would emit
+    /// has_size() and size() methods on the zip range.  Otherwise, if at least one of
+    /// the ranges is sized and not a sequence, then there is no need for has_size(),
+    /// and size() will never throw an exception.
+
+    template <size_t min, typename...>
+    static constexpr size_t _zip_tuple_size = min;
+    template <size_t min, typename T, typename... Ts>
+    static constexpr size_t _zip_tuple_size<min, T, Ts...> = _zip_tuple_size<min, Ts...>;
+    template <size_t min, meta::range T, typename... Ts>
+        requires (meta::tuple_like<T> && meta::tuple_size<T> < min)
+    static constexpr size_t _zip_tuple_size<min, T, Ts...> =
+        _zip_tuple_size<meta::tuple_size<T>, Ts...>;
+    template <typename... Ts>
+    static constexpr size_t zip_tuple_size =
+        _zip_tuple_size<std::numeric_limits<size_t>::max(), Ts...>;
 
     /* Zipped ranges store an arbitrary set of argument types as well as a function to
     apply over them.  The arguments are not required to be ranges, and will be
     broadcasted as lvalues over the length of the range.  If any of the arguments are
     ranges, then they will be iterated over like normal. */
-    template <meta::not_void F, meta::not_void... A>
-        requires (
-            (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
-            (meta::range<A> || ...) &&
-            meta::callable<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>
-        )
+    template <typename F, typename... A> requires (zip_concept<F, A...>)
     struct zip {
         using function_type = F;
         using argument_types = meta::pack<A...>;
@@ -4269,22 +4315,195 @@ namespace impl {
         using indices = std::make_index_sequence<sizeof...(A)>;
         using ranges = zip_indices<A...>;
 
-    private:
-        static constexpr bool has_size =
-            ((!meta::range<A> || (!meta::sequence<A> && meta::has_size<A>)) && ...);
-
-        size_type m_size = std::numeric_limits<size_type>::max();
         [[no_unique_addres]] impl::ref<F> m_func;
         [[no_unique_addres]] impl::basic_tuple<A...> m_args;
 
+        /* Perfectly forward the underlying transformation function. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) func(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_func);
+        }
+
+        /* Perfectly forward the I-th zipped argument. */
+        template <size_t I, typename Self> requires (I < sizeof...(A))
+        [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
+            return (std::forward<Self>(self).m_args.template get<I>());
+        }
+
+    private:
+        static constexpr bool sized = ((!meta::range<A> || meta::has_size<A>) && ...);
+        static constexpr bool tuple_like = ((!meta::range<A> || meta::tuple_like<A>) && ...);
+        static constexpr bool sequence_like = (meta::sequence<A> || ...);
+
         template <typename T>
-        constexpr void get_size(T&&) noexcept {}
-        template <meta::range T> requires (!meta::sequence<T>)
-        constexpr void get_size(T&& range) noexcept (meta::nothrow::size_returns<size_type, T>) {
-            if (size_type n = range.size(); n < m_size) {
-                m_size = n;
+        static constexpr bool has_size_impl(const T& value) noexcept {
+            if constexpr (meta::sequence<T>) {
+                return value.has_size();
+            } else {
+                return true;
             }
         }
+
+        template <size_t... Is> requires (sequence_like && sizeof...(Is) == ranges::size())
+        [[nodiscard]] constexpr bool _has_size(std::index_sequence<Is...>) const noexcept {
+            return (has_size_impl(arg<Is>()) && ...);
+        }
+
+
+        /// TODO: just use the size of the first index in the ranges{} sequence to
+        /// set the minimum size, and then fold over the rest of the ranges.  That
+        /// will be simpler and easier to maintain.
+
+        static constexpr size_type _size_impl(size_type min) noexcept { return min; }
+
+        /// TODO: special case for unbounded iotas, in order to simulate an enumerate{}
+        /// range.
+
+        template <meta::range T, typename... Ts>
+        static constexpr size_type _size_impl(size_type min, const T& curr, const Ts&... next)
+            noexcept (requires{{_size_impl(
+                std::min(size_type(curr.size()), min),
+                std::forward<Ts>(next)...
+            )} noexcept;})
+            requires (requires{{_size_impl(
+                std::min(size_type(curr.size()), min),
+                std::forward<Ts>(next)...
+            )};})
+        {
+            return _size_impl(
+                std::min(size_type(curr.size()), min),
+                std::forward<Ts>(next)...
+            );
+        }
+
+        /// TODO: centralize the IndexErrors between these types, and possibly share
+        /// them with sequence.size() as well.
+
+        template <meta::sequence T, typename... Ts>
+        static constexpr size_type _size_impl(size_type min, const T& curr, const Ts&... next)
+            noexcept (requires{{_size_impl(
+                std::min(size_type(curr.size()), min),
+                std::forward<Ts>(next)...
+            )} noexcept;})
+            requires (requires{{_size_impl(
+                std::min(size_type(curr.size()), min),
+                std::forward<Ts>(next)...
+            )};})
+        {
+            if (curr.has_size()) {
+                return _size_impl(
+                    std::min(size_type(curr.size()), min),
+                    std::forward<Ts>(next)...
+                );
+            } else {
+                throw IndexError();
+            }
+        }
+
+        template <meta::range T, typename... Ts> requires (meta::size_returns<size_type, T>)
+        static constexpr size_type size_impl(T&& curr, Ts&&... next)
+            noexcept (requires{{_size_impl(curr.size(), std::forward<Ts>(next)...)} noexcept;})
+            requires (requires{{_size_impl(curr.size(), std::forward<Ts>(next)...)};})
+        {
+            return _size_impl(curr.size(), std::forward<Ts>(next)...);
+        }
+
+        template <meta::sequence T, typename... Ts>
+        static constexpr size_type size_impl(T&& curr, Ts&&... next)
+            requires (requires{{_size_impl(curr.size(), std::forward<Ts>(next)...)};})
+        {
+            if (curr.has_size()) {
+                return _size_impl(curr.size(), std::forward<Ts>(next)...);
+            } else {
+                throw IndexError();
+            }
+        }
+
+        template <size_t... Is> requires (sizeof...(Is) == ranges::size())
+        constexpr size_type _size(std::index_sequence<Is...>) const
+            noexcept (requires{{size_impl(arg<Is>()...)} noexcept;})
+            requires (requires{{size_impl(arg<Is>()...)};})
+        {
+            return size_impl(arg<Is>()...);
+        }
+
+    public:
+        /* If any of the input ranges are `sequence` types, then it's possible that
+        `.size()` could throw a runtime error due to type erasure, which acts as a
+        SFINAE barrier with respect to the underlying container.  In order to handle
+        this, a zipped range consisting of one or more sequences will expose the same
+        `has_size()` accessor as the sequences themselves, and will return their
+        logical conjunction. */
+        [[nodiscard]] static constexpr bool has_size() noexcept requires (sized && !sequence_like) {
+            return true;
+        }
+
+        /* If any of the input ranges are `sequence` types, then it's possible that
+        `.size()` could throw a runtime error due to type erasure, which acts as a
+        SFINAE barrier with respect to the underlying container.  In order to handle
+        this, a zipped range consisting of one or more sequences will expose the same
+        `has_size()` accessor as the sequences themselves, and will return their
+        logical conjunction. */
+        [[nodiscard]] constexpr bool has_size() const noexcept requires (sized && sequence_like) {
+            return _has_size(ranges{});
+        }
+
+        /* The overall size of the zipped range as an unsigned integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs, in
+        which case it will return the minimum size of the constituent ranges.  If all
+        of the ranges are tuple-like, then the size will be computed statically at
+        compile time.  Otherwise, it will be computed using a fold over the input
+        ranges.
+        
+        Note that if all of the input ranges are `sequence` types (which may or may not
+        be sized), then this method may throw an `IndexError` if and only if
+        `sequence.has_size()` evaluates to `false` for any of the input ranges.  This
+        is a consequence of type erasure on the underlying container, and may be worked
+        around via the `has_size()` method.  If that method returns `true`, then this
+        method will never throw. */
+        [[nodiscard]] static constexpr size_type size() noexcept requires (tuple_like) {
+            return zip_tuple_size<A...>;
+        }
+
+        /* The overall size of the zipped range as an unsigned integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs, in
+        which case it will return the minimum size of the constituent ranges.  If all
+        of the ranges are tuple-like, then the size will be computed statically at
+        compile time.  Otherwise, it will be computed using a fold over the input
+        ranges.
+        
+        Note that if all of the input ranges are `sequence` types (which may or may not
+        be sized), then this method may throw an `IndexError` if and only if
+        `sequence.has_size()` evaluates to `false` for any of the input ranges.  This
+        is a consequence of type erasure on the underlying container, and may be worked
+        around via the `has_size()` method.  If that method returns `true`, then this
+        method will never throw. */
+        [[nodiscard]] constexpr size_type size() const
+            noexcept (requires{{_size(ranges{})} noexcept;})
+            requires (!tuple_like && sized)
+        {
+            return _size(ranges{});
+        }
+
+        /* The overall size of the zipped range as a signed integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs,
+        and the visitor function yields either scalar values or tuple-like ranges with
+        a consistent size. */
+        [[nodiscard]] constexpr index_type ssize() const noexcept requires (sized) {
+            return index_type(size());
+        }
+
+        /* True if the zipped range contains no elements.  False otherwise. */
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{begin() == end()} noexcept;})
+        {
+            return begin() == end();
+        }
+
+    private:
+
+        /// TODO: flattening an unpack operator will also need to occur in get<I>() and
+        /// operator[], as well as the iterator dereference and subscript operators.
 
         template <size_t I, typename T>
         [[nodiscard]] static constexpr decltype(auto) _get_impl(T&& value)
@@ -4304,14 +4523,14 @@ namespace impl {
 
         template <size_t I, typename Self, size_type... Is>
         [[nodiscard]] constexpr decltype(auto) _get(this Self&& self, std::index_sequence<Is...>)
-            noexcept (requires{{std::forward<Self>(self).func()(_get_impl<Is>(
+            noexcept (requires{{std::forward<Self>(self).func()(_get_impl<I>(
                 std::forward<Self>(self).template arg<Is>()
             )...)} noexcept;})
-            requires (requires{{std::forward<Self>(self).func()(_get_impl<Is>(
+            requires (requires{{std::forward<Self>(self).func()(_get_impl<I>(
                 std::forward<Self>(self).template arg<Is>()
             )...)};})
         {
-            return (std::forward<Self>(self).func()(_get_impl<Is>(
+            return (std::forward<Self>(self).func()(_get_impl<I>(
                 std::forward<Self>(self).template arg<Is>()
             )...));
         }
@@ -4350,63 +4569,6 @@ namespace impl {
         }
 
     public:
-        [[nodiscard]] constexpr zip(meta::forward<F> f, meta::forward<A>... r)
-            noexcept (requires{
-                {impl::ref<F>{std::forward<F>(f)}} noexcept;
-                {impl::basic_tuple<A...>{std::forward<A>(r)...}} noexcept;
-            } && (!has_size || requires{{(get_size(std::forward<A>(r)), ...)} noexcept;}))
-            requires (requires{
-                {impl::ref<F>{std::forward<F>(f)}};
-                {impl::basic_tuple<A...>{std::forward<A>(r)...}};
-            })
-        :
-            m_func(std::forward<F>(f)),
-            m_args(std::forward<A>(r)...)
-        {
-            if constexpr (has_size) {
-                (get_size(std::forward<A>(r)), ...);
-            }
-        }
-
-        /* Perfectly forward the underlying transformation function. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) func(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_func);
-        }
-
-        /* Perfectly forward the I-th stored argument. */
-        template <size_t I, typename Self> requires (I < sizeof...(A))
-        [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
-            return (std::forward<Self>(self).m_args.template get<I>());
-        }
-
-        /* The overall size of the zipped range as an unsigned integer.  This is only
-        enabled if all of the arguments are either sized ranges or non-range inputs,
-        and the visitor function yields either scalar values or tuple-like ranges with
-        a consistent size. */
-        [[nodiscard]] constexpr size_type size() const noexcept requires (has_size) {
-            return m_size;
-        }
-
-        /* The overall size of the zipped range as a signed integer.  This is only
-        enabled if all of the arguments are either sized ranges or non-range inputs,
-        and the visitor function yields either scalar values or tuple-like ranges with
-        a consistent size. */
-        [[nodiscard]] constexpr index_type ssize() const noexcept requires (has_size) {
-            return index_type(m_size);
-        }
-
-        /* True if the zipped range contains no elements.  False otherwise. */
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (has_size || requires{{begin() == end()} noexcept;})
-        {
-            if constexpr (has_size) {
-                return m_size == 0;
-            } else {
-                return begin() == end();
-            }
-        }
-
         /* Access the `I`-th element of a tuple-like, zipped range, passing the
         unpacked arguments into the transformation function.  Non-range arguments will
         be forwarded according to the current cvref qualifications of the `zip` range,
@@ -4442,7 +4604,7 @@ namespace impl {
         /* Get a forward iterator over the zipped range. */
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{{make_zip_iterator{*this}.begin()} noexcept;})
-            // requires (requires{{make_zip_iterator{*this}.begin()};})
+            requires (requires{{make_zip_iterator{*this}.begin()};})
         {
             return make_zip_iterator{*this}.begin();
         }
@@ -4504,8 +4666,9 @@ namespace impl {
         }
     };
 
-    /* If no visitor function is provided, then `zip{}` will default to returning each
-    value as a `Tuple`, similar to `std::views::zip` or `zip()` in Python. */
+    /* If no transformation function is provided, then `zip{}` will default to
+    returning each value as a `Tuple`, similar to `std::views::zip()` or `zip()` in
+    Python. */
     struct zip_tuple {
         template <typename... A> requires (!meta::range<A> && ...)
         [[nodiscard]] constexpr auto operator()(A&&... args)
@@ -4519,8 +4682,7 @@ namespace impl {
 }
 
 
-
-template <typename F = void> requires (meta::not_rvalue<F>)
+template <meta::not_rvalue F = void>
 struct zip {
 private:
     template <typename... A>
@@ -4532,21 +4694,20 @@ private:
 public:
     [[no_unique_addres]] F f;
 
-    template <typename Self, typename... A>
-        requires (meta::callable<meta::as_lvalue<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
+    template <typename Self, typename... A> requires (impl::zip_concept<F, A...>)
     [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
         noexcept (requires{{range<A...>{container<A...>{
-            std::forward<Self>(self).f,
-            std::forward<A>(a)...
+            .m_func = std::forward<Self>(self).f,
+            .m_args = {std::forward<A>(a)...}
         }}} noexcept;})
         requires (requires{{range<A...>{container<A...>{
-            std::forward<Self>(self).f,
-            std::forward<A>(a)...
+            .m_func = std::forward<Self>(self).f,
+            .m_args = {std::forward<A>(a)...}
         }}};})
     {
         return range<A...>{container<A...>{
-            std::forward<Self>(self).f,
-            std::forward<A>(a)...
+            .m_func = std::forward<Self>(self).f,
+            .m_args = {std::forward<A>(a)...}
         }};
     }
 };
@@ -4566,24 +4727,43 @@ private:
 public:
     static constexpr F f;
 
-    template <typename... A>
-        requires (meta::callable<meta::as_const_ref<F>, impl::zip_arg<meta::as_lvalue<A>>...>)
-    [[nodiscard]] static constexpr auto operator()(A&&... args)
-        noexcept (requires{{range<A...>{container<A...>{f, std::forward<A>(args)...}}} noexcept;})
-        requires (requires{{range<A...>{container<A...>{f, std::forward<A>(args)...}}};})
+    template <typename... A> requires (impl::zip_concept<const F&, A...>)
+    [[nodiscard]] static constexpr auto operator()(A&&... a)
+        noexcept (requires{{range<A...>{container<A...>{
+            .m_func = f,
+            .m_args = {std::forward<A>(a)...}
+        }}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{
+            .m_func = f,
+            .m_args = {std::forward<A>(a)...}
+        }}};})
     {
-        return range<A...>{container<A...>{f, std::forward<A>(args)...}};
+        return range<A...>{container<A...>{
+            .m_func = f,
+            .m_args = {std::forward<A>(a)...}
+        }};
     }
 };
 
 
-static constexpr std::array arr {1, 2, 3};
+template <typename F>
+zip(F&&) -> zip<meta::remove_rvalue<F>>;
+
+
+static constexpr std::array arr1 {1, 2, 3};
+static constexpr std::array arr2 {1, 2, 3, 4, 5};
+static constexpr auto z = zip{
+    [](int x, int y) { return x + y;}
+}(range(arr1), range(arr2));
 static_assert([] {
-    auto r = zip{[](int x, int& y) {
-        ++y;
+    auto r = zip{[](int x, int y) {
         return x + y;
-    }}(range(arr), 0);
-    for (auto&& x : r) {
+    }}(range(arr1), range(arr2));
+
+    if (r.size() != 3) return false;
+    if (r.__value->template get<0>() != 2) return false;
+
+    for (auto&& x : z) {
         if (x != 2 && x != 4 && x != 6) {
             return false;
         }
@@ -4602,7 +4782,7 @@ static_assert([] {
 
 /// TODO: `join{}` is quite challenging to implement.  It basically requires the range
 /// adaptor to store an `impl::overloads` of the initializing ranges, and then the
-/// iterator would store an `impl::union_storage<Iters...>` where the active index
+/// iterator would store an `impl::basic_union<Iters...>` where the active index
 /// determines which range is currently being iterated over.  If the ranges yield
 /// multiple distinct types, then the overall yield type from the iterator will be
 /// a `Union<Ts...>`.
