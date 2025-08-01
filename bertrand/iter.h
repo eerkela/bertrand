@@ -45,8 +45,8 @@ Array(T&&, Ts&&...) -> Array<
 
 namespace impl {
     struct range_tag {};
+    struct iota_tag {};
     struct sequence_tag {};
-    struct tuple_storage_tag {};
 
     template <typename T>
     concept strictly_positive =
@@ -54,25 +54,34 @@ namespace impl {
         !requires(meta::as_const_ref<T> t) {{t < 0} -> meta::explicitly_convertible_to<bool>;};
 
     template <typename Start, typename Stop, typename Step>
-    concept iota_concept =
+    concept base_iota_concept =
         meta::unqualified<Start> &&
         meta::unqualified<Stop> &&
         meta::copyable<Start> &&
         meta::copyable<Stop> &&
-        (meta::lt_returns<bool, const Start&, const Stop&> || meta::None<Stop>) &&
-        ((
-            meta::is_void<Step> &&
-            meta::has_preincrement<Start&>
-        ) || (
-            meta::not_void<Step> &&
-            meta::unqualified<Step> &&
-            meta::copyable<Step> &&
-            (meta::has_iadd<Start&, const Step&> || meta::has_preincrement<Start&>) &&
-            (strictly_positive<Step> || (
-                meta::gt_returns<bool, const Start&, const Stop&> &&
-                (meta::has_iadd<Start&, const Step&> || meta::has_predecrement<Start&>)
-            ))
-        ));
+        (meta::is_void<Step> || (meta::unqualified<Step> && meta::copyable<Step>));
+
+    template <typename Start, typename Stop, typename Step>
+    concept iota_bounded = meta::lt_returns<bool, const Start&, const Stop&> && (
+        meta::is_void<Step> ||
+        strictly_positive<Step> ||
+        meta::gt_returns<bool, const Start&, const Stop&>
+    );
+
+    template <typename Start, typename Stop, typename Step>
+    concept iota_incrementable = (meta::is_void<Step> && meta::has_preincrement<Start&>) || (
+        meta::not_void<Step> &&
+        (meta::has_iadd<Start&, const Step&> || (
+            meta::has_preincrement<Start&> &&
+            (strictly_positive<Step> || meta::has_predecrement<Start&>)
+        ))
+    );
+
+    template <typename Start, typename Stop, typename Step>
+    concept iota_concept =
+        base_iota_concept<Start, Stop, Step> &&
+        (iota_bounded<Start, Stop, Step> || meta::None<Stop>) &&
+        iota_incrementable<Start, Stop, Step>;
 
     template <typename Start, typename Stop, typename Step> requires (iota_concept<Start, Stop, Step>)
     struct iota;
@@ -727,18 +736,12 @@ namespace meta {
     template <typename T>
     concept slice = detail::slice<unqualify<T>>;
 
-
-    // template <typename T>
-    // concept comprehension = inherits<T, impl::comprehension_tag>;
-
-    template <typename T>
-    concept tuple_storage = inherits<T, impl::tuple_storage_tag>;
-
     namespace detail {
 
         template <meta::range T>
         constexpr bool prefer_constructor<T> = true;
 
+        /// TODO: exact_size is probably not required?
         template <meta::range T>
         constexpr bool exact_size<T> = meta::exact_size<typename T::__type>;
 
@@ -1474,13 +1477,15 @@ namespace impl {
     itself. */
     template <typename Start, typename Stop, typename Step>
         requires (iota_concept<Start, Stop, Step>)
-    struct iota {
+    struct iota : impl::iota_tag {
         using start_type = Start;
         using stop_type = Stop;
         using step_type = Step;
         using size_type = size_t;
         using index_type = ssize_t;
         using iterator = iota_iterator<Start, Stop, Step>;
+
+        static constexpr bool bounded = impl::iota_bounded<Start, Stop, Step>;
 
         [[no_unique_address]] Start start;
         [[no_unique_address]] Stop stop;
@@ -1610,13 +1615,15 @@ namespace impl {
     algorithm to use prefix `++` rather than `+= step` to get the next value, which
     allows us to ignore negative step sizes and increase performance. */
     template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
-    struct iota<Start, Stop, void> {
+    struct iota<Start, Stop, void> : impl::iota_tag {
         using start_type = Start;
         using stop_type = Stop;
         using step_type = void;
         using size_type = size_t;
         using index_type = ssize_t;
         using iterator = iota_iterator<Start, Stop, void>;
+
+        static constexpr bool bounded = impl::iota_bounded<Start, Stop, void>;
 
         [[no_unique_address]] Start start;
         [[no_unique_address]] Stop stop;
@@ -4279,16 +4286,6 @@ namespace impl {
     template <typename Self>
     make_zip_reversed(Self& self) -> make_zip_reversed<Self&>;
 
-
-
-    /// TODO: actually what's better is if I just compute the size on demand rather
-    /// than storing it.  I should also be able to handle type-erased sequences, which
-    /// checks .has_size() first and otherwise skips the sequence in the size
-    /// calculation.  If the only sized candidates are sequences, then I would emit
-    /// has_size() and size() methods on the zip range.  Otherwise, if at least one of
-    /// the ranges is sized and not a sequence, then there is no need for has_size(),
-    /// and size() will never throw an exception.
-
     template <size_t min, typename...>
     static constexpr size_t _zip_tuple_size = min;
     template <size_t min, typename T, typename... Ts>
@@ -4349,82 +4346,12 @@ namespace impl {
             return (has_size_impl(arg<Is>()) && ...);
         }
 
-
-        /// TODO: just use the size of the first index in the ranges{} sequence to
-        /// set the minimum size, and then fold over the rest of the ranges.  That
-        /// will be simpler and easier to maintain.
-
-        static constexpr size_type _size_impl(size_type min) noexcept { return min; }
-
-        /// TODO: special case for unbounded iotas, in order to simulate an enumerate{}
-        /// range.
-
-        template <meta::range T, typename... Ts>
-        static constexpr size_type _size_impl(size_type min, const T& curr, const Ts&... next)
-            noexcept (requires{{_size_impl(
-                std::min(size_type(curr.size()), min),
-                std::forward<Ts>(next)...
-            )} noexcept;})
-            requires (requires{{_size_impl(
-                std::min(size_type(curr.size()), min),
-                std::forward<Ts>(next)...
-            )};})
-        {
-            return _size_impl(
-                std::min(size_type(curr.size()), min),
-                std::forward<Ts>(next)...
-            );
-        }
-
-        /// TODO: centralize the IndexErrors between these types, and possibly share
-        /// them with sequence.size() as well.
-
-        template <meta::sequence T, typename... Ts>
-        static constexpr size_type _size_impl(size_type min, const T& curr, const Ts&... next)
-            noexcept (requires{{_size_impl(
-                std::min(size_type(curr.size()), min),
-                std::forward<Ts>(next)...
-            )} noexcept;})
-            requires (requires{{_size_impl(
-                std::min(size_type(curr.size()), min),
-                std::forward<Ts>(next)...
-            )};})
-        {
-            if (curr.has_size()) {
-                return _size_impl(
-                    std::min(size_type(curr.size()), min),
-                    std::forward<Ts>(next)...
-                );
-            } else {
-                throw IndexError();
-            }
-        }
-
-        template <meta::range T, typename... Ts> requires (meta::size_returns<size_type, T>)
-        static constexpr size_type size_impl(T&& curr, Ts&&... next)
-            noexcept (requires{{_size_impl(curr.size(), std::forward<Ts>(next)...)} noexcept;})
-            requires (requires{{_size_impl(curr.size(), std::forward<Ts>(next)...)};})
-        {
-            return _size_impl(curr.size(), std::forward<Ts>(next)...);
-        }
-
-        template <meta::sequence T, typename... Ts>
-        static constexpr size_type size_impl(T&& curr, Ts&&... next)
-            requires (requires{{_size_impl(curr.size(), std::forward<Ts>(next)...)};})
-        {
-            if (curr.has_size()) {
-                return _size_impl(curr.size(), std::forward<Ts>(next)...);
-            } else {
-                throw IndexError();
-            }
-        }
-
         template <size_t... Is> requires (sizeof...(Is) == ranges::size())
         constexpr size_type _size(std::index_sequence<Is...>) const
-            noexcept (requires{{size_impl(arg<Is>()...)} noexcept;})
-            requires (requires{{size_impl(arg<Is>()...)};})
+            noexcept (requires{{std::min({size_type(arg<Is>().size())...})} noexcept;})
+            requires (requires{{std::min({size_type(arg<Is>().size())...})};})
         {
-            return size_impl(arg<Is>()...);
+            return std::min({size_type(arg<Is>().size())...});
         }
 
     public:
@@ -6721,14 +6648,6 @@ slice(Start&& = {}, Stop&& = {}, Step&& = {}) -> slice<
     meta::remove_rvalue<Stop>,
     meta::remove_rvalue<Step>
 >;
-
-
-static constexpr std::array arr {1, 2, 3};
-static constexpr range r(arr);
-// static constexpr auto s = slice{{}, {}, 2}(arr);
-static constexpr auto s = r[slice{{}, {}, 2}];
-static_assert(s[0] == 1);
-static_assert(s[1] == 3);
 
 
 ////////////////////
