@@ -3478,21 +3478,40 @@ public:
 
 namespace impl {
 
-    /* Arguments to a zip function will be yielded elementwise if they come from
-    ranges, or broadcasted as lvalues otherwise. */
-    template <meta::lvalue T>
-    struct _zip_arg { using type = meta::as_lvalue<T>; };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct _zip_arg<T> { using type = meta::yield_type<T>; };
-    template <meta::lvalue T>
-    using zip_arg = _zip_arg<T>::type;
+    /* Arguments to a zip function will be either broadcasted as lvalues if they are
+    non-range arguments or iterated elementwise if they are ranges.  If a range is
+    given as an `unpack` type and yields tuples, then the tuples will destructured
+    when they are passed into the zip function. */
+    template <typename out, typename F, typename...>
+    struct _zip_call { static constexpr bool enable = false; };
+    template <typename... out, typename F> requires (meta::callable<F, out...>)
+    struct _zip_call<meta::pack<out...>, F> {
+        static constexpr bool enable = true;
+        using type = meta::call_type<F, out...>;
+    };
+    template <typename... out, typename F, typename A, typename... As> requires (!meta::range<A>)
+    struct _zip_call<meta::pack<out...>, F, A, As...> :
+        _zip_call<meta::pack<out..., A>, F, As...>
+    {};
+    template <typename... out, typename F, meta::range A, typename... As>
+        requires (!meta::unpack<A> || !meta::tuple_like<meta::yield_type<A>>)
+    struct _zip_call<meta::pack<out...>, F, A, As...> :
+        _zip_call<meta::pack<out..., meta::yield_type<A>>, F, As...>
+    {};
+    template <typename out, typename F, meta::unpack A, typename... As>
+        requires (meta::tuple_like<meta::yield_type<A>>)
+    struct _zip_call<out, F, A, As...> :
+        _zip_call<meta::concat<out, meta::tuple_types<meta::yield_type<A>>>, F, As...>
+    {};
+    template <typename F, typename... A>
+    using zip_call = _zip_call<meta::pack<>, meta::as_lvalue<F>, meta::as_lvalue<A>...>;
 
     template <typename F, typename... A>
     concept zip_concept =
         (meta::not_void<F> && ... && meta::not_void<A>) &&
         (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
         (meta::range<A> || ...) &&
-        meta::callable<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>;
+        zip_call<F, A...>::enable;
 
     template <typename C, size_t I>
     concept zip_broadcast =
@@ -3526,8 +3545,8 @@ namespace impl {
 
     /* Zip iterators preserve as much of the iterator interface as possible. */
     template <typename, meta::not_rvalue... Iters>
-    struct zip_category { using type = std::random_access_iterator_tag; };
-    template <size_t... Is, meta::not_rvalue... Iters> requires (sizeof...(Is) > 0)
+    struct zip_category;
+    template <size_t... Is, meta::not_rvalue... Iters>
     struct zip_category<std::index_sequence<Is...>, Iters...> {
         using type = meta::common_type<
             meta::iterator_category<meta::unpack_type<Is, Iters...>>...
@@ -3537,43 +3556,44 @@ namespace impl {
     /* The difference type between zip iterators (if any) is the common type for all
     constituent ranges. */
     template <typename, meta::not_rvalue... Iters>
-    struct zip_difference { using type = std::ptrdiff_t; };
-    template <size_t... Is, meta::not_rvalue... Iters> requires (sizeof...(Is) > 0)
+    struct zip_difference;
+    template <size_t... Is, meta::not_rvalue... Iters>
     struct zip_difference<std::index_sequence<Is...>, Iters...> {
         using type = meta::common_type<
             meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
         >;
     };
 
-    /* Zip iterators dereference to the return type of the perfectly-forwarded
-    transformation function invoked with the broadcasted scalar references and the
-    dereference types of each of the constituent range iterators. */
+    /* Zip iterators take the cvref qualifications of the zipped range into account
+    when deducing the return type for the dereference operator, applying the same
+    broadcasting and unpacking rules as `zip_call`. */
     template <typename out, typename C, size_t I, typename...>
-    struct _zip_call { static constexpr bool enable = false; };
+    struct _zip_yield { static constexpr bool enable = false; };
     template <typename... out, typename C, size_t I>
         requires (requires(C container, out... args) {
             {container.func()(std::forward<out>(args)...)};
         })
-    struct _zip_call<meta::pack<out...>, C, I> {
+    struct _zip_yield<meta::pack<out...>, C, I> {
         static constexpr bool enable = true;
         using type = decltype((std::declval<C>().func()(std::declval<out>()...)));
     };
     template <typename... out, typename C, size_t I, typename curr, typename... next>
-    struct _zip_call<meta::pack<out...>, C, I, curr, next...> :
-        _zip_call<meta::pack<out..., meta::dereference_type<curr>>, C, I + 1, next...>
+        requires (zip_broadcast<C, I>)
+    struct _zip_yield<meta::pack<out...>, C, I, curr, next...> :
+        _zip_yield<meta::pack<out..., curr>, C, I + 1, next...>
     {};
     template <typename... out, typename C, size_t I, typename curr, typename... next>
-        requires (zip_broadcast<C, I>)
-    struct _zip_call<meta::pack<out...>, C, I, curr, next...> :
-        _zip_call<meta::pack<out..., curr>, C, I + 1, next...>
+        requires (!zip_broadcast<C, I> && !zip_unpack<C, I>)
+    struct _zip_yield<meta::pack<out...>, C, I, curr, next...> :
+        _zip_yield<meta::pack<out..., meta::dereference_type<curr>>, C, I + 1, next...>
     {};
     template <typename out, typename C, size_t I, typename curr, typename... next>
         requires (zip_unpack<C, I>)
-    struct _zip_call<out, C, I, curr, next...> :
-        _zip_call<meta::concat<out, zip_unpack_types<C, I>>, C, I + 1, next...>
+    struct _zip_yield<out, C, I, curr, next...> :
+        _zip_yield<meta::concat<out, zip_unpack_types<C, I>>, C, I + 1, next...>
     {};
     template <typename C, typename... Iters>
-    using zip_call = _zip_call<meta::pack<>, C, 0, Iters...>;
+    using zip_yield = _zip_yield<meta::pack<>, C, 0, Iters...>;
 
     /* Zip iterators work by storing a pointer to the zipped range and a tuple of
     backing iterators, which may be interspersed with references to scalar arguments
@@ -3584,13 +3604,13 @@ namespace impl {
     scalar values or dereference types of the iterator tuple.  If an iterator
     originates from an `unpack` range, then it will be destructured into its respective
     components, if it has any. */
-    template <meta::lvalue C, meta::not_rvalue... Iters> requires (zip_call<C, Iters...>::enable)
+    template <meta::lvalue C, meta::not_rvalue... Iters> requires (zip_yield<C, Iters...>::enable)
     struct zip_iterator {
         using indices = meta::unqualify<C>::indices;
         using ranges = meta::unqualify<C>::ranges;
         using iterator_category = zip_category<ranges, Iters...>::type;
         using difference_type = zip_difference<ranges, Iters...>::type;
-        using reference = zip_call<C, Iters...>::type;
+        using reference = zip_yield<C, Iters...>::type;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::address_type<reference>;
 
@@ -3599,74 +3619,185 @@ namespace impl {
 
     private:
 
-        template <size_t I, typename T>
-        static constexpr decltype(auto) _deref(T&& value)
-            noexcept (zip_broadcast<C, I> || requires{{*std::forward<T>(value)} noexcept;})
-            requires (zip_broadcast<C, I> || requires{{*std::forward<T>(value)};})
+        template <size_t I, typename Self, typename... A>
+            requires (I < sizeof...(Iters) && zip_broadcast<C, I>)
+        constexpr decltype(auto) deref(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()
+            )};})
         {
-            if constexpr (zip_broadcast<C, I>) {
-                return (std::forward<T>(value));
-            } else {
-                return (*std::forward<T>(value));
-            }
+            return (std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()
+            ));
         }
 
-        /// TODO: flattening an unpack operator occurs here, in the dereference
-        /// operator, as well as the subscript operator.  It basically requires an
-        /// extra zip_unpack<C, I> call to determine those indices.  I would then check
-        /// to see if the corresponding iterator's dereference type is a tuple, and if
-        /// so, call another helper function that unpacks the elements
-        /// -> The hard part will be aligning the outer index sequence.  The only real
-        /// way to do this is recursively, using an index into the iterator tuple, and
-        /// an argument list that grows with each recursion, but not necessarily by 1
-        /// each time.  Just unroll this index sequence, basically.
-
-        template <typename Self, size_t... Is> requires (sizeof...(Is) == indices::size())
-        constexpr decltype(auto) deref(this Self&& self, std::index_sequence<Is...>)
-            noexcept (requires{{self.container->func()(_deref<Is>(
-                std::forward<Self>(self).iters.template get<Is>()
-            )...)} noexcept;})
-            requires (requires{{self.container->func()(_deref<Is>(
-                std::forward<Self>(self).iters.template get<Is>()
-            )...)};})
+        template <size_t I, typename Self, meta::tuple_like T, size_t... Is, typename... A>
+        constexpr decltype(auto) _deref(
+            this Self&& self,
+            T&& value,
+            std::index_sequence<Is...>,
+            A&&... args
+        )
+            noexcept (requires{{std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )};})
         {
-            return (self.container->func()(_deref<Is>(
-                std::forward<Self>(self).iters.template get<Is>()
-            )...));
+            return (std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            ));
         }
 
-
-        template <size_t I, typename T>
-        static constexpr decltype(auto) _subscript(T&& value, difference_type i)
-            noexcept (zip_broadcast<C, I> || requires{{std::forward<T>(value)[i]} noexcept;})
-            requires (zip_broadcast<C, I> || requires{{std::forward<T>(value)[i]};})
+        template <size_t I, typename Self, typename... A>
+            requires (I < sizeof...(Iters) && zip_unpack<C, I>)
+        constexpr decltype(auto) deref(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).template _deref<I>(
+                *std::forward<Self>(self).iters.template get<I>(),
+                std::make_index_sequence<zip_unpack_types<C, I>::size()>{},
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _deref<I>(
+                *std::forward<Self>(self).iters.template get<I>(),
+                std::make_index_sequence<zip_unpack_types<C, I>::size()>{},
+                std::forward<A>(args)...
+            )};})
         {
-            if constexpr (zip_broadcast<C, I>) {
-                return (std::forward<T>(value));
-            } else {
-                return (std::forward<T>(value)[i]);
-            }
+            return (std::forward<Self>(self).template _deref<I>(
+                *std::forward<Self>(self).iters.template get<I>(),
+                std::make_index_sequence<zip_unpack_types<C, I>::size()>{},
+                std::forward<A>(args)...
+            ));
         }
 
-        template <typename Self, size_t... Is> requires (sizeof...(Is) == indices::size())
-        constexpr decltype(auto) subscript(
+        template <size_t I, typename Self, typename... A>
+            requires (I < sizeof...(Iters) && !zip_broadcast<C, I> && !zip_unpack<C, I>)
+        constexpr decltype(auto) deref(this Self&& self, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                *std::forward<Self>(self).iters.template get<I>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                *std::forward<Self>(self).iters.template get<I>()
+            )};})
+        {
+            return (std::forward<Self>(self).template deref<I + 1>(
+                std::forward<A>(args)...,
+                *std::forward<Self>(self).iters.template get<I>()
+            ));
+        }
+
+        template <size_t I, typename Self, typename... A> requires (I == sizeof...(Iters))
+        constexpr decltype(auto) deref(this Self&& self, A&&... args)
+            noexcept (requires{{self.container->func()(std::forward<A>(args)...)} noexcept;})
+            requires (requires{{self.container->func()(std::forward<A>(args)...)};})
+        {
+            return (self.container->func()(std::forward<A>(args)...));
+        }
+
+        template <size_t I, typename Self, typename... A>
+            requires (I < sizeof...(Iters) && zip_broadcast<C, I>)
+        constexpr decltype(auto) subscript(this Self&& self, difference_type i, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).template subscript<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()
+            )};})
+        {
+            return (std::forward<Self>(self).template subscript<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()
+            ));
+        }
+
+        template <size_t I, typename Self, meta::tuple_like T, size_t... Is, typename... A>
+        constexpr decltype(auto) _subscript(
             this Self&& self,
             difference_type i,
-            std::index_sequence<Is...>
+            T&& value,
+            std::index_sequence<Is...>,
+            A&&... args
         )
-            noexcept (requires{{self.container->func()(_subscript<Is>(
-                std::forward<Self>(self).iters.template get<Is>(),
-                i
-            )...)} noexcept;})
-            requires (requires{{self.container->func()(_subscript<Is>(
-                std::forward<Self>(self).iters.template get<Is>(),
-                i
-            )...)};})
+            noexcept (requires{{std::forward<Self>(self).template subscript<I + 1>(
+                i,
+                std::forward<A>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<I + 1>(
+                i,
+                std::forward<A>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )};})
         {
-            return (self.container->func()(_subscript<Is>(
-                std::forward<Self>(self).iters.template get<Is>(),
-                i
-            )...));
+            return (std::forward<Self>(self).template subscript<I + 1>(
+                i,
+                std::forward<A>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            ));
+        }
+
+        template <size_t I, typename Self, typename... A>
+            requires (I < sizeof...(Iters) && zip_unpack<C, I>)
+        constexpr decltype(auto) subscript(this Self&& self, difference_type i, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).template _subscript<I>(
+                i,
+                std::forward<Self>(self).iters.template get<I>()[i],
+                std::make_index_sequence<zip_unpack_types<C, I>::size()>{},
+                std::forward<A>(args)...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _subscript<I>(
+                i,
+                std::forward<Self>(self).iters.template get<I>()[i],
+                std::make_index_sequence<zip_unpack_types<C, I>::size()>{},
+                std::forward<A>(args)...
+            )};})
+        {
+            return (std::forward<Self>(self).template _subscript<I>(
+                i,
+                std::forward<Self>(self).iters.template get<I>()[i],
+                std::make_index_sequence<zip_unpack_types<C, I>::size()>{},
+                std::forward<A>(args)...
+            ));
+        }
+
+        template <size_t I, typename Self, typename... A>
+            requires (I < sizeof...(Iters) && !zip_broadcast<C, I> && !zip_unpack<C, I>)
+        constexpr decltype(auto) subscript(this Self&& self, difference_type i, A&&... args)
+            noexcept (requires{{std::forward<Self>(self).template subscript<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()[i]
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()[i]
+            )};})
+        {
+            return (std::forward<Self>(self).template subscript<I + 1>(
+                std::forward<A>(args)...,
+                std::forward<Self>(self).iters.template get<I>()[i]
+            ));
+        }
+
+        template <size_t I, typename Self, typename... A> requires (I == sizeof...(Iters))
+        constexpr decltype(auto) subscript(this Self&& self, difference_type i, A&&... args)
+            noexcept (requires{{self.container->func()(std::forward<A>(args)...)} noexcept;})
+            requires (requires{{self.container->func()(std::forward<A>(args)...)};})
+        {
+            return (self.container->func()(std::forward<A>(args)...));
         }
 
         template <size_t... Is> requires (sizeof...(Is) == ranges::size())
@@ -3888,10 +4019,10 @@ namespace impl {
     public:
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).deref(indices{})} noexcept;})
-            requires (requires{{std::forward<Self>(self).deref(indices{})};})
+            noexcept (requires{{std::forward<Self>(self).template deref<0>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).template deref<0>()};})
         {
-            return (std::forward<Self>(self).deref(indices{}));
+            return (std::forward<Self>(self).template deref<0>());
         }
 
         template <typename Self>
@@ -3904,10 +4035,10 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
-            noexcept (requires{{std::forward<Self>(self).subscript(i, indices{})} noexcept;})
-            requires (requires{{std::forward<Self>(self).subscript(i, indices{})};})
+            noexcept (requires{{std::forward<Self>(self).template subscript<0>(i)} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<0>(i)};})
         {
-            return (std::forward<Self>(self).subscript(i, indices{}));
+            return (std::forward<Self>(self).template subscript<0>(i));
         }
 
         constexpr zip_iterator& operator++()
@@ -4097,19 +4228,24 @@ namespace impl {
     also match. */
     template <meta::lvalue Self, typename>
     struct _make_zip_iterator;
-    template <meta::lvalue Self, typename... A>
-    struct _make_zip_iterator<Self, meta::pack<A...>> {
-        using begin = zip_iterator<Self, typename make_zip_begin<meta::as_lvalue<A>>::type...>;
-        using end = zip_iterator<Self, typename make_zip_end<meta::as_lvalue<A>>::type...>;
+    template <meta::lvalue Self, size_t... Is>
+    struct _make_zip_iterator<Self, std::index_sequence<Is...>> {
+        using begin = zip_iterator<
+            Self,
+            typename make_zip_begin<decltype((std::declval<Self>().template arg<Is>()))>::type...
+        >;
+        using end = zip_iterator<
+            Self,
+            typename make_zip_end<decltype((std::declval<Self>().template arg<Is>()))>::type...
+        >;
     };
     template <meta::lvalue Self>
     struct make_zip_iterator {
         Self container;
 
     private:
-        using arguments = meta::unqualify<Self>::argument_types;
         using indices = meta::unqualify<Self>::indices;
-        using type = _make_zip_iterator<Self, arguments>;
+        using type = _make_zip_iterator<Self, indices>;
 
         template <size_t... Is>
         constexpr type::begin _begin(std::index_sequence<Is...>)
@@ -4216,10 +4352,16 @@ namespace impl {
     all of the input ranges use the same rbegin and rend types. */
     template <meta::lvalue Self, typename>
     struct _make_zip_reversed;
-    template <meta::lvalue Self, typename... A>
-    struct _make_zip_reversed<Self, meta::pack<A...>> {
-        using begin = zip_iterator<Self, typename make_zip_rbegin<meta::as_lvalue<A>>::type...>;
-        using end = zip_iterator<Self, typename make_zip_rend<meta::as_lvalue<A>>::type...>;
+    template <meta::lvalue Self, size_t... Is>
+    struct _make_zip_reversed<Self, std::index_sequence<Is...>> {
+        using begin = zip_iterator<
+            Self,
+            typename make_zip_rbegin<decltype((std::declval<Self>().template arg<Is>()))>::type...
+        >;
+        using end = zip_iterator<
+            Self,
+            typename make_zip_rend<decltype((std::declval<Self>().template arg<Is>()))>::type...
+        >;
     };
     template <meta::lvalue Self>
         requires (zip_reverse_iterable<typename meta::unqualify<Self>::argument_types>)
@@ -4227,9 +4369,8 @@ namespace impl {
         Self container;
 
     private:
-        using arguments = meta::unqualify<Self>::argument_types;
         using indices = meta::unqualify<Self>::indices;
-        using type = _make_zip_reversed<Self, arguments>;
+        using type = _make_zip_reversed<Self, indices>;
 
         template <size_t... Is>
         constexpr type::begin _begin(std::index_sequence<Is...>)
@@ -4306,7 +4447,7 @@ namespace impl {
     struct zip {
         using function_type = F;
         using argument_types = meta::pack<A...>;
-        using return_type = meta::call_type<meta::as_lvalue<F>, zip_arg<meta::as_lvalue<A>>...>;
+        using return_type = zip_call<F, A...>::type;
         using size_type = size_t;
         using index_type = ssize_t;
         using indices = std::make_index_sequence<sizeof...(A)>;
@@ -4428,71 +4569,206 @@ namespace impl {
         }
 
     private:
-
-        /// TODO: flattening an unpack operator will also need to occur in get<I>() and
-        /// operator[], as well as the iterator dereference and subscript operators.
-
-        template <size_t I, typename T>
-        [[nodiscard]] static constexpr decltype(auto) _get_impl(T&& value)
-            noexcept (!meta::range<T> || requires{
-                {std::forward<T>(value).template get<I>()} noexcept;
-            })
-            requires (!meta::range<T> || requires{
-                {std::forward<T>(value).template get<I>()};
-            })
+        template <size_t I, size_t J, typename Self, typename... Ts>
+            requires (J < sizeof...(A) && zip_broadcast<Self, J>)
+        constexpr decltype(auto) _get(this Self&& self, Ts&&... args)
+            noexcept (requires{{std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()
+            )};})
         {
-            if constexpr (meta::range<T>) {
-                return (std::forward<T>(value).template get<I>());
-            } else {
-                return (std::forward<T>(value));
-            }
+            return (std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()
+            ));
         }
 
-        template <size_t I, typename Self, size_type... Is>
-        [[nodiscard]] constexpr decltype(auto) _get(this Self&& self, std::index_sequence<Is...>)
-            noexcept (requires{{std::forward<Self>(self).func()(_get_impl<I>(
-                std::forward<Self>(self).template arg<Is>()
-            )...)} noexcept;})
-            requires (requires{{std::forward<Self>(self).func()(_get_impl<I>(
-                std::forward<Self>(self).template arg<Is>()
-            )...)};})
-        {
-            return (std::forward<Self>(self).func()(_get_impl<I>(
-                std::forward<Self>(self).template arg<Is>()
-            )...));
-        }
-
-        template <typename T>
-        [[nodiscard]] static constexpr decltype(auto) _subscript_impl(T&& value, size_type i)
-            noexcept (!meta::range<T> || requires{{std::forward<T>(value)[i]} noexcept;})
-            requires (!meta::range<T> || requires{{std::forward<T>(value)[i]};})
-        {
-            if constexpr (meta::range<T>) {
-                return (std::forward<T>(value)[i]);
-            } else {
-                return (std::forward<T>(value));
-            }
-        }
-
-        template <typename Self, size_type... Is>
-        [[nodiscard]] constexpr decltype(auto) _subscript(
+        template <
+            size_t I,
+            size_t J,
+            typename Self,
+            meta::tuple_like T,
+            size_t... Is,
+            typename... Ts
+        >
+        constexpr decltype(auto) _get_impl(
             this Self&& self,
-            size_type i,
-            std::index_sequence<Is...>
+            T&& value,
+            std::index_sequence<Is...>,
+            Ts&&... args
         )
-            noexcept (requires{{std::forward<Self>(self).func()(_subscript_impl(
-                std::forward<Self>(self).template arg<Is>(),
-                i
-            )...)} noexcept;})
-            requires (requires{{std::forward<Self>(self).func()(_subscript_impl(
-                std::forward<Self>(self).template arg<Is>(),
-                i
-            )...)};})
+            noexcept (requires{{std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )};})
         {
-            return (std::forward<Self>(self).func()(_subscript_impl(
-                std::forward<Self>(self).template arg<Is>(),
-                i
-            )...));
+            return (std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            ));
+        }
+
+        template <size_t I, size_t J, typename Self, typename... Ts>
+            requires (J < sizeof...(A) && zip_unpack<Self, J>)
+        constexpr decltype(auto) _get(this Self&& self, Ts&&... args)
+            noexcept (requires{{std::forward<Self>(self).template _get_impl<I, J>(
+                std::forward<Self>(self).template arg<J>().template get<I>(),
+                std::make_index_sequence<zip_unpack_types<Self, J>::size()>{},
+                std::forward<Ts>(args)...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _get_impl<I, J>(
+                std::forward<Self>(self).template arg<J>().template get<I>(),
+                std::make_index_sequence<zip_unpack_types<Self, J>::size()>{},
+                std::forward<Ts>(args)...
+            )};})
+        {
+            return (std::forward<Self>(self).template _get_impl<I, J>(
+                std::forward<Self>(self).template arg<J>().template get<I>(),
+                std::make_index_sequence<zip_unpack_types<Self, J>::size()>{},
+                std::forward<Ts>(args)...
+            ));
+        }
+
+        template <size_t I, size_t J, typename Self, typename... Ts>
+            requires (J < sizeof...(A) && !zip_broadcast<Self, J> && !zip_unpack<Self, J>)
+        [[nodiscard]] constexpr decltype(auto) _get(this Self&& self, Ts&&... args)
+            noexcept (requires{{std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>().template get<I>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>().template get<I>()
+            )};})
+        {
+            return (std::forward<Self>(self).template _get<I, J + 1>(
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>().template get<I>()
+            ));
+        }
+
+        template <size_t I, size_t J, typename Self, typename... Ts> requires (J == sizeof...(A))
+        constexpr decltype(auto) _get(this Self&& self, Ts&&... args)
+            noexcept (requires{
+                {std::forward<Self>(self).func()(std::forward<Ts>(args)...)} noexcept;
+            })
+            requires (requires{
+                {std::forward<Self>(self).func()(std::forward<Ts>(args)...)};
+            })
+        {
+            return (std::forward<Self>(self).func()(std::forward<Ts>(args)...));
+        }
+
+        template <size_t J, typename Self, typename... Ts>
+            requires (J < sizeof...(A) && zip_broadcast<Self, J>)
+        constexpr decltype(auto) subscript(this Self&& self, index_type i, Ts&&... args)
+            noexcept (requires{{std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()
+            )};})
+        {
+            return (std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()
+            ));
+        }
+
+        template <size_t J, typename Self, meta::tuple_like T, size_t... Is, typename... Ts>
+        constexpr decltype(auto) _subscript(
+            this Self&& self,
+            index_type i,
+            T&& value,
+            std::index_sequence<Is...>,
+            Ts&&... args
+        )
+            noexcept (requires{{std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            )};})
+        {
+            return (std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                meta::unpack_tuple<Is>(std::forward<T>(value))...
+            ));
+        }
+
+        template <size_t J, typename Self, typename... Ts>
+            requires (J < sizeof...(A) && zip_unpack<Self, J>)
+        constexpr decltype(auto) subscript(this Self&& self, index_type i, Ts&&... args)
+            noexcept (requires{{std::forward<Self>(self).template _subscript<J>(
+                i,
+                std::forward<Self>(self).template arg<J>()[i],
+                std::make_index_sequence<zip_unpack_types<Self, J>::size()>{},
+                std::forward<Ts>(args)...
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _subscript<J>(
+                i,
+                std::forward<Self>(self).template arg<J>()[i],
+                std::make_index_sequence<zip_unpack_types<Self, J>::size()>{},
+                std::forward<Ts>(args)...
+            )};})
+        {
+            return (std::forward<Self>(self).template _subscript<J>(
+                i,
+                std::forward<Self>(self).template arg<J>()[i],
+                std::make_index_sequence<zip_unpack_types<Self, J>::size()>{},
+                std::forward<Ts>(args)...
+            ));
+        }
+
+        template <size_t J, typename Self, typename... Ts>
+            requires (J < sizeof...(A) && !zip_broadcast<Self, J> && !zip_unpack<Self, J>)
+        constexpr decltype(auto) subscript(this Self&& self, index_type i, Ts&&... args)
+            noexcept (requires{{std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()[i]
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()[i]
+            )};})
+        {
+            return (std::forward<Self>(self).template subscript<J + 1>(
+                i,
+                std::forward<Ts>(args)...,
+                std::forward<Self>(self).template arg<J>()[i]
+            ));
+        }
+
+        template <size_t J, typename Self, typename... Ts> requires (J == sizeof...(A))
+        constexpr decltype(auto) subscript(this Self&& self, index_type i, Ts&&... args)
+            noexcept (requires{
+                {std::forward<Self>(self).func()(std::forward<Ts>(args)...)} noexcept;
+            })
+            requires (requires{
+                {std::forward<Self>(self).func()(std::forward<Ts>(args)...)};
+            })
+        {
+            return (std::forward<Self>(self).func()(std::forward<Ts>(args)...));
         }
 
     public:
@@ -4505,10 +4781,10 @@ namespace impl {
         method will fail to compile. */
         template <size_t I, typename Self>
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).template _get<I>(indices{})} noexcept;})
-            requires (requires{{std::forward<Self>(self).template _get<I>(indices{})};})
+            noexcept (requires{{std::forward<Self>(self).template _get<I, 0>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _get<I, 0>()};})
         {
-            return (std::forward<Self>(self).template _get<I>(indices{}));
+            return (std::forward<Self>(self).template _get<I, 0>());
         }
 
         /* Index into the zipped range, passing the indexed arguments into the
@@ -4520,12 +4796,10 @@ namespace impl {
         compile. */
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_type i)
-            noexcept (requires{
-                {std::forward<Self>(self).template _subscript(i, indices{})} noexcept;
-            })
-            requires (requires{{std::forward<Self>(self).template _subscript(i, indices{})};})
+            noexcept (requires{{std::forward<Self>(self).template subscript<0>(i)} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<0>(i)};})
         {
-            return (std::forward<Self>(self).template _subscript(i, indices{}));
+            return (std::forward<Self>(self).template subscript<0>(i));
         }
 
         /* Get a forward iterator over the zipped range. */
@@ -4688,7 +4962,7 @@ static_assert([] {
     }}(range(arr1), range(arr2));
 
     if (r.size() != 3) return false;
-    if (r.__value->template get<0>() != 2) return false;
+    if ((*r.__value)[1] != 4) return false;
 
     for (auto&& x : z) {
         if (x != 2 && x != 4 && x != 6) {
@@ -4698,6 +4972,23 @@ static_assert([] {
     return true;
 }());
 
+
+static constexpr std::array arr3 {std::pair{1, 2}, std::pair{3, 4}};
+static constexpr auto r = zip{[](int x, int y, int z) {
+    return x + y;
+}}(*range(arr3), 2);
+static_assert([] {
+    if (r.size() != 2) return false;
+    if (r[0] != 3) return false;
+
+    for (auto&& x : r) {
+        if (x != 3 && x != 7) {
+            return false;
+        }
+    }
+
+    return true;
+}());
 
 
 ////////////////////
