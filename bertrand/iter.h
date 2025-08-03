@@ -3476,6 +3476,11 @@ public:
 ///////////////////
 
 
+/// TODO: if the range is itself a tuple, and doesn't just yield tuples, then unpacking
+/// it in a `zip{}` call should expand it and then broadcast the values as scalars.
+/// Once that's implemented, `zip{}` should be done.
+
+
 namespace impl {
 
     /* Arguments to a zip function will be either broadcasted as lvalues if they are
@@ -3531,23 +3536,23 @@ namespace impl {
 
     /* An index sequence records the positions of the incoming ranges. */
     template <typename out, size_t, typename...>
-    struct _zip_indices { using type = out; };
+    struct _range_indices { using type = out; };
     template <size_t... Is, size_t I, typename T, typename... Ts>
-    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
-        _zip_indices<std::index_sequence<Is...>, I + 1, Ts...>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is...>, I + 1, Ts...>
     {};
     template <size_t... Is, size_t I, meta::range T, typename... Ts>
-    struct _zip_indices<std::index_sequence<Is...>, I, T, Ts...> :
-        _zip_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
     {};
     template <meta::not_rvalue... A>
-    using zip_indices = _zip_indices<std::index_sequence<>, 0, A...>::type;
+    using range_indices = _range_indices<std::index_sequence<>, 0, A...>::type;
 
     /* Zip iterators preserve as much of the iterator interface as possible. */
     template <typename, meta::not_rvalue... Iters>
-    struct zip_category;
+    struct range_category;
     template <size_t... Is, meta::not_rvalue... Iters>
-    struct zip_category<std::index_sequence<Is...>, Iters...> {
+    struct range_category<std::index_sequence<Is...>, Iters...> {
         using type = meta::common_type<
             meta::iterator_category<meta::unpack_type<Is, Iters...>>...
         >;
@@ -3556,9 +3561,9 @@ namespace impl {
     /* The difference type between zip iterators (if any) is the common type for all
     constituent ranges. */
     template <typename, meta::not_rvalue... Iters>
-    struct zip_difference;
+    struct range_difference;
     template <size_t... Is, meta::not_rvalue... Iters>
-    struct zip_difference<std::index_sequence<Is...>, Iters...> {
+    struct range_difference<std::index_sequence<Is...>, Iters...> {
         using type = meta::common_type<
             meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
         >;
@@ -3606,10 +3611,13 @@ namespace impl {
     components, if it has any. */
     template <meta::lvalue C, meta::not_rvalue... Iters> requires (zip_yield<C, Iters...>::enable)
     struct zip_iterator {
+    private:
         using indices = meta::unqualify<C>::indices;
         using ranges = meta::unqualify<C>::ranges;
-        using iterator_category = zip_category<ranges, Iters...>::type;
-        using difference_type = zip_difference<ranges, Iters...>::type;
+
+    public:
+        using iterator_category = range_category<ranges, Iters...>::type;
+        using difference_type = range_difference<ranges, Iters...>::type;
         using reference = zip_yield<C, Iters...>::type;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::address_type<reference>;
@@ -3618,7 +3626,6 @@ namespace impl {
         impl::basic_tuple<Iters...> iters {};
 
     private:
-
         template <size_t I, typename Self, typename... A>
             requires (I < sizeof...(Iters) && zip_broadcast<C, I>)
         constexpr decltype(auto) deref(this Self&& self, A&&... args)
@@ -4226,26 +4233,26 @@ namespace impl {
     reference to a non-range argument or an appropriate range iterator at each index.
     If all ranges use the same begin and end types, then the overall zip iterators will
     also match. */
-    template <meta::lvalue Self, typename>
+    template <meta::lvalue T, typename>
     struct _make_zip_iterator;
-    template <meta::lvalue Self, size_t... Is>
-    struct _make_zip_iterator<Self, std::index_sequence<Is...>> {
+    template <meta::lvalue T, size_t... Is>
+    struct _make_zip_iterator<T, std::index_sequence<Is...>> {
         using begin = zip_iterator<
-            Self,
-            typename make_zip_begin<decltype((std::declval<Self>().template arg<Is>()))>::type...
+            T,
+            typename make_zip_begin<decltype((std::declval<T>().template arg<Is>()))>::type...
         >;
         using end = zip_iterator<
-            Self,
-            typename make_zip_end<decltype((std::declval<Self>().template arg<Is>()))>::type...
+            T,
+            typename make_zip_end<decltype((std::declval<T>().template arg<Is>()))>::type...
         >;
     };
-    template <meta::lvalue Self>
+    template <meta::lvalue T>
     struct make_zip_iterator {
-        Self container;
+        T container;
 
     private:
-        using indices = meta::unqualify<Self>::indices;
-        using type = _make_zip_iterator<Self, indices>;
+        using indices = meta::unqualify<T>::indices;
+        using type = _make_zip_iterator<T, indices>;
 
         template <size_t... Is>
         constexpr type::begin _begin(std::index_sequence<Is...>)
@@ -4299,13 +4306,13 @@ namespace impl {
             return _end(indices{});
         }
     };
-    template <typename Self>
-    make_zip_iterator(Self& self) -> make_zip_iterator<Self&>;
+    template <typename T>
+    make_zip_iterator(T&) -> make_zip_iterator<T&>;
 
     template <typename>
-    constexpr bool zip_reverse_iterable = false;
+    constexpr bool range_reverse_iterable = false;
     template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
-    constexpr bool zip_reverse_iterable<meta::pack<A...>> = true;
+    constexpr bool range_reverse_iterable<meta::pack<A...>> = true;
 
     template <meta::lvalue T>
     struct make_zip_rbegin {
@@ -4350,27 +4357,27 @@ namespace impl {
     /* If all of the input ranges happen to be reverse iterable, then the zipped range
     will also be reverse iterable, and the rbegin and rend iterators will match if
     all of the input ranges use the same rbegin and rend types. */
-    template <meta::lvalue Self, typename>
+    template <meta::lvalue T, typename>
     struct _make_zip_reversed;
-    template <meta::lvalue Self, size_t... Is>
-    struct _make_zip_reversed<Self, std::index_sequence<Is...>> {
+    template <meta::lvalue T, size_t... Is>
+    struct _make_zip_reversed<T, std::index_sequence<Is...>> {
         using begin = zip_iterator<
-            Self,
-            typename make_zip_rbegin<decltype((std::declval<Self>().template arg<Is>()))>::type...
+            T,
+            typename make_zip_rbegin<decltype((std::declval<T>().template arg<Is>()))>::type...
         >;
         using end = zip_iterator<
-            Self,
-            typename make_zip_rend<decltype((std::declval<Self>().template arg<Is>()))>::type...
+            T,
+            typename make_zip_rend<decltype((std::declval<T>().template arg<Is>()))>::type...
         >;
     };
-    template <meta::lvalue Self>
-        requires (zip_reverse_iterable<typename meta::unqualify<Self>::argument_types>)
+    template <meta::lvalue T>
+        requires (range_reverse_iterable<typename meta::unqualify<T>::argument_types>)
     struct make_zip_reversed {
-        Self container;
+        T container;
 
     private:
-        using indices = meta::unqualify<Self>::indices;
-        using type = _make_zip_reversed<Self, indices>;
+        using indices = meta::unqualify<T>::indices;
+        using type = _make_zip_reversed<T, indices>;
 
         template <size_t... Is>
         constexpr type::begin _begin(std::index_sequence<Is...>)
@@ -4424,20 +4431,18 @@ namespace impl {
             return _end(indices{});
         }
     };
-    template <typename Self>
-    make_zip_reversed(Self& self) -> make_zip_reversed<Self&>;
+    template <typename T>
+    make_zip_reversed(T&) -> make_zip_reversed<T&>;
 
     template <size_t min, typename...>
-    static constexpr size_t _zip_tuple_size = min;
+    constexpr size_t _zip_tuple_size = min;
     template <size_t min, typename T, typename... Ts>
-    static constexpr size_t _zip_tuple_size<min, T, Ts...> = _zip_tuple_size<min, Ts...>;
+    constexpr size_t _zip_tuple_size<min, T, Ts...> = _zip_tuple_size<min, Ts...>;
     template <size_t min, meta::range T, typename... Ts>
         requires (meta::tuple_like<T> && meta::tuple_size<T> < min)
-    static constexpr size_t _zip_tuple_size<min, T, Ts...> =
-        _zip_tuple_size<meta::tuple_size<T>, Ts...>;
+    constexpr size_t _zip_tuple_size<min, T, Ts...> = _zip_tuple_size<meta::tuple_size<T>, Ts...>;
     template <typename... Ts>
-    static constexpr size_t zip_tuple_size =
-        _zip_tuple_size<std::numeric_limits<size_t>::max(), Ts...>;
+    constexpr size_t zip_tuple_size = _zip_tuple_size<std::numeric_limits<size_t>::max(), Ts...>;
 
     /* Zipped ranges store an arbitrary set of argument types as well as a function to
     apply over them.  The arguments are not required to be ranges, and will be
@@ -4451,10 +4456,10 @@ namespace impl {
         using size_type = size_t;
         using index_type = ssize_t;
         using indices = std::make_index_sequence<sizeof...(A)>;
-        using ranges = zip_indices<A...>;
+        using ranges = range_indices<A...>;
 
-        [[no_unique_addres]] impl::ref<F> m_func;
-        [[no_unique_addres]] impl::basic_tuple<A...> m_args;
+        [[no_unique_address]] impl::ref<F> m_func;
+        [[no_unique_address]] impl::basic_tuple<A...> m_args;
 
         /* Perfectly forward the underlying transformation function. */
         template <typename Self>
@@ -4539,7 +4544,7 @@ namespace impl {
         of the ranges are tuple-like, then the size will be computed statically at
         compile time.  Otherwise, it will be computed using a fold over the input
         ranges.
-        
+
         Note that if all of the input ranges are `sequence` types (which may or may not
         be sized), then this method may throw an `IndexError` if and only if
         `sequence.has_size()` evaluates to `false` for any of the input ranges.  This
@@ -4893,7 +4898,7 @@ private:
     using range = bertrand::range<container<A...>>;
 
 public:
-    [[no_unique_addres]] F f;
+    [[no_unique_address]] F f;
 
     template <typename Self, typename... A> requires (impl::zip_concept<F, A...>)
     [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
@@ -4974,12 +4979,13 @@ static_assert([] {
 
 
 static constexpr std::array arr3 {std::pair{1, 2}, std::pair{3, 4}};
-static constexpr auto r = zip{[](int x, int y, int z) {
+static constexpr auto r = zip{[](int x, int y, int z, int w) {
     return x + y;
-}}(*range(arr3), 2);
+}}(*range(arr3), range(arr1), 2);
 static_assert([] {
     if (r.size() != 2) return false;
     if (r[0] != 3) return false;
+    if (r[1] != 7) return false;
 
     for (auto&& x : r) {
         if (x != 3 && x != 7) {
@@ -4996,10 +5002,541 @@ static_assert([] {
 ////////////////////
 
 
+namespace impl {
+
+    template <typename Sep, typename... A>
+    concept join_concept =
+        (meta::not_void<A> && ...) &&
+        (meta::not_rvalue<Sep> && ... && meta::not_rvalue<A>);
+
+    /// TODO: join may be called with zero range arguments? -> join{"."}("a", "b", "c")
+    /// -> It may be a good idea to enforce the same standard for `zip`, for parity
+    /// with join.
+
+    template <typename C, size_t I>
+    concept join_broadcast =
+        !meta::range<typename meta::unqualify<C>::argument_types::template at<I>>;
+
+    /// TODO: what does unpacking mean in the context of joined ranges exactly?  If the
+    /// yield type is another range, then the joined range will flatten them into the
+    /// output?
+
+    // template <typename C, size_t I>
+    // concept join_unpack =
+    //     meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>> &&
+    //     meta::tuple_like<meta::yield_type<
+    //         typename meta::unqualify<C>::argument_types::template at<I>
+    //     >>;
+
+
+    template <meta::lvalue C, meta::not_rvalue... Iters>
+        // requires (join_yield<C, Iters...>::enable)
+    struct join_iterator {
+    private:
+        using indices = meta::unqualify<C>::indices;
+        using ranges = meta::unqualify<C>::ranges;
+
+    public:
+        using iterator_category = range_category<ranges, Iters...>::type;
+        using difference_type = range_difference<ranges, Iters...>::type;
+
+        meta::as_pointer<C> container = nullptr;
+        impl::basic_union<Iters...> iters;
+
+    private:
+
+        /// TODO: helpers to implement the iterator interface
+
+    public:
+
+        /// TODO: call all the helpers to implement the iterator interface
+
+    };
+
+    template <meta::lvalue T>
+    struct make_join_begin {
+        using type = T;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_join_begin<T> {
+        using type = meta::begin_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.begin()} noexcept;})
+            requires (requires{{arg.begin()};})
+        {
+            return arg.begin();
+        }
+    };
+    template <typename T>
+    make_join_begin(T&) -> make_join_begin<T&>;
+
+    template <meta::lvalue T>
+    struct make_join_end {
+        using type = T;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_join_end<T> {
+        using type = meta::end_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.end()} noexcept;})
+            requires (requires{{arg.end()};})
+        {
+            return arg.end();
+        }
+    };
+    template <typename T>
+    make_join_end(T&) -> make_join_end<T&>;
+
+    /* Forward iterators over `join` ranges consist of an inner union holding either
+    an iterator over the current range or a trivial iterator over a single element.
+    If all ranges use the same begin and end types, then the overall joined iterators
+    will also match. */
+    template <meta::lvalue T, typename>
+    struct _make_join_iterator;
+    template <meta::lvalue T, size_t... Is>
+    struct _make_join_iterator<T, std::index_sequence<Is...>> {
+        using begin = join_iterator<
+            T,
+            typename make_zip_begin<decltype((std::declval<T>().template arg<Is>()))>::type...
+        >;
+        using end = join_iterator<
+            T,
+            typename make_zip_end<decltype((std::declval<T>().template arg<Is>()))>::type...
+        >;
+    };
+    template <meta::lvalue T>
+    struct make_join_iterator {
+        T container;
+
+    private:
+        using indices = meta::unqualify<T>::indices;
+        using type = _make_join_iterator<T, indices>;
+
+        template <size_t... Is>
+        constexpr type::begin _begin(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::begin{
+                .container = std::addressof(container),
+                .iters = {make_join_begin{container.template arg<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::begin{
+                .container = std::addressof(container),
+                .iters = {make_join_begin{container.template arg<Is>()}()...}
+            }};})
+        {
+            return {
+                .container = std::addressof(container),
+                .iters = {make_join_begin{container.template arg<Is>()}()...}
+            };
+        }
+
+        template <size_t... Is>
+        constexpr type::end _end(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::end{
+                .container = std::addressof(container),
+                .iters = {make_join_end{container.template arg<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::end{
+                .container = std::addressof(container),
+                .iters = {make_join_end{container.template arg<Is>()}()...}
+            }};})
+        {
+            return {
+                .container = std::addressof(container),
+                .iters = {make_join_end{container.template arg<Is>()}()...}
+            };
+        }
+
+    public:
+        using begin_type = type::begin;
+        using end_type = type::end;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{_begin(indices{})} noexcept;})
+            requires (requires{{_begin(indices{})};})
+        {
+            return _begin(indices{});
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (requires{{_end(indices{})} noexcept;})
+            requires (requires{{_end(indices{})};})
+        {
+            return _end(indices{});
+        }
+    };
+    template <typename T>
+    make_join_iterator(T&) -> make_join_iterator<T&>;
+
+    template <typename>
+    constexpr bool join_reverse_iterable = false;
+    template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
+    constexpr bool join_reverse_iterable<meta::pack<A...>> = true;
+
+    template <meta::lvalue T>
+    struct make_join_rbegin {
+        using type = T;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_join_rbegin<T> {
+        using type = meta::rbegin_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.rbegin()} noexcept;})
+            requires (requires{{arg.rbegin()};})
+        {
+            return arg.rbegin();
+        }
+    };
+    template <typename T>
+    make_join_rbegin(T&) -> make_join_rbegin<T&>;
+
+    template <meta::lvalue T>
+    struct make_join_rend {
+        using type = T;
+        T arg;
+        constexpr type operator()() noexcept { return arg; }
+    };
+    template <meta::lvalue T> requires (meta::range<T>)
+    struct make_join_rend<T> {
+        using type = meta::rend_type<T>;
+        T arg;
+        constexpr type operator()()
+            noexcept (requires{{arg.rend()} noexcept;})
+            requires (requires{{arg.rend()};})
+        {
+            return arg.rend();
+        }
+    };
+    template <typename T>
+    make_join_rend(T&) -> make_join_rend<T&>;
+
+    /* If all of the input ranges happen to be reverse iterable, then the joined range
+    will alos be reverse iterable, and the rbegin and rend iterators will match if all
+    of the input ranges use the same rbegin and rend types. */
+    template <meta::lvalue T, typename>
+    struct _make_join_reversed;
+    template <meta::lvalue T, size_t... Is>
+    struct _make_join_reversed<T, std::index_sequence<Is...>> {
+        using begin = join_iterator<
+            T,
+            typename make_zip_rbegin<decltype((std::declval<T>().template arg<Is>()))>::type...
+        >;
+        using end = join_iterator<
+            T,
+            typename make_zip_rend<decltype((std::declval<T>().template arg<Is>()))>::type...
+        >;
+    };
+    template <meta::lvalue T>
+        requires (range_reverse_iterable<typename meta::unqualify<T>::argument_types>)
+    struct make_join_reversed {
+        T container;
+
+    private:
+        using indices = meta::unqualify<T>::indices;
+        using type = _make_zip_reversed<T, indices>;
+
+        template <size_t... Is>
+        constexpr type::begin _begin(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::begin{
+                .container = std::addressof(container),
+                .iters = {make_join_rbegin{container.template arg<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::begin{
+                .container = std::addressof(container),
+                .iters = {make_join_rbegin{container.template arg<Is>()}()...}
+            }};})
+        {
+            return {
+                .container = std::addressof(container),
+                .iters = {make_join_rbegin{container.template arg<Is>()}()...}
+            };
+        }
+
+        template <size_t... Is>
+        constexpr type::end _end(std::index_sequence<Is...>)
+            noexcept (requires{{typename type::end{
+                .container = std::addressof(container),
+                .iters = {make_join_rend{container.template arg<Is>()}()...}
+            }} noexcept;})
+            requires (requires{{typename type::end{
+                .container = std::addressof(container),
+                .iters = {make_join_rend{container.template arg<Is>()}()...}
+            }};})
+        {
+            return {
+                .container = std::addressof(container),
+                .iters = {make_join_rend{container.template arg<Is>()}()...}
+            };
+        }
+
+    public:
+        using begin_type = type::begin;
+        using end_type = type::end;
+
+        [[nodiscard]] constexpr begin_type begin()
+            noexcept (requires{{_begin(indices{})} noexcept;})
+            requires (requires{{_begin(indices{})};})
+        {
+            return _begin(indices{});
+        }
+
+        [[nodiscard]] constexpr end_type end()
+            noexcept (requires{{_end(indices{})} noexcept;})
+            requires (requires{{_end(indices{})};})
+        {
+            return _end(indices{});
+        }
+    };
+    template <typename T>
+    make_join_reversed(T&) -> make_join_reversed<T&>;
+
+    template <size_t sum, typename...>
+    constexpr size_t _join_tuple_size = sum;
+    template <size_t sum, typename T, typename... Ts>
+    constexpr size_t _join_tuple_size<sum, T, Ts...> = _join_tuple_size<sum, Ts...>;
+    template <size_t sum, meta::range T, typename... Ts> requires (meta::tuple_like<T>)
+    constexpr size_t _join_tuple_size<sum, T, Ts...> =
+        _join_tuple_size<sum + meta::tuple_size<T>, Ts...>;
+    template <typename... Ts>
+    constexpr size_t join_tuple_size = _join_tuple_size<0, Ts...>;
+
+    /* Joined ranges store an arbitrary set of argument types as well as a possible
+    separator to insert between each one.  The arguments are not required to be ranges,
+    and will be inserted as single elements at their respective position if not.  If
+    any of the arguments are ranges, then they will be iterated over in sequence. */
+    template <typename Sep, typename... A> requires (join_concept<Sep, A...>)
+    struct join {
+        using separator_type = Sep;
+        using argument_types = meta::pack<A...>;
+        using size_type = size_t;
+        using index_type = ssize_t;
+        using indices = std::make_index_sequence<sizeof...(A)>;
+        using ranges = range_indices<A...>;
+
+        [[no_unique_address]] impl::ref<Sep> m_sep;
+        [[no_unique_address]] impl::basic_tuple<A...> m_args;
+
+        /* Perfectly forward the stored separator, if one was given. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) sep(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_sep);
+        }
+
+        /* Perfectly forward the I-th joined argument. */
+        template <size_t I, typename Self> requires (I < sizeof...(A))
+        [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
+            return (std::forward<Self>(self).m_args.template get<I>());
+        }
+
+    private:
+        static constexpr bool sized = ((!meta::range<A> || meta::has_size<A>) && ...);
+        static constexpr bool tuple_like = ((!meta::range<A> || meta::tuple_like<A>) && ...);
+        static constexpr bool sequence_like = (meta::sequence<A> || ...);
+
+        template <typename T>
+        static constexpr bool has_size_impl(const T& value) noexcept {
+            if constexpr (meta::sequence<T>) {
+                return value.has_size();
+            } else {
+                return true;
+            }
+        }
+
+        template <size_t... Is> requires (sequence_like && sizeof...(Is) == ranges::size())
+        [[nodiscard]] constexpr bool _has_size(std::index_sequence<Is...>) const noexcept {
+            return (has_size_impl(arg<Is>()) && ...);
+        }
+
+        /// TODO: a joined range's size depends on the presence of a separator and/or
+        /// unpacking operator, and is not generally easy to compute.  It will require
+        /// some thinking to figure out how this should be implemented.
+
+    public:
+        /* If any of the input ranges are `sequence` types, then it's possible that
+        `.size()` could throw a runtime error due to type erasure, which acts as a
+        SFINAE barrier with respect to the underlying container.  In order to handle
+        this, a joined range consisting of one or more sequences will expose the same
+        `has_size()` accessor as the sequences themselves, and will return their
+        logical conjunction. */
+        [[nodiscard]] static constexpr bool has_size() noexcept requires (sized && !sequence_like) {
+            return true;
+        }
+
+        /* If any of the input ranges are `sequence` types, then it's possible that
+        `.size()` could throw a runtime error due to type erasure, which acts as a
+        SFINAE barrier with respect to the underlying container.  In order to handle
+        this, a joined range consisting of one or more sequences will expose the same
+        `has_size()` accessor as the sequences themselves, and will return their
+        logical conjunction. */
+        [[nodiscard]] constexpr bool has_size() const noexcept requires (sized && sequence_like) {
+            return _has_size(ranges{});
+        }
+
+
+        /// TODO: calculate the appropriate size
+
+
+        // /* True if the joined range contains no elements.  False otherwise. */
+        // [[nodiscard]] constexpr bool empty() const
+        //     noexcept (requires{{begin() == end()} noexcept;})
+        // {
+        //     return begin() == end();
+        // }
+
+    private:
+
+        /// TODO: helpers for get<I>() and operator[]()
+
+    public:
+        /// TODO: get<I>() and operator[] using helpers
+
+
+        
+        /* Get a forward iterator over the joined range. */
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{make_join_iterator{*this}.begin()} noexcept;})
+            requires (requires{{make_join_iterator{*this}.begin()};})
+        {
+            return make_join_iterator{*this}.begin();
+        }
+
+        /* Get a forward iterator over the joined range. */
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{make_join_iterator{*this}.begin()} noexcept;})
+            requires (requires{{make_join_iterator{*this}.begin()};})
+        {
+            return make_join_iterator{*this}.begin();
+        }
+
+        /* Get a forward sentinel one past the end of the joined range. */
+        [[nodiscard]] constexpr auto end()
+            noexcept (requires{{make_join_iterator{*this}.end()} noexcept;})
+            requires (requires{{make_join_iterator{*this}.end()};})
+        {
+            return make_join_iterator{*this}.end();
+        }
+
+        /* Get a forward sentinel one past the end of the joined range. */
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{make_join_iterator{*this}.end()} noexcept;})
+            requires (requires{{make_join_iterator{*this}.end()};})
+        {
+            return make_join_iterator{*this}.end();
+        }
+
+        /* Get a reverse iterator over the joined range. */
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires{{make_join_reversed{*this}.begin()} noexcept;})
+            requires (requires{{make_join_reversed{*this}.begin()};})
+        {
+            return make_join_reversed{*this}.begin();
+        }
+
+        /* Get a reverse iterator over the joined range. */
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{make_join_reversed{*this}.begin()} noexcept;})
+            requires (requires{{make_join_reversed{*this}.begin()};})
+        {
+            return make_join_reversed{*this}.begin();
+        }
+
+        /* Get a reverse sentinel one before the beginning of the joined range. */
+        [[nodiscard]] constexpr auto rend()
+            noexcept (requires{{make_join_reversed{*this}.end()} noexcept;})
+            requires (requires{{make_join_reversed{*this}.end()};})
+        {
+            return make_join_reversed{*this}.end();
+        }
+
+        /* Get a reverse sentinel one before the beginning of the joined range. */
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (requires{{make_join_reversed{*this}.end()} noexcept;})
+            requires (requires{{make_join_reversed{*this}.end()};})
+        {
+            return make_join_reversed{*this}.end();
+        }
+    };
+
+}
+
+
+template <meta::not_rvalue Sep = void>
+struct join {
+private:
+    template <typename... A>
+    using container = impl::join<Sep, meta::remove_rvalue<A>...>;
+
+    template <typename... A>
+    using range = bertrand::range<container<A...>>;
+
+public:
+    [[no_unique_address]] Sep sep;
+
+    template <typename Self, typename... A> requires (impl::join_concept<Sep, A...>)
+    [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
+        noexcept (requires{{range<A...>{container<A...>{
+            .m_sep = std::forward<Self>(self).sep,
+            .m_args = {std::forward<A>(a)...}
+        }}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{
+            .m_sep = std::forward<Self>(self).sep,
+            .m_args = {std::forward<A>(a)...}
+        }}};})
+    {
+        return range<A...>{container<A...>{
+            .m_sep = std::forward<Self>(self).sep,
+            .m_args = {std::forward<A>(a)...}
+        }};
+    }
+};
+
+
+template <meta::is_void V> requires (meta::not_rvalue<V>)
+struct join<V> {
+private:
+    template <typename... A>
+    using container = impl::join<void, meta::remove_rvalue<A>...>;
+
+    template <typename... A>
+    using range = bertrand::range<container<A...>>;
+
+public:
+    /// TODO: revisit this once the storage for impl::join has been implemented, since
+    /// this might need to account for the lack of a separator at compile time.
+
+    template <typename Self, typename... A> requires (impl::join_concept<void, A...>)
+    [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
+        noexcept (requires{{range<A...>{container<A...>{
+            .m_args = {std::forward<A>(a)...}
+        }}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{
+            .m_args = {std::forward<A>(a)...}
+        }}};})
+    {
+        return range<A...>{container<A...>{
+            .m_args = {std::forward<A>(a)...}
+        }};
+    }
+};
+
+
+template <typename Sep>
+join(Sep&&) -> join<meta::remove_rvalue<Sep>>;
+
+
+
 
 
 /// TODO: `join{}` is quite challenging to implement.  It basically requires the range
-/// adaptor to store an `impl::overloads` of the initializing ranges, and then the
+/// adaptor to store an `impl::basic_tuple` of the initializing ranges, and then the
 /// iterator would store an `impl::basic_union<Iters...>` where the active index
 /// determines which range is currently being iterated over.  If the ranges yield
 /// multiple distinct types, then the overall yield type from the iterator will be
@@ -5008,7 +5545,7 @@ static_assert([] {
 /// TODO: I'm also not entirely sure how to handle unpacking operators in this case.
 /// They should either expand horizontally or cause nested ranges to be flattened,
 /// which may end up being the default behavior.  Just yield a non-range if you want
-/// to avoid flattening.
+/// to avoid flattening?
 
 
 
