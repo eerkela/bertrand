@@ -4488,7 +4488,7 @@ namespace impl {
         }
 
         template <size_t... Is> requires (sequence_like && sizeof...(Is) == ranges::size())
-        [[nodiscard]] constexpr bool _has_size(std::index_sequence<Is...>) const noexcept {
+        constexpr bool _has_size(std::index_sequence<Is...>) const noexcept {
             return (has_size_impl(arg<Is>()) && ...);
         }
 
@@ -4521,6 +4521,9 @@ namespace impl {
             return _has_size(ranges{});
         }
 
+        /// TODO: maybe splitting the size methods is not required, and the optimizer
+        /// will do that for us as part of constant folding?
+
         /* The overall size of the zipped range as an unsigned integer.  This is only
         enabled if all of the arguments are either sized ranges or non-range inputs, in
         which case it will return the minimum size of the constituent ranges.  If all
@@ -4545,12 +4548,12 @@ namespace impl {
         compile time.  Otherwise, it will be computed using a fold over the input
         ranges.
 
-        Note that if all of the input ranges are `sequence` types (which may or may not
-        be sized), then this method may throw an `IndexError` if and only if
-        `sequence.has_size()` evaluates to `false` for any of the input ranges.  This
-        is a consequence of type erasure on the underlying container, and may be worked
-        around via the `has_size()` method.  If that method returns `true`, then this
-        method will never throw. */
+        Note that if any of the input ranges are `sequence` types (which may or may not
+        be sized), then this method may throw an `IndexError` if `sequence.has_size()`
+        evaluates to `false` for any of the sequences.  This is a consequence of type
+        erasure on the underlying container, which acts as a SFINAE barrier for the
+        compiler, and may be worked around via the `has_size()` method.  If that method
+        returns `true`, then this method will never throw. */
         [[nodiscard]] constexpr size_type size() const
             noexcept (requires{{_size(ranges{})} noexcept;})
             requires (!tuple_like && sized)
@@ -4559,10 +4562,11 @@ namespace impl {
         }
 
         /* The overall size of the zipped range as a signed integer.  This is only
-        enabled if all of the arguments are either sized ranges or non-range inputs,
-        and the visitor function yields either scalar values or tuple-like ranges with
-        a consistent size. */
-        [[nodiscard]] constexpr index_type ssize() const noexcept requires (sized) {
+        enabled if all of the arguments are either sized ranges or non-range inputs. */
+        [[nodiscard]] constexpr index_type ssize() const
+            noexcept (requires{{index_type(size())} noexcept;})
+            requires (sized)
+        {
             return index_type(size());
         }
 
@@ -4888,6 +4892,60 @@ namespace impl {
 }
 
 
+/// TODO: maybe unpacking a non-range argument should not be a problem, and always
+/// attempts to unpack the individual elements rather than the whole argument.  This
+/// will require some thought.
+
+
+/* A function object that merges multiple ranges and/or scalar values into a single
+range, passing each element to a given transformation function.  If no transformation
+function is given, then the range defaults to returning a `Tuple` of the individual
+elements.
+
+This class unifies and replaces the following standard library views:
+
+    1.  `std::views::zip` -> `zip{}(a...)`
+    2.  `std::views::zip_transform` -> `zip{f}(a...)`
+    3.  `std::views::transform` -> `zip{f}(r)`
+    4.  `std::views::enumerate` -> `zip{f}(range(0, r.size()), r)`
+
+This class also serves as the basis for monadic operations on ranges, which differ only
+in the transformation function used to compute each element.  An expression such as
+`range(x) + 2` is therefore equivalent to:
+
+    ```cpp
+    auto add = []<typename L, typename R>(L&& l, R&& r) -> decltype(auto) {
+        return (std::forward<L>(l) + std::forward<R>(r));
+    };
+    zip{add}(range(x), 2);
+    ```
+
+Similar definitions exist for all overloadable operators, which act as simple
+elementwise transformations on the zipped range(s).
+
+Note that providing an unpacking operator (e.g. `*range(x)`) as an argument will
+trigger tuple decomposition for each element of the unpacked range, causing them to be
+passed as individual arguments to the transformation function.  For example:
+
+    ```cpp
+    auto f = [](int a, int b, int c) { return a + b + c; };
+
+    Array x {Tuple{1, 2}, Tuple{3, 4}, Tuple{5, 6}};
+    zip{f}(*range(x), 7);  // [10, 14, 18]
+    ```
+
+If the unpacked range does not yield tuple-like elements, then the unpacking operator
+will be ignored.  Additionally, unpacking a non-range argument (i.e. `*x` instead of
+`*range(x)`) will decompose the argument before iterating, which may cause the contents
+to be broadcasted as scalars:
+
+    ```cpp
+    auto f = [](int a, int b, int c, int d) { return a + b + c + d; };
+
+    Tuple x {1, 2, 3};
+    zip{f}(*x, 4);  // [10]
+    ```
+*/
 template <meta::not_rvalue F = void>
 struct zip {
 private:
@@ -4919,6 +4977,55 @@ public:
 };
 
 
+/* A function object that merges multiple ranges and/or scalar values into a single
+range, passing each element to a given transformation function.  If no transformation
+function is given, then the range defaults to returning a `Tuple` of the individual
+elements.
+
+This class unifies and replaces the following standard library views:
+
+    1.  `std::views::zip` -> `zip{}(a...)`
+    2.  `std::views::zip_transform` -> `zip{f}(a...)`
+    3.  `std::views::transform` -> `zip{f}(r)`
+    4.  `std::views::enumerate` -> `zip{f}(range(0, r.size()), r)`
+
+This class also serves as the basis for monadic operations on ranges, which differ only
+in the transformation function used to compute each element.  An expression such as
+`range(x) + 2` is therefore equivalent to:
+
+    ```cpp
+    auto add = []<typename L, typename R>(L&& l, R&& r) -> decltype(auto) {
+        return (std::forward<L>(l) + std::forward<R>(r));
+    };
+    zip{add}(range(x), 2);
+    ```
+
+Similar definitions exist for all overloadable operators, which act as simple
+elementwise transformations on the zipped range(s).
+
+Note that providing an unpacking operator (e.g. `*range(x)`) as an argument will
+trigger tuple decomposition for each element of the unpacked range, causing them to be
+passed as individual arguments to the transformation function.  For example:
+
+    ```cpp
+    auto f = [](int a, int b, int c) { return a + b + c; };
+
+    Array x {Tuple{1, 2}, Tuple{3, 4}, Tuple{5, 6}};
+    zip{f}(*range(x), 7);  // [10, 14, 18]
+    ```
+
+If the unpacked range does not yield tuple-like elements, then the unpacking operator
+will be ignored.  Additionally, unpacking a non-range argument (i.e. `*x` instead of
+`*range(x)`) will decompose the argument before iterating, which may cause the contents
+to be broadcasted as scalars:
+
+    ```cpp
+    auto f = [](int a, int b, int c, int d) { return a + b + c + d; };
+
+    Tuple x {1, 2, 3};
+    zip{f}(*x, 4);  // [10]
+    ```
+*/
 template <meta::is_void V> requires (meta::not_rvalue<V>)
 struct zip<V> {
 private:
@@ -5337,9 +5444,21 @@ namespace impl {
         }
 
     private:
-        static constexpr bool sized = ((!meta::range<A> || meta::has_size<A>) && ...);
-        static constexpr bool tuple_like = ((!meta::range<A> || meta::tuple_like<A>) && ...);
-        static constexpr bool sequence_like = (meta::sequence<A> || ...);
+        static constexpr bool sized = (
+            (!meta::range<Sep> || (meta::has_size<Sep> && (
+                !meta::unpack<Sep> || meta::tuple_like<meta::yield_type<Sep>>
+            ))) &&
+            ... &&
+            (!meta::range<A> || (meta::has_size<A> && (
+                !meta::unpack<A> || meta::tuple_like<meta::yield_type<A>>
+            )))
+        );
+        static constexpr bool tuple_like = (
+            (!meta::range<Sep> || meta::tuple_like<Sep>) &&
+            ... &&
+            (!meta::range<A> || meta::tuple_like<A>)
+        );
+        static constexpr bool sequence_like = (meta::sequence<Sep> || ... || meta::sequence<A>);
 
         template <typename T>
         static constexpr bool has_size_impl(const T& value) noexcept {
@@ -5351,13 +5470,97 @@ namespace impl {
         }
 
         template <size_t... Is> requires (sequence_like && sizeof...(Is) == ranges::size())
-        [[nodiscard]] constexpr bool _has_size(std::index_sequence<Is...>) const noexcept {
+        constexpr bool _has_size(std::index_sequence<Is...>) const noexcept {
             return (has_size_impl(arg<Is>()) && ...);
         }
 
-        /// TODO: a joined range's size depends on the presence of a separator and/or
-        /// unpacking operator, and is not generally easy to compute.  It will require
-        /// some thinking to figure out how this should be implemented.
+        template <typename T>
+        constexpr size_type size_impl(const T& arg) const
+            noexcept (
+                !meta::range<T> ||
+                (meta::nothrow::size_returns<size_type, const T&> && (
+                    !meta::unpack<T> ||
+                    (meta::tuple_like<meta::yield_type<T>> && (
+                        !meta::range<Sep> ||
+                        requires{{size_type(sep().size())} noexcept;}
+                    ))
+                ))
+            )
+            requires (
+                !meta::range<T> ||
+                (meta::size_returns<size_type, const T&> && (
+                    !meta::unpack<T> ||
+                    (meta::tuple_like<meta::yield_type<T>> && (
+                        !meta::range<Sep> ||
+                        requires{{size_type(sep().size())};}
+                    ))
+                ))
+            )
+        {
+            if constexpr (meta::unpack<T>) {
+                constexpr size_type element_size = meta::tuple_size<meta::yield_type<T>>;
+                size_type n = arg.size();
+                if constexpr (meta::is_void<Sep>) {
+                    return n * element_size;
+                } else if constexpr (meta::range<Sep>) {
+                    return n * element_size + (n - (n > 0)) * size_type(sep().size());
+                } else {
+                    return n * element_size + (n - (n > 0));
+                }
+            } else if constexpr (meta::range<T>) {
+                return arg.size();
+            } else {
+                return 1;
+            }
+        }
+
+        template <size_t... Is> requires (sizeof...(Is) == indices::size())
+        constexpr size_type _size(std::index_sequence<Is...>) const
+            noexcept (requires{{(size_impl(arg<Is>()) + ... + 0)} noexcept;})
+            requires (meta::is_void<Sep> && requires{{(size_impl(arg<Is>()) + ... + 0)};})
+        {
+            return (size_impl(arg<Is>()) + ... + 0);
+        }
+
+        template <size_t... Is> requires (sizeof...(Is) == indices::size())
+        constexpr size_type _size(std::index_sequence<Is...>) const
+            noexcept (requires{{(
+                size_impl(arg<Is>()) +
+                ... +
+                (size_type(sep().size()) * (sizeof...(Is) - (sizeof...(Is) > 0)))
+            )} noexcept;})
+            requires (meta::range<Sep> && requires{{(
+                size_impl(arg<Is>()) +
+                ... +
+                (size_type(sep().size()) * (sizeof...(Is) - (sizeof...(Is) > 0)))
+            )};})
+        {
+            return (
+                size_impl(arg<Is>()) +
+                ... +
+                (size_type(sep().size()) * (sizeof...(Is) - (sizeof...(Is) > 0)))
+            );
+        }
+
+        template <size_t... Is> requires (sizeof...(Is) == indices::size())
+        constexpr size_type _size(std::index_sequence<Is...>) const
+            noexcept (requires{{(
+                size_impl(arg<Is>()) +
+                ... +
+                (sizeof...(Is) - (sizeof...(Is) > 0))
+            )} noexcept;})
+            requires (meta::not_void<Sep> && !meta::range<Sep> && requires{{(
+                size_impl(arg<Is>()) +
+                ... +
+                (sizeof...(Is) - (sizeof...(Is) > 0))
+            )};})
+        {
+            return (
+                size_impl(arg<Is>()) +
+                ... +
+                (sizeof...(Is) - (sizeof...(Is) > 0))
+            );
+        }
 
     public:
         /* If any of the input ranges are `sequence` types, then it's possible that
@@ -5380,16 +5583,42 @@ namespace impl {
             return _has_size(ranges{});
         }
 
+        /* The overall size of the joined range as an unsigned integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs,
+        and the separator is either absent, a scalar value, or a sized range.  If one
+        or more unpacking operators are used, then the unpacked element type must be
+        either scalar or tuple-like, so that the size can be computed in constant time.
+        Otherwise, this method will fail to compile.
 
-        /// TODO: calculate the appropriate size
+        Note that if any of the input ranges are `sequence` types (which may or may not
+        be sized), then this method may throw an `IndexError` if `sequence.has_size()`
+        evaluates to `false` for any of the sequences.  This is a consequence of type
+        erasure on the underlying container, which acts as a SFINAE barrier for the
+        compiler, and may be worked around via the `has_size()` method.  If that method
+        returns `true`, then this method will never throw. */
+        [[nodiscard]] constexpr size_type size() const
+            noexcept (requires{{_size(indices{})} noexcept;})
+            requires (sized)
+        {
+            return _size(indices{});
+        }
 
+        /* The overall size of the joined range as a signed integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs,
+        and the separator is either absent, a scalar value, or a sized range. */
+        [[nodiscard]] constexpr index_type ssize() const
+            noexcept (requires{{index_type(size())} noexcept;})
+            requires (sized)
+        {
+            return index_type(size());
+        }
 
-        // /* True if the joined range contains no elements.  False otherwise. */
-        // [[nodiscard]] constexpr bool empty() const
-        //     noexcept (requires{{begin() == end()} noexcept;})
-        // {
-        //     return begin() == end();
-        // }
+        /* True if the joined range contains no elements.  False otherwise. */
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{begin() == end()} noexcept;})
+        {
+            return begin() == end();
+        }
 
     private:
 
