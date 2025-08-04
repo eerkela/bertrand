@@ -4788,7 +4788,7 @@ namespace impl {
         forwarding.  If the index is invalid for one or more of the input ranges, or
         the forwarded arguments are not valid inputs to the visitor function, then this
         method will fail to compile. */
-        template <size_t I, typename Self>
+        template <size_t I, typename Self> requires (tuple_like && I < zip_tuple_size<A...>)
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
             noexcept (requires{{std::forward<Self>(self).template _get<I, 0>()} noexcept;})
             requires (requires{{std::forward<Self>(self).template _get<I, 0>()};})
@@ -4797,7 +4797,7 @@ namespace impl {
         }
 
         /* Index into the zipped range, passing the indexed arguments into the
-        transformation function.  None-range arguments will be forwarded according to
+        transformation function.  Non-range arguments will be forwarded according to
         the current cvref qualifications of the `zip` range, while range arguments will
         be accessed using the provided index before forwarding.  If the index is not
         supported for one or more of the input ranges, or the forwarded arguments are
@@ -4945,7 +4945,16 @@ to be broadcasted as scalars:
     Tuple x {1, 2, 3};
     zip{f}(*x, 4);  // [10]
     ```
-*/
+
+The additional unpacking behavior allows this class to also replace the following
+standard library views:
+
+    1.  `std::views::elements`
+    2.  `std::views::keys`
+    3.  `std::views::values`
+
+... Which all devolve to `zip{f}(*r)`, where `r` is a range yielding tuple-like
+elements, and `f` is a function that extracts the desired value(s). */
 template <meta::not_rvalue F = void>
 struct zip {
 private:
@@ -5025,7 +5034,16 @@ to be broadcasted as scalars:
     Tuple x {1, 2, 3};
     zip{f}(*x, 4);  // [10]
     ```
-*/
+
+The additional unpacking behavior allows this class to also replace the following
+standard library views:
+
+    1.  `std::views::elements`
+    2.  `std::views::keys`
+    3.  `std::views::values`
+
+... Which all devolve to `zip{f}(*r)`, where `r` is a range yielding tuple-like
+elements, and `f` is a function that extracts the desired value(s). */
 template <meta::is_void V> requires (meta::not_rvalue<V>)
 struct zip<V> {
 private:
@@ -5128,12 +5146,12 @@ namespace impl {
     /// yield type is another range, then the joined range will flatten them into the
     /// output?
 
-    // template <typename C, size_t I>
-    // concept join_unpack =
-    //     meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>> &&
-    //     meta::tuple_like<meta::yield_type<
-    //         typename meta::unqualify<C>::argument_types::template at<I>
-    //     >>;
+    template <typename C, size_t I>
+    concept join_unpack =
+        meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>> &&
+        meta::tuple_like<meta::yield_type<
+            typename meta::unqualify<C>::argument_types::template at<I>
+        >>;
 
 
     template <meta::lvalue C, meta::not_rvalue... Iters>
@@ -5405,6 +5423,31 @@ namespace impl {
     template <typename T>
     make_join_reversed(T&) -> make_join_reversed<T&>;
 
+    template <typename Sep>
+    constexpr size_t join_sep_size = 1;
+    template <meta::is_void Sep>
+    constexpr size_t join_sep_size<Sep> = 0;
+    template <meta::range Sep> requires (meta::tuple_like<Sep>)
+    constexpr size_t join_sep_size<Sep> = meta::tuple_size<Sep>;
+    template <meta::unpack Sep>
+        requires (meta::tuple_like<Sep> && meta::tuple_like<meta::yield_type<Sep>>)
+    constexpr size_t join_sep_size<Sep> =
+        meta::tuple_size<Sep> * meta::tuple_size<meta::yield_type<Sep>>;
+
+    template <typename T, typename Sep>
+    constexpr size_t join_arg_size = 1;
+    template <meta::range T, typename Sep> requires (meta::tuple_like<T>)
+    constexpr size_t join_arg_size<T, Sep> = meta::tuple_size<T>;
+    template <meta::unpack T, typename Sep>
+        requires (meta::tuple_like<T> && meta::tuple_like<meta::yield_type<T>>)
+    constexpr size_t join_arg_size<T, Sep> =
+        meta::tuple_size<T> * meta::tuple_size<meta::yield_type<T>> +
+        (meta::tuple_size<T> - (meta::tuple_size<T> > 0)) * join_sep_size<Sep>;
+
+    /// TODO: join_tuple_size needs to account for the separator, which may be missing,
+    /// a scalar, range, or unpacked range.  If any arguments are unpacked ranges
+    /// that meet the conditions for unpacking, then the separator will be inserted
+    /// between each one.
     template <size_t sum, typename...>
     constexpr size_t _join_tuple_size = sum;
     template <size_t sum, typename T, typename... Ts>
@@ -5414,6 +5457,17 @@ namespace impl {
         _join_tuple_size<sum + meta::tuple_size<T>, Ts...>;
     template <typename... Ts>
     constexpr size_t join_tuple_size = _join_tuple_size<0, Ts...>;
+
+    template <typename Sep, typename... A> requires (join_concept<Sep, A...>)
+    struct join_storage {
+        [[no_unique_address]] impl::ref<Sep> sep;
+        [[no_unique_address]] impl::basic_tuple<A...> args;
+    };
+
+    template <meta::is_void Sep, typename... A> requires (join_concept<Sep, A...>)
+    struct join_storage<Sep, A...> {
+        [[no_unique_address]] impl::basic_tuple<A...> args;
+    };
 
     /* Joined ranges store an arbitrary set of argument types as well as a possible
     separator to insert between each one.  The arguments are not required to be ranges,
@@ -5428,19 +5482,18 @@ namespace impl {
         using indices = std::make_index_sequence<sizeof...(A)>;
         using ranges = range_indices<A...>;
 
-        [[no_unique_address]] impl::ref<Sep> m_sep;
-        [[no_unique_address]] impl::basic_tuple<A...> m_args;
+        [[no_unique_address]] join_storage<Sep, A...> m_storage;
 
         /* Perfectly forward the stored separator, if one was given. */
-        template <typename Self>
+        template <typename Self> requires (meta::not_void<Sep>)
         [[nodiscard]] constexpr decltype(auto) sep(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_sep);
+            return (*std::forward<Self>(self).m_storage.sep);
         }
 
         /* Perfectly forward the I-th joined argument. */
         template <size_t I, typename Self> requires (I < sizeof...(A))
         [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
-            return (std::forward<Self>(self).m_args.template get<I>());
+            return (std::forward<Self>(self).m_storage.args.template get<I>());
         }
 
     private:
@@ -5459,6 +5512,10 @@ namespace impl {
             (!meta::range<A> || meta::tuple_like<A>)
         );
         static constexpr bool sequence_like = (meta::sequence<Sep> || ... || meta::sequence<A>);
+
+        template <size_t J>
+        static constexpr size_type unpack_size =
+            meta::tuple_size<meta::yield_type<meta::unpack_type<J, A...>>>;
 
         template <typename T>
         static constexpr bool has_size_impl(const T& value) noexcept {
@@ -5621,13 +5678,189 @@ namespace impl {
         }
 
     private:
+        template <size_t I, typename Self> requires (I < join_sep_size<Sep>)
+        constexpr decltype(auto) get_sep_impl(this Self&& self)
+            noexcept ((meta::unpack<Sep> && requires{
+                {std::forward<Self>(self).sep().
+                    template get<I / meta::tuple_size<meta::yield_type<Sep>>>().
+                    template get<I % meta::tuple_size<meta::yield_type<Sep>>>()
+                } noexcept;
+            }) || (!meta::unpack<Sep> && meta::range<Sep> && requires{
+                {std::forward<Self>(self).sep().template get<I>()} noexcept;
+            }) || (!meta::range<Sep> && requires{
+                {std::forward<Self>(self).sep()} noexcept;
+            }))
+            requires ((meta::unpack<Sep> && requires{
+                {std::forward<Self>(self).sep().
+                    template get<I / meta::tuple_size<meta::yield_type<Sep>>>().
+                    template get<I % meta::tuple_size<meta::yield_type<Sep>>>()
+                };
+            }) || (!meta::unpack<Sep> && meta::range<Sep> && requires{
+                {std::forward<Self>(self).sep().template get<I>()};
+            }) || (!meta::range<Sep> && requires{
+                {std::forward<Self>(self).sep()};
+            }))
+        {
+            if constexpr (meta::unpack<Sep>) {
+                return (std::forward<Self>(self).sep().
+                    template get<I / meta::tuple_size<meta::yield_type<Sep>>>().
+                    template get<I % meta::tuple_size<meta::yield_type<Sep>>>()
+                );
+            } else if constexpr (meta::range<Sep>) {
+                return (std::forward<Self>(self).sep().template get<I>());
+            } else {
+                return (std::forward<Self>(self).sep());
+            }
+        }
 
-        /// TODO: helpers for get<I>() and operator[]()
+        /* Index `I` matches a separator. */
+        template <size_t I, size_t J, typename Self> requires (I < join_sep_size<Sep>)
+        constexpr decltype(auto) get_sep(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).template get_sep_impl<I>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).template get_sep_impl<I>()};})
+        {
+            return std::forward<Self>(self).template get_sep_impl<I>();
+        }
+
+        template <size_t I, size_t J, typename Self>
+        static constexpr size_t quotient = 
+            (join_sep_size<Sep> + I) / (join_sep_size<Sep> + unpack_size<J>);
+
+        template <size_t I, size_t J, typename Self>
+        static constexpr size_t remainder =
+            (join_sep_size<Sep> + I) % (join_sep_size<Sep> + unpack_size<J>);
+
+        /* Index `I` matches the `J`-th joined argument, accounting for separators. */
+        template <size_t I, size_t J, typename Self>
+            requires (I < join_arg_size<meta::unpack_type<J, A...>, Sep>)
+        constexpr decltype(auto) _get(this Self&& self)
+            noexcept ((join_unpack<Self, J> && (
+                (
+                    remainder<I, J, Self> < join_sep_size<Sep> &&
+                    requires{{std::forward<Self>(self).
+                        template get_sep_impl<remainder<I, J, Self>>()
+                    } noexcept;}
+                ) || (
+                    remainder<I, J, Self> >= join_sep_size<Sep> &&
+                    requires{{std::forward<Self>(self).template arg<J>().
+                        template get<quotient<I, J, Self>>().
+                        template get<remainder<I, J, Self> - join_sep_size<Sep>>()
+                    } noexcept;}
+                )
+            )) || (!join_unpack<Self, J> && !join_broadcast<Self, J> && requires{
+                {std::forward<Self>(self).template arg<J>().template get<I>()} noexcept;
+            }) || (join_broadcast<Self, J> && requires{
+                {std::forward<Self>(self).template arg<J>()} noexcept;
+            }))
+            requires ((join_unpack<Self, J> && (
+                (
+                    remainder<I, J, Self> < join_sep_size<Sep> &&
+                    requires{{std::forward<Self>(self).
+                        template get_sep_impl<remainder<I, J, Self>>()
+                    };}
+                ) || (
+                    remainder<I, J, Self> >= join_sep_size<Sep> &&
+                    requires{{std::forward<Self>(self).template arg<J>().
+                        template get<quotient<I, J, Self>>().
+                        template get<remainder<I, J, Self> - join_sep_size<Sep>>()
+                    };}
+                )
+            )) || (!join_unpack<Self, J> && !join_broadcast<Self, J> && requires{
+                {std::forward<Self>(self).template arg<J>().template get<I>()} noexcept;
+            }) || (join_broadcast<Self, J> && requires{
+                {std::forward<Self>(self).template arg<J>()} noexcept;
+            }))
+        {
+            if constexpr (join_unpack<Self, J>) {
+                constexpr size_t r = remainder<I, J, Self>;
+                if constexpr (r < join_sep_size<Sep>) {
+                    return (std::forward<Self>(self).template get_sep_impl<r>());
+                } else {
+                    return (std::forward<Self>(self).template arg<J>().
+                        template get<quotient<I, J, Self>>().
+                        template get<r - join_sep_size<Sep>>()
+                    );
+                }
+            } else if constexpr (!join_broadcast<Self, J>) {
+                return (std::forward<Self>(self).template arg<J>().template get<I>());
+            } else {
+                return (std::forward<Self>(self).template arg<J>());
+            }
+        }
+
+        /* Index `I` does NOT match the `J-th` joined argument. */
+        template <size_t I, size_t J, typename Self>
+            requires (I >= join_arg_size<meta::unpack_type<J, A...>, Sep>)
+        constexpr decltype(auto) _get(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).template get_sep<
+                I - join_arg_size<meta::unpack_type<J, A...>, Sep>,
+                J + 1
+            >()} noexcept;})
+            requires (requires{{std::forward<Self>(self).template get_sep<
+                I - join_arg_size<meta::unpack_type<J, A...>, Sep>,
+                J + 1
+            >()};})
+        {
+            return (std::forward<Self>(self).template get_sep<
+                I - join_arg_size<meta::unpack_type<J, A...>, Sep>,
+                J + 1
+            >());
+        }
+
+        /* Index `I` does NOT match the current separator. */
+        template <size_t I, size_t J, typename Self> requires (I >= join_sep_size<Sep>)
+        constexpr decltype(auto) get_sep(this Self&& self)
+            noexcept (requires{{
+                std::forward<Self>(self).template _get<I - join_sep_size<Sep>, J>()
+            } noexcept;})
+            requires (requires{{
+                std::forward<Self>(self).template _get<I - join_sep_size<Sep>, J>()
+            };})
+        {
+            return (std::forward<Self>(self).template _get<I - join_sep_size<Sep>, J>());
+        }
+
+
+        /// TODO: `operator[]` should do mostly the same thing as `get`, but may need
+        /// to return a union type, which greatly complicates things.  I'll probably
+        /// need to do this anyway, but I'll need to define a helper class that accepts
+        /// the joined range with full qualifications and produces a flattened union of
+        /// all of the yield types.
+        /// -> this may require a generalized utility to convert a set of input types
+        /// into a corresponding `Union<>` type, which flattens input unions.  This
+        /// might already be available if I can just expose the canonicalization
+        /// machinery that has already been written for union visitors.  This then
+        /// informs the return type of `operator[]` and the join iterator.
+
+
+
 
     public:
-        /// TODO: get<I>() and operator[] using helpers
+        /* Access the `I`-th element of a tuple-like, joined range.  Non-range
+        arguments will be forwarded according to the current cvref qualifications of
+        the `join` range, while range arguments will be accessed using the provided
+        index before forwarding.  If the index is invalid for one or more of the input
+        ranges, then this method will fail to compile. */
+        template <size_t I, typename Self> requires (tuple_like && I < join_tuple_size<Sep, A...>)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).template _get<I, 0>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).template _get<I, 0>()};})
+        {
+            return (std::forward<Self>(self).template _get<I, 0>());
+        }
 
-
+        /* Index into the joined range.  Non-range arguments will be forwarded
+        according to the current cvref qualifications of the `join` range, while range
+        arguments will be accessed using the provided index before forwarding.  If the
+        index is not supported for one or more of the input ranges, then this method
+        will fail to compile. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_type i)
+            noexcept (requires{{std::forward<Self>(self).template subscript<0>(i)} noexcept;})
+            requires (requires{{std::forward<Self>(self).template subscript<0>(i)};})
+        {
+            return (std::forward<Self>(self).template subscript<0>(i));
+        }
         
         /* Get a forward iterator over the joined range. */
         [[nodiscard]] constexpr auto begin()
@@ -5711,19 +5944,19 @@ public:
 
     template <typename Self, typename... A> requires (impl::join_concept<Sep, A...>)
     [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
-        noexcept (requires{{range<A...>{container<A...>{
-            .m_sep = std::forward<Self>(self).sep,
-            .m_args = {std::forward<A>(a)...}
-        }}} noexcept;})
-        requires (requires{{range<A...>{container<A...>{
-            .m_sep = std::forward<Self>(self).sep,
-            .m_args = {std::forward<A>(a)...}
-        }}};})
+        noexcept (requires{{range<A...>{container<A...>{.m_storage = {
+            .sep = std::forward<Self>(self).sep,
+            .args = {std::forward<A>(a)...}
+        }}}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{.m_storage = {
+            .sep = std::forward<Self>(self).sep,
+            .args = {std::forward<A>(a)...}
+        }}}};})
     {
-        return range<A...>{container<A...>{
-            .m_sep = std::forward<Self>(self).sep,
-            .m_args = {std::forward<A>(a)...}
-        }};
+        return range<A...>{container<A...>{.m_storage = {
+            .sep = std::forward<Self>(self).sep,
+            .args = {std::forward<A>(a)...}
+        }}};
     }
 };
 
@@ -5738,21 +5971,18 @@ private:
     using range = bertrand::range<container<A...>>;
 
 public:
-    /// TODO: revisit this once the storage for impl::join has been implemented, since
-    /// this might need to account for the lack of a separator at compile time.
-
     template <typename Self, typename... A> requires (impl::join_concept<void, A...>)
     [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
-        noexcept (requires{{range<A...>{container<A...>{
-            .m_args = {std::forward<A>(a)...}
-        }}} noexcept;})
-        requires (requires{{range<A...>{container<A...>{
-            .m_args = {std::forward<A>(a)...}
-        }}};})
+        noexcept (requires{{range<A...>{container<A...>{.m_storage = {
+            .args = {std::forward<A>(a)...}
+        }}}} noexcept;})
+        requires (requires{{range<A...>{container<A...>{.m_storage = {
+            .args = {std::forward<A>(a)...}
+        }}}};})
     {
-        return range<A...>{container<A...>{
-            .m_args = {std::forward<A>(a)...}
-        }};
+        return range<A...>{container<A...>{.m_storage = {
+            .args = {std::forward<A>(a)...}
+        }}};
     }
 };
 
