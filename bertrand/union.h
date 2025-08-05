@@ -195,16 +195,6 @@ namespace impl {
         using value = void;  // no pointer-like dereference operators
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
-
-        /// NOTE: for the default specialization, the following methods will never
-        /// actually be called, but are part of the interface for custom extensions.
-
-        /* The active index for non-visitable types is trivially zero. */
-        [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept;
-
-        /* Getting the value for a non-visitable type will trivially forward it. */
-        template <size_t I> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u) noexcept;
     };
 
 }
@@ -678,10 +668,9 @@ namespace meta {
             ::std::conditional_t<
                 meta::is_void<R> || meta::convertible_to<R, bertrand::NoneType>,
                 returns,
-                ::std::conditional_t<
-                    meta::visitable<R>,
-                    meta::concat_unique<returns, typename impl::visitable<R>::alternatives>,
-                    meta::append_unique<returns, R>
+                meta::concat_unique<
+                    returns,
+                    typename impl::visitable<R>::alternatives::template map<meta::remove_rvalue>
                 >
             >,
             errors,
@@ -699,7 +688,10 @@ namespace meta {
             )
         struct visit_deduce<returns, errors, optional, meta::pack<R, Rs...>> : visit_deduce<
             returns,
-            meta::concat_unique<errors, typename impl::visitable<R>::errors>,
+            meta::concat_unique<
+                errors,
+                typename impl::visitable<R>::errors::template map<meta::remove_rvalue>
+            >,
             optional || meta::not_void<typename impl::visitable<R>::empty>,
             meta::pack<typename impl::visitable<R>::value, Rs...>
         > {};
@@ -745,6 +737,12 @@ namespace meta {
         };
 
     }
+
+    /* Form a canonical union type from the given input types, filtering for uniqueness
+    and flattening any nested monads. */
+    template <typename... Ts>
+    using union_type =
+        detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
 
     /* A visitor function can only be applied to a set of arguments if it covers all
     non-empty and non-error states of the visitable arguments. */
@@ -805,6 +803,13 @@ namespace meta {
 
     namespace nothrow {
 
+        template <typename... Ts>
+            requires (
+                detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::nothrow
+            )
+        using union_type =
+            detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
+
         template <typename F, typename... Args>
         concept visit = meta::visit<F, Args...> && detail::visit<F, Args...>::nothrow;
 
@@ -837,6 +842,7 @@ namespace meta {
         template <typename T, typename... Es>
         constexpr bool prefer_constructor<bertrand::Expected<T, Es...>> = true;
 
+        /// TODO: exact_size is no longer needed?
         template <typename... Ts>
         constexpr bool exact_size<bertrand::Union<Ts...>> = (meta::exact_size<Ts> && ...);
 

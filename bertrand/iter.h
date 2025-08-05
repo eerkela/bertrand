@@ -6,6 +6,10 @@
 #include "bertrand/union.h"
 
 
+/// TODO: split this file into multiple smaller files in an iter/ directory.
+/// iter.h will just include all of them in the proper order.
+
+
 namespace bertrand {
 
 
@@ -156,12 +160,14 @@ namespace impl {
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
 
+    template <typename T>
+    concept enable_tuple_iterator = meta::lvalue<T> && meta::tuple_like<T>;
+
     /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
     pointers if all elements unpack to the same lvalue type.  Otherwise, they must
     build a vtable and perform a dynamic dispatch to yield a proper value type, which
     may be a union. */
-    enum class tuple_array_kind : uint8_t {
-        NO_COMMON_TYPE,
+    enum class tuple_iterator_kind : uint8_t {
         DYNAMIC,
         ARRAY,
         EMPTY,
@@ -171,38 +177,22 @@ namespace impl {
     array, which can either be a flat array of homogenous references or a vtable of
     function pointers that produce a common type (which may be a `Union`) to which all
     results are convertible. */
-    template <typename, typename>
-    struct _tuple_array {
-        using types = meta::pack<>;
-        using reference = const NoneType&;
-        static constexpr tuple_array_kind kind = tuple_array_kind::EMPTY;
-        static constexpr bool nothrow = true;
-    };
-    template <typename in, typename T>
-    struct _tuple_array<in, meta::pack<T>> {
-        using types = meta::pack<T>;
-        using reference = T;
-        static constexpr tuple_array_kind kind = meta::lvalue<T> && meta::has_address<T> ?
-            tuple_array_kind::ARRAY : tuple_array_kind::DYNAMIC;
-        static constexpr bool nothrow = true;
-    };
-    template <typename in, typename... Ts> requires (sizeof...(Ts) > 1)
-    struct _tuple_array<in, meta::pack<Ts...>> {
-        using types = meta::pack<Ts...>;
-        using reference = bertrand::Union<Ts...>;
-        static constexpr tuple_array_kind kind = (meta::convertible_to<Ts, reference> && ...) ?
-            tuple_array_kind::DYNAMIC : tuple_array_kind::NO_COMMON_TYPE;
+    template <typename>
+    struct _tuple_iterator_traits;
+    template <typename... Ts>
+    struct _tuple_iterator_traits<meta::pack<Ts...>> {
+        using reference = meta::union_type<Ts...>;
+        static constexpr tuple_iterator_kind kind = meta::is_void<reference> ?
+            tuple_iterator_kind::EMPTY :
+            meta::visitable<reference> ?
+                tuple_iterator_kind::DYNAMIC :
+                tuple_iterator_kind::ARRAY;
         static constexpr bool nothrow = (meta::nothrow::convertible_to<Ts, reference> && ...);
     };
-    template <meta::tuple_like T>
-    struct tuple_array :
-        _tuple_array<T, typename meta::tuple_types<T>::template eval<meta::to_unique>>
-    {
+    template <enable_tuple_iterator T>
+    struct tuple_iterator_traits : _tuple_iterator_traits<typename meta::tuple_types<T>> {
     private:
-        using base = _tuple_array<
-            T,
-            typename meta::tuple_types<T>::template eval<meta::to_unique>
-        >;
+        using base = _tuple_iterator_traits<typename meta::tuple_types<T>>;
 
         template <size_t I>
         struct fn {
@@ -217,33 +207,235 @@ namespace impl {
         >;
     };
 
-    template <typename>
-    struct tuple_iterator {};
+    /* A special case of `tuple_iterator` for empty tuples, which do not yield any
+    results, and are optimized away by the compiler. */
+    template <enable_tuple_iterator T>
+    struct tuple_iterator {
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = const NoneType;
+        using pointer = const NoneType*;
+        using reference = const NoneType&;
 
-    template <typename T>
-    concept enable_tuple_iterator =
-        meta::lvalue<T> &&
-        meta::tuple_like<T> &&
-        tuple_array<T>::kind != tuple_array_kind::NO_COMMON_TYPE;
+        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
+        [[nodiscard]] constexpr tuple_iterator(T, difference_type = 0) noexcept {}
+
+        [[nodiscard]] constexpr reference operator*() const noexcept {
+            return None;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const noexcept {
+            return &None;
+        }
+
+        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
+            return None;
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type
+        ) noexcept {
+            return self;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type,
+            const tuple_iterator& self
+        ) noexcept {
+            return self;
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type) noexcept {
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
+            return 0;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type) noexcept {
+            return *this;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
+            return std::strong_ordering::equal;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
+            return true;
+        }
+    };
+
+    /* A special case of `tuple_iterator` for tuples where all elements share the
+    same addressable type.  In this case, the vtable is reduced to a simple array of
+    pointers that are initialized on construction, without requiring dynamic
+    dispatch. */
+    template <enable_tuple_iterator T>
+        requires (tuple_iterator_traits<T>::kind == tuple_iterator_kind::ARRAY)
+    struct tuple_iterator<T> {
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using reference = tuple_iterator_traits<T>::reference;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::address_type<reference>;
+
+    private:
+        using indices = std::make_index_sequence<meta::tuple_size<T>>;
+        using store = impl::ref<reference>;
+        using array = std::array<store, meta::tuple_size<T>>;
+
+        array data;
+        difference_type index;
+
+        template <size_t... Is>
+        static constexpr array init(std::index_sequence<Is...>, T t)
+            noexcept ((requires{
+                {meta::unpack_tuple<Is>(t)} noexcept -> meta::nothrow::convertible_to<store>;
+            } && ...))
+        {
+            return {meta::unpack_tuple<Is>(t)...};
+        }
+
+        [[nodiscard]] constexpr tuple_iterator(const array& data, difference_type index) noexcept :
+            data(data),
+            index(index)
+        {}
+
+    public:
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
+            data{},
+            index(index)
+        {}
+
+        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index = 0)
+            noexcept (requires{{init(indices{}, t)} noexcept;})
+        :
+            data(init(indices{}, t)),
+            index(index)
+        {}
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
+            return (*self.data[self.index]);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self) noexcept {
+            return impl::arrow_proxy{*std::forward<Self>(self)};
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](
+            this Self&& self,
+            difference_type n
+        ) noexcept {
+            return (*self.data[self.index + n]);
+        }
+
+        constexpr tuple_iterator& operator++() noexcept {
+            ++index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
+            auto tmp = *this;
+            ++index;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            const tuple_iterator& self,
+            difference_type n
+        ) noexcept {
+            return {self.data, self.index + n};
+        }
+
+        [[nodiscard]] friend constexpr tuple_iterator operator+(
+            difference_type n,
+            const tuple_iterator& self
+        ) noexcept {
+            return {self.data, self.index + n};
+        }
+
+        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
+            index += n;
+            return *this;
+        }
+
+        constexpr tuple_iterator& operator--() noexcept {
+            --index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
+            auto tmp = *this;
+            --index;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
+            return {data, index - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
+            return index - rhs.index;
+        }
+
+        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
+            return index == other.index;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
+    };
 
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
     to iterable algorithms, as long as those algorithms are built to handle possible
     `Union` values. */
     template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::DYNAMIC)
+        requires (tuple_iterator_traits<T>::kind == tuple_iterator_kind::DYNAMIC)
     struct tuple_iterator<T> {
-        using types = tuple_array<T>::types;
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using reference = tuple_array<T>::reference;
+        using reference = tuple_iterator_traits<T>::reference;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
     private:
-        using table = tuple_array<T>;
+        using table = tuple_iterator_traits<T>;
         using indices = std::make_index_sequence<meta::tuple_size<T>>;
         using storage = meta::as_pointer<T>;
+
+        storage data;
+        difference_type index;
 
         [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
             data(data),
@@ -251,10 +443,7 @@ namespace impl {
         {}
 
     public:
-        storage data;
-        difference_type index;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = 0) noexcept :
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
             data(nullptr),
             index(index)
         {}
@@ -268,7 +457,7 @@ namespace impl {
         {}
 
         [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
-            return typename table::dispatch{index}(*data);
+            return typename table::dispatch{size_t(index)}(*data);
         }
 
         [[nodiscard]] constexpr auto operator->() const noexcept (table::nothrow) {
@@ -343,211 +532,6 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
             return index == other.index;
-        }
-    };
-
-    /* A special case of `tuple_iterator` for tuples where all elements share the
-    same addressable type.  In this case, the vtable is reduced to a simple array of
-    pointers that are initialized on construction, without requiring dynamic
-    dispatch. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::ARRAY)
-    struct tuple_iterator<T> {
-        using types = tuple_array<T>::types;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using reference = tuple_array<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::address_type<reference>;
-
-    private:
-        using indices = std::make_index_sequence<meta::tuple_size<T>>;
-        using array = std::array<pointer, meta::tuple_size<T>>;
-
-        template <size_t... Is>
-        static constexpr array init(std::index_sequence<Is...>, T t)
-            noexcept ((requires{{
-                std::addressof(meta::unpack_tuple<Is>(t))
-            } noexcept -> meta::nothrow::convertible_to<pointer>;} && ...))
-        {
-            return {std::addressof(meta::unpack_tuple<Is>(t))...};
-        }
-
-        [[nodiscard]] constexpr tuple_iterator(const array& arr, difference_type index) noexcept :
-            arr(arr),
-            index(index)
-        {}
-
-    public:
-        array arr;
-        difference_type index;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
-            arr{},
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index = 0)
-            noexcept (requires{{init(indices{}, t)} noexcept;})
-        :
-            arr(init(indices{}, t)),
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return *arr[index];
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return arr[index];
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return *arr[index + n];
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            auto tmp = *this;
-            ++index;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.arr, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type n,
-            const tuple_iterator& self
-        ) noexcept {
-            return {self.arr, self.index + n};
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            auto tmp = *this;
-            --index;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {arr, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
-            return index - index;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
-            return index == other.index;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-    };
-
-    /* A special case of `tuple_iterator` for empty tuples, which do not yield any
-    results, and are optimized away by the compiler. */
-    template <enable_tuple_iterator T>
-        requires (tuple_array<T>::kind == tuple_array_kind::EMPTY)
-    struct tuple_iterator<T> {
-        using types = meta::pack<>;
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = const NoneType;
-        using pointer = const NoneType*;
-        using reference = const NoneType&;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
-        [[nodiscard]] constexpr tuple_iterator(T, difference_type = 0) noexcept {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return None;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return &None;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
-            return None;
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type
-        ) noexcept {
-            return self;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type,
-            const tuple_iterator& self
-        ) noexcept {
-            return self;
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type) noexcept {
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
-            return 0;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
-            return std::strong_ordering::equal;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
-            return true;
         }
     };
 
@@ -756,6 +740,41 @@ namespace meta {
 
 
 namespace impl {
+
+    /* An index sequence records the positions of the incoming ranges. */
+    template <typename out, size_t, typename...>
+    struct _range_indices { using type = out; };
+    template <size_t... Is, size_t I, typename T, typename... Ts>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is...>, I + 1, Ts...>
+    {};
+    template <size_t... Is, size_t I, meta::range T, typename... Ts>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
+    {};
+    template <meta::not_rvalue... A>
+    using range_indices = _range_indices<std::index_sequence<>, 0, A...>::type;
+
+    /* Zip iterators preserve as much of the iterator interface as possible. */
+    template <typename, meta::not_rvalue... Iters>
+    struct range_category;
+    template <size_t... Is, meta::not_rvalue... Iters>
+    struct range_category<std::index_sequence<Is...>, Iters...> {
+        using type = meta::common_type<
+            meta::iterator_category<meta::unpack_type<Is, Iters...>>...
+        >;
+    };
+
+    /* The difference type between zip iterators (if any) is the common type for all
+    constituent ranges. */
+    template <typename, meta::not_rvalue... Iters>
+    struct range_difference;
+    template <size_t... Is, meta::not_rvalue... Iters>
+    struct range_difference<std::index_sequence<Is...>, Iters...> {
+        using type = meta::common_type<
+            meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
+        >;
+    };
 
     /// TODO: enable_borrowed_range should always be enabled for iotas.
 
@@ -1740,7 +1759,7 @@ namespace impl {
         if constexpr (requires{{std::forward<C>(container)[i]};}) {
             return (std::forward<C>(container)[i]);
         } else {
-            return typename impl::tuple_array<meta::forward<C>>::dispatch{i}(
+            return typename impl::tuple_iterator_traits<meta::forward<C>>::dispatch{i}(
                 std::forward<C>(container)
             );
         }
@@ -2362,6 +2381,17 @@ constexpr void swap(range<C>& lhs, range<C>& rhs)
 {
     lhs.swap(rhs);
 }
+
+
+static constexpr std::tuple tup {1, 2, 3.5};
+static_assert([] {
+    for (auto&& i : range(tup)) {
+        if (i != 1 && i != 2 && i != 3.5) {
+            return false;
+        }
+    }
+    return true;
+}());
 
 
 ////////////////////////
@@ -3213,264 +3243,6 @@ constexpr void swap(sequence<T>& lhs, sequence<T>& rhs)
 }
 
 
-///////////////////////
-////    REVERSE    ////
-///////////////////////
-
-
-/// TODO: swap() operators for all ranges and all public range adaptors.
-
-
-/// TODO: if the adapted container for reverse() is a sequence, then I may need to
-/// emit has_size() and a size() method that can possibly throw.
-
-
-namespace impl {
-
-    /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
-    iterate over the container `C` instead of forward iterating.  This equates to
-    swapping all of the `begin()` and `end()` methods with their reversed counterparts,
-    and modifying the indexing logic to map index `i` to index `-i - 1`, which
-    triggers Python-style wraparound. */
-    template <meta::not_rvalue C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    struct reverse {
-        using type = C;
-        using size_type = size_t;
-        using index_type = ssize_t;
-
-    private:
-        [[no_unique_address]] impl::ref<type> m_range;
-
-    public:
-        [[nodiscard]] constexpr reverse(meta::forward<type> range)
-            noexcept (requires{{impl::ref<type>(std::forward<type>(range))} noexcept;})
-            requires (requires{{impl::ref<type>(std::forward<type>(range))};})
-        :
-            m_range(std::forward<type>(range))
-        {}
-
-        /* Perfectly forward the underlying container according to the reversed range's
-        current cvref qualifications. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_range);
-        }
-
-        /* Swap the underlying containers between two reversed ranges. */
-        constexpr void swap(reverse& other)
-            noexcept (requires{{m_range.swap(other.m_range)} noexcept;})
-            requires (requires{{m_range.swap(other.m_range)};})
-        {
-            m_range.swap(other.m_range);
-        }
-
-        /* Indirectly access a member of the underlying container. */
-        [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{meta::to_arrow(value())} noexcept;})
-            requires (requires{{meta::to_arrow(value())};})
-        {
-            return meta::to_arrow(value());
-        }
-
-        /* Indirectly access a member of the underlying container. */
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{meta::to_arrow(value())} noexcept;})
-            requires (requires{{meta::to_arrow(value())};})
-        {
-            return meta::to_arrow(value());
-        }
-
-        /* The total number of elements in the reversed range, as an unsigned
-        integer. */
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (meta::nothrow::size_returns<size_type, meta::as_const_ref<type>> || (
-                !meta::size_returns<size_type, meta::as_const_ref<type>> &&
-                meta::tuple_like<type>
-            ))
-            requires (
-                meta::size_returns<size_type, meta::as_const_ref<type>> ||
-                meta::tuple_like<type>
-            )
-        {
-            if constexpr (meta::size_returns<size_type, meta::as_const_ref<type>>) {
-                return std::ranges::size(value());
-            } else {
-                return meta::tuple_size<type>;
-            }
-        }
-
-        /* The total number of elements in the reversed range, as a signed integer. */
-        [[nodiscard]] constexpr index_type ssize() const
-            noexcept (meta::nothrow::ssize_returns<index_type, meta::as_const_ref<type>> || (
-                !meta::ssize_returns<index_type, meta::as_const_ref<type>> &&
-                meta::tuple_like<type>
-            ))
-            requires (
-                meta::ssize_returns<index_type, meta::as_const_ref<type>> ||
-                meta::tuple_like<type>
-            )
-        {
-            if constexpr (meta::ssize_returns<index_type, meta::as_const_ref<type>>) {
-                return std::ranges::ssize(value());
-            } else {
-                return meta::to_signed(meta::tuple_size<type>);
-            }
-        }
-
-        /* True if the reversed range contains zero elements.  False otherwise. */
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (meta::nothrow::has_empty<meta::as_const_ref<type>> || (
-                !meta::has_empty<meta::as_const_ref<type>> && meta::tuple_like<type>
-            ))
-            requires (meta::has_empty<meta::as_const_ref<type>> || meta::tuple_like<type>)
-        {
-            if constexpr (meta::has_empty<meta::as_const_ref<type>>) {
-                return std::ranges::empty(value());
-            } else {
-                return meta::tuple_size<type> == 0;
-            }
-        }
-
-        /* Allow tuple-like access and destructuring of the reversed range, with
-        Python-style wraparound for negative indices.  This is identical to accessing
-        the underlying container, but maps index `I` to `-I - 1` before applying
-        wraparound. */
-        template <index_type I, typename Self>
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{
-                {meta::unpack_tuple<-I - 1>(std::forward<Self>(self).value())} noexcept;
-            })
-            requires (requires{
-                {meta::unpack_tuple<-I - 1>(std::forward<Self>(self).value())};
-            })
-        {
-            return (meta::unpack_tuple<-I - 1>(std::forward<Self>(self).value()));
-        }
-
-        /* Index operator for accessing elements in the reversed range, with
-        Python-style wraparound for negative indices.  This is identical to indexing
-        the underlying container, but maps index `i` to `-i - 1` before applying
-        wraparound.  The actual index will always be forwarded as an unsigned
-        `size_type` integer to maintain compatibility with as many container types as
-        possible. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, index_type i)
-            noexcept (requires{{std::forward<Self>(self).value()[
-                size_type(impl::normalize_index(self.ssize(), -i - 1))]
-            } noexcept;})
-            requires (requires{{std::forward<Self>(self).value()[
-                size_type(impl::normalize_index(self.ssize(), -i - 1))]
-            };})
-        {
-            return (std::forward<Self>(self).value()[
-                size_type(impl::normalize_index(self.ssize(), -i - 1))
-            ]);
-        }
-
-        /* The reversed range maps `begin()` to the underlying container's `rbegin()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) begin()
-            noexcept (requires{{impl::make_range_reversed{value()}.begin()} noexcept;})
-            requires (requires{{impl::make_range_reversed{value()}.begin()};})
-        {
-            return (impl::make_range_reversed{value()}.begin());
-        }
-
-        /* The reversed range maps `begin()` to the underlying container's `rbegin()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) begin() const
-            noexcept (requires{{impl::make_range_reversed{value()}.begin()} noexcept;})
-            requires (requires{{impl::make_range_reversed{value()}.begin()};})
-        {
-            return (impl::make_range_reversed{value()}.begin());
-        }
-
-        /* The reversed range maps `end()` to the underlying container's `rend()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) end()
-            noexcept (requires{{impl::make_range_reversed{value()}.end()} noexcept;})
-            requires (requires{{impl::make_range_reversed{value()}.end()};})
-        {
-            return (impl::make_range_reversed{value()}.end());
-        }
-
-        /* The reversed range maps `end()` to the underlying container's `rend()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) end() const
-            noexcept (requires{{impl::make_range_reversed{value()}.end()} noexcept;})
-            requires (requires{{impl::make_range_reversed{value()}.end()};})
-        {
-            return (impl::make_range_reversed{value()}.end());
-        }
-
-        /* The reversed range maps `rbegin()` to the underlying container's `begin()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) rbegin()
-            noexcept (requires{{impl::make_range_iterator{value()}.begin()} noexcept;})
-            requires (requires{{impl::make_range_iterator{value()}.begin()};})
-        {
-            return (impl::make_range_iterator{value()}.begin());
-        }
-
-        /* The reversed range maps `rbegin()` to the underlying container's `begin()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) rbegin() const
-            noexcept (requires{{impl::make_range_iterator{value()}.begin()} noexcept;})
-            requires (requires{{impl::make_range_iterator{value()}.begin()};})
-        {
-            return (impl::make_range_iterator{value()}.begin());
-        }
-
-        /* The reversed range maps `rend()` to the underlying container's `end()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) rend()
-            noexcept (requires{{impl::make_range_iterator{value()}.end()} noexcept;})
-            requires  (requires{{impl::make_range_iterator{value()}.end()};})
-        {
-            return (impl::make_range_iterator{value()}.end());
-        }
-
-        /* The reversed range maps `rend()` to the underlying container's `end()`
-        method. */
-        [[nodiscard]] constexpr decltype(auto) rend() const
-            noexcept (requires{{impl::make_range_iterator{value()}.end()} noexcept;})
-            requires (requires{{impl::make_range_iterator{value()}.end()};})
-        {
-            return (impl::make_range_iterator{value()}.end());
-        }
-    };
-
-}
-
-
-/* A function object that reverses the order of iteration for a supported container.
-
-The ranges that are produced by this object act just like normal ranges, but with the
-forward and reverse iterators swapped, and the indexing logic modified to map index
-`i` to index `-i - 1` before applying Python-style wraparound.
-
-Note that the `reverse` class must be default-constructed, which standardizes it with
-respect to other range adaptors and allows it to be easily chained together with other
-operations to form more complex range-based algorithms. */
-struct reverse {
-private:
-    template <typename C>
-    using container = impl::reverse<meta::remove_rvalue<C>>;
-
-    template <typename C>
-    using range = bertrand::range<container<C>>;
-
-public:
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    [[nodiscard]] static constexpr range<C> operator()(C&& c)
-        noexcept (requires{{range<C>{container<C>{std::forward<C>(c)}}} noexcept;})
-        requires (requires{{range<C>{container<C>{std::forward<C>(c)}}};})
-    {
-        return range<C>{container<C>{std::forward<C>(c)}};
-    }
-};
-
-
 ///////////////////
 ////    ZIP    ////
 ///////////////////
@@ -3533,41 +3305,6 @@ namespace impl {
     using zip_unpack_types = meta::tuple_types<meta::yield_type<
         typename meta::unqualify<C>::argument_types::template at<I>
     >>;
-
-    /* An index sequence records the positions of the incoming ranges. */
-    template <typename out, size_t, typename...>
-    struct _range_indices { using type = out; };
-    template <size_t... Is, size_t I, typename T, typename... Ts>
-    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
-        _range_indices<std::index_sequence<Is...>, I + 1, Ts...>
-    {};
-    template <size_t... Is, size_t I, meta::range T, typename... Ts>
-    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
-        _range_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
-    {};
-    template <meta::not_rvalue... A>
-    using range_indices = _range_indices<std::index_sequence<>, 0, A...>::type;
-
-    /* Zip iterators preserve as much of the iterator interface as possible. */
-    template <typename, meta::not_rvalue... Iters>
-    struct range_category;
-    template <size_t... Is, meta::not_rvalue... Iters>
-    struct range_category<std::index_sequence<Is...>, Iters...> {
-        using type = meta::common_type<
-            meta::iterator_category<meta::unpack_type<Is, Iters...>>...
-        >;
-    };
-
-    /* The difference type between zip iterators (if any) is the common type for all
-    constituent ranges. */
-    template <typename, meta::not_rvalue... Iters>
-    struct range_difference;
-    template <size_t... Is, meta::not_rvalue... Iters>
-    struct range_difference<std::index_sequence<Is...>, Iters...> {
-        using type = meta::common_type<
-            meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
-        >;
-    };
 
     /* Zip iterators take the cvref qualifications of the zipped range into account
     when deducing the return type for the dereference operator, applying the same
@@ -4521,9 +4258,6 @@ namespace impl {
             return _has_size(ranges{});
         }
 
-        /// TODO: maybe splitting the size methods is not required, and the optimizer
-        /// will do that for us as part of constant folding?
-
         /* The overall size of the zipped range as an unsigned integer.  This is only
         enabled if all of the arguments are either sized ranges or non-range inputs, in
         which case it will return the minimum size of the constituent ranges.  If all
@@ -5153,6 +4887,43 @@ namespace impl {
             typename meta::unqualify<C>::argument_types::template at<I>
         >>;
 
+    template <typename A>
+    struct _join_arg { using type = A; };
+    template <meta::range A>
+    struct _join_arg<A> { using type = meta::yield_type<A>; };
+    template <meta::unpack A> requires (meta::tuple_like<meta::yield_type<A>>)
+    struct _join_arg<A> { using type = meta::yield_type<meta::yield_type<A>>; };
+    template <typename A>
+    using join_arg = _join_arg<A>::type;
+
+    /* Iterators over joined ranges may need to yield unions if the inputs do not share
+    a common element type.  If they do, then that type can be yielded directly to avoid
+    extra iteration overhead. */
+    template <typename C, typename>
+    struct _join_type;
+    template <typename C, size_t... Is>
+        requires (meta::is_void<typename meta::unqualify<C>::separator_type>)
+    struct _join_type<C, std::index_sequence<Is...>> {
+        using type = meta::union_type<
+            join_arg<decltype((std::declval<C>().template arg<Is>()))>...
+        >;
+    };
+    template <typename C, size_t... Is>
+        requires (meta::not_void<typename meta::unqualify<C>::separator_type>)
+    struct _join_type<C, std::index_sequence<Is...>> {
+        using type = meta::union_type<
+            join_arg<decltype((std::declval<C>().sep()))>,
+            join_arg<decltype((std::declval<C>().template arg<Is>()))>...
+        >;
+    };
+    template <typename C>
+    using join_type = _join_type<C, typename meta::unqualify<C>::indices>::type;
+
+    /// TODO: join_type will be used as the reference type for the joined iterator,
+    /// and Iters... will become the inputs to the inner union, which might also be
+    /// able to use meta::union_type to deduce the most efficient representation.
+    /// The optional and expected cases would never occur, since all of the inputs
+    /// would be non-visitable iterator types.
 
     template <meta::lvalue C, meta::not_rvalue... Iters>
         // requires (join_yield<C, Iters...>::enable)
@@ -5444,19 +5215,10 @@ namespace impl {
         meta::tuple_size<T> * meta::tuple_size<meta::yield_type<T>> +
         (meta::tuple_size<T> - (meta::tuple_size<T> > 0)) * join_sep_size<Sep>;
 
-    /// TODO: join_tuple_size needs to account for the separator, which may be missing,
-    /// a scalar, range, or unpacked range.  If any arguments are unpacked ranges
-    /// that meet the conditions for unpacking, then the separator will be inserted
-    /// between each one.
-    template <size_t sum, typename...>
-    constexpr size_t _join_tuple_size = sum;
-    template <size_t sum, typename T, typename... Ts>
-    constexpr size_t _join_tuple_size<sum, T, Ts...> = _join_tuple_size<sum, Ts...>;
-    template <size_t sum, meta::range T, typename... Ts> requires (meta::tuple_like<T>)
-    constexpr size_t _join_tuple_size<sum, T, Ts...> =
-        _join_tuple_size<sum + meta::tuple_size<T>, Ts...>;
-    template <typename... Ts>
-    constexpr size_t join_tuple_size = _join_tuple_size<0, Ts...>;
+    template <typename Sep, typename... A>
+    constexpr size_t join_tuple_size = (
+        join_arg_size<A, Sep> + ... + (join_sep_size<Sep> * (sizeof...(A) - (sizeof...(A) > 0))
+    ));
 
     template <typename Sep, typename... A> requires (join_concept<Sep, A...>)
     struct join_storage {
@@ -5653,9 +5415,26 @@ namespace impl {
         erasure on the underlying container, which acts as a SFINAE barrier for the
         compiler, and may be worked around via the `has_size()` method.  If that method
         returns `true`, then this method will never throw. */
+        [[nodiscard]] static constexpr size_type size() noexcept requires (tuple_like) {
+            return join_tuple_size<Sep, A...>;
+        }
+
+        /* The overall size of the joined range as an unsigned integer.  This is only
+        enabled if all of the arguments are either sized ranges or non-range inputs,
+        and the separator is either absent, a scalar value, or a sized range.  If one
+        or more unpacking operators are used, then the unpacked element type must be
+        either scalar or tuple-like, so that the size can be computed in constant time.
+        Otherwise, this method will fail to compile.
+
+        Note that if any of the input ranges are `sequence` types (which may or may not
+        be sized), then this method may throw an `IndexError` if `sequence.has_size()`
+        evaluates to `false` for any of the sequences.  This is a consequence of type
+        erasure on the underlying container, which acts as a SFINAE barrier for the
+        compiler, and may be worked around via the `has_size()` method.  If that method
+        returns `true`, then this method will never throw. */
         [[nodiscard]] constexpr size_type size() const
             noexcept (requires{{_size(indices{})} noexcept;})
-            requires (sized)
+            requires (!tuple_like && sized)
         {
             return _size(indices{});
         }
@@ -5820,20 +5599,218 @@ namespace impl {
             return (std::forward<Self>(self).template _get<I - join_sep_size<Sep>, J>());
         }
 
+        constexpr size_type subscript_sep_size() const
+            noexcept (
+                !meta::range<Sep> ||
+                (meta::unpack<Sep> && requires{{
+                    sep().size() * meta::tuple_size<meta::yield_type<Sep>>
+                } noexcept -> meta::nothrow::convertible_to<size_type>;}) ||
+                (!meta::unpack<Sep> && requires{
+                    {sep().size()} noexcept -> meta::nothrow::convertible_to<size_type>;
+                })
+            )
+            requires (meta::not_void<Sep> && (
+                !meta::range<Sep> ||
+                (meta::unpack<Sep> && requires{{
+                    sep().size() * meta::tuple_size<meta::yield_type<Sep>>
+                } -> meta::convertible_to<size_type>;}) ||
+                (!meta::unpack<Sep> && requires{
+                    {sep().size()} -> meta::convertible_to<size_type>;
+                })
+            ))
+        {
+            if constexpr (meta::unpack<Sep>) {
+                return sep().size() * meta::tuple_size<meta::yield_type<Sep>>;
+            } else if constexpr (meta::range<Sep>) {
+                return sep().size();
+            } else {
+                return 1;
+            }
+        }
 
-        /// TODO: `operator[]` should do mostly the same thing as `get`, but may need
-        /// to return a union type, which greatly complicates things.  I'll probably
-        /// need to do this anyway, but I'll need to define a helper class that accepts
-        /// the joined range with full qualifications and produces a flattened union of
-        /// all of the yield types.
-        /// -> this may require a generalized utility to convert a set of input types
-        /// into a corresponding `Union<>` type, which flattens input unions.  This
-        /// might already be available if I can just expose the canonicalization
-        /// machinery that has already been written for union visitors.  This then
-        /// informs the return type of `operator[]` and the join iterator.
+        template <size_t J>
+        constexpr size_type subscript_size() const
+            noexcept (
+                join_broadcast<const join&, J> ||
+                (
+                    join_unpack<const join&, J> &&
+                    requires{
+                        {arg<J>().size()} noexcept -> meta::nothrow::convertible_to<size_type>;
+                    } && (meta::is_void<Sep> || requires{{subscript_sep_size()} noexcept;})
+                ) || (
+                    !join_unpack<const join&, J> &&
+                    requires{
+                        {arg<J>().size()} noexcept -> meta::nothrow::convertible_to<size_type>;
+                    }
+                )
+            )
+            requires (
+                join_broadcast<const join&, J> ||
+                (
+                    join_unpack<const join&, J> &&
+                    requires{
+                        {arg<J>().size()} -> meta::convertible_to<size_type>;
+                    } && (meta::is_void<Sep> || requires{{subscript_sep_size()};})
+                ) || (
+                    !join_unpack<const join&, J> &&
+                    requires{
+                        {arg<J>().size()} -> meta::convertible_to<size_type>;
+                    }
+                )
+            )
+        {
+            if constexpr (join_unpack<const join&, J>) {
+                size_type n = arg<J>().size();
+                if constexpr (meta::not_void<Sep>) {
+                    return n * unpack_size<J> + (n - (n > 0)) * subscript_sep_size();
+                } else {
+                    return n * unpack_size<J>;
+                }
+            } else if constexpr (!join_broadcast<const join&, J>) {
+                return arg<J>().size();
+            } else {
+                return 1;
+            }
+        }
 
+        template <typename Self> requires (meta::not_void<Sep>)
+        constexpr impl::join_type<Self> subscript_sep(this Self&& self, size_type i)
+            noexcept (
+                (meta::unpack<Sep> && requires{
+                    {
+                        std::forward<Self>(self).sep()
+                            [i / meta::tuple_size<meta::yield_type<Sep>>()]
+                            [i % meta::tuple_size<meta::yield_type<Sep>>()]
+                    } noexcept -> meta::nothrow::convertible_to<impl::join_type<Self>>;
+                }) || (!meta::unpack<Sep> && meta::range<Sep> && requires{
+                    {
+                        std::forward<Self>(self).sep()[i]
+                    } noexcept -> meta::nothrow::convertible_to<impl::join_type<Self>>;
+                }) || (!meta::range<Sep> && requires{
+                    {
+                        std::forward<Self>(self).sep()
+                    } noexcept -> meta::nothrow::convertible_to<impl::join_type<Self>>;
+                })
+            )
+            requires (
+                (meta::unpack<Sep> && requires{
+                    {
+                        std::forward<Self>(self).sep()
+                            [i / meta::tuple_size<meta::yield_type<Sep>>()]
+                            [i % meta::tuple_size<meta::yield_type<Sep>>()]
+                    } -> meta::convertible_to<impl::join_type<Self>>;
+                }) || (!meta::unpack<Sep> && meta::range<Sep> && requires{
+                    {
+                        std::forward<Self>(self).sep()[i]
+                    } -> meta::convertible_to<impl::join_type<Self>>;
+                }) || (!meta::range<Sep> && requires{
+                    {
+                        std::forward<Self>(self).sep()
+                    } -> meta::convertible_to<impl::join_type<Self>>;
+                })
+            )
+        {
+            if constexpr (meta::unpack<Sep>) {
+                constexpr size_type n = meta::tuple_size<meta::yield_type<Sep>>;
+                return std::forward<Self>(self).sep()[i / n][i % n];
+            } else if constexpr (meta::range<Sep>) {
+                return std::forward<Self>(self).sep()[i];
+            } else {
+                return std::forward<Self>(self).sep();
+            }
+        }
 
-
+        template <size_t J, typename Self> requires (J < sizeof...(A))
+        constexpr impl::join_type<Self> subscript(this Self&& self, size_type i)
+            noexcept (requires{{self.template subscript_size<J>()} noexcept;} && (
+                meta::is_void<Sep> || requires{
+                    {self.subscript_sep_size()} noexcept;
+                    {std::forward<Self>(self).subscript_sep(i)} noexcept;
+                }
+            ) && (
+                (
+                    join_unpack<Self, J> && requires{{
+                        std::forward<Self>(self).template arg<J>()[i][i]
+                    } noexcept -> meta::nothrow::convertible_to<impl::join_type<Self>>;}
+                ) || (
+                    !join_unpack<Self, J> && !join_broadcast<Self, J> &&
+                    requires{{
+                        std::forward<Self>(self).template arg<J>()[i]
+                    } noexcept -> meta::nothrow::convertible_to<impl::join_type<Self>>;}
+                ) || (
+                    join_broadcast<Self, J> &&
+                    requires{{
+                        std::forward<Self>(self).template arg<J>()
+                    } noexcept -> meta::nothrow::convertible_to<impl::join_type<Self>>;}
+                )
+            ) && (
+                J + 1 >= sizeof...(A) || requires{
+                    {std::forward<Self>(self).template subscript<J + 1>(i)} noexcept;
+                }
+            ))
+            requires (requires{{self.template subscript_size<J>()};} && (
+                meta::is_void<Sep> || requires{
+                    {self.subscript_sep_size()};
+                    {std::forward<Self>(self).subscript_sep(i)};
+                }
+            ) && (
+                (
+                    join_unpack<Self, J> && requires{{
+                        std::forward<Self>(self).template arg<J>()[i][i]
+                    } -> meta::convertible_to<impl::join_type<Self>>;}
+                ) || (
+                    !join_unpack<Self, J> && !join_broadcast<Self, J> &&
+                    requires{{
+                        std::forward<Self>(self).template arg<J>()[i]
+                    } -> meta::convertible_to<impl::join_type<Self>>;}
+                ) || (
+                    join_broadcast<Self, J> &&
+                    requires{{
+                        std::forward<Self>(self).template arg<J>()
+                    } -> meta::convertible_to<impl::join_type<Self>>;}
+                )
+            ) && (
+                J + 1 >= sizeof...(A) || requires{
+                    {std::forward<Self>(self).template subscript<J + 1>(i)};
+                }
+            ))
+        {
+            size_type size = self.template subscript_size<J>();
+            if (i < size) {
+                if constexpr (join_unpack<Self, J>) {
+                    if constexpr (meta::not_void<Sep>) {
+                        size_type sep_size = self.subscript_sep_size();
+                        i += sep_size;
+                        size_type j = i / (sep_size + unpack_size<J>);
+                        i %= (sep_size + unpack_size<J>);
+                        if (i < sep_size) {
+                            return std::forward<Self>(self).subscript_sep(i);
+                        }
+                        return std::forward<Self>(self).template arg<J>()[j][i - sep_size];
+                    } else {
+                        constexpr size_type n = unpack_size<J>;
+                        return std::forward<Self>(self).template arg<J>()[i / n][i % n];
+                    }
+                } else if constexpr (!join_broadcast<Self, J>) {
+                    return std::forward<Self>(self).template arg<J>()[i];
+                } else {
+                    return std::forward<Self>(self).template arg<J>();
+                }
+            }
+            if constexpr (J + 1 < sizeof...(A)) {
+                i -= size;
+                if constexpr (meta::not_void<Sep>) {
+                    size_type sep_size = self.subscript_sep_size();
+                    if (i < sep_size) {
+                        return std::forward<Self>(self).subscript_sep(i);
+                    }
+                    i -= sep_size;
+                }
+                return std::forward<Self>(self).template subscript<J + 1>(i);
+            } else {
+                throw IndexError();  // unreachable
+            }
+        }
 
     public:
         /* Access the `I`-th element of a tuple-like, joined range.  Non-range
@@ -5855,11 +5832,11 @@ namespace impl {
         index is not supported for one or more of the input ranges, then this method
         will fail to compile. */
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_type i)
+        [[nodiscard]] constexpr impl::join_type<Self> operator[](this Self&& self, size_type i)
             noexcept (requires{{std::forward<Self>(self).template subscript<0>(i)} noexcept;})
             requires (requires{{std::forward<Self>(self).template subscript<0>(i)};})
         {
-            return (std::forward<Self>(self).template subscript<0>(i));
+            return std::forward<Self>(self).template subscript<0>(i);
         }
         
         /* Get a forward iterator over the joined range. */
@@ -5989,23 +5966,6 @@ public:
 
 template <typename Sep>
 join(Sep&&) -> join<meta::remove_rvalue<Sep>>;
-
-
-
-
-
-/// TODO: `join{}` is quite challenging to implement.  It basically requires the range
-/// adaptor to store an `impl::basic_tuple` of the initializing ranges, and then the
-/// iterator would store an `impl::basic_union<Iters...>` where the active index
-/// determines which range is currently being iterated over.  If the ranges yield
-/// multiple distinct types, then the overall yield type from the iterator will be
-/// a `Union<Ts...>`.
-
-/// TODO: I'm also not entirely sure how to handle unpacking operators in this case.
-/// They should either expand horizontally or cause nested ranges to be flattened,
-/// which may end up being the default behavior.  Just yield a non-range if you want
-/// to avoid flattening?
-
 
 
 //////////////////////
@@ -6972,12 +6932,24 @@ repeat(T n) -> repeat<None>;
 
 
 
+/// TODO: partition<N>{n/f}, which returns Optional([prev, sep, next])?
+/// -> just handle this via the `split{}` customization interface, which includes
+/// the following options:
+///     - peek, which allows the groups to overlap
+///     - until, which ignores groups after some index or predicate returns true.
+///     - drop_sep, which omits the separator from the output.
+/// These tags would be constexpr variables and can possibly be combined with the `|`
+/// operator
 
 
 
 /////////////////////
 ////    SLICE    ////
 /////////////////////
+
+
+/// TODO: maybe slice{} should also be able to accept boolean masks as step sizes,
+/// which would standardize that case in the range indexing operator.
 
 
 /// TODO: zip is necessary for complex slicing involving function predicates, so that's
@@ -7937,12 +7909,297 @@ slice(Start&& = {}, Stop&& = {}, Step&& = {}) -> slice<
 >;
 
 
+//////////////////////
+////    SAMPLE    ////
+//////////////////////
+
+
+/// TODO: `sample` extracts a random sample of elements from a range, and takes
+/// a standardized random_device as an optional parameter (defaulting to a mersenne
+/// twister).
+
+
+
+
+///////////////////////
+////    REVERSE    ////
+///////////////////////
+
+
+/// TODO: swap() operators for all ranges and all public range adaptors.
+
+
+/// TODO: if the adapted container for reverse() is a sequence, then I may need to
+/// emit has_size() and a size() method that can possibly throw.
+
+
+namespace impl {
+
+    /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
+    iterate over the container `C` instead of forward iterating.  This equates to
+    swapping all of the `begin()` and `end()` methods with their reversed counterparts,
+    and modifying the indexing logic to map index `i` to index `-i - 1`, which
+    triggers Python-style wraparound. */
+    template <meta::not_rvalue C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    struct reverse {
+        using type = C;
+        using size_type = size_t;
+        using index_type = ssize_t;
+
+    private:
+        [[no_unique_address]] impl::ref<type> m_range;
+
+    public:
+        [[nodiscard]] constexpr reverse(meta::forward<type> range)
+            noexcept (requires{{impl::ref<type>(std::forward<type>(range))} noexcept;})
+            requires (requires{{impl::ref<type>(std::forward<type>(range))};})
+        :
+            m_range(std::forward<type>(range))
+        {}
+
+        /* Perfectly forward the underlying container according to the reversed range's
+        current cvref qualifications. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_range);
+        }
+
+        /* Swap the underlying containers between two reversed ranges. */
+        constexpr void swap(reverse& other)
+            noexcept (requires{{m_range.swap(other.m_range)} noexcept;})
+            requires (requires{{m_range.swap(other.m_range)};})
+        {
+            m_range.swap(other.m_range);
+        }
+
+        /* Indirectly access a member of the underlying container. */
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(value())} noexcept;})
+            requires (requires{{meta::to_arrow(value())};})
+        {
+            return meta::to_arrow(value());
+        }
+
+        /* Indirectly access a member of the underlying container. */
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(value())} noexcept;})
+            requires (requires{{meta::to_arrow(value())};})
+        {
+            return meta::to_arrow(value());
+        }
+
+        /* The total number of elements in the reversed range, as an unsigned
+        integer. */
+        [[nodiscard]] constexpr size_type size() const
+            noexcept (meta::nothrow::size_returns<size_type, meta::as_const_ref<type>> || (
+                !meta::size_returns<size_type, meta::as_const_ref<type>> &&
+                meta::tuple_like<type>
+            ))
+            requires (
+                meta::size_returns<size_type, meta::as_const_ref<type>> ||
+                meta::tuple_like<type>
+            )
+        {
+            if constexpr (meta::size_returns<size_type, meta::as_const_ref<type>>) {
+                return std::ranges::size(value());
+            } else {
+                return meta::tuple_size<type>;
+            }
+        }
+
+        /* The total number of elements in the reversed range, as a signed integer. */
+        [[nodiscard]] constexpr index_type ssize() const
+            noexcept (meta::nothrow::ssize_returns<index_type, meta::as_const_ref<type>> || (
+                !meta::ssize_returns<index_type, meta::as_const_ref<type>> &&
+                meta::tuple_like<type>
+            ))
+            requires (
+                meta::ssize_returns<index_type, meta::as_const_ref<type>> ||
+                meta::tuple_like<type>
+            )
+        {
+            if constexpr (meta::ssize_returns<index_type, meta::as_const_ref<type>>) {
+                return std::ranges::ssize(value());
+            } else {
+                return meta::to_signed(meta::tuple_size<type>);
+            }
+        }
+
+        /* True if the reversed range contains zero elements.  False otherwise. */
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (meta::nothrow::has_empty<meta::as_const_ref<type>> || (
+                !meta::has_empty<meta::as_const_ref<type>> && meta::tuple_like<type>
+            ))
+            requires (meta::has_empty<meta::as_const_ref<type>> || meta::tuple_like<type>)
+        {
+            if constexpr (meta::has_empty<meta::as_const_ref<type>>) {
+                return std::ranges::empty(value());
+            } else {
+                return meta::tuple_size<type> == 0;
+            }
+        }
+
+        /* Allow tuple-like access and destructuring of the reversed range, with
+        Python-style wraparound for negative indices.  This is identical to accessing
+        the underlying container, but maps index `I` to `-I - 1` before applying
+        wraparound. */
+        template <index_type I, typename Self>
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{
+                {meta::unpack_tuple<-I - 1>(std::forward<Self>(self).value())} noexcept;
+            })
+            requires (requires{
+                {meta::unpack_tuple<-I - 1>(std::forward<Self>(self).value())};
+            })
+        {
+            return (meta::unpack_tuple<-I - 1>(std::forward<Self>(self).value()));
+        }
+
+        /* Index operator for accessing elements in the reversed range, with
+        Python-style wraparound for negative indices.  This is identical to indexing
+        the underlying container, but maps index `i` to `-i - 1` before applying
+        wraparound.  The actual index will always be forwarded as an unsigned
+        `size_type` integer to maintain compatibility with as many container types as
+        possible. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, index_type i)
+            noexcept (requires{{std::forward<Self>(self).value()[
+                size_type(impl::normalize_index(self.ssize(), -i - 1))]
+            } noexcept;})
+            requires (requires{{std::forward<Self>(self).value()[
+                size_type(impl::normalize_index(self.ssize(), -i - 1))]
+            };})
+        {
+            return (std::forward<Self>(self).value()[
+                size_type(impl::normalize_index(self.ssize(), -i - 1))
+            ]);
+        }
+
+        /* The reversed range maps `begin()` to the underlying container's `rbegin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) begin()
+            noexcept (requires{{impl::make_range_reversed{value()}.begin()} noexcept;})
+            requires (requires{{impl::make_range_reversed{value()}.begin()};})
+        {
+            return (impl::make_range_reversed{value()}.begin());
+        }
+
+        /* The reversed range maps `begin()` to the underlying container's `rbegin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) begin() const
+            noexcept (requires{{impl::make_range_reversed{value()}.begin()} noexcept;})
+            requires (requires{{impl::make_range_reversed{value()}.begin()};})
+        {
+            return (impl::make_range_reversed{value()}.begin());
+        }
+
+        /* The reversed range maps `end()` to the underlying container's `rend()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) end()
+            noexcept (requires{{impl::make_range_reversed{value()}.end()} noexcept;})
+            requires (requires{{impl::make_range_reversed{value()}.end()};})
+        {
+            return (impl::make_range_reversed{value()}.end());
+        }
+
+        /* The reversed range maps `end()` to the underlying container's `rend()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) end() const
+            noexcept (requires{{impl::make_range_reversed{value()}.end()} noexcept;})
+            requires (requires{{impl::make_range_reversed{value()}.end()};})
+        {
+            return (impl::make_range_reversed{value()}.end());
+        }
+
+        /* The reversed range maps `rbegin()` to the underlying container's `begin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rbegin()
+            noexcept (requires{{impl::make_range_iterator{value()}.begin()} noexcept;})
+            requires (requires{{impl::make_range_iterator{value()}.begin()};})
+        {
+            return (impl::make_range_iterator{value()}.begin());
+        }
+
+        /* The reversed range maps `rbegin()` to the underlying container's `begin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rbegin() const
+            noexcept (requires{{impl::make_range_iterator{value()}.begin()} noexcept;})
+            requires (requires{{impl::make_range_iterator{value()}.begin()};})
+        {
+            return (impl::make_range_iterator{value()}.begin());
+        }
+
+        /* The reversed range maps `rend()` to the underlying container's `end()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rend()
+            noexcept (requires{{impl::make_range_iterator{value()}.end()} noexcept;})
+            requires  (requires{{impl::make_range_iterator{value()}.end()};})
+        {
+            return (impl::make_range_iterator{value()}.end());
+        }
+
+        /* The reversed range maps `rend()` to the underlying container's `end()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rend() const
+            noexcept (requires{{impl::make_range_iterator{value()}.end()} noexcept;})
+            requires (requires{{impl::make_range_iterator{value()}.end()};})
+        {
+            return (impl::make_range_iterator{value()}.end());
+        }
+    };
+
+}
+
+
+/* A function object that reverses the order of iteration for a supported container.
+
+The ranges that are produced by this object act just like normal ranges, but with the
+forward and reverse iterators swapped, and the indexing logic modified to map index
+`i` to index `-i - 1` before applying Python-style wraparound.
+
+Note that the `reverse` class must be default-constructed, which standardizes it with
+respect to other range adaptors and allows it to be easily chained together with other
+operations to form more complex range-based algorithms. */
+struct reverse {
+private:
+    template <typename C>
+    using container = impl::reverse<meta::remove_rvalue<C>>;
+
+    template <typename C>
+    using range = bertrand::range<container<C>>;
+
+public:
+    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    [[nodiscard]] static constexpr range<C> operator()(C&& c)
+        noexcept (requires{{range<C>{container<C>{std::forward<C>(c)}}} noexcept;})
+        requires (requires{{range<C>{container<C>{std::forward<C>(c)}}};})
+    {
+        return range<C>{container<C>{std::forward<C>(c)}};
+    }
+};
+
+
 ////////////////////
 ////    SORT    ////
 ////////////////////
 
 
 
+//////////////////
+////    AT    ////
+//////////////////
+
+
+
+//////////////////////
+////    SELECT    ////
+//////////////////////
+
+
+
+////////////////////
+////    FOLD    ////
+////////////////////
 
 
 
@@ -8069,22 +8326,6 @@ namespace meta {
 
 
 
-/////////////////////
-////    TUPLE    ////
-/////////////////////
-
-
-/// TODO: Tuples are defined in their own header, which is included just after
-/// static strings, in order to take advantage of named fields.  All I need for
-/// comprehensions is a forward declaration, and then it can assume the rest of the
-/// interface ahead of time.
-
-
-
-
-
-
-
 
 
 
@@ -8125,13 +8366,17 @@ namespace meta {
 namespace std {
 
     /// TODO: remember to enable borrowed ranges for all ranges.  This requires some
-    /// care to make sure the intended semantics are always observed.
+    /// care to make sure the intended semantics are always observed.  Also make sure
+    /// that these statuses even make sense.
 
     /* Specializing `std::ranges::enable_borrowed_range` ensures that iterators over
     slices are not tied to the lifetime of the slice itself, but rather to that of the
     underlying container. */
     template <bertrand::meta::slice T>
     constexpr bool ranges::enable_borrowed_range<T> = true;
+
+
+    /// TODO: tuple_size and tuple_element for ranges where possible.
 
 }
 
