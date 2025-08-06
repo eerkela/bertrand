@@ -4958,9 +4958,18 @@ namespace impl {
         using difference_type = std::ptrdiff_t;
         using value_type = meta::remove_reference<T>;
         using reference = meta::as_lvalue<T>;
-        using pointer = meta::as_pointer<reference>;
+        using pointer = meta::address_type<reference>;
 
-        pointer ptr;
+        pointer ptr = nullptr;
+
+        [[nodiscard]] constexpr operator pointer() const noexcept {
+            /// NOTE: including an implicit conversion to a raw pointer allows
+            /// `std::common_type` to deduce a common type between this iterator and
+            /// containers whose iterators devolve to raw pointers, such as
+            /// `std::vector` and `std::array`, which can lead to optimizations in the
+            /// monadic range interface.
+            return ptr;
+        }
 
         [[nodiscard]] constexpr reference operator*() const noexcept {
             return *ptr;

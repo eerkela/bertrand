@@ -3252,6 +3252,10 @@ constexpr void swap(sequence<T>& lhs, sequence<T>& rhs)
 /// it in a `zip{}` call should expand it and then broadcast the values as scalars.
 /// Once that's implemented, `zip{}` should be done.
 
+/// TODO: maybe unpacking a non-range argument should not be a problem, and always
+/// attempts to unpack the individual elements rather than the whole argument.  This
+/// will require some thought.
+
 
 namespace impl {
 
@@ -4626,11 +4630,6 @@ namespace impl {
 }
 
 
-/// TODO: maybe unpacking a non-range argument should not be a problem, and always
-/// attempts to unpack the individual elements rather than the whole argument.  This
-/// will require some thought.
-
-
 /* A function object that merges multiple ranges and/or scalar values into a single
 range, passing each element to a given transformation function.  If no transformation
 function is given, then the range defaults to returning a `Tuple` of the individual
@@ -4876,10 +4875,6 @@ namespace impl {
     concept join_broadcast =
         !meta::range<typename meta::unqualify<C>::argument_types::template at<I>>;
 
-    /// TODO: what does unpacking mean in the context of joined ranges exactly?  If the
-    /// yield type is another range, then the joined range will flatten them into the
-    /// output?
-
     template <typename C, size_t I>
     concept join_unpack =
         meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>> &&
@@ -4925,29 +4920,488 @@ namespace impl {
     /// The optional and expected cases would never occur, since all of the inputs
     /// would be non-visitable iterator types.
 
+    /// TODO: include an index for the current argument, and use a vtable to
+    /// get the next iterator.
+
+
+
+    /// TODO: a trivial join_iterator_storage<Begin, End> that holds the begin
+    /// and end iterators for a single range, the active index, and possibly also its
+    /// size.  `join_iterator` will then be templated to accept these, will reduce them
+    /// to a union_type<...> for storage, and will initialize each one accordingly.
+
+
+
+
+
+    /// TODO: maybe I just pass the raw arguments to the iterator and let it decide
+    /// how to handle them?  That way, if all of the begin types share a common type,
+    /// then I can store just that type directly and avoid all dispatching overhead.
+    /// Otherwise, I have to store a union that is perfectly aligned to the arguments
+
+    enum class join_subrange_kind {
+        SCALAR,
+        RANGE,
+        UNPACK,
+    };
+
+    /// TODO: all of these subranges will have to store the index within the current
+    /// group for random-access purposes.
+
+    /* Join iterators have to store both the begin and end iterators for each argument
+    as sub ranges within the inner union.  We also take the opportunity to normalize
+    non-range arguments to trivial subranges at the same time. */
+    template <meta::lvalue C>
+    struct join_subrange {
+        using begin_type = meta::begin_type<C>;
+        using end_type = meta::end_type<C>;
+
+        static constexpr join_subrange_kind kind = join_subrange_kind::SCALAR;
+
+    private:
+        begin_type m_begin;
+        end_type m_end;
+
+    public:
+        constexpr join_subrange() = default;
+        constexpr join_subrange(C c)
+            noexcept (requires{
+                {begin_type{std::addressof(c)}} noexcept;
+                {end_type{std::addressof(c) + 1}} noexcept;
+            })
+            requires (requires{
+                {begin_type{std::addressof(c)}};
+                {end_type{std::addressof(c) + 1}};
+            })
+        :
+            m_begin(std::addressof(c)),
+            m_end(std::addressof(c) + 1)
+        {}
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) deref(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_begin} noexcept;})
+            requires (requires{{*std::forward<Self>(self).m_begin};})
+        {
+            return (*std::forward<Self>(self).m_begin);
+        }
+
+        constexpr void increment()
+            noexcept (requires{{++m_begin} noexcept;})
+            requires (requires{{++m_begin};})
+        {
+            ++m_begin;
+        }
+
+        [[nodiscard]] constexpr bool done() const
+            noexcept (requires{{m_begin == m_end} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{m_begin == m_end} -> meta::convertible_to<bool>;})
+        {
+            return m_begin == m_end;
+        }
+    };
+    template <meta::lvalue C> requires (meta::range<C>)
+    struct join_subrange<C> {
+        using begin_type = meta::begin_type<C>;
+        using end_type = meta::end_type<C>;
+
+        static constexpr join_subrange_kind kind = join_subrange_kind::RANGE;
+
+    private:
+        begin_type m_begin;
+        end_type m_end;
+
+    public:
+        constexpr join_subrange() = default;
+        constexpr join_subrange(C c)
+            noexcept (requires{
+                {c.begin()} noexcept -> meta::nothrow::convertible_to<begin_type>;
+                {c.end()} noexcept -> meta::nothrow::convertible_to<end_type>;
+            })
+            requires (requires{
+                {c.begin()} -> meta::convertible_to<begin_type>;
+                {c.end()} -> meta::convertible_to<end_type>;
+            })
+        :
+            m_begin(c.begin()),
+            m_end(c.end())
+        {}
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) deref(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_begin} noexcept;})
+            requires (requires{{*std::forward<Self>(self).m_begin};})
+        {
+            return (*std::forward<Self>(self).m_begin);
+        }
+
+        constexpr void increment()
+            noexcept (requires{{++m_begin} noexcept;})
+            requires (requires{{++m_begin};})
+        {
+            ++m_begin;
+        }
+
+        [[nodiscard]] constexpr bool done() const
+            noexcept (requires{{m_begin == m_end} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{m_begin == m_end} -> meta::convertible_to<bool>;})
+        {
+            return m_begin == m_end;
+        }
+    };
+    template <meta::lvalue C> requires (meta::unpack<C> && meta::range<meta::yield_type<C>>)
+    struct join_subrange<C> {
+        using begin_type = meta::begin_type<C>;
+        using end_type = meta::end_type<C>;
+
+        static constexpr join_subrange_kind kind = join_subrange_kind::UNPACK;
+
+    private:
+        struct Inner {
+            using type = meta::yield_type<C>;
+            impl::ref<type> data;
+            meta::begin_type<type> begin = data->begin();
+            meta::end_type<type> end = data->end();
+        };
+
+        begin_type m_begin;
+        end_type m_end;
+        Optional<Inner> m_inner;
+        size_t m_group = 0;
+
+        /* Get the inner range for the current group, assuming one exists. */
+        template <typename Self>
+        constexpr decltype(auto) inner(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).inner.__value.template get<1>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).inner.__value.template get<1>()};})
+        {
+            return (std::forward<Self>(self).inner.__value.template get<1>());
+        }
+
+        /* Advance the iterator to the next non-empty group in the outer range. */
+        constexpr void advance()
+            noexcept (requires(Inner* curr) {
+                {m_begin == m_end} noexcept -> meta::nothrow::convertible_to<bool>;
+                {m_inner = None} noexcept;
+                {m_inner = Inner{*m_begin}} noexcept;
+                {curr->begin == curr->end} noexcept -> meta::nothrow::convertible_to<bool>;
+                {++m_begin} noexcept;
+            })
+            requires (requires(Inner* curr) {
+                {m_begin == m_end} -> meta::convertible_to<bool>;
+                {m_inner = None};
+                {m_inner = Inner{*m_begin}};
+                {curr->begin == curr->end} -> meta::convertible_to<bool>;
+                {++m_begin};
+            })
+        {
+            if (m_begin == m_end) {
+                m_inner = None;
+                return;
+            }
+            m_inner = Inner{*m_begin};
+            Inner* curr = &inner();
+            while (curr->begin == curr->end) {
+                ++m_group;
+                ++m_begin;
+                if (m_begin == m_end) {
+                    m_inner = None;
+                    break;
+                }
+                m_inner = Inner{*m_begin};
+                curr = &inner();
+            }
+        }
+
+    public:
+        constexpr join_subrange() = default;
+        constexpr join_subrange(C c)
+            noexcept (requires{
+                {c.begin()} noexcept -> meta::nothrow::convertible_to<begin_type>;
+                {c.end()} noexcept -> meta::nothrow::convertible_to<end_type>;
+                {advance()} noexcept;
+            })
+            requires (requires{
+                {c.begin()} -> meta::convertible_to<begin_type>;
+                {c.end()} -> meta::convertible_to<end_type>;
+                {advance()};
+            })
+        :
+            m_begin(c.begin()),
+            m_end(c.end())
+        {
+            advance();
+        }
+
+        /* Return the index for the current group.  This is used to insert separators
+        between the groups whenever we advance from one to the other. */
+        [[nodiscard]] constexpr size_t group() const noexcept {
+            return m_group;
+        }
+
+        /// TODO: maybe also a helper for getting the remaining values in the current
+        /// group, and the index within that group for random-access purposes?
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) deref(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).inner().begin} noexcept;})
+            requires (requires{{*std::forward<Self>(self).inner().begin};})
+        {
+            return (*std::forward<Self>(self).inner().begin);
+        }
+
+        constexpr void increment()
+            noexcept (requires(Inner& curr) {
+                {++curr.begin} noexcept;
+                {curr.begin == curr.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                {++m_begin} noexcept;
+                {advance()} noexcept;
+            })
+            requires (requires(Inner& curr) {
+                {++curr.begin};
+                {curr.begin == curr.end} -> meta::convertible_to<bool>;
+                {++m_begin};
+                {advance()};
+            })
+        {
+            Inner& curr = inner();
+            ++curr.begin;
+            if (curr.begin == curr.end) {
+                ++m_group;
+                ++m_begin;
+                advance();
+            }
+        }
+
+        [[nodiscard]] constexpr bool done() const
+            noexcept (requires{{m_inner == None} noexcept;})
+            requires (requires{{m_inner == None};})
+        {
+            return m_inner == None;
+        }
+
+        /// TODO: random access methods?  This whole interface will be a bit difficult
+    };
+    template <typename C>
+    join_subrange(C&) -> join_subrange<C&>;
+
+
+    /// TODO: if I just pass in the raw arguments, then there may actually not be a need
+    /// to pass them at all.  The container should be enough on its own?  Alternatively,
+    /// if I generate the subranges and pass them in, then I can potentially reuse the
+    /// iterator class for reverse iterators as well?
+
+    /* Join iterators work by storing a pointer to the joined range, an index recording
+    the current sub-range, and a union of backing iterators, which store both the begin
+    and end iterators for each range.  Scalars are promoted to ranges of length 1 for
+    the purposes of this union.  When the iterator is incremented, the current begin
+    iterator will be advanced, and if it equals the corresponding end iterator, the
+    index will be incremented and the next range will be initialized, skipping any that
+    are empty.  If all of the begin and end types for each of the input ranges are
+    the same, then the joined range will model `std::common_range`, and the end
+    iterator will be initialized with the end iterator for the final argument.
+
+    Note that if a common type exists between all of the iterators, then the internal
+    union will be optimized out, and the common iterator type will be stored directly
+    as an optimization, which avoids extra dispatching overhead.  Additionally, if all
+    of the component ranges return a single type, then the overall joined iterator will
+    dereference to that type directly.  Otherwise, it will return a union of the
+    possible types across all of the ranges. */
     template <meta::lvalue C, meta::not_rvalue... Iters>
         // requires (join_yield<C, Iters...>::enable)
     struct join_iterator {
     private:
+        using type = join_type<C>;
+        using storage = meta::union_type<Iters...>;
+        using tag = impl::union_index_type<sizeof...(Iters)>;
         using indices = meta::unqualify<C>::indices;
         using ranges = meta::unqualify<C>::ranges;
 
     public:
         using iterator_category = range_category<ranges, Iters...>::type;
         using difference_type = range_difference<ranges, Iters...>::type;
+        using value_type = meta::remove_reference<type>;
+        using reference = meta::as_lvalue<value_type>;
+        using pointer = meta::address_type<value_type>;
 
         meta::as_pointer<C> container = nullptr;
-        impl::basic_union<Iters...> iters;
+        [[no_unique_address]] storage iters;
+        [[no_unique_address]] tag current = 0;
 
     private:
 
-        /// TODO: helpers to implement the iterator interface
+        /// TODO: random-access methods will (always?) be able to calculate
+        /// constant-time distance to the end iterator, which is what is used to
+        /// implement offsets that cross a range boundary.  That might require the
+        /// subranges to also store their current index, so that I can decrement in
+        /// the same way and still cross join boundaries.
+
 
     public:
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once storage has been nailed down
+        }
 
-        /// TODO: call all the helpers to implement the iterator interface
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{impl::arrow_proxy{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{impl::arrow_proxy{*std::forward<Self>(self)}};})
+        {
+            return impl::arrow_proxy{*std::forward<Self>(self)};
+        }
 
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once random access has been nailed down
+        }
+
+        constexpr join_iterator& operator++()
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once storage has been nailed down
+        }
+
+        [[nodiscard]] constexpr join_iterator operator++(int)
+            noexcept (
+                meta::nothrow::copyable<join_iterator> &&
+                meta::nothrow::has_preincrement<join_iterator>
+            )
+            requires (
+                meta::copyable<join_iterator> &&
+                meta::has_preincrement<join_iterator>
+            )
+        {
+            join_iterator tmp = *this;
+            ++*this;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr join_iterator operator+(
+            const join_iterator& self,
+            difference_type i
+        )
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this  random access has been nailed down
+        }
+
+        [[nodiscard]] friend constexpr join_iterator operator+(
+            difference_type i,
+            const join_iterator& self
+        )
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once random access has been nailed down
+        }
+
+        constexpr join_iterator& operator+=(difference_type i)
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this random access has been nailed down
+        }
+
+        constexpr join_iterator& operator--()
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once storage has been nailed down
+        }
+
+        [[nodiscard]] constexpr join_iterator operator--(int)
+            noexcept (
+                meta::nothrow::copyable<join_iterator> &&
+                meta::nothrow::has_predecrement<join_iterator>
+            )
+            requires (
+                meta::copyable<join_iterator> &&
+                meta::has_predecrement<join_iterator>
+            )
+        {
+            join_iterator tmp = *this;
+            --*this;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr join_iterator operator-(difference_type i) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once random access has been nailed down
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const join_iterator& other
+        ) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: implement this once random access has been nailed down
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator<(const join_iterator<C, Ts...>& other) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: figure out comparisons
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator<=(const join_iterator<C, Ts...>& other) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: figure out comparisons
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator==(const join_iterator<C, Ts...>& other) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: figure out comparisons
+            return current == other.current;  // + dispatch a comparison to the actual iterators
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator!=(const join_iterator<C, Ts...>& other) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: figure out comparisons
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator>=(const join_iterator<C, Ts...>& other) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: figure out comparisons
+        }
+
+        template <typename... Ts>
+        [[nodiscard]] constexpr bool operator>(const join_iterator<C, Ts...>& other) const
+            noexcept (false)
+            requires (false)
+        {
+            /// TODO: figure out comparisons
+        }
     };
+
+
+
+
 
     template <meta::lvalue T>
     struct make_join_begin {
@@ -5212,12 +5666,14 @@ namespace impl {
     template <meta::unpack T, typename Sep>
         requires (meta::tuple_like<T> && meta::tuple_like<meta::yield_type<T>>)
     constexpr size_t join_arg_size<T, Sep> =
-        meta::tuple_size<T> * meta::tuple_size<meta::yield_type<T>> +
-        (meta::tuple_size<T> - (meta::tuple_size<T> > 0)) * join_sep_size<Sep>;
+        meta::tuple_size<meta::yield_type<T>> * meta::tuple_size<T> +
+        join_sep_size<Sep> * (meta::tuple_size<T> - (meta::tuple_size<T> > 0));
 
     template <typename Sep, typename... A>
     constexpr size_t join_tuple_size = (
-        join_arg_size<A, Sep> + ... + (join_sep_size<Sep> * (sizeof...(A) - (sizeof...(A) > 0))
+        join_arg_size<A, Sep> +
+        ... +
+        (join_sep_size<Sep> * (sizeof...(A) - (sizeof...(A) > 0))
     ));
 
     template <typename Sep, typename... A> requires (join_concept<Sep, A...>)
@@ -6926,24 +7382,6 @@ repeat(T n) -> repeat<None>;
 
 
 /////////////////////
-////    SPLIT    ////
-/////////////////////
-
-
-
-
-/// TODO: partition<N>{n/f}, which returns Optional([prev, sep, next])?
-/// -> just handle this via the `split{}` customization interface, which includes
-/// the following options:
-///     - peek, which allows the groups to overlap
-///     - until, which ignores groups after some index or predicate returns true.
-///     - drop_sep, which omits the separator from the output.
-/// These tags would be constexpr variables and can possibly be combined with the `|`
-/// operator
-
-
-
-/////////////////////
 ////    SLICE    ////
 /////////////////////
 
@@ -7909,6 +8347,23 @@ slice(Start&& = {}, Stop&& = {}, Step&& = {}) -> slice<
 >;
 
 
+/////////////////////
+////    SPLIT    ////
+/////////////////////
+
+
+
+
+/// TODO: partition<N>{n/f}, which returns Optional([prev, sep, next])?
+/// -> just handle this via the `split{}` customization interface, which includes
+/// the following options:
+///     - peek, which allows the groups to overlap
+///     - until, which ignores groups after some index or predicate returns true.
+///     - drop_sep, which omits the separator from the output.
+/// These tags would be constexpr variables and can possibly be combined with the `|`
+/// operator
+
+
 //////////////////////
 ////    SAMPLE    ////
 //////////////////////
@@ -7917,7 +8372,6 @@ slice(Start&& = {}, Stop&& = {}, Step&& = {}) -> slice<
 /// TODO: `sample` extracts a random sample of elements from a range, and takes
 /// a standardized random_device as an optional parameter (defaulting to a mersenne
 /// twister).
-
 
 
 
