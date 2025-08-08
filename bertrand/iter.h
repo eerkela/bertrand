@@ -3289,6 +3289,7 @@ namespace impl {
 
     template <typename F, typename... A>
     concept zip_concept =
+        sizeof...(A) > 0 &&
         (meta::not_void<F> && ... && meta::not_void<A>) &&
         (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
         (meta::range<A> || ...) &&
@@ -4864,6 +4865,7 @@ namespace impl {
 
     template <typename Sep, typename... A>
     concept join_concept =
+        sizeof...(A) > 0 &&
         (meta::not_void<A> && ...) &&
         (meta::not_rvalue<Sep> && ... && meta::not_rvalue<A>);
 
@@ -5104,232 +5106,11 @@ namespace impl {
     template <typename T>
     concept is_join_subrange = meta::unqualified<T> && _is_join_subrange<T>;
 
-    /* `join_forward` produces a `join_subrange` containing forward iterators over a
-    `join` container. */
-    template <meta::lvalue C>
-    struct join_forward;
-    template <meta::lvalue C> requires (!meta::range<C>)
-    struct join_forward<C> {
-        using type = join_subrange<
-            false,
-            impl::contiguous_iterator<C>,
-            impl::contiguous_iterator<C>
-        >;
-
-        C arg;
-
-        constexpr type operator()()
-            noexcept (requires{{type{
-                .m_begin = {std::addressof(arg)},
-                .m_end = {std::addressof(arg) + 1}
-            }} noexcept;})
-            requires (requires{{type{
-                .m_begin = {std::addressof(arg)},
-                .m_end = {std::addressof(arg) + 1}
-            }};})
-        {
-            return type{
-                .m_begin = {std::addressof(arg)},
-                .m_end = {std::addressof(arg) + 1}
-            };
-        }
-    };
-    template <meta::lvalue C> requires (meta::range<C> && meta::iterable<C>)
-    struct join_forward<C> {
-        using type = join_subrange<
-            false,
-            meta::unqualify<meta::begin_type<C>>,
-            meta::unqualify<meta::end_type<C>>
-        >;
-
-        C arg;
-
-        constexpr type operator()()
-            noexcept (requires{{type{
-                .m_begin = arg.begin(),
-                .m_end = arg.end()
-            }} noexcept;})
-            requires (requires{{type{
-                .m_begin = arg.begin(),
-                .m_end = arg.end()
-            }};})
-        {
-            return type{
-                .m_begin = arg.begin(),
-                .m_end = arg.end()
-            };
-        }
-    };
-    template <meta::lvalue C>
-        requires (meta::unpack<C> && meta::iterable<C> && meta::range<meta::yield_type<C>>)
-    struct join_forward<C> {
-        using type = join_subrange<
-            true,
-            meta::unqualify<meta::begin_type<meta::yield_type<C>>>,
-            meta::unqualify<meta::end_type<meta::yield_type<C>>>
-        >;
-
-        C arg;
-
-        constexpr type operator()()
-            noexcept (
-                requires{{type{.m_begin = arg.begin(), .m_end = arg.end()}} noexcept;} &&
-                requires(type result) {{result.advance()} noexcept;}
-            )
-            requires (
-                requires{{type{.m_begin = arg.begin(), .m_end = arg.end()}};} &&
-                requires(type result) {{result.advance()};}
-            )
-        {
-            type result {
-                .m_begin = arg.begin(),
-                .m_end = arg.end()
-            };
-            result.advance();
-            return result;
-        }
-    };
-    template <typename C>
-    join_forward(C&) -> join_forward<C&>;
-
-    /* `join_reverse` produces a `join_subrange` containing reverse iterators over a
-    `join` container. */
-    template <meta::lvalue C>
-    struct join_reverse;
-    template <meta::lvalue C> requires (!meta::range<C>)
-    struct join_reverse<C> {
-        using type = join_subrange<
-            false,
-            std::reverse_iterator<impl::contiguous_iterator<C>>,
-            std::reverse_iterator<impl::contiguous_iterator<C>>
-        >;
-
-        C arg;
-
-        constexpr type operator()()
-            noexcept (requires{{type{
-                .m_begin = std::make_reverse_iterator(
-                    impl::contiguous_iterator<C>{std::addressof(arg) + 1}
-                ),
-                .m_end = std::make_reverse_iterator(
-                    impl::contiguous_iterator<C>{std::addressof(arg)}
-                )
-            }} noexcept;})
-            requires (requires{{type{
-                .m_begin = std::make_reverse_iterator(
-                    impl::contiguous_iterator<C>{std::addressof(arg) + 1}
-                ),
-                .m_end = std::make_reverse_iterator(
-                    impl::contiguous_iterator<C>{std::addressof(arg)}
-                )
-            }};})
-        {
-            return type{
-                .m_begin = std::make_reverse_iterator(
-                    impl::contiguous_iterator<C>{std::addressof(arg) + 1}
-                ),
-                .m_end = std::make_reverse_iterator(
-                    impl::contiguous_iterator<C>{std::addressof(arg)}
-                )
-            };
-        }
-    };
-    template <meta::lvalue C> requires (meta::range<C> && meta::reverse_iterable<C>)
-    struct join_reverse<C> {
-        using type = join_subrange<
-            false,
-            meta::unqualify<meta::rbegin_type<C>>,
-            meta::unqualify<meta::rend_type<C>>
-        >;
-
-        C arg;
-
-        constexpr type operator()()
-            noexcept (requires{{type{
-                .m_begin = arg.rbegin(),
-                .m_end = arg.rend()
-            }} noexcept;})
-            requires (requires{{type{
-                .m_begin = arg.rbegin(),
-                .m_end = arg.rend()
-            }};})
-        {
-            return type{
-                .m_begin = arg.rbegin(),
-                .m_end = arg.rend()
-            };
-        }
-    };
-    template <meta::lvalue C>
-        requires (meta::unpack<C> && meta::reverse_iterable<C> && meta::range<meta::yield_type<C>>)
-    struct join_reverse<C> {
-        using type = join_subrange<
-            true,
-            meta::unqualify<meta::rbegin_type<meta::yield_type<C>>>,
-            meta::unqualify<meta::rend_type<meta::yield_type<C>>>
-        >;
-
-        C arg;
-
-        constexpr type operator()()
-            noexcept (
-                requires{{type{.m_begin = arg.rbegin(), .m_end = arg.rend()}} noexcept;} &&
-                requires(type result) {{result.advance()} noexcept;}
-            )
-            requires (
-                requires{{type{.m_begin = arg.rbegin(), .m_end = arg.rend()}};} &&
-                requires(type result) {{result.advance()};}
-            )
-        {
-            type result {
-                .m_begin = arg.rbegin(),
-                .m_end = arg.rend()
-            };
-            result.advance();
-            return result;
-        }
-    };
-    template <typename C>
-    join_reverse(C&) -> join_reverse<C&>;
-
-
-    /// TODO: either I need 2 full specializations of join_iterator to implement
-    /// the common iterator optimization, or I need a nested inner class that
-    /// implements that for us.
-
-    template <is_join_subrange... Iters>
-    struct join_iterator_storage {
-        using type = meta::union_type<Iters...>;
-        [[no_unique_address]] type iters;
-    };
-
-    /* If all of the subrange begin and end types share a common type, then we can
-    eliminate the inner union and store that subrange directly */
-    template <is_join_subrange Iter, is_join_subrange... Iters>
-        requires (
-            ((Iter::unpack == Iters::unpack) && ...) &&
-            meta::has_common_type<typename Iter::begin_type, typename Iters::begin_type...> &&
-            meta::has_common_type<typename Iter::end_type, typename Iters::end_type...> &&
-            meta::sentinel_for<
-                typename meta::common_type<typename Iter::begin_type, typename Iters::begin_type...>,
-                typename meta::common_type<typename Iter::end_type, typename Iters::end_type...>
-            >
-        )
-    struct join_iterator_storage<Iter, Iters...> {
-        using type = join_subrange<
-            Iter::unpack,
-            typename meta::common_type<typename Iter::begin_type, typename Iters::begin_type...>,
-            typename meta::common_type<typename Iter::end_type, typename Iters::end_type...>
-        >;
-        [[no_unique_address]] type iters;
-    };
-
 
     /// TODO: if the begin and end types for all of the subranges are NOT the same,
     /// then I should optimize the end iterator to just a `None` sentinel, rather
     /// than initializing a full iterator.  I'll just include comparisons against
     /// `None` in the iterator interface for this purpose.
-
 
 
     /* Join iterators work by storing a pointer to the joined range, an index recording
@@ -5539,49 +5320,135 @@ namespace impl {
         }
     };
 
+    /* `join_forward` produces a `join_subrange` containing forward iterators over a
+    `join` container. */
+    template <meta::lvalue C>
+    struct join_forward;
+    template <meta::lvalue C> requires (!meta::range<C>)
+    struct join_forward<C> {
+        using type = join_subrange<
+            false,
+            impl::contiguous_iterator<C>,
+            impl::contiguous_iterator<C>
+        >;
 
+        C arg;
 
-
-
-    template <meta::lvalue T>
-    struct make_join_begin {
-        using type = T;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_join_begin<T> {
-        using type = meta::begin_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.begin()} noexcept;})
-            requires (requires{{arg.begin()};})
+        constexpr type begin()
+            noexcept (requires{{type{
+                .m_begin = {std::addressof(arg)},
+                .m_end = {std::addressof(arg) + 1}
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = {std::addressof(arg)},
+                .m_end = {std::addressof(arg) + 1}
+            }};})
         {
-            return arg.begin();
+            return type{
+                .m_begin = {std::addressof(arg)},
+                .m_end = {std::addressof(arg) + 1}
+            };
+        }
+
+        constexpr type end()
+            noexcept (requires{{type{
+                .m_begin = {std::addressof(arg) + 1},
+                .m_end = {std::addressof(arg) + 1}
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = {std::addressof(arg) + 1},
+                .m_end = {std::addressof(arg) + 1}
+            }};})
+        {
+            return type{
+                .m_begin = {std::addressof(arg) + 1},
+                .m_end = {std::addressof(arg) + 1}
+            };
         }
     };
-    template <typename T>
-    make_join_begin(T&) -> make_join_begin<T&>;
+    template <meta::lvalue C> requires (meta::range<C> && meta::iterable<C>)
+    struct join_forward<C> {
+        using type = join_subrange<
+            false,
+            meta::unqualify<meta::begin_type<C>>,
+            meta::unqualify<meta::end_type<C>>
+        >;
 
-    template <meta::lvalue T>
-    struct make_join_end {
-        using type = T;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_join_end<T> {
-        using type = meta::end_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.end()} noexcept;})
-            requires (requires{{arg.end()};})
+        C arg;
+
+        constexpr type begin()
+            noexcept (requires{{type{
+                .m_begin = arg.begin(),
+                .m_end = arg.end()
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = arg.begin(),
+                .m_end = arg.end()
+            }};})
         {
-            return arg.end();
+            return type{
+                .m_begin = arg.begin(),
+                .m_end = arg.end()
+            };
+        }
+
+        constexpr type end()
+            noexcept (requires{{type{
+                .m_begin = arg.end(),
+                .m_end = arg.end()
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = arg.end(),
+                .m_end = arg.end()
+            }};})
+        {
+            return type{
+                .m_begin = arg.end(),
+                .m_end = arg.end()
+            };
         }
     };
-    template <typename T>
-    make_join_end(T&) -> make_join_end<T&>;
+    template <meta::lvalue C>
+        requires (meta::unpack<C> && meta::iterable<C> && meta::range<meta::yield_type<C>>)
+    struct join_forward<C> {
+        using type = join_subrange<
+            true,
+            meta::unqualify<meta::begin_type<meta::yield_type<C>>>,
+            meta::unqualify<meta::end_type<meta::yield_type<C>>>
+        >;
+
+        C arg;
+
+        constexpr type begin()
+            noexcept (
+                requires{{type{.m_begin = arg.begin(), .m_end = arg.end()}} noexcept;} &&
+                requires(type result) {{result.advance()} noexcept;}
+            )
+            requires (
+                requires{{type{.m_begin = arg.begin(), .m_end = arg.end()}};} &&
+                requires(type result) {{result.advance()};}
+            )
+        {
+            type result {
+                .m_begin = arg.begin(),
+                .m_end = arg.end()
+            };
+            result.advance();
+            return result;
+        }
+
+        constexpr type end()
+            noexcept (requires{{type{.m_begin = arg.end(), .m_end = arg.end()}} noexcept;})
+            requires (requires{{type{.m_begin = arg.end(), .m_end = arg.end()}};})
+        {
+            return {
+                .m_begin = arg.end(),
+                .m_end = arg.end()
+            };
+        }
+    };
+    template <typename C>
+    join_forward(C&) -> join_forward<C&>;
 
     /* Forward iterators over `join` ranges consist of an inner union holding either
     an iterator over the current range or a trivial iterator over a single element.
@@ -5591,14 +5458,19 @@ namespace impl {
     struct _make_join_iterator;
     template <meta::lvalue T, size_t... Is>
     struct _make_join_iterator<T, std::index_sequence<Is...>> {
+    private:
+        using last = decltype(join_forward{
+            std::declval<T>().template arg<sizeof...(Is) - 1>()
+        }.begin());
+
+    public:
+        static constexpr bool common =
+            std::same_as<typename last::begin_type, typename last::end_type>;
         using begin = join_iterator<
             T,
-            typename make_zip_begin<decltype((std::declval<T>().template arg<Is>()))>::type...
+            decltype(join_forward{std::declval<T>().template arg<Is>()}.begin())...
         >;
-        using end = join_iterator<
-            T,
-            typename make_zip_end<decltype((std::declval<T>().template arg<Is>()))>::type...
-        >;
+        using end = std::conditional_t<common, begin, NoneType>;
     };
     template <meta::lvalue T>
     struct make_join_iterator {
@@ -5608,105 +5480,202 @@ namespace impl {
         using indices = meta::unqualify<T>::indices;
         using type = _make_join_iterator<T, indices>;
 
-        template <size_t... Is>
-        constexpr type::begin _begin(std::index_sequence<Is...>)
-            noexcept (requires{{typename type::begin{
-                .container = std::addressof(container),
-                .iters = {make_join_begin{container.template arg<Is>()}()...}
-            }} noexcept;})
-            requires (requires{{typename type::begin{
-                .container = std::addressof(container),
-                .iters = {make_join_begin{container.template arg<Is>()}()...}
-            }};})
-        {
-            return {
-                .container = std::addressof(container),
-                .iters = {make_join_begin{container.template arg<Is>()}()...}
-            };
-        }
-
-        template <size_t... Is>
-        constexpr type::end _end(std::index_sequence<Is...>)
-            noexcept (requires{{typename type::end{
-                .container = std::addressof(container),
-                .iters = {make_join_end{container.template arg<Is>()}()...}
-            }} noexcept;})
-            requires (requires{{typename type::end{
-                .container = std::addressof(container),
-                .iters = {make_join_end{container.template arg<Is>()}()...}
-            }};})
-        {
-            return {
-                .container = std::addressof(container),
-                .iters = {make_join_end{container.template arg<Is>()}()...}
-            };
-        }
-
     public:
         using begin_type = type::begin;
         using end_type = type::end;
 
         [[nodiscard]] constexpr begin_type begin()
-            noexcept (requires{{_begin(indices{})} noexcept;})
-            requires (requires{{_begin(indices{})};})
+            noexcept (requires{{begin_type{
+                .container = std::addressof(container),
+                .iters = {join_forward{container.template arg<0>()}.begin()}
+            }} noexcept;})
+            requires (requires{{begin_type{
+                .container = std::addressof(container),
+                .iters = {join_forward{container.template arg<0>()}.begin()}
+            }};})
         {
-            return _begin(indices{});
+            return {
+                .container = std::addressof(container),
+                .iters = {join_forward{container.template arg<0>()}.begin()}
+            };
         }
 
         [[nodiscard]] constexpr end_type end()
-            noexcept (requires{{_end(indices{})} noexcept;})
-            requires (requires{{_end(indices{})};})
+            noexcept (requires{{end_type{
+                .container = std::addressof(container),
+                .iters = {join_forward{container.template arg<indices::size() - 1>()}.end()}
+            }} noexcept;})
+            requires (type::common && requires{{end_type{
+                .container = std::addressof(container),
+                .iters = {join_forward{container.template arg<indices::size() - 1>()}.end()}
+            }};})
         {
-            return _end(indices{});
+            return {
+                .container = std::addressof(container),
+                .iters = {join_forward{container.template arg<indices::size() - 1>()}.end()}
+            };
+        }
+
+        [[nodiscard]] constexpr end_type end() noexcept requires (!type::common) {
+            return None;
         }
     };
     template <typename T>
     make_join_iterator(T&) -> make_join_iterator<T&>;
 
-    template <typename>
-    constexpr bool join_reverse_iterable = false;
-    template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
-    constexpr bool join_reverse_iterable<meta::pack<A...>> = true;
+    /* `join_reverse` produces a `join_subrange` containing reverse iterators over a
+    `join` container. */
+    template <meta::lvalue C>
+    struct join_reverse;
+    template <meta::lvalue C> requires (!meta::range<C>)
+    struct join_reverse<C> {
+        using type = join_subrange<
+            false,
+            std::reverse_iterator<impl::contiguous_iterator<C>>,
+            std::reverse_iterator<impl::contiguous_iterator<C>>
+        >;
 
-    template <meta::lvalue T>
-    struct make_join_rbegin {
-        using type = T;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_join_rbegin<T> {
-        using type = meta::rbegin_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.rbegin()} noexcept;})
-            requires (requires{{arg.rbegin()};})
+        C arg;
+
+        constexpr type begin()
+            noexcept (requires{{type{
+                .m_begin = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg) + 1}
+                ),
+                .m_end = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                )
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg) + 1}
+                ),
+                .m_end = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                )
+            }};})
         {
-            return arg.rbegin();
+            return type{
+                .m_begin = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg) + 1}
+                ),
+                .m_end = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                )
+            };
+        }
+
+        constexpr type end()
+            noexcept (requires{{type{
+                .m_begin = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                ),
+                .m_end = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                )
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                ),
+                .m_end = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                )
+            }};})
+        {
+            return type{
+                .m_begin = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                ),
+                .m_end = std::make_reverse_iterator(
+                    impl::contiguous_iterator<C>{std::addressof(arg)}
+                )
+            };
         }
     };
-    template <typename T>
-    make_join_rbegin(T&) -> make_join_rbegin<T&>;
+    template <meta::lvalue C> requires (meta::range<C> && meta::reverse_iterable<C>)
+    struct join_reverse<C> {
+        using type = join_subrange<
+            false,
+            meta::unqualify<meta::rbegin_type<C>>,
+            meta::unqualify<meta::rend_type<C>>
+        >;
 
-    template <meta::lvalue T>
-    struct make_join_rend {
-        using type = T;
-        T arg;
-        constexpr type operator()() noexcept { return arg; }
-    };
-    template <meta::lvalue T> requires (meta::range<T>)
-    struct make_join_rend<T> {
-        using type = meta::rend_type<T>;
-        T arg;
-        constexpr type operator()()
-            noexcept (requires{{arg.rend()} noexcept;})
-            requires (requires{{arg.rend()};})
+        C arg;
+
+        constexpr type begin()
+            noexcept (requires{{type{
+                .m_begin = arg.rbegin(),
+                .m_end = arg.rend()
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = arg.rbegin(),
+                .m_end = arg.rend()
+            }};})
         {
-            return arg.rend();
+            return type{
+                .m_begin = arg.rbegin(),
+                .m_end = arg.rend()
+            };
+        }
+
+        constexpr type end()
+            noexcept (requires{{type{
+                .m_begin = arg.rend(),
+                .m_end = arg.rend()
+            }} noexcept;})
+            requires (requires{{type{
+                .m_begin = arg.rend(),
+                .m_end = arg.rend()
+            }};})
+        {
+            return type{
+                .m_begin = arg.rend(),
+                .m_end = arg.rend()
+            };
         }
     };
-    template <typename T>
-    make_join_rend(T&) -> make_join_rend<T&>;
+    template <meta::lvalue C>
+        requires (meta::unpack<C> && meta::reverse_iterable<C> && meta::range<meta::yield_type<C>>)
+    struct join_reverse<C> {
+        using type = join_subrange<
+            true,
+            meta::unqualify<meta::rbegin_type<meta::yield_type<C>>>,
+            meta::unqualify<meta::rend_type<meta::yield_type<C>>>
+        >;
+
+        C arg;
+
+        constexpr type begin()
+            noexcept (
+                requires{{type{.m_begin = arg.rbegin(), .m_end = arg.rend()}} noexcept;} &&
+                requires(type result) {{result.advance()} noexcept;}
+            )
+            requires (
+                requires{{type{.m_begin = arg.rbegin(), .m_end = arg.rend()}};} &&
+                requires(type result) {{result.advance()};}
+            )
+        {
+            type result {
+                .m_begin = arg.rbegin(),
+                .m_end = arg.rend()
+            };
+            result.advance();
+            return result;
+        }
+
+        constexpr type begin()
+            noexcept (requires{{type{.m_begin = arg.rend(), .m_end = arg.rend()}} noexcept;})
+            requires (requires{{type{.m_begin = arg.rend(), .m_end = arg.rend()}};})
+        {
+            return {
+                .m_begin = arg.rend(),
+                .m_end = arg.rend()
+            };
+        }
+    };
+    template <typename C>
+    join_reverse(C&) -> join_reverse<C&>;
 
     /* If all of the input ranges happen to be reverse iterable, then the joined range
     will alos be reverse iterable, and the rbegin and rend iterators will match if all
@@ -5715,14 +5684,19 @@ namespace impl {
     struct _make_join_reversed;
     template <meta::lvalue T, size_t... Is>
     struct _make_join_reversed<T, std::index_sequence<Is...>> {
+    private:
+        using last = decltype(join_reverse{
+            std::declval<T>().template arg<sizeof...(Is) - 1>()
+        }.begin());
+
+    public:
+        static constexpr bool common =
+            std::same_as<typename last::begin_type, typename last::end_type>;
         using begin = join_iterator<
             T,
-            typename make_zip_rbegin<decltype((std::declval<T>().template arg<Is>()))>::type...
+            decltype(join_reverse{std::declval<T>().template arg<Is>()}.begin())...
         >;
-        using end = join_iterator<
-            T,
-            typename make_zip_rend<decltype((std::declval<T>().template arg<Is>()))>::type...
-        >;
+        using end = std::conditional_t<common, begin, NoneType>;
     };
     template <meta::lvalue T>
         requires (range_reverse_iterable<typename meta::unqualify<T>::argument_types>)
@@ -5733,56 +5707,40 @@ namespace impl {
         using indices = meta::unqualify<T>::indices;
         using type = _make_zip_reversed<T, indices>;
 
-        template <size_t... Is>
-        constexpr type::begin _begin(std::index_sequence<Is...>)
-            noexcept (requires{{typename type::begin{
-                .container = std::addressof(container),
-                .iters = {make_join_rbegin{container.template arg<Is>()}()...}
-            }} noexcept;})
-            requires (requires{{typename type::begin{
-                .container = std::addressof(container),
-                .iters = {make_join_rbegin{container.template arg<Is>()}()...}
-            }};})
-        {
-            return {
-                .container = std::addressof(container),
-                .iters = {make_join_rbegin{container.template arg<Is>()}()...}
-            };
-        }
-
-        template <size_t... Is>
-        constexpr type::end _end(std::index_sequence<Is...>)
-            noexcept (requires{{typename type::end{
-                .container = std::addressof(container),
-                .iters = {make_join_rend{container.template arg<Is>()}()...}
-            }} noexcept;})
-            requires (requires{{typename type::end{
-                .container = std::addressof(container),
-                .iters = {make_join_rend{container.template arg<Is>()}()...}
-            }};})
-        {
-            return {
-                .container = std::addressof(container),
-                .iters = {make_join_rend{container.template arg<Is>()}()...}
-            };
-        }
-
     public:
         using begin_type = type::begin;
         using end_type = type::end;
 
         [[nodiscard]] constexpr begin_type begin()
-            noexcept (requires{{_begin(indices{})} noexcept;})
-            requires (requires{{_begin(indices{})};})
+            noexcept (requires{{typename type::begin{
+                .container = std::addressof(container),
+                .iters = {join_reverse{container.template arg<0>()}.begin()}
+            }} noexcept;})
+            requires (requires{{typename type::begin{
+                .container = std::addressof(container),
+                .iters = {join_reverse{container.template arg<0>()}.begin()}
+            }};})
         {
-            return _begin(indices{});
+            return {
+                .container = std::addressof(container),
+                .iters = {join_reverse{container.template arg<0>()}.begin()}
+            };
         }
 
-        [[nodiscard]] constexpr end_type end()
-            noexcept (requires{{_end(indices{})} noexcept;})
-            requires (requires{{_end(indices{})};})
+        constexpr type::end end()
+            noexcept (requires{{typename type::end{
+                .container = std::addressof(container),
+                .iters = {join_reverse{container.template arg<indices::size() - 1>()}.begin()}
+            }} noexcept;})
+            requires (requires{{typename type::end{
+                .container = std::addressof(container),
+                .iters = {join_reverse{container.template arg<indices::size() - 1>()}.begin()}
+            }};})
         {
-            return _end(indices{});
+            return {
+                .container = std::addressof(container),
+                .iters = {join_reverse{container.template arg<indices::size() - 1>()}.begin()}
+            };
         }
     };
     template <typename T>
