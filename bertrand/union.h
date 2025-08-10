@@ -613,28 +613,47 @@ namespace meta {
         `Union` of those types.  Otherwise, we return the type itself if there is
         only one, or void if there are none. */
         template <typename>
-        struct visit_to_union { using type = void; };
+        struct visit_to_union {
+            using type = void;
+            static constexpr bool trivial = true;
+        };
         template <typename R>
-        struct visit_to_union<meta::pack<R>> { using type = R; };
+        struct visit_to_union<meta::pack<R>> {
+            using type = R;
+            static constexpr bool trivial = true;
+        };
         template <typename... Rs> requires (sizeof...(Rs) > 1)
-        struct visit_to_union<meta::pack<Rs...>> { using type = bertrand::Union<Rs...>; };
+        struct visit_to_union<meta::pack<Rs...>> {
+            using type = bertrand::Union<Rs...>;
+            static constexpr bool trivial = false;
+        };
 
         /* If `option` is true (indicating either an unhandled empty state or void
         return type), then the result deduces to `Optional<R>`, where `R` is the output
         from `visit_to_union`.  If `R` is itself an optional type, then it will be
         flattened into the output. */
         template <typename R, bool optional>
-        struct visit_to_optional { using type = R; };
+        struct visit_to_optional {
+            using type = R;
+            static constexpr bool trivial = true;
+        };
         template <meta::not_void R>
-        struct visit_to_optional<R, true> { using type = bertrand::Optional<R>; };
+        struct visit_to_optional<R, true> {
+            using type = bertrand::Optional<R>;
+            static constexpr bool trivial = false;
+        };
 
         /* If there are any accumulated error states, then the result will be further
         wrapped in `Expected<R, errors...>` to propagate them. */
         template <typename R, typename>
-        struct visit_to_expected { using type = R; };
+        struct visit_to_expected {
+            using type = R;
+            static constexpr bool trivial = true;
+        };
         template <typename R, typename E, typename... Es>
         struct visit_to_expected<R, meta::pack<E, Es...>> {
             using type = bertrand::Expected<R, E, Es...>;
+            static constexpr bool trivial = false;
         };
 
         template <typename R, typename returns, typename errors, bool optional>
@@ -649,13 +668,15 @@ namespace meta {
         return type */
         template <typename returns, typename errors, bool optional, typename>
         struct visit_deduce {
-            using type = visit_to_expected<
-                typename visit_to_optional<
-                    typename visit_to_union<returns>::type,
-                    optional
-                >::type,
-                errors
-            >::type;
+        private:
+            using to_union = visit_to_union<returns>;
+            using to_optional = visit_to_optional<typename to_union::type, optional>;
+            using to_expected = visit_to_expected<typename to_optional::type, errors>;
+
+        public:
+            using type = to_expected::type;
+            static constexpr bool trivial =
+                to_union::trivial && to_optional::trivial && to_expected::trivial;
             static constexpr bool nothrow = visit_nothrow<type, returns, errors, optional>;
         };
 
@@ -743,6 +764,18 @@ namespace meta {
     template <typename... Ts>
     using union_type =
         detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
+
+    /* Detect whether the canonical union type for the given inputs does not trigger
+    promotion to a `Union`, `Optional`, or `Expected` monad, meaning that `union_type`
+    reduces to a single scalar type after filtering for uniqueness and flattening any
+    nested monads. */
+    template <typename... Ts>
+    concept trivial_union = detail::visit_deduce<
+        meta::pack<>,
+        meta::pack<>,
+        false,
+        meta::pack<Ts...>
+    >::trivial;
 
     /* A visitor function can only be applied to a set of arguments if it covers all
     non-empty and non-error states of the visitable arguments. */

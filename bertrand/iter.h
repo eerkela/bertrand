@@ -4922,9 +4922,6 @@ namespace impl {
     /// The optional and expected cases would never occur, since all of the inputs
     /// would be non-visitable iterator types.
 
-    /// TODO: include an index for the current argument, and use a vtable to
-    /// get the next iterator.
-
 
 
     /// TODO: a trivial join_iterator_storage<Begin, End> that holds the begin
@@ -4932,22 +4929,9 @@ namespace impl {
     /// size.  `join_iterator` will then be templated to accept these, will reduce them
     /// to a union_type<...> for storage, and will initialize each one accordingly.
 
-
-
-
-
-    /// TODO: maybe I just pass the raw arguments to the iterator and let it decide
-    /// how to handle them?  That way, if all of the begin types share a common type,
-    /// then I can store just that type directly and avoid all dispatching overhead.
-    /// Otherwise, I have to store a union that is perfectly aligned to the arguments
-
     /// TODO: all of these subranges will have to store the index within the current
     /// group for random-access purposes.
 
-
-    /// TODO: maybe rather than using a boolean flag for the unpacking behavior, I
-    /// should template the subrange type on the inner begin and end iterators and
-    /// default them to void?
 
 
     /* Join iterators have to store both the begin and end iterators for each argument
@@ -4957,45 +4941,23 @@ namespace impl {
     struct join_subrange {
         using begin_type = Begin;
         using end_type = End;
-
         static constexpr bool unpack = Unpack;
 
-        begin_type m_begin;
-        end_type m_end;
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) deref(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).m_begin} noexcept;})
-            requires (requires{{*std::forward<Self>(self).m_begin};})
-        {
-            return (*std::forward<Self>(self).m_begin);
-        }
-
-        constexpr void increment()
-            noexcept (requires{{++m_begin} noexcept;})
-            requires (requires{{++m_begin};})
-        {
-            ++m_begin;
-        }
-
-        [[nodiscard]] constexpr bool done() const
-            noexcept (requires{{m_begin == m_end} noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{m_begin == m_end} -> meta::convertible_to<bool>;})
-        {
-            return m_begin == m_end;
-        }
+        begin_type begin;
+        end_type end;
     };
     template <meta::unqualified Begin, meta::unqualified End>
         requires (meta::range<meta::dereference_type<Begin>>)
     struct join_subrange<true, Begin, End> {
         using begin_type = Begin;
         using end_type = End;
-
         static constexpr bool unpack = true;
 
         struct Inner {
             using type = meta::dereference_type<Begin>;
             impl::ref<type> data;
+            /// TODO: store a recursive subrange rather than the raw iterators, so
+            /// that this can support recursive unpacking.
             meta::begin_type<type> begin = data->begin();
             meta::end_type<type> end = data->end();
         };
@@ -5058,14 +5020,6 @@ namespace impl {
         /// TODO: maybe also a helper for getting the remaining values in the current
         /// group, and the index within that group for random-access purposes?
 
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) deref(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).inner().begin} noexcept;})
-            requires (requires{{*std::forward<Self>(self).inner().begin};})
-        {
-            return (*std::forward<Self>(self).inner().begin);
-        }
-
         constexpr void increment()
             noexcept (requires(Inner& curr) {
                 {++curr.begin} noexcept;
@@ -5105,12 +5059,215 @@ namespace impl {
     constexpr bool _is_join_subrange<join_subrange<Unpack, Begin, End>> = true;
     template <typename T>
     concept is_join_subrange = meta::unqualified<T> && _is_join_subrange<T>;
+    template <typename Iter, size_t I>
+    concept unpack_subrange = is_join_subrange<meta::unqualify<decltype(
+        std::declval<Iter>().template get<I>()
+    )>>;
+
+    namespace join_deref {
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr decltype(auto) operator()(Self&& self)
+                noexcept (requires{{*std::forward<Self>(self).template get<I>().begin} noexcept;})
+                requires (requires{{*std::forward<Self>(self).template get<I>().begin};})
+            {
+                return (*std::forward<Self>(self).template get<I>().begin);
+            }
+            template <typename Self> requires (unpack_subrange<Self, I>)
+            static constexpr decltype(auto) operator()(Self&& self)
+                noexcept (requires{{*std::forward<Self>(self).inner().begin} noexcept;})
+                requires (requires{{*std::forward<Self>(self).inner().begin};})
+            {
+                return (*std::forward<Self>(self).inner().begin);
+            }
+        };
+
+    }
+
+    namespace join_increment {
+
+        /// TODO: the unpacked case will check to see whether the inner iterator
+        /// compares equal to the end iterator, and if so, advance the outer
+        /// iterator.  Somehow, I would need to also insert separators between
+        /// each group, so maybe what I need to do is check whether BOTH the
+        /// inner iterator compares equal to its end iterator, and the separator
+        /// begin iterator compares equal to its end iterator.  If so, then I
+        /// advance the outer iterator and reset the inner iterator, and reset the
+        /// separator iterator to a stored begin.
+
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr void operator()(Self& self)
+                noexcept (requires{{++self.template get<I>().begin} noexcept;})
+                requires (requires{{++self.template get<I>().begin};})
+            {
+                ++self.template get<I>().begin;
+            }
+            template <typename Self> requires (unpack_subrange<Self, I>)
+            static constexpr void operator()(Self& self)
+            {
+                auto& inner = self.inner();
+                if constexpr (/* separator present */ false) {
+                    if (inner.begin == inner.end) {
+                        if (false) {
+                            /// TODO: reset the separator and advance the outer
+                            /// iterator
+                        } else {
+                            /// TODO: increment separator iterator
+                        }
+                    } else {
+                        ++inner.begin;
+                    }
+                } else {
+                    if (inner.begin == inner.end) {
+                        /// TODO: increment the outer iterator to the next non-empty
+                        /// group
+                    }
+                }
+            }
+        };
+
+    }
+
+    namespace join_lt {
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr bool operator()(const Self& self, const Self& other)
+                noexcept (requires{{
+                    self.template get<I>().begin < other.template get<I>().begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    self.template get<I>().begin < other.template get<I>().begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return self.template get<I>().begin < other.template get<I>().begin;
+            }
+        };
+
+    }
+
+    namespace join_le {
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr bool operator()(const Self& self, const Self& other)
+                noexcept (requires{{
+                    self.template get<I>().begin <= other.template get<I>().begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    self.template get<I>().begin <= other.template get<I>().begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return self.template get<I>().begin <= other.template get<I>().begin;
+            }
+        };
+
+    }
+
+    namespace join_eq {
+
+        /// TODO: note that this (and possibly other comparisons?) will need to work
+        /// even when the active indices differ, so it needs to work even when the
+        /// begin iterators are not directly comparable.  The group check just before
+        /// calling this helper ensures that we never compare iterators from different
+        /// subranges.
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr bool operator()(const Self& self, const Self& other)
+                noexcept (requires{{
+                    self.template get<I>().begin == other.template get<I>().begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    self.template get<I>().begin == other.template get<I>().begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return self.template get<I>().begin == other.template get<I>().begin;
+            }
+        };
+
+    }
+
+    namespace join_ne {
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr bool operator()(const Self& self, const Self& other)
+                noexcept (requires{{
+                    self.template get<I>().begin != other.template get<I>().begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    self.template get<I>().begin != other.template get<I>().begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return self.template get<I>().begin != other.template get<I>().begin;
+            }
+        };
+
+    }
+
+    namespace join_ge {
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr bool operator()(const Self& self, const Self& other)
+                noexcept (requires{{
+                    self.template get<I>().begin >= other.template get<I>().begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    self.template get<I>().begin >= other.template get<I>().begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return self.template get<I>().begin >= other.template get<I>().begin;
+            }
+        };
+
+    }
+
+    namespace join_gt {
+
+        template <size_t I>
+        struct fn {
+            template <typename Self> requires (!unpack_subrange<Self, I>)
+            static constexpr bool operator()(const Self& self, const Self& other)
+                noexcept (requires{{
+                    self.template get<I>().begin > other.template get<I>().begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    self.template get<I>().begin > other.template get<I>().begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return self.template get<I>().begin > other.template get<I>().begin;
+            }
+        };
+
+    }
 
 
     /// TODO: if the begin and end types for all of the subranges are NOT the same,
     /// then I should optimize the end iterator to just a `None` sentinel, rather
     /// than initializing a full iterator.  I'll just include comparisons against
     /// `None` in the iterator interface for this purpose.
+    /// -> This is handled in the make_join_iterator factory.  All I need to do is
+    /// provide comparisons against `None` within the iterator interface.  And that
+    /// requires a well-reasoned layout for the subrange types, which would abstract
+    /// the iterator methods over the unpacked and non-unpacked cases.  Ideally,
+    /// unpacking could be applied recursively, so that you can nest ranges arbitrarily
+    /// deep, and the iterator will continue to work as expected.  Since standardizing
+    /// function calls to accept named tuples, there should be no difference between
+    /// **unpacking vs *unpacking, meaning that you can freely stack * prefixes without
+    /// clobbering the nested structure.
+
 
 
     /* Join iterators work by storing a pointer to the joined range, an index recording
@@ -5137,6 +5294,7 @@ namespace impl {
         using tag = impl::union_index_type<sizeof...(Iters)>;
         using indices = meta::unqualify<C>::indices;
         using ranges = meta::unqualify<C>::ranges;
+        using vtable_indices = std::make_index_sequence<visitable<storage>::alternatives::size()>;
 
     public:
         using iterator_category = range_category<ranges, Iters...>::type;
@@ -5145,11 +5303,50 @@ namespace impl {
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::address_type<value_type>;
 
+        static constexpr bool trivial = meta::trivial_union<Iters...>;
+
         meta::as_pointer<C> container = nullptr;
         [[no_unique_address]] storage iters;
-        [[no_unique_address]] tag current = 0;
+        [[no_unique_address]] tag group = 0;
+
+        /* Return the active index in the `iters` union, which may not be the same as
+        `group` due to unions filtering for uniqueness.  If `trivial` evaluates to
+        true, then this will always return 0. */
+        constexpr size_t active() const noexcept {
+            if constexpr (trivial) {
+                return 0;
+            } else {
+                return iters.__value.index();
+            }
+        }
+
+        /* Get the alternative at index `I` after normalizing trivial unions. */
+        template <size_t I, typename Self> requires (trivial)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).iters.__value.template get<I>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).iters.__value.template get<I>()};})
+        {
+            return (std::forward<Self>(self).iters.__value.template get<I>());
+        }
+
+        /* Get the alternative at index `I` after normalizing trivial unions. */
+        template <size_t I, typename Self> requires (!trivial && I == 0)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).iters} noexcept;})
+            requires (requires{{std::forward<Self>(self).iters};})
+        {
+            return (std::forward<Self>(self).iters);
+        }
 
     private:
+        using deref = impl::vtable<join_deref::fn>::template dispatch<vtable_indices>;
+        using increment = impl::vtable<join_increment::fn>::template dispatch<vtable_indices>;
+        using lt = impl::vtable<join_lt::fn>::template dispatch<vtable_indices>;
+        using le = impl::vtable<join_le::fn>::template dispatch<vtable_indices>;
+        using eq = impl::vtable<join_eq::fn>::template dispatch<vtable_indices>;
+        using ne = impl::vtable<join_ne::fn>::template dispatch<vtable_indices>;
+        using ge = impl::vtable<join_ge::fn>::template dispatch<vtable_indices>;
+        using gt = impl::vtable<join_gt::fn>::template dispatch<vtable_indices>;
 
         /// TODO: random-access methods will (always?) be able to calculate
         /// constant-time distance to the end iterator, which is what is used to
@@ -5157,14 +5354,16 @@ namespace impl {
         /// subranges to also store their current index, so that I can decrement in
         /// the same way and still cross join boundaries.
 
+        
+
 
     public:
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (false)
-            requires (false)
+            noexcept (requires{{deref{self.active()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{deref{self.active()}(std::forward<Self>(self))};})
         {
-            /// TODO: implement this once storage has been nailed down
+            return (deref{self.active()}(std::forward<Self>(self)));
         }
 
         template <typename Self>
@@ -5184,10 +5383,11 @@ namespace impl {
         }
 
         constexpr join_iterator& operator++()
-            noexcept (false)
-            requires (false)
+            noexcept (requires{{increment{active()}(*this)} noexcept;})
+            requires (requires{{increment{active()}(*this)};})
         {
-            /// TODO: implement this once storage has been nailed down
+            increment{active()}(*this);
+            return *this;
         }
 
         [[nodiscard]] constexpr join_iterator operator++(int)
@@ -5270,53 +5470,104 @@ namespace impl {
             /// TODO: implement this once random access has been nailed down
         }
 
-        template <typename... Ts>
-        [[nodiscard]] constexpr bool operator<(const join_iterator<C, Ts...>& other) const
-            noexcept (false)
-            requires (false)
+
+        /// TODO: comparisons will ALWAYS be between iterators of the same type since
+        /// the subranges encapsulate both the begin and end iterators for each
+        /// argument.  I just need the extra comparison against `None` to allow `join`
+        /// to be an uncommon range if the last range is not a common range.
+
+        [[nodiscard]] constexpr bool operator<(const join_iterator& other) const
+            noexcept (requires{{
+                group < other.group || (group == other.group && lt{active()}(*this, other))
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                group < other.group || (group == other.group && lt{active()}(*this, other))
+            } -> meta::convertible_to<bool>;})
         {
-            /// TODO: figure out comparisons
+            return group < other.group || (group == other.group && lt{active()}(*this, other));
         }
 
-        template <typename... Ts>
-        [[nodiscard]] constexpr bool operator<=(const join_iterator<C, Ts...>& other) const
-            noexcept (false)
-            requires (false)
+        [[nodiscard]] constexpr bool operator<=(const join_iterator& other) const
+            noexcept (requires{{
+                group < other.group || (group == other.group && le{active()}(*this, other))
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                group < other.group || (group == other.group && le{active()}(*this, other))
+            } -> meta::convertible_to<bool>;})
         {
-            /// TODO: figure out comparisons
+            return group < other.group || (group == other.group && le{active()}(*this, other));
         }
 
-        template <typename... Ts>
-        [[nodiscard]] constexpr bool operator==(const join_iterator<C, Ts...>& other) const
-            noexcept (false)
-            requires (false)
+        [[nodiscard]] constexpr bool operator==(const join_iterator& other) const
+            noexcept (requires{{
+                group == other.group && eq{active()}(*this, other)
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                group == other.group && eq{active()}(*this, other)
+            } -> meta::convertible_to<bool>;})
         {
-            /// TODO: figure out comparisons
-            return current == other.current;  // + dispatch a comparison to the actual iterators
+            return group == other.group && eq{active()}(*this, other);
         }
 
-        template <typename... Ts>
-        [[nodiscard]] constexpr bool operator!=(const join_iterator<C, Ts...>& other) const
-            noexcept (false)
-            requires (false)
-        {
-            /// TODO: figure out comparisons
+        [[nodiscard]] friend constexpr bool operator==(
+            const join_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.group >= sizeof...(Iters);
         }
 
-        template <typename... Ts>
-        [[nodiscard]] constexpr bool operator>=(const join_iterator<C, Ts...>& other) const
-            noexcept (false)
-            requires (false)
-        {
-            /// TODO: figure out comparisons
+        [[nodiscard]] friend constexpr bool operator==(
+            NoneType,
+            const join_iterator& self
+        ) noexcept {
+            return self.group >= sizeof...(Iters);
         }
 
-        template <typename... Ts>
-        [[nodiscard]] constexpr bool operator>(const join_iterator<C, Ts...>& other) const
-            noexcept (false)
-            requires (false)
+        [[nodiscard]] constexpr bool operator!=(const join_iterator& other) const
+            noexcept (requires{{
+                group != other.group || ne{active()}(*this, other)
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                group != other.group || ne{active()}(*this, other)
+            } -> meta::convertible_to<bool>;})
         {
-            /// TODO: figure out comparisons
+            return group != other.group || ne{active()}(*this, other);
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const join_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.group < sizeof...(Iters);
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            NoneType,
+            const join_iterator& self
+        ) noexcept {
+            return self.group < sizeof...(Iters);
+        }
+
+        [[nodiscard]] constexpr bool operator>=(const join_iterator& other) const
+            noexcept (requires{{
+                group > other.group || (group == other.group && ge{active()}(*this, other))
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                group > other.group || (group == other.group && ge{active()}(*this, other))
+            } -> meta::convertible_to<bool>;})
+        {
+            return group > other.group || (group == other.group && ge{active()}(*this, other));
+        }
+
+        [[nodiscard]] constexpr bool operator>(const join_iterator& other) const
+            noexcept (requires{{
+                group > other.group || (group == other.group && gt{active()}(*this, other))
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                group > other.group || (group == other.group && gt{active()}(*this, other))
+            } -> meta::convertible_to<bool>;})
+        {
+            return group > other.group || (group == other.group && gt{active()}(*this, other));
         }
     };
 
