@@ -4885,6 +4885,11 @@ namespace impl {
     concept join_broadcast =
         !meta::range<typename meta::unqualify<C>::argument_types::template at<I>>;
 
+    /// TODO: unpacking should now apply to any range that yields nested ranges.  That
+    /// also means that subranges can just check to see whether the begin iterator
+    /// dereferences to a range, without requiring a boolean flag.
+    /// Also join_unpack -> join_flatten
+
     template <typename C, size_t I>
     concept join_unpack =
         meta::unpack<typename meta::unqualify<C>::argument_types::template at<I>> &&
@@ -4958,35 +4963,167 @@ namespace impl {
         meta::iterator<Begin> &&
         meta::sentinel_for<End, Begin>;
 
+    enum class join_direction : uint8_t {
+        FORWARD,
+        REVERSE
+    };
+
     /* Join iterators always store both the begin and end iterators for each argument,
     so that they can smoothly advance from one to the next.  These subranges are stored
     in an internal union with duplicate types filtered out, which limits dispatch and
     memory overhead as much as possible. */
-    template <bool Unpack, typename Sep, typename Begin, typename End>
+    template <join_direction Dir, typename Sep, typename Begin, typename End>
         requires (join_subrange_concept<Sep, Begin, End>)
     struct join_subrange {
         using begin_type = Begin;
         using end_type = End;
-        static constexpr bool unpack = Unpack;
-
+        static constexpr bool unpack = false;
+        static constexpr join_direction direction = Dir;
         begin_type begin;
         end_type end;
     };
 
-    template <bool Unpack, typename Sep, typename Begin, typename End>
-    constexpr bool _is_join_subrange<join_subrange<Unpack, Sep, Begin, End>> = true;
+    template <join_direction Dir, typename Sep, typename Begin, typename End>
+    constexpr bool _is_join_subrange<join_subrange<Dir, Sep, Begin, End>> = true;
 
-    template <typename subrange, typename Sep>
+    template <join_direction Dir, typename Sep, typename Begin, typename End>
     struct join_unpack_storage {
+        struct subrange {
+            using nested = meta::dereference_type<Begin>;
+            using type = join_subrange<
+                Dir,
+                Sep,
+                meta::unqualify<meta::begin_type<nested>>,
+                meta::unqualify<meta::end_type<nested>>
+            >;
+            impl::ref<nested> data;
+            type iters {
+                .begin = data->begin(),
+                .end = data->end()
+            };
+        };
+        using separator = void;
         using type = subrange;
-        static constexpr bool trivial = true;
     };
-    template <typename subrange, meta::not_void Sep>
-    struct join_unpack_storage<subrange, Sep> {
+    template <meta::is_void Sep, typename Begin, typename End>
+    struct join_unpack_storage<join_direction::REVERSE, Sep, Begin, End> {
+        struct subrange {
+            using nested = meta::dereference_type<Begin>;
+            using type = join_subrange<
+                join_direction::REVERSE,
+                Sep,
+                meta::unqualify<meta::rbegin_type<nested>>,
+                meta::unqualify<meta::rend_type<nested>>
+            >;
+            impl::ref<nested> data;
+            type iters {
+                .begin = data->rbegin(),
+                .end = data->rend()
+            };
+        };
+        using separator = void;
+        using type = subrange;
+    };
+    template <join_direction Dir, meta::not_void Sep, typename Begin, typename End>
+    struct join_unpack_storage<Dir, Sep, Begin, End> {
+        using subrange = join_unpack_storage<Dir, void, Begin, End>::subrange;
         struct separator { Sep iters; };
-        using type = meta::union_type<subrange, separator>;
-        static constexpr bool trivial = meta::trivial_union<subrange, separator>;
+        using type = Union<subrange, separator>;
     };
+
+
+    template <typename Sep, typename... Subranges>
+    concept join_union_concept =
+        (meta::is_void<Sep> || (meta::unqualified<Sep> && is_join_subrange<Sep>)) &&
+        ((meta::unqualified<Subranges> && is_join_subrange<Subranges>) && ...);
+
+    /* Join iterators and nested subranges store the active subrange in an internal
+    union that filters out duplicates as an optimization.  This minimizes the size of
+    any corresponding vtables, potentially triggering dispatch optimizations and
+    reducing overall binary size.  If all subranges are the same, then the union will
+    be optimized out entirely.  The only downside is that the union's index no longer
+    reflects the active argument being joined, which necessitates a separate tracking
+    index. */
+    template <typename Sep, typename... Subranges>
+        requires (join_union_concept<Sep, Subranges...>)
+    struct _join_union {
+        using type = meta::union_type<Subranges...>;
+        static constexpr bool trivial = meta::trivial_union<Subranges...>;
+    };
+    template <meta::not_void Sep, typename... Subranges>
+        requires (join_union_concept<Sep, Subranges...>)
+    struct _join_union<Sep, Subranges...> {
+        using type = meta::union_type<Sep, Subranges...>;
+        static constexpr bool trivial = meta::trivial_union<Sep, Subranges...>;
+    };
+    template <typename Sep, typename... Subranges>
+        requires (join_union_concept<Sep, Subranges...>)
+    struct join_union {
+        using type = _join_union<Sep, Subranges...>::type;
+        static constexpr bool trivial = _join_union<Sep, Subranges...>::trivial;
+        using indices = std::make_index_sequence<
+            trivial ? 1 : visitable<type>::alternatives::size()
+        >;
+
+        [[no_unique_address]] Optional<type> value;
+
+        /* Check if the storage union is empty, signifying the end of the range.  The
+        other methods in this class assume that this is false, and will result in
+        undefined behavior otherwise. */
+        [[nodiscard]] constexpr bool empty() const noexcept { return value == None; }
+
+        /* Get the active index of the storage union.  Note that this does not
+        necessarily correspond to the active argument in the joined range, due to
+        duplicate subranges being filtered out.  Additionally, if a separator is
+        present, then it will always be stored at index 0, followed by the unique
+        subranges.  This index will be used to specialize any function template
+        provided to `visit<F>()`. */
+        constexpr size_t active() const noexcept {
+            if constexpr (trivial) {
+                return 0;
+            } else {
+                return value.__value.template get<1>().__value.index();
+            }
+        }
+
+        /* Visit the inner union with a vtable function that accepts the `active()`
+        index as a template parameter.  The function will then be called with the
+        given arguments, and `get<I>()` can be used to safely access the inner
+        subrange(s). */
+        template <template <size_t> class F, typename... A>
+        constexpr decltype(auto) visit(A&&... args) const
+            noexcept (requires{
+                {typename impl::vtable<F>::template dispatch<indices>{active()}(
+                    std::forward<A>(args)...
+                )} noexcept;
+            })
+            requires (requires{
+                {typename impl::vtable<F>::template dispatch<indices>{active()}(
+                    std::forward<A>(args)...
+                )};
+            })
+        {
+            return (typename impl::vtable<F>::template dispatch<indices>{active()})(
+                std::forward<A>(args)...
+            );
+        }
+
+        /* Access the current subrange as the indicated type, where `I` matches the
+        semantics for `active()` and `visit()`. */
+        template <size_t I, typename Self> requires (I < indices::size())
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            if constexpr (trivial) {
+                return (std::forward<Self>(self).value.__value.template get<1>());
+            } else {
+                return (std::forward<Self>(self).value.
+                    __value.template get<1>().
+                    __value.template get<I>()
+                );
+            }
+        }
+    };
+
+
 
     /* If a range of ranges is supplied as an unpacked argument to join, then its
     subrange will be marked as such, and will be flattened into the output.  Such a
@@ -4994,63 +5131,155 @@ namespace impl {
     iterator over its yield type, which will be cached within the subrange as long as
     they are needed.  If a separator is also present, then it will be inserted between
     each element of the outer iterator. */
-    template <typename Sep, typename Begin, typename End>
+    template <join_direction Dir, typename Sep, typename Begin, typename End>
         requires (
             join_subrange_concept<Sep, Begin, End> &&
             meta::range<meta::dereference_type<Begin>>
         )
-    struct join_subrange<true, Sep, Begin, End> {
+    struct join_subrange<Dir, Sep, Begin, End> {
         using begin_type = Begin;
         using end_type = End;
         static constexpr bool unpack = true;
+        static constexpr join_direction direction = Dir;
         begin_type begin;
         end_type end;
 
-        struct subrange {
-            using type = meta::dereference_type<Begin>;
-            impl::ref<type> data;
-            join_subrange<
-                meta::unpack<type> && meta::range<meta::yield_type<type>>,
-                Sep,
-                meta::unqualify<meta::begin_type<type>>,
-                meta::unqualify<meta::end_type<type>>
-            > iters {
-                .begin = data->begin(),
-                .end = data->end()
-            };
-        };
+        using traits = join_unpack_storage<direction, Sep, Begin, End>;
+        using subrange_type = traits::subrange::type;
+        using separator_type = Sep;
+        using storage_type = traits::type;
+        static constexpr bool has_sep = meta::not_void<Sep>;
+        static constexpr bool trivial = !has_sep;
+        static constexpr size_t total_groups = 1 + has_sep;
+        using group_type = impl::union_index_type<total_groups>;
+        using group_indices = std::make_index_sequence<total_groups>;
 
-        static constexpr bool trivial = join_unpack_storage<subrange, Sep>::trivial;
+        template <size_t G> requires (G < total_groups)
+        static constexpr bool is_separator = G == 1;
 
-        Optional<typename join_unpack_storage<subrange, Sep>::type> _inner;
+        template <size_t G> requires (G < total_groups)
+        static constexpr size_t normalize = G;
 
-        template <typename Self>
-        constexpr decltype(auto) inner(this Self&& self)
-            noexcept (requires{
-                {std::forward<Self>(self)._inner.__value.template get<1>()} noexcept;
-            })
-            requires (requires{
-                {std::forward<Self>(self)._inner.__value.template get<1>()};
-            })
-        {
-            return (std::forward<Self>(self)._inner.__value.template get<1>());
-        }
 
-        constexpr auto inner_index() const noexcept {
+        /// TODO: store the cached value in a separate optional field and then reuse
+        /// the `join_storage` type
+        // using inner_type = meta::dereference_type<Begin>;
+        // [[no_unique_address]] Optional<impl::ref<inner_type>> data;
+
+
+        /* The empty state of the `iters` union signifies an empty range, which is
+        handled in the traversal logic.  The remaining methods assume `iters` is never
+        empty. */
+        [[no_unique_address]] Optional<storage_type> iters;
+
+        /* Get the active index of the inner union, which is identical to the encoded
+        group index in this case.  This will always be either 0 or 1, where 0 indicates
+        an inner subrange and 1 indicates a separator, if one is present. */
+        [[nodiscard]] constexpr group_type active() const noexcept {
             if constexpr (trivial) {
                 return 0;
             } else {
-                return _inner.__value.index();
+                return iters.__value.template get<1>().__value.index();
             }
         }
 
-        template <size_t I, typename Self> requires (I < (2 - trivial))
-        constexpr decltype(auto) get(this Self&& self) noexcept {
+        /* Get the active index of the inner union, which is identical to the encoded
+        group index in this case.  This will always be either 0 or 1, where 0 indicates
+        an inner subrange and 1 indicates a separator, if one is present. */
+        [[nodiscard]] constexpr group_type group() const noexcept { return active(); }
+
+        /* Visit the inner union with a vtable function that accepts the `active()`
+        index as a template parameter.  The function will then be called with the outer
+        subrange, and `get<I>()` can be used to safely access the inner subrange. */
+        template <template <size_t> class F, typename Self>
+        constexpr decltype(auto) visit(this Self&& self)
+            noexcept (requires{
+                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
+                    std::forward<Self>(self)
+                )} noexcept;
+            })
+            requires (requires{
+                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
+                    std::forward<Self>(self)
+                )};
+            })
+        {
+            return (typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
+                std::forward<Self>(self)
+            ));
+        }
+
+        /* Visit the inner union with a vtable function that accepts the `group()`
+        index as a template parameter.  The function will then be called with the outer
+        subrange, and `get_group<G>()` can be used to safely access the inner
+        subrange. */
+        template <template <size_t> class F, typename Self>
+        constexpr decltype(auto) dispatch(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).template visit<F>()} noexcept;})
+            requires (requires{{std::forward<Self>(self).template visit<F>()};})
+        {
+            return (std::forward<Self>(self).template visit<F>());
+        }
+
+        /* Access the current subrange as the indicated type, where `I` is an index
+        with the same semantics as `active()` and `visit()`. */
+        template <size_t I, typename Self> requires (I < total_groups)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
             if constexpr (trivial) {
-                return std::forward<Self>(self).inner().iters;
+                return (std::forward<Self>(self).iters.__value.template get<1>().iters);
             } else {
-                return std::forward<Self>(self).inner().__value.template get<I>();
+                return (std::forward<Self>(self).iters.
+                    __value.template get<1>().
+                    __value.template get<I>().
+                    iters
+                );
             }
+        }
+
+        /* Access the current subrange as the indicated type, where `G` is an index
+        with the same semantics as `group()` and `dispatch()`. */
+        template <size_t G, typename Self> requires (G < total_groups)
+        [[nodiscard]] constexpr decltype(auto) get_group(this Self&& self) noexcept {
+            return std::forward<Self>(self).template get<G>();
+        }
+
+        /* Populate the `iters` union with an inner subrange by dereferencing the
+        begin iterator and caching the result.  The result can then be safely accessed
+        via `get_group<G>()`. */
+        template <size_t G, typename Iter> requires (G == 0)
+        constexpr void init_group(Iter& it)
+            noexcept (requires{{iters = typename traits::subrange{{*begin}}} noexcept;})
+            requires (requires{{iters = typename traits::subrange{{*begin}}};})
+        {
+            iters = typename traits::subrange{{*begin}};
+        }
+
+        /* Populate the `iters` union with a separator subrange.  The result can then
+        be safely accessed via `get_group<G>()`. */
+        template <size_t G, typename Iter> requires (has_sep && G == 1)
+        constexpr void init_group(Iter& it)
+            noexcept (requires{
+                {iters = typename traits::separator{join_forward{it.container->sep()}.begin()}} noexcept;
+            })
+            requires (Dir == join_direction::FORWARD && requires{
+                {iters = typename traits::separator{join_forward{it.container->sep()}.begin()}};
+            })
+        {
+            iters = typename traits::separator{join_forward{it.container->sep()}.begin()};
+        }
+
+        /* Populate the `iters` union with a separator subrange.  The result can then
+        be safely accessed via `get_group<G>()`. */
+        template <size_t G, typename Iter> requires (has_sep && G == 1)
+        constexpr void init_group(Iter& it)
+            noexcept (requires{
+                {typename traits::separator{join_reverse{it.container->sep()}.begin()}} noexcept;
+            })
+            requires (Dir == join_direction::REVERSE && requires{
+                {typename traits::separator{join_reverse{it.container->sep()}.begin()}};
+            })
+        {
+            iters = typename traits::separator{join_reverse{it.container->sep()}.begin()};
         }
     };
 
@@ -5060,7 +5289,7 @@ namespace impl {
     struct join_forward<C> {
         template <typename Sep>
         using type = join_subrange<
-            false,
+            join_direction::FORWARD,
             Sep,
             impl::contiguous_iterator<C>,
             impl::contiguous_iterator<C>
@@ -5106,7 +5335,7 @@ namespace impl {
     struct join_forward<C> {
         template <typename Sep>
         using type = join_subrange<
-            false,
+            join_direction::FORWARD,
             Sep,
             meta::unqualify<meta::begin_type<C>>,
             meta::unqualify<meta::end_type<C>>
@@ -5153,7 +5382,7 @@ namespace impl {
     struct join_forward<C> {
         template <typename Sep>
         using type = join_subrange<
-            true,
+            join_direction::FORWARD,
             Sep,
             meta::unqualify<meta::begin_type<meta::yield_type<C>>>,
             meta::unqualify<meta::end_type<meta::yield_type<C>>>
@@ -5198,7 +5427,7 @@ namespace impl {
     struct join_reverse<C> {
         template <typename Sep>
         using type = join_subrange<
-            false,
+            join_direction::REVERSE,
             Sep,
             std::reverse_iterator<impl::contiguous_iterator<C>>,
             std::reverse_iterator<impl::contiguous_iterator<C>>
@@ -5268,7 +5497,7 @@ namespace impl {
     struct join_reverse<C> {
         template <typename Sep>
         using type = join_subrange<
-            false,
+            join_direction::REVERSE,
             Sep,
             meta::unqualify<meta::rbegin_type<C>>,
             meta::unqualify<meta::rend_type<C>>
@@ -5315,7 +5544,7 @@ namespace impl {
     struct join_reverse<C> {
         template <typename Sep>
         using type = join_subrange<
-            true,
+            join_direction::REVERSE,
             Sep,
             meta::unqualify<meta::rbegin_type<meta::yield_type<C>>>,
             meta::unqualify<meta::rend_type<meta::yield_type<C>>>
@@ -5355,6 +5584,9 @@ namespace impl {
     };
 
     namespace join_deref {
+
+        /// TODO: convert this into a standardized visitor that accepts `I` as a
+        /// template parameter.
 
         template <meta::not_void element_type>
         struct deref {
@@ -5401,115 +5633,178 @@ namespace impl {
 
     namespace join_increment {
 
-        /// TODO: all of these will need to be generalized between both iterators and
-        /// subranges in order to support proper nesting.
+        /// TODO: The following must be standardized between join_iterator and unpacked
+        /// subranges so that the increment machinery can be recursively applied to
+        /// both types:
+        /// - has_sep
+        /// - separator_type
+        /// - subrange_types
+        /// - get<I>()
+        /// - total_groups
 
-        template <meta::not_const Iter, size_t J>
-        static constexpr bool is_separator = false;
-        template <meta::not_const Iter, size_t J> requires (Iter::has_sep)
-        static constexpr bool is_separator<Iter, J> = J % 2 == 1;
+        /// I'm going to have to be really careful when I do this, since it is
+        /// incredibly easy to get the member accesses wrong.
 
-        template <meta::not_const Iter, size_t J>
-        static constexpr size_t normalize = J;
-        template <meta::not_const Iter, size_t J> requires (Iter::has_sep)
-        static constexpr size_t normalize<Iter, J> = J / 2;
 
-        template <meta::not_const Iter, size_t J>
-        struct _subrange_type {
-            using type = Iter::subrange_types::template at<normalize<Iter, J>>;
-        };
-        template <meta::not_const Iter, size_t J> requires (Iter::has_sep && (J % 2 == 1))
-        struct _subrange_type<Iter, J> { using type = Iter::separator_type; };
-        template <meta::not_const Iter, size_t J>
-        using subrange_type = _subrange_type<Iter, J>::type;
 
-        /// NOTE: start() is going to have to work recursively in order to account
-        /// for nested unpacking, which means it should only ever accept the parent
-        /// subrange, and not the overall iterator.
 
-        template <size_t J, meta::not_const Iter> requires (!is_separator<Iter, J>)
-        static constexpr subrange_type<Iter, J> start(Iter& it)
+        /// NOTE: in this context, `I` indicates the state of the
+        /// `join_iterator::groups` counter, which encodes the current argument index
+        /// along with possible separators.  If a separator is present, then every odd
+        /// index will be a separator, and will transition to the next argument from
+        /// the `join{}(args...)` signature when exhausted.  Even indices will
+        /// transition to a separator subrange, and since the index is known at compile
+        /// time within the vtable context, these decisions will not introduce any
+        /// extra branches at runtime.
+
+        template <meta::not_const parent, size_t J> requires (J < parent::total_groups)
+        static constexpr bool is_separator = parent::has_sep && (J % 2 == 1);
+
+        template <meta::not_const parent, size_t J> requires (J < parent::total_groups)
+        static constexpr size_t normalize = parent::has_sep ? J / 2 : J;
+
+        template <meta::not_const parent, size_t J> requires (J < parent::total_groups)
+        using subrange_type = std::conditional_t<
+            is_separator<parent, J>,
+            typename parent::separator_type,
+            typename parent::subrange_types::template at<normalize<parent, J>>
+        >;
+
+        /// TODO: in the unpack case, arg<J>() will need to dereference the begin
+        /// iterator of the internal subrange after casting it to the right type.
+        /// -> maybe value<J>() instead for clarity?
+
+        template <size_t J, meta::not_const Iter, meta::not_const parent>
+        constexpr subrange_type<parent, J> start(Iter& it, parent& p)
             noexcept (requires{{
-                join_forward{it.container->template arg<normalize<Iter, J>>()}.begin()
-            } noexcept -> meta::nothrow::convertible_to<subrange_type<Iter, J>>;})
-            requires (requires{{
-                join_forward{it.container->template arg<normalize<Iter, J>>()}.begin()
-            } -> meta::is<subrange_type<Iter, J>>;})
+                join_forward{p.template arg<normalize<parent, J>>()}.begin()
+            } noexcept -> meta::nothrow::convertible_to<subrange_type<parent, J>>;})
+            requires (!is_separator<parent, J> && requires{{
+                join_forward{p.template arg<normalize<parent, J>>()}.begin()
+            } -> meta::is<subrange_type<parent, J>>;})
         {
-            return join_forward{it.container->template arg<normalize<Iter, J>>()}.begin();
+            return join_forward{p.template arg<normalize<parent, J>>()}.begin();
         }
 
-        template <size_t J, meta::not_const Iter> requires (!is_separator<Iter, J>)
-        static constexpr auto start(Iter& it)
+        template <size_t J, meta::not_const Iter, meta::not_const parent>
+        constexpr subrange_type<parent, J> start(Iter& it, parent& p)
             noexcept (requires{{
-                join_reverse{it.container->template arg<normalize<Iter, J>>()}.begin()
-            } noexcept -> meta::nothrow::convertible_to<typename Iter::separator_type>;})
-            requires (requires{{
-                join_reverse{it.container->template arg<normalize<Iter, J>>()}.begin()
-            } -> meta::is<typename Iter::separator_type>;})
+                join_reverse{p.template arg<normalize<parent, J>>()}.begin()
+            } noexcept -> meta::nothrow::convertible_to<subrange_type<parent, J>>;})
+            requires (!is_separator<parent, J> && requires{{
+                join_reverse{p.template arg<normalize<parent, J>>()}.begin()
+            } -> meta::is<subrange_type<parent, J>>;})
         {
-            return join_reverse{it.container->template arg<normalize<Iter, J>>()}.begin();
+            return join_reverse{p.template arg<normalize<parent, J>>()}.begin();
         }
 
-        template <size_t J, meta::not_const Iter> requires (is_separator<Iter, J>)
-        static constexpr subrange_type<Iter, J> start(Iter& it)
+        template <size_t J, meta::not_const Iter, meta::not_const parent>
+        constexpr subrange_type<parent, J> start(Iter& it, parent& p)
             noexcept (requires{{
                 join_forward{it.container->sep()}.begin()
-            } noexcept -> meta::nothrow::convertible_to<subrange_type<Iter, J>>;})
-            requires (requires{{
+            } noexcept -> meta::nothrow::convertible_to<subrange_type<parent, J>>;})
+            requires (is_separator<parent, J> && requires{{
                 join_forward{it.container->sep()}.begin()
-            } -> meta::is<subrange_type<Iter, J>>;})
+            } -> meta::is<subrange_type<parent, J>>;})
         {
             return join_forward{it.container->sep()}.begin();
         }
 
-        template <size_t J, meta::not_const Iter> requires (is_separator<Iter, J>)
-        static constexpr auto start(Iter& it)
+        template <size_t J, meta::not_const Iter, meta::not_const parent>
+        constexpr subrange_type<parent, J> start(Iter& it, parent& p)
             noexcept (requires{{
                 join_reverse{it.container->sep()}.begin()
-            } noexcept -> meta::nothrow::convertible_to<typename Iter::separator_type>;})
-            requires (requires{{
+            } noexcept -> meta::nothrow::convertible_to<subrange_type<parent, J>>;})
+            requires (is_separator<parent, J> && requires{{
                 join_reverse{it.container->sep()}.begin()
-            } -> meta::is<typename Iter::separator_type>;})
+            } -> meta::is<subrange_type<parent, J>>;})
         {
             return join_reverse{it.container->sep()}.begin();
+        }
+
+        template <size_t J, meta::not_const Iter, meta::not_const parent>
+        constexpr bool skip(Iter& it, parent& p)
+            noexcept (J >= parent::total_groups || requires(subrange_type<parent, J> s) {
+                {
+                    start<J>(it, p)
+                } noexcept -> meta::nothrow::convertible_to<subrange_type<parent, J>>;
+                {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                {p.iters = std::move(s)} noexcept;
+                {skip<J + 1>(it, p)} noexcept;
+            })
+            requires (J >= parent::total_groups || requires(subrange_type<parent, J> s) {
+                {
+                    start<J>(it, p)
+                } -> meta::convertible_to<subrange_type<parent, J>>;
+                {s.begin == s.end} -> meta::convertible_to<bool>;
+                {p.iters = std::move(s)};
+                {skip<J + 1>(it, p)};
+            })
+        {
+            if constexpr (J < parent::total_groups) {
+                subrange_type<parent, J> s = start<J>(it, p);
+                if (s.begin == s.end) {
+                    ++p.group;
+                    return skip<J + 1>(it, p);
+                }
+                p.iters = std::move(s);
+                return true;
+            } else {
+                return false;
+            }
         }
 
         /* A vtable function that increments a join iterator, accounting for the transition
         from one component range to the next, and inserting separators where appropriate. */
         template <size_t I>
         struct increment {
-            /// NOTE: in this context, `I` indicates the state of the
-            /// `join_iterator::groups` counter, which encodes the current argument index
-            /// along with possible separators.  If a separator is present, then every odd
-            /// index will be a separator, and will transition to the next argument from
-            /// the `join{}(args...)` signature when exhausted.  Even indices will
-            /// transition to a separator subrange, and since the index is known at compile
-            /// time within the vtable context, these decisions will not introduce any
-            /// extra branches at runtime.
-
             template <meta::not_const Iter, meta::not_const parent, is_join_subrange subrange>
             static constexpr void call(Iter& it, parent& p, subrange& s)
+                noexcept (requires{
+                    {++s.begin} noexcept;
+                    {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                    {skip<I + 1>(it, p)} noexcept;
+                } && (!is_join_unpack<parent> || requires{
+                    {++p.begin} noexcept;
+                    {p.begin == p.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                    {skip<0>(it, p)} noexcept;
+                }))
+                requires (requires{
+                    {++s.begin};
+                    {s.begin == s.end} -> meta::convertible_to<bool>;
+                    {skip<I + 1>(it, p)};
+                } && (!is_join_unpack<parent> || requires{
+                    {++p.begin};
+                    {p.begin == p.end} -> meta::convertible_to<bool>;
+                    {skip<0>(it, p)};
+                }))
             {
                 ++s.begin;
-                if constexpr ((I + 1) < Iter::total_groups) {
-                    if (s.begin == s.end) {
-                        /// TODO: search for the next non-empty subrange.  This
-                        /// basically consists of a recursive function chain that
-                        /// calls start<I + delta>(p) until a non-empty subrange is
-                        /// encountered or I + delta exceeds total_groups.  That
-                        /// requires further standardization between the iterator and
-                        /// subrange types, so that all the expected methods are
-                        /// available and generically usable, so that this method
-                        /// can be used for recursive unpacking.
-
-                        p.iters = start<I + 1>(it);
+                if (s.begin == s.end) {
+                    ++p.group;
+                    if constexpr (is_join_unpack<parent>) {
+                        if (!skip<I + 1>(it, p)) {
+                            ++p.begin;
+                            if (p.begin == p.end) {
+                                return;
+                            }
+                            p.group = 0;
+                            while (!skip<0>(it, p)) {
+                                ++p.begin;
+                                if (p.begin == p.end) {
+                                    return;
+                                }
+                                p.group = 0;
+                            }
+                        }
+                    } else {
+                        skip<I + 1>(it, p);
                     }
                 }
             }
 
             struct fn {
-                template <meta::not_const Iter, is_join_subrange subrange, typename inner>
+                template <meta::not_const Iter, is_join_unpack subrange, typename inner>
                 static constexpr void operator()(Iter& it, subrange s, inner& i)
                     noexcept (requires{{call(it, s, i.iters)} noexcept;})
                     requires (requires{{call(it, s, i.iters)};})
@@ -5520,11 +5815,15 @@ namespace impl {
 
             template <meta::not_const Iter, meta::not_const parent, is_join_unpack subrange>
             static constexpr void call(Iter& it, parent& p, subrange& s)
-                noexcept (requires{{impl::visit(fn{}, s.inner())} noexcept;})
-                requires (requires{{impl::visit(fn{}, s.inner())};})
+                noexcept (requires{{impl::visit(fn{}, it, s, s.inner())} noexcept;})
+                requires (requires{{impl::visit(fn{}, it, s, s.inner())};})
             {
-                return impl::visit(fn{}, s.inner());
+                return impl::visit(fn{}, it, s, s.inner());
             }
+
+            /// NOTE: the separator subrange is always the first element of the
+            /// internal union, so all odd indices map to 0.  Otherwise, even indices
+            /// are halved and start at index 1.
 
             template <meta::not_const Iter>
             static constexpr void operator()(Iter& it)
@@ -5539,9 +5838,6 @@ namespace impl {
                     it.template get<is_separator<Iter, I> ? 0 : normalize<Iter, I> + Iter::has_sep>()
                 )};})
             {
-                // the separator subrange is always the first element of the internal
-                // union, so all odd indices map to 0.  Otherwise, even indices are
-                // halved and start at index 1.
                 call(
                     it,
                     it,
@@ -5813,8 +6109,8 @@ namespace impl {
             }
         };
 
-        /// TODO: distance is going to have to account for the index array, which
-        /// is still very much a work in progress.
+        /// TODO: distance is going to have to account for the index array for iterators
+        /// where the indices differ, which is still very much a work in progress.
 
         template <typename difference_type>
         struct distance {
@@ -5859,12 +6155,11 @@ namespace impl {
 
     }
 
-    template <typename C, typename Sep, typename... Iters>
+    template <typename C, typename Sep, typename... Subranges>
     concept join_iterator_concept =
-        sizeof...(Iters) > 0 &&
+        sizeof...(Subranges) > 0 &&
         meta::lvalue<C> &&
-        (meta::is_void<Sep> || (meta::unqualified<Sep> && is_join_subrange<Sep>)) &&
-        ((meta::unqualified<Iters> && is_join_subrange<Iters>) && ...);
+        join_union_concept<Sep, Subranges...>;
 
     /// TODO: C -> R (for range) on both this and zip iterators.
 
@@ -5888,10 +6183,10 @@ namespace impl {
         requires (join_iterator_concept<C, Sep, Subranges...>)
     struct join_iterator {
         using container_type = C;
+        using element_type = join_element<C>::type;
         using separator_type = Sep;
         using subrange_types = meta::pack<Subranges...>;
-        using element_type = join_element<C>::type;
-
+        using storage = join_union<Sep, Subranges...>;
         using iterator_category = range_category<
             typename meta::unqualify<C>::ranges,
             Subranges...
@@ -5905,71 +6200,123 @@ namespace impl {
         using pointer = meta::address_type<value_type>;
 
         meta::as_pointer<C> container = nullptr;
+        [[no_unique_address]] storage store;
 
-        /// TODO: storage_type should always include the separator as the first
-        /// element if present.
-
-        /* The `iters` union stores the active member from `Subranges...` or a
-        separator subrange if one is provided.  Duplicate subranges are filtered out
-        when building the union, which minimizes the size of any corresponding vtables,
-        potentially triggering optimizations and reducing overall binary size.  If all
-        subranges are the same, then the union will be optimized out entirely.  The
-        only downside is that the union's index no longer reflects the active argument,
-        which necessitates a separate tracking index. */
-        using storage_type = meta::union_type<Subranges...>;
-        static constexpr bool storage_trivial = meta::trivial_union<Subranges...>;
-        using storage_indices = std::make_index_sequence<storage_trivial ?
-            1 : visitable<storage_type>::alternatives::size()
-        >;
-
-        [[no_unique_address]] storage_type iters;
-
-        /* Normally the `group` counter tracks the active argument whose subrange is
-        stored within the `iters` union.  However, if a separator is provided, then it
-        will be encoded as an odd `groups` value. */
+        /* The `group` index identifies which of the original joined arguments is
+        currently being iterated over, and encodes separators as odd indices if they
+        are present.  The encoded value is used as vtable index for the iterator's
+        traversal methods, which need to know the precise argument or separator being
+        iterated over, so that they can transition to the next argument or separator in
+        the overall range. */
         static constexpr bool has_sep = meta::not_void<Sep>;
         static constexpr size_t total_groups =
             sizeof...(Subranges) + (sizeof...(Subranges) - 1) * has_sep;
         using group_type = impl::union_index_type<total_groups>;
         using group_indices = std::make_index_sequence<total_groups>;
+        template <size_t G> requires (G < total_groups)
+        static constexpr bool is_separator = has_sep && (G % 2 == 1);
+        template <size_t G> requires (G < total_groups)
+        static constexpr size_t normalize = has_sep ? G / 2 : G;
+        template <size_t G> requires (G < total_groups)
+        static constexpr join_direction direction = 
+            meta::unpack_type<normalize<G>, Subranges...>::direction;
 
-        [[no_unique_address]] group_type group = 0;
+        [[no_unique_address]] group_type _group = 0;
 
-        /* Random-access iterators need to know the exact sizes of all subranges so
-        that it can jump efficiently from one to the next, potentially skipping whole
-        ranges.  This array tracks those sizes, and is aligned to the `group` counter
-        with 2 extra elements at the front and back to make comparisons to the next and
-        previous groups safe and optimal. */
-        std::array<size_t, total_groups + 2> group_sizes {};
+        /* Get the active group index, which is used to determine which of the joined
+        arguments is currently being iterated over.  If separators are present, then
+        they will be encoded as odd indices, in which case the argument index can be
+        obtained by halving the group index.  This index will be used to specialize any
+        function template provided to `dispatch<F>()`. */
+        [[nodiscard]] constexpr group_type group() const noexcept { return _group; }
+
+        /* Visit the inner union with a vtable function that accepts the `group()`
+        index as a template parameter.  The function will then be called with the
+        iterator object, and `get_group<G>()` can be used to safely access the inner
+        subrange. */
+        template <template <size_t> class F, typename Self>
+        constexpr decltype(auto) dispatch(this Self&& self)
+            noexcept (requires{
+                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
+                    std::forward<Self>(self)
+                )} noexcept;
+            })
+            requires (requires{
+                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
+                    std::forward<Self>(self)
+                )};
+            })
+        {
+            return (typename impl::vtable<F>::template dispatch<group_indices>{self.active()})(
+                std::forward<Self>(self)
+            );
+        }
+
+        /// TODO: get_group<G>(), which involves an index translation from G to I.
+        /// That can be done by mapping odd G to get<0>() and even G to the storage
+        /// index of the subrange_type at G / 2.
+
+        /* Populate the `store` union with an inner subrange over the group at index
+        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        template <size_t G> requires (!is_separator<G>)
+        constexpr void init_group(join_iterator& it)
+            noexcept (requires{
+                {store.value = join_forward{container->template arg<normalize<G>>()}.begin()} noexcept;
+            })
+            requires (direction<G> == join_direction::FORWARD && requires{
+                {store.value = join_forward{container->template arg<normalize<G>>()}.begin()};
+            })
+        {
+            store.value = join_forward{container->template arg<normalize<G>>()}.begin();
+        }
+
+        /* Populate the `iters` union with an inner subrange over the group at index
+        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        template <size_t G> requires (!is_separator<G>)
+        constexpr void init_group(join_iterator& it)
+            noexcept (requires{
+                {store.value = join_reverse{container->template arg<normalize<G>>()}.begin()} noexcept;
+            })
+            requires (direction<G> == join_direction::REVERSE && requires{
+                {store.value = join_reverse{container->template arg<normalize<G>>()}.begin()};
+            })
+        {
+            store.value = join_reverse{container->template arg<normalize<G>>()}.begin();
+        }
+
+        /* Populate the `iters` union with an inner subrange over the group at index
+        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        template <size_t G> requires (is_separator<G>)
+        constexpr void init_group(join_iterator& it)
+            noexcept (requires{
+                {store.value = join_forward{container->sep()}.begin()} noexcept;
+            })
+            requires (direction<G> == join_direction::FORWARD && requires{
+                {store.value = join_forward{container->sep()}.begin()};
+            })
+        {
+            store.value = join_forward{container->sep()}.begin();
+        }
+
+        /* Populate the `iters` union with an inner subrange over the group at index
+        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        template <size_t G> requires (is_separator<G>)
+        constexpr void init_group(join_iterator& it)
+            noexcept (requires{
+                {store.value = join_reverse{container->sep()}.begin()} noexcept;
+            })
+            requires (direction<G> == join_direction::REVERSE && requires{
+                {store.value = join_reverse{container->sep()}.begin()};
+            })
+        {
+            store.value = join_reverse{container->sep()}.begin();
+        }
 
     private:
-        constexpr size_t active() const noexcept {
-            if constexpr (storage_trivial) {
-                return 0;
-            } else {
-                return iters.__value.index();
-            }
-        }
-
-        template <size_t I, typename Self> requires (I < storage_indices::size())
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            if constexpr (storage_trivial) {
-                return (std::forward<Self>(self).iters);
-            } else {
-                return (std::forward<Self>(self).iters.__value.template get<I>());
-            }
-        }
-
         using increment = impl::vtable<join_increment::increment>::template dispatch<group_indices>;
 
         /// TODO: other increment/decrement methods
-
-        using lt = impl::vtable<join_compare::lt>::template dispatch<storage_indices>;
-        using le = impl::vtable<join_compare::le>::template dispatch<storage_indices>;
-        using eq = impl::vtable<join_compare::eq>::template dispatch<storage_indices>;
-        using ne = impl::vtable<join_compare::ne>::template dispatch<storage_indices>;
-        using ge = impl::vtable<join_compare::ge>::template dispatch<storage_indices>;
-        using gt = impl::vtable<join_compare::gt>::template dispatch<storage_indices>;
+        /// -> use dispatch<F>() to keep track of the current group index
 
     public:
         [[nodiscard]] constexpr element_type operator*()
@@ -6115,35 +6462,43 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator<(const join_iterator& other) const
             noexcept (requires{{
-                lt{active()}(*this, other)
+                store.template visit<join_compare::lt>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                lt{active()}(*this, other)
+                store.template visit<join_compare::lt>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
-            return group < other.group || (group == other.group && lt{active()}(*this, other));
+            return group() < other.group() || (
+                group() == other.group() &&
+                store.template visit<join_compare::lt>(*this, other)
+            );
         }
 
         [[nodiscard]] constexpr bool operator<=(const join_iterator& other) const
             noexcept (requires{{
-                le{active()}(*this, other)
+                store.template visit<join_compare::le>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                le{active()}(*this, other)
+                store.template visit<join_compare::le>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
-            return group < other.group || (group == other.group && le{active()}(*this, other));
+            return group() < other.group() || (
+                group() == other.group() &&
+                store.template visit<join_compare::le>(*this, other)
+            );
         }
 
         [[nodiscard]] constexpr bool operator==(const join_iterator& other) const
             noexcept (requires{{
-                eq{active()}(*this, other)
+                store.template visit<join_compare::eq>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                eq{active()}(*this, other)
+                store.template visit<join_compare::eq>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
-            return group == other.group && eq{active()}(*this, other);
+            return
+                group() == other.group() &&
+                store.template visit<join_compare::eq>(*this, other);
         }
 
         [[nodiscard]] friend constexpr bool operator==(
@@ -6162,49 +6517,57 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator!=(const join_iterator& other) const
             noexcept (requires{{
-                ne{active()}(*this, other)
+                store.template visit<join_compare::ne>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                ne{active()}(*this, other)
+                store.template visit<join_compare::ne>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
-            return group != other.group || ne{active()}(*this, other);
+            return
+                group() != other.group() ||
+                store.template visit<join_compare::ne>(*this, other);
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
             const join_iterator& self,
             NoneType
         ) noexcept {
-            return self.group < sizeof...(Subranges);
+            return self.group() < sizeof...(Subranges);
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
             NoneType,
             const join_iterator& self
         ) noexcept {
-            return self.group < sizeof...(Subranges);
+            return self.group() < sizeof...(Subranges);
         }
 
         [[nodiscard]] constexpr bool operator>=(const join_iterator& other) const
             noexcept (requires{{
-                ge{active()}(*this, other)
+                store.template visit<join_compare::ge>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                ge{active()}(*this, other)
+                store.template visit<join_compare::ge>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
-            return ge{active()}(*this, other);
+            return group() > other.group() || (
+                group() == other.group() &&
+                store.template visit<join_compare::ge>(*this, other)
+            );
         }
 
         [[nodiscard]] constexpr bool operator>(const join_iterator& other) const
             noexcept (requires{{
-                gt{active()}(*this, other)
+                store.template visit<join_compare::gt>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                gt{active()}(*this, other)
+                store.template visit<join_compare::gt>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
-            return gt{active()}(*this, other);
+            return group() > other.group() || (
+                group() == other.group() &&
+                store.template visit<join_compare::gt>(*this, other)
+            );
         }
     };
 
@@ -7063,6 +7426,13 @@ namespace impl {
     };
 
 }
+
+
+/// TODO: maybe `join` should be able to accept multiple separators, which will be
+/// applied to each respective level of unpacking.  So
+
+/// join{".", "-"}([["a", "b"], ["c", "d"]]) -> "a-b.c-d"
+/// join{"."}([["a", "b"], ["c", "d"]]) -> "ab.cd"
 
 
 template <meta::not_rvalue Sep = void>

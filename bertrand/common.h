@@ -4866,6 +4866,10 @@ namespace impl {
     `MIN_VTABLE_SIZE` optimization where possible. */
     template <template <size_t> typename F>
     struct vtable {
+        /// TODO: possibly merge the index sequence into the vtable above, in case you
+        /// already have an index sequence available.  The default case would be
+        /// indexable, the empty index sequence case would be empty, and the
+        /// non-empty index sequence case would be equivalent to dispatch{}
         template <typename>
         struct dispatch;
         template <size_t I, size_t... Is>
