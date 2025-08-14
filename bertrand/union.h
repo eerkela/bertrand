@@ -430,7 +430,8 @@ namespace meta {
                     }
                 };
 
-                using vtable = impl::vtable<dispatch>::template dispatch<
+                using vtable = impl::vtable<
+                    dispatch,
                     ::std::make_index_sequence<traits::alternatives::size()>
                 >;
 
@@ -1566,12 +1567,12 @@ namespace impl {
             requires (copyable)
         {
             if consteval {
-                return impl::vtable<copy>{}[indices{}, other.index()](other);
+                return impl::vtable<copy, indices>{other.index()}(other);
             } else {
                 if constexpr (trivially_copyable) {
                     return trivial_copy(other);
                 } else {
-                    return impl::vtable<copy>{}[indices{}, other.index()](other);
+                    return impl::vtable<copy, indices>{other.index()}(other);
                 }
             }
         }
@@ -1581,12 +1582,12 @@ namespace impl {
             requires (movable)
         {
             if consteval {
-                return impl::vtable<move>{}[indices{}, other.index()](std::move(other));
+                return impl::vtable<move, indices>{other.index()}(std::move(other));
             } else {
                 if constexpr (trivially_copyable) {
                     return trivial_copy(other);
                 } else {
-                    return impl::vtable<move>{}[indices{}, other.index()](std::move(other));
+                    return impl::vtable<move, indices>{other.index()}(std::move(other));
                 }
             }
         }
@@ -1596,7 +1597,7 @@ namespace impl {
             requires (destructible)
         {
             if constexpr (!trivially_destructible) {
-                impl::vtable<destroy>{}[indices{}, self.index()](self);
+                impl::vtable<destroy, indices>{self.index()}(self);
             }
         }
 
@@ -1605,20 +1606,20 @@ namespace impl {
             requires (swappable)
         {
             if consteval {
-                return impl::vtable<_swap>{}[
-                    std::make_index_sequence<sizeof...(Ts) * sizeof...(Ts)>{},
-                    lhs.index() * sizeof...(Ts) + rhs.index()
-                ](lhs, rhs);
+                return impl::vtable<
+                    _swap,
+                    std::make_index_sequence<sizeof...(Ts) * sizeof...(Ts)>
+                >{lhs.index() * sizeof...(Ts) + rhs.index()}(lhs, rhs);
             } else {
                 if constexpr (trivially_copyable) {
                     basic_union temp = lhs;
                     std::memcpy(&lhs, &rhs, sizeof(basic_union));
                     std::memcpy(&rhs, &temp, sizeof(basic_union));
                 } else {
-                    return impl::vtable<_swap>{}[
-                        std::make_index_sequence<sizeof...(Ts) * sizeof...(Ts)>{},
-                        lhs.index() * sizeof...(Ts) + rhs.index()
-                    ](lhs, rhs);
+                    return impl::vtable<
+                        _swap,
+                        std::make_index_sequence<sizeof...(Ts) * sizeof...(Ts)>
+                    >{lhs.index() * sizeof...(Ts) + rhs.index()}(lhs, rhs);
                 }
             }
         }
@@ -1805,7 +1806,8 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<
+        using dispatch = impl::vtable<
+            fn,
             std::make_index_sequence<meta::unqualify<Self>::types::size()>
         >;
 
@@ -1852,7 +1854,8 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<
+        using dispatch = impl::vtable<
+            fn,
             std::make_index_sequence<meta::unqualify<Self>::types::size()>
         >;
 
@@ -1925,7 +1928,7 @@ namespace impl {
                 return *self.__value.template get<I>();
             }
         };
-        using deref = impl::vtable<_deref>::template dispatch<indices>;
+        using deref = impl::vtable<_deref, indices>;
 
         template <size_t I>
         struct _subscript {
@@ -1940,7 +1943,7 @@ namespace impl {
                 return self.__value.template get<I>()[n];
             }
         };
-        using subscript = impl::vtable<_subscript>::template dispatch<indices>;
+        using subscript = impl::vtable<_subscript, indices>;
 
         template <size_t I>
         struct _increment {
@@ -1951,7 +1954,7 @@ namespace impl {
                 ++self.__value.template get<I>();
             }
         };
-        using increment = impl::vtable<_increment>::template dispatch<indices>;
+        using increment = impl::vtable<_increment, indices>;
 
         template <size_t I>
         struct _add {
@@ -1976,7 +1979,7 @@ namespace impl {
                 return {{std::in_place_index<I>, n + self.__value.template get<I>()}};
             }
         };
-        using add = impl::vtable<_add>::template dispatch<indices>;
+        using add = impl::vtable<_add, indices>;
 
         template <size_t I>
         struct _iadd {
@@ -1987,7 +1990,7 @@ namespace impl {
                 self.__value.template get<I>() += n;
             }
         };
-        using iadd = impl::vtable<_iadd>::template dispatch<indices>;
+        using iadd = impl::vtable<_iadd, indices>;
 
         template <size_t I>
         struct _decrement {
@@ -1998,7 +2001,7 @@ namespace impl {
                 --self.__value.template get<I>();
             }
         };
-        using decrement = impl::vtable<_decrement>::template dispatch<indices>;
+        using decrement = impl::vtable<_decrement, indices>;
 
         template <size_t I>
         struct _subtract {
@@ -2013,7 +2016,7 @@ namespace impl {
                 return {{std::in_place_index<I>, self.__value.template get<I>() - n}};
             }
         };
-        using subtract = impl::vtable<_subtract>::template dispatch<indices>;
+        using subtract = impl::vtable<_subtract, indices>;
 
         template <size_t I>
         struct _isub {
@@ -2024,7 +2027,7 @@ namespace impl {
                 self.__value.template get<I>() -= n;
             }
         };
-        using isub = impl::vtable<_isub>::template dispatch<indices>;
+        using isub = impl::vtable<_isub, indices>;
 
         template <size_t I>
         struct _distance {
@@ -2067,7 +2070,7 @@ namespace impl {
                 return lhs.__value.template get<I>() - rhs.__value.template get<I>();
             }
         };
-        using distance = impl::vtable<_distance>::template dispatch<indices>;
+        using distance = impl::vtable<_distance, indices>;
 
         template <size_t I>
         struct _less {
@@ -2110,7 +2113,7 @@ namespace impl {
                 return lhs.__value.template get<I>() < rhs.__value.template get<I>();
             }
         };
-        using less = impl::vtable<_less>::template dispatch<indices>;
+        using less = impl::vtable<_less, indices>;
 
         template <size_t I>
         struct _less_equal {
@@ -2153,7 +2156,7 @@ namespace impl {
                 return lhs.__value.template get<I>() <= rhs.__value.template get<I>();
             }
         };
-        using less_equal = impl::vtable<_less_equal>::template dispatch<indices>;
+        using less_equal = impl::vtable<_less_equal, indices>;
 
         template <size_t I>
         struct _equal {
@@ -2196,7 +2199,7 @@ namespace impl {
                 return lhs.__value.template get<I>() == rhs.__value.template get<I>();
             }
         };
-        using equal = impl::vtable<_equal>::template dispatch<indices>;
+        using equal = impl::vtable<_equal, indices>;
 
         template <size_t I>
         struct _unequal {
@@ -2239,7 +2242,7 @@ namespace impl {
                 return lhs.__value.template get<I>() != rhs.__value.template get<I>();
             }
         };
-        using unequal = impl::vtable<_unequal>::template dispatch<indices>;
+        using unequal = impl::vtable<_unequal, indices>;
 
         template <size_t I>
         struct _greater_equal {
@@ -2282,7 +2285,7 @@ namespace impl {
                 return lhs.__value.template get<I>() >= rhs.__value.template get<I>();
             }
         };
-        using greater_equal = impl::vtable<_greater_equal>::template dispatch<indices>;
+        using greater_equal = impl::vtable<_greater_equal, indices>;
 
         template <size_t I>
         struct _greater {
@@ -2325,7 +2328,7 @@ namespace impl {
                 return lhs.__value.template get<I>() > rhs.__value.template get<I>();
             }
         };
-        using greater = impl::vtable<_greater>::template dispatch<indices>;
+        using greater = impl::vtable<_greater, indices>;
 
         template <typename other>
         static constexpr bool forward_spaceship = (
@@ -2396,7 +2399,7 @@ namespace impl {
                 return lhs.__value.template get<I>() <=> rhs.__value.template get<I>();
             }
         };
-        using spaceship = impl::vtable<_spaceship>::template dispatch<indices>;
+        using spaceship = impl::vtable<_spaceship, indices>;
 
     public:
         [[nodiscard]] constexpr reference operator*() const
@@ -2763,7 +2766,7 @@ namespace impl {
                 return {{std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}};
             }
         };
-        using _begin = impl::vtable<begin_fn>::template dispatch<indices>;
+        using _begin = impl::vtable<begin_fn, indices>;
 
         template <size_t I>
         struct end_fn {
@@ -2788,7 +2791,7 @@ namespace impl {
                 return {{std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}};
             }
         };
-        using _end = impl::vtable<end_fn>::template dispatch<indices>;
+        using _end = impl::vtable<end_fn, indices>;
 
         template <size_t I>
         struct rbegin_fn {
@@ -2813,7 +2816,7 @@ namespace impl {
                 return {{std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}};
             }
         };
-        using _rbegin = impl::vtable<rbegin_fn>::template dispatch<indices>;
+        using _rbegin = impl::vtable<rbegin_fn, indices>;
 
         template <size_t I>
         struct rend_fn {
@@ -2838,7 +2841,7 @@ namespace impl {
                 return {{std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}};
             }
         };
-        using _rend = impl::vtable<rend_fn>::template dispatch<indices>;
+        using _rend = impl::vtable<rend_fn, indices>;
 
         template <size_t I>
         struct size_fn {
@@ -2853,7 +2856,7 @@ namespace impl {
                 return std::ranges::size(u.__value.template get<I>());
             }
         };
-        using _size = impl::vtable<size_fn>::template dispatch<indices>;
+        using _size = impl::vtable<size_fn, indices>;
 
         template <size_t I>
         struct ssize_fn {
@@ -2868,7 +2871,7 @@ namespace impl {
                 return std::ranges::ssize(u.__value.template get<I>());
             }
         };
-        using _ssize = impl::vtable<ssize_fn>::template dispatch<indices>;
+        using _ssize = impl::vtable<ssize_fn, indices>;
 
         template <size_t I>
         struct empty_fn {
@@ -2883,7 +2886,7 @@ namespace impl {
                 return std::ranges::empty(u.__value.template get<I>());
             }
         };
-        using _empty = impl::vtable<empty_fn>::template dispatch<indices>;
+        using _empty = impl::vtable<empty_fn, indices>;
 
     public:
         static constexpr begin_type begin(U u)
@@ -3619,7 +3622,7 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<2>>;
+        using dispatch = impl::vtable<fn, std::make_index_sequence<2>>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
@@ -3680,7 +3683,7 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<2>>;
+        using dispatch = impl::vtable<fn, std::make_index_sequence<2>>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
@@ -4755,9 +4758,10 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<
-            meta::unqualify<Self>::types::size()
-        >>;
+        using dispatch = impl::vtable<
+            fn,
+            std::make_index_sequence<meta::unqualify<Self>::types::size()>
+        >;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
@@ -4801,9 +4805,10 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<
-            meta::unqualify<Self>::types::size()
-        >>;
+        using dispatch = impl::vtable<
+            fn,
+            std::make_index_sequence<meta::unqualify<Self>::types::size()>
+        >;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
@@ -4834,9 +4839,10 @@ namespace impl {
             }
         };
 
-        using dispatch = impl::vtable<fn>::template dispatch<std::make_index_sequence<
-            meta::unqualify<Self>::types::size()
-        >>;
+        using dispatch = impl::vtable<
+            fn,
+            std::make_index_sequence<meta::unqualify<Self>::types::size()>
+        >;
 
         [[nodiscard]] static constexpr type operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})

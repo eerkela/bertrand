@@ -4860,95 +4860,79 @@ namespace impl {
 
     /* A helper class that generates a manual vtable for a visitor function `F`, which
     must be a template class that accepts a single `size_t` parameter representing the
-    index of the alternative being invoked.  Indexing the vtable object sets the
-    number of alternatives and requested index, and returns a function object that
-    performs the necessary dispatch.  Such vtables will automatically apply the
-    `MIN_VTABLE_SIZE` optimization where possible. */
-    template <template <size_t> typename F>
-    struct vtable {
-        /// TODO: possibly merge the index sequence into the vtable above, in case you
-        /// already have an index sequence available.  The default case would be
-        /// indexable, the empty index sequence case would be empty, and the
-        /// non-empty index sequence case would be equivalent to dispatch{}
-        template <typename>
-        struct dispatch;
-        template <size_t I, size_t... Is>
-        struct dispatch<std::index_sequence<I, Is...>> {
-            size_t index;
+    index of the alternative being invoked. The second template parameter is a
+    `std::index_sequence` that contains the values used to specialize `F`, and the
+    constructor accepts an index that selects the alternative to invoke.  This has the
+    effect of promoting the runtime index to compile time, allowing each function `F`
+    to use it safely in constexpr contexts.  Such vtables are foundational to most
+    forms of type erasure, polymorphism, and runtime dispatch, and this class provides
+    an optimal implementation that replaces function pointers with recursive `if`
+    chains when the number of alternatives is less than `MIN_VTABLE_SIZE`. */
+    template <template <size_t> typename F, typename>
+    struct vtable;
+    template <template <size_t> typename F, size_t I, size_t... Is>
+        requires (meta::default_constructible<F<I>> && ... && meta::default_constructible<F<Is>>)
+    struct vtable<F, std::index_sequence<I, Is...>> {
+        size_t index;
 
-            template <typename... A>
-            static constexpr bool nothrow = (
-                meta::nothrow::callable<F<I>, A...> &&
-                ... &&
-                meta::nothrow::callable<F<Is>, A...>
-            );
+        template <typename... A>
+        static constexpr bool nothrow = (
+            meta::nothrow::callable<F<I>, A...> &&
+            ... &&
+            meta::nothrow::callable<F<Is>, A...>
+        );
 
-            template <typename... A>
-            using type = meta::call_type<F<I>, A...>;
+        template <typename... A>
+        using type = meta::call_type<F<I>, A...>;
 
-            /* If the vtable size is less than `MIN_VTABLE_SIZE`, then we can optimize
-            the dispatch to a recursive `if` chain, which is easier for the compiler to
-            optimize. */
-            template <size_t J = 0, typename... A>
-            [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
-                noexcept (nothrow<A...>)
-                requires (
-                    sizeof...(Is) + 1 < MIN_VTABLE_SIZE &&
-                    (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
-                    (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
-                )
-            {
-                if constexpr (J < sizeof...(Is)) {
-                    if (index == J) {
-                        return F<J>{}(std::forward<A>(args)...);
-                    } else {
-                        return operator()<J + 1>(std::forward<A>(args)...);
-                    }
+        /* If the vtable size is less than `MIN_VTABLE_SIZE`, then we can optimize
+        the dispatch to a recursive `if` chain, which is easier for the compiler to
+        optimize. */
+        template <size_t J = 0, typename... A>
+        [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
+            noexcept (nothrow<A...>)
+            requires (
+                sizeof...(Is) + 1 < MIN_VTABLE_SIZE &&
+                (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
+                (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
+            )
+        {
+            if constexpr (J < sizeof...(Is)) {
+                if (index == J) {
+                    return F<J>{}(std::forward<A>(args)...);
                 } else {
-                    return F<J>{}(std::forward<A>(args)...);                
+                    return operator()<J + 1>(std::forward<A>(args)...);
                 }
+            } else {
+                return F<J>{}(std::forward<A>(args)...);                
             }
+        }
 
-            template <typename... A>
-            using ptr = type<A...>(*)(A...) noexcept (nothrow<A...>);
+        template <typename... A>
+        using ptr = type<A...>(*)(A...) noexcept (nothrow<A...>);
 
-            template <size_t J, typename... A>
-            static constexpr type<A...> fn(A... args) noexcept (nothrow<A...>) {
-                return F<J>{}(std::forward<A>(args)...);
-            }
+        template <size_t J, typename... A>
+        static constexpr type<A...> fn(A... args) noexcept (nothrow<A...>) {
+            return F<J>{}(std::forward<A>(args)...);
+        }
 
-            template <typename... A>
-            static constexpr ptr<A...> table[sizeof...(Is) + 1] {
-                &fn<I, A...>,
-                &fn<Is + 1, A...>...
-            };
-
-            /* Otherwise, a normal vtable will be emitted and stored in the binary. */
-            template <typename... A>
-            [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
-                noexcept (nothrow<A...>)
-                requires (
-                    sizeof...(Is) + 1 >= MIN_VTABLE_SIZE &&
-                    (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
-                    (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
-                )
-            {
-                return table<meta::forward<A>...>[index](std::forward<A>(args)...);
-            }
+        template <typename... A>
+        static constexpr ptr<A...> table[sizeof...(Is) + 1] {
+            &fn<I, A...>,
+            &fn<Is + 1, A...>...
         };
 
-        /* Set the vtable size to the index sequence set by the first argument, and
-        then select the alternative at the given index.  Returns a function object that
-        can invoked to perform the actual dispatch, passing the arguments to the
-        selected alternative.  This effectively promotes the runtime index to compile
-        time, encoding it in `Is...`, which can apply different logic for each
-        alternative.  Note that if the total number of alternatives is less than
-        `MIN_VTABLE_SIZE`, a recursive `if` chain will be generated instead of a full
-        vtable. */
-        template <size_t... Is>
-            requires ((sizeof...(Is) > 0) && ... && meta::default_constructible<F<Is>>)
-        static constexpr auto operator[](std::index_sequence<Is...>, size_t i) noexcept {
-            return dispatch<std::index_sequence<Is...>>{i};
+        /* Otherwise, a normal vtable will be emitted and stored in the binary. */
+        template <typename... A>
+        [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
+            noexcept (nothrow<A...>)
+            requires (
+                sizeof...(Is) + 1 >= MIN_VTABLE_SIZE &&
+                (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
+                (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
+            )
+        {
+            return table<meta::forward<A>...>[index](std::forward<A>(args)...);
         }
     };
 

@@ -4,6 +4,7 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/union.h"
+#include <pthread.h>
 
 
 /// TODO: split this file into multiple smaller files in an iter/ directory.
@@ -202,9 +203,7 @@ namespace impl {
         };
 
     public:
-        using dispatch = impl::vtable<fn>::template dispatch<
-            std::make_index_sequence<meta::tuple_size<T>>
-        >;
+        using dispatch = impl::vtable<fn, std::make_index_sequence<meta::tuple_size<T>>>;
     };
 
     /* A special case of `tuple_iterator` for empty tuples, which do not yield any
@@ -4986,56 +4985,12 @@ namespace impl {
     template <join_direction Dir, typename Sep, typename Begin, typename End>
     constexpr bool _is_join_subrange<join_subrange<Dir, Sep, Begin, End>> = true;
 
-    template <join_direction Dir, typename Sep, typename Begin, typename End>
-    struct join_unpack_storage {
-        struct subrange {
-            using nested = meta::dereference_type<Begin>;
-            using type = join_subrange<
-                Dir,
-                Sep,
-                meta::unqualify<meta::begin_type<nested>>,
-                meta::unqualify<meta::end_type<nested>>
-            >;
-            impl::ref<nested> data;
-            type iters {
-                .begin = data->begin(),
-                .end = data->end()
-            };
-        };
-        using separator = void;
-        using type = subrange;
-    };
-    template <meta::is_void Sep, typename Begin, typename End>
-    struct join_unpack_storage<join_direction::REVERSE, Sep, Begin, End> {
-        struct subrange {
-            using nested = meta::dereference_type<Begin>;
-            using type = join_subrange<
-                join_direction::REVERSE,
-                Sep,
-                meta::unqualify<meta::rbegin_type<nested>>,
-                meta::unqualify<meta::rend_type<nested>>
-            >;
-            impl::ref<nested> data;
-            type iters {
-                .begin = data->rbegin(),
-                .end = data->rend()
-            };
-        };
-        using separator = void;
-        using type = subrange;
-    };
-    template <join_direction Dir, meta::not_void Sep, typename Begin, typename End>
-    struct join_unpack_storage<Dir, Sep, Begin, End> {
-        using subrange = join_unpack_storage<Dir, void, Begin, End>::subrange;
-        struct separator { Sep iters; };
-        using type = Union<subrange, separator>;
-    };
-
-
     template <typename Sep, typename... Subranges>
-    concept join_union_concept =
+    concept join_union_concept = sizeof...(Subranges) > 0 &&
         (meta::is_void<Sep> || (meta::unqualified<Sep> && is_join_subrange<Sep>)) &&
-        ((meta::unqualified<Subranges> && is_join_subrange<Subranges>) && ...);
+        ((meta::unqualified<Subranges> && is_join_subrange<Subranges>) && ...) &&
+        (meta::is_void<Sep> || (Sep::direction == meta::unpack_type<0, Subranges...>::direction)) &&
+        ((meta::unpack_type<0, Subranges...>::direction == Subranges::direction) && ...);
 
     /* Join iterators and nested subranges store the active subrange in an internal
     union that filters out duplicates as an optimization.  This minimizes the size of
@@ -5065,12 +5020,12 @@ namespace impl {
             trivial ? 1 : visitable<type>::alternatives::size()
         >;
 
-        [[no_unique_address]] Optional<type> value;
+        [[no_unique_address]] Optional<type> data;
 
         /* Check if the storage union is empty, signifying the end of the range.  The
         other methods in this class assume that this is false, and will result in
         undefined behavior otherwise. */
-        [[nodiscard]] constexpr bool empty() const noexcept { return value == None; }
+        [[nodiscard]] constexpr bool empty() const noexcept { return data == None; }
 
         /* Get the active index of the storage union.  Note that this does not
         necessarily correspond to the active argument in the joined range, due to
@@ -5082,7 +5037,7 @@ namespace impl {
             if constexpr (trivial) {
                 return 0;
             } else {
-                return value.__value.template get<1>().__value.index();
+                return data.__value.template get<1>().__value.index();
             }
         }
 
@@ -5093,19 +5048,13 @@ namespace impl {
         template <template <size_t> class F, typename... A>
         constexpr decltype(auto) visit(A&&... args) const
             noexcept (requires{
-                {typename impl::vtable<F>::template dispatch<indices>{active()}(
-                    std::forward<A>(args)...
-                )} noexcept;
+                {impl::vtable<F, indices>{active()}(std::forward<A>(args)...)} noexcept;
             })
             requires (requires{
-                {typename impl::vtable<F>::template dispatch<indices>{active()}(
-                    std::forward<A>(args)...
-                )};
+                {impl::vtable<F, indices>{active()}(std::forward<A>(args)...)};
             })
         {
-            return (typename impl::vtable<F>::template dispatch<indices>{active()})(
-                std::forward<A>(args)...
-            );
+            return (impl::vtable<F, indices>{active()})(std::forward<A>(args)...);
         }
 
         /* Access the current subrange as the indicated type, where `I` matches the
@@ -5113,9 +5062,9 @@ namespace impl {
         template <size_t I, typename Self> requires (I < indices::size())
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
             if constexpr (trivial) {
-                return (std::forward<Self>(self).value.__value.template get<1>());
+                return (std::forward<Self>(self).data.__value.template get<1>());
             } else {
-                return (std::forward<Self>(self).value.
+                return (std::forward<Self>(self).data.
                     __value.template get<1>().
                     __value.template get<I>()
                 );
@@ -5123,7 +5072,24 @@ namespace impl {
         }
     };
 
-
+    template <join_direction Dir, typename Sep, typename Begin, typename End>
+    struct _join_subrange {
+        using type = join_subrange<
+            Dir,
+            Sep,
+            meta::unqualify<meta::begin_type<meta::dereference_type<Begin>>>,
+            meta::unqualify<meta::end_type<meta::dereference_type<Begin>>>
+        >;
+    };
+    template <meta::is_void Sep, typename Begin, typename End>
+    struct _join_subrange<join_direction::REVERSE, Sep, Begin, End> {
+        using type = join_subrange<
+            join_direction::REVERSE,
+            Sep,
+            meta::unqualify<meta::rbegin_type<meta::dereference_type<Begin>>>,
+            meta::unqualify<meta::rend_type<meta::dereference_type<Begin>>>
+        >;
+    };
 
     /* If a range of ranges is supplied as an unpacked argument to join, then its
     subrange will be marked as such, and will be flattened into the output.  Such a
@@ -5139,15 +5105,20 @@ namespace impl {
     struct join_subrange<Dir, Sep, Begin, End> {
         using begin_type = Begin;
         using end_type = End;
-        static constexpr bool unpack = true;
+        static constexpr bool unpack = true;  // TODO: rename this to `flatten`?
         static constexpr join_direction direction = Dir;
         begin_type begin;
         end_type end;
 
-        using traits = join_unpack_storage<direction, Sep, Begin, End>;
-        using subrange_type = traits::subrange::type;
         using separator_type = Sep;
-        using storage_type = traits::type;
+        using subrange_types =
+            meta::pack<typename _join_subrange<direction, Sep, Begin, End>::type>;
+        using storage_type =
+            join_union<Sep, typename _join_subrange<direction, Sep, Begin, End>::type>;
+
+        [[no_unique_address]] Optional<meta::dereference_type<Begin>> data;
+        [[no_unique_address]] storage_type inner;
+
         static constexpr bool has_sep = meta::not_void<Sep>;
         static constexpr bool trivial = !has_sep;
         static constexpr size_t total_groups = 1 + has_sep;
@@ -5160,126 +5131,90 @@ namespace impl {
         template <size_t G> requires (G < total_groups)
         static constexpr size_t normalize = G;
 
-
-        /// TODO: store the cached value in a separate optional field and then reuse
-        /// the `join_storage` type
-        // using inner_type = meta::dereference_type<Begin>;
-        // [[no_unique_address]] Optional<impl::ref<inner_type>> data;
-
-
-        /* The empty state of the `iters` union signifies an empty range, which is
-        handled in the traversal logic.  The remaining methods assume `iters` is never
-        empty. */
-        [[no_unique_address]] Optional<storage_type> iters;
-
         /* Get the active index of the inner union, which is identical to the encoded
         group index in this case.  This will always be either 0 or 1, where 0 indicates
         an inner subrange and 1 indicates a separator, if one is present. */
-        [[nodiscard]] constexpr group_type active() const noexcept {
-            if constexpr (trivial) {
-                return 0;
-            } else {
-                return iters.__value.template get<1>().__value.index();
-            }
-        }
-
-        /* Get the active index of the inner union, which is identical to the encoded
-        group index in this case.  This will always be either 0 or 1, where 0 indicates
-        an inner subrange and 1 indicates a separator, if one is present. */
-        [[nodiscard]] constexpr group_type group() const noexcept { return active(); }
-
-        /* Visit the inner union with a vtable function that accepts the `active()`
-        index as a template parameter.  The function will then be called with the outer
-        subrange, and `get<I>()` can be used to safely access the inner subrange. */
-        template <template <size_t> class F, typename Self>
-        constexpr decltype(auto) visit(this Self&& self)
-            noexcept (requires{
-                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
-                    std::forward<Self>(self)
-                )} noexcept;
-            })
-            requires (requires{
-                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
-                    std::forward<Self>(self)
-                )};
-            })
-        {
-            return (typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
-                std::forward<Self>(self)
-            ));
-        }
+        [[nodiscard]] constexpr group_type group() const noexcept { return inner.active(); }
 
         /* Visit the inner union with a vtable function that accepts the `group()`
         index as a template parameter.  The function will then be called with the outer
-        subrange, and `get_group<G>()` can be used to safely access the inner
+        subrange, and `get<G>()` can be used to safely access the inner
         subrange. */
-        template <template <size_t> class F, typename Self>
-        constexpr decltype(auto) dispatch(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).template visit<F>()} noexcept;})
-            requires (requires{{std::forward<Self>(self).template visit<F>()};})
+        template <template <size_t> class F, typename... A>
+        constexpr decltype(auto) visit(A&&... args) const
+            noexcept (requires{{inner.template visit<F>(std::forward<A>(args)...)} noexcept;})
+            requires (requires{{inner.template visit<F>(std::forward<A>(args)...)};})
         {
-            return (std::forward<Self>(self).template visit<F>());
-        }
-
-        /* Access the current subrange as the indicated type, where `I` is an index
-        with the same semantics as `active()` and `visit()`. */
-        template <size_t I, typename Self> requires (I < total_groups)
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            if constexpr (trivial) {
-                return (std::forward<Self>(self).iters.__value.template get<1>().iters);
-            } else {
-                return (std::forward<Self>(self).iters.
-                    __value.template get<1>().
-                    __value.template get<I>().
-                    iters
-                );
-            }
+            return (inner.template visit<F>(std::forward<A>(args)...));
         }
 
         /* Access the current subrange as the indicated type, where `G` is an index
-        with the same semantics as `group()` and `dispatch()`. */
+        with the same semantics as `group()` and `visit()`. */
         template <size_t G, typename Self> requires (G < total_groups)
-        [[nodiscard]] constexpr decltype(auto) get_group(this Self&& self) noexcept {
-            return std::forward<Self>(self).template get<G>();
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            return std::forward<Self>(self).inner.template get<G>();
         }
 
         /* Populate the `iters` union with an inner subrange by dereferencing the
         begin iterator and caching the result.  The result can then be safely accessed
-        via `get_group<G>()`. */
-        template <size_t G, typename Iter> requires (G == 0)
-        constexpr void init_group(Iter& it)
-            noexcept (requires{{iters = typename traits::subrange{{*begin}}} noexcept;})
-            requires (requires{{iters = typename traits::subrange{{*begin}}};})
-        {
-            iters = typename traits::subrange{{*begin}};
-        }
-
-        /* Populate the `iters` union with a separator subrange.  The result can then
-        be safely accessed via `get_group<G>()`. */
-        template <size_t G, typename Iter> requires (has_sep && G == 1)
-        constexpr void init_group(Iter& it)
+        via `get<G>()`. */
+        template <size_t G, typename Iter> requires (!is_separator<G>)
+        constexpr void init(Iter& it)
             noexcept (requires{
-                {iters = typename traits::separator{join_forward{it.container->sep()}.begin()}} noexcept;
+                {data = *begin} noexcept;
+                {inner.data = join_forward{data.__value.template get<1>()}.begin()} noexcept;
             })
             requires (Dir == join_direction::FORWARD && requires{
-                {iters = typename traits::separator{join_forward{it.container->sep()}.begin()}};
+                {data = *begin};
+                {inner.data = join_forward{data.__value.template get<1>()}.begin()};
             })
         {
-            iters = typename traits::separator{join_forward{it.container->sep()}.begin()};
+            data = *begin;
+            inner.data = join_forward{data.__value.template get<1>()}.begin();
+        }
+
+        /* Populate the `iters` union with an inner subrange by dereferencing the
+        begin iterator and caching the result.  The result can then be safely accessed
+        via `get<G>()`. */
+        template <size_t G, typename Iter> requires (!is_separator<G>)
+        constexpr void init(Iter& it)
+            noexcept (requires{
+                {data = *begin} noexcept;
+                {inner.data = join_reverse{data.__value.template get<1>()}.begin()} noexcept;
+            })
+            requires (Dir == join_direction::REVERSE && requires{
+                {data = *begin};
+                {inner.data = join_reverse{data.__value.template get<1>()}.begin()};
+            })
+        {
+            data = *begin;
+            inner.data = join_reverse{data.__value.template get<1>()}.begin();
         }
 
         /* Populate the `iters` union with a separator subrange.  The result can then
-        be safely accessed via `get_group<G>()`. */
-        template <size_t G, typename Iter> requires (has_sep && G == 1)
-        constexpr void init_group(Iter& it)
-            noexcept (requires{
-                {typename traits::separator{join_reverse{it.container->sep()}.begin()}} noexcept;
-            })
-            requires (Dir == join_direction::REVERSE && requires{
-                {typename traits::separator{join_reverse{it.container->sep()}.begin()}};
-            })
+        be safely accessed via `get<G>()`. */
+        template <size_t G, typename Iter> requires (is_separator<G>)
+        constexpr void init(Iter& it)
+            noexcept (requires{{inner.data = join_forward{it.container->sep()}.begin()} noexcept;})
+            requires (
+                Dir == join_direction::FORWARD &&
+                requires{{inner.data = join_forward{it.container->sep()}.begin()};}
+            )
         {
-            iters = typename traits::separator{join_reverse{it.container->sep()}.begin()};
+            inner.data = join_forward{it.container->sep()}.begin();
+        }
+
+        /* Populate the `iters` union with a separator subrange.  The result can then
+        be safely accessed via `get<G>()`. */
+        template <size_t G, typename Iter> requires (is_separator<G>)
+        constexpr void init(Iter& it)
+            noexcept (requires{{inner.data = join_reverse{it.container->sep()}.begin()} noexcept;})
+            requires (
+                Dir == join_direction::REVERSE &&
+                requires{{inner.data = join_reverse{it.container->sep()}.begin()};}
+            )
+        {
+            inner.data = join_reverse{it.container->sep()}.begin();
         }
     };
 
@@ -5583,54 +5518,6 @@ namespace impl {
         }
     };
 
-    namespace join_deref {
-
-        /// TODO: convert this into a standardized visitor that accepts `I` as a
-        /// template parameter.
-
-        template <meta::not_void element_type>
-        struct deref {
-            template <is_join_subrange subrange>
-            [[nodiscard]] static constexpr element_type operator()(subrange&& self)
-                noexcept (requires{{
-                    *std::forward<subrange>(self).begin
-                } noexcept -> meta::nothrow::convertible_to<element_type>;})
-                requires (requires{{
-                    *std::forward<subrange>(self).begin
-                } -> meta::convertible_to<element_type>;})
-            {
-                return *std::forward<subrange>(self).begin;
-            }
-
-            struct fn {
-                template <typename inner>
-                static constexpr element_type operator()(inner&& self)
-                    noexcept (requires{
-                        {deref::operator()(std::forward<inner>(self).iters)} noexcept;
-                    })
-                    requires (requires{
-                        {deref::operator()(std::forward<inner>(self).iters)};
-                    })
-                {
-                    return deref::operator()(std::forward<inner>(self).iters);
-                }
-            };
-
-            template <is_join_unpack subrange>
-            [[nodiscard]] static constexpr element_type operator()(subrange&& self)
-                noexcept (requires{
-                    {impl::visit(fn{}, std::forward<subrange>(self).inner())} noexcept;
-                })
-                requires (requires{
-                    {impl::visit(fn{}, std::forward<subrange>(self).inner())};
-                })
-            {
-                return impl::visit(fn{}, std::forward<subrange>(self).inner());
-            }
-        };
-
-    }
-
     namespace join_increment {
 
         /// TODO: The following must be standardized between join_iterator and unpacked
@@ -5848,316 +5735,8 @@ namespace impl {
 
     }
 
-    namespace join_compare {
-
-        template <is_join_unpack subrange, typename op>
-        struct dispatch {
-            template <size_t J>
-            struct fn {
-                template <typename inner>
-                static constexpr auto operator()(const inner& lhs, const inner& rhs)
-                    noexcept (requires{{
-                        op::call(lhs.template get<J>(), rhs.template get<J>())
-                    } noexcept;})
-                    requires (requires{{
-                        op::call(lhs.template get<J>(), rhs.template get<J>())
-                    };})
-                {
-                    return op::call(lhs.template get<J>(), rhs.template get<J>());
-                }
-            };
-
-            using vtable = impl::vtable<fn>::template dispatch<
-                std::make_index_sequence<2 - subrange::trivial>
-            >;
-
-            static constexpr auto operator()(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    vtable{lhs.inner_index()}(lhs.inner(), rhs.inner())
-                } noexcept;})
-                requires (requires{{
-                    vtable{lhs.inner_index()}(lhs.inner(), rhs.inner())
-                };})
-            {
-                return vtable{lhs.inner_index()}(lhs.inner(), rhs.inner());
-            }
-        };
-
-        template <size_t I>
-        struct lt {
-            template <is_join_subrange subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    lhs.begin < rhs.begin
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (requires{{
-                    lhs.begin < rhs.begin
-                } -> meta::convertible_to<bool>;})
-            {
-                return lhs.begin < rhs.begin;
-            }
-
-            template <is_join_unpack subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{dispatch<subrange, lt>{}(lhs, rhs)} noexcept;})
-                requires (requires{{dispatch<subrange, lt>{}(lhs, rhs)};})
-            {
-                return lhs.inner_index() < rhs.inner_index() || (
-                    lhs.inner_index() == rhs.inner_index() &&
-                    dispatch<subrange, lt>{}(lhs, rhs)
-                );
-            }
-
-            template <typename Iter>
-            static constexpr bool operator()(const Iter& lhs, const Iter& rhs)
-                noexcept (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                } noexcept;})
-                requires (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                };})
-            {
-                return call(lhs.template get<I>(), rhs.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct le {
-            template <is_join_subrange subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    lhs.begin <= rhs.begin
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (requires{{
-                    lhs.begin <= rhs.begin
-                } -> meta::convertible_to<bool>;})
-            {
-                return lhs.begin <= rhs.begin;
-            }
-
-            template <is_join_unpack subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{dispatch<subrange, le>{}(lhs, rhs)} noexcept;})
-                requires (requires{{dispatch<subrange, le>{}(lhs, rhs)};})
-            {
-                return lhs.inner_index() < rhs.inner_index() || (
-                    lhs.inner_index() == rhs.inner_index() &&
-                    dispatch<subrange, le>{}(lhs, rhs)
-                );
-            }
-
-            template <typename Iter>
-            static constexpr bool operator()(const Iter& lhs, const Iter& rhs)
-                noexcept (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                } noexcept;})
-                requires (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                };})
-            {
-                return call(lhs.template get<I>(), rhs.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct eq {
-            template <is_join_subrange subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    lhs.begin == rhs.begin
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (requires{{
-                    lhs.begin == rhs.begin
-                } -> meta::convertible_to<bool>;})
-            {
-                return lhs.begin == rhs.begin;
-            }
-
-            template <is_join_unpack subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{dispatch<subrange, eq>{}(lhs, rhs)} noexcept;})
-                requires (requires{{dispatch<subrange, eq>{}(lhs, rhs)};})
-            {
-                return
-                    lhs.inner_index() == rhs.inner_index() &&
-                    dispatch<subrange, eq>{}(lhs, rhs);
-            }
-
-            template <typename Iter>
-            static constexpr bool operator()(const Iter& lhs, const Iter& rhs)
-                noexcept (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                } noexcept;})
-                requires (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                };})
-            {
-                return call(lhs.template get<I>(), rhs.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct ne {
-            template <is_join_subrange subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    lhs.begin != rhs.begin
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (requires{{
-                    lhs.begin != rhs.begin
-                } -> meta::convertible_to<bool>;})
-            {
-                return lhs.begin != rhs.begin;
-            }
-
-            template <is_join_unpack subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{dispatch<subrange, ne>{}(lhs, rhs)} noexcept;})
-                requires (requires{{dispatch<subrange, ne>{}(lhs, rhs)};})
-            {
-                return
-                    lhs.inner_index() != rhs.inner_index() ||
-                    dispatch<subrange, ne>{}(lhs, rhs);
-            }
-
-            template <typename Iter>
-            static constexpr bool operator()(const Iter& lhs, const Iter& rhs)
-                noexcept (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                } noexcept;})
-                requires (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                };})
-            {
-                return call(lhs.template get<I>(), rhs.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct ge {
-            template <is_join_subrange subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    lhs.begin >= rhs.begin
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (requires{{
-                    lhs.begin >= rhs.begin
-                } -> meta::convertible_to<bool>;})
-            {
-                return lhs.begin >= rhs.begin;
-            }
-
-            template <is_join_unpack subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{dispatch<subrange, ge>{}(lhs, rhs)} noexcept;})
-                requires (requires{{dispatch<subrange, ge>{}(lhs, rhs)};})
-            {
-                return lhs.inner_index() > rhs.inner_index() || (
-                    lhs.inner_index() == rhs.inner_index() &&
-                    dispatch<subrange, ge>{}(lhs, rhs)
-                );
-            }
-
-            template <typename Iter>
-            static constexpr bool operator()(const Iter& lhs, const Iter& rhs)
-                noexcept (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                } noexcept;})
-                requires (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                };})
-            {
-                return call(lhs.template get<I>(), rhs.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct gt {
-            template <is_join_subrange subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{
-                    lhs.begin > rhs.begin
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (requires{{
-                    lhs.begin > rhs.begin
-                } -> meta::convertible_to<bool>;})
-            {
-                return lhs.begin > rhs.begin;
-            }
-
-            template <is_join_unpack subrange>
-            static constexpr bool call(const subrange& lhs, const subrange& rhs)
-                noexcept (requires{{dispatch<subrange, gt>{}(lhs, rhs)} noexcept;})
-                requires (requires{{dispatch<subrange, gt>{}(lhs, rhs)};})
-            {
-                return lhs.inner_index() > rhs.inner_index() || (
-                    lhs.inner_index() == rhs.inner_index() &&
-                    dispatch<subrange, gt>{}(lhs, rhs)
-                );
-            }
-
-            template <typename Iter>
-            static constexpr bool operator()(const Iter& lhs, const Iter& rhs)
-                noexcept (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                } noexcept;})
-                requires (requires{{
-                    call(lhs.template get<I>(), rhs.template get<I>())
-                };})
-            {
-                return call(lhs.template get<I>(), rhs.template get<I>());
-            }
-        };
-
-        /// TODO: distance is going to have to account for the index array for iterators
-        /// where the indices differ, which is still very much a work in progress.
-
-        template <typename difference_type>
-        struct distance {
-            template <size_t I>
-            struct fn {
-                template <is_join_subrange subrange>
-                static constexpr difference_type call(const subrange& lhs, const subrange& rhs)
-                    noexcept (requires{{
-                        lhs.begin - rhs.begin
-                    } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-                    requires (requires{{
-                        lhs.begin - rhs.begin
-                    } -> meta::convertible_to<difference_type>;})
-                {
-                    return lhs.begin - rhs.begin;
-                }
-
-                template <is_join_unpack subrange>
-                static constexpr difference_type call(const subrange& lhs, const subrange& rhs)
-                    noexcept (requires{{dispatch<subrange, fn>{}(lhs, rhs)} noexcept;})
-                    requires (requires{{dispatch<subrange, fn>{}(lhs, rhs)};})
-                {
-                    return lhs.inner_index() > rhs.inner_index() || (
-                        lhs.inner_index() == rhs.inner_index() &&
-                        dispatch<subrange, fn>{}(lhs, rhs)
-                    );
-                }
-
-                template <typename Iter>
-                static constexpr difference_type operator()(const Iter& lhs, const Iter& rhs)
-                    noexcept (requires{{
-                        call(lhs.template get<I>(), rhs.template get<I>())
-                    } noexcept;})
-                    requires (requires{{
-                        call(lhs.template get<I>(), rhs.template get<I>())
-                    };})
-                {
-                    return call(lhs.template get<I>(), rhs.template get<I>());
-                }
-            };
-        };
-
-    }
-
     template <typename C, typename Sep, typename... Subranges>
     concept join_iterator_concept =
-        sizeof...(Subranges) > 0 &&
         meta::lvalue<C> &&
         join_union_concept<Sep, Subranges...>;
 
@@ -6184,9 +5763,6 @@ namespace impl {
     struct join_iterator {
         using container_type = C;
         using element_type = join_element<C>::type;
-        using separator_type = Sep;
-        using subrange_types = meta::pack<Subranges...>;
-        using storage = join_union<Sep, Subranges...>;
         using iterator_category = range_category<
             typename meta::unqualify<C>::ranges,
             Subranges...
@@ -6199,8 +5775,13 @@ namespace impl {
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::address_type<value_type>;
 
+        using separator_type = Sep;
+        using subrange_types = meta::pack<Subranges...>;
+        using storage_type = join_union<Sep, Subranges...>;
+        static constexpr join_direction direction = meta::unpack_type<0, Subranges...>::direction;
+
         meta::as_pointer<C> container = nullptr;
-        [[no_unique_address]] storage store;
+        [[no_unique_address]] storage_type inner;
 
         /* The `group` index identifies which of the original joined arguments is
         currently being iterated over, and encodes separators as odd indices if they
@@ -6211,134 +5792,416 @@ namespace impl {
         static constexpr bool has_sep = meta::not_void<Sep>;
         static constexpr size_t total_groups =
             sizeof...(Subranges) + (sizeof...(Subranges) - 1) * has_sep;
-        using group_type = impl::union_index_type<total_groups>;
-        using group_indices = std::make_index_sequence<total_groups>;
+        using tag = impl::union_index_type<total_groups>;
+        using indices = std::make_index_sequence<total_groups>;
+
         template <size_t G> requires (G < total_groups)
         static constexpr bool is_separator = has_sep && (G % 2 == 1);
+
         template <size_t G> requires (G < total_groups)
         static constexpr size_t normalize = has_sep ? G / 2 : G;
-        template <size_t G> requires (G < total_groups)
-        static constexpr join_direction direction = 
-            meta::unpack_type<normalize<G>, Subranges...>::direction;
 
-        [[no_unique_address]] group_type _group = 0;
+        [[no_unique_address]] tag _group = 0;
 
         /* Get the active group index, which is used to determine which of the joined
         arguments is currently being iterated over.  If separators are present, then
         they will be encoded as odd indices, in which case the argument index can be
         obtained by halving the group index.  This index will be used to specialize any
         function template provided to `dispatch<F>()`. */
-        [[nodiscard]] constexpr group_type group() const noexcept { return _group; }
+        [[nodiscard]] constexpr tag group() const noexcept { return _group; }
 
         /* Visit the inner union with a vtable function that accepts the `group()`
         index as a template parameter.  The function will then be called with the
-        iterator object, and `get_group<G>()` can be used to safely access the inner
+        iterator object, and `get<G>()` can be used to safely access the inner
         subrange. */
         template <template <size_t> class F, typename Self>
-        constexpr decltype(auto) dispatch(this Self&& self)
+        constexpr decltype(auto) visit(this Self&& self)
             noexcept (requires{
-                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
-                    std::forward<Self>(self)
-                )} noexcept;
+                {impl::vtable<F, indices>{self.active()}(std::forward<Self>(self))} noexcept;
             })
             requires (requires{
-                {typename impl::vtable<F>::template dispatch<group_indices>{self.active()}(
-                    std::forward<Self>(self)
-                )};
+                {impl::vtable<F, indices>{self.active()}(std::forward<Self>(self))};
             })
         {
-            return (typename impl::vtable<F>::template dispatch<group_indices>{self.active()})(
-                std::forward<Self>(self)
-            );
+            return (impl::vtable<F, indices>{self.active()})(std::forward<Self>(self));
         }
 
-        /// TODO: get_group<G>(), which involves an index translation from G to I.
-        /// That can be done by mapping odd G to get<0>() and even G to the storage
-        /// index of the subrange_type at G / 2.
+        /* Access the current subrange as the indicated type, where `G` is an index
+        with the same semantics as `group()` and `visit()`. */
+        template <size_t G, typename Self> requires (G < total_groups)
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+            return (std::forward<Self>(self).inner.template get<
+                is_separator<G> ? 0 : normalize<G> + has_sep
+            >());
+        }
 
-        /* Populate the `store` union with an inner subrange over the group at index
-        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        /* Populate the `inner` union with an inner subrange over the group at index
+        `G`.  The result can then be safely accessed via `get<G>()`. */
         template <size_t G> requires (!is_separator<G>)
-        constexpr void init_group(join_iterator& it)
+        constexpr void init(join_iterator& it)
             noexcept (requires{
-                {store.value = join_forward{container->template arg<normalize<G>>()}.begin()} noexcept;
+                {inner.data = join_forward{container->template arg<normalize<G>>()}.begin()} noexcept;
             })
-            requires (direction<G> == join_direction::FORWARD && requires{
-                {store.value = join_forward{container->template arg<normalize<G>>()}.begin()};
+            requires (direction == join_direction::FORWARD && requires{
+                {inner.data = join_forward{container->template arg<normalize<G>>()}.begin()};
             })
         {
-            store.value = join_forward{container->template arg<normalize<G>>()}.begin();
+            inner.data = join_forward{container->template arg<normalize<G>>()}.begin();
         }
 
         /* Populate the `iters` union with an inner subrange over the group at index
-        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        `G`.  The result can then be safely accessed via `get<G>()`. */
         template <size_t G> requires (!is_separator<G>)
-        constexpr void init_group(join_iterator& it)
+        constexpr void init(join_iterator& it)
             noexcept (requires{
-                {store.value = join_reverse{container->template arg<normalize<G>>()}.begin()} noexcept;
+                {inner.data = join_reverse{container->template arg<normalize<G>>()}.begin()} noexcept;
             })
-            requires (direction<G> == join_direction::REVERSE && requires{
-                {store.value = join_reverse{container->template arg<normalize<G>>()}.begin()};
+            requires (direction == join_direction::REVERSE && requires{
+                {inner.data = join_reverse{container->template arg<normalize<G>>()}.begin()};
             })
         {
-            store.value = join_reverse{container->template arg<normalize<G>>()}.begin();
+            inner.data = join_reverse{container->template arg<normalize<G>>()}.begin();
         }
 
         /* Populate the `iters` union with an inner subrange over the group at index
-        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        `G`.  The result can then be safely accessed via `get<G>()`. */
         template <size_t G> requires (is_separator<G>)
-        constexpr void init_group(join_iterator& it)
+        constexpr void init(join_iterator& it)
             noexcept (requires{
-                {store.value = join_forward{container->sep()}.begin()} noexcept;
+                {inner.data = join_forward{container->sep()}.begin()} noexcept;
             })
-            requires (direction<G> == join_direction::FORWARD && requires{
-                {store.value = join_forward{container->sep()}.begin()};
+            requires (direction == join_direction::FORWARD && requires{
+                {inner.data = join_forward{container->sep()}.begin()};
             })
         {
-            store.value = join_forward{container->sep()}.begin();
+            inner.data = join_forward{container->sep()}.begin();
         }
 
         /* Populate the `iters` union with an inner subrange over the group at index
-        `G`.  The result can then be safely accessed via `get_group<G>()`. */
+        `G`.  The result can then be safely accessed via `get<G>()`. */
         template <size_t G> requires (is_separator<G>)
-        constexpr void init_group(join_iterator& it)
+        constexpr void init(join_iterator& it)
             noexcept (requires{
-                {store.value = join_reverse{container->sep()}.begin()} noexcept;
+                {inner.data = join_reverse{container->sep()}.begin()} noexcept;
             })
-            requires (direction<G> == join_direction::REVERSE && requires{
-                {store.value = join_reverse{container->sep()}.begin()};
+            requires (direction == join_direction::REVERSE && requires{
+                {inner.data = join_reverse{container->sep()}.begin()};
             })
         {
-            store.value = join_reverse{container->sep()}.begin();
+            inner.data = join_reverse{container->sep()}.begin();
         }
 
     private:
-        using increment = impl::vtable<join_increment::increment>::template dispatch<group_indices>;
+        template <size_t I>
+        struct deref {
+            template <is_join_subrange subrange>
+            static constexpr element_type call(subrange&& self)
+                noexcept (requires{{
+                    *std::forward<subrange>(self).begin
+                } noexcept -> meta::nothrow::convertible_to<element_type>;})
+                requires (requires{{
+                    *std::forward<subrange>(self).begin
+                } -> meta::convertible_to<element_type>;})
+            {
+                return *std::forward<subrange>(self).begin;
+            }
 
-        /// TODO: other increment/decrement methods
-        /// -> use dispatch<F>() to keep track of the current group index
+            template <is_join_unpack subrange>
+            static constexpr element_type call(subrange&& self)
+                noexcept (requires{
+                    {std::forward<subrange>(self).inner.template visit<join_iterator::deref>(
+                        std::forward<subrange>(self)
+                    )} noexcept;
+                })
+                requires (requires{
+                    {std::forward<subrange>(self).inner.template visit<join_iterator::deref>(
+                        std::forward<subrange>(self)
+                    )};
+                })
+            {
+                return std::forward<subrange>(self).inner.template visit<join_iterator::deref>(
+                    std::forward<subrange>(self)
+                );
+            }
+
+            template <typename parent>
+            [[nodiscard]] static constexpr element_type operator()(parent&& self)
+                noexcept (requires{
+                    {call(std::forward<parent>(self).inner.template get<I>())} noexcept;
+                })
+                requires (requires{
+                    {call(std::forward<parent>(self).inner.template get<I>())};
+                })
+            {
+                return call(std::forward<parent>(self).inner.template get<I>());
+            }
+        };
+
+        using increment = impl::vtable<join_increment::increment, indices>;
+
+        template <size_t I>
+        struct lt {
+            template <is_join_subrange subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{{
+                    lhs.begin < rhs.begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    lhs.begin < rhs.begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return lhs.begin < rhs.begin;
+            }
+
+            template <is_join_unpack subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{
+                    {lhs.inner.template visit<join_iterator::lt>(lhs, rhs)} noexcept;
+                })
+                requires (requires{
+                    {lhs.inner.template visit<join_iterator::lt>(lhs, rhs)};
+                })
+            {
+                return lhs.group() < rhs.group() || (
+                    lhs.group() == rhs.group() &&
+                    lhs.inner.template visit<join_iterator::lt>(lhs, rhs)
+                );
+            }
+
+            template <typename parent>
+            static constexpr bool operator()(const parent& lhs, const parent& rhs)
+                noexcept (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                } noexcept;})
+                requires (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                };})
+            {
+                return call(lhs.inner.template get<I>(), rhs.inner.template get<I>());
+            }
+        };
+
+        template <size_t I>
+        struct le {
+            template <is_join_subrange subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{{
+                    lhs.begin <= rhs.begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    lhs.begin <= rhs.begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return lhs.begin <= rhs.begin;
+            }
+
+            template <is_join_unpack subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{
+                    {lhs.inner.template visit<join_iterator::le>(lhs, rhs)} noexcept;
+                })
+                requires (requires{
+                    {lhs.inner.template visit<join_iterator::le>(lhs, rhs)};
+                })
+            {
+                return lhs.group() < rhs.group() || (
+                    lhs.group() == rhs.group() &&
+                    lhs.inner.template visit<join_iterator::le>(lhs, rhs)
+                );
+            }
+
+            template <typename parent>
+            static constexpr bool operator()(const parent& lhs, const parent& rhs)
+                noexcept (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                } noexcept;})
+                requires (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                };})
+            {
+                return call(lhs.inner.template get<I>(), rhs.inner.template get<I>());
+            }
+        };
+
+        template <size_t I>
+        struct eq {
+            template <is_join_subrange subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{{
+                    lhs.begin == rhs.begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    lhs.begin == rhs.begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return lhs.begin == rhs.begin;
+            }
+
+            template <is_join_unpack subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{
+                    {lhs.inner.template visit<join_iterator::eq>(lhs, rhs)} noexcept;
+                })
+                requires (requires{
+                    {lhs.inner.template visit<join_iterator::eq>(lhs, rhs)};
+                })
+            {
+                return
+                    lhs.group() == rhs.group() &&
+                    lhs.inner.template visit<join_iterator::eq>(lhs, rhs);
+            }
+
+            template <typename parent>
+            static constexpr bool operator()(const parent& lhs, const parent& rhs)
+                noexcept (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                } noexcept;})
+                requires (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                };})
+            {
+                return call(lhs.inner.template get<I>(), rhs.inner.template get<I>());
+            }
+        };
+
+        template <size_t I>
+        struct ne {
+            template <is_join_subrange subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{{
+                    lhs.begin != rhs.begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    lhs.begin != rhs.begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return lhs.begin != rhs.begin;
+            }
+
+            template <is_join_unpack subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{
+                    {lhs.inner.template visit<join_iterator::ne>(lhs, rhs)} noexcept;
+                })
+                requires (requires{
+                    {lhs.inner.template visit<join_iterator::ne>(lhs, rhs)};
+                })
+            {
+                return
+                    lhs.group() != rhs.group() ||
+                    lhs.inner.template visit<join_iterator::ne>(lhs, rhs);
+            }
+
+            template <typename parent>
+            static constexpr bool operator()(const parent& lhs, const parent& rhs)
+                noexcept (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                } noexcept;})
+                requires (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                };})
+            {
+                return call(lhs.inner.template get<I>(), rhs.inner.template get<I>());
+            }
+        };
+
+        template <size_t I>
+        struct ge {
+            template <is_join_subrange subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{{
+                    lhs.begin >= rhs.begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    lhs.begin >= rhs.begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return lhs.begin >= rhs.begin;
+            }
+
+            template <is_join_unpack subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{
+                    {lhs.inner.template visit<join_iterator::ge>(lhs, rhs)} noexcept;
+                })
+                requires (requires{
+                    {lhs.inner.template visit<join_iterator::ge>(lhs, rhs)};
+                })
+            {
+                return lhs.group() > rhs.group() || (
+                    lhs.group() == rhs.group() &&
+                    lhs.inner.template visit<join_iterator::ge>(lhs, rhs)
+                );
+            }
+
+            template <typename parent>
+            static constexpr bool operator()(const parent& lhs, const parent& rhs)
+                noexcept (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                } noexcept;})
+                requires (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                };})
+            {
+                return call(lhs.inner.template get<I>(), rhs.inner.template get<I>());
+            }
+        };
+
+        template <size_t I>
+        struct gt {
+            template <is_join_subrange subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{{
+                    lhs.begin > rhs.begin
+                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                requires (requires{{
+                    lhs.begin > rhs.begin
+                } -> meta::convertible_to<bool>;})
+            {
+                return lhs.begin >= rhs.begin;
+            }
+
+            template <is_join_unpack subrange>
+            static constexpr bool call(const subrange& lhs, const subrange& rhs)
+                noexcept (requires{
+                    {lhs.inner.template visit<join_iterator::gt>(lhs, rhs)} noexcept;
+                })
+                requires (requires{
+                    {lhs.inner.template visit<join_iterator::gt>(lhs, rhs)};
+                })
+            {
+                return lhs.group() > rhs.group() || (
+                    lhs.group() == rhs.group() &&
+                    lhs.inner.template visit<join_iterator::gt>(lhs, rhs)
+                );
+            }
+
+            template <typename parent>
+            static constexpr bool operator()(const parent& lhs, const parent& rhs)
+                noexcept (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                } noexcept;})
+                requires (requires{{
+                    call(lhs.inner.template get<I>(), rhs.inner.template get<I>())
+                };})
+            {
+                return call(lhs.inner.template get<I>(), rhs.inner.template get<I>());
+            }
+        };
 
     public:
         [[nodiscard]] constexpr element_type operator*()
-            noexcept (requires{
-                {impl::visit(join_deref::deref<element_type>{}, iters)} noexcept;
-            })
-            requires (requires{
-                {impl::visit(join_deref::deref<element_type>{}, iters)};
-            })
+            noexcept (requires{{inner.template visit<deref>(*this)} noexcept;})
+            requires (requires{{inner.template visit<deref>(*this)};})
         {
-            return impl::visit(join_deref::deref<element_type>{}, iters);
+            return inner.template visit<deref>(*this);
         }
 
         [[nodiscard]] constexpr element_type operator*() const
-            noexcept (requires{
-                {impl::visit(join_deref::deref<element_type>{}, iters)} noexcept;
-            })
-            requires (requires{
-                {impl::visit(join_deref::deref<element_type>{}, iters)};
-            })
+            noexcept (requires{{inner.template visit<deref>(*this)} noexcept;})
+            requires (requires{{inner.template visit<deref>(*this)};})
         {
-            return impl::visit(join_deref::deref<element_type>{}, iters);
+            return inner.template visit<deref>(*this);
         }
 
         [[nodiscard]] constexpr auto operator->()
@@ -6364,10 +6227,10 @@ namespace impl {
         }
 
         constexpr join_iterator& operator++()
-            noexcept (requires{{increment{active()}(*this)} noexcept;})
-            requires (requires{{increment{active()}(*this)};})
+            noexcept (requires{{increment{inner.active()}(*this)} noexcept;})
+            requires (requires{{increment{inner.active()}(*this)};})
         {
-            increment{active()}(*this);
+            increment{inner.active()}(*this);
             return *this;
         }
 
@@ -6462,43 +6325,43 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator<(const join_iterator& other) const
             noexcept (requires{{
-                store.template visit<join_compare::lt>(*this, other)
+                inner.template visit<lt>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                store.template visit<join_compare::lt>(*this, other)
+                inner.template visit<lt>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
             return group() < other.group() || (
                 group() == other.group() &&
-                store.template visit<join_compare::lt>(*this, other)
+                inner.template visit<lt>(*this, other)
             );
         }
 
         [[nodiscard]] constexpr bool operator<=(const join_iterator& other) const
             noexcept (requires{{
-                store.template visit<join_compare::le>(*this, other)
+                inner.template visit<le>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                store.template visit<join_compare::le>(*this, other)
+                inner.template visit<le>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
             return group() < other.group() || (
                 group() == other.group() &&
-                store.template visit<join_compare::le>(*this, other)
+                inner.template visit<le>(*this, other)
             );
         }
 
         [[nodiscard]] constexpr bool operator==(const join_iterator& other) const
             noexcept (requires{{
-                store.template visit<join_compare::eq>(*this, other)
+                inner.template visit<eq>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                store.template visit<join_compare::eq>(*this, other)
+                inner.template visit<eq>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
             return
                 group() == other.group() &&
-                store.template visit<join_compare::eq>(*this, other);
+                inner.template visit<eq>(*this, other);
         }
 
         [[nodiscard]] friend constexpr bool operator==(
@@ -6517,15 +6380,15 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator!=(const join_iterator& other) const
             noexcept (requires{{
-                store.template visit<join_compare::ne>(*this, other)
+                inner.template visit<ne>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                store.template visit<join_compare::ne>(*this, other)
+                inner.template visit<ne>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
             return
                 group() != other.group() ||
-                store.template visit<join_compare::ne>(*this, other);
+                inner.template visit<ne>(*this, other);
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
@@ -6544,29 +6407,29 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator>=(const join_iterator& other) const
             noexcept (requires{{
-                store.template visit<join_compare::ge>(*this, other)
+                inner.template visit<ge>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                store.template visit<join_compare::ge>(*this, other)
+                inner.template visit<ge>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
             return group() > other.group() || (
                 group() == other.group() &&
-                store.template visit<join_compare::ge>(*this, other)
+                inner.template visit<ge>(*this, other)
             );
         }
 
         [[nodiscard]] constexpr bool operator>(const join_iterator& other) const
             noexcept (requires{{
-                store.template visit<join_compare::gt>(*this, other)
+                inner.template visit<gt>(*this, other)
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                store.template visit<join_compare::gt>(*this, other)
+                inner.template visit<gt>(*this, other)
             } -> meta::convertible_to<bool>;})
         {
             return group() > other.group() || (
                 group() == other.group() &&
-                store.template visit<join_compare::gt>(*this, other)
+                inner.template visit<gt>(*this, other)
             );
         }
     };
@@ -6751,6 +6614,10 @@ namespace impl {
     struct join_storage<Sep, A...> {
         [[no_unique_address]] impl::basic_tuple<A...> args;
     };
+
+    /// TODO: not all ranges are reverse iterable, and it may be the case that an outer
+    /// range is reverse iterable, but an inner one is not, which must be accounted for
+    /// when attempting to reverse iterate over a range of ranges.
 
     /* Joined ranges store an arbitrary set of argument types as well as a possible
     separator to insert between each one.  The arguments are not required to be ranges,
