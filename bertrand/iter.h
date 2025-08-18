@@ -5563,6 +5563,12 @@ namespace impl {
             }
         }
 
+        enum class skip_result {
+            GOOD,
+            CONTINUE,
+            BREAK
+        };
+
         template <size_t I>
         struct deref {
             template <is_join_subrange S>
@@ -5606,14 +5612,14 @@ namespace impl {
         template <size_t G>
         struct increment {
             template <typename P> requires (G < P::total_groups)
-            static constexpr bool skip(join_iterator& it, P& p)
+            static constexpr skip_result skip(join_iterator& it, P& p)
                 noexcept (requires(decltype((p.template get<G>())) s) {
                     {p.template init<G>(it)} noexcept;
                     {p.template get<G>()} noexcept;
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                 } && (!is_join_nested<P> || requires(decltype((p.template get<G>())) s) {
                     {increment<0>::skip(it, s)} noexcept;
-                    {++s.begin} noexcept;
+                    {++p.begin} noexcept;
                 }) && (G + 1 == P::total_groups || requires{
                     {increment<G + 1>::skip(it, p)} noexcept;
                 }))
@@ -5623,30 +5629,38 @@ namespace impl {
                     {s.begin == s.end} -> meta::convertible_to<bool>;
                 } && (!is_join_nested<P> || requires(decltype((p.template get<G>())) s) {
                     {increment<0>::skip(it, s)} noexcept;
-                    {++s.begin} noexcept;
+                    {++p.begin} noexcept;
                 }) && (G + 1 == P::total_groups || requires{
                     {increment<G + 1>::skip(it, p)};
                 }))
             {
                 p.template init<G>(it);
                 auto& s = p.template get<G>();
-                if constexpr (is_join_nested<decltype(s)>) {
-                    while (s.begin != s.end) {
-                        if (!increment<0>::skip(it, s)) {
-                            return false;
+                if (s.begin != s.end) {
+                    if constexpr (is_join_nested<decltype(s)>) {
+                        while (true) {
+                            skip_result r = increment<0>::skip(it, s);
+                            if (r == skip_result::GOOD) {
+                                return r;
+                            } else if (r == skip_result::BREAK) {
+                                break;
+                            }
                         }
-                        ++s.begin;
-                        ++s.index;
-                    }
-                } else {
-                    if (s.begin != s.end) {
-                        return false;
+                    } else {
+                        return skip_result::GOOD;
                     }
                 }
+                ++p.index;
                 if constexpr (G + 1 == P::total_groups) {
-                    return true;
+                    return skip_result::CONTINUE;
+                } else if constexpr (is_join_nested<P> && !P::template is_separator<G>) {
+                    ++p.begin;
+                    if (p.begin != p.end) {
+                        return increment<G + 1>::skip(it, p);
+                    } else {
+                        return skip_result::BREAK;
+                    }
                 } else {
-                    ++p.index;
                     return increment<G + 1>::skip(it, p);
                 }
             }
@@ -5656,41 +5670,39 @@ namespace impl {
                 noexcept (requires{
                     {++s.begin} noexcept;
                     {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
-                } && (!is_join_nested<P> || requires{
+                } && (G + 1 >= P::total_groups || requires{
+                    {increment<G + 1>::skip(it, p)} noexcept;
+                }) && (!is_join_nested<P> || requires{
                     {++p.begin} noexcept;
                     {p.begin != p.end} noexcept -> meta::nothrow::convertible_to<bool>;
                     {increment<0>::skip(it, p)} noexcept;
-                }) && (G + 1 == P::total_groups || requires{
-                    {increment<G + 1>::skip(it, p)} noexcept;
                 }))
                 requires (requires{
                     {++s.begin};
                     {s.begin == s.end} -> meta::convertible_to<bool>;
-                } && (!is_join_nested<P> || requires{
+                } && (G + 1 >= P::total_groups || requires{
+                    {increment<G + 1>::skip(it, p)};
+                }) && (!is_join_nested<P> || requires{
                     {++p.begin};
                     {p.begin != p.end} -> meta::convertible_to<bool>;
                     {increment<0>::skip(it, p)};
-                }) && (G + 1 == P::total_groups || requires{
-                    {increment<G + 1>::skip(it, p)};
                 }))
             {
                 ++s.begin;
                 ++s.index;
                 if constexpr (is_join_nested<P>) {
+                    bool next = s.begin == s.end;
                     if constexpr (G + 1 < P::total_groups) {
-                        if (s.begin == s.end && increment<G + 1>::skip(it, p)) {
-                            do {
-                                ++p.begin;
-                                ++p.index;
-                            } while (p.begin != p.end && increment<0>::skip(it, p));
-                        }
-                    } else {
-                        if (s.begin == s.end) {
-                            do {
-                                ++p.begin;
-                                ++p.index;
-                            } while (p.begin != p.end && increment<0>::skip(it, p));
-                        }
+                        next = next && increment<G + 1>::skip(it, p) != skip_result::GOOD;
+                    }
+                    if (next) {
+                        do {
+                            ++p.begin;
+                            ++p.index;
+                        } while (
+                            p.begin != p.end &&
+                            increment<0>::skip(it, p) != skip_result::GOOD
+                        );
                     }
                 } else {
                     if (s.begin == s.end) {
