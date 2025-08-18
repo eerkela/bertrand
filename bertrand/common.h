@@ -1397,6 +1397,11 @@ namespace meta {
 
     }
 
+    template <copyable T>
+    constexpr T copy(const T& v) noexcept (nothrow::copyable<T>) {
+        return v;
+    }
+
     namespace detail {
 
         template <typename T>
