@@ -8,6 +8,7 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <expected>
 #include <filesystem>
@@ -870,6 +871,90 @@ namespace meta {
             static constexpr bool enable = false;
         };
 
+        template <typename T, auto min, auto max>
+        concept in_range =
+            min >= ::std::numeric_limits<T>::min() &&
+            max <= ::std::numeric_limits<T>::max();
+
+        template <auto min, auto max>
+        struct smallest_signed_int { using type = int64_t; };
+        template <auto min, auto max> requires (in_range<int8_t, min, max>)
+        struct smallest_signed_int<min, max> { using type = int8_t; };
+        template <auto min, auto max>
+            requires (!in_range<int8_t, min, max> && in_range<int16_t, min, max>)
+        struct smallest_signed_int<min, max> { using type = int16_t; };
+        template <auto min, auto max>
+            requires (!in_range<int16_t, min, max> && in_range<int32_t, min, max>)
+        struct smallest_signed_int<min, max> { using type = int32_t; };
+        template <auto min, auto max>
+            requires (!in_range<int32_t, min, max> && in_range<int64_t, min, max>)
+        struct smallest_signed_int<min, max> { using type = int64_t; };
+
+        template <auto min, auto max>
+        struct smallest_unsigned_int;
+        template <auto min, auto max>
+            requires (in_range<uint8_t, 0, max>)
+        struct smallest_unsigned_int<min, max> { using type = uint8_t; };
+        template <auto min, auto max>
+            requires (!in_range<uint8_t, 0, max> && in_range<uint16_t, 0, max>)
+        struct smallest_unsigned_int<min, max> { using type = uint16_t; };
+        template <auto min, auto max>
+            requires (!in_range<uint16_t, 0, max> && in_range<uint32_t, 0, max>)
+        struct smallest_unsigned_int<min, max> { using type = uint32_t; };
+        template <auto min, auto max>
+            requires (!in_range<uint32_t, 0, max> && in_range<uint64_t, 0, max>)
+        struct smallest_unsigned_int<min, max> { using type = uint64_t; };
+
+        template <auto min, auto max>
+        struct smallest_int;
+        template <auto min, auto max> requires (in_range<int8_t, min, max>)
+        struct smallest_int<min, max> { using type = int8_t; };
+        template <auto min, auto max>
+            requires (!in_range<int8_t, min, max> && in_range<uint8_t, min, max>)
+        struct smallest_int<min, max> { using type = uint8_t; };
+        template <auto min, auto max>
+            requires (
+                !in_range<int8_t, min, max> &&
+                !in_range<uint8_t, min, max> &&
+                in_range<int16_t, min, max>
+            )
+        struct smallest_int<min, max> { using type = int16_t; };
+        template <auto min, auto max>
+            requires (
+                !in_range<int16_t, min, max> &&
+                !in_range<uint8_t, min, max> &&
+                in_range<uint16_t, min, max>
+            )
+        struct smallest_int<min, max> { using type = uint16_t; };
+        template <auto min, auto max>
+            requires (
+                !in_range<int16_t, min, max> &&
+                !in_range<uint16_t, min, max> &&
+                in_range<int32_t, min, max>
+            )
+        struct smallest_int<min, max> { using type = int32_t; };
+        template <auto min, auto max>
+            requires (
+                !in_range<int32_t, min, max> &&
+                !in_range<uint16_t, min, max> &&
+                in_range<uint32_t, min, max>
+            )
+        struct smallest_int<min, max> { using type = uint32_t; };
+        template <auto min, auto max>
+            requires (
+                !in_range<int32_t, min, max> &&
+                !in_range<uint32_t, min, max> &&
+                in_range<int64_t, min, max>
+            )
+        struct smallest_int<min, max> { using type = int64_t; };
+        template <auto min, auto max>
+            requires (
+                !in_range<int64_t, min, max> &&
+                !in_range<uint32_t, min, max> &&
+                in_range<uint64_t, min, max>
+            )
+        struct smallest_int<min, max> { using type = uint64_t; };
+
     }
 
     template <typename T>
@@ -886,6 +971,9 @@ namespace meta {
         return static_cast<as_signed<T>>(value);
     }
 
+    template <auto min, auto max> requires (detail::in_range<int64_t, min, max>)
+    using smallest_signed_int = detail::smallest_signed_int<min, max>::type;
+
     template <typename T>
     concept has_unsigned = detail::as_unsigned<unqualify<T>>::enable;
 
@@ -899,6 +987,13 @@ namespace meta {
     {
         return static_cast<as_unsigned<T>>(value);
     }
+
+    template <auto max> requires (detail::in_range<uint64_t, 0, max>)
+    using smallest_unsigned_int = detail::smallest_unsigned_int<0, max>::type;
+
+    template <auto min, auto max>
+        requires (detail::in_range<int64_t, 0, max> || detail::in_range<uint64_t, 0, max>)
+    using smallest_int = detail::smallest_int<min, max>::type;
 
     template <typename T>
     concept numeric = detail::numeric<T>;
@@ -4633,7 +4728,6 @@ template <meta::hashable T>
 
 
 namespace impl {
-    
 
     /* A helper for defining iterators and other objects that wish to expose the `->`
     operator, but may dereference to a temporary result, which would otherwise
@@ -4863,106 +4957,113 @@ namespace impl {
     template <typename... Fs>
     basic_tuple(Fs&&...) -> basic_tuple<meta::remove_rvalue<Fs>...>;
 
-    /* A helper class that generates a manual vtable for a visitor function `F`, which
-    must be a template class that accepts a single `size_t` parameter representing the
-    index of the alternative being invoked. The second template parameter is a
-    `std::index_sequence` that contains the values used to specialize `F`, and the
-    constructor accepts an index that selects the alternative to invoke.  This has the
-    effect of promoting the runtime index to compile time, allowing each function `F`
-    to use it safely in constexpr contexts.  Such vtables are foundational to most
-    forms of type erasure, polymorphism, and runtime dispatch, and this class provides
-    an optimal implementation that replaces function pointers with recursive `if`
-    chains when the number of alternatives is less than `MIN_VTABLE_SIZE`. */
-    template <template <size_t> typename F, typename>
-    struct vtable;
-    template <template <size_t> typename F, size_t I, size_t... Is>
-        requires (meta::default_constructible<F<I>> && ... && meta::default_constructible<F<Is>>)
-    struct vtable<F, std::index_sequence<I, Is...>> {
+    /* A helper class that generates a compile-time vtable for a visitor function `F`,
+    which must be a template class that accepts a single non-type template parameter
+    chosen from the enumerated options using a runtime index which is provided to the
+    constructor.  This effectively promotes the index to compile time, and allows the
+    inner function to specialize accordingly, which serves as the basis for most forms
+    of type erasure, polymorphism, and runtime dispatch.
+
+    Note that the vtable will only be generated when the helper object is invoked, and
+    will therefore be unique for each signature.  If the total vtable size (i.e. the
+    number of non-type template parameters provided to this class) is less than
+    `MIN_VTABLE_SIZE`, then the vtable will be optimized into a recursive `if`/`else`
+    chain instead, which promotes inlining optimizations and reduces binary size. */
+    template <template <auto> typename F, auto T, auto... Ts>
+        requires (meta::default_constructible<F<T>> && ... && meta::default_constructible<F<Ts>>)
+    struct vtable {
         size_t index;
 
+        static constexpr size_t size() noexcept { return sizeof...(Ts) + 1; }
+        static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
+        static constexpr bool empty() noexcept { return false; }
+
+    private:
         template <typename... A>
         static constexpr bool nothrow = (
-            meta::nothrow::callable<F<I>, A...> &&
+            meta::nothrow::callable<F<T>, A...> &&
             ... &&
-            meta::nothrow::callable<F<Is>, A...>
+            meta::nothrow::callable<F<Ts>, A...>
         );
 
         template <typename... A>
-        using type = meta::call_type<F<I>, A...>;
-
-        /* If the vtable size is less than `MIN_VTABLE_SIZE`, then we can optimize
-        the dispatch to a recursive `if` chain, which is easier for the compiler to
-        optimize. */
-        template <size_t J = 0, typename... A>
-        [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
-            noexcept (nothrow<A...>)
-            requires (
-                sizeof...(Is) + 1 < MIN_VTABLE_SIZE &&
-                (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
-                (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
-            )
-        {
-            if constexpr (J < sizeof...(Is)) {
-                if (index == J) {
-                    return F<J>{}(std::forward<A>(args)...);
-                } else {
-                    return operator()<J + 1>(std::forward<A>(args)...);
-                }
-            } else {
-                return F<J>{}(std::forward<A>(args)...);                
-            }
-        }
+        using type = meta::call_type<F<T>, A...>;
 
         template <typename... A>
         using ptr = type<A...>(*)(A...) noexcept (nothrow<A...>);
 
-        template <size_t J, typename... A>
+        template <size_t I, typename... A>
         static constexpr type<A...> fn(A... args) noexcept (nothrow<A...>) {
-            return F<J>{}(std::forward<A>(args)...);
+            return F<meta::unpack_value<I, T, Ts...>>{}(std::forward<A>(args)...);
         }
 
-        template <typename... A>
-        static constexpr ptr<A...> table[sizeof...(Is) + 1] {
-            &fn<I, A...>,
-            &fn<Is + 1, A...>...
-        };
+        template <typename, typename... A>
+        static constexpr ptr<A...> table[size()];
+        template <size_t... Is, typename... A>
+        static constexpr ptr<A...> table<std::index_sequence<Is...>, A...> {&fn<Is, A...>...};
+
+    public:
+        /* If the vtable size is less than `MIN_VTABLE_SIZE`, then we can optimize
+        the dispatch to a recursive `if` chain, which is easier for the compiler to
+        optimize. */
+        template <size_t I = 0, typename... A>
+        [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
+            noexcept (nothrow<A...>)
+            requires (
+                size() < MIN_VTABLE_SIZE &&
+                (meta::callable<F<T>, A...> && ... && meta::callable<F<Ts>, A...>) &&
+                (std::same_as<meta::call_type<F<T>, A...>, meta::call_type<F<Ts>, A...>> && ...)
+            )
+        {
+            if constexpr (I + 1 == size()) {
+                return F<meta::unpack_value<I, T, Ts...>>{}(std::forward<A>(args)...);
+            } else {
+                if (index == I) {
+                    return F<meta::unpack_value<I, T, Ts...>>{}(std::forward<A>(args)...);
+                } else {
+                    return operator()<I + 1>(std::forward<A>(args)...);
+                }
+            }
+        }
 
         /* Otherwise, a normal vtable will be emitted and stored in the binary. */
         template <typename... A>
         [[gnu::always_inline]] constexpr type<A...> operator()(A&&... args) const
             noexcept (nothrow<A...>)
             requires (
-                sizeof...(Is) + 1 >= MIN_VTABLE_SIZE &&
-                (meta::callable<F<I>, A...> && ... && meta::callable<F<Is>, A...>) &&
-                (std::same_as<meta::call_type<F<I>, A...>, meta::call_type<F<Is>, A...>> && ...)
+                size() >= MIN_VTABLE_SIZE &&
+                (meta::callable<F<T>, A...> && ... && meta::callable<F<Ts>, A...>) &&
+                (std::same_as<meta::call_type<F<T>, A...>, meta::call_type<F<Ts>, A...>> && ...)
             )
         {
-            return table<meta::forward<A>...>[index](std::forward<A>(args)...);
+            return table<std::make_index_sequence<size()>, meta::forward<A>...>[index](
+                std::forward<A>(args)...
+            );
         }
     };
+
+    template <template <size_t> typename F, typename>
+    struct _basic_vtable;
+    template <template <size_t> typename F, size_t... Is>
+    struct _basic_vtable<F, std::index_sequence<Is...>> { using type = vtable<F, Is...>; };
+
+    /* Produce a simple vtable with purely integer indices and a specified size. */
+    template <template <size_t> typename F, size_t N>
+    using basic_vtable = _basic_vtable<F, std::make_index_sequence<N>>::type;
 
     /* A trivial iterator that acts just like a raw pointer over contiguous storage.
     Using a wrapper rather than the pointer directly comes with some advantages
     regarding type safety, preventing accidental conversions to pointer arguments,
     boolean conversions, placement new, etc. */
-    template <meta::not_void T>
+    template <meta::lvalue T> requires (meta::has_address<T>)
     struct contiguous_iterator {
         using iterator_category = std::contiguous_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = meta::remove_reference<T>;
-        using reference = meta::as_lvalue<T>;
-        using pointer = meta::address_type<reference>;
+        using reference = T;
+        using pointer = meta::address_type<T>;
 
         pointer ptr = nullptr;
-
-        [[nodiscard]] constexpr operator pointer() const noexcept {
-            /// NOTE: including an implicit conversion to a raw pointer allows
-            /// `std::common_type` to deduce a common type between this iterator and
-            /// containers whose iterators devolve to raw pointers, such as
-            /// `std::vector` and `std::array`, which can lead to optimizations in the
-            /// monadic range interface.
-            return ptr;
-        }
 
         [[nodiscard]] constexpr reference operator*() const noexcept {
             return *ptr;

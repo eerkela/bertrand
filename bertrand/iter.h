@@ -202,7 +202,7 @@ namespace impl {
         };
 
     public:
-        using dispatch = impl::vtable<fn, std::make_index_sequence<meta::tuple_size<T>>>;
+        using dispatch = impl::basic_vtable<fn, meta::tuple_size<T>>;
     };
 
     /* A special case of `tuple_iterator` for empty tuples, which do not yield any
@@ -4931,9 +4931,14 @@ namespace impl {
     struct join_union {
         using type = _join_union<Sep, Subranges...>::type;
         static constexpr bool trivial = _join_union<Sep, Subranges...>::trivial;
-        using indices = std::make_index_sequence<
-            trivial ? 1 : visitable<type>::alternatives::size()
-        >;
+
+        static constexpr size_t size() noexcept {
+            return trivial ? 1 : visitable<type>::alternatives::size();
+        }
+
+        static constexpr ssize_t ssize() noexcept {
+            return ssize_t(size());
+        }
 
         [[no_unique_address]] Optional<type> data;
 
@@ -4963,18 +4968,18 @@ namespace impl {
         template <template <size_t> class F, typename... A>
         constexpr decltype(auto) visit(A&&... args) const
             noexcept (requires{
-                {impl::vtable<F, indices>{active()}(std::forward<A>(args)...)} noexcept;
+                {impl::basic_vtable<F, size()>{active()}(std::forward<A>(args)...)} noexcept;
             })
             requires (requires{
-                {impl::vtable<F, indices>{active()}(std::forward<A>(args)...)};
+                {impl::basic_vtable<F, size()>{active()}(std::forward<A>(args)...)};
             })
         {
-            return (impl::vtable<F, indices>{active()})(std::forward<A>(args)...);
+            return (impl::basic_vtable<F, size()>{active()})(std::forward<A>(args)...);
         }
 
         /* Access the current subrange as the indicated type, where `I` matches the
         semantics for `active()` and `visit()`. */
-        template <size_t I, typename Self> requires (I < indices::size())
+        template <size_t I, typename Self> requires (I < size())
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
             if constexpr (trivial) {
                 return (std::forward<Self>(self).data.__value.template get<1>());
@@ -4995,6 +5000,11 @@ namespace impl {
         meta::iterator<Begin> &&
         meta::sentinel_for<End, Begin>;
 
+    /// TODO: all indices are now signed, so that will require a proofreading pass to
+    /// make sure it's always observed, and then updates to the decrement operator to
+    /// standardize everything, plus including the one-before-begin state in the
+    /// outermost vtable.
+
     /* Join iterators have to store both the begin and end iterators for every argument
     and separator, so that they can smoothly transition from one to the next.  This
     class encapsulates those iterators for any non-range or non-nested value, and is
@@ -5007,7 +5017,7 @@ namespace impl {
         static constexpr join_direction direction = D;
         begin_type begin;
         end_type end;
-        size_t index = 0;
+        ssize_t index = 0;
     };
 
     template <join_direction D, typename Sep, typename Begin, typename End>
@@ -5288,7 +5298,7 @@ namespace impl {
         static constexpr join_direction direction = D;
         begin_type begin;
         end_type end;
-        size_t index = 0;
+        ssize_t index = 0;
 
         using separator_type = Sep;
         using storage_type =
@@ -5476,8 +5486,19 @@ namespace impl {
         static constexpr bool is_separator = has_sep && (G % 2 == 1);
         template <size_t G> requires (G < total_groups)
         static constexpr size_t normalize = has_sep ? G / 2 : G;
-        using tag = impl::union_index_type<total_groups + 1>;
-        using indices = std::make_index_sequence<total_groups + 1>;
+        using tag = meta::smallest_signed_int<-1, total_groups + 1>;
+
+        /// TODO: maybe the tag index should be signed?  That might simplify the
+        /// decrement operator if one before the begin iterator is represented by an
+        /// index of -1.
+        /// -> using a signed index means begin == end is used to detect one past the
+        /// end of the subrange, and index < 0 is used to detect one past the
+        /// beginning.  Perhaps both of these would be necessary to handle all of the
+        /// possible iterator states.  However, doing that could require changes to
+        /// basically the whole vtable structure if the negative index state is going
+        /// to be covered by dynamic dispatch.
+        /// -> This is now handled, I just need to manually specialize the
+        /// impl::vtable<> template rather than using 
 
         meta::as_pointer<R> range = nullptr;
         [[no_unique_address]] storage_type subrange;
@@ -5488,14 +5509,16 @@ namespace impl {
         iterator object, and `get<G>()` can be used to safely access the subrange. */
         template <template <size_t> class F, typename Self>
         constexpr decltype(auto) visit(this Self&& self)
-            noexcept (requires{
-                {impl::vtable<F, indices>{self.index}(std::forward<Self>(self))} noexcept;
-            })
-            requires (requires{
-                {impl::vtable<F, indices>{self.index}(std::forward<Self>(self))};
-            })
+            noexcept (requires{{impl::basic_vtable<F, total_groups + 1>{self.index}(
+                std::forward<Self>(self)
+            )} noexcept;})
+            requires (requires{{impl::basic_vtable<F, total_groups + 1>{self.index}(
+                std::forward<Self>(self)
+            )};})
         {
-            return (impl::vtable<F, indices>{self.index})(std::forward<Self>(self));
+            return (impl::basic_vtable<F, total_groups + 1>{self.index}(
+                std::forward<Self>(self)
+            ));
         }
 
         /* Access the current subrange as the indicated type, where `G` is an index
@@ -5605,11 +5628,6 @@ namespace impl {
         };
 
         template <size_t G>
-        struct subscript {
-            /// TODO: write this
-        };
-
-        template <size_t G>
         struct increment {
             template <typename P> requires (G < P::total_groups)
             static constexpr skip_result skip(join_iterator& it, P& p)
@@ -5617,22 +5635,46 @@ namespace impl {
                     {p.template init<G>(it)} noexcept;
                     {p.template get<G>()} noexcept;
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
-                } && (!is_join_nested<P> || requires(decltype((p.template get<G>())) s) {
-                    {increment<0>::skip(it, s)} noexcept;
-                    {++p.begin} noexcept;
-                }) && (G + 1 == P::total_groups || requires{
-                    {increment<G + 1>::skip(it, p)} noexcept;
-                }))
-                requires (G >= P::total_groups || requires(decltype((p.template get<G>())) s) {
+                } && (
+                    !is_join_nested<decltype((p.template get<G>()))> ||
+                    requires(decltype((p.template get<G>())) s) {
+                        {increment<0>::skip(it, s)} noexcept;
+                    }
+                ) && (
+                    G + 1 == P::total_groups || (
+                        is_join_nested<P> && !P::template is_separator<G> && requires{
+                            {++p.begin} noexcept;
+                            {p.begin != p.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                            {increment<G + 1>::skip(it, p)} noexcept;
+                        }
+                    ) || (
+                        !is_join_nested<P> || P::template is_separator<G> && requires{
+                            {increment<G + 1>::skip(it, p)} noexcept;
+                        }
+                    )
+                ))
+                requires (requires(decltype((p.template get<G>())) s) {
                     {p.template init<G>(it)};
                     {p.template get<G>()};
-                    {s.begin == s.end} -> meta::convertible_to<bool>;
-                } && (!is_join_nested<P> || requires(decltype((p.template get<G>())) s) {
-                    {increment<0>::skip(it, s)} noexcept;
-                    {++p.begin} noexcept;
-                }) && (G + 1 == P::total_groups || requires{
-                    {increment<G + 1>::skip(it, p)};
-                }))
+                    {s.begin != s.end} -> meta::convertible_to<bool>;
+                } && (
+                    !is_join_nested<decltype((p.template get<G>()))> ||
+                    requires(decltype((p.template get<G>())) s) {
+                        {increment<0>::skip(it, s)};
+                    }
+                ) && (
+                    G + 1 == P::total_groups || (
+                        is_join_nested<P> && !P::template is_separator<G> && requires{
+                            {++p.begin};
+                            {p.begin != p.end} -> meta::convertible_to<bool>;
+                            {increment<G + 1>::skip(it, p)};
+                        }
+                    ) || (
+                        !is_join_nested<P> || P::template is_separator<G> && requires{
+                            {increment<G + 1>::skip(it, p)};
+                        }
+                    )
+                ))
             {
                 p.template init<G>(it);
                 auto& s = p.template get<G>();
@@ -5741,24 +5783,7 @@ namespace impl {
         };
 
         template <size_t G>
-        struct add {
-            /// TODO: write this
-        };
-
-        template <size_t G>
-        struct iadd {
-            /// TODO: write this
-        };
-
-        template <size_t G>
         struct decrement {
-
-            /// TODO: the index needs to properly account for empty ranges, which
-            /// means init() is also going to have to implement the `skip` behavior
-            /// to get an accurate index count.  I may also need to modify the increment
-            /// operator to ensure that the index is always accurate in that way.  I
-            /// believe it was already set up to do that earlier.
-
             template <typename P> requires (G < P::total_groups)
             static constexpr bool init(join_iterator& it, P& p)
                 noexcept (requires(decltype((p.template get<G>())) s) {
@@ -5821,58 +5846,85 @@ namespace impl {
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr bool skip(join_iterator& it, P& p)
+            static constexpr skip_result skip(join_iterator& it, P& p)
                 noexcept (
-                    requires{{init(it, p)} noexcept;} &&
-                    (
-                        !is_join_nested<decltype(p.template get<G>())> ||
+                    requires{
+                        {init(it, p)} noexcept;
+                        {p.template get<G>()} noexcept;
+                    } && (
+                        !is_join_nested<decltype((p.template get<G>()))> ||
                         requires(decltype((p.template get<G>())) s) {
-                            {decrement<meta::unqualify<decltype(s)>::total_groups - 1>::skip(
-                                it,
-                                s
-                            )} noexcept;
-                            {--s.begin} noexcept;
+                            {decrement<
+                                meta::unqualify<decltype(s)>::total_groups -
+                                1 -
+                                meta::unqualify<decltype(s)>::has_sep
+                            >::skip(it, s)} noexcept;
+                            {decrement<
+                                meta::unqualify<decltype(s)>::total_groups - 1
+                            >::skip(it, s)} noexcept;
                         }
-                    ) &&
-                    (G == 0 || requires{{decrement<G - 1>::skip(it, p)} noexcept;})
+                    ) && (
+                        (G == 0 && (!is_join_nested<P> || requires{{--p.begin} noexcept;})) ||
+                        (G > 0 && requires{{decrement<G - 1>::skip(it, p)} noexcept;})
+                    )
                 )
                 requires (
-                    requires{{init(it, p)};} &&
-                    (
-                        !is_join_nested<decltype(p.template get<G>())> ||
+                    requires{
+                        {init(it, p)};
+                        {p.template get<G>()};
+                    } && (
+                        !is_join_nested<decltype((p.template get<G>()))> ||
                         requires(decltype((p.template get<G>())) s) {
-                            {decrement<meta::unqualify<decltype(s)>::total_groups - 1>::skip(
-                                it,
-                                s
-                            )};
-                            {--s.begin};
+                            {decrement<
+                                meta::unqualify<decltype(s)>::total_groups -
+                                1 -
+                                meta::unqualify<decltype(s)>::has_sep
+                            >::skip(it, s)};
+                            {decrement<
+                                meta::unqualify<decltype(s)>::total_groups - 1
+                            >::skip(it, s)};
                         }
-                    ) &&
-                    (G == 0 || requires{{decrement<G - 1>::skip(it, p)};})
+                    ) && (
+                        (G == 0 && (!is_join_nested<P> || requires{{--p.begin};})) ||
+                        (G > 0 && requires{{decrement<G - 1>::skip(it, p)};})
+                    )
                 )
             {
                 if (init(it, p)) {
                     auto& s = p.template get<G>();
                     using S = meta::unqualify<decltype(s)>;
                     if constexpr (is_join_nested<S>) {
-                        while (s.index > 0) {
-                            if (!decrement<S::total_groups - 1>::skip(it, s)) {
-                                return false;
-                            }
-                            --s.begin;
-                            --s.index;
+                        constexpr size_t I = S::total_groups - 1;
+                        skip_result r = decrement<I - S::has_sep>::skip(it, s);
+                        if (r == skip_result::GOOD) {
+                            return r;
                         }
-                        return decrement<S::total_groups - 1>::skip(it, s);
+                        while (r != skip_result::BREAK) {
+                            r = decrement<I>::skip(it, s);
+                            if (r == skip_result::GOOD) {
+                                return r;
+                            }
+                        }
+                    } else {
+                        return skip_result::GOOD;
                     }
-                    return false;
                 }
-                if constexpr (G > 0) {
+                if constexpr (G == 0) {
+                    if (p.index == 0) {
+                        return skip_result::BREAK;
+                    }
+                    --p.index;
+                    if constexpr (is_join_nested<P>) {
+                        --p.begin;
+                    }
+                    return skip_result::CONTINUE;
+                } else {
                     --p.index;
                     return decrement<G - 1>::skip(it, p);
-                } else {
-                    return true;
                 }
             }
+
+            /// TODO: incorporate skip() into the new call() method.
 
             template <typename P, is_join_subrange S> requires (G < P::total_groups)
             static constexpr void call(join_iterator& it, P& p, S& s)
@@ -5886,18 +5938,20 @@ namespace impl {
                 if (s.index > 0) {
                     --s.begin;
                     --s.index;
-                    /// TODO: how to handle separators and/or empty subranges in this
-                    /// case?
-
-                    /// TODO: backtrack the parent iterator and initialize the previous
-                    /// range with the last element.  If the parent's index is also
-                    /// zero, then this will trigger a recursive backtrack.  Also,
-                    /// the skipping logic will need to be applied in that case, but
-                    /// in the opposite direction to `skip_forward<G>()`.
+                } else {
+                    if constexpr (G > 0) {
+                        --p.index;
+                        decrement<G - 1>::skip(it, p);
+                    } else if constexpr (is_join_nested<P>) {
+                        do {
+                            --p.begin;
+                            --p.index;
+                        } while (
+                            p.index > 0 &&  // TODO: p.index >= 0 if index becomes signed, which it should
+                            decrement<P::total_groups - 1>::skip(it, p) != skip_result::GOOD
+                        );
+                    }
                 }
-                // if constexpr (G > 0) {
-                //     skip(it, p);
-                // }
             }
 
             template <typename P, is_join_nested S> requires (G < P::total_groups)
@@ -5920,6 +5974,10 @@ namespace impl {
                 call(it, p, p.template get<G>());
             }
 
+            /// TODO: decrementing an end iterator should not initialize to a
+            /// separator.
+
+
             // trying to decrement an end iterator initializes it to the last element
             // in the joined range
             static constexpr void operator()(join_iterator& it, join_iterator& p)
@@ -5932,15 +5990,6 @@ namespace impl {
             {
                 decrement<total_groups - 1>::skip(it, p);
             }
-        };
-
-        /// TODO: distance may need to encode the group indices for both iterators,
-        /// or maybe pass in the difference in groups as an extra parameter.  Not sure
-        /// exactly how to do that.
-
-        template <size_t G>
-        struct distance {
-            /// TODO: write this
         };
 
         template <size_t I>
@@ -5961,6 +6010,35 @@ namespace impl {
                 return call(lhs.subrange.template get<I>(), rhs.subrange.template get<I>());
             }
         };
+
+        template <size_t G>
+        struct subscript {
+            /// TODO: write this
+        };
+
+        template <size_t G>
+        struct add {
+            /// TODO: write this
+        };
+
+        template <size_t G>
+        struct iadd {
+            /// TODO: write this
+        };
+
+        /// TODO: distance may need to encode the group indices for both iterators,
+        /// or maybe pass in the difference in groups as an extra parameter.  Not sure
+        /// exactly how to do that.
+        /// -> the extra tracking index helps with this, but it's not foolproof due to
+        /// the skipping logic for nested subranges, which isn't a reliable measure of
+        /// the true index in the overall range.
+
+        template <size_t G>
+        struct distance {
+            /// TODO: write this
+        };
+
+
 
         /// TODO: The only issue with 3-way comparisons is making sure the `index`
         /// field is properly initialized when creating an end iterator for
