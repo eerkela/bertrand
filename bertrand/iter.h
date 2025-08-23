@@ -5633,7 +5633,7 @@ namespace impl {
             template <is_join_nested S>
             static constexpr std::strong_ordering call(const S& lhs, const S& rhs) noexcept {
                 if (auto cmp = lhs.index <=> rhs.index; cmp != 0) return cmp;
-                return lhs.subrange.template visit<join_iterator::compare>(lhs, rhs);
+                return lhs.template visit<join_iterator::compare>(lhs, rhs);
             }
 
             template <typename P>
@@ -5770,12 +5770,8 @@ namespace impl {
 
             template <typename P, is_join_nested S> requires (G < P::total_groups)
             static constexpr void call(join_iterator& it, P& p, S& s)
-                noexcept (requires{
-                    {s.subrange.template visit<join_iterator::increment>(it, s)} noexcept;
-                })
-                requires (requires{
-                    {s.subrange.template visit<join_iterator::increment>(it, s)};
-                })
+                noexcept (requires{{s.template visit<join_iterator::increment>(it, s)} noexcept;})
+                requires (requires{{s.template visit<join_iterator::increment>(it, s)};})
             {
                 s.template visit<join_iterator::increment>(it, s);
             }
@@ -5983,14 +5979,10 @@ namespace impl {
 
             template <typename P, is_join_nested S> requires (G < P::total_groups)
             static constexpr void call(join_iterator& it, P& p, S& s)
-                noexcept (requires{{
-                    s.subrange.template visit<join_iterator::decrement>(it, s)
-                } noexcept;})
-                requires (requires{{
-                    s.subrange.template visit<join_iterator::decrement>(it, s)
-                };})
+                noexcept (requires{{s.template visit<join_iterator::decrement>(it, s)} noexcept;})
+                requires (requires{{s.template visit<join_iterator::decrement>(it, s)};})
             {
-                s.subrange.template visit<join_iterator::decrement>(it, s);
+                s.template visit<join_iterator::decrement>(it, s);
             }
 
             template <typename P> requires (G < P::total_groups)
@@ -6085,7 +6077,7 @@ namespace impl {
             }
 
             template <typename P, is_join_subrange S> requires (G < P::total_groups)
-            static constexpr void call(join_iterator& it, difference_type i, P& p, S& s)
+            static constexpr void call(join_iterator& it, difference_type& i, P& p, S& s)
                 noexcept (requires{
                     {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
                     {s.begin += i} noexcept;
@@ -6137,23 +6129,19 @@ namespace impl {
             }
 
             template <typename P, is_join_nested S> requires (G < P::total_groups)
-            static constexpr void call(join_iterator& it, difference_type i, P& p, S& s)
-                noexcept (requires{
-                    {s.subrange.template visit<join_iterator::iadd>(it, i, s)} noexcept;
-                })
-                requires (requires{
-                    {s.subrange.template visit<join_iterator::iadd>(it, i, s)};
-                })
+            static constexpr void call(join_iterator& it, difference_type& i, P& p, S& s)
+                noexcept (requires{{s.template visit<join_iterator::iadd>(it, i, s)} noexcept;})
+                requires (requires{{s.template visit<join_iterator::iadd>(it, i, s)};})
             {
                 s.template visit<join_iterator::iadd>(it, i, s);
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr void operator()(join_iterator& it, difference_type i, P& p)
+            static constexpr void operator()(join_iterator& it, difference_type& i, P& p)
                 noexcept (requires{{call(it, i, p, p.template get<G>())} noexcept;})
                 requires (requires{{call(it, i, p, p.template get<G>())};})
             {
-                call(it, i, p, p.subrange.template get<G>());
+                call(it, i, p, p.template get<G>());
             }
         };
 
@@ -6294,12 +6282,8 @@ namespace impl {
 
             template <typename P, is_join_nested S> requires (G < P::total_groups)
             static constexpr void call(join_iterator& it, difference_type i, P& p, S& s)
-                noexcept (requires{
-                    {s.subrange.template visit<join_iterator::isub>(it, i, s)} noexcept;
-                })
-                requires (requires{
-                    {s.subrange.template visit<join_iterator::isub>(it, i, s)};
-                })
+                noexcept (requires{{s.template visit<join_iterator::isub>(it, i, s)} noexcept;})
+                requires (requires{{s.template visit<join_iterator::isub>(it, i, s)};})
             {
                 s.template visit<join_iterator::isub>(it, i, s);
             }
@@ -6309,40 +6293,336 @@ namespace impl {
                 noexcept (requires{{call(it, i, p, p.template get<G>())} noexcept;})
                 requires (requires{{call(it, i, p, p.template get<G>())};})
             {
-                call(it, i, p, p.subrange.template get<G>());
+                call(it, i, p, p.template get<G>());
             }
         };
 
-        /// TODO: distance may need to encode the group indices for both iterators,
-        /// or maybe pass in the difference in groups as an extra parameter.  Not sure
-        /// exactly how to do that.
-        /// -> the extra tracking index helps with this, but it's not foolproof due to
-        /// the skipping logic for nested subranges, which isn't a reliable measure of
-        /// the true index in the overall range.
+        /* Distance calculations between joined iterators may need to cross from one
+        subrange to another in order to accurately compute the total distance.  This
+        causes the distance calculation to be separated into 3 parts:
 
+            +------------+------------+------------+
+            |   left     |   center   |    right   |
+            +------------+------------+------------+
+
+        Where `left` represents the distance from the current position to the end of
+        its respective index, `center` represents the distance between the start of the
+        next index and that of the comparison iterator, and `right` represents the
+        distance from the start of that index to the comparison iterator's current
+        position.  The `center` partition may be empty if the iterator indices are
+        immediately adjacent to one another.  Only the `left` and `right` partitions
+        require any kind of dynamic dispatch.
+
+        Note also that accurately calculating the distance requires a copy of the
+        current iterator, since nested subranges may need to be traversed as part of
+        the distance computation.  As a result, obtaining the distance between two
+        `join_iterator`s is not strictly constant time, although it does not require
+        traversing the entire range.  Only nested subranges will need to be traversed,
+        otherwise delegated distance computations will be used for non-range and
+        non-nested inputs. */
         template <size_t G>
-        struct distance {
-            template <typename P>
-            static constexpr size_t I = G / P::total_groups;
+        struct distance_center {
+            template <typename P> requires (G < P::total_groups)
+            static constexpr difference_type operator()(join_iterator& it, P& p)
+                noexcept (requires{
+                    {p.template init<G>(it)} noexcept;
+                    {p.template get<G>()} noexcept;
+                } && (
+                    (
+                        is_join_nested<decltype(p.template get<G>())> &&
+                        requires(decltype((p.template get<G>())) s, difference_type sum) {
+                            {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                            {distance_center<0>::nested(it, s, sum)} noexcept;
+                        }
+                    ) || (
+                        !is_join_nested<decltype(p.template get<G>())> &&
+                        requires(decltype((p.template get<G>())) s) {{
+                            s.end - s.begin
+                        } noexcept -> meta::nothrow::convertible_to<difference_type>;}
+                    )
+                ))
+                requires (requires{
+                    {p.template init<G>(it)};
+                    {p.template get<G>()};
+                } && (
+                    (
+                        is_join_nested<decltype(p.template get<G>())> &&
+                        requires(decltype((p.template get<G>())) s, difference_type sum) {
+                            {s.begin != s.end} -> meta::convertible_to<bool>;
+                            {distance_center<0>::nested(it, s, sum)};
+                        }
+                    ) || (
+                        !is_join_nested<decltype(p.template get<G>())> &&
+                        requires(decltype((p.template get<G>())) s) {
+                            {s.end - s.begin} -> meta::convertible_to<difference_type>;
+                        }
+                    )
+                ))
+            {
+                p.template init<G>(it);
+                auto& s = p.template get<G>();
+                if constexpr (is_join_nested<decltype(s)>) {
+                    difference_type sum = 0;
+                    if (s.begin != s.end) {
+                        while (distance_center<0>::nested(it, s, sum) != signal::BREAK);
+                    }
+                    return sum;
+                } else {
+                    return s.end - s.begin;
+                }
+            }
 
-            template <typename P>
-            static constexpr size_t J = G % P::total_groups;
-
-            /// TODO: write this
+            template <is_join_nested S>
+            static constexpr signal nested(join_iterator& it, S& s, difference_type& sum)
+                noexcept (requires{
+                    {sum += operator()(it, s)} noexcept;
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin} noexcept;
+                    {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                }) && (G + 1 == S::total_groups || requires{
+                    {distance_center<G + 1>::nested(it, s, sum)} noexcept;
+                }))
+                requires (requires{
+                    {sum += operator()(it, s)};
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin};
+                    {s.begin == s.end} -> meta::convertible_to<bool>;
+                }) && (G + 1 == S::total_groups || requires{
+                    {distance_center<G + 1>::nested(it, s, sum)};
+                }))
+            {
+                sum += operator()(it, s);
+                if constexpr (!S::template is_separator<G>) {
+                    ++s.begin;
+                    if (s.begin == s.end) {
+                        return signal::BREAK;  // skip separator after last value
+                    }
+                }
+                if constexpr (G + 1 == S::total_groups) {
+                    return signal::CONTINUE;  // to next iteration
+                } else {
+                    return distance_center<G + 1>::nested(it, s, sum);  // to next group
+                }
+            }
         };
+        template <size_t G>
+        struct distance_left {
+            template <is_join_subrange S> requires (G < S::total_groups)
+            static constexpr difference_type call(join_iterator& it, S& s)
+                noexcept (requires{
+                    {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
+                })
+                requires (requires{
+                    {s.end - s.begin} -> meta::convertible_to<difference_type>;
+                })
+            {
+                return s.end - s.begin;
+            }
 
-        constexpr join_iterator(
-            meta::as_pointer<R> range,
-            storage_type&& subrange,
-            ssize_t index
-        )
-            noexcept (meta::nothrow::movable<storage_type>)
-            requires (meta::movable<storage_type>)
-        :
-            range(range),
-            index(index),
-            subrange(std::move(subrange))
-        {}
+            template <is_join_nested S> requires (G < S::total_groups)
+            static constexpr difference_type call(join_iterator& it, S& s)
+                noexcept (requires(difference_type sum) {
+                    {s.template visit<join_iterator::distance_left>(it, s)} noexcept;
+                    {distance_center<0>::nested(it, s, sum)} noexcept;
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin} noexcept;
+                    {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                }) && (G + 1 == S::total_groups || requires(difference_type sum) {
+                    {distance_center<G + 1>::nested(it, s, sum)} noexcept;
+                }))
+                requires (requires(difference_type sum) {
+                    {s.template visit<join_iterator::distance_left>(it, s)};
+                    {distance_center<0>::nested(it, s, sum)};
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin};
+                    {s.begin == s.end} -> meta::convertible_to<bool>;
+                }) && (G + 1 == S::total_groups || requires(difference_type sum) {
+                    {distance_center<G + 1>::nested(it, s, sum)};
+                }))
+            {
+                // get the distance to the end of the innermost subrange
+                difference_type sum = s.template visit<join_iterator::distance_left>(it, s);
+                if constexpr (!S::template is_separator<G>) {
+                    ++s.begin;
+                    if (s.begin == s.end) {
+                        return sum;  // skip separator after last value
+                    }
+                }
+
+                // finish this iteration if necessary
+                signal r = signal::CONTINUE;
+                if constexpr (G + 1 < S::total_groups) {
+                    r = distance_center<G + 1>::nested(it, s, sum);
+                }
+
+                // iterate over the remaining groups
+                while (r != signal::BREAK) {
+                    r = distance_center<0>::nested(it, s, sum);
+                }
+                return sum;
+            }
+
+            template <typename P> requires (G < P::total_groups)
+            static constexpr difference_type operator()(join_iterator& it, P& p)
+                noexcept (requires{{call(it, p.template get<G>())} noexcept;})
+                requires (requires{{call(it, p.template get<G>())};})
+            {
+                return call(it, p.template get<G>());
+            }
+        };
+        template <size_t G>
+        struct distance_right {
+            /// TODO: I may need to pipe the comparison iterator through to this visitor
+            /// so that I can continue incrementing from the iterator state produced by
+            /// `distance_left` and `distance_center`.  That would mean we would always
+            /// call `distance_right<0>` on the output from the previous operations,
+            /// and then call `distance_center` on each index until it compares equal
+            /// with the other iterator's position, which triggers a visit whereby the
+            /// inner types are known to be equal, which triggers some more
+            /// `distance_center` calls until the nested indices compare equal once
+            /// again, and that's the general pattern for recursion.
+
+            template <typename P, is_join_subrange S> requires (G < P::total_groups)
+            static constexpr difference_type call(join_iterator& it, P& p, S& s, const P& other)
+                noexcept (requires{
+                    {s.index} noexcept -> meta::nothrow::convertible_to<difference_type>;
+                })
+                requires (requires{
+                    {s.index} -> meta::convertible_to<difference_type>;
+                })
+            {
+                return s.index;
+            }
+
+            template <typename P, is_join_nested S> requires (G < P::total_groups)
+            static constexpr difference_type call(join_iterator& it, P& p, S& s, const P& other)
+                noexcept (requires{{s.template visit<join_iterator::distance_right>(s)} noexcept;})
+                requires (requires{{s.template visit<join_iterator::distance_right>(s)};})
+            {
+                // while 
+
+                /// TODO: basically the same process as `distance_left`, but the
+                /// nested visit happens at the end of the function instead of the
+                /// beginning.
+
+
+                return s.template visit<join_iterator::distance_right>(s);
+            }
+
+            template <typename P> requires (G < P::total_groups)
+            static constexpr difference_type operator()(join_iterator& it, P& p, const P& o)
+                noexcept (requires{{call(it, p, p.template get<G>(), o.template get<G>())} noexcept;})
+                requires (requires{{call(it, p, p.template get<G>(), o.template get<G>())};})
+            {
+                return call(it, p, p.template get<G>(), o.template get<G>());
+            }
+        };
+        template <size_t H>
+        struct distance {
+            /// TODO: the outer `distance` function just determines which of the above to
+            /// call, and possibly implements the special case where the two iterators
+            /// are in the same group.
+
+            template <typename P>
+            static constexpr size_t G1 = H / P::total_groups;
+            template <typename P>
+            static constexpr size_t G2 = H % P::total_groups;
+
+            /// TODO: maybe when I'm measuring distance from end, I also pass in the
+            /// index I need to reach by the end.  So the algorithm works like
+            /// distance_left, but only advances until it reaches that index rather
+            /// than the end of the subrange.  I would then do one last index check
+            /// against the right bound to get the overall distance.
+
+
+
+            template <is_join_subrange S>
+            static constexpr difference_type equal(S& s1, S& s2)
+                noexcept (requires{
+                    {s1.begin - s2.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
+                })
+                requires (requires{
+                    {s1.begin - s2.begin} -> meta::convertible_to<difference_type>;
+                })
+            {
+                return s1.begin - s2.begin;
+            }
+
+            template <is_join_nested S>
+            static constexpr difference_type equal(const S& s1, const S& s2)
+            {
+                if (s1.index < s2.index) {
+                    difference_type sum = 0;
+                    S temp = s1;
+                    /// TODO: get the distance between the current location of s1 and
+                    /// its end iterator.  This probably requires a nested visit, which
+                    /// is where everything got wonky before.
+                    /// -> This would have to call the left -> end version for the
+                    /// first iteration and all subsequent iterations till the case
+                    /// where the indices are equal
+
+                    while (temp.index < s2.index) {
+                        
+                    }
+
+                } else if (s1.index > s2.index) {
+                    difference_type sum = 0;
+                    S temp = s2;
+                    /// TODO: just like above, but subtracting instead of adding
+
+
+                } else {
+                    /// TODO: rather than building a basic vtable, maybe I build a
+                    /// standard vtable with just 2 options multiplied by total_groups
+                    /// and added to itself?
+
+                    return impl::basic_vtable<
+                        join_iterator::distance,
+                        S::total_groups * S::total_groups
+                    >{
+                        /// TODO: figure out how this has to be phrased
+                    }(s1, s2);
+                }
+            }
+
+
+            static constexpr difference_type operator()(
+                const join_iterator& lhs,
+                const join_iterator& rhs
+            )
+                noexcept (requires{{equal(
+                    lhs.template get<G1<join_iterator>>(),
+                    rhs.template get<G2<join_iterator>>()
+                )} noexcept;})
+                requires (G1<join_iterator> == G2<join_iterator> && requires{{equal(
+                    lhs.template get<G1<join_iterator>>(),
+                    rhs.template get<G2<join_iterator>>()
+                )};})
+            {
+                return equal(
+                    lhs.template get<G1<join_iterator>>(),
+                    rhs.template get<G2<join_iterator>>()
+                );
+            }
+
+            // static constexpr difference_type operator()(
+            //     const join_iterator& lhs,
+            //     const join_iterator& rhs
+            // )
+            //     requires (G1 < G2)
+            // {
+
+            // }
+
+            // static constexpr difference_type operator()(
+            //     const join_iterator& lhs,
+            //     const join_iterator& rhs
+            // )
+            //     requires (G1 > G2)
+            // {
+
+            // }
+        };
 
     public:
         [[nodiscard]] constexpr join_iterator() = default;
@@ -6404,12 +6684,12 @@ namespace impl {
 
         constexpr join_iterator& operator++()
             noexcept (requires{
-                {visit<increment>(*this)} noexcept;
+                {visit<increment>(*this, *this)} noexcept;
             } && (!meta::inherits<iterator_category, std::bidirectional_iterator_tag> || requires{
                 {increment<0>::skip(*this, *this)} noexcept;
             }))
             requires (requires{
-                {visit<increment>(*this)};
+                {visit<increment>(*this, *this)};
             } && (!meta::inherits<iterator_category, std::bidirectional_iterator_tag> || requires{
                 {increment<0>::skip(*this, *this)};
             }))
@@ -6424,10 +6704,10 @@ namespace impl {
                             increment<0>::skip(*this, *this);
                         }
                     } else {
-                        visit<increment>(*this);
+                        visit<increment>(*this, *this);
                     }
                 } else {
-                    visit<increment>(*this);
+                    visit<increment>(*this, *this);
                 }
             }
             return *this;
@@ -6450,11 +6730,11 @@ namespace impl {
 
         constexpr join_iterator& operator--()
             noexcept (requires{
-                {visit<decrement>(*this)} noexcept;
+                {visit<decrement>(*this, *this)} noexcept;
                 {decrement<total_groups - 1>::skip(*this, *this)} noexcept;
             })
             requires (requires{
-                {visit<decrement>(*this)};
+                {visit<decrement>(*this, *this)};
                 {decrement<total_groups - 1>::skip(*this, *this)};
             })
         {
@@ -6466,7 +6746,7 @@ namespace impl {
             } else if (index < 0) {
                 --index;
             } else {
-                visit<decrement>(*this);
+                visit<decrement>(*this, *this);
             }
             return *this;
         }
@@ -6488,36 +6768,36 @@ namespace impl {
 
         constexpr join_iterator& operator+=(difference_type i)
             noexcept (requires{
-                {visit<isub>(*this, -i)} noexcept;
-                {visit<iadd>(*this, i)} noexcept;
+                {visit<isub>(*this, -i, *this)} noexcept;
+                {visit<iadd>(*this, i, *this)} noexcept;
             })
             requires (requires{
-                {visit<isub>(*this, -i)};
-                {visit<iadd>(*this, i)};
+                {visit<isub>(*this, -i, *this)};
+                {visit<iadd>(*this, i, *this)};
             })
         {
             if (i < 0) {
-                visit<isub>(*this, -i);
+                visit<isub>(*this, -i, *this);
             } else {
-                visit<iadd>(*this, i);
+                visit<iadd>(*this, i, *this);
             }
             return *this;
         }
 
         [[nodiscard]] constexpr join_iterator& operator-=(difference_type i)
             noexcept (requires{
-                {visit<iadd>(*this, -i)} noexcept;
-                {visit<isub>(*this, i)} noexcept;
+                {visit<iadd>(*this, -i, *this)} noexcept;
+                {visit<isub>(*this, i, *this)} noexcept;
             })
             requires (requires{
-                {visit<iadd>(*this, -i)};
-                {visit<isub>(*this, i)};
+                {visit<iadd>(*this, -i, *this)};
+                {visit<isub>(*this, i, *this)};
             })
         {
             if (i < 0) {
-                visit<iadd>(*this, -i);
+                visit<iadd>(*this, -i, *this);
             } else {
-                visit<isub>(*this, i);
+                visit<isub>(*this, i, *this);
             }
             return *this;
         }
@@ -6607,13 +6887,44 @@ namespace impl {
             return *temp;
         }
 
+        /// TODO: Once I finish the distance operator, join should be fully functional!
+
+        /// TODO: what I should do is sum the distance between the outermost groups
+        /// first, and then restrict distance to always work on the same parent types
+        /// rather than allowing them to differ.  That may also avoid the need for a
+        /// cartesian product.
+        /// -> The problem is that I need to dispatch on both operands to accurately
+        /// count the distance, which is a problem.
+
+        /// -> Maybe the best way to do this is just to dispatch each operand separately
+        /// to get its true index in the overall joined range, and then just subtract
+        /// those.  That requires no cartesian product, which is a significant
+        /// simplification.  I can maybe accomplish the same thing by first checking
+        /// `index <=> other.index` and then orienting the distance calculation
+        /// accordingly.  If this index is less than the other index, then I get the
+        /// number of remaining items in this index, plus the sizes of all intermediate
+        /// indices, plus the position of the other iterator within its index.
+        /// If this index is greater, the calculation is reversed.  That should be more
+        /// efficient than computing a full index within the 
+
+
         [[nodiscard]] constexpr difference_type operator-(
             const join_iterator& other
         ) const
-            noexcept (requires{{visit<distance>(*this, other)} noexcept;})
-            requires (requires{{visit<distance>(*this, other)};})
+            noexcept (requires{{
+                impl::basic_vtable<distance, total_groups * total_groups>{
+                    size_t(index * total_groups + other.index)
+                }(*this, other)
+            } noexcept;})
+            requires (requires{{
+                impl::basic_vtable<distance, total_groups * total_groups>{
+                    size_t(index * total_groups + other.index)
+                }(*this, other)
+            };})
         {
-            return visit<distance>(*this, other);
+            return impl::basic_vtable<distance, total_groups * total_groups>{
+                size_t(index * total_groups + other.index)
+            }(*this, other);
         }
     };
 
@@ -7486,13 +7797,6 @@ namespace impl {
     };
 
 }
-
-
-/// TODO: maybe `join` should be able to accept multiple separators, which will be
-/// applied to each respective level of unpacking.  So
-
-/// join{".", "-"}([["a", "b"], ["c", "d"]]) -> "a-b.c-d"
-/// join{"."}([["a", "b"], ["c", "d"]]) -> "ab.cd"
 
 
 template <meta::not_rvalue Sep = void>

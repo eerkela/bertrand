@@ -1280,12 +1280,6 @@ namespace meta {
     concept constructible_from = detail::constructible_from<T, Args...>;
 
     template <typename T, typename... Args>
-    concept implicitly_constructible_from =
-        constructible_from<T, Args...> && requires(Args... args) {
-            [](Args... args) -> T { return {::std::forward<Args>(args)...}; };
-        };
-
-    template <typename T, typename... Args>
     concept trivially_constructible = detail::trivially_constructible<T, Args...>;
 
     template <typename T>
@@ -1296,11 +1290,6 @@ namespace meta {
         template <typename T, typename... Args>
         concept constructible_from =
             meta::constructible_from<T, Args...> &&
-            detail::nothrow_constructible_from<T, Args...>;
-
-        template <typename T, typename... Args>
-        concept implicitly_constructible_from =
-            meta::implicitly_constructible_from<T, Args...> &&
             detail::nothrow_constructible_from<T, Args...>;
 
         template <typename T, typename... Args>
@@ -5142,8 +5131,8 @@ namespace impl {
         }
     };
 
-    /* A functor that implements a universal, non-cryptographic FNV-1a string hashing
-    algorithm, which is stable at both compile time and runtime. */
+    /* A simple functor that implements a universal, non-cryptographic FNV-1a string
+    hashing algorithm, which is stable at both compile time and runtime. */
     struct fnv1a {
         static constexpr size_t seed =
             sizeof(size_t) > 4 ? size_t(14695981039346656037ULL) : size_t(2166136261U);
@@ -5636,7 +5625,7 @@ namespace impl {
 }
 
 
-/// TODO: static_str -> StaticStr?
+/// TODO: static_str<N> -> Str<Optional<N> = None>?
 
 
 template <size_t N = 0>

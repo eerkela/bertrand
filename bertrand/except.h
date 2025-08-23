@@ -76,7 +76,7 @@ private:
     reference-counted pointer so as not to contribute to the `Exception`'s overall
     size, and allow fast copy/move semantics. */
     struct info {
-        /// TODO: figure out skips to hide exception internals
+        /// TODO: figure out skips to hide internal exception frames
         mutable std::atomic<size_t> refcount;
         mutable size_t skip;
         mutable bool resolved;
