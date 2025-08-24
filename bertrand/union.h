@@ -265,6 +265,10 @@ namespace meta {
 
     namespace detail {
 
+        /// TODO: the mandatory visit counter would escape up to visit_base, in which
+        /// case it just becomes an extra constraint alongside the `meta::callable`
+        /// check.
+
         /* The base case for the dispatch logic is to directly forward to the
         underlying function, assuming the permutation is valid. */
         template <typename F, typename prefix, typename... suffix>
@@ -298,22 +302,96 @@ namespace meta {
             };
         };
 
+        ///////////////////////////
+        ////    PERMUTATION    ////
+        ///////////////////////////
+
         /* Base case: either `F` is directly callable with the given arguments, or
         we've run out of visitable arguments to match against. */
-        template <typename F, typename prefix, size_t k, typename... suffix>
+        template <
+            typename F,  // function to invoke
+            typename prefix,  // processed arguments
+            size_t k,  // remaining visit budget
+            typename... suffix  // unprocessed arguments
+        >
         struct _visit_permute : visit_base<F, prefix, suffix...> {};
+
+        /* Skip to the next visitable argument in the event of a substitution
+        failure, avoiding unnecessary instantiations of `_visit_permute` and limiting
+        template depth. */
+        template <typename...>
+        constexpr size_t _visit_skip = 0;
+        template <typename A, typename... As> requires (!meta::visitable<A>)
+        constexpr size_t _visit_skip<A, As...> = _visit_skip<As...> + 1;
+        template <typename, typename, typename F, typename prefix, size_t k, typename... suffix>
+        struct visit_skip;
+        template <
+            size_t... prev,
+            size_t... next,
+            typename F,
+            typename... prefix,
+            size_t k,
+            typename... suffix
+        >
+        struct visit_skip<
+            ::std::index_sequence<prev...>,
+            ::std::index_sequence<next...>,
+            F,
+            meta::pack<prefix...>,
+            k,
+            suffix...
+        > {
+            using type = _visit_permute<
+                F,
+                meta::pack<prefix..., meta::unpack_type<prev, suffix...>...>,
+                k,
+                meta::unpack_type<sizeof...(prev) + next, suffix...>...
+            >;
+        };
+
+        /// TODO: visit_failure would also check to see if `j`, which represents the
+        /// minimum number of visits that have to be performed is greater than
+        /// zero, i.e. `k > 0 && (j > 0 || !meta::callable<F, As...>)`
+
+        template <typename F, size_t k, typename... As>
+        concept visit_failure = k > 0 && !meta::callable<F, As...>;
+
+        /* Recursive case: `F` is not directly callable and `k` allows further visits,
+        but either the current argument `A` is not visitable, or attempting to visit it
+        results in substitution failure.  In either case, we forward it as-is and try
+        to visit a future argument instead, skipping immediately to that argument if it
+        exists. */
+        template <typename F, typename... prefix, size_t k, typename A, typename... suffix>
+            requires (visit_failure<F, k, prefix..., A, suffix...>)
+        struct _visit_permute<F, meta::pack<prefix...>, k, A, suffix...> : visit_skip<
+            ::std::make_index_sequence<_visit_skip<suffix...>>,
+            ::std::make_index_sequence<sizeof...(suffix) - _visit_skip<suffix...>>,
+            F,
+            meta::pack<prefix..., A>,
+            k,
+            suffix...
+        >::type {};
+
+        /// TODO: basically, recursion control would consist of an extra argument to
+        /// the `visit_success` concept that tracks how many mandatory visits are
+        /// left along this path, which gets decremented every time a successful visit
+        /// is made.  That decrement would have to be done elsewhere in the algorithm
+        /// though, which totally sucks.
+
 
         /* Attempt to substitute alternatives for the current argument, assuming it is
         visitable.  If not all alternatives are valid, then this will evaluate to a
         substitution failure that causes the algorithm to ignore this argument and
         attempt to visit a future argument instead. */
         template <
-            typename F,
-            typename prefix,
-            typename A,
-            typename alts,
-            size_t k,
-            typename suffix
+            typename F,  // function to invoke
+            typename prefix,  // processed arguments preceding current
+            typename A,  // current argument
+            typename alts,  // alternatives for current argument
+            /// TODO: I would add an extra `j` parameter that tracks the remaining mandatory visits,
+            /// and is strictly less than or equal to `k` at all times.
+            size_t k,  // remaining visit budget along this path
+            typename suffix  // unprocessed arguments
         >
         struct visit_substitute { static constexpr bool enable = false; };
 
@@ -457,57 +535,6 @@ namespace meta {
             };
         };
 
-        template <typename F, size_t k, typename... As>
-        concept visit_failure = k > 0 && !meta::callable<F, As...>;
-
-        /* Skip to the next visitable argument in the event of a substitution
-        failure, avoiding unnecessary instantiations of `_visit_permute`. */
-        template <typename...>
-        constexpr size_t _visit_skip = 0;
-        template <typename A, typename... As> requires (!meta::visitable<A>)
-        constexpr size_t _visit_skip<A, As...> = _visit_skip<As...> + 1;
-        template <typename, typename, typename F, typename prefix, size_t k, typename... suffix>
-        struct visit_skip;
-        template <
-            size_t... prev,
-            size_t... next,
-            typename F,
-            typename... prefix,
-            size_t k,
-            typename... suffix
-        >
-        struct visit_skip<
-            ::std::index_sequence<prev...>,
-            ::std::index_sequence<next...>,
-            F,
-            meta::pack<prefix...>,
-            k,
-            suffix...
-        > {
-            using type = _visit_permute<
-                F,
-                meta::pack<prefix..., meta::unpack_type<prev, suffix...>...>,
-                k,
-                meta::unpack_type<sizeof...(prev) + next, suffix...>...
-            >;
-        };
-
-        /* Recursive case: `F` is not directly callable and `k` allows further visits,
-        but either the current argument `A` is not visitable, or attempting to visit it
-        results in substitution failure.  In either case, we forward it as-is and try
-        to visit a future argument instead, skipping immediately to that argument if it
-        exists. */
-        template <typename F, typename... prefix, size_t k, typename A, typename... suffix>
-            requires (visit_failure<F, k, prefix..., A, suffix...>)
-        struct _visit_permute<F, meta::pack<prefix...>, k, A, suffix...> : visit_skip<
-            ::std::make_index_sequence<_visit_skip<suffix...>>,
-            ::std::make_index_sequence<sizeof...(suffix) - _visit_skip<suffix...>>,
-            F,
-            meta::pack<prefix..., A>,
-            k,
-            suffix...
-        >::type {};
-
         template <
             typename F,
             typename prefix,
@@ -522,7 +549,7 @@ namespace meta {
             visit_substitute<F, prefix, A, alts, k, suffix>::enable;
 
         /* Visit success: `F` is not directly callable, `k` allows visits, and the
-        current argument `A` is substitutable for its alternatives.  This terminates
+        current argument `A` is substitutable with its alternatives.  This terminates
         the recursion early, effectively preferring to visit earlier arguments before
         later ones in case of ambiguity, without ever needing to check them. */
         template <typename F, typename... prefix, size_t k, typename A, typename... suffix>
@@ -558,13 +585,19 @@ namespace meta {
             visit_max_k<typename impl::visitable<A>::alternatives> + 1 +
             visit_max_k<meta::pack<As...>>;
 
+        /// TODO: add a min_k template parameter to visit_ctx, and therefore visit_permute
+        /// and downstream from there.
+
         template <typename... A>
         struct visit_ctx {
             static constexpr size_t max_k = visit_max_k<meta::pack<A...>>;
+
             template <typename F, size_t k>
             using permute = _visit_permute<F, meta::pack<>, k, A...>;
+
             template <typename F, size_t k = 0>
             struct type : permute<F, k> {};
+
             template <typename F, size_t k> requires (!permute<F, k>::enable && k < max_k)
             struct type<F, k> : type<F, k + 1> {};
         };
@@ -577,6 +610,10 @@ namespace meta {
         empty and error states, from which an overall return type can be deduced. */
         template <typename F, typename... A>
         using visit_permute = visit_ctx<A...>::template type<F>;
+
+        /////////////////////////////////////
+        ////    RETURN TYPE DEDUCTION    ////
+        /////////////////////////////////////
 
         template <typename F, typename args>
         struct _visit_invoke {
@@ -714,6 +751,10 @@ namespace meta {
             optional || meta::not_void<typename impl::visitable<R>::empty>,
             meta::pack<typename impl::visitable<R>::value, Rs...>
         > {};
+
+        ///////////////////////////
+        ////    ENTRY POINT    ////
+        ///////////////////////////
 
         /* The actual visit metafunction provides simplified access to the dispatch
         logic and metaprogramming traits for the visit operation.  Calling the
@@ -873,16 +914,6 @@ namespace meta {
         template <typename T, typename... Es>
         constexpr bool prefer_constructor<bertrand::Expected<T, Es...>> = true;
 
-        /// TODO: exact_size is no longer needed?
-        template <typename... Ts>
-        constexpr bool exact_size<bertrand::Union<Ts...>> = (meta::exact_size<Ts> && ...);
-
-        template <typename T>
-        constexpr bool exact_size<bertrand::Optional<T>> = meta::exact_size<T>;
-
-        template <typename T, typename... Es>
-        constexpr bool exact_size<bertrand::Expected<T, Es...>> = meta::exact_size<T>;
-
     }
 
 }
@@ -928,7 +959,7 @@ namespace impl {
     special handling.  Otherwise, the component visitables are expanded according to
     the semantics laid out in `impl::visitable<T>`, which describes how to register
     custom visitable types for use with this function. */
-    template <typename F, typename... Args>
+    template <size_t min_visits = 0, typename F, typename... Args>
     [[gnu::always_inline]] constexpr meta::visit_type<F, Args...> visit(F&& f, Args&&... args)
         noexcept (meta::nothrow::visit<F, Args...>)
         requires (meta::visit<F, Args...>)
@@ -1140,15 +1171,15 @@ namespace impl {
     template <typename F>
     struct visit_fn {
         F func;
-        template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-            noexcept (requires{{std::forward<Self>(self).func(std::forward<A>(args)...)} noexcept;})
+        template <typename... A>
+        constexpr decltype(auto) operator()(A&&... args) &&
+            noexcept (requires{{std::move(func)(std::forward<A>(args)...)} noexcept;})
             requires (
                 (!meta::visit_monad<A> && ...) &&
-                requires{{std::forward<Self>(self).func(std::forward<A>(args)...)};
+                requires{{std::move(func)(std::forward<A>(args)...)};
             })
         {
-            return (std::forward<Self>(self).func(std::forward<A>(args)...));
+            return (std::move(func)(std::forward<A>(args)...));
         }
     };
 
@@ -5269,6 +5300,15 @@ constexpr decltype(auto) operator->*(T&& val, F&& func)
         std::forward<T>(val)
     ));
 }
+
+
+static constexpr Union<int, const char*> u1 = "abc";
+static_assert(u1 ->* impl::basic_tuple{
+    [](int) { return false; },
+    [](const char* s) { return true; }
+});
+
+
 
 
 /// TODO: there appears to be something wrong with the Union<> constructor in the case

@@ -6308,7 +6308,6 @@ namespace impl {
         /// pretty complicated, all things considered.
 
 
-
         /* Distance calculations between joined iterators may need to cross from one
         subrange to another in order to accurately compute the total distance.  This
         causes the distance calculation to be separated into 3 parts:
@@ -6996,9 +6995,6 @@ namespace impl {
                 return index - other.index;
             }
 
-            /// TODO: it is actually probably 
-
-
             // otherwise, we need to identify left and right bounds and visit at least
             // one subrange
             if (index < other.index) {
@@ -7042,6 +7038,8 @@ namespace impl {
                 // the other iterator becomes the left bound
 
             } else {
+
+
                 // both subranges are the same
             }
 
@@ -10211,7 +10209,9 @@ public:
 
 
 /// TODO: copy over the sorting logic from before, and turn it into a range adaptor
-/// with as little overhead as possible.
+/// with as little overhead as possible.  Sorting an immutable input means sorting an
+/// array of `impl::ref` objects to its contents, which gets allocated and populated
+/// at the same time as the insertion sort pass.
 
 
 
