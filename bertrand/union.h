@@ -993,15 +993,14 @@ namespace impl {
     the semantics laid out in `impl::visitable<T>`, which describes how to register
     custom visitable types for use with this function. */
     template <size_t min_visits = 0, typename F, typename... Args>
-    [[gnu::always_inline]] constexpr auto visit(F&& f, Args&&... args)
+    [[gnu::always_inline]] constexpr decltype(auto) visit(F&& f, Args&&... args)
         noexcept (meta::nothrow::force_visit<min_visits, F, Args...>)
-        -> meta::force_visit_type<min_visits, F, Args...>
         requires (meta::force_visit<min_visits, F, Args...>)
     {
-        return meta::detail::visit<F, min_visits, Args...>{}(
+        return (meta::detail::visit<F, min_visits, Args...>{}(
             std::forward<F>(f),
             std::forward<Args>(args)...
-        );
+        ));
     }
 
     template <typename T, typename = std::make_index_sequence<meta::unqualify<T>::types::size()>>
@@ -1765,10 +1764,10 @@ namespace impl {
 
     /* A simple visitor that backs the implicit constructor for a `Union<Ts...>`
     object, returning a corresponding `impl::basic_union` primitive type. */
-    template <typename, typename...>
+    template <typename>
     struct union_convert_from {};
-    template <typename... Ts, typename in> requires (!meta::visit_monad<in>)
-    struct union_convert_from<meta::pack<Ts...>, in> {
+    template <typename... Ts>
+    struct union_convert_from<meta::pack<Ts...>> {
         template <typename from>
         using type = _union_convert_from<from, void, void, Ts...>::type;
         template <typename from>
@@ -3168,10 +3167,10 @@ struct Union : impl::union_tag {
     implicit conversions from other union types, regardless of source. */
     template <typename from>
     [[nodiscard]] constexpr Union(from&& v)
-        noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<types, from>, from>)
-        requires (meta::visit_exhaustive<impl::union_convert_from<types, from>, from>)
+        noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<types>, from>)
+        requires (meta::visit_exhaustive<impl::union_convert_from<types>, from>)
     :
-        __value(impl::visit(impl::union_convert_from<types, from>{}, std::forward<from>(v)))
+        __value(impl::visit(impl::union_convert_from<types>{}, std::forward<from>(v)))
     {}
 
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
@@ -3184,7 +3183,7 @@ struct Union : impl::union_tag {
         noexcept (meta::nothrow::visit_exhaustive<impl::union_construct_from<Ts...>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::visit_exhaustive<impl::union_convert_from<types, A...>, A...> &&
+            !meta::visit_exhaustive<impl::union_convert_from<types>, A...> &&
             meta::visit_exhaustive<impl::union_construct_from<Ts...>, A...>
         )
     :
@@ -3458,6 +3457,24 @@ constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
 ////////////////////////
 
 
+/// TODO: `T` should be allowed to be both `void` and `None`, such that CTAD guides
+/// enable `Optional{}` and `Optional{None}`, which is important when using optionals
+/// in template metaprogramming, which is a promising use case.  A template of the
+/// form:
+
+/// template <Optional x>
+/// struct Foo {};
+
+/// could therefore be instantiated with `Foo<{}>` as well as `Foo<1>` or any other
+/// suitable type.  It also just makes the monad structure more flexible overall,
+/// which is nice.
+
+
+/// TODO: the problem with this is that it interferes with the storage backend and
+/// visit logic, which currently assumes all alternatives are held in storage.  This
+/// would therefore require more changes than I currently understand.
+
+
 namespace impl {
 
     /* Return a standardized error if an optional is dereferenced while in the empty
@@ -3527,7 +3544,7 @@ namespace impl {
     object, returning a corresponding `impl::basic_union` primitive type. */
     template <typename T, typename...>
     struct optional_convert_from {};
-    template <typename T, typename in> requires (!meta::visit_monad<in>)
+    template <typename T, typename in>
     struct optional_convert_from<T, in> {
         using type = meta::remove_rvalue<T>;
         using empty = impl::visitable<in>::empty;
@@ -4694,7 +4711,7 @@ namespace impl {
     object, returning a corresponding `impl::basic_union` primitive type. */
     template <typename, typename...>
     struct expected_convert_from {};
-    template <typename T, typename... Es, typename in> requires (!meta::visit_monad<in>)
+    template <typename T, typename... Es, typename in>
     struct expected_convert_from<meta::pack<T, Es...>, in> {
         using type = meta::remove_rvalue<expected_value<T>>;
         using result = impl::basic_union<type, meta::remove_rvalue<Es>...>;
@@ -5316,14 +5333,6 @@ constexpr decltype(auto) operator->*(T&& val, F&& func)
         std::forward<T>(val)
     ));
 }
-
-
-/// TODO: there appears to be something wrong with the Union<> constructor in the case
-/// of `Union<Optional<int>, const char*> u = Optional(2)`, where visitors aren't being
-/// properly invoked from the optional to the nested union.  The expected behavior is
-/// that the union should be initialized to the first alternative.
-// static constexpr Union<Optional<int>, const char*> u = Optional(2);
-
 
 
 /// NOTE: All other operators are conditionally supported for union types, but only if
