@@ -5445,6 +5445,11 @@ namespace impl {
         meta::lvalue<R> &&
         join_union_concept<Sep, Subranges...>;
 
+    /* A simple tag that indicates to an iterator algorithm that a given group is
+    currently uninitialized, and must be populated before the algorithm can
+    continue. */
+    struct join_fresh {};
+
     /* Join iterators work by storing a pointer to the joined range, an index recording
     the current sub-range, and a union of backing iterators, which store both the begin
     and end iterators for each range.  Scalars are promoted to ranges of length 1 for
@@ -5493,7 +5498,7 @@ namespace impl {
 
     private:
         meta::as_pointer<R> range = nullptr;
-        ssize_t index = total_groups;  // defaults to end iterator
+        ssize_t index = total_groups;
         storage_type subrange;
 
         /* Visit the subrange union with a vtable function that accepts the current
@@ -6293,77 +6298,8 @@ namespace impl {
             }
         };
 
-        /// TODO: life would probably be a bit better if distance_middle/left/right
-        /// always maintained an accurate index within their respective subranges.
-
-        /// TODO: distance_right and distance_equal need to contend with the fact that
-        /// the index might exceed the length of the subrange in the case of end
-        /// iterator overflow, which is currently not handled.  Probably, this will
-        /// mean handling the last subrange as if it is empty, and then adding the
-        /// remaining overflow to the total reported distance.  Regardless, this is
-        /// pretty complicated, all things considered.
-
-
-        /// TODO: what would really be a lot better is if I could decouple all of these
-        /// various visitors and reduce them to just a single one that starts at a
-        /// particular group, assumes that group is initialized, and then iterates
-        /// until either the end iterator is reached or we get to a particular index,
-        /// whichever comes first.  Perhaps I can pass in a separate tag class to
-        /// indicate whether the group should be initialized as part of the operation,
-        /// in which case I can avoid a bunch of unnecessary visits.
-
-        struct fresh {};
-
         template <size_t G>
-        struct consume {
-            template <is_join_subrange S>
-            static constexpr difference_type call(const join_iterator& it, S& s)
-                noexcept (requires{
-                    {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                })
-                requires (requires{
-                    {s.end - s.begin} -> meta::convertible_to<difference_type>;
-                })
-            {
-                return s.end - s.begin;
-            }
-
-            template <is_join_subrange S>
-            static constexpr difference_type call(fresh, const join_iterator& it, S& s)
-                noexcept (requires{
-                    {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                })
-                requires (requires{
-                    {s.end - s.begin} -> meta::convertible_to<difference_type>;
-                })
-            {
-                return s.end - s.begin;
-            }
-
-            template <is_join_subrange S>
-            static constexpr difference_type call(const join_iterator& it, S& s, const S& end)
-                noexcept (requires{{
-                    end.index - s.index
-                } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-                requires (requires{{
-                    end.index - s.index
-                } -> meta::convertible_to<difference_type>;})
-            {
-                return end.index - s.index;
-            }
-
-            template <is_join_subrange S>
-            static constexpr difference_type call(fresh, const join_iterator& it, S& s, const S& end)
-                noexcept (requires{{
-                    end.index - s.index
-                } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-                requires (requires{{
-                    end.index - s.index
-                } -> meta::convertible_to<difference_type>;})
-            {
-                return end.index - s.index;
-            }
-
+        struct count {
             template <is_join_nested S>
             static constexpr signal middle(
                 difference_type& sum,
@@ -6371,23 +6307,23 @@ namespace impl {
                 S& s
             )
                 noexcept (requires(difference_type sum) {
-                    {sum += consume<G>{}(fresh{}, it, s)} noexcept;
+                    {sum += count<G>{}(join_fresh{}, it, s)} noexcept;
                 } && (S::template is_separator<G> || requires{
                     {++s.begin} noexcept;
                     {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                 }) && (G + 1 == S::total_groups || requires{
-                    {consume<G + 1>::middle(sum, it, s)} noexcept;
+                    {count<G + 1>::middle(sum, it, s)} noexcept;
                 }))
                 requires (requires(difference_type sum) {
-                    {sum += consume<G>{}(fresh{}, it, s)};
+                    {sum += count<G>{}(join_fresh{}, it, s)};
                 } && (S::template is_separator<G> || requires{
                     {++s.begin};
                     {s.begin == s.end} -> meta::convertible_to<bool>;
                 }) && (G + 1 == S::total_groups || requires{
-                    {consume<G + 1>::middle(sum, it, s)};
+                    {count<G + 1>::middle(sum, it, s)};
                 }))
             {
-                sum += consume<G>{}(fresh{}, it, s);
+                sum += count<G>{}(join_fresh{}, it, s);
                 ++s.index;
                 if constexpr (!S::template is_separator<G>) {
                     ++s.begin;
@@ -6398,22 +6334,152 @@ namespace impl {
                 if constexpr (G + 1 == S::total_groups) {
                     return signal::CONTINUE;
                 } else {
-                    return consume<G + 1>::middle(sum, it, s);
+                    return count<G + 1>::middle(sum, it, s);
                 }
             }
 
-            /// TODO: a version of `middle()` that terminates early based on an index.
-            /// This would accept an end subrange of the same type as `s`, and is
-            /// guaranteed to be in range.
+            template <is_join_nested S>
+            static constexpr signal middle(
+                difference_type& sum,
+                const join_iterator& it,
+                S& s,
+                const S& end
+            )
+                noexcept (requires(difference_type sum) {
+                    {sum += count<G>{}(join_fresh{}, it, s)} noexcept;
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin} noexcept;
+                }) && (G + 1 == S::total_groups || requires{
+                    {count<G + 1>::middle(sum, it, s, end)} noexcept;
+                }))
+                requires (requires(difference_type sum) {
+                    {sum += count<G>{}(join_fresh{}, it, s)};
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin};
+                }) && (G + 1 == S::total_groups || requires{
+                    {count<G + 1>::middle(sum, it, s, end)};
+                }))
+            {
+                if (s.index == end.index) {
+                    return signal::BREAK;
+                }
+                sum += count<G>{}(join_fresh{}, it, s);
+                ++s.index;
+                if constexpr (!S::template is_separator<G>) {
+                    ++s.begin;
+                }
+                if constexpr (G + 1 == S::total_groups) {
+                    return signal::CONTINUE;
+                } else {
+                    return count<G + 1>::middle(sum, it, s, end);
+                }
+            }
 
+            /// NOTE: `count{}()` can be called in four different ways:
+            /// 1.  `count<G>{}(join_fresh{}, it, p)`: initializes and counts group `G`
+            ///     in its entirety
+            /// 2.  `count<G>{}(it, p)`: counts from the current position of `p` to
+            ///     the end of group `G`
+            /// 3.  `count<G>{}(join_fresh{}, it, p, end)`: initializes group `G` and
+            ///     counts from the beginning of `p` to the position of `end`
+            /// 4.  `count<G>{}(it, p, end)`: counts from the current position of
+            ///     `p` to the position of `end` (which must be in range)
 
+            /// (1)
+
+            template <is_join_subrange S>
+            static constexpr difference_type begin_to_end(
+                join_fresh,
+                const join_iterator& it,
+                S& s
+            )
+                noexcept (requires{
+                    {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
+                })
+                requires (requires{
+                    {s.end - s.begin} -> meta::convertible_to<difference_type>;
+                })
+            {
+                return s.end - s.begin;
+            }
 
             template <is_join_nested S>
-            static constexpr difference_type call(const join_iterator& it, S& s)
-                /// TODO: noexcept/requires
+            static constexpr difference_type begin_to_end(join_fresh, const join_iterator& it, S& s)
+                noexcept (requires(difference_type sum) {
+                    {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                    {count<0>::middle(sum, it, s)} noexcept;
+                })
+                requires (requires(difference_type sum) {
+                    {s.begin != s.end} -> meta::convertible_to<bool>;
+                    {count<0>::middle(sum, it, s)};
+                })
+            {
+                difference_type sum = 0;
+                if (s.begin != s.end) {
+                    while (count<0>::middle(sum, it, s) != signal::BREAK);
+                }
+                return sum;
+            }
+
+            template <meta::not_const P> requires (G < P::total_groups)
+            static constexpr difference_type operator()(
+                join_fresh,
+                const join_iterator& it,
+                P& p
+            )
+                noexcept (requires{
+                    {p.template init<G>(it)} noexcept;
+                    {begin_to_end(join_fresh{}, it, p.template get<G>())} noexcept;
+                })
+                requires (requires{
+                    {p.template init<G>(it)};
+                    {begin_to_end(join_fresh{}, it, p.template get<G>())};
+                })
+            {
+                p.template init<G>(it);
+                return begin_to_end(join_fresh{}, it, p.template get<G>());
+            }
+
+            /// (2)
+
+            template <is_join_subrange S>
+            static constexpr difference_type curr_to_end(
+                const join_iterator& it,
+                S& s
+            )
+                noexcept (requires{
+                    {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
+                })
+                requires (requires{
+                    {s.end - s.begin} -> meta::convertible_to<difference_type>;
+                })
+            {
+                return s.end - s.begin;
+            }
+
+            template <is_join_nested S>
+            static constexpr difference_type curr_to_end(const join_iterator& it, S& s)
+                noexcept (requires(difference_type sum) {
+                    {s.template visit<join_iterator::count>(it, s)} noexcept;
+                    {count<0>::middle(sum, it, s)} noexcept;
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin} noexcept;
+                    {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
+                }) && (G + 1 == S::total_groups || requires(difference_type sum) {
+                    {count<G + 1>::middle(sum, it, s)} noexcept;
+                }))
+                requires (requires(difference_type sum) {
+                    {s.template visit<join_iterator::count>(it, s)};
+                    {count<0>::middle(sum, it, s)};
+                } && (S::template is_separator<G> || requires{
+                    {++s.begin};
+                    {s.begin == s.end} -> meta::convertible_to<bool>;
+                }) && (G + 1 == S::total_groups || requires(difference_type sum) {
+                    {count<G + 1>::middle(sum, it, s)};
+                }))
             {
                 // get the distance to the end of the innermost subrange
-                difference_type sum = s.template visit<join_iterator::consume>(it, s);
+                difference_type sum = s.template visit<join_iterator::count>(it, s);
                 ++s.index;
                 if constexpr (!S::template is_separator<G>) {
                     ++s.begin;
@@ -6425,121 +6491,325 @@ namespace impl {
                 // finish this iteration if necessary
                 signal r = signal::CONTINUE;
                 if constexpr (G + 1 < S::total_groups) {
-                    r = consume<G + 1>::middle(sum, it, s);
+                    r = count<G + 1>::middle(sum, it, s);
                 }
 
                 // iterate over the remaining groups
                 while (r != signal::BREAK) {
-                    r = consume<0>::middle(sum, it, s);
+                    r = count<0>::middle(sum, it, s);
                 }
                 return sum;
+            }
+
+            template <meta::not_const P> requires (G < P::total_groups)
+            static constexpr difference_type operator()(const join_iterator& it, P& p)
+                noexcept (requires{{curr_to_end(it, p.template get<G>())} noexcept;})
+                requires (requires{{curr_to_end(it, p.template get<G>())};})
+            {
+                return curr_to_end(it, p.template get<G>());
+            }
+
+            /// (3)
+
+            template <is_join_subrange S>
+            static constexpr difference_type begin_to_sentinel(
+                join_fresh,
+                const join_iterator& it,
+                S& s,
+                const S& end
+            )
+                noexcept (requires{{
+                    end.index
+                } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+                requires (requires{{
+                    end.index
+                } -> meta::convertible_to<difference_type>;})
+            {
+                return end.index;
             }
 
             template <is_join_nested S>
-            static constexpr difference_type call(fresh, const join_iterator& it, S& s)
-                /// TODO: noexcept/requires
-            {
-                difference_type sum = 0;
-                if (s.begin != s.end) {
-                    while (consume<0>::middle(sum, it, s) != signal::BREAK);
-                }
-                return sum;
-            }
-
-
-            /// TODO: versions of `call()` that terminate early based on an index
-
-
-
-            template <typename P> requires (G < P::total_groups)
-            static constexpr difference_type operator()(const join_iterator& it, P& p)
-                noexcept (requires{{call(it, p.template get<G>())} noexcept;})
-                requires (requires{{call(it, p.template get<G>())};})
-            {
-                return call(it, p.template get<G>());
-            }
-
-            template <typename P> requires (G < P::total_groups)
-            static constexpr difference_type operator()(const join_iterator& it, P& p, ssize_t i)
-                noexcept (requires{{call(it, p.template get<G>(), i)} noexcept;})
-                requires (requires{{call(it, p.template get<G>(), i)};})
-            {
-                return call(it, p.template get<G>(), i);
-            }
-
-            template <typename P> requires (G < P::total_groups)
-            static constexpr difference_type operator()(
-                fresh,
+            static constexpr difference_type begin_to_sentinel(
+                join_fresh,
                 const join_iterator& it,
-                P& p
+                S& s,
+                const S& end
             )
-                noexcept (requires{
-                    {p.template init<G>(it)} noexcept;
-                    {call(fresh{}, it, p.template get<G>())} noexcept;
+                noexcept (requires(difference_type sum) {
+                    {count<0>::middle(sum, it, s)} noexcept;
+                    {count<0>::middle(sum, it, s, end)} noexcept;
+                    {sum + s.template visit<join_iterator::count>(it, s, end)} noexcept;
                 })
-                requires (requires{
-                    {p.template init<G>(it)};
-                    {call(fresh{}, it, p.template get<G>())};
+                requires (requires(difference_type sum) {
+                    {count<0>::middle(sum, it, s)};
+                    {count<0>::middle(sum, it, s, end)};
+                    {sum + s.template visit<join_iterator::count>(it, s, end)};
                 })
             {
-                p.template init<G>(it);
-                return call(fresh{}, it, p.template get<G>());
+                // count full groups until `s.index` is within one group of `end.index`
+                difference_type sum = 0;
+                s.index += S::total_groups;
+                while (s.index <= end.index) {
+                    count<0>::middle(sum, it, s);
+                }
+                s.index -= S::total_groups;
+
+                // continue counting last partial group until `s.index == end.index`
+                count<0>::middle(sum, it, s, end);
+
+                // recursively visit one level deeper after indices equalize
+                return sum + s.template visit<join_iterator::count>(join_fresh{}, it, s, end);
             }
 
-            template <typename P> requires (G < P::total_groups)
+            template <meta::not_const P> requires (G < P::total_groups)
             static constexpr difference_type operator()(
-                fresh,
+                join_fresh,
                 const join_iterator& it,
                 P& p,
-                ssize_t i
+                const P& end
             )
                 noexcept (requires{
                     {p.template init<G>(it)} noexcept;
-                    {call(fresh{}, it, p.template get<G>(), i)} noexcept;
+                    {begin_to_sentinel(
+                        join_fresh{},
+                        it,
+                        p.template get<G>(),
+                        end.template get<G>()
+                    )} noexcept;
                 })
                 requires (requires{
                     {p.template init<G>(it)};
-                    {call(fresh{}, it, p.template get<G>(), i)};
+                    {begin_to_sentinel(
+                        join_fresh{},
+                        it,
+                        p.template get<G>(),
+                        end.template get<G>()
+                    )};
                 })
             {
                 p.template init<G>(it);
-                return call(fresh{}, it, p.template get<G>(), i);
+                return begin_to_sentinel(
+                    join_fresh{},
+                    it,
+                    p.template get<G>(),
+                    end.template get<G>()
+                );
+            }
+
+            /// (4)
+
+            template <is_join_subrange S>
+            static constexpr difference_type curr_to_sentinel(
+                const join_iterator& it,
+                const S& s,
+                const S& end
+            )
+                noexcept (requires{{
+                    end.index - s.index
+                } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+                requires (requires{{
+                    end.index - s.index
+                } -> meta::convertible_to<difference_type>;})
+            {
+                return end.index - s.index;
+            }
+
+            template <is_join_nested S>
+            static constexpr difference_type curr_to_sentinel(
+                const join_iterator& it,
+                const S& s,
+                const S& end
+            )
+                noexcept (
+                    meta::nothrow::copyable<S> &&
+                    requires(difference_type sum, S tmp) {
+                        {tmp.template visit<join_iterator::count>(it, tmp)} noexcept;
+                        {count<0>::middle(sum, it, tmp)} noexcept;
+                        {count<0>::middle(sum, it, tmp, end)} noexcept;
+                        {count<0>::middle(sum, it, tmp, s)} noexcept;
+                        {tmp.template visit<join_iterator::count>(it, tmp, end)} noexcept;
+                        {tmp.template visit<join_iterator::count>(it, tmp, s)} noexcept;
+                        {s.template visit<join_iterator::count>(it, s, end)} noexcept;
+                    } && (S::template is_separator<G> || requires(S tmp) {
+                        {++tmp.begin} noexcept;
+                    }) && (G + 1 == S::total_groups || requires(difference_type sum, S tmp) {
+                        {count<G + 1>::middle(sum, it, tmp, end)} noexcept;
+                        {count<G + 1>::middle(sum, it, tmp, s)} noexcept;
+                    })
+                )
+                requires (
+                    meta::copyable<S> &&
+                    requires(difference_type sum, S tmp) {
+                        {tmp.template visit<join_iterator::count>(it, tmp)};
+                        {count<0>::middle(sum, it, tmp)};
+                        {count<0>::middle(sum, it, tmp, end)};
+                        {count<0>::middle(sum, it, tmp, s)};
+                        {tmp.template visit<join_iterator::count>(it, tmp, end)};
+                        {tmp.template visit<join_iterator::count>(it, tmp, s)};
+                        {s.template visit<join_iterator::count>(it, s, end)};
+                    } && (S::template is_separator<G> || requires(S tmp) {
+                        {++tmp.begin};
+                    }) && (G + 1 == S::total_groups || requires(difference_type sum, S tmp) {
+                        {count<G + 1>::middle(sum, it, tmp, end)};
+                        {count<G + 1>::middle(sum, it, tmp, s)};
+                    })
+                )
+            {
+                if (s.index < end.index) {
+                    S tmp = s;
+
+                    // get the distance to the end of the innermost subrange for `tmp`
+                    difference_type sum = tmp.template visit<join_iterator::count>(it, tmp);
+                    ++tmp.index;
+                    if constexpr (!S::template is_separator<G>) {
+                        ++tmp.begin;
+                    }
+
+                    // finish this iteration if necessary
+                    if constexpr (G + 1 < S::total_groups) {
+                        count<G + 1>::middle(sum, it, tmp, end);
+                    }
+
+                    // count full groups until `tmp.index` is within one group of `end.index`
+                    tmp.index += S::total_groups;
+                    while (tmp.index <= end.index) {
+                        count<0>::middle(sum, it, tmp);
+                    }
+                    tmp.index -= S::total_groups;
+
+                    // continue counting last partial group until `tmp.index == end.index`
+                    count<0>::middle(sum, it, tmp, end);
+
+                    // recursively visit one level deeper after indices equalize
+                    return sum + tmp.template visit<join_iterator::count>(it, tmp, end);
+
+                } else if (s.index > end.index) {
+                    S tmp = end;
+                    difference_type sum = -tmp.template visit<join_iterator::count>(it, tmp);
+                    ++tmp.index;
+                    if constexpr (!S::template is_separator<G>) {
+                        ++tmp.begin;
+                    }
+                    difference_type temp_sum = 0;
+                    if constexpr (G + 1 < S::total_groups) {
+                        count<G + 1>::middle(temp_sum, it, tmp, s);
+                    }
+                    tmp.index += S::total_groups;
+                    while (tmp.index <= s.index) {
+                        count<0>::middle(temp_sum, it, tmp);
+                    }
+                    tmp.index -= S::total_groups;
+                    count<0>::middle(temp_sum, it, tmp, s);
+                    return sum - temp_sum - tmp.template visit<join_iterator::count>(it, tmp, s);
+
+                } else {
+                    // indices are already equal - just visit one level deeper
+                    return s.template visit<join_iterator::count>(it, s, end);
+                }
+            }
+
+            template <typename P> requires (G < P::total_groups)
+            static constexpr difference_type operator()(
+                const join_iterator& it,
+                const P& p,
+                const P& end
+            )
+                noexcept (requires{{curr_to_sentinel(
+                    it,
+                    p.template get<G>(),
+                    end.template get<G>()
+                )} noexcept;})
+                requires (requires{{curr_to_sentinel(
+                    it,
+                    p.template get<G>(),
+                    end.template get<G>()
+                )};})
+            {
+                return curr_to_sentinel(it, p.template get<G>(), end.template get<G>());
             }
         };
+
         template <size_t H>
         struct distance {
             static constexpr size_t LHS = H / total_groups;
             static constexpr size_t RHS = H % total_groups;
 
-            /// TODO: the equal case will have to do a runtime check to determine the
-            /// correct sign of the distance, and needs to bound the iteration
-            /// accordingly, since `consume<>` can only go from left to right.
-
-            // static constexpr difference_type operator()(
-            //     const join_iterator& lhs,
-            //     const join_iterator& rhs
-            // )
-            //     noexcept (requires{{distance_equal<LHS>{}(lhs, rhs)} noexcept;})
-            //     requires (LHS == RHS && requires{{distance_equal<LHS>{}(lhs, rhs)};})
-            // {
-            //     /// TODO: if LHS is 0 or total_groups - 1, then I need to check for
-            //     /// uninitialized iterators and handle them appropriately.
-            //     return distance_equal<LHS>{}(lhs, rhs);
-            // }
-
-
-
-
-
+            static constexpr difference_type operator()(
+                const join_iterator& lhs,
+                const join_iterator& rhs
+            )
+                noexcept (LHS == RHS && requires{
+                    {count<LHS>{}(lhs, lhs, rhs)} noexcept;
+                } && (
+                    LHS != 0 ||
+                    !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                    requires(join_iterator tmp) {
+                        {lhs} noexcept -> meta::nothrow::copyable;
+                        {rhs} noexcept -> meta::nothrow::copyable;
+                        {count<LHS>{}(join_fresh{}, tmp, tmp, rhs)} noexcept;
+                        {count<LHS>{}(join_fresh{}, tmp, tmp, lhs)} noexcept;
+                    }
+                ) && (
+                    LHS != total_groups - 1 ||
+                    requires(join_iterator tmp) {
+                        {lhs} noexcept -> meta::nothrow::copyable;
+                        {rhs} noexcept -> meta::nothrow::copyable;
+                        {count<LHS>{}(tmp, tmp)} noexcept;
+                    }
+                ))
+                requires (LHS == RHS && requires{
+                    {count<LHS>{}(lhs, lhs, rhs)};
+                } && (
+                    LHS != 0 ||
+                    !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                    requires(join_iterator tmp) {
+                        {lhs} -> meta::copyable;
+                        {rhs} -> meta::copyable;
+                        {count<LHS>{}(join_fresh{}, tmp, tmp, rhs)};
+                        {count<LHS>{}(join_fresh{}, tmp, tmp, lhs)};
+                    }
+                ) && (
+                    LHS != total_groups - 1 ||
+                    requires(join_iterator tmp) {
+                        {lhs} -> meta::copyable;
+                        {rhs} -> meta::copyable;
+                        {count<LHS>{}(tmp, tmp)};
+                    }
+                ))
+            {
+                if constexpr (
+                    LHS == 0 &&
+                    meta::inherits<iterator_category, std::bidirectional_iterator_tag>
+                ) {
+                    if (lhs.index < 0) {
+                        join_iterator tmp = lhs;
+                        return -lhs.index + count<LHS>{}(join_fresh{}, tmp, tmp, rhs);
+                    }
+                    if (rhs.index < 0) {
+                        join_iterator tmp = rhs;
+                        return rhs.index - count<LHS>{}(join_fresh{}, tmp, tmp, lhs);
+                    }
+                } else if constexpr (LHS == total_groups - 1) {
+                    if (rhs.index >= total_groups) {
+                        join_iterator tmp = lhs;
+                        return rhs.index - (total_groups - 1) + count<LHS>{}(tmp, tmp);
+                    }
+                    if (lhs.index >= total_groups) {
+                        join_iterator tmp = rhs;
+                        return -(lhs.index - (total_groups - 1) + count<LHS>{}(tmp, tmp));
+                    }
+                }
+                return count<LHS>{}(lhs, lhs, rhs);
+            }
 
             template <size_t... Gs>
             static constexpr difference_type middle(std::index_sequence<Gs...>, join_iterator& tmp)
                 noexcept (requires(difference_type sum) {{(
-                    (sum += consume<LHS + 1 + Gs>{}(fresh{}, tmp, tmp)),
+                    (sum += count<LHS + 1 + Gs>{}(join_fresh{}, tmp, tmp)),
                     ...
                 )} noexcept;})
                 requires (requires(difference_type sum) {{(
-                    (sum += consume<LHS + 1 + Gs>{}(fresh{}, tmp, tmp)),
+                    (sum += count<LHS + 1 + Gs>{}(join_fresh{}, tmp, tmp)),
                     ...
                 )};})
             {
@@ -6547,7 +6817,7 @@ namespace impl {
                 // evaluation, which is crucial because `distance_middle` advances `tmp`
                 // by side effect.
                 difference_type sum = 0;
-                ((sum += consume<LHS + 1 + Gs>{}(fresh{}, tmp, tmp)), ...);
+                ((sum += count<LHS + 1 + Gs>{}(join_fresh{}, tmp, tmp)), ...);
                 return sum;
             }
 
@@ -6558,20 +6828,20 @@ namespace impl {
                 noexcept (
                     meta::nothrow::copyable<join_iterator> &&
                     requires(join_iterator tmp, difference_type sum) {
-                        {sum += consume<LHS>{}(tmp, tmp)} noexcept;
+                        {sum += count<LHS>{}(tmp, tmp)} noexcept;
                         {sum += middle(std::make_index_sequence<RHS - LHS - 1>{}, tmp)} noexcept;
-                        {sum += consume<RHS>{}(fresh{}, tmp, tmp, rhs)} noexcept;
+                        {sum += count<RHS>{}(join_fresh{}, tmp, tmp, rhs)} noexcept;
                     } && (
                         LHS > 0 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum += consume<LHS>{}(fresh{}, tmp, tmp)} noexcept;
+                            {sum += count<LHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
                     ) && (
                         RHS < total_groups - 1 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum += consume<RHS>{}(fresh{}, tmp, tmp)} noexcept;
+                            {sum += count<RHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
                     )
                 )
@@ -6579,20 +6849,20 @@ namespace impl {
                     LHS < RHS &&
                     meta::copyable<join_iterator> &&
                     requires(join_iterator tmp, difference_type sum) {
-                        {sum += consume<LHS>{}(tmp, tmp)};
+                        {sum += count<LHS>{}(tmp, tmp)};
                         {sum += middle(std::make_index_sequence<RHS - LHS - 1>{}, tmp)};
-                        {sum += consume<RHS>{}(fresh{}, tmp, tmp, rhs)};
+                        {sum += count<RHS>{}(join_fresh{}, tmp, tmp, rhs)};
                     } && (
                         LHS > 0 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum += consume<LHS>{}(fresh{}, tmp, tmp)};
+                            {sum += count<LHS>{}(join_fresh{}, tmp, tmp)};
                         }
                     ) && (
                         RHS < total_groups - 1 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum += consume<RHS>{}(fresh{}, tmp, tmp)};
+                            {sum += count<RHS>{}(join_fresh{}, tmp, tmp)};
                         }
                     )
                 )
@@ -6604,22 +6874,24 @@ namespace impl {
                     meta::inherits<iterator_category, std::bidirectional_iterator_tag>
                 ) {
                     if (tmp.index < 0) {
-                        sum += consume<LHS>{}(fresh{}, tmp, tmp);
+                        sum -= tmp.index;
+                        sum += count<LHS>{}(join_fresh{}, tmp, tmp);
                     } else {
-                        sum += consume<LHS>{}(tmp, tmp);
+                        sum += count<LHS>{}(tmp, tmp);
                     }
                 } else {
-                    sum += consume<LHS>{}(tmp, tmp);
+                    sum += count<LHS>{}(tmp, tmp);
                 }
                 sum += middle(std::make_index_sequence<RHS - LHS - 1>{}, tmp);
                 if constexpr (RHS == total_groups - 1) {
                     if (rhs.index >= total_groups) {
-                        sum += consume<RHS>{}(fresh{}, tmp, tmp);
+                        sum += rhs.index - (total_groups - 1);
+                        sum += count<RHS>{}(join_fresh{}, tmp, tmp);
                     } else {
-                        sum += consume<RHS>{}(fresh{}, tmp, tmp, rhs);
+                        sum += count<RHS>{}(join_fresh{}, tmp, tmp, rhs);
                     }
                 } else {
-                    sum += consume<RHS>{}(fresh{}, tmp, tmp, rhs);
+                    sum += count<RHS>{}(join_fresh{}, tmp, tmp, rhs);
                 }
                 return sum;
             }
@@ -6631,20 +6903,20 @@ namespace impl {
                 noexcept (
                     meta::nothrow::copyable<join_iterator> &&
                     requires(join_iterator tmp, difference_type sum) {
-                        {sum -= consume<RHS>{}(tmp, tmp)} noexcept;
+                        {sum -= count<RHS>{}(tmp, tmp)} noexcept;
                         {sum -= middle(std::make_index_sequence<LHS - RHS - 1>{}, tmp)} noexcept;
-                        {sum -= consume<LHS>{}(fresh{}, tmp, tmp, lhs)} noexcept;
+                        {sum -= count<LHS>{}(join_fresh{}, tmp, tmp, lhs)} noexcept;
                     } && (
                         RHS > 0 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum -= consume<RHS>{}(fresh{}, tmp, tmp)} noexcept;
+                            {sum -= count<RHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
                     ) && (
                         LHS < total_groups - 1 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum -= consume<LHS>{}(fresh{}, tmp, tmp)} noexcept;
+                            {sum -= count<LHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
                     )
                 )
@@ -6652,20 +6924,20 @@ namespace impl {
                     LHS > RHS &&
                     meta::copyable<join_iterator> &&
                     requires(join_iterator tmp, difference_type sum) {
-                        {sum -= consume<RHS>{}(tmp, tmp)};
+                        {sum -= count<RHS>{}(tmp, tmp)};
                         {sum -= middle(std::make_index_sequence<LHS - RHS - 1>{}, tmp)};
-                        {sum -= consume<LHS>{}(fresh{}, tmp, tmp, lhs)};
+                        {sum -= count<LHS>{}(join_fresh{}, tmp, tmp, lhs)};
                     } && (
                         RHS > 0 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum -= consume<RHS>{}(fresh{}, tmp, tmp)};
+                            {sum -= count<RHS>{}(join_fresh{}, tmp, tmp)};
                         }
                     ) && (
                         LHS < total_groups - 1 ||
                         !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
                         requires(join_iterator tmp, difference_type sum) {
-                            {sum -= consume<LHS>{}(fresh{}, tmp, tmp)};
+                            {sum -= count<LHS>{}(join_fresh{}, tmp, tmp)};
                         }
                     )
                 )
@@ -6677,22 +6949,24 @@ namespace impl {
                     meta::inherits<iterator_category, std::bidirectional_iterator_tag>
                 ) {
                     if (tmp.index < 0) {
-                        sum -= consume<RHS>{}(fresh{}, tmp, tmp);
+                        sum += tmp.index;
+                        sum -= count<RHS>{}(join_fresh{}, tmp, tmp);
                     } else {
-                        sum -= consume<RHS>{}(tmp, tmp);
+                        sum -= count<RHS>{}(tmp, tmp);
                     }
                 } else {
-                    sum -= consume<RHS>{}(tmp, tmp);
+                    sum -= count<RHS>{}(tmp, tmp);
                 }
                 sum -= middle(std::make_index_sequence<LHS - RHS - 1>{}, tmp);
                 if constexpr (LHS == total_groups - 1) {
                     if (lhs.index >= total_groups) {
-                        sum -= consume<LHS>{}(fresh{}, tmp, tmp);
+                        sum -= lhs.index - (total_groups - 1);
+                        sum -= count<LHS>{}(join_fresh{}, tmp, tmp);
                     } else {
-                        sum -= consume<LHS>{}(fresh{}, tmp, tmp, lhs);
+                        sum -= count<LHS>{}(join_fresh{}, tmp, tmp, lhs);
                     }
                 } else {
-                    sum -= consume<LHS>{}(fresh{}, tmp, tmp, lhs);
+                    sum -= count<LHS>{}(join_fresh{}, tmp, tmp, lhs);
                 }
                 return sum;
             }
@@ -6705,15 +6979,13 @@ namespace impl {
             requires (requires{{increment<0>::skip(*this, *this)};})
         :
             range(std::addressof(range)),
-            index(0),
-            subrange()
+            index(0)
         {
             increment<0>::skip(*this, *this);
         }
         [[nodiscard]] constexpr join_iterator(R range, NoneType) noexcept :
             range(std::addressof(range)),
-            index(total_groups),
-            subrange()
+            index(total_groups)
         {}
 
         [[nodiscard]] constexpr yield_type operator*()
@@ -6976,43 +7248,27 @@ namespace impl {
             ssize_t l = index;
             ssize_t r = other.index;
 
-            /// TODO: maybe it is actually better to put all the `sum` logic into the
-            /// `distance` visitor, so that it can account for sign a little better.
-
             // if both iterators are out of bounds and in the same region, then the
             // distance is simply the difference between their overflowing indices
-            difference_type sum = 0;
             if constexpr (meta::inherits<iterator_category, std::bidirectional_iterator_tag>) {
                 if (l < 0) {
                     if (r < 0) return l - r;
-                    sum -= l;
                     l = 0;
-                    if (r >= total_groups) {
-                        sum += r - (total_groups - 1);
-                        r = total_groups - 1;
-                    }
+                    if (r >= total_groups) r = total_groups - 1;
                 } else if (l >= total_groups) {
                     if (r >= total_groups) return l - r;
-                    sum += l - (total_groups - 1);
                     l = total_groups - 1;
-                    if (r < 0) {
-                        sum -= r;
-                        r = 0;
-                    }
+                    if (r < 0) r = 0;
                 } else if (r < 0) {
-                    sum -= r;
                     r = 0;
                 } else if (r >= total_groups) {
-                    sum += r - (total_groups - 1);
                     r = total_groups - 1;
                 }
             } else {
                 if (l >= total_groups) {
                     if (r >= total_groups) return l - r;
-                    sum += l - (total_groups - 1);
                     l = total_groups - 1;
                 } else if (r >= total_groups) {
-                    sum += r - (total_groups - 1);
                     r = total_groups - 1;
                 }
             }
@@ -7020,7 +7276,7 @@ namespace impl {
             // otherwise we dispatch based on the cartesian product of the normalized
             // indices, which effectively promotes them to compile time, allowing the
             // rest of the logic to index on that basis
-            return sum + impl::basic_vtable<distance, total_groups * total_groups>{
+            return impl::basic_vtable<distance, total_groups * total_groups>{
                 size_t(l * total_groups + r)
             }(*this, other);
         }
