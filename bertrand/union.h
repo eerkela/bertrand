@@ -3603,7 +3603,7 @@ namespace impl {
             return result{p};
         }
     };
-    template <meta::None T, typename in>
+    template <typename T, typename in> requires (meta::is_void<T> || meta::None<T>)
     struct optional_convert_from<T, in> {
         using empty = impl::visitable<in>::empty;
         using result = impl::basic_union<NoneType>;
@@ -3648,7 +3648,7 @@ namespace impl {
             };
         }
     };
-    template <meta::None T>
+    template <typename T> requires (meta::is_void<T> || meta::None<T>)
     struct optional_construct_from<T> {
         template <typename... A>
         static constexpr auto operator()(A&&... args)
@@ -4378,23 +4378,31 @@ namespace impl {
 
 This is identical to `Union<NoneType, T>`, except in the following cases:
 
-    1.  The implicit and explicit constructors always construct `T`, except for the
-        default constructor and implicit conversion conversion from `None` and
-        `std::nullopt` (assuming those are not valid constructors for `T`).
-    2.  Robust CTAD guides allow `T` to be omitted in many cases, and inferred from a
-        corresponding initializer.
-    3.  Pointer indirection assumes that the active member is not `NoneType`, and
-        always delegates to `T` directly.  A check confirming this will only be emitted
-        in debug builds, ensuring no overhead in release builds.
-    4.  If `T` is an lvalue reference (i.e. `T&`), then the optional supports
+    1.  The implicit and explicit constructors always construct `T` as the active
+        member, except for the default constructor and implicit conversion conversion
+        from `None` or `std::nullopt` (assuming those are not valid constructors for
+        `T`).
+    2.  CTAD guides allow `T` to be omitted in many cases and inferred from a
+        corresponding initializer, including as non-type template parameters for
+        arbitrary classes.
+    3.  As a consequence of (2), `Optional<void>` is well-formed, as is
+        `Optional<NoneType>`, both of which equate to the same type.  These types will
+        only store the empty state, and will not support pointer indirection.
+    4.  Otherwise, pointer indirection assumes that the active member is not
+        `NoneType`, and always returns a pointer-like reference to `T`.  A check
+        confirming the non-empty state will only be generated in debug builds, meaning
+        that in release builds, the pointer operations will produce the same machine
+        code as raw pointers.
+    5.  If `T` is an lvalue reference (i.e. `T&`), then the optional also supports
         conversions both to and from `T*`, where the empty state maps to a null
         pointer.  This allows `Optional<T&>` to be used as a drop-in replacement for
         pointers in most cases, as long as pointer arithmetic is not required.
-    5.  The empty state can be omitted during monadic operations and `impl::visit()`
+    6.  The empty state can be omitted during monadic operations and `impl::visit()`
         calls, in which case it will be implicitly propagated to the return type,
-        possibly promoting that type to an optional.  Note that this is not the case
-        for pattern matching via `->*`, which must exhaustively cover both states.
-    6.  Optionals are always iterable, with one of 2 behaviors depending on `T`:
+        possibly promoting it to an optional.  Note that this is not the case for
+        pattern matching via `->*`, which must exhaustively cover both states.
+    7.  Optionals are always iterable, with one of the following behaviors depending
+        on `T`:
         -   If `T` is iterable, then the result is a forwarding adaptor for the
             iterator(s) over `T`, which behave identically.  If the optional is in the
             empty state, then the adaptor will be uninitialized, and will always
@@ -4403,10 +4411,12 @@ This is identical to `Union<NoneType, T>`, except in the following cases:
             element, which is equivalent to a simple pointer to the contained value.
             If the optional is in the empty state, then a one-past-the-end pointer will
             be used instead.
+        -   If `T` is `void` or `NoneType`, then the optional returns a trivial
+            iterator that yields no values, acting as an empty range.
 
 Note that because optional references are compatible with pointers, Bertrand's binding
-generators will emit them wherever a pointer is exposed to Python, or any other
-language that does not expose pointers as first-class citizens. */
+generators will generate them wherever pointers or pointer-like objects are exposed to
+a language that otherwise does not implement them as first-class citizens. */
 template <typename T>
 struct Optional : impl::optional_tag {
     using types = meta::pack<T>;
@@ -4814,16 +4824,28 @@ struct Optional : impl::optional_tag {
 };
 
 
-/// TODO: document these specializations
-
-
 /// TODO: it might also be a good idea to eliminate the `types` alias from these
 /// specializations, and retrieve that information from inspecting the type of
 /// `__value` instead.  This eliminates a possible name conflict and modularizes the
 /// interface a bit more.
 
 
-template <meta::None T>
+/* A special case of `Optional<T>` that always represents a purely empty state, which
+has no other value.  See `Optional<T>` for more details.
+
+This specialization is necessary to allow CTAD to correctly deduce the type of
+`Optional` non-type template parameters, where an initializer of `None` would otherwise
+be invalid.  With this in place, the following code compiles:
+
+```
+template <Optional value>
+struct Foo { static constexpr bool empty = (value == None); };
+static_assert(Foo<None>::empty);
+static_assert(!Foo<1>::empty);
+static_assert(!Foo<2.5>::empty);
+```
+*/
+template <typename T> requires (meta::is_void<T> || meta::None<T>)
 struct Optional<T> : impl::optional_tag {
     using types = meta::pack<>;
 
@@ -4994,12 +5016,6 @@ struct Optional<T> : impl::optional_tag {
     /// TODO: begin()/end() returning strictly empty iterators, which can be implemented
     /// in common.h
 
-};
-
-
-template <meta::is_void T>
-struct Optional<T> : Optional<NoneType> {
-    using Optional<NoneType>::Optional;
 };
 
 
