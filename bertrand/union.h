@@ -242,7 +242,7 @@ template <meta::not_void... Ts> requires (sizeof...(Ts) > 1 && meta::unique<Ts..
 struct Union;
 
 
-template <meta::not_void T> requires (!meta::None<T>)
+template <typename T = void>
 struct Optional;
 
 
@@ -1068,7 +1068,7 @@ namespace impl {
         }
     };
 
-    template <meta::Optional T>
+    template <meta::Optional T> requires (meta::unqualify<T>::types::size() == 1)
     struct visitable<T> {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
@@ -1084,10 +1084,39 @@ namespace impl {
 
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
-            noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;}) {
+            noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
+        {
             return (std::forward<T>(u).__value.template get<I>());
         }
     };
+
+    /// NOTE: we need a separate specialization to account for `Optional<void>`, which
+    /// only stores the empty state.
+    template <meta::Optional T> requires (meta::unqualify<T>::types::size() == 0)
+    struct visitable<T> {
+        static constexpr bool enable = true;
+        static constexpr bool monad = true;
+        using type = T;
+        using empty = decltype((std::declval<T>().__value.template get<0>()));
+        using value = empty;
+        using alternatives = meta::pack<empty>;
+        using errors = meta::pack<>;
+
+        [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
+            return 0;
+        }
+
+        template <size_t I> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
+            noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
+        {
+            return (std::forward<T>(u).__value.template get<0>());
+        }
+    };
+
+    /// TODO: maybe I should add a visitable specialization for raw pointers?  Maybe
+    /// that's the cleanest possible implementation?  The same could possibly be done
+    /// for smart pointers, paralleling `std::optional`.
 
     template <meta::std::optional T>
     struct visitable<T> {
@@ -1122,6 +1151,8 @@ namespace impl {
     struct expected_errors<T, std::index_sequence<Is...>> {
         using type = meta::pack<decltype((std::declval<T>().__value.template get<Is + 1>()))...>;
     };
+
+    /// TODO: does visit need to account for `Expected<void>` similar to `Optional<void>`?
 
     template <meta::Expected T>
     struct visitable<T> {
@@ -1261,7 +1292,7 @@ namespace impl {
     overall structure.  This is a fundamental building block for sum types, and can
     dramatically reduce the amount of bookkeeping necessary to safely work with raw C
     unions. */
-    template <meta::not_void... Ts> requires ((sizeof...(Ts) > 1) && ... && !meta::rvalue<Ts>)
+    template <meta::not_void... Ts> requires (!meta::rvalue<Ts> && ...)
     struct basic_union : basic_union_tag {
         using types = meta::pack<Ts...>;
         using default_type = impl::union_default_type<Ts...>;
@@ -1771,11 +1802,11 @@ namespace impl {
         template <typename from>
         using type = _union_convert_from<from, void, void, Ts...>::type;
         template <typename from>
-        static constexpr impl::basic_union<meta::remove_rvalue<Ts>...> operator()(from&& arg)
+        static constexpr auto operator()(from&& arg)
             noexcept (meta::nothrow::convertible_to<from, type<from>>)
             requires (meta::not_void<type<from>>)
         {
-            return {
+            return impl::basic_union<meta::remove_rvalue<Ts>...>{
                 std::in_place_index<meta::index_of<type<from>, Ts...>>,
                 std::forward<from>(arg)
             };
@@ -1799,11 +1830,11 @@ namespace impl {
         template <typename... A>
         using type = _union_construct_from<A...>::template select<Ts...>::type;
         template <typename... A>
-        static constexpr impl::basic_union<meta::remove_rvalue<Ts>...> operator()(A&&... args)
+        static constexpr auto operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type<A...>, A...>)
             requires (meta::not_void<type<A...>>)
         {
-            return {
+            return impl::basic_union<meta::remove_rvalue<Ts>...>{
                 std::in_place_index<meta::index_of<type<A...>, Ts...>>,
                 std::forward<A>(args)...
             };
@@ -3457,24 +3488,6 @@ constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
 ////////////////////////
 
 
-/// TODO: `T` should be allowed to be both `void` and `None`, such that CTAD guides
-/// enable `Optional{}` and `Optional{None}`, which is important when using optionals
-/// in template metaprogramming, which is a promising use case.  A template of the
-/// form:
-
-/// template <Optional x>
-/// struct Foo {};
-
-/// could therefore be instantiated with `Foo<{}>` as well as `Foo<1>` or any other
-/// suitable type.  It also just makes the monad structure more flexible overall,
-/// which is nice.
-
-
-/// TODO: the problem with this is that it interferes with the storage backend and
-/// visit logic, which currently assumes all alternatives are held in storage.  This
-/// would therefore require more changes than I currently understand.
-
-
 namespace impl {
 
     /* Return a standardized error if an optional is dereferenced while in the empty
@@ -3556,7 +3569,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<alt, type>)
             requires (meta::convertible_to<alt, type>)
         {
-            return {std::in_place_index<1>, std::forward<alt>(v)};
+            return result{std::in_place_index<1>, std::forward<alt>(v)};
         }
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
@@ -3570,10 +3583,10 @@ namespace impl {
                 (meta::is<alt, empty> || meta::None<alt> || meta::is<alt, std::nullopt_t>)
             )
         {
-            return {};
+            return result{};
         }
 
-        // 3) if `out` is an lvalue, then an extra conversion is enabled from raw
+        // 3) if `type` is an lvalue, then an extra conversion is enabled from raw
         // pointers, where nullptr gets translated into an empty `basic_union`
         // object, exploiting the pointer optimization.
         template <typename alt>
@@ -3587,7 +3600,34 @@ namespace impl {
                 meta::convertible_to<alt, meta::address_type<type>>
             )
         {
-            return {p};
+            return result{p};
+        }
+    };
+    template <meta::None T, typename in>
+    struct optional_convert_from<T, in> {
+        using empty = impl::visitable<in>::empty;
+        using result = impl::basic_union<NoneType>;
+
+        // 1) prefer direct conversion to `NoneType` if possible
+        template <typename alt>
+        static constexpr result operator()(alt&& v)
+            noexcept (meta::nothrow::convertible_to<alt, NoneType>)
+            requires (meta::convertible_to<alt, NoneType>)
+        {
+            return result{std::in_place_index<0>, std::forward<alt>(v)};
+        }
+
+        // 2) otherwise, if the argument is in an empty state as defined by the input's
+        // `impl::visitable` specification, then we retain that state.
+        template <typename alt>
+        static constexpr result operator()(alt&&)
+            noexcept (meta::nothrow::default_constructible<impl::basic_union<NoneType>>)
+            requires (
+                !meta::convertible_to<alt, NoneType> &&
+                meta::is<alt, empty>
+            )
+        {
+            return result{};
         }
     };
 
@@ -3598,11 +3638,27 @@ namespace impl {
     struct optional_construct_from {
         using type = meta::remove_rvalue<T>;
         template <typename... A>
-        static constexpr impl::basic_union<NoneType, type> operator()(A&&... args)
+        static constexpr auto operator()(A&&... args)
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
-            return {std::in_place_index<1>, std::forward<A>(args)...};
+            return impl::basic_union<NoneType, type>{
+                std::in_place_index<1>,
+                std::forward<A>(args)...
+            };
+        }
+    };
+    template <meta::None T>
+    struct optional_construct_from<T> {
+        template <typename... A>
+        static constexpr auto operator()(A&&... args)
+            noexcept (meta::nothrow::constructible_from<NoneType, A...>)
+            requires (meta::constructible_from<NoneType, A...>)
+        {
+            return impl::basic_union<NoneType>{
+                std::in_place_index<0>,
+                std::forward<A>(args)...
+            };
         }
     };
 
@@ -3612,11 +3668,16 @@ namespace impl {
     pointers in the case of optional lvalues. */
     template <typename Self, typename to>
     struct optional_convert_to {
-        static constexpr bool from_none = meta::convertible_to<const bertrand::NoneType&, to>;
-        static constexpr bool from_nullopt = meta::convertible_to<const std::nullopt_t&, to>;
+        static constexpr bool from_none = requires{{bertrand::None} -> meta::convertible_to<to>;};
+        static constexpr bool from_nullopt = requires{{std::nullopt} -> meta::convertible_to<to>;};
         static constexpr bool from_nullptr =
             meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
-            meta::convertible_to<std::nullptr_t, to>;
+            requires(meta::forward<Self> self) {
+                {nullptr} -> meta::convertible_to<to>;
+                {
+                    std::addressof(std::forward<Self>(self).__value.template get<1>())
+                } -> meta::convertible_to<to>;
+            };
 
         template <size_t I>
         struct fn {
@@ -3634,24 +3695,33 @@ namespace impl {
             }
 
             static constexpr to operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::convertible_to<const bertrand::NoneType&, to>)
+                noexcept (requires{{bertrand::None} -> meta::nothrow::convertible_to<to>;})
                 requires (!convert && I == 0 && from_none)
             {
                 return bertrand::None;
             }
 
             static constexpr to operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
+                noexcept (requires{{std::nullopt} -> meta::nothrow::convertible_to<to>;})
                 requires (!convert && I == 0 && !from_none && from_nullopt)
             {
                 return std::nullopt;
             }
 
             static constexpr to operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
-                requires (!convert && I == 0 && !from_none && !from_nullopt && from_nullptr)
+                noexcept (requires{
+                    {nullptr} -> meta::nothrow::convertible_to<to>;
+                    {
+                        std::addressof(std::forward<Self>(self).__value.template get<1>())
+                    } -> meta::nothrow::convertible_to<to>;
+                })
+                requires (!convert && !from_none && !from_nullopt && from_nullptr)
             {
-                return nullptr;
+                if constexpr (I == 0) {
+                    return nullptr;
+                } else {
+                    return std::addressof(std::forward<Self>(self).__value.template get<1>());
+                }
             }
         };
 
@@ -3664,6 +3734,37 @@ namespace impl {
             return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
+    template <typename Self, typename to> requires (visitable<Self>::alternatives::size() == 1)
+    struct optional_convert_to<Self, to> {
+        static constexpr bool convert = requires(meta::forward<Self> self) {{
+            std::forward<Self>(self).__value.template get<0>()
+        } -> meta::convertible_to<to>;};
+        static constexpr bool from_nullopt = requires{{std::nullopt} -> meta::convertible_to<to>;};
+        static constexpr bool from_nullptr = requires{{nullptr} -> meta::convertible_to<to>;};
+
+        static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{
+                std::forward<Self>(self).__value.template get<0>()
+            } noexcept -> meta::nothrow::convertible_to<to>;})
+            requires (convert)
+        {
+            return std::forward<Self>(self).__value.template get<0>();
+        }
+
+        static constexpr to operator()(meta::forward<Self> self)
+            noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, to>)
+            requires (!convert && from_nullopt)
+        {
+            return std::nullopt;
+        }
+
+        static constexpr to operator()(meta::forward<Self> self)
+            noexcept (meta::nothrow::convertible_to<std::nullptr_t, to>)
+            requires (!convert && !from_nullopt && from_nullptr)
+        {
+            return nullptr;
+        }
+    };
 
     /* A simple visitor that backs the explicit conversion operator from `Optional<T>`,
     which attempts a normal visitor conversion where possible, falling back to a
@@ -3671,13 +3772,16 @@ namespace impl {
     in the case of optional lvalues. */
     template <typename Self, typename to>
     struct optional_cast_to {
-        static constexpr bool from_none =
-            meta::explicitly_convertible_to<const bertrand::NoneType&, to>;
-        static constexpr bool from_nullopt =
-            meta::explicitly_convertible_to<const std::nullopt_t&, to>;
+        static constexpr bool from_none = requires{{static_cast<to>(bertrand::None)};};
+        static constexpr bool from_nullopt = requires{{static_cast<to>(std::nullopt)};};
         static constexpr bool from_nullptr =
             meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
-            meta::explicitly_convertible_to<std::nullptr_t, to>;
+            requires(meta::forward<Self> self) {
+                {static_cast<to>(nullptr)} -> meta::convertible_to<to>;
+                {static_cast<to>(
+                    std::addressof(std::forward<Self>(self).__value.template get<1>())
+                )};
+            };
 
         template <size_t I>
         struct fn {
@@ -3695,24 +3799,35 @@ namespace impl {
             }
 
             static constexpr to operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::explicitly_convertible_to<const bertrand::NoneType&, to>)
+                noexcept (requires{{static_cast<to>(bertrand::None)} noexcept;})
                 requires (!convert && I == 0 && from_none)
             {
                 return static_cast<to>(bertrand::None);
             }
 
             static constexpr to operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, to>)
+                noexcept (requires{{static_cast<to>(std::nullopt)} noexcept;})
                 requires (!convert && I == 0 && !from_none && from_nullopt)
             {
                 return static_cast<to>(std::nullopt);
             }
 
             static constexpr to operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::explicitly_convertible_to<std::nullptr_t, to>)
-                requires (!convert && I == 0 && !from_none && !from_nullopt && from_nullptr)
+                noexcept (requires{
+                    {static_cast<to>(nullptr)} noexcept;
+                    {static_cast<to>(
+                        std::addressof(std::forward<Self>(self).__value.template get<1>())
+                    )} noexcept;
+                })
+                requires (!convert && !from_none && !from_nullopt && from_nullptr)
             {
-                return static_cast<to>(nullptr);
+                if constexpr (I == 0) {
+                    return static_cast<to>(nullptr);
+                } else {
+                    return static_cast<to>(
+                        std::addressof(std::forward<Self>(self).__value.template get<1>())
+                    );
+                }
             }
         };
 
@@ -3723,6 +3838,42 @@ namespace impl {
             requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
             return dispatch{self.__value.index()}(std::forward<Self>(self));
+        }
+    };
+    template <typename Self, typename to> requires (visitable<Self>::alternatives::size() == 1)
+    struct optional_cast_to<Self, to> {
+        static constexpr bool from_none =
+            meta::explicitly_convertible_to<const bertrand::NoneType&, to>;
+        static constexpr bool from_nullopt =
+            meta::explicitly_convertible_to<const std::nullopt_t&, to>;
+        static constexpr bool from_nullptr =
+            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
+            meta::explicitly_convertible_to<std::nullptr_t, to>;
+        static constexpr bool convert = requires(meta::forward<Self> self) {{
+            static_cast<to>(std::forward<Self>(self).__value.template get<0>())
+        };};
+
+        static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{
+                static_cast<to>(std::forward<Self>(self).__value.template get<0>())
+            } noexcept;})
+            requires (convert)
+        {
+            return static_cast<to>(std::forward<Self>(self).__value.template get<0>());
+        }
+
+        static constexpr to operator()(meta::forward<Self> self)
+            noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, to>)
+            requires (!convert && !from_none && from_nullopt)
+        {
+            return static_cast<to>(std::nullopt);
+        }
+
+        static constexpr to operator()(meta::forward<Self> self)
+            noexcept (meta::nothrow::explicitly_convertible_to<std::nullptr_t, to>)
+            requires (!convert && !from_none && !from_nullopt && from_nullptr)
+        {
+            return static_cast<to>(nullptr);
         }
     };
 
@@ -4256,7 +4407,7 @@ This is identical to `Union<NoneType, T>`, except in the following cases:
 Note that because optional references are compatible with pointers, Bertrand's binding
 generators will emit them wherever a pointer is exposed to Python, or any other
 language that does not expose pointers as first-class citizens. */
-template <meta::not_void T> requires (!meta::None<T>)
+template <typename T>
 struct Optional : impl::optional_tag {
     using types = meta::pack<T>;
 
@@ -4663,6 +4814,195 @@ struct Optional : impl::optional_tag {
 };
 
 
+/// TODO: document these specializations
+
+
+/// TODO: it might also be a good idea to eliminate the `types` alias from these
+/// specializations, and retrieve that information from inspecting the type of
+/// `__value` instead.  This eliminates a possible name conflict and modularizes the
+/// interface a bit more.
+
+
+template <meta::None T>
+struct Optional<T> : impl::optional_tag {
+    using types = meta::pack<>;
+
+    impl::basic_union<NoneType> __value;
+
+    /* Default constructor.  Initializes the optional in the empty state. */
+    [[nodiscard]] constexpr Optional() = default;
+
+    /* Converting constructor.  Implicitly converts the input to the value type, and
+    initializes the optional with the result.  Also allows implicit conversions from
+    any type `U` where `bertrand::impl::visitable<U>::empty` is not void and all
+    non-empty alternatives can be converted to the value type (e.g. `std::optional<V>`,
+    where `V` is convertible to `T`), or from raw pointers in case `T` is an lvalue
+    reference. */
+    template <typename from>
+    [[nodiscard]] constexpr Optional(from&& v)
+        noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
+        requires (meta::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
+    : 
+        __value(impl::visit(
+            impl::optional_convert_from<T, from>{},
+            std::forward<from>(v)
+        ))
+    {}
+
+    /* Explicit constructor.  Accepts arbitrary arguments to the value type's
+    constructor, and initializes the optional with the result. */
+    template <typename... A>
+    [[nodiscard]] constexpr explicit Optional(A&&... args)
+        noexcept (meta::nothrow::visit_exhaustive<impl::optional_construct_from<T>, A...>)
+        requires (
+            sizeof...(A) > 0 &&
+            !meta::visit_exhaustive<impl::optional_convert_from<T, A...>, A...> &&
+            meta::visit_exhaustive<impl::optional_construct_from<T>, A...>
+        )
+    :
+        __value(impl::visit(
+            impl::optional_construct_from<T>{},
+            std::forward<A>(args)...
+        ))
+    {}
+
+    /* Swap the contents of two optionals as efficiently as possible. */
+    constexpr void swap(Optional& other)
+        noexcept (requires{{__value.swap(other.__value)} noexcept;})
+        requires (requires{{__value.swap(other.__value)};})
+    {
+        __value.swap(other.__value);
+    }
+
+    /* Implicit conversion from `Optional<T>` to any type that is convertible from both
+    the perfectly-forwarded value type and any of `None`, `std::nullopt`, or `nullptr`
+    (if `T` is an lvalue reference). */
+    template <typename Self, typename to>
+    [[nodiscard]] constexpr operator to(this Self&& self)
+        noexcept (requires{
+            {impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))} noexcept;
+        })
+        requires (
+            !meta::prefer_constructor<to> &&
+            requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};}
+        )
+    {
+        return impl::optional_convert_to<Self, to>{}(std::forward<Self>(self));
+    }
+
+    /* Explicit conversion from `Optional<T>` to any type that is explicitly
+    convertible from both the perfectly-forwarded value type and any of `None`,
+    `std::nullopt`, or `nullptr` (if `T` is an lvalue reference).  This operator only
+    applies if an implicit conversion could not be found. */
+    template <typename Self, typename to>
+    [[nodiscard]] explicit constexpr operator to(this Self&& self)
+        noexcept (requires{
+            {impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
+        })
+        requires (
+            !meta::prefer_constructor<to> &&
+            !requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
+            requires{{impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))};}
+        )
+    {
+        return impl::optional_cast_to<Self, to>{}(std::forward<Self>(self));
+    }
+
+    /* Contextually convert the optional to a boolean, where true indicates the
+    presence of a value. */
+    [[nodiscard]] explicit constexpr operator bool() const noexcept { return false; }
+
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator==(const Optional& opt, NoneType) noexcept {
+        return true;
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator==(NoneType, const Optional& opt) noexcept {
+        return true;
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator==(const Optional& opt, std::nullptr_t) noexcept
+        requires (meta::lvalue<T>)
+    {
+        return true;
+    }
+
+    /* Explicitly check whether the optional is in the empty state by comparing against
+    `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator==(std::nullptr_t, const Optional& opt) noexcept
+        requires (meta::lvalue<T>)
+    {
+        return true;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator!=(const Optional& opt, NoneType) noexcept {
+        return false;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `None` or `std::nullopt`. */
+    [[nodiscard]] friend constexpr bool operator!=(NoneType, const Optional& opt) noexcept {
+        return false;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator!=(const Optional& opt, std::nullptr_t) noexcept
+        requires (meta::lvalue<T>)
+    {
+        return false;
+    }
+
+    /* Explicitly check whether the optional is in the non-empty state by comparing
+    against `nullptr`, assuming `T` is an lvalue reference. */
+    [[nodiscard]] friend constexpr bool operator!=(std::nullptr_t, const Optional& opt) noexcept
+        requires (meta::lvalue<T>)
+    {
+        return false;
+    }
+
+    /* Return 0 if the optional is empty or `std::ranges::size(value())` otherwise.
+    If `std::ranges::size(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the optional would return just a single element), then
+    the result will be identical to `has_value()`.  If neither option is available,
+    then this method will fail to compile. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
+
+    /* Return 0 if the optional is empty or `std::ranges::ssize(value())` otherwise.
+    If `std::ranges::ssize(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the optional would return just a single element), then
+    the result will be identical to `has_value()`.  If neither option is available,
+    then this method will fail to compile. */
+    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
+
+    /* Return true if the optional is empty or `std::ranges::empty(value())` otherwise.
+    If `std::ranges::empty(value())` would be malformed and the value is not iterable
+    (meaning that iterating over the optional would return just a single element), then
+    the result will be identical to `!has_value()`.  If neither option is available,
+    then this method will fail to compile. */
+    [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+
+
+    /// TODO: begin()/end() returning strictly empty iterators, which can be implemented
+    /// in common.h
+
+};
+
+
+template <meta::is_void T>
+struct Optional<T> : Optional<NoneType> {
+    using Optional<NoneType>::Optional;
+};
+
+
 /* ADL swap() operator for `bertrand::Optional<T>`.  Equivalent to calling `a.swap(b)`
 as a member method. */
 template <typename T>
@@ -4722,7 +5062,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<from, type>)
             requires (meta::convertible_to<from, type>)
         {
-            return {std::in_place_index<0>, std::forward<from>(arg)};
+            return result{std::in_place_index<0>, std::forward<from>(arg)};
         }
 
         template <typename from>
@@ -4735,7 +5075,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<from, err<from>>)
             requires (!meta::convertible_to<from, type> && meta::not_void<err<from>>)
         {
-            return {
+            return result{
                 std::in_place_index<meta::index_of<err<from>, Es...> + 1>,
                 std::forward<from>(arg)
             };
@@ -4755,7 +5095,7 @@ namespace impl {
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
-            return {std::in_place_index<0>, std::forward<A>(args)...};
+            return result{std::in_place_index<0>, std::forward<A>(args)...};
         }
     };
 
