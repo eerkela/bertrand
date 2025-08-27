@@ -5445,6 +5445,14 @@ namespace impl {
     continue. */
     struct join_fresh {};
 
+    /* A simple enum that indicates the result of an increment or decrement operation,
+    which bounds the recursion such that I never need to repeat comparisons. */
+    enum class join_signal : uint8_t {
+        GOOD,
+        CONTINUE,
+        BREAK
+    };
+
     /* Join iterators work by storing a pointer to the joined range, an index recording
     the current sub-range, and a union of backing iterators, which store both the begin
     and end iterators for each range.  Scalars are promoted to ranges of length 1 for
@@ -5492,6 +5500,11 @@ namespace impl {
         using pointer = meta::address_type<value_type>;
 
     private:
+        static constexpr bool bidirectional = meta::inherits<
+            iterator_category,
+            std::bidirectional_iterator_tag
+        >;
+
         meta::as_pointer<R> range = nullptr;
         ssize_t index = total_groups;
         storage_type subrange;
@@ -5578,13 +5591,6 @@ namespace impl {
             }
         }
 
-        /// TODO: signal -> impl::join_signal
-        enum class signal : uint8_t {
-            GOOD,
-            CONTINUE,
-            BREAK
-        };
-
         template <size_t I>
         struct deref {
             template <is_join_subrange S>
@@ -5646,7 +5652,7 @@ namespace impl {
         template <size_t G>
         struct jump_forward {
             template <typename S> requires (G < S::total_groups)
-            static constexpr signal advance(const join_iterator& it, S& s)
+            static constexpr join_signal advance(const join_iterator& it, S& s)
                 noexcept (requires{
                     {jump_forward<G>{}(it, s)} noexcept;
                 } && (!is_join_nested<S> || S::template is_separator<G> || requires{
@@ -5666,8 +5672,8 @@ namespace impl {
             {
                 // continue depth-first search within current group, which is guaranteed
                 // to be fresh and initialized to the first element
-                if (jump_forward<G>{}(it, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (jump_forward<G>{}(it, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // increment index and inner iterator
@@ -5675,20 +5681,20 @@ namespace impl {
                 if constexpr (is_join_nested<S> && !S::template is_separator<G>) {
                     ++s.begin;
                     if (s.begin == s.end) {
-                        return signal::BREAK;
+                        return join_signal::BREAK;
                     }
                 }
 
                 // try again with next group until end of current iteration
                 if constexpr (G + 1 == S::total_groups) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 } else {
                     return jump_forward<G + 1>::advance(it, s);
                 }
             }
 
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                 })
@@ -5696,11 +5702,11 @@ namespace impl {
                     {s.begin == s.end} -> meta::convertible_to<bool>;
                 })
             {
-                return s.begin == s.end ? signal::CONTINUE : signal::GOOD;
+                return s.begin == s.end ? join_signal::CONTINUE : join_signal::GOOD;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                     {jump_forward<0>::advance(it, s)} noexcept;
@@ -5712,19 +5718,19 @@ namespace impl {
             {
                 if (s.begin != s.end) {
                     while (true) {
-                        signal r = jump_forward<0>::advance(it, s);
-                        if (r == signal::GOOD) {
+                        join_signal r = jump_forward<0>::advance(it, s);
+                        if (r == join_signal::GOOD) {
                             return r;
-                        } else if (r == signal::BREAK) {
+                        } else if (r == join_signal::BREAK) {
                             break;  // BREAK signal never escapes from `advance()`
                         }
                     }
                 }
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, P& p)
                 noexcept (requires{
                     {p.template init<G>(it)} noexcept;
                     {call(it, p.template get<G>())} noexcept;
@@ -5742,7 +5748,7 @@ namespace impl {
         template <size_t G>
         struct increment {
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {++s.begin} noexcept;
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
@@ -5754,11 +5760,11 @@ namespace impl {
             {
                 ++s.begin;
                 ++s.index;
-                return s.begin == s.end ? signal::CONTINUE : signal::GOOD;
+                return s.begin == s.end ? join_signal::CONTINUE : join_signal::GOOD;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {s.template visit<join_iterator::increment>(it, s)} noexcept;
                     {jump_forward<0>::advance(it, s)} noexcept;
@@ -5773,30 +5779,30 @@ namespace impl {
                 }))
             {
                 // recur for depth-first traversal
-                if (s.template visit<join_iterator::increment>(it, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (s.template visit<join_iterator::increment>(it, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // if the inner range is exhausted, increment the outer range until we
                 // find a non-empty inner range or exhaust the outer range
-                signal r = signal::CONTINUE;
+                join_signal r = join_signal::CONTINUE;
                 if constexpr (G + 1 < S::total_groups) {
                     r = jump_forward<G + 1>::advance(it, s);
                 }
-                while (r != signal::BREAK) {
+                while (r != join_signal::BREAK) {
                     r = jump_forward<0>::advance(it, s);
-                    if (r == signal::GOOD) {
+                    if (r == join_signal::GOOD) {
                         return r;
                     }
                 }
 
                 // if we exhaust the outer range, backtrack to the previous level and
                 // continue searching
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, P& p)
                 noexcept (requires{{call(it, p.template get<G>())} noexcept;})
                 requires (requires{{call(it, p.template get<G>())};})
             {
@@ -5807,7 +5813,7 @@ namespace impl {
         template <size_t G>
         struct jump_backward {
             template <typename S> requires (G < S::total_groups)
-            static constexpr signal advance(const join_iterator& it, S& s)
+            static constexpr join_signal advance(const join_iterator& it, S& s)
                 noexcept (requires{
                     {jump_backward<G>{}(it, s)} noexcept;
                 } && (!is_join_nested<S> || S::template is_separator<G> || requires{
@@ -5825,29 +5831,29 @@ namespace impl {
             {
                 // continue depth-first search within current group, which is guaranteed
                 // to be fresh and initialized to the last element
-                if (jump_backward<G>{}(it, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (jump_backward<G>{}(it, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // decrement index and inner iterator
                 --s.index;
                 if constexpr (is_join_nested<S> && !S::template is_separator<G>) {
                     if (s.index < 0) {
-                        return signal::BREAK;
+                        return join_signal::BREAK;
                     }
                     --s.begin;
                 }
 
                 // try again with previous group until beginning of current iteration
                 if constexpr (G == 0) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 } else {
                     return jump_backward<G - 1>::advance(it, s);
                 }
             }
 
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {s.begin == s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                 })
@@ -5855,11 +5861,11 @@ namespace impl {
                     {s.begin == s.end} -> meta::convertible_to<bool>;
                 })
             {
-                return s.begin == s.end ? signal::CONTINUE : signal::GOOD;
+                return s.begin == s.end ? join_signal::CONTINUE : join_signal::GOOD;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                     {jump_backward<S::total_groups - 1 - S::has_sep>::advance(it, s)} noexcept;
@@ -5872,19 +5878,22 @@ namespace impl {
                 if (s.begin != s.end) {
                     while (true) {
                         // last iteration never includes final separator
-                        signal r = jump_backward<S::total_groups - 1 - S::has_sep>::advance(it, s);
-                        if (r == signal::GOOD) {
+                        join_signal r = jump_backward<S::total_groups - 1 - S::has_sep>::advance(
+                            it,
+                            s
+                        );
+                        if (r == join_signal::GOOD) {
                             return r;
-                        } else if (r == signal::BREAK) {
+                        } else if (r == join_signal::BREAK) {
                             break;  // BREAK signal never escapes from `advance()`
                         }
                     }
                 }
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, P& p)
                 noexcept (requires(decltype((p.template get<G>())) s) {
                     {p.template init<G>(it)} noexcept;
                     {p.template get<G>()} noexcept;
@@ -5922,7 +5931,7 @@ namespace impl {
                 p.template init<G>(it);
                 auto& s = p.template get<G>();
                 if (s.begin == s.end) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 }
 
                 // initialize to last element in subrange
@@ -5960,20 +5969,20 @@ namespace impl {
         template <size_t G>
         struct decrement {
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{{--s.begin} noexcept;})
                 requires (requires{{--s.begin};})
             {
                 --s.index;
                 if (s.index < 0) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 }
                 --s.begin;
-                return signal::GOOD;
+                return join_signal::GOOD;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, S& s)
+            static constexpr join_signal call(const join_iterator& it, S& s)
                 noexcept (requires{
                     {s.template visit<join_iterator::decrement>(it, s)} noexcept;
                     {jump_backward<S::total_groups - 1>::advance(it, s)} noexcept;
@@ -5988,31 +5997,31 @@ namespace impl {
                 }))
             {
                 // recur for depth-first traversal
-                if (s.template visit<join_iterator::decrement>(it, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (s.template visit<join_iterator::decrement>(it, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // if the inner range is exhausted, decrement the outer range until we
                 // find a non-empty inner range or exhaust the outer range
-                signal r = signal::CONTINUE;
+                join_signal r = join_signal::CONTINUE;
                 if constexpr (G > 0) {
                     r = jump_backward<G - 1>::advance(it, s);
                 }
-                while (r != signal::BREAK) {
+                while (r != join_signal::BREAK) {
                     r = jump_backward<S::total_groups - 1>::advance(it, s);
-                    if (r == signal::GOOD) {
+                    if (r == join_signal::GOOD) {
                         return r;
                     }
                 }
 
                 // if we exhaust the outer range, backtrack to the previous level and
                 // continue searching
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
 
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, P& p)
                 noexcept (requires{{call(it, p.template get<G>())} noexcept;})
                 requires (requires{{call(it, p.template get<G>())};})
             {
@@ -6023,7 +6032,7 @@ namespace impl {
         template <size_t G>
         struct seek_forward {
             template <typename S> requires (G < S::total_groups)
-            static constexpr signal advance(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal advance(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {seek_forward<G>{}(it, s)} noexcept;
                 } && (!is_join_nested<S> || S::template is_separator<G> || requires{
@@ -6043,8 +6052,8 @@ namespace impl {
             {
                 // continue depth-first search within current group, which is guaranteed
                 // to be fresh and initialized to the first element
-                if (seek_forward<G>{}(it, i, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (seek_forward<G>{}(it, i, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // increment index and inner iterator
@@ -6052,20 +6061,20 @@ namespace impl {
                 if constexpr (is_join_nested<S> && !S::template is_separator<G>) {
                     ++s.begin;
                     if (s.begin == s.end) {
-                        return signal::BREAK;
+                        return join_signal::BREAK;
                     }
                 }
 
                 // try again with next group until end of current iteration
                 if constexpr (G + 1 == S::total_groups) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 } else {
                     return seek_forward<G + 1>::advance(it, i, s);
                 }
             }
 
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
                     {s.begin += i} noexcept;
@@ -6079,14 +6088,14 @@ namespace impl {
                 if (i < size) {  // index falls within this innermost subrange
                     s.begin += i;
                     s.index += i;
-                    return signal::GOOD;
+                    return join_signal::GOOD;
                 }
                 i -= size;
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                     {seek_forward<0>::advance(it, i, s)} noexcept;
@@ -6098,19 +6107,19 @@ namespace impl {
             {
                 if (s.begin != s.end) {
                     while (true) {
-                        signal r = seek_forward<0>::advance(it, i, s);
-                        if (r == signal::GOOD) {
+                        join_signal r = seek_forward<0>::advance(it, i, s);
+                        if (r == join_signal::GOOD) {
                             return r;
-                        } else if (r == signal::BREAK) {
+                        } else if (r == join_signal::BREAK) {
                             break;
                         }
                     }
                 }
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, difference_type& i, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, difference_type& i, P& p)
                 noexcept (requires{
                     {p.template init<G>(it)} noexcept;
                     {call(it, i, p.template get<G>())} noexcept;
@@ -6128,7 +6137,7 @@ namespace impl {
         template <size_t G>
         struct iadd {
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {s.end - s.begin} noexcept -> meta::nothrow::convertible_to<difference_type>;
                     {s.begin += i} noexcept;
@@ -6142,14 +6151,14 @@ namespace impl {
                 if (i < size) {  // index falls within this innermost subrange
                     s.begin += i;
                     s.index += i;
-                    return signal::GOOD;
+                    return join_signal::GOOD;
                 }
                 i -= size;
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {s.template visit<join_iterator::increment>(it, s)} noexcept;
                     {seek_forward<0>::advance(it, i, s)} noexcept;
@@ -6164,30 +6173,30 @@ namespace impl {
                 }))
             {
                 // recur for depth-first traversal
-                if (s.template visit<join_iterator::iadd>(it, i, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (s.template visit<join_iterator::iadd>(it, i, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // if the inner range is exhausted, increment the outer range until the
                 // index falls within a future subrange or we exhaust the outer range
-                signal r = signal::CONTINUE;
+                join_signal r = join_signal::CONTINUE;
                 if constexpr (G + 1 < S::total_groups) {
                     r = seek_forward<G + 1>::advance(it, i, s);
                 }
-                while (r != signal::BREAK) {
+                while (r != join_signal::BREAK) {
                     r = seek_forward<0>::advance(it, i, s);
-                    if (r == signal::GOOD) {
+                    if (r == join_signal::GOOD) {
                         return r;
                     }
                 }
 
                 // if we exhaust the outer range, backtrack to the previous level and
                 // continue searching
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, difference_type& i, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, difference_type& i, P& p)
                 noexcept (requires{{call(it, i, p.template get<G>())} noexcept;})
                 requires (requires{{call(it, i, p.template get<G>())};})
             {
@@ -6198,7 +6207,7 @@ namespace impl {
         template <size_t G>
         struct seek_backward {
             template <typename S> requires (G < S::total_groups)
-            static constexpr signal advance(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal advance(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {seek_backward<G>{}(it, s)} noexcept;
                 } && (!is_join_nested<S> || S::template is_separator<G> || requires{
@@ -6216,43 +6225,43 @@ namespace impl {
             {
                 // continue depth-first search within current group, which is guaranteed
                 // to be fresh and initialized to the last element
-                if (seek_backward<G>{}(it, i, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (seek_backward<G>{}(it, i, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // decrement index and inner iterator
                 --s.index;
                 if constexpr (is_join_nested<S> && !S::template is_separator<G>) {
                     if (s.index < 0) {
-                        return signal::BREAK;
+                        return join_signal::BREAK;
                     }
                     --s.begin;
                 }
 
                 // try again with previous group until beginning of current iteration
                 if constexpr (G == 0) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 } else {
                     return seek_backward<G - 1>::advance(it, i, s);
                 }
             }
 
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{{s.begin -= i} noexcept;})
                 requires (requires{{s.begin -= i};})
             {
                 if (i <= s.index) {  // index falls within this innermost subrange
                     s.begin -= i;
                     s.index -= i;
-                    return signal::GOOD;
+                    return join_signal::GOOD;
                 }
                 i -= s.index;
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {s.begin != s.end} noexcept -> meta::nothrow::convertible_to<bool>;
                     {seek_backward<S::total_groups - 1 - S::has_sep>::advance(
@@ -6274,22 +6283,26 @@ namespace impl {
             {
                 if (s.begin != s.end) {
                     // last iteration never includes final separator
-                    signal r = seek_backward<S::total_groups - 1 - S::has_sep>::advance(it, i, s);
-                    if (r == signal::GOOD) {
+                    join_signal r = seek_backward<S::total_groups - 1 - S::has_sep>::advance(
+                        it,
+                        i,
+                        s
+                    );
+                    if (r == join_signal::GOOD) {
                         return r;
                     }
-                    while (r != signal::BREAK) {
+                    while (r != join_signal::BREAK) {
                         r = seek_backward<S::total_groups - 1>::advance(it, i, s);
-                        if (r == signal::GOOD) {
+                        if (r == join_signal::GOOD) {
                             return r;
                         }
                     }
                 }
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, difference_type& i, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, difference_type& i, P& p)
                 noexcept (requires(decltype((p.template get<G>())) s) {
                     {p.template init<G>(it)} noexcept;
                     {p.template get<G>()} noexcept;
@@ -6327,7 +6340,7 @@ namespace impl {
                 p.template init<G>(it);
                 auto& s = p.template get<G>();
                 if (s.begin == s.end) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 }
 
                 // initialize to last element in subrange
@@ -6365,21 +6378,21 @@ namespace impl {
         template <size_t G>
         struct isub {
             template <is_join_subrange S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{{s.begin -= i} noexcept;})
                 requires (requires{{s.begin -= i};})
             {
                 if (i <= s.index) {  // index falls within this innermost subrange
                     s.begin -= i;
                     s.index -= i;
-                    return signal::GOOD;
+                    return join_signal::GOOD;
                 }
                 i -= s.index;
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <is_join_nested S> requires (G < S::total_groups)
-            static constexpr signal call(const join_iterator& it, difference_type& i, S& s)
+            static constexpr join_signal call(const join_iterator& it, difference_type& i, S& s)
                 noexcept (requires{
                     {s.template visit<join_iterator::isub>(it, i, s)} noexcept;
                     {seek_backward<S::total_groups - 1>::advance(it, i, s)} noexcept;
@@ -6394,30 +6407,30 @@ namespace impl {
                 }))
             {
                 // recur for depth-first traversal
-                if (s.template visit<join_iterator::isub>(it, i, s) == signal::GOOD) {
-                    return signal::GOOD;
+                if (s.template visit<join_iterator::isub>(it, i, s) == join_signal::GOOD) {
+                    return join_signal::GOOD;
                 }
 
                 // if the inner range is exhausted, decrement the outer range until the
                 // index falls within a previous subrange or we exhaust the outer range
-                signal r = signal::CONTINUE;
+                join_signal r = join_signal::CONTINUE;
                 if constexpr (G > 0) {
                     r = seek_backward<G - 1>::advance(it, i, s);
                 }
-                while (r != signal::BREAK) {
+                while (r != join_signal::BREAK) {
                     r = seek_backward<S::total_groups - 1>::advance(it, i, s);
-                    if (r == signal::GOOD) {
+                    if (r == join_signal::GOOD) {
                         return r;
                     }
                 }
 
                 // if we exhaust the outer range, backtrack to the previous level and
                 // continue searching
-                return signal::CONTINUE;
+                return join_signal::CONTINUE;
             }
 
             template <typename P> requires (G < P::total_groups)
-            static constexpr signal operator()(const join_iterator& it, difference_type& i, P& p)
+            static constexpr join_signal operator()(const join_iterator& it, difference_type& i, P& p)
                 noexcept (requires{{call(it, i, p.template get<G>())} noexcept;})
                 requires (requires{{call(it, i, p.template get<G>())};})
             {
@@ -6430,7 +6443,7 @@ namespace impl {
         template <size_t G>
         struct count {
             template <is_join_nested S>
-            static constexpr signal middle(
+            static constexpr join_signal middle(
                 difference_type& sum,
                 const join_iterator& it,
                 S& s
@@ -6457,18 +6470,18 @@ namespace impl {
                 if constexpr (!S::template is_separator<G>) {
                     ++s.begin;
                     if (s.begin == s.end) {
-                        return signal::BREAK;
+                        return join_signal::BREAK;
                     }
                 }
                 if constexpr (G + 1 == S::total_groups) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 } else {
                     return count<G + 1>::middle(sum, it, s);
                 }
             }
 
             template <is_join_nested S>
-            static constexpr signal middle(
+            static constexpr join_signal middle(
                 difference_type& sum,
                 const join_iterator& it,
                 S& s,
@@ -6490,7 +6503,7 @@ namespace impl {
                 }))
             {
                 if (s.index == end.index) {
-                    return signal::BREAK;
+                    return join_signal::BREAK;
                 }
                 sum += count<G>{}(join_fresh{}, it, s);
                 ++s.index;
@@ -6498,7 +6511,7 @@ namespace impl {
                     ++s.begin;
                 }
                 if constexpr (G + 1 == S::total_groups) {
-                    return signal::CONTINUE;
+                    return join_signal::CONTINUE;
                 } else {
                     return count<G + 1>::middle(sum, it, s, end);
                 }
@@ -6545,7 +6558,7 @@ namespace impl {
             {
                 difference_type sum = 0;
                 if (s.begin != s.end) {
-                    while (count<0>::middle(sum, it, s) != signal::BREAK);
+                    while (count<0>::middle(sum, it, s) != join_signal::BREAK);
                 }
                 return sum;
             }
@@ -6618,13 +6631,13 @@ namespace impl {
                 }
 
                 // finish this iteration if necessary
-                signal r = signal::CONTINUE;
+                join_signal r = join_signal::CONTINUE;
                 if constexpr (G + 1 < S::total_groups) {
                     r = count<G + 1>::middle(sum, it, s);
                 }
 
                 // iterate over the remaining groups
-                while (r != signal::BREAK) {
+                while (r != join_signal::BREAK) {
                     r = count<0>::middle(sum, it, s);
                 }
                 return sum;
@@ -6888,47 +6901,30 @@ namespace impl {
             )
                 noexcept (LHS == RHS && requires{
                     {count<LHS>{}(lhs, lhs, rhs)} noexcept;
-                } && (
-                    LHS != 0 ||
-                    !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
-                    requires(join_iterator tmp) {
-                        {lhs} noexcept -> meta::nothrow::copyable;
-                        {rhs} noexcept -> meta::nothrow::copyable;
-                        {count<LHS>{}(join_fresh{}, tmp, tmp, rhs)} noexcept;
-                        {count<LHS>{}(join_fresh{}, tmp, tmp, lhs)} noexcept;
-                    }
-                ) && (
-                    LHS != total_groups - 1 ||
-                    requires(join_iterator tmp) {
-                        {lhs} noexcept -> meta::nothrow::copyable;
-                        {rhs} noexcept -> meta::nothrow::copyable;
-                        {count<LHS>{}(tmp, tmp)} noexcept;
-                    }
-                ))
+                } && (LHS != 0 || !bidirectional || requires(join_iterator tmp) {
+                    {lhs} noexcept -> meta::nothrow::copyable;
+                    {rhs} noexcept -> meta::nothrow::copyable;
+                    {count<LHS>{}(join_fresh{}, tmp, tmp, rhs)} noexcept;
+                    {count<LHS>{}(join_fresh{}, tmp, tmp, lhs)} noexcept;
+                }) && (LHS != total_groups - 1 || requires(join_iterator tmp) {
+                    {lhs} noexcept -> meta::nothrow::copyable;
+                    {rhs} noexcept -> meta::nothrow::copyable;
+                    {count<LHS>{}(tmp, tmp)} noexcept;
+                }))
                 requires (LHS == RHS && requires{
                     {count<LHS>{}(lhs, lhs, rhs)};
-                } && (
-                    LHS != 0 ||
-                    !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
-                    requires(join_iterator tmp) {
-                        {lhs} -> meta::copyable;
-                        {rhs} -> meta::copyable;
-                        {count<LHS>{}(join_fresh{}, tmp, tmp, rhs)};
-                        {count<LHS>{}(join_fresh{}, tmp, tmp, lhs)};
-                    }
-                ) && (
-                    LHS != total_groups - 1 ||
-                    requires(join_iterator tmp) {
-                        {lhs} -> meta::copyable;
-                        {rhs} -> meta::copyable;
-                        {count<LHS>{}(tmp, tmp)};
-                    }
-                ))
+                } && (LHS != 0 || !bidirectional || requires(join_iterator tmp) {
+                    {lhs} -> meta::copyable;
+                    {rhs} -> meta::copyable;
+                    {count<LHS>{}(join_fresh{}, tmp, tmp, rhs)};
+                    {count<LHS>{}(join_fresh{}, tmp, tmp, lhs)};
+                }) && (LHS != total_groups - 1 || requires(join_iterator tmp) {
+                    {lhs} -> meta::copyable;
+                    {rhs} -> meta::copyable;
+                    {count<LHS>{}(tmp, tmp)};
+                }))
             {
-                if constexpr (
-                    LHS == 0 &&
-                    meta::inherits<iterator_category, std::bidirectional_iterator_tag>
-                ) {
+                if constexpr (LHS == 0 && bidirectional) {
                     if (lhs.index < 0) {
                         join_iterator tmp = lhs;
                         return -lhs.index + count<LHS>{}(join_fresh{}, tmp, tmp, rhs);
@@ -6962,13 +6958,13 @@ namespace impl {
                         {sum += count<RHS>{}(join_fresh{}, tmp, tmp, rhs)} noexcept;
                     } && (
                         LHS > 0 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum += count<LHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
                     ) && (
                         RHS < total_groups - 1 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum += count<RHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
@@ -6983,13 +6979,13 @@ namespace impl {
                         {sum += count<RHS>{}(join_fresh{}, tmp, tmp, rhs)};
                     } && (
                         LHS > 0 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum += count<LHS>{}(join_fresh{}, tmp, tmp)};
                         }
                     ) && (
                         RHS < total_groups - 1 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum += count<RHS>{}(join_fresh{}, tmp, tmp)};
                         }
@@ -6998,10 +6994,7 @@ namespace impl {
             {
                 join_iterator tmp = lhs;
                 difference_type sum = 0;
-                if constexpr (
-                    LHS == 0 &&
-                    meta::inherits<iterator_category, std::bidirectional_iterator_tag>
-                ) {
+                if constexpr (LHS == 0 && bidirectional) {
                     if (tmp.index < 0) {
                         sum -= tmp.index;
                         sum += count<LHS>{}(join_fresh{}, tmp, tmp);
@@ -7037,13 +7030,13 @@ namespace impl {
                         {sum -= count<LHS>{}(join_fresh{}, tmp, tmp, lhs)} noexcept;
                     } && (
                         RHS > 0 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum -= count<RHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
                     ) && (
                         LHS < total_groups - 1 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum -= count<LHS>{}(join_fresh{}, tmp, tmp)} noexcept;
                         }
@@ -7058,13 +7051,13 @@ namespace impl {
                         {sum -= count<LHS>{}(join_fresh{}, tmp, tmp, lhs)};
                     } && (
                         RHS > 0 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum -= count<RHS>{}(join_fresh{}, tmp, tmp)};
                         }
                     ) && (
                         LHS < total_groups - 1 ||
-                        !meta::inherits<iterator_category, std::bidirectional_iterator_tag> ||
+                        !bidirectional ||
                         requires(join_iterator tmp, difference_type sum) {
                             {sum -= count<LHS>{}(join_fresh{}, tmp, tmp)};
                         }
@@ -7073,10 +7066,7 @@ namespace impl {
             {
                 join_iterator tmp = rhs;
                 difference_type sum = 0;
-                if constexpr (
-                    RHS == 0 &&
-                    meta::inherits<iterator_category, std::bidirectional_iterator_tag>
-                ) {
+                if constexpr (RHS == 0 && bidirectional) {
                     if (tmp.index < 0) {
                         sum += tmp.index;
                         sum -= count<RHS>{}(join_fresh{}, tmp, tmp);
@@ -7145,9 +7135,9 @@ namespace impl {
             return impl::arrow_proxy{**this};
         }
 
-        [[nodiscard]] constexpr std::strong_ordering operator<=>(
-            const join_iterator& other
-        ) const noexcept {
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(const join_iterator& other) const
+            noexcept
+        {
             if (auto cmp = index <=> other.index; cmp != 0) return cmp;
             if (index >= total_groups || index < 0) return std::strong_ordering::equal;
             return subrange.template visit<compare>(*this, other);
@@ -7160,19 +7150,19 @@ namespace impl {
         constexpr join_iterator& operator++()
             noexcept (requires{
                 {visit<increment>(*this, *this)} noexcept;
-            } && (!meta::inherits<iterator_category, std::bidirectional_iterator_tag> || requires{
+            } && (!bidirectional || requires{
                 {jump_forward<0>::advance(*this, *this)} noexcept;
             }))
             requires (requires{
                 {visit<increment>(*this, *this)};
-            } && (!meta::inherits<iterator_category, std::bidirectional_iterator_tag> || requires{
+            } && (!bidirectional || requires{
                 {jump_forward<0>::advance(*this, *this)};
             }))
         {
             if (index >= total_groups) {
                 ++index;
             } else {
-                if constexpr (meta::inherits<iterator_category, std::bidirectional_iterator_tag>) {
+                if constexpr (bidirectional) {
                     if (index < 0) {
                         ++index;
                         if (index == 0) {
@@ -7241,43 +7231,77 @@ namespace impl {
             return tmp;
         }
 
-        /// TODO: += and -= need to consider the case where the starting iterator is
-        /// out of bounds
-
         constexpr join_iterator& operator+=(difference_type i)
             noexcept (requires{
                 {visit<isub>(*this, -i, *this)} noexcept;
                 {visit<iadd>(*this, i, *this)} noexcept;
-            })
+            } && (!bidirectional || requires{
+                {seek_backward<total_groups - 1>::advance(*this, i, *this)} noexcept;
+                {seek_forward<0>::advance(*this, i, *this)} noexcept;
+            }))
             requires (requires{
                 {visit<isub>(*this, -i, *this)};
                 {visit<iadd>(*this, i, *this)};
-            })
+            } && (!bidirectional || requires{
+                {seek_backward<total_groups - 1>::advance(*this, i, *this)};
+                {seek_forward<0>::advance(*this, i, *this)};
+            }))
         {
             if (i < 0) {
-                visit<isub>(*this, -i, *this);
+                if (index < 0) {
+                    index += i;
+                    return *this;
+                }
+                join_signal r = join_signal::CONTINUE;
+                if constexpr (bidirectional) {
+                    if (index >= total_groups) {
+                        index += i;
+                        if (index < total_groups) {
+                            i = total_groups - 1 - index;
+                            index = total_groups - 1;
+                            r = seek_backward<total_groups - 1>::advance(*this, i, *this);
+                        }
+                    } else {
+                        r = visit<isub>(*this, -i, *this);
+                    }
+                } else {
+                    r = visit<isub>(*this, -i, *this);
+                }
+                if (r != join_signal::GOOD) {
+                    index -= i;  // index overflows past the beginning of the range
+                };
             } else {
-                visit<iadd>(*this, i, *this);
+                if (index >= total_groups) {
+                    index += i;
+                    return *this;
+                }
+                join_signal r = join_signal::CONTINUE;
+                if constexpr (bidirectional) {
+                    if (index < 0) {
+                        index += i;
+                        if (index >= 0) {
+                            i = index;
+                            index = 0;
+                            r = seek_forward<0>::advance(*this, i, *this);
+                        }
+                    } else {
+                        r = visit<iadd>(*this, i, *this);
+                    }
+                } else {
+                    r = visit<iadd>(*this, i, *this);
+                }
+                if (r != join_signal::GOOD) {
+                    index += i;  // index overflows past the end of the range
+                };
             }
             return *this;
         }
 
         [[nodiscard]] constexpr join_iterator& operator-=(difference_type i)
-            noexcept (requires{
-                {visit<iadd>(*this, -i, *this)} noexcept;
-                {visit<isub>(*this, i, *this)} noexcept;
-            })
-            requires (requires{
-                {visit<iadd>(*this, -i, *this)};
-                {visit<isub>(*this, i, *this)};
-            })
+            noexcept (requires{{*this += -i} noexcept;})
+            requires (requires{{*this += -i};})
         {
-            if (i < 0) {
-                visit<iadd>(*this, -i, *this);
-            } else {
-                visit<isub>(*this, i, *this);
-            }
-            return *this;
+            return *this += -i;
         }
 
         [[nodiscard]] friend constexpr join_iterator operator+(
@@ -7382,7 +7406,7 @@ namespace impl {
 
             // if both iterators are out of bounds and in the same region, then the
             // distance is simply the difference between their overflowing indices
-            if constexpr (meta::inherits<iterator_category, std::bidirectional_iterator_tag>) {
+            if constexpr (bidirectional) {
                 if (l < 0) {
                     if (r < 0) return l - r;
                     l = 0;
