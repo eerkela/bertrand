@@ -4347,9 +4347,9 @@ struct Optional : impl::optional_tag {
         return __value.index();
     }
     [[nodiscard, deprecated(
-        "Contextual bool conversions are potentially ambiguous when used on optional "
-        "booleans.  Consider an explicit comparison against `None`, a dereference "
-        "with a leading `*`, or an exhaustive visitor using trailing `->*` instead. "
+        "Contextual conversions are potentially ambiguous for optional booleans.  "
+        "Consider an explicit comparison against `None`, a dereference with a leading "
+        "`*`, or an exhaustive visitor using trailing `->*` instead. "
     )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return __value.index();
     }
