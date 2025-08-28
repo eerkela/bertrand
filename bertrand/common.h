@@ -245,7 +245,7 @@ namespace meta {
         constexpr bool rvalue = ::std::is_rvalue_reference_v<T>;
 
         template <typename T>
-        constexpr bool pointer = ::std::is_pointer_v<T>;
+        constexpr bool pointer = ::std::is_pointer_v<meta::unqualify<T>>;
 
     }
 
