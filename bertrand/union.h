@@ -1285,13 +1285,6 @@ namespace impl {
 /////////////////////
 
 
-/// TODO: unions should conditionally expose the tuple interface if all alternatives
-/// support it and all have the same size.  The same should also apply to optionals
-/// and expecteds if the value type is tuple-like.  Together with eliminating the
-/// `types` field, this will render unions fully complete until reflection-based
-/// members become possible in C++26.
-
-
 namespace impl {
 
     /* Find the first type in Ts... that is default constructible (void if none) */
@@ -1925,6 +1918,70 @@ namespace impl {
         using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
 
         [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
+        {
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
+        }
+    };
+
+    /* Unions may be tuples if and only if all of their alternatives are tuples of the
+    same size, in which case they can be indexed at compile time and destructured, with
+    the elements possibly being promoted to unions if they are not all the same type. */
+    template <
+        typename Self,
+        typename = std::make_index_sequence<visitable<Self>::alternatives::size()>
+    >
+    struct union_tuple {
+        static constexpr bool enable = false;
+        static constexpr size_t size = 0;
+    };
+    template <typename Self, size_t I, size_t... Is>
+        requires ((
+            meta::tuple_like<decltype(std::declval<Self>().__value.template get<I>())> &&
+            ... &&
+            meta::tuple_like<decltype(std::declval<Self>().__value.template get<Is>())>
+        ) && ((
+            meta::tuple_size<decltype(std::declval<Self>().__value.template get<I>())> ==
+            meta::tuple_size<decltype(std::declval<Self>().__value.template get<Is>())>
+        ) && ...))
+    struct union_tuple<Self, std::index_sequence<I, Is...>> {
+        static constexpr bool enable = true;
+        static constexpr size_t size =
+            meta::tuple_size<decltype(std::declval<Self>().__value.template get<I>())>;
+    };
+    template <
+        typename Self,
+        ssize_t I,
+        typename = std::make_index_sequence<visitable<Self>::alternatives::size()>
+    >
+    struct union_get {};
+    template <typename Self, ssize_t I, size_t... Js>
+        requires (union_tuple<Self>::enable && (requires(Self self) {
+            {meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<Js>())};
+        } && ...))
+    struct union_get<Self, I, std::index_sequence<Js...>> {
+        using Union = meta::union_type<
+            decltype((meta::unpack_tuple<I>(std::declval<Self>().__value.template get<Js>())))...
+        >;
+
+        template <size_t J>
+        struct fn {
+            static constexpr Union operator()(meta::forward<Self> self)
+                noexcept (requires{{
+                    meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<J>())
+                } noexcept -> meta::nothrow::convertible_to<Union>;})
+                requires (requires{{
+                    meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<J>())
+                } -> meta::convertible_to<Union>;})
+            {
+                return meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<J>());
+            }
+        };
+
+        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
+
+        [[nodiscard]] static constexpr Union operator()(meta::forward<Self> self)
             noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
             requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
         {
@@ -3327,6 +3384,17 @@ struct Union : impl::union_tag {
         return impl::arrow_proxy(*std::forward<Self>(self));
     }
 
+    /* Forward tuple access to `Ts...`, assuming they all support it and have the same
+    size.  If so, then the return type may be a further union if the indexed types
+    differ. */
+    template <ssize_t I, typename Self>
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+        noexcept (requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
+        requires (requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))};})
+    {
+        return (impl::union_get<Self, I>{}(std::forward<Self>(self)));
+    }
+
     /* Returns the result of `std::ranges::size()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
@@ -3893,6 +3961,53 @@ namespace impl {
             requires (!convert && !from_none && !from_nullopt && from_nullptr)
         {
             return static_cast<to>(nullptr);
+        }
+    };
+
+    /* A simple visitor that backs the tuple indexing operator for `Optional<T>`, where
+    `T` is tuple-like, and the return type is promoted to an optional. */
+    template <typename Self, ssize_t I>
+        requires (
+            visitable<Self>::alternatives::size() == 2 &&
+            meta::tuple_like<typename visitable<Self>::value> &&
+            impl::valid_index<meta::tuple_size<typename visitable<Self>::value>, I>
+        )
+    struct optional_get {
+        using Optional = bertrand::Optional<meta::remove_rvalue<decltype((meta::unpack_tuple<I>(
+            std::declval<Self>().__value.template get<1>()
+        )))>>;
+
+        template <size_t J>
+        struct fn {
+            static constexpr Optional operator()(meta::forward<Self> self)
+                noexcept (requires{
+                    {
+                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<1>())
+                    } noexcept -> meta::nothrow::convertible_to<Optional>;
+                    {None} noexcept -> meta::nothrow::convertible_to<Optional>;
+                })
+                requires (requires{
+                    {
+                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<1>())
+                    } -> meta::convertible_to<Optional>;
+                    {None} -> meta::convertible_to<Optional>;
+                })
+            {
+                if constexpr (J == 1) {
+                    return meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<1>());
+                } else {
+                    return None;
+                }
+            }
+        };
+
+        using dispatch = impl::basic_vtable<fn, 2>;
+
+        [[nodiscard]] static constexpr Optional operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
+        {
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
         }
     };
 
@@ -4699,6 +4814,18 @@ struct Optional : impl::optional_tag {
         return opt.__value.index() != 0;
     }
 
+    /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
+    type will be promoted to an `Optional<R>`, where `R` represents the forwarded
+    result, and the empty state is implicitly propagated. */
+    template <ssize_t I, typename Self>
+        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
+    [[nodiscard]] constexpr auto get(this Self&& self)
+        noexcept (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
+        requires (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))};})
+    {
+        return impl::optional_get<Self, I>{}(std::forward<Self>(self));
+    }
+
     /* Return 0 if the optional is empty or `std::ranges::size(*opt)` otherwise.
     If `std::ranges::size(*opt)` would be malformed and the value is not iterable
     (meaning that iterating over the optional would return just a single element), then
@@ -5353,6 +5480,59 @@ namespace impl {
         }
     };
 
+    /* A simple visitor that backs the tuple indexing operator for `Optional<T>`, where
+    `T` is tuple-like, and the return type is promoted to an optional. */
+    template <typename Self, ssize_t I>
+        requires (
+            meta::tuple_like<typename visitable<Self>::value> &&
+            impl::valid_index<meta::tuple_size<typename visitable<Self>::value>, I>
+        )
+    struct expected_get {
+        using T = meta::remove_rvalue<decltype((meta::unpack_tuple<I>(
+            std::declval<Self>().__value.template get<0>()
+        )))>;
+        template <typename... Es>
+        using _Expected = bertrand::Expected<T, Es...>;
+        using Expected = visitable<Self>::errors::template eval<_Expected>;
+
+        template <size_t J>
+        struct fn {
+            static constexpr Expected operator()(meta::forward<Self> self)
+                noexcept (requires{
+                    {
+                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<0>())
+                    } noexcept -> meta::nothrow::convertible_to<Expected>;
+                    {
+                        std::forward<Self>(self).__value.template get<J>()
+                    } noexcept -> meta::nothrow::convertible_to<Expected>;
+                })
+                requires (requires{
+                    {
+                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<0>())
+                    } -> meta::convertible_to<Expected>;
+                    {
+                        std::forward<Self>(self).__value.template get<J>()
+                    } -> meta::convertible_to<Expected>;
+                })
+            {
+                if constexpr (J == 0) {
+                    return meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<0>());
+                } else {
+                    return std::forward<Self>(self).__value.template get<J>();
+                }
+            }
+        };
+
+        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
+
+        [[nodiscard]] static constexpr Expected operator()(meta::forward<Self> self)
+            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
+        {
+            return dispatch{self.__value.index()}(std::forward<Self>(self));
+        }
+    };
+
 }
 
 
@@ -5573,6 +5753,18 @@ struct Expected : impl::expected_tag {
         })
     {
         return meta::to_arrow(impl::expected_access<const Expected&>{}(*this));
+    }
+
+    /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
+    type will be promoted to an `Expected<R, Es...>`, where `R` represents the
+    forwarded result, and `Es...` represent the forwarded error state(s). */
+    template <ssize_t I, typename Self>
+        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
+    [[nodiscard]] constexpr auto get(this Self&& self)
+        noexcept (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
+        requires (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))};})
+    {
+        return impl::expected_get<Self, I>{}(std::forward<Self>(self));
     }
 
     /* Return 0 if the expected is empty or `std::ranges::size(*exp)` otherwise.
@@ -6765,8 +6957,6 @@ namespace std {
         >::alternatives::template at<I>;
     };
 
-    /* Unchecked `std::get<I>()` support for `bertrand::impl::basic_union`
-    objects. */
     template <size_t I, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get(U&& u)
         noexcept (requires{{std::forward<U>(u).template get<I>()} noexcept;})
@@ -6775,8 +6965,6 @@ namespace std {
         return (std::forward<U>(u).template get<I>());
     }
 
-    /* Unchecked `std::get<I>()` support for `bertrand::impl::basic_union`
-    objects. */
     template <typename T, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get(U&& u)
         noexcept (requires{{std::forward<U>(u).template get<T>()} noexcept;})
@@ -6785,7 +6973,6 @@ namespace std {
         return (std::forward<U>(u).template get<T>());
     }
 
-    /* `std::get_if<I>()` support for `bertrand::impl::basic_union` objects. */
     template <size_t I, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
         noexcept (requires{{std::forward<U>(u).template get_if<I>()} noexcept;})
@@ -6794,13 +6981,74 @@ namespace std {
         return (std::forward<U>(u).template get_if<I>());
     }
 
-    /* `std::get_if<I>()` support for `bertrand::impl::basic_union` objects. */
     template <typename T, bertrand::meta::basic_union U>
     [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
         noexcept (requires{{std::forward<U>(u).template get_if<T>()} noexcept;})
         requires (requires{{std::forward<U>(u).template get_if<T>()};})
     {
         return (std::forward<U>(u).template get_if<T>());
+    }
+
+    template <bertrand::meta::Union T> requires (bertrand::impl::union_tuple<T>::enable)
+    struct tuple_size<T> : std::integral_constant<
+        size_t,
+        bertrand::impl::union_tuple<T>::size
+    > {};
+
+    template <bertrand::meta::Optional T>
+        requires (bertrand::meta::tuple_like<typename bertrand::impl::visitable<T>::value>)
+    struct tuple_size<T> : std::integral_constant<
+        size_t,
+        bertrand::meta::tuple_size<typename bertrand::impl::visitable<T>::value>
+    > {};
+
+    template <bertrand::meta::Expected T>
+        requires (bertrand::meta::tuple_like<typename bertrand::impl::visitable<T>::value>)
+    struct tuple_size<T> : std::integral_constant<
+        size_t,
+        bertrand::meta::tuple_size<typename bertrand::impl::visitable<T>::value>
+    > {};
+
+    template <size_t I, bertrand::meta::Union T>
+        requires (requires(T t) {{std::forward<T>(t).template get<I>()};})
+    struct tuple_element<I, T> {
+        using type = decltype((std::declval<T>().template get<I>()));
+    };
+
+    template <size_t I, bertrand::meta::Optional T>
+        requires (requires(T t) {{std::forward<T>(t).template get<I>()};})
+    struct tuple_element<I, T> {
+        using type = decltype((std::declval<T>().template get<I>()));
+    };
+
+    template <size_t I, bertrand::meta::Expected T>
+        requires (requires(T t) {{std::forward<T>(t).template get<I>()};})
+    struct tuple_element<I, T> {
+        using type = decltype((std::declval<T>().template get<I>()));
+    };
+
+    template <ssize_t I, bertrand::meta::Union T>
+    constexpr decltype(auto) get(T&& t)
+        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
+        requires (requires{{std::forward<T>(t).template get<I>()};})
+    {
+        return (std::forward<T>(t).template get<I>());
+    }
+
+    template <ssize_t I, bertrand::meta::Optional T>
+    constexpr decltype(auto) get(T&& t)
+        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
+        requires (requires{{std::forward<T>(t).template get<I>()};})
+    {
+        return (std::forward<T>(t).template get<I>());
+    }
+
+    template <ssize_t I, bertrand::meta::Expected T>
+    constexpr decltype(auto) get(T&& t)
+        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
+        requires (requires{{std::forward<T>(t).template get<I>()};})
+    {
+        return (std::forward<T>(t).template get<I>());
     }
 
 }
