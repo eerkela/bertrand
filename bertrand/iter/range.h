@@ -15,6 +15,7 @@ namespace impl {
     /* A trivial range with zero elements.  This is the default type for the `range`
     class template, allowing it to be default-constructed. */
     struct empty_range {
+        static constexpr void swap(empty_range&) noexcept {}
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
@@ -31,6 +32,8 @@ namespace impl {
             return std::make_reverse_iterator(begin());
         }
     };
+
+    constexpr void swap(empty_range& lhs, empty_range& rhs) noexcept {}
 
     /* A range over just a single scalar element.  Indexing the range perfectly
     forwards that element, and iterating over it is akin to taking its address.  A
@@ -50,6 +53,13 @@ namespace impl {
             __value{std::forward<A>(args)...}
         {}
 
+        constexpr void swap(single_range& other)
+            noexcept (meta::nothrow::swappable<impl::ref<T>>)
+            requires (meta::swappable<impl::ref<T>>)
+        {
+            std::ranges::swap(__value, other.__value);
+        }
+
         [[nodiscard]] static constexpr size_t size() noexcept { return 1; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 1; }
         [[nodiscard]] static constexpr bool empty() noexcept { return false; }
@@ -60,6 +70,20 @@ namespace impl {
             requires (requires{{meta::to_arrow(*std::forward<Self>(self).__value)};})
         {
             return meta::to_arrow(*std::forward<Self>(self).__value);
+        }
+
+        [[nodiscard]] constexpr auto data()
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
+        {
+            return std::addressof(*__value);
+        }
+
+        [[nodiscard]] constexpr auto data() const
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
+        {
+            return std::addressof(*__value);
         }
 
         template <size_t I, typename Self> requires (I == 0)
@@ -152,6 +176,14 @@ namespace impl {
     };
     template <typename T>
     single_range(T&&) -> single_range<meta::remove_rvalue<T>>;
+
+    template <typename T>
+    constexpr void swap(single_range<T>& lhs, single_range<T>& rhs)
+        noexcept (requires{{lhs.swap(rhs)} noexcept;})
+        requires (requires{{lhs.swap(rhs)};})
+    {
+        lhs.swap(rhs);
+    }
 
     enum class tuple_kind : uint8_t {
         EMPTY,
@@ -381,6 +413,14 @@ namespace impl {
             elements(init(std::make_index_sequence<size()>{}))
         {}
 
+        constexpr void swap(tuple_range& other)
+            noexcept (meta::nothrow::swappable<impl::ref<C>> && meta::nothrow::swappable<array>)
+            requires (meta::swappable<impl::ref<C>> && meta::swappable<array>)
+        {
+            std::ranges::swap(__value, other.__value);
+            std::ranges::swap(elements, other.elements);
+        }
+
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
             noexcept (requires{{meta::to_arrow(*std::forward<Self>(self).__value)} noexcept;})
@@ -488,6 +528,13 @@ namespace impl {
             __value(std::forward<A>(args)...)
         {}
 
+        constexpr void swap(tuple_range& other)
+            noexcept (meta::nothrow::swappable<impl::ref<C>>)
+            requires (meta::swappable<impl::ref<C>>)
+        {
+            std::ranges::swap(__value, other.__value);
+        }
+
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
             noexcept (requires{{meta::to_arrow(*std::forward<Self>(self).__value)} noexcept;})
@@ -574,6 +621,14 @@ namespace impl {
     };
     template <typename T>
     tuple_range(T&&) -> tuple_range<meta::remove_rvalue<T>>;
+
+    template <typename T>
+    constexpr void swap(tuple_range<T>& lhs, tuple_range<T>& rhs)
+        noexcept (requires{{lhs.swap(rhs)} noexcept;})
+        requires (requires{{lhs.swap(rhs)};})
+    {
+        lhs.swap(rhs);
+    }
 
 
     /// TODO: all the iota machinery goes up here and should get simplified as much as
@@ -745,7 +800,7 @@ namespace impl {
 
     /* A trivial subclass of `range` that allows the range to be destructured when
     used as an argument to a Bertrand function. */
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    template <meta::not_rvalue C> requires (meta::iterable<C>)
     struct unpack : iter::range<C> {
         [[nodiscard]] explicit constexpr unpack(meta::forward<C> c)
             noexcept (meta::nothrow::constructible_from<iter::range<C>, meta::forward<C>>)
@@ -1946,150 +2001,46 @@ namespace iter {
     aggressively optimized by the compiler. */
     template <meta::not_rvalue C> requires (meta::iterable<C>)
     struct range : impl::range_tag {
-        /// TODO: no need for `__type`: just infer from `decltype(__value)` like I do
-        /// for unions, in order to prevent name conflicts.
-        using __type = meta::remove_rvalue<C>;
-
-        [[no_unique_address]] impl::ref<__type> __value;
+        [[no_unique_address]] impl::ref<C> __value;
 
         [[nodiscard]] constexpr range() = default;
+        [[nodiscard]] constexpr range(const range&) = default;
+        [[nodiscard]] constexpr range(range&&) = default;
 
         template <typename... A> requires (sizeof...(A) > 0)
         [[nodiscard]] constexpr range(A&&... args)
-            noexcept (meta::nothrow::constructible_from<impl::ref<__type>, A...>)
-            requires (meta::constructible_from<impl::ref<__type>, A...>)
+            noexcept (meta::nothrow::constructible_from<impl::ref<C>, A...>)
+            requires (meta::constructible_from<impl::ref<C>, A...>)
         :
             __value(std::forward<A>(args)...)
         {}
 
-        /// TODO: all of the constructors need to be reviewed, and changes would be
-        /// coupled with the impl:: concept refactor and CTAD guides.
-
-        // /* Forwarding constructor for the underlying container. */
-        // [[nodiscard]] explicit constexpr range(meta::forward<C> c)
-        //     noexcept (meta::nothrow::constructible_from<__type, meta::forward<C>>)
-        //     requires (meta::constructible_from<__type, meta::forward<C>>)
-        // :
-        //     __value(std::forward<C>(c))
-        // {}
-
-        // /* CTAD constructor for 1-argument iota ranges. */
-        // template <typename Stop>
-        //     requires (
-        //         !meta::constructible_from<__type, meta::forward<C>> &&
-        //         impl::iota_concept<Stop, Stop, void>
-        //     )
-        // [[nodiscard]] explicit constexpr range(Stop stop)
-        //     noexcept (meta::nothrow::constructible_from<__type, Stop, Stop>)
-        //     requires (meta::constructible_from<__type, Stop, Stop>)
-        // :
-        //     __value(Stop(0), stop)
-        // {}
-
-        // /* CTAD constructor for iterator pair subranges. */
-        // template <meta::iterator Begin, meta::sentinel_for<Begin> End>
-        // [[nodiscard]] explicit constexpr range(Begin&& begin, End&& end)
-        //     noexcept (meta::nothrow::constructible_from<__type, Begin, End>)
-        //     requires (meta::constructible_from<__type, Begin, End>)
-        // :
-        //     __value(std::forward<Begin>(begin), std::forward<End>(end))
-        // {}
-
-        // /* CTAD constructor for 2-argument iota ranges. */
-        // template <typename Start, typename Stop>
-        //     requires (
-        //         (!meta::iterator<Start> || !meta::sentinel_for<Stop, Start>) &&
-        //         impl::iota_concept<Start, Stop, void>
-        //     )
-        // [[nodiscard]] explicit constexpr range(Start start, Stop stop)
-        //     noexcept (meta::nothrow::constructible_from<__type, Start, Stop>)
-        //     requires (meta::constructible_from<__type, Start, Stop>)
-        // :
-        //     __value(start, stop)
-        // {}
-
-        // /* CTAD constructor for counted ranges, which consist of a begin iterator and an
-        // integer size. */
-        // template <meta::iterator Begin, typename Count>
-        //     requires (
-        //         !meta::sentinel_for<Begin, Count> &&
-        //         !impl::iota_concept<Begin, Count, void> &&
-        //         meta::unsigned_integer<Count>
-        //     )
-        // [[nodiscard]] constexpr range(Begin begin, Count size)
-        //     noexcept (meta::nothrow::constructible_from<
-        //         __type,
-        //         std::counted_iterator<Begin>,
-        //         const std::default_sentinel_t&
-        //     >)
-        //     requires (meta::constructible_from<
-        //         __type,
-        //         std::counted_iterator<Begin>,
-        //         const std::default_sentinel_t&
-        //     >)
-        // :
-        //     __value(
-        //         std::counted_iterator(std::move(begin), std::forward<Count>(size)),
-        //         std::default_sentinel
-        //     )
-        // {}
-
-        // /* CTAD constructor for 3-argument iota ranges. */
-        // template <typename Start, typename Stop, typename Step>
-        //     requires (impl::iota_concept<Start, Stop, Step>)
-        // [[nodiscard]] explicit constexpr range(Start start, Stop stop, Step step)
-        //     noexcept (meta::nothrow::constructible_from<__type, Start, Stop, Step>)
-        //     requires (meta::constructible_from<__type, Start, Stop, Step>)
-        // :
-        //     __value(start, stop, step)
-        // {}
-
-        [[nodiscard]] constexpr range(const range&) = default;
-        [[nodiscard]] constexpr range(range&&) = default;
-        constexpr range& operator=(const range&) = default;
-        constexpr range& operator=(range&&) = default;
-
         /* `swap()` operator between ranges. */
         constexpr void swap(range& other)
-            noexcept (meta::nothrow::swappable<impl::ref<__type>>)
-            requires (meta::swappable<impl::ref<__type>>)
+            noexcept (meta::nothrow::swappable<impl::ref<C>>)
+            requires (meta::swappable<impl::ref<C>>)
         {
             std::ranges::swap(__value, other.__value);
         }
-
-        /// TODO: the dereference operator is bound up in the `unpack` refactor, so
-        /// that needs to be finished before this can be finalized.
 
         /* Dereferencing a range promotes it into a trivial `unpack` subclass, which allows
         it to be destructured when used as an argument to a Bertrand function. */
         template <typename Self>
         [[nodiscard]] constexpr auto operator*(this Self&& self)
-            noexcept (requires{{impl::unpack{std::forward<Self>(self)}} noexcept;})
-            requires (requires{{impl::unpack{std::forward<Self>(self)}};})
+            noexcept (requires{{impl::unpack(*std::forward<Self>(self).__value)} noexcept;})
+            requires (requires{{impl::unpack(*std::forward<Self>(self).__value)};})
         {
-            return impl::unpack{std::forward<Self>(self)};
+            return impl::unpack(*std::forward<Self>(self).__value);
         }
 
         /* Indirectly access a member of the wrapped container. */
-        [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{meta::to_arrow(*__value)} noexcept;})
-            requires (requires{{meta::to_arrow(*__value)};})
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{meta::to_arrow(*std::forward<Self>(self).__value)} noexcept;})
+            requires (requires{{meta::to_arrow(*std::forward<Self>(self).__value)};})
         {
-            return meta::to_arrow(*__value);
+            return meta::to_arrow(*std::forward<Self>(self).__value);
         }
-
-        /* Indirectly access a member of the wrapped container. */
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{meta::to_arrow(*__value)} noexcept;})
-            requires (requires{{meta::to_arrow(*__value)};})
-        {
-            return meta::to_arrow(*__value);
-        }
-
-        /// TODO: .size(), .data(), indexing, etc. must account for single-element ranges.
-        /// -> This may need to wait until the refactor for single-element ranges in
-        /// general, since they may require different handling, or use a centralized
-        /// flag to control their state.
 
         /* Get a pointer to the underlying data array, if one exists.  This is
         identical to a `std::ranges::data()` call on the underlying value, assuming
@@ -2157,40 +2108,28 @@ namespace iter {
         /* Forwarding `size()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr auto size() const
-            noexcept (meta::nothrow::has_size<C> || meta::tuple_like<C>)
-            requires (meta::has_size<C> || meta::tuple_like<C>)
+            noexcept (meta::nothrow::has_size<C>)
+            requires (meta::has_size<C>)
         {
-            if constexpr (meta::has_size<C>) {
-                return std::ranges::size(*__value);
-            } else {
-                return meta::tuple_size<C>;
-            }
+            return std::ranges::size(*__value);
         }
 
         /* Forwarding `ssize()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr auto ssize() const
-            noexcept (meta::nothrow::has_ssize<C> || meta::tuple_like<C>)
-            requires (meta::has_ssize<C> || meta::tuple_like<C>)
+            noexcept (meta::nothrow::has_ssize<C>)
+            requires (meta::has_ssize<C>)
         {
-            if constexpr (meta::has_ssize<C>) {
-                return std::ranges::ssize(*__value);
-            } else {
-                return meta::to_signed(meta::tuple_size<C>);
-            }
+            return std::ranges::ssize(*__value);
         }
 
         /* Forwarding `empty()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr bool empty() const
-            noexcept (meta::nothrow::has_empty<C> || meta::tuple_like<C>)
-            requires (meta::has_empty<C> || meta::tuple_like<C>)
+            noexcept (meta::nothrow::has_empty<C>)
+            requires (meta::has_empty<C>)
         {
-            if constexpr (meta::has_empty<C>) {
-                return std::ranges::empty(*__value);
-            } else {
-                return meta::tuple_size<C> == 0;
-            }
+            return std::ranges::empty(*__value);
         }
 
         /* Forwarding `get<I>()` accessor, provided the underlying container is
@@ -2213,9 +2152,7 @@ namespace iter {
         retrieves the corresponding element from the underlying container after
         applying Python-style wraparound for negative indices, which converts the index
         to an unsigned integer.  If multiple indices are given, then each successive
-        index after the first will be used to subscript the previous result.  If the
-        container does not support indexing, but is otherwise tuple-like, then a vtable
-        will be synthesized to back this operator. */
+        index after the first will be used to subscript the previous result. */
         template <typename Self, meta::convertible_to<ssize_t>... Is> requires (sizeof...(Is) > 0)
         constexpr decltype(auto) operator[](this Self&& self, Is&&... is)
             noexcept (requires{{impl::range_subscript(
@@ -2387,6 +2324,9 @@ namespace iter {
             }
         }
 
+        constexpr range& operator=(const range&) = default;
+        constexpr range& operator=(range&&) = default;
+
         /// TODO: range assignment is also complicated, and is probably tied to the
         /// constructor and conversion operator refactors.
 
@@ -2523,6 +2463,69 @@ namespace iter {
 }
 
 
+}
+
+
+namespace std {
+
+    /// TODO: enable_borrowed_range
+
+    template <>
+    struct tuple_size<bertrand::impl::empty_range> : std::integral_constant<size_t, 0> {};
+
+    template <typename T>
+    struct tuple_size<bertrand::impl::single_range<T>> : std::integral_constant<size_t, 1> {};
+
+    template <typename T>
+    struct tuple_size<bertrand::impl::tuple_range<T>> : std::integral_constant<
+        size_t,
+        bertrand::meta::tuple_size<T>
+    > {};
+
+    template <bertrand::meta::tuple_like T>
+    struct tuple_size<bertrand::iter::range<T>> : std::integral_constant<
+        size_t,
+        bertrand::meta::tuple_size<T>
+    > {};
+
+    template <size_t I>
+    struct tuple_element<I, bertrand::impl::empty_range> {
+        using type = const bertrand::NoneType&;
+    };
+
+    template <size_t I, typename T> requires (I == 0)
+    struct tuple_element<I, bertrand::impl::single_range<T>> {
+        using type = T;
+    };
+
+    template <size_t I, typename T> requires (I < bertrand::meta::tuple_size<T>)
+    struct tuple_element<I, bertrand::impl::tuple_range<T>> {
+        using type = decltype((bertrand::meta::unpack_tuple<I>(std::declval<T>())));
+    };
+
+    template <size_t I, bertrand::meta::tuple_like T> requires (I < bertrand::meta::tuple_size<T>)
+    struct tuple_element<I, bertrand::iter::range<T>> {
+        using type = decltype((bertrand::meta::unpack_tuple<I>(std::declval<T>())));
+    };
+
+    template <ssize_t I, bertrand::meta::range R>
+        requires (
+            bertrand::meta::tuple_like<R> &&
+            bertrand::impl::valid_index<bertrand::meta::tuple_size<R>, I>
+        )
+    constexpr decltype(auto) get(R&& r)
+        noexcept (requires{{bertrand::meta::unpack_tuple<I>(std::forward<R>(r))} noexcept;})
+        requires (requires{{bertrand::meta::unpack_tuple<I>(std::forward<R>(r))};})
+    {
+        return (bertrand::meta::unpack_tuple<I>(std::forward<R>(r)));
+    }
+
+}
+
+
+namespace bertrand {
+
+
 static constexpr std::tuple tup {1, 2, 3.5};
 static_assert([] {
     for (auto&& i : iter::range(tup)) {
@@ -2538,13 +2541,6 @@ static_assert([] {
     return true;
 }());
 
-
-}
-
-
-namespace std {
-
-    /// TODO: enable_borrowed_range, tuple definitions
 
 }
 
