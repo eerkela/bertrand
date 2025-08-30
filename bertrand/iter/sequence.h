@@ -10,6 +10,21 @@ namespace bertrand {
 
 
 namespace impl {
+    struct sequence_tag {};
+
+}
+
+
+namespace meta {
+
+    template <typename T, typename R = void>
+    concept sequence = range<T, R> && inherits<T, impl::sequence_tag>;
+
+}
+
+
+namespace impl {
+    
 
     /// TODO: update and streamline error messages.  This might not be doable until
     /// after strings are defined, since otherwise I get undefined template errors.

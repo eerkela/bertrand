@@ -12,20 +12,15 @@ namespace bertrand {
 namespace impl {
     struct range_tag {};
     struct iota_tag {};
-    struct sequence_tag {};
+
+    /// TODO: these concepts are going to need to be refactored to work with the
+    /// iota/subrange/counted use cases, and apply `step` equally across all of them,
+    /// which is a challenge.  I should probably address all the other issues first.
 
     template <typename T>
     concept strictly_positive =
         meta::unsigned_integer<T> ||
         !requires(meta::as_const_ref<T> t) {{t < 0} -> meta::explicitly_convertible_to<bool>;};
-
-    template <typename Start, typename Stop, typename Step>
-    concept base_iota_concept =
-        meta::unqualified<Start> &&
-        meta::unqualified<Stop> &&
-        meta::copyable<Start> &&
-        meta::copyable<Stop> &&
-        (meta::is_void<Step> || (meta::unqualified<Step> && meta::copyable<Step>));
 
     template <typename Start, typename Stop, typename Step>
     concept iota_bounded = meta::lt_returns<bool, const Start&, const Stop&> && (
@@ -45,7 +40,11 @@ namespace impl {
 
     template <typename Start, typename Stop, typename Step>
     concept iota_concept =
-        base_iota_concept<Start, Stop, Step> &&
+        meta::unqualified<Start> &&
+        meta::unqualified<Stop> &&
+        meta::copyable<Start> &&
+        meta::copyable<Stop> &&
+        (meta::is_void<Step> || (meta::unqualified<Step> && meta::copyable<Step>)) &&
         (iota_bounded<Start, Stop, Step> || meta::None<Stop>) &&
         iota_incrementable<Start, Stop, Step>;
 
@@ -59,6 +58,11 @@ namespace iter {
 
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     struct range;
+
+    /// TODO: CTAD guides will need to be updated to account for all the iota/subrange/
+    /// counted cases, with and without `step`, as well as the unary `range(value)`
+    /// case, which is always devoted to converting `value` into an iterable range.
+    /// This will have to be done in tandem with the concept refactors.
 
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     range(C&&) -> range<meta::remove_rvalue<C>>;
@@ -101,6 +105,12 @@ namespace iter {
 
 namespace impl {
 
+    /// TODO: unpack ranges should use a custom iterator type that behaves identically
+    /// to a normal range iterator, but if the yield type is a range, and we're
+    /// applying double unpacking, then the inner range should also be unpacked.  That
+    /// may be slightly tricky to implement, but it's core to how unpacking should
+    /// work in general, and ranges can't be solved until it's done.
+
     /* A trivial subclass of `range` that allows the range to be destructured when
     used as an argument to a Bertrand function. */
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
@@ -116,312 +126,308 @@ namespace impl {
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
 
+
+    /// TODO: probably the best place to start is to proofread the tuple iterator code,
+    /// which should not require any changes, except possibly to simplify the
+    /// implementation and make it more maintainable.
+
+    enum class tuple_kind : uint8_t {
+        EMPTY,
+        TRIVIAL,
+        VTABLE,
+    };
+
     template <typename T>
-    concept enable_tuple_iterator = meta::lvalue<T> && meta::tuple_like<T>;
+    concept tuple_iterator_concept = meta::lvalue<T> && meta::tuple_like<T>;
+
+    template <tuple_iterator_concept T>
+    struct tuple_iterator;
+
+    /// TODO: Maybe `begin()` is only available as an rvalue for tuple_dispatch, which
+    /// would just move the current dispatch object into the iterator, preferably by
+    /// aggregate initialization to avoid intermediate copies.
+    /// -> store a `tuple_dispatch` container inside the range, and then just reference
+    /// it indirectly in the iterator types.  That avoids all copy overhead, and
+    /// generates the reference array right at the point where `range(c)` is called,
+    /// which is the best possible place to do it.  That would make `tuple_dispatch`
+    /// another kind of container adaptor like iotas, subranges, and counted, which
+    /// is covered by a dedicated CTAD guide.
 
     /* Tuple iterators can be optimized away if the tuple is empty, or into an array of
-    pointers if all elements unpack to the same lvalue type.  Otherwise, they must
-    build a vtable and perform a dynamic dispatch to yield a proper value type, which
-    may be a union. */
-    enum class tuple_iterator_kind : uint8_t {
-        DYNAMIC,
-        ARRAY,
-        EMPTY,
-    };
-
-    /* Indexing and/or iterating over a tuple requires the creation of some kind of
-    array, which can either be a flat array of homogenous references or a vtable of
-    function pointers that produce a common type (which may be a `Union`) to which all
-    results are convertible. */
-    template <typename>
-    struct _tuple_iterator_traits;
+    references if all elements unpack to the same type.  Otherwise, they must build a
+    vtable and perform a dynamic dispatch to yield a proper value as a union. */
     template <typename... Ts>
-    struct _tuple_iterator_traits<meta::pack<Ts...>> {
-        using reference = meta::union_type<Ts...>;
-        static constexpr tuple_iterator_kind kind = meta::is_void<reference> ?
-            tuple_iterator_kind::EMPTY :
-            meta::visitable<reference> ?
-                tuple_iterator_kind::DYNAMIC :
-                tuple_iterator_kind::ARRAY;
-        static constexpr bool nothrow = (meta::nothrow::convertible_to<Ts, reference> && ...);
+    struct _tuple_dispatch {
+        using type = meta::union_type<Ts...>;
+        static constexpr tuple_kind kind =
+            meta::trivial_union<Ts...> ? tuple_kind::TRIVIAL : tuple_kind::VTABLE;
     };
-    template <enable_tuple_iterator T>
-    struct tuple_iterator_traits : _tuple_iterator_traits<typename meta::tuple_types<T>> {
+    template <>
+    struct _tuple_dispatch<> {
+        using type = const NoneType&;
+        static constexpr tuple_kind kind = tuple_kind::EMPTY;
+    };
+    template <tuple_iterator_concept T>
+    struct tuple_dispatch : meta::tuple_types<T>::template eval<_tuple_dispatch> {
     private:
-        using base = _tuple_iterator_traits<typename meta::tuple_types<T>>;
+        meta::address_type<T> tuple = nullptr;
 
+    public:
+        [[nodiscard]] constexpr tuple_dispatch() = default;
+        [[nodiscard]] constexpr tuple_dispatch(T tuple)
+            noexcept (meta::nothrow::has_address<T>)
+            requires (meta::has_address<T>)
+        :
+            tuple(std::addressof(tuple))
+        {}
+
+        [[nodiscard]] static constexpr size_t index(ssize_t i)
+            noexcept (requires{{size_t(impl::normalize_index(meta::tuple_size<T>, i))} noexcept;})
+        {
+            return size_t(impl::normalize_index(meta::tuple_size<T>, i));
+        }
+
+        [[nodiscard]] static constexpr const NoneType& operator[](size_t i) noexcept {
+            return None;
+        }
+
+        /// TODO: no call operator?
+
+        [[nodiscard]] static constexpr auto begin() noexcept {
+            return empty_iterator<const NoneType&>{};
+        }
+
+        [[nodiscard]] static constexpr auto end() noexcept {
+            return empty_iterator<const NoneType&>{};
+        }
+
+        [[nodiscard]] static constexpr auto rbegin() noexcept {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] static constexpr auto rend() noexcept {
+            return std::make_reverse_iterator(begin());
+        }
+    };
+    template <tuple_iterator_concept T>
+        requires (meta::tuple_types<T>::template eval<_tuple_dispatch>::kind == tuple_kind::TRIVIAL)
+    struct tuple_dispatch<T> : meta::tuple_types<T>::template eval<_tuple_dispatch> {
+    private:
+        using base = meta::tuple_types<T>::template eval<_tuple_dispatch>;
+        using ref = impl::ref<typename base::type>;
+        using array = std::array<ref, meta::tuple_size<T>>;
+
+        meta::address_type<T> tuple = nullptr;
+        array data {};
+
+        template <size_t... Is>
+        constexpr array init(std::index_sequence<Is...>)
+            noexcept ((requires{
+                {meta::unpack_tuple<Is>(*tuple)} noexcept -> meta::nothrow::convertible_to<ref>;
+            } && ...))
+        {
+            return {meta::unpack_tuple<Is>(*tuple)...};
+        }
+
+    public:
+        [[nodiscard]] constexpr tuple_dispatch() = default;
+        [[nodiscard]] constexpr tuple_dispatch(T tuple)
+            noexcept (meta::nothrow::has_address<T> && requires{
+                {init(std::make_index_sequence<meta::tuple_size<T>>{})} noexcept;
+            })
+            requires (meta::has_address<T> && requires{
+                {init(std::make_index_sequence<meta::tuple_size<T>>{})};
+            })
+        :
+            tuple(std::addressof(tuple)),
+            data(init(std::make_index_sequence<meta::tuple_size<T>>{}))
+        {}
+
+        [[nodiscard]] static constexpr size_t index(ssize_t i)
+            noexcept (requires{{size_t(impl::normalize_index(meta::tuple_size<T>, i))} noexcept;})
+        {
+            return size_t(impl::normalize_index(meta::tuple_size<T>, i));
+        }
+
+        [[nodiscard]] constexpr base::type operator[](size_t i) const noexcept {
+            using type = base::type;
+            if constexpr (meta::lvalue<type> && meta::not_const<type>) {
+                return (const_cast<array&>(data)[i]);
+            } else {
+                return (data[i]);
+            }
+        }
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{tuple_iterator<T>{*tuple}} noexcept;})
+            requires (requires{{tuple_iterator<T>{*tuple}};})
+        {
+            return tuple_iterator<T>{*tuple};
+        }
+
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{tuple_iterator<T>{}} noexcept;})
+            requires (requires{{tuple_iterator<T>{}};})
+        {
+            return tuple_iterator<T>{};
+        }
+
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(end())};})
+        {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(begin())};})
+        {
+            return std::make_reverse_iterator(begin());
+        }
+    };
+    template <tuple_iterator_concept T>
+        requires (meta::tuple_types<T>::template eval<_tuple_dispatch>::kind == tuple_kind::VTABLE)
+    struct tuple_dispatch<T> : meta::tuple_types<T>::template eval<_tuple_dispatch> {
+    private:
+        using base = meta::tuple_types<T>::template eval<_tuple_dispatch>;
         template <size_t I>
         struct fn {
-            static constexpr base::reference operator()(T t) noexcept (base::nothrow) {
+            static constexpr base::type operator()(T t)
+                noexcept (requires{{
+                    meta::unpack_tuple<I>(t)
+                } noexcept -> meta::nothrow::convertible_to<typename base::type>;})
+            {
                 return meta::unpack_tuple<I>(t);
             }
         };
+        using dispatch = impl::basic_vtable<fn, meta::tuple_size<T>>;
+
+        meta::address_type<T> tuple = nullptr;
 
     public:
-        using dispatch = impl::basic_vtable<fn, meta::tuple_size<T>>;
+        [[nodiscard]] constexpr tuple_dispatch() = default;
+        [[nodiscard]] constexpr tuple_dispatch(T tuple)
+            noexcept (meta::nothrow::has_address<T>)
+            requires (meta::has_address<T>)
+        :
+            tuple(std::addressof(tuple))
+        {}
+
+        [[nodiscard]] static constexpr size_t index(ssize_t i)
+            noexcept (requires{{size_t(impl::normalize_index(meta::tuple_size<T>, i))} noexcept;})
+        {
+            return size_t(impl::normalize_index(meta::tuple_size<T>, i));
+        }
+
+        [[nodiscard]] constexpr base::type operator[](size_t i) const
+            noexcept (requires{{dispatch{i}(*tuple)} noexcept;})
+        {
+            return (dispatch{i}(*tuple));
+        }
+
+        /// TODO: maybe if I provide a call operator, I could avoid the overload
+        /// behavior for `impl::basic_tuple`, and allow any tuple-like container of
+        /// functions to be invoked as an overload set.
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{tuple_iterator<T>{*tuple}} noexcept;})
+            requires (requires{{tuple_iterator<T>{*tuple}};})
+        {
+            return tuple_iterator<T>{*tuple};
+        }
+
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{tuple_iterator<T>{}} noexcept;})
+            requires (requires{{tuple_iterator<T>{}};})
+        {
+            return tuple_iterator<T>{};
+        }
+
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(end())};})
+        {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(begin())};})
+        {
+            return std::make_reverse_iterator(begin());
+        }
     };
+    template <typename T>
+    tuple_dispatch(T&) -> tuple_dispatch<T&>;
+
+    /// TODO: fix docs for tuple iterators, and relate them to `tuple_dispatch`, which
+    /// centralizes all the vtable operations one might want to perform for tuples.
 
     /* A special case of `tuple_iterator` for empty tuples, which do not yield any
     results, and are optimized away by the compiler. */
-    template <enable_tuple_iterator T>
-    struct tuple_iterator {
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = const NoneType;
-        using pointer = const NoneType*;
-        using reference = const NoneType&;
-
-        [[nodiscard]] constexpr tuple_iterator(difference_type = 0) noexcept {}
-        [[nodiscard]] constexpr tuple_iterator(T, difference_type = 0) noexcept {}
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return None;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return &None;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type) const noexcept {
-            return None;
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type
-        ) noexcept {
-            return self;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type,
-            const tuple_iterator& self
-        ) noexcept {
-            return self;
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type) noexcept {
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type) const noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator&) const noexcept {
-            return 0;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type) noexcept {
-            return *this;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator&) const noexcept {
-            return std::strong_ordering::equal;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator&) const noexcept {
-            return true;
-        }
-    };
 
     /* A special case of `tuple_iterator` for tuples where all elements share the
     same addressable type.  In this case, the vtable is reduced to a simple array of
     pointers that are initialized on construction, without requiring dynamic
     dispatch. */
-    template <enable_tuple_iterator T>
-        requires (tuple_iterator_traits<T>::kind == tuple_iterator_kind::ARRAY)
-    struct tuple_iterator<T> {
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using reference = tuple_iterator_traits<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::address_type<reference>;
-
-    private:
-        using indices = std::make_index_sequence<meta::tuple_size<T>>;
-        using store = impl::ref<reference>;
-        using array = std::array<store, meta::tuple_size<T>>;
-
-        array data;
-        difference_type index;
-
-        template <size_t... Is>
-        static constexpr array init(std::index_sequence<Is...>, T t)
-            noexcept ((requires{
-                {meta::unpack_tuple<Is>(t)} noexcept -> meta::nothrow::convertible_to<store>;
-            } && ...))
-        {
-            return {meta::unpack_tuple<Is>(t)...};
-        }
-
-        [[nodiscard]] constexpr tuple_iterator(const array& data, difference_type index) noexcept :
-            data(data),
-            index(index)
-        {}
-
-    public:
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
-            data{},
-            index(index)
-        {}
-
-        [[nodiscard]] constexpr tuple_iterator(T t, difference_type index = 0)
-            noexcept (requires{{init(indices{}, t)} noexcept;})
-        :
-            data(init(indices{}, t)),
-            index(index)
-        {}
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
-            return (*self.data[self.index]);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr auto operator->(this Self&& self) noexcept {
-            return impl::arrow_proxy{*std::forward<Self>(self)};
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](
-            this Self&& self,
-            difference_type n
-        ) noexcept {
-            return (*self.data[self.index + n]);
-        }
-
-        constexpr tuple_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator++(int) noexcept {
-            auto tmp = *this;
-            ++index;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            const tuple_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.data, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr tuple_iterator operator+(
-            difference_type n,
-            const tuple_iterator& self
-        ) noexcept {
-            return {self.data, self.index + n};
-        }
-
-        constexpr tuple_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        constexpr tuple_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator--(int) noexcept {
-            auto tmp = *this;
-            --index;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {data, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const tuple_iterator& rhs) const noexcept {
-            return index - rhs.index;
-        }
-
-        constexpr tuple_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
-            return index == other.index;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const tuple_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-    };
 
     /* An iterator over an otherwise non-iterable tuple type, which constructs a vtable
     of callback functions yielding each value.  This allows tuples to be used as inputs
     to iterable algorithms, as long as those algorithms are built to handle possible
     `Union` values. */
-    template <enable_tuple_iterator T>
-        requires (tuple_iterator_traits<T>::kind == tuple_iterator_kind::DYNAMIC)
-    struct tuple_iterator<T> {
+
+
+    template <tuple_iterator_concept T>
+    struct tuple_iterator {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using reference = tuple_iterator_traits<T>::reference;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::as_pointer<value_type>;
+        using value_type = meta::remove_reference<typename tuple_dispatch<T>::type>;
+        using reference = meta::as_lvalue<value_type>;
+        using pointer = meta::address_type<reference>;
 
     private:
-        using table = tuple_iterator_traits<T>;
-        using indices = std::make_index_sequence<meta::tuple_size<T>>;
-        using storage = meta::as_pointer<T>;
-
-        storage data;
+        tuple_dispatch<T> dispatch;
         difference_type index;
 
-        [[nodiscard]] constexpr tuple_iterator(storage data, difference_type index) noexcept :
-            data(data),
+        constexpr tuple_iterator(const tuple_dispatch<T>& dispatch, difference_type index)
+            noexcept(meta::nothrow::copyable<tuple_dispatch<T>>)
+        :
+            dispatch(dispatch),
             index(index)
         {}
 
     public:
-        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>) noexcept :
-            data(nullptr),
+        [[nodiscard]] constexpr tuple_iterator(difference_type index = meta::tuple_size<T>)
+            noexcept 
+        :
+            dispatch(),
             index(index)
         {}
 
         [[nodiscard]] constexpr tuple_iterator(T tuple, difference_type index = 0)
-            noexcept (meta::nothrow::address_returns<storage, T>)
-            requires (meta::address_returns<storage, T>)
+            noexcept (meta::nothrow::convertible_to<T, tuple_dispatch<T>>)
         :
-            data(std::addressof(tuple)),
+            dispatch(tuple),
             index(index)
         {}
 
-        [[nodiscard]] constexpr reference operator*() const noexcept (table::nothrow) {
-            return typename table::dispatch{size_t(index)}(*data);
+        [[nodiscard]] constexpr decltype(auto) operator*() const
+            noexcept (requires{{dispatch[size_t(index)]} noexcept;})
+        {
+            return (dispatch[size_t(index)]);
         }
 
-        [[nodiscard]] constexpr auto operator->() const noexcept (table::nothrow) {
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow_proxy(**this)} noexcept;})
+        {
             return impl::arrow_proxy(**this);
         }
 
-        [[nodiscard]] constexpr reference operator[](
-            difference_type n
-        ) const noexcept (table::nothrow) {
-            return typename table::dispatch{index + n}(*data);
+        [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const
+            noexcept (requires{{dispatch[size_t(index + n)]} noexcept;})
+        {
+            return (dispatch[size_t(index + n)]);
         }
 
         constexpr tuple_iterator& operator++() noexcept {
@@ -438,15 +444,15 @@ namespace impl {
         [[nodiscard]] friend constexpr tuple_iterator operator+(
             const tuple_iterator& self,
             difference_type n
-        ) noexcept {
-            return {self.data, self.index + n};
+        ) noexcept (meta::nothrow::copyable<tuple_dispatch<T>>) {
+            return {self.dispatch, self.index + n};
         }
 
         [[nodiscard]] friend constexpr tuple_iterator operator+(
             difference_type n,
             const tuple_iterator& self
-        ) noexcept {
-            return {self.data, self.index + n};
+        ) noexcept (meta::nothrow::copyable<tuple_dispatch<T>>) {
+            return {self.dispatch, self.index + n};
         }
 
         constexpr tuple_iterator& operator+=(difference_type n) noexcept {
@@ -465,8 +471,10 @@ namespace impl {
             return tmp;
         }
 
-        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const noexcept {
-            return {data, index - n};
+        [[nodiscard]] constexpr tuple_iterator operator-(difference_type n) const
+            noexcept (meta::nothrow::copyable<tuple_dispatch<T>>)
+        {
+            return {dispatch, index - n};
         }
 
         [[nodiscard]] constexpr difference_type operator-(
@@ -487,137 +495,138 @@ namespace impl {
         [[nodiscard]] constexpr bool operator==(const tuple_iterator& other) const noexcept {
             return index == other.index;
         }
+
     };
 
-    template <typename C>
-    struct make_range_begin { using type = void; };
-    template <meta::iterable C>
-    struct make_range_begin<C> { using type = meta::begin_type<C>; };
+    // template <typename C>
+    // struct make_range_begin { using type = void; };
+    // template <meta::iterable C>
+    // struct make_range_begin<C> { using type = meta::begin_type<C>; };
 
-    template <typename C>
-    struct make_range_end { using type = void; };
-    template <meta::iterable C>
-    struct make_range_end<C> { using type = meta::end_type<C>; };
+    // template <typename C>
+    // struct make_range_end { using type = void; };
+    // template <meta::iterable C>
+    // struct make_range_end<C> { using type = meta::end_type<C>; };
 
-    template <typename C>
-    struct make_range_rbegin { using type = void; };
-    template <meta::reverse_iterable C>
-    struct make_range_rbegin<C> { using type = meta::rbegin_type<C>; };
+    // template <typename C>
+    // struct make_range_rbegin { using type = void; };
+    // template <meta::reverse_iterable C>
+    // struct make_range_rbegin<C> { using type = meta::rbegin_type<C>; };
 
-    template <typename C>
-    struct make_range_rend { using type = void; };
-    template <meta::reverse_iterable C>
-    struct make_range_rend<C> { using type = meta::rend_type<C>; };
+    // template <typename C>
+    // struct make_range_rend { using type = void; };
+    // template <meta::reverse_iterable C>
+    // struct make_range_rend<C> { using type = meta::rend_type<C>; };
 
-    /* `make_range_iterator` abstracts the forward iterator methods for a `range`,
-    synthesizing a corresponding tuple iterator if the underlying container is not
-    already iterable. */
-    template <meta::lvalue C>
-    struct make_range_iterator {
-        static constexpr bool tuple = true;
-        using begin_type = tuple_iterator<C>;
-        using end_type = begin_type;
+    // /* `make_range_iterator` abstracts the forward iterator methods for a `range`,
+    // synthesizing a corresponding tuple iterator if the underlying container is not
+    // already iterable. */
+    // template <meta::lvalue C>
+    // struct make_range_iterator {
+    //     static constexpr bool tuple = true;
+    //     using begin_type = tuple_iterator<C>;
+    //     using end_type = begin_type;
 
-        C container;
+    //     C container;
 
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (requires{{begin_type{container}} noexcept;})
-        {
-            return begin_type(container);
-        }
+    //     [[nodiscard]] constexpr begin_type begin()
+    //         noexcept (requires{{begin_type{container}} noexcept;})
+    //     {
+    //         return begin_type(container);
+    //     }
 
-        [[nodiscard]] constexpr end_type end()
-            noexcept (requires{{end_type{}} noexcept;})
-        {
-            return end_type{};
-        }
-    };
-    template <meta::lvalue C> requires (meta::iterable<C>)
-    struct make_range_iterator<C> {
-        static constexpr bool tuple = false;
-        using begin_type = make_range_begin<C>::type;
-        using end_type = make_range_end<C>::type;
+    //     [[nodiscard]] constexpr end_type end()
+    //         noexcept (requires{{end_type{}} noexcept;})
+    //     {
+    //         return end_type{};
+    //     }
+    // };
+    // template <meta::lvalue C> requires (meta::iterable<C>)
+    // struct make_range_iterator<C> {
+    //     static constexpr bool tuple = false;
+    //     using begin_type = make_range_begin<C>::type;
+    //     using end_type = make_range_end<C>::type;
 
-        C container;
+    //     C container;
 
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (meta::nothrow::has_begin<C>)
-            requires (meta::has_begin<C>)
-        {
-            return std::ranges::begin(container);
-        }
+    //     [[nodiscard]] constexpr begin_type begin()
+    //         noexcept (meta::nothrow::has_begin<C>)
+    //         requires (meta::has_begin<C>)
+    //     {
+    //         return std::ranges::begin(container);
+    //     }
 
-        [[nodiscard]] constexpr end_type end()
-            noexcept (meta::nothrow::has_end<C>)
-            requires (meta::has_end<C>)
-        {
-            return std::ranges::end(container);
-        }
-    };
+    //     [[nodiscard]] constexpr end_type end()
+    //         noexcept (meta::nothrow::has_end<C>)
+    //         requires (meta::has_end<C>)
+    //     {
+    //         return std::ranges::end(container);
+    //     }
+    // };
 
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    make_range_iterator(C&) -> make_range_iterator<C&>;
+    // template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    // make_range_iterator(C&) -> make_range_iterator<C&>;
 
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    using range_begin = make_range_iterator<meta::as_lvalue<C>>::begin_type;
+    // template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    // using range_begin = make_range_iterator<meta::as_lvalue<C>>::begin_type;
 
-    template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-    using range_end = make_range_iterator<meta::as_lvalue<C>>::end_type;
+    // template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
+    // using range_end = make_range_iterator<meta::as_lvalue<C>>::end_type;
 
-    /* `make_range_reversed` abstracts the reverse iterator methods for a `range`,
-    synthesizing a corresponding tuple iterator if the underlying container is not
-    already iterable. */
-    template <meta::lvalue C>
-    struct make_range_reversed {
-        static constexpr bool tuple = true;
-        using begin_type = std::reverse_iterator<tuple_iterator<C>>;
-        using end_type = begin_type;
+    // /* `make_range_reversed` abstracts the reverse iterator methods for a `range`,
+    // synthesizing a corresponding tuple iterator if the underlying container is not
+    // already iterable. */
+    // template <meta::lvalue C>
+    // struct make_range_reversed {
+    //     static constexpr bool tuple = true;
+    //     using begin_type = std::reverse_iterator<tuple_iterator<C>>;
+    //     using end_type = begin_type;
 
-        C container;
+    //     C container;
 
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (requires{{begin_type{begin_type{container, meta::tuple_size<C>}}} noexcept;})
-        {
-            return begin_type{tuple_iterator<C>{container, meta::tuple_size<C>}};
-        }
+    //     [[nodiscard]] constexpr begin_type begin()
+    //         noexcept (requires{{begin_type{begin_type{container, meta::tuple_size<C>}}} noexcept;})
+    //     {
+    //         return begin_type{tuple_iterator<C>{container, meta::tuple_size<C>}};
+    //     }
 
-        [[nodiscard]] constexpr end_type end()
-            noexcept (requires{{end_type{begin_type{size_t(0)}}} noexcept;})
-        {
-            return end_type{begin_type{size_t(0)}};
-        }
-    };
-    template <meta::lvalue C> requires (meta::reverse_iterable<C>)
-    struct make_range_reversed<C> {
-        static constexpr bool tuple = false;
-        using begin_type = make_range_rbegin<C>::type;
-        using end_type = make_range_rend<C>::type;
+    //     [[nodiscard]] constexpr end_type end()
+    //         noexcept (requires{{end_type{begin_type{size_t(0)}}} noexcept;})
+    //     {
+    //         return end_type{begin_type{size_t(0)}};
+    //     }
+    // };
+    // template <meta::lvalue C> requires (meta::reverse_iterable<C>)
+    // struct make_range_reversed<C> {
+    //     static constexpr bool tuple = false;
+    //     using begin_type = make_range_rbegin<C>::type;
+    //     using end_type = make_range_rend<C>::type;
 
-        C container;
+    //     C container;
 
-        [[nodiscard]] constexpr begin_type begin()
-            noexcept (meta::nothrow::has_rbegin<C>)
-            requires (meta::has_rbegin<C>)
-        {
-            return std::ranges::rbegin(container);
-        }
+    //     [[nodiscard]] constexpr begin_type begin()
+    //         noexcept (meta::nothrow::has_rbegin<C>)
+    //         requires (meta::has_rbegin<C>)
+    //     {
+    //         return std::ranges::rbegin(container);
+    //     }
 
-        [[nodiscard]] constexpr end_type end()
-            noexcept (meta::nothrow::has_rend<C>)
-            requires (meta::has_rend<C>)
-        {
-            return std::ranges::rend(container);
-        }
-    };
+    //     [[nodiscard]] constexpr end_type end()
+    //         noexcept (meta::nothrow::has_rend<C>)
+    //         requires (meta::has_rend<C>)
+    //     {
+    //         return std::ranges::rend(container);
+    //     }
+    // };
 
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    make_range_reversed(C&) -> make_range_reversed<C&>;
+    // template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    // make_range_reversed(C&) -> make_range_reversed<C&>;
 
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    using range_rbegin = make_range_reversed<meta::as_lvalue<C>>::begin_type;
+    // template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    // using range_rbegin = make_range_reversed<meta::as_lvalue<C>>::begin_type;
 
-    template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
-    using range_rend = make_range_reversed<meta::as_lvalue<C>>::end_type;
+    // template <typename C> requires (meta::reverse_iterable<C> || meta::tuple_like<C>)
+    // using range_rend = make_range_reversed<meta::as_lvalue<C>>::end_type;
 
 }
 
@@ -654,8 +663,9 @@ namespace meta {
     template <typename T, typename R = void>
     concept range = inherits<T, impl::range_tag> && (is_void<R> || yields<T, R>);
 
-    template <typename T, typename R = void>
-    concept sequence = range<T, R> && inherits<T, impl::sequence_tag>;
+    /// TODO: perhaps I should add `bidirectional_range`, `random_access_range`,
+    /// `contiguous_range`, `output_range`, `common_range`, all possibly with an
+    /// optional yield type.
 
     template <typename T, typename R = void>
     concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
@@ -677,6 +687,9 @@ namespace meta {
 
 
 namespace impl {
+
+    /// TODO: review all the range_ and iota_ helpers to streamline them and make them
+    /// more maintainable.
 
     template <typename>
     constexpr bool range_reverse_iterable = false;
@@ -1693,18 +1706,53 @@ namespace impl {
         requires (iota_concept<Start, Stop, Step>)
     iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
 
-    template <typename C>
-    constexpr decltype(auto) range_subscript(C&& container, size_t i)
-        noexcept (requires{{std::forward<C>(container)[i]} noexcept;} || meta::tuple_like<C>)
-        requires (requires{{std::forward<C>(container)[i]};} || meta::tuple_like<C>)
+    /// TODO: range_get() and range_subscript() may need to account for single-element
+    /// ranges?
+
+    template <ssize_t I, typename C>
+    constexpr decltype(auto) range_get(C&& c)
+        noexcept (requires{{meta::unpack_tuple<I>(std::forward<C>(c))} noexcept;})
+        requires (requires{{meta::unpack_tuple<I>(std::forward<C>(c))};})
     {
-        if constexpr (requires{{std::forward<C>(container)[i]};}) {
-            return (std::forward<C>(container)[i]);
+        return (meta::unpack_tuple<I>(std::forward<C>(c)));
+    }
+
+    template <ssize_t I, ssize_t... Is, typename C> requires (sizeof...(Is) > 0)
+    constexpr decltype(auto) range_get(C&& c)
+        noexcept (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))} noexcept;})
+        requires (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))};})
+    {
+        return (range_get<Is...>(range_get<I>(std::forward<C>(c))));
+    }
+
+    template <typename C>
+    constexpr decltype(auto) range_subscript(C&& c, ssize_t i)
+        noexcept (requires{
+            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]} noexcept;
+        } || meta::tuple_like<C>)
+        requires (requires{
+            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]};
+        } || meta::tuple_like<C>)
+    {
+        if constexpr (requires{{std::forward<C>(c)[i]};}) {
+            return (std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]);
         } else {
-            return typename impl::tuple_iterator_traits<meta::forward<C>>::dispatch{i}(
-                std::forward<C>(container)
-            );
+            return (impl::tuple_dispatch{std::forward<C>(c)}[
+                size_t(impl::normalize_index(meta::tuple_size<C>, i))
+            ]);
         }
+    }
+
+    template <typename C, meta::convertible_to<ssize_t>... Is> requires (sizeof...(Is) > 0)
+    constexpr decltype(auto) range_subscript(C&& container, ssize_t i, Is... is)
+        noexcept (requires{
+            {range_subscript(range_subscript(std::forward<C>(container), i), is...)} noexcept;
+        })
+        requires (requires{
+            {range_subscript(range_subscript(std::forward<C>(container), i), is...)};
+        })
+    {
+        return (range_subscript(range_subscript(std::forward<C>(container), i), is...));
     }
 
     template <typename to, meta::tuple_like C, size_t... Is>
@@ -1823,9 +1871,14 @@ namespace iter {
     aggressively optimized by the compiler. */
     template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
     struct range : impl::range_tag {
+        /// TODO: no need for `__type`: just infer from `decltype(__value)` like I do
+        /// for unions, in order to prevent name conflicts.
         using __type = meta::remove_rvalue<C>;
 
         [[no_unique_address]] impl::ref<__type> __value;
+
+        /// TODO: all of the constructors need to be reviewed, and changes would be
+        /// coupled with the impl:: concept refactor and CTAD guides.
 
         /* Forwarding constructor for the underlying container. */
         [[nodiscard]] explicit constexpr range(meta::forward<C> c)
@@ -1919,6 +1972,9 @@ namespace iter {
             std::ranges::swap(*__value, *other.__value);
         }
 
+        /// TODO: the dereference operator is bound up in the `unpack` refactor, so
+        /// that needs to be finished before this can be finalized.
+
         /* Dereferencing a range promotes it into a trivial `unpack` subclass, which allows
         it to be destructured when used as an argument to a Bertrand function. */
         template <typename Self>
@@ -1943,6 +1999,74 @@ namespace iter {
             requires (requires{{meta::to_arrow(*__value)};})
         {
             return meta::to_arrow(*__value);
+        }
+
+        /// TODO: .size(), .data(), indexing, etc. must account for single-element ranges.
+        /// -> This may need to wait until the refactor for single-element ranges in
+        /// general, since they may require different handling, or use a centralized
+        /// flag to control their state.
+
+        /* Get a pointer to the underlying data array, if one exists.  This is
+        identical to a `std::ranges::data()` call on the underlying value, assuming
+        that expression is well-formed. */
+        [[nodiscard]] constexpr auto data()
+            noexcept (requires{{std::ranges::data(*__value)} noexcept;})
+            requires (requires{{std::ranges::data(*__value)};})
+        {
+            return std::ranges::data(*__value);
+        }
+
+        /* Get a pointer to the underlying data array, if one exists.  This is
+        identical to a `std::ranges::data()` call on the underlying value, assuming
+        that expression is well-formed. */
+        [[nodiscard]] constexpr auto data() const
+            noexcept (requires{{std::ranges::data(*__value)} noexcept;})
+            requires (requires{{std::ranges::data(*__value)};})
+        {
+            return std::ranges::data(*__value);
+        }
+
+        /* Get a pointer to the underlying data array, if one exists.  This is
+        identical to a `std::ranges::cdata()` call on the underlying value, assuming
+        that expression is well-formed. */
+        [[nodiscard]] constexpr auto cdata() const
+            noexcept (requires{{std::ranges::cdata(*__value)} noexcept;})
+            requires (requires{{std::ranges::cdata(*__value)};})
+        {
+            return std::ranges::cdata(*__value);
+        }
+
+        /* Check whether the underlying container has a definite size, which can be
+        determined ahead of time.  This is provided to account for `sequence<T>` types,
+        which may or may not be sized, but cannot determine that status at compile time
+        due to type erasure.  For most other container types, this is identical to a
+        `meta::has_size<T>` SFINAE check. */
+        [[nodiscard]] static constexpr bool has_size()
+            noexcept (requires{
+                {meta::unqualify<C>::has_size()} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{
+                {meta::unqualify<C>::has_size()} -> meta::convertible_to<bool>;
+            })
+        {
+            return meta::unqualify<C>::has_size();
+        }
+
+        /* Check whether the underlying container has a definite size, which can be
+        determined ahead of time.  This is provided to account for `sequence<T>` types,
+        which may or may not be sized, but cannot determine that status at compile time
+        due to type erasure.  For most other container types, this is identical to a
+        `meta::has_size<T>` SFINAE check. */
+        [[nodiscard]] constexpr bool has_size() const
+            noexcept (requires{
+                {__value->has_size()} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (
+                !requires{{meta::unqualify<C>::has_size()} -> meta::convertible_to<bool>;} &&
+                requires{{__value->has_size()} -> meta::convertible_to<bool>;}
+            )
+        {
+            return __value->has_size();
         }
 
         /* Forwarding `size()` operator for the underlying container, provided the
@@ -1984,137 +2108,244 @@ namespace iter {
             }
         }
 
-
-        /// TODO: `get<slice>()` and `get<*mask>()` can allow indexing into a range at
-        /// compile time using the same semantics as `operator[]`.
-
         /* Forwarding `get<I>()` accessor, provided the underlying container is
-        tuple-like.  Automatically applies Python-style wraparound for negative indices. */
-        template <ssize_t I, typename Self>
+        tuple-like.  Automatically applies Python-style wraparound for negative
+        indices, and allows multidimensional indexing if the container is a tuple of
+        tuples. */
+        template <ssize_t... Is, typename Self> requires (sizeof...(Is) > 0)
         constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{meta::unpack_tuple<I>(*std::forward<Self>(self).__value)} noexcept;})
-            requires (requires{{meta::unpack_tuple<I>(*std::forward<Self>(self).__value)};})
+            noexcept (requires{
+                {impl::range_get<Is...>(*std::forward<Self>(self).__value)} noexcept;
+            })
+            requires (requires{
+                {impl::range_get<Is...>(*std::forward<Self>(self).__value)};
+            })
         {
-            return (meta::unpack_tuple<I>(*std::forward<Self>(self).__value));
+            return (impl::range_get<Is...>(*std::forward<Self>(self).__value));
         }
 
-        /* Integer indexing operator.  Accepts a single signed integer and retrieves the
-        corresponding element from the underlying container after applying Python-style
-        wraparound for negative indices.  If the container does not support indexing, but
-        is otherwise tuple-like, then a vtable will be synthesized to back this
-        operator. */
-        template <typename Self>
-        constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+        /* Integer indexing operator.  Accepts one or more signed integers and
+        retrieves the corresponding element from the underlying container after
+        applying Python-style wraparound for negative indices, which converts the index
+        to an unsigned integer.  If multiple indices are given, then each successive
+        index after the first will be used to subscript the previous result.  If the
+        container does not support indexing, but is otherwise tuple-like, then a vtable
+        will be synthesized to back this operator. */
+        template <typename Self, meta::convertible_to<ssize_t>... Is> requires (sizeof...(Is) > 0)
+        constexpr decltype(auto) operator[](this Self&& self, Is&&... is)
             noexcept (requires{{impl::range_subscript(
                 *std::forward<Self>(self).__value,
-                size_t(impl::normalize_index(self.ssize(), i))
+                std::forward<Is>(is)...
             )} noexcept;})
             requires (requires{{impl::range_subscript(
                 *std::forward<Self>(self).__value,
-                size_t(impl::normalize_index(self.ssize(), i))
+                std::forward<Is>(is)...
             )};})
         {
             return (impl::range_subscript(
                 *std::forward<Self>(self).__value,
-                size_t(impl::normalize_index(self.ssize(), i))
+                std::forward<Is>(is)...
             ));
         }
 
+        /// TODO: make_range_iterator will need to account for single-element ranges.
+
         /* Get a forward iterator to the start of the range. */
-        [[nodiscard]] constexpr decltype(auto) begin()
-            noexcept (requires{{impl::make_range_iterator{*__value}.begin()} noexcept;})
-            requires (requires{{impl::make_range_iterator{*__value}.begin()};})
+        [[nodiscard]] constexpr auto begin()
+            noexcept (
+                requires{{std::ranges::begin(*__value)} noexcept;} || (
+                    !requires{{std::ranges::begin(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.begin()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::begin(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.begin()};}
+            )
         {
-            return (impl::make_range_iterator{*__value}.begin());
+            if constexpr (requires{{std::ranges::begin(*__value)};}) {
+                return std::ranges::begin(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.begin();
+            }
         }
 
         /* Get a forward iterator to the start of the range. */
-        [[nodiscard]] constexpr decltype(auto) begin() const
-            noexcept (requires{{impl::make_range_iterator{*__value}.begin()} noexcept;})
-            requires (requires{{impl::make_range_iterator{*__value}.begin()};})
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (
+                requires{{std::ranges::begin(*__value)} noexcept;} || (
+                    !requires{{std::ranges::begin(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.begin()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::begin(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.begin()};}
+            )
         {
-            return (impl::make_range_iterator{*__value}.begin());
+            if constexpr (requires{{std::ranges::begin(*__value)};}) {
+                return std::ranges::begin(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.begin();
+            }
         }
 
         /* Get a forward iterator to the start of the range. */
-        [[nodiscard]] constexpr decltype(auto) cbegin() const
-            noexcept (requires{{impl::make_range_iterator{*__value}.begin()} noexcept;})
-            requires (requires{{impl::make_range_iterator{*__value}.begin()};})
+        [[nodiscard]] constexpr auto cbegin() const
+            noexcept (requires{{begin()} noexcept;})
+            requires (requires{{begin()};})
         {
-            return (impl::make_range_iterator{*__value}.begin());
+            return begin();
         }
 
         /* Get a forward iterator to one past the last element of the range. */
-        [[nodiscard]] constexpr decltype(auto) end()
-            noexcept (requires{{impl::make_range_iterator{*__value}.end()} noexcept;})
-            requires (requires{{impl::make_range_iterator{*__value}.end()};})
+        [[nodiscard]] constexpr auto end()
+            noexcept (
+                requires{{std::ranges::end(*__value)} noexcept;} || (
+                    !requires{{std::ranges::end(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.end()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::end(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.end()};}
+            )
         {
-            return (impl::make_range_iterator{*__value}.end());
+            if constexpr (requires{{std::ranges::end(*__value)};}) {
+                return std::ranges::end(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.end();
+            }
         }
 
         /* Get a forward iterator to one past the last element of the range. */
-        [[nodiscard]] constexpr decltype(auto) end() const
-            noexcept (requires{{impl::make_range_iterator{*__value}.end()} noexcept;})
-            requires (requires{{impl::make_range_iterator{*__value}.end()};})
+        [[nodiscard]] constexpr auto end() const
+            noexcept (
+                requires{{std::ranges::end(*__value)} noexcept;} || (
+                    !requires{{std::ranges::end(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.end()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::end(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.end()};}
+            )
         {
-            return (impl::make_range_iterator{*__value}.end());
+            if constexpr (requires{{std::ranges::end(*__value)};}) {
+                return std::ranges::end(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.end();
+            }
         }
 
         /* Get a forward iterator to one past the last element of the range. */
-        [[nodiscard]] constexpr decltype(auto) cend() const
-            noexcept (requires{{impl::make_range_iterator{*__value}.end()} noexcept;})
-            requires (requires{{impl::make_range_iterator{*__value}.end()};})
+        [[nodiscard]] constexpr auto cend() const
+            noexcept (requires{{end()} noexcept;})
+            requires (requires{{end()};})
         {
-            return (impl::make_range_iterator{*__value}.end());
+            return end();
         }
 
         /* Get a reverse iterator to the last element of the range. */
-        [[nodiscard]] constexpr decltype(auto) rbegin()
-            noexcept (requires{{impl::make_range_reversed{*__value}.begin()} noexcept;})
-            requires (requires{{impl::make_range_reversed{*__value}.begin()};})
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (
+                requires{{std::ranges::rbegin(*__value)} noexcept;} || (
+                    !requires{{std::ranges::rbegin(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.rbegin()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::rbegin(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.rbegin()};}
+            )
         {
-            return (impl::make_range_reversed{*__value}.begin());
+            if constexpr (requires{{std::ranges::rbegin(*__value)};}) {
+                return std::ranges::rbegin(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.rbegin();
+            }
         }
 
         /* Get a reverse iterator to the last element of the range. */
-        [[nodiscard]] constexpr decltype(auto) rbegin() const
-            noexcept (requires{{impl::make_range_reversed{*__value}.begin()} noexcept;})
-            requires (requires{{impl::make_range_reversed{*__value}.begin()};})
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (
+                requires{{std::ranges::rbegin(*__value)} noexcept;} || (
+                    !requires{{std::ranges::rbegin(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.rbegin()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::rbegin(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.rbegin()};}
+            )
         {
-            return (impl::make_range_reversed{*__value}.begin());
+            if constexpr (requires{{std::ranges::rbegin(*__value)};}) {
+                return std::ranges::rbegin(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.rbegin();
+            }
         }
 
         /* Get a reverse iterator to the last element of the range. */
-        [[nodiscard]] constexpr decltype(auto) crbegin() const
-            noexcept (requires{{impl::make_range_reversed{*__value}.begin()} noexcept;})
-            requires (requires{{impl::make_range_reversed{*__value}.begin()};})
+        [[nodiscard]] constexpr auto crbegin() const
+            noexcept (requires{{rbegin()} noexcept;}
+            )
+            requires (requires{{rbegin()};})
         {
-            return (impl::make_range_reversed{*__value}.begin());
+            return rbegin();
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
-        [[nodiscard]] constexpr decltype(auto) rend()
-            noexcept (requires{{impl::make_range_reversed{*__value}.end()} noexcept;})
-            requires (requires{{impl::make_range_reversed{*__value}.end()};})
+        [[nodiscard]] constexpr auto rend()
+            noexcept (
+                requires{{std::ranges::rend(*__value)} noexcept;} || (
+                    !requires{{std::ranges::rend(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.rend()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::rend(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.rend()};}
+            )
         {
-            return (impl::make_range_reversed{*__value}.end());
+            if constexpr (requires{{std::ranges::rend(*__value)};}) {
+                return std::ranges::rend(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.rend();
+            }
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
-        [[nodiscard]] constexpr decltype(auto) rend() const
-            noexcept (requires{{impl::make_range_reversed{*__value}.end()} noexcept;})
-            requires (requires{{impl::make_range_reversed{*__value}.end()};})
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (
+                requires{{std::ranges::rend(*__value)} noexcept;} || (
+                    !requires{{std::ranges::rend(*__value)};} &&
+                    requires{{impl::tuple_dispatch{*__value}.rend()} noexcept;}
+                )
+            )
+            requires (
+                requires{{std::ranges::rend(*__value)};} ||
+                requires{{impl::tuple_dispatch{*__value}.rend()};}
+            )
         {
-            return (impl::make_range_reversed{*__value}.end());
+            if constexpr (requires{{std::ranges::rend(*__value)};}) {
+                return std::ranges::rend(*__value);
+            } else {
+                return impl::tuple_dispatch{*__value}.rend();
+            }
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
-        [[nodiscard]] constexpr decltype(auto) crend() const
-            noexcept (requires{{impl::make_range_reversed{*__value}.end()} noexcept;})
-            requires (requires{{impl::make_range_reversed{*__value}.end()};})
+        [[nodiscard]] constexpr auto crend() const
+            noexcept (requires{{rend()} noexcept;})
+            requires (requires{{rend()};})
         {
-            return (impl::make_range_reversed{*__value}.end());
+            return rend();
         }
+
+        /// TODO: I'm not entirely sure how the conversion operators should behave,
+        /// or the basis on which to judge them, so this needs to be thought through
+        /// around the same time as the constructors, concepts, and CTAD guides.
 
         /* If the range is tuple-like, then conversions are allowed to any other type that
         can be directly constructed (via a braced initializer) from the perfectly-forwarded
@@ -2168,6 +2399,9 @@ namespace iter {
                 return to(self.begin(), self.end());
             }
         }
+
+        /// TODO: range assignment is also complicated, and is probably tied to the
+        /// constructor and conversion operator refactors.
 
         /* Assigning a range to another range triggers elementwise assignment between their
         contents.  If both ranges are tuple-like, then they must have the same size, such
@@ -2285,10 +2519,8 @@ namespace iter {
             return std::forward<L>(lhs);
         }
 
-        /// TODO: also a monadic call operator which returns a comprehension that invokes
-        /// each element of the range as a function with the given arguments.
-        /// -> This requires some work on the `comprehension` class, such that I can
-        /// define the expression template operators.
+        /// TODO: monadic call operator, which may be forward-declared and filled in
+        /// later in op.h, once `zip{}` has been defined.
 
     };
 
@@ -2314,6 +2546,13 @@ static_assert([] {
     return true;
 }());
 
+
+}
+
+
+namespace std {
+
+    /// TODO: enable_borrowed_range, tuple definitions
 
 }
 
