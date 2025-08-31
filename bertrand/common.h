@@ -136,7 +136,8 @@ exhaustively enforced by the type system. */
 #ifdef BERTRAND_RELEASE
     constexpr bool DEBUG = false;
 #else
-    constexpr bool DEBUG = true;
+    /// TODO: switch this back to true
+    constexpr bool DEBUG = false;
 #endif
 
 
@@ -2529,8 +2530,8 @@ namespace meta {
     indices. */
     template <ssize_t I, tuple_like T>
     constexpr decltype(auto) unpack_tuple(T&& t)
-        noexcept(nothrow::has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
-        requires(has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
+        noexcept (nothrow::has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
+        requires (has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
     {
         return (::std::forward<T>(t).template get<impl::normalize_index<meta::tuple_size<T>, I>()>());
     }
@@ -2539,8 +2540,8 @@ namespace meta {
     instead.  Also applies Python-style wraparound for negative indices. */
     template <ssize_t I, tuple_like T>
     constexpr decltype(auto) unpack_tuple(T&& t)
-        noexcept(nothrow::has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
-        requires(
+        noexcept (nothrow::has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
+        requires (
             !has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()> &&
             has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>
         )
