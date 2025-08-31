@@ -47,8 +47,8 @@ namespace impl {
 
         template <typename... A> requires (sizeof...(A) > 0)
         [[nodiscard]] constexpr single_range(A&&... args)
-            noexcept (meta::nothrow::constructible_from<impl::ref<T>, A...>)
-            requires (meta::constructible_from<impl::ref<T>, A...>)
+            noexcept (meta::nothrow::constructible_from<T, A...>)
+            requires (meta::constructible_from<T, A...>)
         :
             __value{std::forward<A>(args)...}
         {}
@@ -789,6 +789,104 @@ namespace iter {
 
 namespace impl {
 
+    template <typename L, typename R>
+    consteval ValueError range_size_mismatch() noexcept {
+        static constexpr static_str msg =
+            "Size mismatch during range assignment: " + demangle<L>() + " = " + demangle<R>();
+        return ValueError(msg);
+    }
+
+    template <typename to, meta::tuple_like C, size_t... Is>
+    constexpr to range_tuple_conversion(C&& container, std::index_sequence<Is...>)
+        noexcept (requires{{to{meta::unpack_tuple<Is>(std::forward<C>(container))...}} noexcept;})
+        requires (requires{{to{meta::unpack_tuple<Is>(std::forward<C>(container))...}};})
+    {
+        return to{meta::unpack_tuple<Is>(std::forward<C>(container))...};
+    }
+
+    template <typename C, typename T, size_t... Is>
+    constexpr void range_tuple_assignment(C& container, T&& r, std::index_sequence<Is...>)
+        noexcept (requires{{
+            ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...)
+        } noexcept;})
+        requires (requires{{
+            ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...)
+        };})
+    {
+        ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...);
+    }
+
+    /// TODO: range_get() will need to apply the same nested range behavior as the
+    /// subscript operator, and something similar will need to be implemented for
+    /// the unpack case.
+
+    template <ssize_t I, typename C>
+    constexpr decltype(auto) range_get(C&& c)
+        noexcept (requires{{meta::unpack_tuple<I>(std::forward<C>(c))} noexcept;})
+        requires (requires{{meta::unpack_tuple<I>(std::forward<C>(c))};})
+    {
+        return (meta::unpack_tuple<I>(std::forward<C>(c)));
+    }
+
+    template <ssize_t I, ssize_t... Is, typename C> requires (sizeof...(Is) > 0)
+    constexpr decltype(auto) range_get(C&& c)
+        noexcept (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))} noexcept;})
+        requires (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))};})
+    {
+        return (range_get<Is...>(range_get<I>(std::forward<C>(c))));
+    }
+
+    template <typename C> requires (!meta::range<C>)
+    constexpr decltype(auto) range_subscript(C&& c, ssize_t i)
+        noexcept (requires{
+            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]} noexcept;
+        })
+        requires (requires{
+            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]};
+        })
+    {
+        return (std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]);
+    }
+
+    template <meta::range R>
+    constexpr decltype(auto) range_subscript(R&& r, ssize_t i)
+        noexcept (requires{{range_subscript(*std::forward<R>(r).__value, i)} noexcept;})
+        requires (
+            !meta::range<decltype((*std::forward<R>(r).__value))> &&
+            requires{{range_subscript(*std::forward<R>(r).__value, i)};}
+        )
+    {
+        return (range_subscript(*std::forward<R>(r).__value, i));
+    }
+
+    template <meta::range R>
+    constexpr decltype(auto) range_subscript(R&& r, ssize_t i)
+        noexcept (requires{{iter::range(range_subscript(*std::forward<R>(r).__value, i))} noexcept;})
+        requires (
+            meta::range<decltype((*std::forward<R>(r).__value))> &&
+            requires{{iter::range(range_subscript(*std::forward<R>(r).__value, i))};}
+        )
+    {
+        return (iter::range(range_subscript(*std::forward<R>(r).__value, i)));
+    }
+
+    template <typename C, typename I, typename... Is> requires (sizeof...(Is) > 0)
+    constexpr decltype(auto) range_subscript(C&& c, I&& i, Is&&... is)
+        noexcept (requires{{range_subscript(
+            range_subscript(std::forward<C>(c), std::forward<I>(i)),
+            std::forward<Is>(is)...
+        )} noexcept;})
+        requires (requires{{range_subscript(
+            range_subscript(std::forward<C>(c), std::forward<I>(i)),
+            std::forward<Is>(is)...
+        )};})
+    {
+        return (range_subscript(
+            range_subscript(std::forward<C>(c), std::forward<I>(i)),
+            std::forward<Is>(is)...
+        ));
+    }
+
     template <meta::not_rvalue T> requires (meta::iterator<T>)
     struct range_iterator;
 
@@ -1101,15 +1199,7 @@ namespace impl {
     used as an argument to a Bertrand function. */
     template <meta::not_rvalue C> requires (meta::iterable<C>)
     struct unpack : iter::range<C> {
-        [[nodiscard]] explicit constexpr unpack(meta::forward<C> c)
-            noexcept (meta::nothrow::constructible_from<iter::range<C>, meta::forward<C>>)
-            requires (meta::constructible_from<iter::range<C>, meta::forward<C>>)
-        :
-            iter::range<C>(std::forward<C>(c))
-        {}
-
-
-
+        using iter::range<C>::range;
 
 
         /* Get a forward iterator to the start of the range. */
@@ -2538,82 +2628,6 @@ namespace impl {
         requires (iota_concept<Start, Stop, Step>)
     iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
 
-    /// TODO: range_get() and range_subscript() may need to account for single-element
-    /// ranges?
-
-    template <ssize_t I, typename C>
-    constexpr decltype(auto) range_get(C&& c)
-        noexcept (requires{{meta::unpack_tuple<I>(std::forward<C>(c))} noexcept;})
-        requires (requires{{meta::unpack_tuple<I>(std::forward<C>(c))};})
-    {
-        return (meta::unpack_tuple<I>(std::forward<C>(c)));
-    }
-
-    template <ssize_t I, ssize_t... Is, typename C> requires (sizeof...(Is) > 0)
-    constexpr decltype(auto) range_get(C&& c)
-        noexcept (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))} noexcept;})
-        requires (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))};})
-    {
-        return (range_get<Is...>(range_get<I>(std::forward<C>(c))));
-    }
-
-    template <typename C>
-    constexpr decltype(auto) range_subscript(C&& c, ssize_t i)
-        noexcept (requires{
-            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]} noexcept;
-        } || meta::tuple_like<C>)
-        requires (requires{
-            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]};
-        } || meta::tuple_like<C>)
-    {
-        if constexpr (requires{{std::forward<C>(c)[i]};}) {
-            return (std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]);
-        } else {
-            return (impl::tuple_range{std::forward<C>(c)}[
-                size_t(impl::normalize_index(meta::tuple_size<C>, i))
-            ]);
-        }
-    }
-
-    template <typename C, meta::convertible_to<ssize_t>... Is> requires (sizeof...(Is) > 0)
-    constexpr decltype(auto) range_subscript(C&& container, ssize_t i, Is... is)
-        noexcept (requires{
-            {range_subscript(range_subscript(std::forward<C>(container), i), is...)} noexcept;
-        })
-        requires (requires{
-            {range_subscript(range_subscript(std::forward<C>(container), i), is...)};
-        })
-    {
-        return (range_subscript(range_subscript(std::forward<C>(container), i), is...));
-    }
-
-    template <typename to, meta::tuple_like C, size_t... Is>
-    constexpr to range_tuple_conversion(C&& container, std::index_sequence<Is...>)
-        noexcept (requires{{to{meta::unpack_tuple<Is>(std::forward<C>(container))...}} noexcept;})
-        requires (requires{{to{meta::unpack_tuple<Is>(std::forward<C>(container))...}};})
-    {
-        return to{meta::unpack_tuple<Is>(std::forward<C>(container))...};
-    }
-
-    template <typename C, typename T, size_t... Is>
-    constexpr void range_tuple_assignment(C& container, T&& r, std::index_sequence<Is...>)
-        noexcept (requires{{
-            ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...)
-        } noexcept;})
-        requires (requires{{
-            ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...)
-        };})
-    {
-        ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...);
-    }
-
-    template <typename L, typename R>
-    consteval ValueError range_size_mismatch() noexcept {
-        static constexpr static_str msg =
-            "Size mismatch during range assignment: " + demangle<L>() + " = " + demangle<R>();
-        return ValueError(msg);
-    }
-
 }
 
 
@@ -2842,6 +2856,8 @@ namespace iter {
             return std::ranges::empty(*__value);
         }
 
+
+
         /// TODO: the same nested range promotion should be applied to `get<I>()` and
         /// the subscript operator.
 
@@ -2868,21 +2884,16 @@ namespace iter {
         index after the first will be used to subscript the previous result. */
         template <typename Self, meta::convertible_to<ssize_t>... Is> requires (sizeof...(Is) > 0)
         constexpr decltype(auto) operator[](this Self&& self, Is&&... is)
-            noexcept (requires{{impl::range_subscript(
-                *std::forward<Self>(self).__value,
-                std::forward<Is>(is)...
-            )} noexcept;})
-            requires (requires{{impl::range_subscript(
-                *std::forward<Self>(self).__value,
-                std::forward<Is>(is)...
-            )};})
+            noexcept (requires{{
+                impl::range_subscript(std::forward<Self>(self), std::forward<Is>(is)...)
+            } noexcept;})
+            requires (requires{{
+                impl::range_subscript(std::forward<Self>(self), std::forward<Is>(is)...)
+            };})
         {
-            return (impl::range_subscript(
-                *std::forward<Self>(self).__value,
-                std::forward<Is>(is)...
-            ));
+            return (impl::range_subscript(std::forward<Self>(self), std::forward<Is>(is)...));
         }
-
+        
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{
@@ -3256,11 +3267,18 @@ namespace bertrand {
 
 
 static constexpr std::tuple tup {1, 2, 3.5};
-static constexpr auto x = iter::range(iter::range(tup));
+static constexpr std::tuple tup2 {std::array{1, 2}, std::array{2, 2}, std::array{3.5, 3.5}};
+static constexpr auto r1 = iter::range(tup2);
+static constexpr auto r2 = iter::range(iter::range(tup2));
+static constexpr auto x1 = r1[0];
+static constexpr auto x2 = r2[0];
+static constexpr auto y1 = r1[0, 1];
+static constexpr auto y2 = r2[0, 1];
+static_assert(y2 == y1);
 static_assert([] {
-    for (auto&& r : x) {
-        for (auto&& i : r) {
-            if (i != 1 && i != 2 && i != 3.5) {
+    for (auto&& x : r2) {
+        for (auto&& y : x) {
+            if (y != 1 && y != 2 && y != 3.5) {
                 return false;
             }
         }

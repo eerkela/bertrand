@@ -1528,15 +1528,6 @@ namespace impl {
             )
         )) && ...);
 
-        [[gnu::always_inline]] static constexpr type trivial_copy(const basic_union& other)
-            noexcept
-            requires (trivially_copyable)
-        {
-            type result;
-            std::memcpy(&result, &other.m_data, sizeof(type));
-            return result;
-        }
-
         template <size_t I>
         struct copy {
             static constexpr type operator()(const basic_union& other)
@@ -1632,30 +1623,14 @@ namespace impl {
             noexcept (nothrow_copyable)
             requires (copyable)
         {
-            if consteval {
-                return impl::basic_vtable<copy, size()>{other.index()}(other);
-            } else {
-                if constexpr (trivially_copyable) {
-                    return trivial_copy(other);
-                } else {
-                    return impl::basic_vtable<copy, size()>{other.index()}(other);
-                }
-            }
+            return impl::basic_vtable<copy, size()>{other.index()}(other);
         }
 
         static constexpr type dispatch_move(basic_union&& other)
             noexcept (nothrow_movable)
             requires (movable)
         {
-            if consteval {
-                return impl::basic_vtable<move, size()>{other.index()}(std::move(other));
-            } else {
-                if constexpr (trivially_copyable) {
-                    return trivial_copy(other);
-                } else {
-                    return impl::basic_vtable<move, size()>{other.index()}(std::move(other));
-                }
-            }
+            return impl::basic_vtable<move, size()>{other.index()}(std::move(other));
         }
 
         static constexpr void dispatch_destroy(basic_union& self)
@@ -1671,21 +1646,9 @@ namespace impl {
             noexcept (nothrow_swappable)
             requires (swappable)
         {
-            if consteval {
-                return impl::basic_vtable<_swap, sizeof...(Ts) * sizeof...(Ts)>{
-                    lhs.index() * sizeof...(Ts) + rhs.index()
-                }(lhs, rhs);
-            } else {
-                if constexpr (trivially_copyable) {
-                    basic_union temp = lhs;
-                    std::memcpy(&lhs, &rhs, sizeof(basic_union));
-                    std::memcpy(&rhs, &temp, sizeof(basic_union));
-                } else {
-                    return impl::basic_vtable<_swap, sizeof...(Ts) * sizeof...(Ts)>{
-                        lhs.index() * sizeof...(Ts) + rhs.index()
-                    }(lhs, rhs);
-                }
-            }
+            return impl::basic_vtable<_swap, sizeof...(Ts) * sizeof...(Ts)>{
+                lhs.index() * sizeof...(Ts) + rhs.index()
+            }(lhs, rhs);
         }
 
     public:
@@ -2029,8 +1992,7 @@ namespace impl {
         using difference_type = meta::common_type<meta::iterator_difference_type<Ts>...>;
         using reference = union_iterator_ref<Ts...>;
         using value_type = meta::remove_reference<reference>;
-        using arrow_type = impl::arrow_proxy<reference>;
-        using pointer = arrow_type::type;
+        using pointer = meta::address_type<reference>;
 
         basic_union<Ts...> __value;
 
@@ -2529,11 +2491,11 @@ namespace impl {
             return deref{__value.index()}(*this);
         }
 
-        [[nodiscard]] constexpr arrow_type operator->() const
-            noexcept (requires{{arrow_type{**this}} noexcept;})
-            requires (requires{{arrow_type{**this}};})
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow_proxy{**this}} noexcept;})
+            requires (requires{{impl::arrow_proxy{**this}};})
         {
-            return {**this};
+            return impl::arrow_proxy{**this};
         }
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const
@@ -2967,7 +2929,7 @@ namespace impl {
                 noexcept (requires{{
                     std::ranges::size(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<size_type>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
+                requires (requires{{
                     std::ranges::size(u.__value.template get<I>())
                 } -> meta::convertible_to<size_type>;})
             {
@@ -2982,7 +2944,7 @@ namespace impl {
                 noexcept (requires{{
                     std::ranges::ssize(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<ssize_type>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
+                requires (requires{{
                     std::ranges::ssize(u.__value.template get<I>())
                 } -> meta::convertible_to<ssize_type>;})
             {
@@ -2997,7 +2959,7 @@ namespace impl {
                 noexcept (requires{{
                     std::ranges::empty(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
+                requires (requires{{
                     std::ranges::empty(u.__value.template get<I>())
                 } -> meta::convertible_to<bool>;})
             {
@@ -4672,6 +4634,7 @@ struct Optional : impl::optional_tag {
         })
         requires (
             !meta::prefer_constructor<to> &&
+            !meta::boolean<to> &&
             requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};}
         )
     {
@@ -4689,6 +4652,7 @@ struct Optional : impl::optional_tag {
         })
         requires (
             !meta::prefer_constructor<to> &&
+            !meta::is<to, bool> &&
             !requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
             requires{{impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))};}
         )
@@ -4701,10 +4665,10 @@ struct Optional : impl::optional_tag {
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
         return __value.index();
     }
-    [[nodiscard, deprecated(
-        "Contextual conversions are potentially ambiguous for optional booleans.  "
-        "Consider an explicit comparison against `None`, a dereference with a leading "
-        "`*`, or an exhaustive visitor using trailing `->*` instead. "
+    [[deprecated(
+        "`Optional<bool>` should never be contextually converted to `bool`.  Consider "
+        "an explicit comparison against `None`, a dereference with a leading `*`, or "
+        "an exhaustive visitor via trailing `->*` instead. "
     )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return __value.index();
     }
@@ -5661,6 +5625,16 @@ struct Expected : impl::expected_tag {
         __value{std::in_place_index<meta::index_of<U, T, E, Es...>>, std::forward<A>(args)...}
     {}
 
+    /* Swap the contents of two expecteds as efficiently as possible. */
+    constexpr void swap(Expected& other)
+        noexcept (requires{{__value.swap(other.__value)} noexcept;})
+        requires (requires{{__value.swap(other.__value)};})
+    {
+        if (this != &other) {
+            __value.swap(other.__value);
+        }
+    }
+
     /* Implicitly convert the `Expected` to any other type to which all alternatives
     can be converted.  If an error state is not directly convertible to the type, the
     algorithm will try again with the type wrapped in `std::unexpected` instead. */
@@ -5689,6 +5663,7 @@ struct Expected : impl::expected_tag {
         })
         requires (
             !meta::prefer_constructor<to> &&
+            !meta::is<to, bool> &&
             !requires{{impl::expected_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
             requires{{impl::expected_cast_to<Self, to>{}(std::forward<Self>(self))};}
         )
@@ -5696,25 +5671,15 @@ struct Expected : impl::expected_tag {
         return impl::expected_cast_to<Self, to>{}(std::forward<Self>(self));
     }
 
-    /* Swap the contents of two expecteds as efficiently as possible. */
-    constexpr void swap(Expected& other)
-        noexcept (requires{{__value.swap(other.__value)} noexcept;})
-        requires (requires{{__value.swap(other.__value)};})
-    {
-        if (this != &other) {
-            __value.swap(other.__value);
-        }
-    }
-
     /* Contextually convert the expected to a boolean, where true indicates the
     presence of a value. */
     [[nodiscard]] explicit constexpr operator bool() const noexcept {
         return __value.index() == 0;
     }
-    [[nodiscard, deprecated(
-        "contextual bool conversions are potentially ambiguous when used on expected "
-        "booleans.  Consider dereferencing with a leading `*`, or an exhaustive "
-        "visitor using trailing `->*` instead. "
+    [[deprecated(
+        "`Expected<bool>` should never be contextually converted to `bool`.  Consider "
+        "an explicit comparison against `None`, a dereference with a leading `*`, or "
+        "an exhaustive visitor via trailing `->*` instead. "
     )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return __value.index() == 0;
     }
