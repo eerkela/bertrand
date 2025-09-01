@@ -12,6 +12,9 @@ namespace bertrand {
 namespace impl {
     struct range_tag {};
 
+    template <meta::not_rvalue C> requires (meta::iterable<C>)
+    struct unpack;
+
     /* A trivial range with zero elements.  This is the default type for the `range`
     class template, allowing it to be default-constructed. */
     struct empty_range {
@@ -660,32 +663,32 @@ namespace impl {
     struct iota;
 
     /// TODO: counted, then subrange
-
+    
 }
 
 
 namespace meta {
 
-    // namespace detail {
+    namespace detail {
 
-    //     template <typename>
-    //     constexpr bool unpack = false;
-    //     template <typename C>
-    //     constexpr bool unpack<impl::unpack<C>> = true;
+        template <typename>
+        constexpr bool unpack = false;
+        template <typename C>
+        constexpr bool unpack<impl::unpack<C>> = true;
 
-    //     template <typename T, bool done, size_t I, typename... Rs>
-    //     constexpr bool _unpack_convert = done;
-    //     template <typename T, bool done, size_t I, typename R> requires (I < meta::tuple_size<T>)
-    //     constexpr bool _unpack_convert<T, done, I, R> =
-    //         meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, true, I + 1, R>;
-    //     template <typename T, bool done, size_t I, typename R, typename... Rs>
-    //         requires (I < meta::tuple_size<T>)
-    //     constexpr bool _unpack_convert<T, done, I, R, Rs...> =
-    //         meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, done, I + 1, Rs...>;
-    //     template <typename T, typename... Rs>
-    //     constexpr bool unpack_convert = _unpack_convert<T, false, 0, Rs...>;
+        template <typename T, bool done, size_t I, typename... Rs>
+        constexpr bool _unpack_convert = done;
+        template <typename T, bool done, size_t I, typename R> requires (I < meta::tuple_size<T>)
+        constexpr bool _unpack_convert<T, done, I, R> =
+            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, true, I + 1, R>;
+        template <typename T, bool done, size_t I, typename R, typename... Rs>
+            requires (I < meta::tuple_size<T>)
+        constexpr bool _unpack_convert<T, done, I, R, Rs...> =
+            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, done, I + 1, Rs...>;
+        template <typename T, typename... Rs>
+        constexpr bool unpack_convert = _unpack_convert<T, false, 0, Rs...>;
 
-    // }
+    }
 
     /// TODO: this idea is actually fantastic, and can be scaled to all other types
     /// as well.  The idea is that for every class, you would have a meta:: concept
@@ -700,8 +703,8 @@ namespace meta {
     /// `contiguous_range`, `output_range`, `common_range`, all possibly with an
     /// optional yield type.
 
-    // template <typename T, typename R = void>
-    // concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
+    template <typename T, typename R = void>
+    concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
 
     // template <typename T, typename... Rs>
     // concept unpack_to = detail::unpack<unqualify<T>> && (
@@ -1139,12 +1142,6 @@ namespace impl {
     template <typename T>
     concept is_unpack_iterator = _is_unpack_iterator<meta::unqualify<T>>;
 
-    /// TODO: unpack ranges should use a custom iterator type that behaves identically
-    /// to a normal range iterator, but if the yield type is a range, and we're
-    /// applying double unpacking, then the inner range should also be unpacked.  That
-    /// may be slightly tricky to implement, but it's core to how unpacking should
-    /// work in general, and ranges can't be solved until it's done.
-
     /* A trivial subclass of `range` that allows the range to be destructured when
     used as an argument to a Bertrand function. */
     template <meta::not_rvalue C> requires (meta::iterable<C>)
@@ -1289,15 +1286,14 @@ namespace impl {
     template <typename C>
     unpack(unpack<C>&&) -> unpack<unpack<C>>;
 
-    // template <typename C> requires (!meta::unpack<C> && meta::iterable<C>)
-    // unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
+    template <typename C> requires (!meta::unpack<C> && meta::iterable<C>)
+    unpack(C&&) -> unpack<meta::remove_rvalue<C>>;
 
-    // template <typename C> requires (!meta::iterable<C> && meta::tuple_like<C>)
-    // unpack(C&&) -> unpack<impl::tuple_range<meta::remove_rvalue<C>>>;
+    template <typename C> requires (!meta::iterable<C> && meta::tuple_like<C>)
+    unpack(C&&) -> unpack<impl::tuple_range<meta::remove_rvalue<C>>>;
 
-    // template <typename C> requires (!meta::iterable<C> && !meta::tuple_like<C>)
-    // unpack(C&&) -> unpack<impl::single_range<meta::remove_rvalue<C>>>;
-
+    template <typename C> requires (!meta::iterable<C> && !meta::tuple_like<C>)
+    unpack(C&&) -> unpack<impl::single_range<meta::remove_rvalue<C>>>;
 
     template <meta::not_rvalue T>
     struct unpack_iterator {
@@ -1559,7 +1555,13 @@ namespace impl {
         }
     };
 
-
+    template <typename C>
+    constexpr void swap(unpack<C>& lhs, unpack<C>& rhs)
+        noexcept (requires{{lhs.swap(rhs)} noexcept;})
+        requires (requires{{lhs.swap(rhs)};})
+    {
+        lhs.swap(rhs);
+    }
 
 
 
@@ -2610,19 +2612,20 @@ namespace iter {
     template <auto... Is> requires (impl::at_concept<decltype(Is)...>)
     struct at {
     private:
-        template <auto J, typename C> requires (!meta::range<C>)
+        template <auto J, typename C>
+        static constexpr bool index =
+            requires(C c) {{meta::unpack_tuple<J>(std::forward<C>(c))};} ||
+            requires(C c) {{std::forward<C>(c)[
+                size_t(impl::normalize_index(std::ranges::ssize(c), J))
+            ]};};
+
+        template <auto J, typename C> requires (!meta::range<C> && index<J, C>)
         static constexpr decltype(auto) call(C&& c)
             noexcept (requires{{meta::unpack_tuple<J>(std::forward<C>(c))} noexcept;} || (
                 !requires{{meta::unpack_tuple<J>(std::forward<C>(c))};} &&
                 requires{{std::forward<C>(c)[
                     size_t(impl::normalize_index(std::ranges::ssize(c), J))
                 ]} noexcept;})
-            )
-            requires (
-                requires{{meta::unpack_tuple<J>(std::forward<C>(c))};} ||
-                requires{{std::forward<C>(c)[
-                    size_t(impl::normalize_index(std::ranges::ssize(c), J))
-                ]};}
             )
         {
             if constexpr (requires{{meta::unpack_tuple<J>(std::forward<C>(c))};}) {
@@ -2634,7 +2637,60 @@ namespace iter {
             }
         }
 
-        /// TODO: handle the boolean predicate case
+        template <size_t N>
+        struct destructure {
+            template <typename F, meta::tuple_like C>
+            static constexpr decltype(auto) operator()(const F& f, C&& c)
+                requires (N == meta::tuple_size<C> || (
+                    requires {
+                        {f(meta::unpack_tuple<N>(std::forward<C>(c)))};
+                    } && (N + 1 == meta::tuple_size<C> || requires{
+                        {destructure<N + 1>{}(f, std::forward<C>(c))};
+                    })
+                ))
+            {
+                if constexpr (N == meta::tuple_size<C>) {
+                    /// TODO: think of a better error message, and possibly factor it out
+                    /// to reduce binary size.
+                    throw ValueError("no matching element found");
+                } else {
+                    decltype(auto) x = meta::unpack_tuple<N>(std::forward<C>(c));
+                    if (f(std::forward<decltype(x)>(x))) {
+                        return (std::forward<decltype(x)>(x));
+                    }
+                    if constexpr (N + 1 == meta::tuple_size<C>) {
+                        /// TODO: think of a better error message, and possibly factor it out
+                        /// to reduce binary size.
+                        throw ValueError("no matching element found");
+                    } else {
+                        return (destructure<N + 1>{}(f, std::forward<C>(c)));
+                    }
+                }
+            }
+        };
+
+        template <auto F, typename C> requires (!meta::range<C> && !index<F, C>)
+        static constexpr decltype(auto) call(C&& c)
+            requires (requires{{destructure<0>{}(F, std::forward<C>(c))};} || (
+                meta::iterable<meta::as_lvalue<C>> &&
+                requires(decltype((*std::ranges::begin(c))) x) {
+                    {F(std::forward<decltype(x)>(x))} -> meta::convertible_to<bool>;
+                    {meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x))};
+                }
+            ))
+        {
+            if constexpr (requires{{destructure<0>{}(F, std::forward<C>(c))};}) {
+                return (destructure<0>{}(F, std::forward<C>(c)));
+            } else {
+                for (auto&& x : c) {
+                    if (F(std::forward<decltype(x)>(x))) {
+                        return (meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x)));
+                    }
+                }
+                /// TODO: think of a better error message.
+                throw ValueError("no element found matching predicate");
+            }
+        }
 
         template <auto J, meta::range R>
         static constexpr decltype(auto) call(R&& r)
@@ -2660,18 +2716,18 @@ namespace iter {
             return (iter::range(call<J>(*std::forward<R>(r).__value)));
         }
 
-        // template <auto J, meta::unpack R>
-        // static constexpr decltype(auto) call(R&& r)
-        //     noexcept (requires{
-        //         {impl::unpack(call<J>(*std::forward<R>(r).__value))} noexcept;
-        //     })
-        //     requires (
-        //         meta::range<decltype((*std::forward<R>(r).__value))> &&
-        //         requires{{impl::unpack(call<J>(*std::forward<R>(r).__value))};}
-        //     )
-        // {
-        //     return (impl::unpack(call<J>(*std::forward<R>(r).__value)));
-        // }
+        template <auto J, meta::unpack R>
+        static constexpr decltype(auto) call(R&& r)
+            noexcept (requires{
+                {impl::unpack(call<J>(*std::forward<R>(r).__value))} noexcept;
+            })
+            requires (
+                meta::range<decltype((*std::forward<R>(r).__value))> &&
+                requires{{impl::unpack(call<J>(*std::forward<R>(r).__value))};}
+            )
+        {
+            return (impl::unpack(call<J>(*std::forward<R>(r).__value)));
+        }
 
         template <auto J, auto... Js>
         struct accumulate {
@@ -2746,7 +2802,15 @@ namespace iter {
         {}
 
     private:
-        template <size_t N, typename C> requires (!meta::range<C>)
+        template <size_t N, typename C>
+        static constexpr bool index =
+            requires(C c) {{std::forward<C>(c)[
+                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+            ]};} || requires(C c) {{impl::tuple_range(std::forward<C>(c))[
+                size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
+            ]};};
+
+        template <size_t N, typename C> requires (!meta::range<C> && index<N, C>)
         constexpr decltype(auto) call(C&& c) const
             noexcept (requires{{std::forward<C>(c)[
                 size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
@@ -2757,11 +2821,6 @@ namespace iter {
                     size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
                 ]} noexcept;}
             ))
-            requires (requires{{std::forward<C>(c)[
-                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-            ]};} || requires{{impl::tuple_range(std::forward<C>(c))[
-                size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
-            ]};})
         {
             if constexpr (requires{{std::forward<C>(c)[
                 size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
@@ -2774,6 +2833,47 @@ namespace iter {
                     size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
                 ]);
             }
+        }
+
+        template <size_t N, typename C> requires (!meta::range<C> && !index<N, C>)
+        constexpr decltype(auto) call(C&& c) const
+            requires ((
+                meta::iterable<meta::as_lvalue<C>> &&
+                requires(
+                    decltype((idx.template get<N>())) f,
+                    decltype((*std::ranges::begin(c))) x
+                ) {
+                    {f(std::forward<decltype(x)>(x))} -> meta::convertible_to<bool>;
+                    {meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x))};
+                }
+            ) || (
+                !meta::iterable<meta::as_lvalue<C>> &&
+                requires(
+                    decltype((idx.template get<N>())) f,
+                    decltype((*impl::tuple_range(std::forward<C>(c)).begin())) x
+                ) {
+                    {f(std::forward<decltype(x)>(x))} -> meta::convertible_to<bool>;
+                    {meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x))};
+                }
+            ))
+        {
+            const auto& f = idx.template get<N>();
+            if constexpr (meta::iterable<meta::as_lvalue<C>>) {
+                for (auto&& x : c) {
+                    if (f(std::forward<decltype(x)>(x))) {
+                        return (meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x)));
+                    }
+                }
+            } else {
+                auto t = impl::tuple_range(std::forward<C>(c));
+                for (auto&& x : t) {
+                    if (f(std::forward<decltype(x)>(x))) {
+                        return (meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x)));
+                    }
+                }
+            }
+            /// TODO: think of a better error message.
+            throw ValueError("no element found matching predicate");
         }
 
         template <size_t N, meta::range R>
@@ -2800,18 +2900,18 @@ namespace iter {
             return (iter::range(call<N>(*std::forward<R>(r).__value)));
         }
 
-        // template <size_t N, meta::unpack R>
-        // constexpr decltype(auto) call(R&& r) const
-        //     noexcept (requires{
-        //         {impl::unpack(call<N>(*std::forward<R>(r).__value))} noexcept;
-        //     })
-        //     requires (
-        //         meta::range<decltype((*std::forward<R>(r).__value))> &&
-        //         requires{{impl::unpack(call<N>(*std::forward<R>(r).__value))};}
-        //     )
-        // {
-        //     return (impl::unpack(call<N>(*std::forward<R>(r).__value)));
-        // }
+        template <size_t N, meta::unpack R>
+        constexpr decltype(auto) call(R&& r) const
+            noexcept (requires{
+                {impl::unpack(call<N>(*std::forward<R>(r).__value))} noexcept;
+            })
+            requires (
+                meta::range<decltype((*std::forward<R>(r).__value))> &&
+                requires{{impl::unpack(call<N>(*std::forward<R>(r).__value))};}
+            )
+        {
+            return (impl::unpack(call<N>(*std::forward<R>(r).__value)));
+        }
 
     public:
         template <size_t N = 0, typename C> requires (N == sizeof...(Is))
@@ -3412,6 +3512,13 @@ namespace iter {
 }
 
 
+namespace impl {
+
+
+
+}
+
+
 }
 
 
@@ -3479,8 +3586,8 @@ static constexpr auto arr = std::array{
     std::array{2, 3},
     std::array{3, 4}
 };
-static constexpr auto y3 = iter::at<0, 1>{}(arr);
-
+static constexpr auto y3 = iter::at<0, [](int x) { return x == 2; }>{}(arr);
+static_assert(y3 == 2);
 
 
 static constexpr std::tuple tup {1, 2, 3.5};
@@ -3492,7 +3599,9 @@ static constexpr auto x2 = r2[0];
 static constexpr auto y1 = r1[0, 1];
 static constexpr auto y2 = r2[0, 1];
 static constexpr auto y4 = iter::at<2, 1>{}(tup2);
+static constexpr auto y5 = r1[0, [](int x) { return x == 2; }];
 static_assert(y2 == y1);
+static_assert(y5 == 2);
 static_assert([] {
     for (auto&& x : r2) {
         for (auto&& y : x) {
