@@ -2901,6 +2901,16 @@ namespace meta {
     ////    INDEXING    ////
     ////////////////////////
 
+    namespace detail {
+
+        template <typename T>
+        constexpr bool wraparound = false;
+
+    }
+
+    template <typename T>
+    concept wraparound = detail::wraparound<T>;
+
     template <typename T, typename... Key>
     concept indexable = !integer<T> && requires(T t, Key... key) {
         ::std::forward<T>(t)[::std::forward<Key>(key)...];
@@ -4765,10 +4775,10 @@ namespace impl {
 
         template <typename... A>
         [[nodiscard]] constexpr ref(A&&... args) 
-            noexcept (meta::nothrow::constructible_from<type, A...>)
-            requires (meta::constructible_from<type, A...>)
+            noexcept (requires{{type{std::forward<A>(args)...}} noexcept;})
+            requires (requires{{type{std::forward<A>(args)...}};})
         :
-            data(std::forward<A>(args)...)
+            data{std::forward<A>(args)...}
         {};
 
         constexpr void swap(ref& other)

@@ -12,6 +12,9 @@ namespace bertrand {
 namespace impl {
     struct range_tag {};
 
+    /// TODO: perhaps the same inheritance trick can be used to simplify `unpack` similar
+    /// to `range`
+
     template <meta::not_rvalue C> requires (meta::iterable<C>)
     struct unpack;
 
@@ -717,6 +720,8 @@ namespace meta {
         template <meta::range T>
         constexpr bool prefer_constructor<T> = true;
 
+        /// TODO: wraparound<T>
+
     }
 
 }
@@ -728,7 +733,7 @@ namespace iter {
     /// `-> range<int>` as a valid return annotation.  Maybe forcing `range<Optional<int>>`
     /// is the better solution overall?
 
-    template <meta::not_rvalue C = impl::empty_range> requires (meta::iterable<C>)
+    template <meta::not_rvalue C = impl::empty_range>
     struct range;
 
     /// TODO: CTAD guides will need to be updated to account for all the iota/subrange/
@@ -745,14 +750,8 @@ namespace iter {
     template <typename C>
     range(range<C>&&) -> range<range<C>>;
 
-    template <typename C> requires (!meta::range<C> && meta::iterable<C>)
+    template <typename C>
     range(C&&) -> range<meta::remove_rvalue<C>>;
-
-    template <typename C> requires (!meta::iterable<C> && meta::tuple_like<C>)
-    range(C&&) -> range<impl::tuple_range<meta::remove_rvalue<C>>>;
-
-    template <typename C> requires (!meta::iterable<C> && !meta::tuple_like<C>)
-    range(C&&) -> range<impl::single_range<meta::remove_rvalue<C>>>;
 
     // template <typename Stop>
     //     requires (
@@ -2615,21 +2614,29 @@ namespace iter {
         template <auto J, typename C>
         static constexpr bool index =
             requires(C c) {{meta::unpack_tuple<J>(std::forward<C>(c))};} ||
+            (meta::wraparound<C> && requires(C c) {{std::forward<C>(c)[J]};}) ||
             requires(C c) {{std::forward<C>(c)[
                 size_t(impl::normalize_index(std::ranges::ssize(c), J))
             ]};};
 
         template <auto J, typename C> requires (!meta::range<C> && index<J, C>)
         static constexpr decltype(auto) call(C&& c)
-            noexcept (requires{{meta::unpack_tuple<J>(std::forward<C>(c))} noexcept;} || (
-                !requires{{meta::unpack_tuple<J>(std::forward<C>(c))};} &&
-                requires{{std::forward<C>(c)[
-                    size_t(impl::normalize_index(std::ranges::ssize(c), J))
-                ]} noexcept;})
-            )
+            noexcept (
+                requires{{meta::unpack_tuple<J>(std::forward<C>(c))} noexcept;} || (
+                !requires{{meta::unpack_tuple<J>(std::forward<C>(c))};} && (
+                    (meta::wraparound<C> && requires{{std::forward<C>(c)[J]} noexcept;}) || (
+                        (!meta::wraparound<C> || !requires(C c) {{std::forward<C>(c)[J]};}) &&
+                        requires{{std::forward<C>(c)[
+                            size_t(impl::normalize_index(std::ranges::ssize(c), J))
+                        ]} noexcept;}
+                    )
+                )
+            ))
         {
             if constexpr (requires{{meta::unpack_tuple<J>(std::forward<C>(c))};}) {
                 return (meta::unpack_tuple<J>(std::forward<C>(c)));
+            } else if constexpr (meta::wraparound<C> && requires(C c) {{std::forward<C>(c)[J]};}) {
+                return (std::forward<C>(c)[J]);
             } else {
                 return (std::forward<C>(c)[
                     size_t(impl::normalize_index(std::ranges::ssize(c), J))
@@ -2804,6 +2811,7 @@ namespace iter {
     private:
         template <size_t N, typename C>
         static constexpr bool index =
+            (meta::wraparound<C> && requires(C c) {{std::forward<C>(c)[idx.template get<N>()]};}) ||
             requires(C c) {{std::forward<C>(c)[
                 size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
             ]};} || requires(C c) {{impl::tuple_range(std::forward<C>(c))[
@@ -2812,17 +2820,29 @@ namespace iter {
 
         template <size_t N, typename C> requires (!meta::range<C> && index<N, C>)
         constexpr decltype(auto) call(C&& c) const
-            noexcept (requires{{std::forward<C>(c)[
-                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-            ]} noexcept;} || (
-                !requires{{std::forward<C>(c)[
-                    size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-                ]};} && requires{{impl::tuple_range(std::forward<C>(c))[
-                    size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
-                ]} noexcept;}
+            noexcept ((meta::wraparound<C> && requires{
+                {std::forward<C>(c)[idx.template get<N>()]} noexcept;
+            }) || (
+                (!meta::wraparound<C> || !requires{
+                    {std::forward<C>(c)[idx.template get<N>()]};
+                }) && (
+                    requires{{std::forward<C>(c)[
+                        size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+                    ]} noexcept;} || (
+                        !requires{{std::forward<C>(c)[
+                            size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+                        ]};} && requires{{impl::tuple_range(std::forward<C>(c))[
+                            size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
+                        ]} noexcept;}
+                    )
+                )
             ))
         {
-            if constexpr (requires{{std::forward<C>(c)[
+            if constexpr (meta::wraparound<C> && requires{
+                {std::forward<C>(c)[idx.template get<N>()]};
+            }) {
+                return (std::forward<C>(c)[idx.template get<N>()]);
+            } else if constexpr (requires{{std::forward<C>(c)[
                 size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
             ]};}) {
                 return (std::forward<C>(c)[
@@ -3034,7 +3054,7 @@ namespace iter {
     expression tree.  The tree will only be evaluated when the range is indexed, iterated
     over, or converted to a compatible type, which reduces it to a single loop that can be
     aggressively optimized by the compiler. */
-    template <meta::not_rvalue C> requires (meta::iterable<C>)
+    template <meta::not_rvalue C>
     struct range : impl::range_tag {
         [[no_unique_address]] impl::ref<C> __value;
 
@@ -3500,6 +3520,20 @@ namespace iter {
 
     };
 
+    /// TODO: document these specializations of range.
+
+    template <meta::not_rvalue C>
+        requires (!meta::range<C> && !meta::iterable<C> && meta::tuple_like<C>)
+    struct range<C> : range<impl::tuple_range<C>> {
+        using range<impl::tuple_range<C>>::range;
+    };
+
+    template <meta::not_rvalue C>
+        requires (!meta::range<C> && !meta::iterable<C> && !meta::tuple_like<C>)
+    struct range<C> : range<impl::single_range<C>> {
+        using range<impl::single_range<C>>::range;
+    };
+
     /* ADL `swap()` operator for ranges. */
     template <typename C>
     constexpr void swap(range<C>& lhs, range<C>& rhs)
@@ -3508,13 +3542,6 @@ namespace iter {
     {
         lhs.swap(rhs);
     }
-
-}
-
-
-namespace impl {
-
-
 
 }
 
@@ -3627,6 +3654,10 @@ static_assert([] {
     // }
     return true;
 }());
+
+
+static constexpr iter::range r10 = std::tuple<int, double>{1, 2.5};
+// static_assert(r10[1] == 2.5);
 
 
 }
