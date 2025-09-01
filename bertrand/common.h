@@ -192,6 +192,15 @@ namespace impl {
 }
 
 
+/* A convenience function that produces a `std::type_identity` instance specialized for
+type `T`.  Instances of this form can be supplied as `auto` template parameters in
+order to mix values and types within the same argument list.  This may be deprecated in
+favor of static reflection specifiers or ideally universal template parameters if and
+when those features become available. */
+template <typename T>
+constexpr std::type_identity<T> type;
+
+
 struct NoneType;
 
 
@@ -847,6 +856,18 @@ namespace meta {
     //////////////////////////
     ////    PRIMITIVES    ////
     //////////////////////////
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool type_identity = false;
+        template <typename T>
+        constexpr bool type_identity<::std::type_identity<T>> = true;
+
+    }
+
+    template <typename T>
+    concept type_identity = detail::type_identity<unqualify<T>>;
 
     namespace detail {
 

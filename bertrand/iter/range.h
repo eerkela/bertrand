@@ -816,78 +816,7 @@ namespace impl {
         ((meta::unpack_tuple<Is>(container) = meta::unpack_tuple<Is>(std::forward<T>(r))), ...);
     }
 
-    /// TODO: range_get() will need to apply the same nested range behavior as the
-    /// subscript operator, and something similar will need to be implemented for
-    /// the unpack case.
-
-    template <ssize_t I, typename C>
-    constexpr decltype(auto) range_get(C&& c)
-        noexcept (requires{{meta::unpack_tuple<I>(std::forward<C>(c))} noexcept;})
-        requires (requires{{meta::unpack_tuple<I>(std::forward<C>(c))};})
-    {
-        return (meta::unpack_tuple<I>(std::forward<C>(c)));
-    }
-
-    template <ssize_t I, ssize_t... Is, typename C> requires (sizeof...(Is) > 0)
-    constexpr decltype(auto) range_get(C&& c)
-        noexcept (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))} noexcept;})
-        requires (requires{{range_get<Is...>(range_get<I>(std::forward<C>(c)))};})
-    {
-        return (range_get<Is...>(range_get<I>(std::forward<C>(c))));
-    }
-
-    template <typename C> requires (!meta::range<C>)
-    constexpr decltype(auto) range_subscript(C&& c, ssize_t i)
-        noexcept (requires{
-            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]} noexcept;
-        })
-        requires (requires{
-            {std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]};
-        })
-    {
-        return (std::forward<C>(c)[size_t(impl::normalize_index(std::ranges::ssize(c), i))]);
-    }
-
-    template <meta::range R>
-    constexpr decltype(auto) range_subscript(R&& r, ssize_t i)
-        noexcept (requires{{range_subscript(*std::forward<R>(r).__value, i)} noexcept;})
-        requires (
-            !meta::range<decltype((*std::forward<R>(r).__value))> &&
-            requires{{range_subscript(*std::forward<R>(r).__value, i)};}
-        )
-    {
-        return (range_subscript(*std::forward<R>(r).__value, i));
-    }
-
-    template <meta::range R>
-    constexpr decltype(auto) range_subscript(R&& r, ssize_t i)
-        noexcept (requires{{iter::range(range_subscript(*std::forward<R>(r).__value, i))} noexcept;})
-        requires (
-            meta::range<decltype((*std::forward<R>(r).__value))> &&
-            requires{{iter::range(range_subscript(*std::forward<R>(r).__value, i))};}
-        )
-    {
-        return (iter::range(range_subscript(*std::forward<R>(r).__value, i)));
-    }
-
-    template <typename C, typename I, typename... Is> requires (sizeof...(Is) > 0)
-    constexpr decltype(auto) range_subscript(C&& c, I&& i, Is&&... is)
-        noexcept (requires{{range_subscript(
-            range_subscript(std::forward<C>(c), std::forward<I>(i)),
-            std::forward<Is>(is)...
-        )} noexcept;})
-        requires (requires{{range_subscript(
-            range_subscript(std::forward<C>(c), std::forward<I>(i)),
-            std::forward<Is>(is)...
-        )};})
-    {
-        return (range_subscript(
-            range_subscript(std::forward<C>(c), std::forward<I>(i)),
-            std::forward<Is>(is)...
-        ));
-    }
-
-    template <meta::not_rvalue T> requires (meta::iterator<T>)
+    template <meta::not_rvalue T>
     struct range_iterator;
 
     template <meta::iterator T>
@@ -905,18 +834,39 @@ namespace impl {
     template <typename T>
     concept is_range_iterator = _is_range_iterator<meta::unqualify<T>>;
 
-    /* A wrapper for an iterator over an `iter::range()` object.  This acts as a
-    transparent adaptor for the underlying iterator type, and does not change its
-    behavior in any way.  The only caveat is for nested ranges, whereby the wrapped
-    iterator will be another instance of this class, and the dereference type will be
-    promoted to a range. */
-    template <meta::not_rvalue T> requires (meta::iterator<T>)
-    struct range_iterator {
+    template <typename T>
+    struct range_iterator_traits {
+        using iterator_category = std::input_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = meta::remove_reference<T>;
+        using reference = meta::as_lvalue<value_type>;
+        using pointer = meta::as_pointer<value_type>;
+    };
+    template <meta::iterator T>
+    struct range_iterator_traits<T> {
         using iterator_category = meta::iterator_category<T>;
         using difference_type = meta::iterator_difference_type<T>;
         using value_type = meta::iterator_value_type<T>;
         using reference = meta::iterator_reference_type<T>;
         using pointer = meta::iterator_pointer_type<T>;
+    };
+
+    /* A wrapper for an iterator over an `iter::range()` object.  This acts as a
+    transparent adaptor for the underlying iterator type, and does not change its
+    behavior in any way.  The only caveat is for nested ranges, whereby the wrapped
+    iterator will be another instance of this class, and the dereference type will be
+    promoted to a range. */
+    template <meta::not_rvalue T>
+    struct range_iterator {
+    private:
+        using traits = range_iterator_traits<T>;
+
+    public:
+        using iterator_category = traits::iterator_category;
+        using difference_type = traits::difference_type;
+        using value_type = traits::value_type;
+        using reference = traits::reference;
+        using pointer = traits::pointer;
 
         T iter;
 
@@ -1171,7 +1121,7 @@ namespace impl {
     behavior in any way.  The only caveat is for nested ranges, whereby the wrapped
     iterator will be another instance of this class, and the dereference type will be
     promoted to an `unpack` range. */
-    template <meta::not_rvalue T> requires (meta::iterator<T>)
+    template <meta::not_rvalue T>
     struct unpack_iterator;
 
     template <meta::iterator T>
@@ -1349,13 +1299,17 @@ namespace impl {
     // unpack(C&&) -> unpack<impl::single_range<meta::remove_rvalue<C>>>;
 
 
-    template <meta::not_rvalue T> requires (meta::iterator<T>)
+    template <meta::not_rvalue T>
     struct unpack_iterator {
-        using iterator_category = meta::iterator_category<T>;
-        using difference_type = meta::iterator_difference_type<T>;
-        using value_type = meta::iterator_value_type<T>;
-        using reference = meta::iterator_reference_type<T>;
-        using pointer = meta::iterator_pointer_type<T>;
+    private:
+        using traits = range_iterator_traits<T>;
+
+    public:
+        using iterator_category = traits::iterator_category;
+        using difference_type = traits::difference_type;
+        using value_type = traits::value_type;
+        using reference = traits::reference;
+        using pointer = traits::pointer;
 
         T iter;
 
@@ -2628,10 +2582,275 @@ namespace impl {
         requires (iota_concept<Start, Stop, Step>)
     iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
 
+    template <typename... Ts>
+    concept at_run_time = (meta::type_identity<Ts> && ...);
+
+    template <typename... Ts>
+    concept at_compile_time = (!meta::type_identity<Ts> && ...);
+
+    template <typename... Ts>
+    concept at_concept = at_run_time<Ts...> || at_compile_time<Ts...>;
+
 }
 
 
 namespace iter {
+
+    /* Range-based multidimensional indexing operator.  Accepts either signed integer
+    indices with Python-style wraparound or predicate functions, which accept a value
+    from the container and return a boolean.  The indexing will stop at the first
+    element for which the function returns true.
+
+    This specialization accepts any number of indices as non-type template parameters,
+    and applies them to an arbitrary container when called.  If more than one index is
+    given, then they will be applied sequentially, equating to a chain of
+    `container[i][j][k]...` calls.  If any results support tuple-like indexing, then
+    the corresponding access will be performed at compile time instead, yielding an
+    exact return type. */
+    template <auto... Is> requires (impl::at_concept<decltype(Is)...>)
+    struct at {
+    private:
+        template <auto J, typename C> requires (!meta::range<C>)
+        static constexpr decltype(auto) call(C&& c)
+            noexcept (requires{{meta::unpack_tuple<J>(std::forward<C>(c))} noexcept;} || (
+                !requires{{meta::unpack_tuple<J>(std::forward<C>(c))};} &&
+                requires{{std::forward<C>(c)[
+                    size_t(impl::normalize_index(std::ranges::ssize(c), J))
+                ]} noexcept;})
+            )
+            requires (
+                requires{{meta::unpack_tuple<J>(std::forward<C>(c))};} ||
+                requires{{std::forward<C>(c)[
+                    size_t(impl::normalize_index(std::ranges::ssize(c), J))
+                ]};}
+            )
+        {
+            if constexpr (requires{{meta::unpack_tuple<J>(std::forward<C>(c))};}) {
+                return (meta::unpack_tuple<J>(std::forward<C>(c)));
+            } else {
+                return (std::forward<C>(c)[
+                    size_t(impl::normalize_index(std::ranges::ssize(c), J))
+                ]);
+            }
+        }
+
+        /// TODO: handle the boolean predicate case
+
+        template <auto J, meta::range R>
+        static constexpr decltype(auto) call(R&& r)
+            noexcept (requires{{call<J>(*std::forward<R>(r).__value)} noexcept;})
+            requires (
+                !meta::range<decltype((*std::forward<R>(r).__value))> &&
+                requires{{call<J>(*std::forward<R>(r).__value)};}
+            )
+        {
+            return (call<J>(*std::forward<R>(r).__value));
+        }
+
+        template <auto J, meta::range R>
+        static constexpr decltype(auto) call(R&& r)
+            noexcept (requires{
+                {iter::range(call<J>(*std::forward<R>(r).__value))} noexcept;
+            })
+            requires (
+                meta::range<decltype((*std::forward<R>(r).__value))> &&
+                requires{{iter::range(call<J>(*std::forward<R>(r).__value))};}
+            )
+        {
+            return (iter::range(call<J>(*std::forward<R>(r).__value)));
+        }
+
+        // template <auto J, meta::unpack R>
+        // static constexpr decltype(auto) call(R&& r)
+        //     noexcept (requires{
+        //         {impl::unpack(call<J>(*std::forward<R>(r).__value))} noexcept;
+        //     })
+        //     requires (
+        //         meta::range<decltype((*std::forward<R>(r).__value))> &&
+        //         requires{{impl::unpack(call<J>(*std::forward<R>(r).__value))};}
+        //     )
+        // {
+        //     return (impl::unpack(call<J>(*std::forward<R>(r).__value)));
+        // }
+
+        template <auto J, auto... Js>
+        struct accumulate {
+            template <typename C>
+            static constexpr decltype(auto) operator()(C&& c)
+                noexcept ((sizeof...(Js) == 0 && requires{
+                    {call<J>(std::forward<C>(c))} noexcept;
+                }) || (sizeof...(Js) > 0 && requires{
+                    {accumulate<Js...>{}(call<J>(std::forward<C>(c)))} noexcept;
+                }))
+                requires ((sizeof...(Js) == 0 && requires{
+                    {call<J>(std::forward<C>(c))};
+                }) || (sizeof...(Js) > 0 && requires{
+                    {accumulate<Js...>{}(call<J>(std::forward<C>(c)))};
+                }))
+            {
+                if constexpr (sizeof...(Js) == 0) {
+                    return (call<J>(std::forward<C>(c)));
+                } else {
+                    return (accumulate<Js...>{}(call<J>(std::forward<C>(c))));
+                }
+            }
+        };
+
+    public:
+        template <typename C>
+        static constexpr decltype(auto) operator()(C&& c)
+            noexcept (sizeof...(Is) == 0 || requires{
+                {accumulate<Is...>{}(std::forward<C>(c))} noexcept;
+            })
+            requires (sizeof...(Is) == 0 || requires{
+                {accumulate<Is...>{}(std::forward<C>(c))};
+            })
+        {
+            if constexpr (sizeof...(Is) == 0) {
+                return (std::forward<C>(c));
+            } else {
+                return (accumulate<Is...>{}(std::forward<C>(c)));
+            }
+        }
+    };
+
+    /* Range-based multidimensional indexing operator.  Accepts either signed integer
+    indices with Python-style wraparound or predicate functions, which accept a value
+    from the container and return a boolean.  The indexing will stop at the first
+    element for which the function returns true.
+
+    This specialization accepts any number of indices as run-time constructor
+    arguments, and applies them to an arbitrary container when called.  If more than
+    one index is given, then they will be applied sequentially, equating to a chain of
+    `container[i][j][k]...` calls.  If the container is tuple-like, but not otherwise
+    subscriptable, then the indexing will be done using a vtable dispatch that maps
+    indices to the appropriate element, possibly returning a union if multiple result
+    types are valid. */
+    template <auto... Is>
+        requires (impl::at_concept<decltype(Is)...> && impl::at_run_time<decltype(Is)...>)
+    struct at<Is...> {
+        [[no_unique_address]] impl::basic_tuple<typename decltype(Is)::type...> idx;
+
+        [[nodiscard]] constexpr at() = default;
+        [[nodiscard]] constexpr at(meta::forward<typename decltype(Is)::type>... args)
+            noexcept (meta::nothrow::constructible_from<
+                impl::basic_tuple<typename decltype(Is)::type...>,
+                meta::forward<typename decltype(Is)::type>...
+            >)
+            requires (meta::constructible_from<
+                impl::basic_tuple<typename decltype(Is)::type...>,
+                meta::forward<typename decltype(Is)::type>...
+            >)
+        :
+            idx{std::forward<typename decltype(Is)::type>(args)...}
+        {}
+
+    private:
+        template <size_t N, typename C> requires (!meta::range<C>)
+        constexpr decltype(auto) call(C&& c) const
+            noexcept (requires{{std::forward<C>(c)[
+                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+            ]} noexcept;} || (
+                !requires{{std::forward<C>(c)[
+                    size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+                ]};} && requires{{impl::tuple_range(std::forward<C>(c))[
+                    size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
+                ]} noexcept;}
+            ))
+            requires (requires{{std::forward<C>(c)[
+                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+            ]};} || requires{{impl::tuple_range(std::forward<C>(c))[
+                size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
+            ]};})
+        {
+            if constexpr (requires{{std::forward<C>(c)[
+                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+            ]};}) {
+                return (std::forward<C>(c)[
+                    size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
+                ]);
+            } else {
+                return (impl::tuple_range(std::forward<C>(c))[
+                    size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
+                ]);
+            }
+        }
+
+        template <size_t N, meta::range R>
+        constexpr decltype(auto) call(R&& r) const
+            noexcept (requires{{call<N>(*std::forward<R>(r).__value)} noexcept;})
+            requires (
+                !meta::range<decltype((*std::forward<R>(r).__value))> &&
+                requires{{call<N>(*std::forward<R>(r).__value)};}
+            )
+        {
+            return (call<N>(*std::forward<R>(r).__value));
+        }
+
+        template <size_t N, meta::range R>
+        constexpr decltype(auto) call(R&& r) const
+            noexcept (requires{
+                {iter::range(call<N>(*std::forward<R>(r).__value))} noexcept;
+            })
+            requires (
+                meta::range<decltype((*std::forward<R>(r).__value))> &&
+                requires{{iter::range(call<N>(*std::forward<R>(r).__value))};}
+            )
+        {
+            return (iter::range(call<N>(*std::forward<R>(r).__value)));
+        }
+
+        // template <size_t N, meta::unpack R>
+        // constexpr decltype(auto) call(R&& r) const
+        //     noexcept (requires{
+        //         {impl::unpack(call<N>(*std::forward<R>(r).__value))} noexcept;
+        //     })
+        //     requires (
+        //         meta::range<decltype((*std::forward<R>(r).__value))> &&
+        //         requires{{impl::unpack(call<N>(*std::forward<R>(r).__value))};}
+        //     )
+        // {
+        //     return (impl::unpack(call<N>(*std::forward<R>(r).__value)));
+        // }
+
+    public:
+        template <size_t N = 0, typename C> requires (N == sizeof...(Is))
+        constexpr decltype(auto) operator()(C&& c) const
+            noexcept (requires{{std::forward<C>(c)} noexcept;})
+            requires (requires{{std::forward<C>(c)};})
+        {
+            return (std::forward<C>(c));
+        }
+
+        template <size_t N = 0, typename C> requires (N < sizeof...(Is))
+        constexpr decltype(auto) operator()(C&& c) const
+            noexcept ((N + 1 == sizeof...(Is) && requires{
+                {call<N>(std::forward<C>(c))} noexcept;
+            }) || (N + 1 < sizeof...(Is) && requires{
+                {(*this).template operator()<N + 1>(call<N>(std::forward<C>(c)))} noexcept;
+            }))
+            requires ((N + 1 == sizeof...(Is) && requires{
+                {call<N>(std::forward<C>(c))};
+            }) || (N + 1 < sizeof...(Is) && requires{
+                {(*this).template operator()<N + 1>(call<N>(std::forward<C>(c)))};
+            }))
+        {
+            if constexpr (N + 1 == sizeof...(Is)) {
+                return (call<N>(std::forward<C>(c)));
+            } else {
+                return ((*this).template operator()<N + 1>(call<N>(std::forward<C>(c))));
+            }
+        }
+
+        /// TODO: provide a `.iter(c)` method that returns an iterator to the given
+        /// index, rather than a reference, applying the same optimizations as `slice`.
+        /// Also, maybe subscripting can be allowed for unsized containers as well,
+        /// in which case we would obtain the correct value by forwarding the index
+        /// directly, or obtaining the value using iterators as a fallback.
+    };
+
+    template <typename... Is>
+    at(Is&&...) -> at<type<Is>...>;
 
     /* A wrapper for an arbitrary container type that can be used to form iterable
     expressions.
@@ -2856,25 +3075,19 @@ namespace iter {
             return std::ranges::empty(*__value);
         }
 
-
-
-        /// TODO: the same nested range promotion should be applied to `get<I>()` and
-        /// the subscript operator.
+        /// TODO: documentation for the tuple-like and runtime index operators should
+        /// reflect their newfound symmetry with `iter::at{}`.
 
         /* Forwarding `get<I>()` accessor, provided the underlying container is
         tuple-like.  Automatically applies Python-style wraparound for negative
         indices, and allows multidimensional indexing if the container is a tuple of
         tuples. */
-        template <ssize_t... Is, typename Self> requires (sizeof...(Is) > 0)
+        template <auto... Is, typename Self>
         constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{
-                {impl::range_get<Is...>(*std::forward<Self>(self).__value)} noexcept;
-            })
-            requires (requires{
-                {impl::range_get<Is...>(*std::forward<Self>(self).__value)};
-            })
+            noexcept (requires{{at<Is...>{}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{at<Is...>{}(std::forward<Self>(self))};})
         {
-            return (impl::range_get<Is...>(*std::forward<Self>(self).__value));
+            return (at<Is...>{}(std::forward<Self>(self)));
         }
 
         /* Integer indexing operator.  Accepts one or more signed integers and
@@ -2882,18 +3095,14 @@ namespace iter {
         applying Python-style wraparound for negative indices, which converts the index
         to an unsigned integer.  If multiple indices are given, then each successive
         index after the first will be used to subscript the previous result. */
-        template <typename Self, meta::convertible_to<ssize_t>... Is> requires (sizeof...(Is) > 0)
+        template <typename Self, typename... Is>
         constexpr decltype(auto) operator[](this Self&& self, Is&&... is)
-            noexcept (requires{{
-                impl::range_subscript(std::forward<Self>(self), std::forward<Is>(is)...)
-            } noexcept;})
-            requires (requires{{
-                impl::range_subscript(std::forward<Self>(self), std::forward<Is>(is)...)
-            };})
+            noexcept (requires{{at{std::forward<Is>(is)...}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{at{std::forward<Is>(is)...}(std::forward<Self>(self))};})
         {
-            return (impl::range_subscript(std::forward<Self>(self), std::forward<Is>(is)...));
+            return (at{std::forward<Is>(is)...}(std::forward<Self>(self)));
         }
-        
+
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{
@@ -3265,15 +3474,24 @@ namespace std {
 
 namespace bertrand {
 
+static constexpr auto arr = std::array{
+    std::array{1, 2},
+    std::array{2, 3},
+    std::array{3, 4}
+};
+static constexpr auto y3 = iter::at<0, 1>{}(arr);
+
+
 
 static constexpr std::tuple tup {1, 2, 3.5};
-static constexpr std::tuple tup2 {std::array{1, 2}, std::array{2, 2}, std::array{3.5, 3.5}};
+static constexpr std::tuple tup2 {std::tuple{1, 2}, std::tuple{2, 2}, std::tuple{3.5, 3.5}};
 static constexpr auto r1 = iter::range(tup2);
 static constexpr auto r2 = iter::range(iter::range(tup2));
 static constexpr auto x1 = r1[0];
 static constexpr auto x2 = r2[0];
 static constexpr auto y1 = r1[0, 1];
 static constexpr auto y2 = r2[0, 1];
+static constexpr auto y4 = iter::at<2, 1>{}(tup2);
 static_assert(y2 == y1);
 static_assert([] {
     for (auto&& x : r2) {
