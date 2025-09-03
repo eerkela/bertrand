@@ -281,7 +281,7 @@ namespace impl {
     };
 
     /* A unique vtable has to be emitted for each observed qualification of the tuple
-    type, so as to perfectly forward the results. */
+    type, in order to perfectly forward the results. */
     template <meta::tuple_like C>
     struct tuple_vtable {
         using type = meta::tuple_types<C>::template eval<meta::union_type>;
@@ -298,16 +298,16 @@ namespace impl {
         using dispatch = impl::basic_vtable<fn, meta::tuple_size<C>>;
     };
 
-    template <typename... Ts>
+    template <typename>
     struct _tuple_range {
-        using type = meta::union_type<Ts...>;
-        static constexpr tuple_kind kind =
-            meta::trivial_union<Ts...> ? tuple_kind::TRIVIAL : tuple_kind::VTABLE;
-    };
-    template <>
-    struct _tuple_range<> {
         using type = const NoneType&;
         static constexpr tuple_kind kind = tuple_kind::EMPTY;
+    };
+    template <typename T, typename... Ts>
+    struct _tuple_range<meta::pack<T, Ts...>> {
+        using type = meta::union_type<T, Ts...>;
+        static constexpr tuple_kind kind =
+            meta::trivial_union<T, Ts...> ? tuple_kind::TRIVIAL : tuple_kind::VTABLE;
     };
 
     /* A wrapper around a generic tuple type that allows it to be indexed and iterated
@@ -315,7 +315,7 @@ namespace impl {
     consists of multiple types, then the subscript and yield types will be promoted to
     unions of all the possible results. */
     template <meta::tuple_like C>
-    struct tuple_range : meta::tuple_types<C>::template eval<_tuple_range> {
+    struct tuple_range : _tuple_range<meta::tuple_types<C>> {
         [[no_unique_address]] impl::ref<C> __value;
 
         template <typename... A>
@@ -368,8 +368,8 @@ namespace impl {
         }
     };
     template <meta::tuple_like C>
-        requires (meta::tuple_types<C>::template eval<_tuple_range>::kind == tuple_kind::TRIVIAL)
-    struct tuple_range<C> : meta::tuple_types<C>::template eval<_tuple_range> {
+        requires (_tuple_range<meta::tuple_types<C>>::kind == tuple_kind::TRIVIAL)
+    struct tuple_range<C> : _tuple_range<meta::tuple_types<C>> {
         [[no_unique_address]] impl::ref<C> __value;
 
         [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
@@ -377,7 +377,7 @@ namespace impl {
         [[nodiscard]] static constexpr bool empty() noexcept { return false; }
 
     private:
-        using base = meta::tuple_types<C>::template eval<_tuple_range>;
+        using base = _tuple_range<meta::tuple_types<C>>;
         using ref = impl::ref<typename base::type>;
         using array = std::array<ref, size()>;
 
@@ -494,8 +494,8 @@ namespace impl {
         }
     };
     template <meta::tuple_like C>
-        requires (meta::tuple_types<C>::template eval<_tuple_range>::kind == tuple_kind::VTABLE)
-    struct tuple_range<C> : meta::tuple_types<C>::template eval<_tuple_range> {
+        requires (_tuple_range<meta::tuple_types<C>>::kind == tuple_kind::VTABLE)
+    struct tuple_range<C> : _tuple_range<meta::tuple_types<C>> {
         [[no_unique_address]] impl::ref<C> __value;
 
         [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
@@ -503,7 +503,7 @@ namespace impl {
         [[nodiscard]] static constexpr bool empty() noexcept { return false; }
 
     private:
-        using base = meta::tuple_types<C>::template eval<_tuple_range>;
+        using base = _tuple_range<meta::tuple_types<C>>;
 
         template <typename Self>
         using dispatch = tuple_vtable<decltype((*std::declval<Self>().__value))>::dispatch;
@@ -621,19 +621,500 @@ namespace impl {
         lhs.swap(rhs);
     }
 
+    /* A tag indicating an iota without an upper bound, which will increment forever,
+    forming an infinite loop.  Typically, this type is listed as an implicit default
+    for the `range(start, {})` and `range(start, {}, step)` iota constructors.
+    Providing an empty initializer for the `stop` index will trigger this
+    specialization, without interfering with the other iota constructors. */
+    struct infinite {};
 
-    /// TODO: all the iota machinery goes up here and should get simplified as much as
-    /// possible.  I then follow it with the counted case, and then finally the
-    /// subrange case, all of which have their associated CTAD guides, and must be
-    /// specialized to work with and without step sizes of several kinds.
-    /// -> What I ought to do is refactor the current iota implementation first, then
-    /// implement the non-step versions of the counted and subrange cases, and then
-    /// think about how to abstract step sizes of various types.
+
+    /// TODO: enable_borrowed_range should always be enabled for iotas.
+
 
 
     template <typename T>
     concept strictly_positive = meta::unsigned_integer<T> || !requires(meta::as_const_ref<T> t) {
         {t < 0} -> meta::explicitly_convertible_to<bool>;
+    };
+
+    template <typename Start, typename Step>
+    concept iota_increment_simple = requires(Start start, Step step) {
+        {start += std::forward<Step>(step)};
+    };
+    template <typename Start, typename Step>
+    concept iota_increment_by_count = requires(Start start, Step step, meta::unqualify<Step> i) {
+        {meta::unqualify<Step>{}};
+        {i < step} -> meta::explicitly_convertible_to<bool>;
+        {++i};
+        {++start};
+    } && (strictly_positive<Step> || requires(Start start, Step step, meta::unqualify<Step> i) {
+        {step < 0} -> meta::explicitly_convertible_to<bool>;
+        {i > step} -> meta::explicitly_convertible_to<bool>;
+        {--i};
+        {--start};
+    });
+    /// TODO: figure out how masks and predicate functions need to work
+    // template <typename Start, typename Step>
+    // concept iota_increment_mask = requires(Start start, Step step) {
+    //     {++start};
+    // };
+    // template <typename Start, typename Step>
+    // concept iota_increment_predicate = requires(Start start, meta::as_const_ref<Step> step) {
+    //     {++start};
+    //     {step(start)} -> meta::convertible_to<bool>;
+    // };
+
+    template <typename Start, typename Step>
+    concept iota_decrement_simple = requires(Start start, Step step) {
+        {start -= std::forward<Step>(step)};
+    };
+    template <typename Start, typename Step>
+    concept iota_decrement_by_count = requires(Start start, Step step, meta::unqualify<Step> i) {
+        {meta::unqualify<Step>{}};
+        {i > step} -> meta::explicitly_convertible_to<bool>;
+        {--i};
+        {--start};
+    } && (strictly_positive<Step> || requires(Start start, Step step, meta::unqualify<Step> i) {
+        {step < 0} -> meta::explicitly_convertible_to<bool>;
+        {i < step} -> meta::explicitly_convertible_to<bool>;
+        {++i};
+        {++start};
+    });
+    /// TODO: figure out how masks and predicate functions need to work
+    // template <typename Start, typename Step>
+    // concept iota_decrement_predicate = requires(Start start, meta::as_const_ref<Step> step) {
+    //     {--start};
+    //     {step(start)} -> meta::convertible_to<bool>;
+    // };
+
+
+    /// TODO: there are several implementations needed to robustly detect whether an
+    /// iota is empty or not.  These should possibly be hidden under `iota_value` where
+    /// appropriate.
+
+    template <typename Start, typename Stop, typename Step>
+    constexpr bool iota_empty(const Start& start, const Stop& stop, const Step& step)
+        noexcept (requires{{!(start < stop)} noexcept -> meta::nothrow::convertible_to<bool>;} && (
+            strictly_positive<Step> || (
+            requires{
+                {step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {!(start > stop)} noexcept -> meta::nothrow::convertible_to<bool>;
+            }
+        )))
+        requires (requires{{!(start < stop)} -> meta::convertible_to<bool>;} && (
+            strictly_positive<Step> ||
+            requires{
+                {step < 0} -> meta::explicitly_convertible_to<bool>;
+                {!(start > stop)} -> meta::convertible_to<bool>;
+            }
+        ))
+    {
+        if constexpr (!strictly_positive<Step>) {
+            if (step < 0) {
+                return !(start > stop);
+            }
+        }
+        return !(start < stop);
+    }
+
+    /* A wrapper for an arbitrary iterator that allows it to be used as the start index
+    of a counted range, where the stop index is given as another integer. */
+    template <meta::unqualified T> requires (meta::iterator<T>)
+    struct iota_counted {
+        using iterator_category = meta::iterator_category<T>;
+        using difference_type = meta::iterator_difference_type<T>;
+        using value_type = meta::iterator_value_type<T>;
+        using reference = meta::iterator_reference_type<T>;
+        using pointer = meta::iterator_pointer_type<T>;
+
+        T iter;
+        difference_type index = 0;
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).iter} noexcept;})
+            requires (requires{{*std::forward<Self>(self).iter};})
+        {
+            return (*std::forward<Self>(self).iter);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{impl::arrow_proxy(*std::forward<Self>(self))} noexcept;})
+            requires (requires{{impl::arrow_proxy(*std::forward<Self>(self))};})
+        {
+            return impl::arrow_proxy(*std::forward<Self>(self));
+        }
+
+        template <typename Self>        
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t n)
+            noexcept (requires{{std::forward<Self>(self).iter[n]} noexcept;})
+            requires (requires{{std::forward<Self>(self).iter[n]};})
+        {
+            return (std::forward<Self>(self).iter[n]);
+        }
+
+        constexpr iota_counted& operator++()
+            noexcept (requires{{++iter} noexcept;})
+            requires (requires{{++iter};})
+        {
+            ++iter;
+            ++index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iota_counted operator++(int)
+            noexcept (requires{
+                {iota_counted{*this}} noexcept;
+                {++iter} noexcept;
+            })
+            requires (requires{
+                {iota_counted(*this)};
+                {++iter};
+            })
+        {
+            iota_counted tmp = *this;
+            ++tmp;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr iota_counted operator+(
+            const iota_counted& self,
+            difference_type n
+        )
+            noexcept (requires{{iota_counted{self.iter + n, self.index + n}} noexcept;})
+            requires (requires{{iota_counted{self.iter + n, self.index + n}};})
+        {
+            return {self.iter + n, self.index + n};
+        }
+
+        [[nodiscard]] friend constexpr iota_counted operator+(
+            difference_type n,
+            const iota_counted& self
+        )
+            noexcept (requires{{iota_counted{self.iter + n, self.index + n}} noexcept;})
+            requires (requires{{iota_counted{self.iter + n, self.index + n}};})
+        {
+            return {self.iter + n, self.index + n};
+        }
+
+        constexpr iota_counted& operator+=(difference_type n)
+            noexcept (requires{{iter + n} noexcept;})
+            requires (requires{{iter + n};})
+        {
+            iter += n;
+            index += n;
+            return *this;
+        }
+
+        constexpr iota_counted& operator--()
+            noexcept (requires{{--iter} noexcept;})
+            requires (requires{{--iter};})
+        {
+            --iter;
+            --index;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iota_counted operator--(int)
+            noexcept (requires{
+                {iota_counted{*this}} noexcept;
+                {--iter} noexcept;
+            })
+            requires (requires{
+                {iota_counted(*this)};
+                {--iter};
+            })
+        {
+            iota_counted tmp = *this;
+            --tmp;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr iota_counted operator-(difference_type n) const
+            noexcept (requires{{iota_counted{iter - n, index - n}} noexcept;})
+            requires (requires{{iota_counted{iter - n, index - n}};})
+        {
+            return {iter - n, index - n};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const iota_counted& other) const
+            noexcept (requires{{index - other.index} noexcept;})
+            requires (requires{{index - other.index};})
+        {
+            return index - other.index;
+        }
+
+        constexpr iota_counted& operator-=(difference_type n)
+            noexcept (requires{{iter - n} noexcept;})
+            requires (requires{{iter - n};})
+        {
+            iter -= n;
+            index -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator==(difference_type stop) const noexcept {
+            return index == stop;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(difference_type stop) const noexcept {
+            return index <=> stop;
+        }
+    };
+
+    /* A wrapper for the `start` index of an iota object, which abstract the increment
+    and decrement operators with respect to arbitrary step sizes. */
+    template <meta::not_rvalue T>
+    struct iota_value {
+        using reference = meta::as_lvalue<T>;
+        using const_reference = meta::as_const_ref<T>;
+
+        [[no_unique_address]] impl::ref<T> value;
+
+        constexpr void swap(iota_value& other)
+            noexcept (requires{{value.swap(other.value)} noexcept;})
+            requires (requires{{value.swap(other.value)};})
+        {
+            value.swap(other.value);
+        }
+
+        constexpr iota_value& operator++() {
+            ++*value;
+            return *this;
+        }
+
+        template <typename Step>
+        constexpr iota_value& operator+=(Step&& step)
+            noexcept (requires{{*value += std::forward<Step>(step)} noexcept;})
+            requires (iota_increment_simple<reference, Step>)
+        {
+            *value += std::forward<Step>(step);
+            return *this;
+        }
+
+        template <typename Step>
+        constexpr iota_value& operator+=(Step&& step)
+            noexcept (requires(meta::unqualify<Step> i) {
+                {meta::unqualify<Step>{}} noexcept;
+                {i < step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {++i} noexcept;
+                {++*value} noexcept;
+            } && (strictly_positive<Step> || requires(meta::unqualify<Step> i) {
+                {step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {i > step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {--i} noexcept;
+                {--*value} noexcept;
+            }))
+            requires (
+                !iota_increment_simple<reference, Step> &&
+                iota_increment_by_count<reference, Step>
+            )
+        {
+            if constexpr (strictly_positive<Step>) {
+                for (meta::unqualify<Step> i = {}; i < step; ++i) {
+                    ++*value;
+                }
+            } else {
+                if (step < 0) {
+                    for (meta::unqualify<Step> i = {}; i > step; --i) {
+                        --*value;
+                    }
+                } else {
+                    for (meta::unqualify<Step> i = {}; i < step; ++i) {
+                        ++*value;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        constexpr iota_value& operator--()
+            noexcept (requires{{--*value} noexcept;})
+            requires (requires{{--*value};})
+        {
+            --*value;
+            return *this;
+        }
+
+        template <typename Step>
+        constexpr iota_value& operator-=(Step&& step)
+            noexcept (requires{{*value -= std::forward<Step>(step)} noexcept;})
+            requires (iota_decrement_simple<reference, Step>)
+        {
+            *value -= std::forward<Step>(step);
+            return *this;
+        }
+
+        template <typename Step>
+        constexpr iota_value& operator-=(Step&& step)
+            noexcept (requires(meta::unqualify<Step> i) {
+                {meta::unqualify<Step>{}} noexcept;
+                {i < step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {++i} noexcept;
+                {++*value} noexcept;
+            } && (strictly_positive<Step> || requires(meta::unqualify<Step> i) {
+                {step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {i > step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {--i} noexcept;
+                {--*value} noexcept;
+            }))
+            requires (
+                !iota_decrement_simple<reference, Step> &&
+                iota_decrement_by_count<reference, Step>
+            )
+        {
+            if constexpr (strictly_positive<Step>) {
+                for (meta::unqualify<Step> i = {}; i > step; --i) {
+                    --*value;
+                }
+            } else {
+                if (step < 0) {
+                    for (meta::unqualify<Step> i = {}; i < step; ++i) {
+                        ++*value;
+                    }
+                } else {
+                    for (meta::unqualify<Step> i = {}; i > step; --i) {
+                        --*value;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        template <typename Step>
+        [[nodiscard]] constexpr meta::unqualify<T> operator+(Step&& step) const
+            noexcept (requires{{
+                *value + std::forward<Step>(step)
+            } noexcept -> meta::nothrow::convertible_to<meta::unqualify<T>>;})
+            requires (requires{{
+                *value + std::forward<Step>(step)
+            } -> meta::convertible_to<meta::unqualify<T>>;})
+        {
+            return *value + std::forward<Step>(step);
+        }
+
+        template <typename Step>
+        [[nodiscard]] constexpr meta::unqualify<T> operator+(Step&& step) const
+            noexcept (requires(iota_value tmp) {
+                {iota_value{value}} noexcept;
+                {tmp += std::forward<Step>(step)} noexcept;
+                {meta::unqualify<T>{*std::move(tmp).value}} noexcept;
+            })
+            requires (!requires{{
+                *value + std::forward<Step>(step)
+            } -> meta::convertible_to<meta::unqualify<T>>;} && requires(iota_value tmp) {
+                {iota_value{value}};
+                {tmp += std::forward<Step>(step)};
+                {meta::unqualify<T>{*std::move(tmp).value}};
+            })
+        {
+            iota_value tmp {value};
+            tmp += std::forward<Step>(step);
+            return *std::move(tmp).value;
+        }
+
+        template <typename Step>
+        [[nodiscard]] constexpr meta::unqualify<T> operator-(Step&& step) const
+            noexcept (requires{{
+                *value - std::forward<Step>(step)
+            } noexcept -> meta::nothrow::convertible_to<meta::unqualify<T>>;})
+            requires (requires{{
+                *value - std::forward<Step>(step)
+            } -> meta::convertible_to<meta::unqualify<T>>;})
+        {
+            return *value - std::forward<Step>(step);
+        }
+
+        template <typename Step>
+        [[nodiscard]] constexpr meta::unqualify<T> operator-(Step&& step) const
+            noexcept (requires(iota_value tmp) {
+                {iota_value{value}} noexcept;
+                {tmp -= std::forward<Step>(step)} noexcept;
+                {meta::unqualify<T>{*std::move(tmp).value}} noexcept;
+            })
+            requires (!requires{{
+                *value - std::forward<Step>(step)
+            } -> meta::convertible_to<meta::unqualify<T>>;} && requires(iota_value tmp) {
+                {iota_value{value}};
+                {tmp -= std::forward<Step>(step)};
+                {meta::unqualify<T>{*std::move(tmp).value}};
+            })
+        {
+            iota_value tmp {value};
+            tmp -= std::forward<Step>(step);
+            return *std::move(tmp).value;
+        }
+
+        /// TODO: distance(stop), which will be used instead of multiplying by
+        /// size.
+
+
+
+        /// TODO: comparisons don't account for the sign of the step size.  That's
+        /// done elsewhere
+
+
+        [[nodiscard]] constexpr bool operator<(infinite) const noexcept { return true; }
+
+        template <typename Stop>
+        [[nodiscard]] constexpr bool operator<(const Stop& stop) const
+            noexcept (requires{{*value < stop} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{*value < stop} -> meta::convertible_to<bool>;})
+        {
+            return *value < stop;
+        }
+
+        [[nodiscard]] constexpr bool operator<=(infinite) const noexcept { return true; }
+
+        template <typename Stop>
+        [[nodiscard]] constexpr bool operator<=(const Stop& stop) const
+            noexcept (requires{{*value <= stop} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{*value <= stop} -> meta::convertible_to<bool>;})
+        {
+            return *value <= stop;
+        }
+
+        [[nodiscard]] constexpr bool operator==(infinite) const noexcept { return false; }
+
+        template <typename Stop>
+        [[nodiscard]] constexpr bool operator==(const Stop& stop) const
+            noexcept (requires{{*value == stop} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{*value == stop} -> meta::convertible_to<bool>;})
+        {
+            return *value == stop;
+        }
+
+        [[nodiscard]] constexpr bool operator!=(infinite) const noexcept { return true; }
+
+        template <typename Stop>
+        [[nodiscard]] constexpr bool operator!=(const Stop& stop) const
+            noexcept (requires{{*value != stop} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{*value != stop} -> meta::convertible_to<bool>;})
+        {
+            return *value != stop;
+        }
+
+        [[nodiscard]] constexpr bool operator>=(infinite) const noexcept { return false; }
+
+        template <typename Stop>
+        [[nodiscard]] constexpr bool operator>=(const Stop& stop) const
+            noexcept (requires{{*value >= stop} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{*value >= stop} -> meta::convertible_to<bool>;})
+        {
+            return *value >= stop;
+        }
+
+        [[nodiscard]] constexpr bool operator>(infinite) const noexcept { return false; }
+
+        template <typename Stop>
+        [[nodiscard]] constexpr bool operator>(const Stop& stop) const
+            noexcept (requires{{*value > stop} noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{*value > stop} -> meta::convertible_to<bool>;})
+        {
+            return *value > stop;
+        }
     };
 
     template <typename Start, typename Stop, typename Step>
@@ -642,7 +1123,6 @@ namespace impl {
         strictly_positive<Step> ||
         meta::gt_returns<bool, const Start&, const Stop&>
     );
-
     template <typename Start, typename Stop, typename Step>
     concept iota_incrementable = (meta::is_void<Step> && meta::has_preincrement<Start&>) || (
         meta::not_void<Step> &&
@@ -651,7 +1131,6 @@ namespace impl {
             (strictly_positive<Step> || meta::has_predecrement<Start&>)
         ))
     );
-
     template <typename Start, typename Stop, typename Step>
     concept iota_concept =
         meta::unqualified<Start> &&
@@ -662,11 +1141,920 @@ namespace impl {
         (iota_bounded<Start, Stop, Step> || meta::None<Stop>) &&
         iota_incrementable<Start, Stop, Step>;
 
-    template <typename Start, typename Stop, typename Step> requires (iota_concept<Start, Stop, Step>)
-    struct iota;
+    /* Iota iterators will use the difference type between `stop` and `start` if
+    available and integer-like.  Otherwise, if `stop` is `infinite`, and start has an
+    integer difference with respect to itself, then we use that type.  Lastly, we
+    default to `std::ptrdiff_t` as a fallback. */
+    template <typename Start, typename Stop>
+    struct iota_difference { using type = std::ptrdiff_t; };
+    template <typename Start, typename Stop>
+        requires (requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {stop - start} -> meta::integer;
+        })
+    struct iota_difference<Start, Stop> {
+        using type = decltype(
+            std::declval<meta::as_const_ref<Stop>>() -
+            std::declval<meta::as_const_ref<Start>>()
+        );
+    };
+    template <typename Start, meta::None Stop>
+        requires (!requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {stop - start};
+        } && requires(meta::as_const_ref<Start> start) {
+            {start - start} -> meta::integer;
+        })
+    struct iota_difference<Start, Stop> {
+        using type = decltype(
+            std::declval<meta::as_const_ref<Start>>() -
+            std::declval<meta::as_const_ref<Stop>>()
+        );
+    };
 
-    /// TODO: counted, then subrange
-    
+    template <typename Start>
+    concept iota_forward = requires(Start start) {
+        {start == start} -> meta::convertible_to<bool>;
+        {start != start} -> meta::convertible_to<bool>;
+    };
+    template <typename Start>
+    concept iota_bidirectional = iota_forward<Start> && requires(Start start) {
+        {--start};
+    };
+    template <typename Start, typename diff>
+    concept iota_random_access = iota_bidirectional<Start> &&
+        requires(Start start, meta::as_lvalue<Start> istart, diff n) {
+            {start + n} -> meta::convertible_to<Start>;
+            {start - n} -> meta::convertible_to<Start>;
+            {istart += n} -> meta::convertible_to<Start&>;
+            {istart -= n} -> meta::convertible_to<Start&>;
+            {start < start} -> meta::convertible_to<bool>;
+            {start <= start} -> meta::convertible_to<bool>;
+            {start > start} -> meta::convertible_to<bool>;
+            {start >= start} -> meta::convertible_to<bool>;
+        };
+
+    /* Iota iterators default to modeling `std::input_iterator` only.  If `Start` is
+    comparable with itself, then the iterator can be upgraded to model
+    `std::forward_iterator`.  If `Start` is also decrementable, then the iterator can
+    be further upgraded to model `std::bidirectional_iterator`.  Lastly, if `Start`
+    also supports addition, subtraction, and ordered comparisons, then the iterator can
+    be upgraded to model `std::random_access_iterator`. */
+    template <typename Start, typename Stop, typename Step>
+    struct iota_category { using type = std::input_iterator_tag; };
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_forward<Start>)
+    struct iota_category<Start, Stop, Step> { using type = std::forward_iterator_tag; };
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_bidirectional<Start>)
+    struct iota_category<Start, Stop, Step> { using type = std::bidirectional_iterator_tag; };
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_random_access<Start, typename iota_difference<Start, Stop>::type>)
+    struct iota_category<Start, Stop, Step> { using type = std::random_access_iterator_tag; };
+
+    /* The `->` operator for iota iterators will prefer to recursively call the same
+    iterator on `start`. */
+    template <typename T>
+    struct iota_pointer { using type = meta::as_pointer<T>; };
+    template <meta::has_arrow T>
+    struct iota_pointer<T> { using type = meta::arrow_type<T>; };
+    template <meta::has_address T> requires (!meta::has_arrow<T>)
+    struct iota_pointer<T> { using type = meta::address_type<T>; }; 
+
+    /* Iota iterators attempt to model the most permissive iterator category possible,
+    but only for the `begin()` iterator.  The `end()` iterator is usually just a
+    trivial sentinel that triggers a `<`/`>` comparison between `start` and `stop` to
+    sidestep perfect equality. */
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_concept<Start, Stop, Step>)
+    struct iota_iterator {
+        using iterator_category = iota_category<Start, Stop, Step>::type;
+        using difference_type = iota_difference<Start, Stop>::type;
+        using value_type = Start;
+        using reference = const Start&;
+        using pointer = iota_pointer<reference>::type;
+
+        [[no_unique_address]] Start start;
+        [[no_unique_address]] Stop stop;
+        [[no_unique_address]] Step step;
+
+        [[nodiscard]] constexpr value_type operator[](difference_type n) const
+            noexcept (requires{{start + step * n} noexcept -> meta::nothrow::convertible_to<Start>;})
+            requires (requires{{start + step * n} -> meta::convertible_to<Start>;})
+        {
+            return start + step * n;
+        }
+
+        /// NOTE: we need 2 dereference operators in order to satisfy
+        /// `std::random_access_iterator` in case `operator[]` is also defined, in
+        /// which case the dereference operator must return a copy, not a reference.
+
+        [[nodiscard]] constexpr value_type operator*() const
+            noexcept (meta::nothrow::copyable<Start>)
+            requires (requires(difference_type n) {{start + step * n} -> meta::convertible_to<Start>;})
+        {
+            return start;
+        }
+
+        [[nodiscard]] constexpr reference operator*() const noexcept
+            requires (!requires(difference_type n) {{start + step * n} -> meta::convertible_to<Start>;})
+        {
+            return start;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const
+            noexcept (requires{{meta::to_arrow(start)} noexcept;})
+            requires (requires{{meta::to_arrow(start)};})
+        {
+            return meta::to_arrow(start);
+        }
+
+        constexpr iota_iterator& operator++()
+            noexcept (meta::nothrow::has_iadd<Start&, const Step&> || (
+                !meta::has_iadd<Start&, const Step&> &&
+                meta::nothrow::default_constructible<meta::unqualify<Step>> &&
+                requires(meta::unqualify<Step> s) {
+                    {s < step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                    {++s} noexcept;
+                } && (
+                    strictly_positive<Step> ||
+                    requires(meta::unqualify<Step> s) {
+                        {s > step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                        {--s} noexcept;
+                    }
+                )
+            ))
+            requires (meta::has_iadd<Start&, const Step&> || (
+                meta::default_constructible<meta::unqualify<Step>> &&
+                requires(meta::unqualify<Step> s) {
+                    {s < step} -> meta::explicitly_convertible_to<bool>;
+                    {++s};
+                } && (
+                    strictly_positive<Step> ||
+                    requires(meta::unqualify<Step> s) {
+                        {s > step} -> meta::explicitly_convertible_to<bool>;
+                        {--s};
+                    }
+                )
+            ))
+        {
+            if constexpr (meta::has_iadd<Start&, const Step&>) {
+                start += step;
+            } else if constexpr (strictly_positive<Step>) {
+                for (meta::unqualify<Step> s {}; s < step; ++s) {
+                    ++start;
+                }
+            } else {
+                if (step < 0) {
+                    for (meta::unqualify<Step> s {}; s > step; --s) {
+                        --start;
+                    }
+                } else {
+                    for (meta::unqualify<Step> s {}; s < step; ++s) {
+                        ++start;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iota_iterator operator++(int)
+            noexcept (
+                meta::nothrow::copyable<iota_iterator> &&
+                meta::nothrow::has_preincrement<iota_iterator>
+            )
+            requires (
+                meta::copyable<iota_iterator> &&
+                meta::has_preincrement<iota_iterator>
+            )
+        {
+            iota_iterator temp = *this;
+            ++*this;
+            return temp;
+        }
+
+        [[nodiscard]] friend constexpr iota_iterator operator+(
+            const iota_iterator& self,
+            difference_type n
+        )
+            noexcept (requires{
+                {iota_iterator{self.start + self.step * n, self.stop, self.step}} noexcept;
+            })
+            requires (requires{
+                {iota_iterator{self.start + self.step * n, self.stop, self.step}};
+            })
+        {
+            return {self.start + self.step * n, self.stop, self.step};
+        }
+
+        [[nodiscard]] friend constexpr iota_iterator operator+(
+            difference_type n,
+            const iota_iterator& self
+        )
+            noexcept (requires{
+                {iota_iterator{self.start + self.step * n, self.stop, self.step}} noexcept;
+            })
+            requires (requires{
+                {iota_iterator{self.start + self.step * n, self.stop, self.step}};
+            })
+        {
+            return {self.start + self.step * n, self.stop, self.step};
+        }
+
+        constexpr iota_iterator& operator+=(difference_type n)
+            noexcept (requires{{start += step * n} noexcept;})
+            requires (requires{{start += step * n};})
+        {
+            start += step * n;
+            return *this;
+        }
+
+        constexpr iota_iterator& operator--()
+            noexcept (meta::nothrow::has_isub<Start&, const Step&> || (
+                !meta::has_isub<Start&, const Step&> &&
+                meta::nothrow::default_constructible<meta::unqualify<Step>> &&
+                requires(meta::unqualify<Step> s) {
+                    {s < step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                    {--s} noexcept;
+                } && (
+                    strictly_positive<Step> ||
+                    requires(meta::unqualify<Step> s) {
+                        {s > step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                        {++s} noexcept;
+                    }
+                )
+            ))
+            requires (meta::has_isub<Start&, const Step&> || (
+                meta::default_constructible<meta::unqualify<Step>> &&
+                requires(meta::unqualify<Step> s) {
+                    {s < step} -> meta::explicitly_convertible_to<bool>;
+                    {--s};
+                } && (
+                    strictly_positive<Step> ||
+                    requires(meta::unqualify<Step> s) {
+                        {s > step} -> meta::explicitly_convertible_to<bool>;
+                        {++s};
+                    }
+                )
+            ))
+        {
+            if constexpr (meta::has_isub<Start&, const Step&>) {
+                start -= step;
+            } else if constexpr (strictly_positive<Step>) {
+                for (meta::unqualify<Step> s {}; s < step; ++s) {
+                    --start;
+                }
+            } else {
+                if (step < 0) {
+                    for (meta::unqualify<Step> s {}; s > step; --s) {
+                        ++start;
+                    }
+                } else {
+                    for (meta::unqualify<Step> s {}; s < step; ++s) {
+                        --start;
+                    }
+                }
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iota_iterator operator--(int)
+            noexcept (
+                meta::nothrow::copyable<iota_iterator> &&
+                meta::nothrow::has_predecrement<iota_iterator>
+            )
+            requires (
+                meta::copyable<iota_iterator> &&
+                meta::has_predecrement<iota_iterator>
+            )
+        {
+            iota_iterator temp = *this;
+            --*this;
+            return temp;
+        }
+
+        [[nodiscard]] constexpr iota_iterator operator-(difference_type n) const
+            noexcept (requires{{iota_iterator{start - step * n, stop, step}} noexcept;})
+            requires (requires{{iota_iterator{start - step * n, stop, step}};})
+        {
+            return {start - step * n, stop, step};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const iota_iterator& other) const
+            noexcept (requires{{
+                (start - other.start) / step
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (requires{{
+                (start - other.start) / step
+            } -> meta::convertible_to<difference_type>;})
+        {
+            return (start - other.start) / step;
+        }
+
+        constexpr iota_iterator& operator-=(difference_type n)
+            noexcept (meta::nothrow::has_isub<Start&, difference_type>)
+            requires (meta::has_isub<Start&, difference_type>)
+        {
+            start -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator<(const iota_iterator& other) const
+            noexcept (requires{
+                {start < other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start < other.start} -> meta::convertible_to<bool>;})
+        {
+            return start < other.start;
+        }
+
+        [[nodiscard]] constexpr bool operator<=(const iota_iterator& other) const
+            noexcept (requires{
+                {start <= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start <= other.start} -> meta::convertible_to<bool>;})
+        {
+            return start <= other.start;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const iota_iterator& other) const
+            noexcept (requires{
+                {start == other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start == other.start} -> meta::convertible_to<bool>;})
+        {
+            return start == other.start;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(const iota_iterator& self, NoneType)
+            noexcept (
+                requires{{iota_empty(self.start, self.stop, self.step)} noexcept;} ||
+                !requires{{iota_empty(self.start, self.stop, self.step)};}
+            )
+            requires (
+                requires{{iota_empty(self.start, self.stop, self.step)};} ||
+                meta::None<Step>
+            )
+        {
+            if constexpr (requires{{iota_empty(self.start, self.stop, self.step)};}) {
+                return iota_empty(self.start, self.stop, self.step);
+            } else {
+                return false;  // infinite range
+            }
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(NoneType, const iota_iterator& self)
+            noexcept (
+                requires{{iota_empty(self.start, self.stop, self.step)} noexcept;} ||
+                !requires{{iota_empty(self.start, self.stop, self.step)};}
+            )
+            requires (
+                requires{{iota_empty(self.start, self.stop, self.step)};} ||
+                meta::None<Step>
+            )
+        {
+            if constexpr (requires{{iota_empty(self.start, self.stop, self.step)};}) {
+                return iota_empty(self.start, self.stop, self.step);
+            } else {
+                return false;  // infinite range
+            }
+        }
+
+        [[nodiscard]] constexpr bool operator!=(const iota_iterator& other) const
+            noexcept (requires{
+                {start != other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start != other.start} -> meta::convertible_to<bool>;})
+        {
+            return start != other.start;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(const iota_iterator& self, NoneType)
+            noexcept (requires{{!(self == None)} noexcept;})
+            requires (requires{{!(self == None)};})
+        {
+            return !(self == None);
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(NoneType, const iota_iterator& self)
+            noexcept (requires{{!(None == self)} noexcept;})
+            requires (requires{{!(None == self)};})
+        {
+            return !(None == self);
+        }
+
+        [[nodiscard]] constexpr bool operator>=(const iota_iterator& other) const
+            noexcept (requires{
+                {start >= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start >= other.start} -> meta::convertible_to<bool>;})
+        {
+            return start >= other.start;
+        }
+
+        [[nodiscard]] constexpr bool operator>(const iota_iterator& other) const
+            noexcept (requires{
+                {start > other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start > other.start} -> meta::convertible_to<bool>;})
+        {
+            return start > other.start;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const iota_iterator& other) const
+            noexcept (requires{{start <=> other.start} noexcept;})
+            requires (requires{{start <=> other.start};})
+        {
+            return start <=> other.start;
+        }
+    };
+
+    /* Specialization for an iota iterator without a step size, which slightly
+    optimizes the inner loop. */
+    template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
+    struct iota_iterator<Start, Stop, void> {
+        using iterator_category = iota_category<Start, Stop, void>::type;
+        using difference_type = iota_difference<Start, Stop>::type;
+        using value_type = Start;
+        using reference = const Start&;
+        using pointer = iota_pointer<reference>::type;
+
+        [[no_unique_address]] Start start;
+        [[no_unique_address]] Stop stop;
+
+        [[nodiscard]] constexpr value_type operator[](difference_type n) const
+            noexcept (requires{{start + n} noexcept -> meta::nothrow::convertible_to<Start>;})
+            requires (requires{{start + n} -> meta::convertible_to<Start>;})
+        {
+            return start + n;
+        }
+
+        /// NOTE: we need 2 dereference operators in order to satisfy
+        /// `std::random_access_iterator` in case `operator[]` is also defined, in
+        /// which case the dereference operator must return a copy, not a reference.
+
+        [[nodiscard]] constexpr value_type operator*() const
+            noexcept (meta::nothrow::copyable<Start>)
+            requires (requires(difference_type n) {{start + n} -> meta::convertible_to<Start>;})
+        {
+            return start;
+        }
+
+        [[nodiscard]] constexpr reference operator*() const noexcept
+            requires (!requires(difference_type n) {{start + n} -> meta::convertible_to<Start>;})
+        {
+            return start;
+        }
+
+        [[nodiscard]] constexpr pointer operator->() const
+            noexcept (requires{{meta::to_arrow(start)} noexcept;})
+            requires (requires{{meta::to_arrow(start)};})
+        {
+            return meta::to_arrow(start);
+        }
+
+        constexpr iota_iterator& operator++()
+            noexcept (meta::nothrow::has_preincrement<Start&>)
+            requires (meta::has_preincrement<Start&>)
+        {
+            ++start;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iota_iterator operator++(int)
+            noexcept (
+                meta::nothrow::copyable<iota_iterator> &&
+                meta::nothrow::has_preincrement<Start&>
+            )
+            requires (meta::has_preincrement<Start&>)
+        {
+            iota_iterator temp = *this;
+            ++*this;
+            return temp;
+        }
+
+        [[nodiscard]] friend constexpr iota_iterator operator+(
+            const iota_iterator& self,
+            difference_type n
+        )
+            noexcept (requires{{iota_iterator{self.start + n, self.stop}} noexcept;})
+            requires (requires{{iota_iterator{self.start + n, self.stop}};})
+        {
+            return {self.start + n, self.stop};
+        }
+
+        [[nodiscard]] friend constexpr iota_iterator operator+(
+            difference_type n,
+            const iota_iterator& self
+        )
+            noexcept (requires{{iota_iterator{self.start + n, self.stop}} noexcept;})
+            requires (requires{{iota_iterator{self.start + n, self.stop}};})
+        {
+            return {self.start + n, self.stop};
+        }
+
+        constexpr iota_iterator& operator+=(difference_type n)
+            noexcept (requires{{start += n} noexcept;})
+            requires (requires{{start += n};})
+        {
+            start += n;
+            return *this;
+        }
+
+        constexpr iota_iterator& operator--()
+            noexcept (meta::nothrow::has_predecrement<Start&>)
+            requires (meta::has_predecrement<Start&>)
+        {
+            --start;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr iota_iterator operator--(int)
+            noexcept (
+                meta::nothrow::copyable<iota_iterator> &&
+                meta::nothrow::has_predecrement<Start&>
+            )
+            requires (meta::has_predecrement<Start&>)
+        {
+            iota_iterator temp = *this;
+            --*this;
+            return temp;
+        }
+
+        [[nodiscard]] constexpr iota_iterator operator-(difference_type n) const
+            noexcept (requires{{iota_iterator{start - n, stop}} noexcept;})
+            requires (requires{{iota_iterator{start - n, stop}};})
+        {
+            return {start - n, stop};
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const iota_iterator& other) const
+            noexcept (meta::nothrow::sub_returns<difference_type, const Start&, const Start&>)
+            requires (meta::sub_returns<difference_type, const Start&, const Start&>)
+        {
+            return start - other.start;
+        }
+
+        constexpr iota_iterator& operator-=(difference_type n)
+            noexcept (meta::nothrow::has_isub<Start&, difference_type>)
+            requires (meta::has_isub<Start&, difference_type>)
+        {
+            start -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr bool operator<(const iota_iterator& other) const
+            noexcept (requires{
+                {start < other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start < other.start} -> meta::convertible_to<bool>;})
+        {
+            return start < other.start;
+        }
+
+        [[nodiscard]] constexpr bool operator<=(const iota_iterator& other) const
+            noexcept (requires{
+                {start <= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start <= other.start} -> meta::convertible_to<bool>;})
+        {
+            return start <= other.start;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const iota_iterator& other) const
+            noexcept (requires{
+                {start == other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start == other.start} -> meta::convertible_to<bool>;})
+        {
+            return start == other.start;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(const iota_iterator& self, NoneType)
+            noexcept (
+                requires{{!(self.start < self.stop)} noexcept -> meta::nothrow::convertible_to<bool>;} ||
+                !requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}
+            )
+            requires (
+                requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;} ||
+                meta::None<Stop>
+            )
+        {
+            if constexpr (requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}) {
+                return !(self.start < self.stop);
+            } else {
+                return false;  // infinite range
+            }
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(NoneType, const iota_iterator& self)
+            noexcept (
+                requires{{!(self.start < self.stop)} noexcept -> meta::nothrow::convertible_to<bool>;} ||
+                !requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}
+            )
+            requires (
+                requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;} ||
+                meta::None<Stop>
+            )
+        {
+            if constexpr (requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}) {
+                return !(self.start < self.stop);
+            } else {
+                return false;  // infinite range
+            }
+        }
+
+        [[nodiscard]] constexpr bool operator!=(const iota_iterator& other) const
+            noexcept (requires{
+                {start != other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start != other.start} -> meta::convertible_to<bool>;})
+        {
+            return start != other.start;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(const iota_iterator& self, NoneType)
+            noexcept (requires{{!(self == None)} noexcept;})
+            requires (requires{{!(self == None)};})
+        {
+            return !(self == None);
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(NoneType, const iota_iterator& self)
+            noexcept (requires{{!(None == self)} noexcept;})
+            requires (requires{{!(None == self)};})
+        {
+            return !(None == self);
+        }
+
+        [[nodiscard]] constexpr bool operator>=(const iota_iterator& other) const
+            noexcept (requires{
+                {start >= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start >= other.start} -> meta::convertible_to<bool>;})
+        {
+            return start >= other.start;
+        }
+
+        [[nodiscard]] constexpr bool operator>(const iota_iterator& other) const
+            noexcept (requires{
+                {start > other.start} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{{start > other.start} -> meta::convertible_to<bool>;})
+        {
+            return start > other.start;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const iota_iterator& other) const
+            noexcept (requires{{start <=> other.start} noexcept;})
+            requires (requires{{start <=> other.start};})
+        {
+            return start <=> other.start;
+        }
+    };
+
+    /* A replacement for `std::ranges::iota_view` that allows for an arbitrary step
+    size.  Can be used with any type, as long as the following are satisfied:
+
+        1.  `start < stop` is a valid expression returning a contextual boolean, which
+            determines the end of the range.  If a step size is given, then
+            `start > stop` must also be valid.
+        2.  Either `++start` or `start += step` are valid expressions, depending on
+            whether a step size is given.
+        3.  If `start` is omitted from the constructor, then it must be
+            default-constructible.
+
+    The resulting iota exposes `size()` and `ssize()` if `stop - start` or
+    `(stop - start) / step` yields a value that can be casted to `size_t` and/or
+    `ssize_t`, respectively.  `empty()` is always supported.
+
+    If the `--start` is also valid, then the iterators over the iota will model
+    `std::bidirectional_iterator`.  If `start` is totally ordered with respect to
+    itself, and `start + step * i`, `start - step * i`, and their in-place equivalents
+    are valid expressions, then the iterators will also model
+    `std::random_access_iterator`.  Otherwise, they will only model
+    `std::input_iterator` or `std::forward_iterator` if `start` is comparable with
+    itself. */
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_concept<Start, Stop, Step>)
+    struct iota {
+        [[no_unique_address]] iota_value<Start> start;
+        [[no_unique_address]] impl::ref<Stop> stop;
+        [[no_unique_address]] impl::ref<Step> step;
+
+        [[nodiscard]] constexpr iota()
+            noexcept (requires{
+                {iota_value<Start>{}} noexcept;
+                {impl::ref<Stop>{}} noexcept;
+                {impl::ref<Step>{1}} noexcept;
+            })
+            requires (requires{
+                {iota_value<Start>{}};
+                {impl::ref<Stop>{}};
+                {impl::ref<Step>{1}};
+            })
+        :
+            start{},
+            stop{},
+            step{1}
+        {};
+        [[nodiscard]] constexpr iota(
+            meta::forward<Start> start,
+            meta::forward<Stop> stop,
+            meta::forward<Step> step
+        )
+            noexcept (!DEBUG && requires{
+                {iota_value<Start>{std::forward<Start>(start)}} noexcept;
+                {impl::ref<Stop>{std::forward<Stop>(stop)}} noexcept;
+                {impl::ref<Step>{std::forward<Step>(step)}} noexcept;
+            })
+        :
+            start{std::forward<Start>(start)},
+            stop{std::forward<Stop>(stop)},
+            step{std::forward<Step>(step)}
+        {
+            if constexpr (
+                DEBUG &&
+                requires{{*this->step == 0} -> meta::explicitly_convertible_to<bool>;}
+            ) {
+                if (*this->step == 0) {
+                    throw ValueError("step size cannot be zero");
+                }
+            }
+        }
+
+        constexpr void swap(iota& other)
+            noexcept (requires{
+                {start.swap(other.start)} noexcept;
+                {stop.swap(other.stop)} noexcept;
+                {step.swap(other.step)} noexcept;
+            })
+            requires (requires{
+                {start.swap(other.start)};
+                {stop.swap(other.stop)};
+                {step.swap(other.step)};
+            })
+        {
+            start.swap(other.start);
+            stop.swap(other.stop);
+            step.swap(other.step);
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{iota_empty(start, stop, step)} noexcept;})
+            requires (requires{{iota_empty(start, stop, step)};})
+        {
+            return iota_empty(start, stop, step);
+        }
+
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{size_t((*stop - *start.value) / *step) * !empty()} noexcept;})
+            requires (requires{{size_t((*stop - *start.value) / *step) * !empty()};})
+        {
+            return size_t((*stop - *start.value) / *step) * !empty();
+        }
+
+        [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (requires{{ssize_t((*stop - *start.value) / *step) * !empty()} noexcept;})
+            requires (requires{{ssize_t((*stop - *start.value) / *step) * !empty()};})
+        {
+            return ssize_t((*stop - *start.value) / *step) * !empty();
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](size_t i) const
+            noexcept (requires{{start + *step * i} noexcept;})
+            requires (requires{{start + *step * i};})
+        {
+            return (start + *step * i);
+        }
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{iota_iterator<Start, Stop, Step>{start, stop, step}} noexcept;})
+            requires (requires{{iota_iterator<Start, Stop, Step>{start, stop, step}};})
+        {
+            return iota_iterator<Start, Stop, Step>{start, stop, step};
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+    };
+
+
+    /// TODO: the 2-argument specialization of `iota` should be pretty much good to go
+    /// outside of the concept and iterator refactors, which are still ongoing.
+
+    /* A specialization of `iota` that lacks a step size.  This causes the iteration
+    algorithm to use prefix `++` rather than `+= step` to get the next value, which
+    allows us to ignore negative step sizes and increase performance. */
+    template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
+    struct iota<Start, Stop, void> {
+        [[no_unique_address]] iota_value<Start> start;
+        [[no_unique_address]] impl::ref<Stop> stop;
+
+        [[nodiscard]] constexpr iota() = default;
+        [[nodiscard]] constexpr iota(meta::forward<Stop> stop)
+            noexcept (requires{
+                {iota_value<Start>{}} noexcept;
+                {impl::ref<Stop>{std::forward<Stop>(stop)}} noexcept;
+            })
+            requires (requires{
+                {iota_value<Start>{}};
+                {impl::ref<Stop>{std::forward<Stop>(stop)}};
+            })
+        :
+            start{},
+            stop{std::forward<Stop>(stop)}
+        {}
+        [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
+            noexcept (requires{
+                {iota_value<Start>{std::forward<Start>(start)}} noexcept;
+                {impl::ref<Stop>{std::forward<Stop>(stop)}} noexcept;
+            })
+            requires (requires{
+                {iota_value<Start>{std::forward<Start>(start)}};
+                {impl::ref<Stop>{std::forward<Stop>(stop)}};
+            })
+        :
+            start{std::forward<Start>(start)},
+            stop{std::forward<Stop>(stop)}
+        {}
+
+        constexpr void swap(iota& other)
+            noexcept (requires{
+                {start.swap(other.start)} noexcept;
+                {stop.swap(other.stop)} noexcept;
+            })
+            requires (requires{
+                {start.swap(other.start)};
+                {stop.swap(other.stop)};
+            })
+        {
+            start.swap(other.start);
+            stop.swap(other.stop);
+        }
+
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{size_t(*stop - *start.value)} noexcept;})
+            requires (requires{{size_t(*stop - *start.value)};})
+        {
+            return size_t(*stop - *start.value);
+        }
+
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{size_t(*stop)} noexcept;})
+            requires (!requires{{size_t(*stop - *start.value)};} && requires{{size_t(*stop)};})
+        {
+            return size_t(*stop);
+        }
+
+        [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (requires{{ssize_t(size())} noexcept;})
+            requires (requires{{ssize_t(size())};})
+        {
+            return ssize_t(size());
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{start == *stop} noexcept;})
+            requires (requires{{start == *stop};})
+        {
+            return start == *stop;
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{size() == 0} noexcept;})
+            requires (!requires{{start == *stop};} && requires{{size() == 0};})
+        {
+            return size() == 0;
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](size_t i) const
+            noexcept (requires{{start + i} noexcept;})
+            requires (requires{{start + i};})
+        {
+            return (start + i);
+        }
+
+        /// TODO: if we're in the counted case, then the iterator type should wrap the
+        /// `start` index in an `iota_counted` class.
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{iota_iterator<Start, Stop, void>{start, stop}} noexcept;})
+            requires (requires{{iota_iterator<Start, Stop, void>{start, stop}};})
+        {
+            return iota_iterator<Start, Stop, void>{start, stop};
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+    };
+
+    template <typename Stop> requires (iota_concept<Stop, Stop, void>)
+    iota(Stop) -> iota<Stop, Stop, void>;
+
+    template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
+    iota(Start, Stop) -> iota<Start, Stop, void>;
+
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_concept<Start, Stop, Step>)
+    iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
+
 }
 
 
@@ -729,17 +2117,8 @@ namespace meta {
 
 namespace iter {
 
-    /// TODO: range<T> must allow `T` to be non-iterable if I want to support
-    /// `-> range<int>` as a valid return annotation.  Maybe forcing `range<Optional<int>>`
-    /// is the better solution overall?
-
     template <meta::not_rvalue C = impl::empty_range>
     struct range;
-
-    /// TODO: CTAD guides will need to be updated to account for all the iota/subrange/
-    /// counted cases, with and without `step`, as well as the unary `range(value)`
-    /// case, which is always devoted to converting `value` into an iterable range.
-    /// This will have to be done in tandem with the concept refactors.
 
     template <typename C>
     range(range<C>&) -> range<range<C>&>;
@@ -753,38 +2132,19 @@ namespace iter {
     template <typename C>
     range(C&&) -> range<meta::remove_rvalue<C>>;
 
-    // template <typename Stop>
-    //     requires (
-    //         !meta::iterable<Stop> &&
-    //         !meta::tuple_like<Stop> &&
-    //         impl::iota_concept<Stop, Stop, void>
-    //     )
-    // range(Stop) -> range<impl::iota<Stop, Stop, void>>;
-
-    template <meta::iterator Begin, meta::sentinel_for<Begin> End>
-    range(Begin, End) -> range<std::ranges::subrange<Begin, End>>;
-
-    template <typename Start, typename Stop>
-        requires (
-            (!meta::iterator<Start> || !meta::sentinel_for<Stop, Start>) &&
-            impl::iota_concept<Start, Stop, void>
-        )
-    range(Start, Stop) -> range<impl::iota<Start, Stop, void>>;
-
-    template <meta::iterator Begin, typename Count>
-        requires (
-            !meta::sentinel_for<Begin, Count> &&
-            !impl::iota_concept<Begin, Count, void> &&
-            meta::integer<Count>
-        )
-    range(Begin, Count) -> range<std::ranges::subrange<
-        std::counted_iterator<Begin>,
-        std::default_sentinel_t
+    template <typename Start, typename Stop = impl::infinite>
+    range(Start&&, Stop&&) -> range<impl::iota<
+        meta::remove_rvalue<Start>,
+        meta::remove_rvalue<Stop>,
+        void
     >>;
 
-    template <typename Start, typename Stop, typename Step>
-        requires (impl::iota_concept<Start, Stop, Step>)
-    range(Start, Stop, Step) -> range<impl::iota<Start, Stop, Step>>;
+    template <typename Start, typename Stop = impl::infinite, typename Step>
+    range(Start&&, Stop&&, Step&&) -> range<impl::iota<
+        meta::remove_rvalue<Start>,
+        meta::remove_rvalue<Stop>,
+        meta::remove_rvalue<Step>
+    >>;
 
 }
 
@@ -1608,980 +2968,8 @@ namespace impl {
         >;
     };
 
-    /// TODO: enable_borrowed_range should always be enabled for iotas.
 
-    /* Iota iterators will use the difference type between `stop` and `start` if
-    available and integer-like.  Otherwise, if `stop` is `None`, and start has an
-    integer difference type with respect to itself, then we use that type.  Lastly,
-    we default to `std::ptrdiff_t`. */
-    template <typename Start, typename Stop>
-    struct iota_difference { using type = std::ptrdiff_t; };
-    template <typename Start, typename Stop>
-        requires (
-            meta::has_sub<const Stop&, const Start&> &&
-            meta::integer<meta::sub_type<const Stop&, const Start&>>
-        )
-    struct iota_difference<Start, Stop> {
-        using type = meta::sub_type<const Stop&, const Start&>;
-    };
-    template <typename Start, meta::None Stop>
-        requires (
-            !meta::has_sub<const Stop&, const Start&> &&
-            meta::has_sub<const Start&, const Start&> &&
-            meta::integer<meta::sub_type<const Start&, const Start&>>
-        )
-    struct iota_difference<Start, Stop> {
-        using type = meta::sub_type<const Start&, const Start&>;
-    };
 
-    /* Iota iterators default to modeling `std::input_iterator` only. */
-    template <typename Start, typename Stop, typename Step>
-    struct iota_category { using type = std::input_iterator_tag; };
-
-    /* If `Start` is comparable with itself, then the iterator can be upgraded to model
-    `std::forward_iterator`. */
-    template <typename Start>
-    concept iota_forward = requires(Start start) {
-        { start == start } -> meta::convertible_to<bool>;
-        { start != start } -> meta::convertible_to<bool>;
-    };
-    template <typename Start, typename Stop, typename Step>
-        requires (iota_forward<Start>)
-    struct iota_category<Start, Stop, Step> {
-        using type = std::forward_iterator_tag;
-    };
-
-    /* If `Start` is also decrementable, then the iterator can be upgraded to model
-    `std::bidirectional_iterator`. */
-    template <typename Start>
-    concept iota_bidirectional = iota_forward<Start> && requires(Start start) { --start; };
-    template <typename Start, typename Stop, typename Step>
-        requires (iota_bidirectional<Start>)
-    struct iota_category<Start, Stop, Step> {
-        using type = std::bidirectional_iterator_tag;
-    };
-
-    /* If `Start` also supports addition, subtraction, and ordered comparisons, then
-    the iterator can be upgraded to model `std::random_access_iterator`. */
-    template <typename Start, typename difference>
-    concept iota_random_access = iota_bidirectional<Start> &&
-        requires(Start start, Start& istart, difference n) {
-            { start + n } -> meta::convertible_to<Start>;
-            { start - n } -> meta::convertible_to<Start>;
-            { istart += n } -> meta::convertible_to<Start&>;
-            { istart -= n } -> meta::convertible_to<Start&>;
-            { start < start } -> meta::convertible_to<bool>;
-            { start <= start } -> meta::convertible_to<bool>;
-            { start > start } -> meta::convertible_to<bool>;
-            { start >= start } -> meta::convertible_to<bool>;
-        };
-    template <typename Start, typename Stop, typename Step>
-        requires (iota_random_access<Start, typename iota_difference<Start, Stop>::type>)
-    struct iota_category<Start, Stop, Step> {
-        using type = std::random_access_iterator_tag;
-    };
-
-    /* The `->` operator for iota iterators will prefer to recursively call the same
-    iterator on `start`. */
-    template <typename T>
-    struct iota_pointer { using type = meta::as_pointer<T>; };
-    template <meta::has_arrow T>
-    struct iota_pointer<T> { using type = meta::arrow_type<T>; };
-    template <meta::has_address T> requires (!meta::has_arrow<T>)
-    struct iota_pointer<T> { using type = meta::address_type<T>; }; 
-
-    template <typename Start, typename Stop, typename Step>
-    constexpr bool iota_empty(const Start& start, const Stop& stop, const Step& step)
-        noexcept (requires{{!(start < stop)} noexcept -> meta::nothrow::convertible_to<bool>;} && (
-            strictly_positive<Step> || (
-            requires{
-                {step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {!(start > stop)} noexcept -> meta::nothrow::convertible_to<bool>;
-            }
-        )))
-        requires (requires{{!(start < stop)} -> meta::convertible_to<bool>;} && (
-            strictly_positive<Step> ||
-            requires{{!(start > stop)} -> meta::convertible_to<bool>;}
-        ))
-    {
-        if constexpr (!strictly_positive<Step>) {
-            if (step < 0) {
-                return !(start > stop);
-            }
-        }
-        return !(start < stop);
-    }
-
-    /* Iota iterators attempt to model the most permissive iterator category possible,
-    but only for the `begin()` iterator.  The `end()` iterator is usually just a
-    trivial sentinel that triggers a `<`/`>` comparison between `start` and `stop` to
-    sidestep perfect equality. */
-    template <typename Start, typename Stop, typename Step>
-        requires (iota_concept<Start, Stop, Step>)
-    struct iota_iterator {
-        using iterator_category = iota_category<Start, Stop, Step>::type;
-        using difference_type = iota_difference<Start, Stop>::type;
-        using value_type = Start;
-        using reference = const Start&;
-        using pointer = iota_pointer<reference>::type;
-
-        [[no_unique_address]] Start start;
-        [[no_unique_address]] Stop stop;
-        [[no_unique_address]] Step step;
-
-        [[nodiscard]] constexpr value_type operator[](difference_type n) const
-            noexcept (requires{{start + step * n} noexcept -> meta::nothrow::convertible_to<Start>;})
-            requires (requires{{start + step * n} -> meta::convertible_to<Start>;})
-        {
-            return start + step * n;
-        }
-
-        /// NOTE: we need 2 dereference operators in order to satisfy
-        /// `std::random_access_iterator` in case `operator[]` is also defined, in
-        /// which case the dereference operator must return a copy, not a reference.
-
-        [[nodiscard]] constexpr value_type operator*() const
-            noexcept (meta::nothrow::copyable<Start>)
-            requires (requires(difference_type n) {{start + step * n} -> meta::convertible_to<Start>;})
-        {
-            return start;
-        }
-
-        [[nodiscard]] constexpr reference operator*() const noexcept
-            requires (!requires(difference_type n) {{start + step * n} -> meta::convertible_to<Start>;})
-        {
-            return start;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const
-            noexcept (requires{{meta::to_arrow(start)} noexcept;})
-            requires (requires{{meta::to_arrow(start)};})
-        {
-            return meta::to_arrow(start);
-        }
-
-        constexpr iota_iterator& operator++()
-            noexcept (meta::nothrow::has_iadd<Start&, const Step&> || (
-                !meta::has_iadd<Start&, const Step&> &&
-                meta::nothrow::default_constructible<meta::unqualify<Step>> &&
-                requires(meta::unqualify<Step> s) {
-                    {s < step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {++s} noexcept;
-                } && (
-                    strictly_positive<Step> ||
-                    requires(meta::unqualify<Step> s) {
-                        {s > step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                        {--s} noexcept;
-                    }
-                )
-            ))
-            requires (meta::has_iadd<Start&, const Step&> || (
-                meta::default_constructible<meta::unqualify<Step>> &&
-                requires(meta::unqualify<Step> s) {
-                    {s < step} -> meta::explicitly_convertible_to<bool>;
-                    {++s};
-                } && (
-                    strictly_positive<Step> ||
-                    requires(meta::unqualify<Step> s) {
-                        {s > step} -> meta::explicitly_convertible_to<bool>;
-                        {--s};
-                    }
-                )
-            ))
-        {
-            if constexpr (meta::has_iadd<Start&, const Step&>) {
-                start += step;
-            } else if constexpr (strictly_positive<Step>) {
-                for (meta::unqualify<Step> s {}; s < step; ++s) {
-                    ++start;
-                }
-            } else {
-                if (step < 0) {
-                    for (meta::unqualify<Step> s {}; s > step; --s) {
-                        --start;
-                    }
-                } else {
-                    for (meta::unqualify<Step> s {}; s < step; ++s) {
-                        ++start;
-                    }
-                }
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iota_iterator operator++(int)
-            noexcept (
-                meta::nothrow::copyable<iota_iterator> &&
-                meta::nothrow::has_preincrement<iota_iterator>
-            )
-            requires (
-                meta::copyable<iota_iterator> &&
-                meta::has_preincrement<iota_iterator>
-            )
-        {
-            iota_iterator temp = *this;
-            ++*this;
-            return temp;
-        }
-
-        [[nodiscard]] friend constexpr iota_iterator operator+(
-            const iota_iterator& self,
-            difference_type n
-        )
-            noexcept (requires{
-                {iota_iterator{self.start + self.step * n, self.stop, self.step}} noexcept;
-            })
-            requires (requires{
-                {iota_iterator{self.start + self.step * n, self.stop, self.step}};
-            })
-        {
-            return {self.start + self.step * n, self.stop, self.step};
-        }
-
-        [[nodiscard]] friend constexpr iota_iterator operator+(
-            difference_type n,
-            const iota_iterator& self
-        )
-            noexcept (requires{
-                {iota_iterator{self.start + self.step * n, self.stop, self.step}} noexcept;
-            })
-            requires (requires{
-                {iota_iterator{self.start + self.step * n, self.stop, self.step}};
-            })
-        {
-            return {self.start + self.step * n, self.stop, self.step};
-        }
-
-        constexpr iota_iterator& operator+=(difference_type n)
-            noexcept (requires{{start += step * n} noexcept;})
-            requires (requires{{start += step * n};})
-        {
-            start += step * n;
-            return *this;
-        }
-
-        constexpr iota_iterator& operator--()
-            noexcept (meta::nothrow::has_isub<Start&, const Step&> || (
-                !meta::has_isub<Start&, const Step&> &&
-                meta::nothrow::default_constructible<meta::unqualify<Step>> &&
-                requires(meta::unqualify<Step> s) {
-                    {s < step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {--s} noexcept;
-                } && (
-                    strictly_positive<Step> ||
-                    requires(meta::unqualify<Step> s) {
-                        {s > step} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                        {++s} noexcept;
-                    }
-                )
-            ))
-            requires (meta::has_isub<Start&, const Step&> || (
-                meta::default_constructible<meta::unqualify<Step>> &&
-                requires(meta::unqualify<Step> s) {
-                    {s < step} -> meta::explicitly_convertible_to<bool>;
-                    {--s};
-                } && (
-                    strictly_positive<Step> ||
-                    requires(meta::unqualify<Step> s) {
-                        {s > step} -> meta::explicitly_convertible_to<bool>;
-                        {++s};
-                    }
-                )
-            ))
-        {
-            if constexpr (meta::has_isub<Start&, const Step&>) {
-                start -= step;
-            } else if constexpr (strictly_positive<Step>) {
-                for (meta::unqualify<Step> s {}; s < step; ++s) {
-                    --start;
-                }
-            } else {
-                if (step < 0) {
-                    for (meta::unqualify<Step> s {}; s > step; --s) {
-                        ++start;
-                    }
-                } else {
-                    for (meta::unqualify<Step> s {}; s < step; ++s) {
-                        --start;
-                    }
-                }
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iota_iterator operator--(int)
-            noexcept (
-                meta::nothrow::copyable<iota_iterator> &&
-                meta::nothrow::has_predecrement<iota_iterator>
-            )
-            requires (
-                meta::copyable<iota_iterator> &&
-                meta::has_predecrement<iota_iterator>
-            )
-        {
-            iota_iterator temp = *this;
-            --*this;
-            return temp;
-        }
-
-        [[nodiscard]] constexpr iota_iterator operator-(difference_type n) const
-            noexcept (requires{{iota_iterator{start - step * n, stop, step}} noexcept;})
-            requires (requires{{iota_iterator{start - step * n, stop, step}};})
-        {
-            return {start - step * n, stop, step};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const iota_iterator& other) const
-            noexcept (requires{{
-                (start - other.start) / step
-            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-            requires (requires{{
-                (start - other.start) / step
-            } -> meta::convertible_to<difference_type>;})
-        {
-            return (start - other.start) / step;
-        }
-
-        constexpr iota_iterator& operator-=(difference_type n)
-            noexcept (meta::nothrow::has_isub<Start&, difference_type>)
-            requires (meta::has_isub<Start&, difference_type>)
-        {
-            start -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator<(const iota_iterator& other) const
-            noexcept (requires{
-                {start < other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start < other.start} -> meta::convertible_to<bool>;})
-        {
-            return start < other.start;
-        }
-
-        [[nodiscard]] constexpr bool operator<=(const iota_iterator& other) const
-            noexcept (requires{
-                {start <= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start <= other.start} -> meta::convertible_to<bool>;})
-        {
-            return start <= other.start;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const iota_iterator& other) const
-            noexcept (requires{
-                {start == other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start == other.start} -> meta::convertible_to<bool>;})
-        {
-            return start == other.start;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(const iota_iterator& self, NoneType)
-            noexcept (
-                requires{{iota_empty(self.start, self.stop, self.step)} noexcept;} ||
-                !requires{{iota_empty(self.start, self.stop, self.step)};}
-            )
-            requires (
-                requires{{iota_empty(self.start, self.stop, self.step)};} ||
-                meta::None<Step>
-            )
-        {
-            if constexpr (requires{{iota_empty(self.start, self.stop, self.step)};}) {
-                return iota_empty(self.start, self.stop, self.step);
-            } else {
-                return false;  // infinite range
-            }
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(NoneType, const iota_iterator& self)
-            noexcept (
-                requires{{iota_empty(self.start, self.stop, self.step)} noexcept;} ||
-                !requires{{iota_empty(self.start, self.stop, self.step)};}
-            )
-            requires (
-                requires{{iota_empty(self.start, self.stop, self.step)};} ||
-                meta::None<Step>
-            )
-        {
-            if constexpr (requires{{iota_empty(self.start, self.stop, self.step)};}) {
-                return iota_empty(self.start, self.stop, self.step);
-            } else {
-                return false;  // infinite range
-            }
-        }
-
-        [[nodiscard]] constexpr bool operator!=(const iota_iterator& other) const
-            noexcept (requires{
-                {start != other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start != other.start} -> meta::convertible_to<bool>;})
-        {
-            return start != other.start;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(const iota_iterator& self, NoneType)
-            noexcept (requires{{!(self == None)} noexcept;})
-            requires (requires{{!(self == None)};})
-        {
-            return !(self == None);
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(NoneType, const iota_iterator& self)
-            noexcept (requires{{!(None == self)} noexcept;})
-            requires (requires{{!(None == self)};})
-        {
-            return !(None == self);
-        }
-
-        [[nodiscard]] constexpr bool operator>=(const iota_iterator& other) const
-            noexcept (requires{
-                {start >= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start >= other.start} -> meta::convertible_to<bool>;})
-        {
-            return start >= other.start;
-        }
-
-        [[nodiscard]] constexpr bool operator>(const iota_iterator& other) const
-            noexcept (requires{
-                {start > other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start > other.start} -> meta::convertible_to<bool>;})
-        {
-            return start > other.start;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const iota_iterator& other) const
-            noexcept (requires{{start <=> other.start} noexcept;})
-            requires (requires{{start <=> other.start};})
-        {
-            return start <=> other.start;
-        }
-    };
-
-    /* Specialization for an iota iterator without a step size, which slightly
-    optimizes the inner loop. */
-    template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
-    struct iota_iterator<Start, Stop, void> {
-        using iterator_category = iota_category<Start, Stop, void>::type;
-        using difference_type = iota_difference<Start, Stop>::type;
-        using value_type = Start;
-        using reference = const Start&;
-        using pointer = iota_pointer<reference>::type;
-
-        [[no_unique_address]] Start start;
-        [[no_unique_address]] Stop stop;
-
-        [[nodiscard]] constexpr value_type operator[](difference_type n) const
-            noexcept (requires{{start + n} noexcept -> meta::nothrow::convertible_to<Start>;})
-            requires (requires{{start + n} -> meta::convertible_to<Start>;})
-        {
-            return start + n;
-        }
-
-        /// NOTE: we need 2 dereference operators in order to satisfy
-        /// `std::random_access_iterator` in case `operator[]` is also defined, in
-        /// which case the dereference operator must return a copy, not a reference.
-
-        [[nodiscard]] constexpr value_type operator*() const
-            noexcept (meta::nothrow::copyable<Start>)
-            requires (requires(difference_type n) {{start + n} -> meta::convertible_to<Start>;})
-        {
-            return start;
-        }
-
-        [[nodiscard]] constexpr reference operator*() const noexcept
-            requires (!requires(difference_type n) {{start + n} -> meta::convertible_to<Start>;})
-        {
-            return start;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const
-            noexcept (requires{{meta::to_arrow(start)} noexcept;})
-            requires (requires{{meta::to_arrow(start)};})
-        {
-            return meta::to_arrow(start);
-        }
-
-        constexpr iota_iterator& operator++()
-            noexcept (meta::nothrow::has_preincrement<Start&>)
-            requires (meta::has_preincrement<Start&>)
-        {
-            ++start;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iota_iterator operator++(int)
-            noexcept (
-                meta::nothrow::copyable<iota_iterator> &&
-                meta::nothrow::has_preincrement<Start&>
-            )
-            requires (meta::has_preincrement<Start&>)
-        {
-            iota_iterator temp = *this;
-            ++*this;
-            return temp;
-        }
-
-        [[nodiscard]] friend constexpr iota_iterator operator+(
-            const iota_iterator& self,
-            difference_type n
-        )
-            noexcept (requires{{iota_iterator{self.start + n, self.stop}} noexcept;})
-            requires (requires{{iota_iterator{self.start + n, self.stop}};})
-        {
-            return {self.start + n, self.stop};
-        }
-
-        [[nodiscard]] friend constexpr iota_iterator operator+(
-            difference_type n,
-            const iota_iterator& self
-        )
-            noexcept (requires{{iota_iterator{self.start + n, self.stop}} noexcept;})
-            requires (requires{{iota_iterator{self.start + n, self.stop}};})
-        {
-            return {self.start + n, self.stop};
-        }
-
-        constexpr iota_iterator& operator+=(difference_type n)
-            noexcept (requires{{start += n} noexcept;})
-            requires (requires{{start += n};})
-        {
-            start += n;
-            return *this;
-        }
-
-        constexpr iota_iterator& operator--()
-            noexcept (meta::nothrow::has_predecrement<Start&>)
-            requires (meta::has_predecrement<Start&>)
-        {
-            --start;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iota_iterator operator--(int)
-            noexcept (
-                meta::nothrow::copyable<iota_iterator> &&
-                meta::nothrow::has_predecrement<Start&>
-            )
-            requires (meta::has_predecrement<Start&>)
-        {
-            iota_iterator temp = *this;
-            --*this;
-            return temp;
-        }
-
-        [[nodiscard]] constexpr iota_iterator operator-(difference_type n) const
-            noexcept (requires{{iota_iterator{start - n, stop}} noexcept;})
-            requires (requires{{iota_iterator{start - n, stop}};})
-        {
-            return {start - n, stop};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const iota_iterator& other) const
-            noexcept (meta::nothrow::sub_returns<difference_type, const Start&, const Start&>)
-            requires (meta::sub_returns<difference_type, const Start&, const Start&>)
-        {
-            return start - other.start;
-        }
-
-        constexpr iota_iterator& operator-=(difference_type n)
-            noexcept (meta::nothrow::has_isub<Start&, difference_type>)
-            requires (meta::has_isub<Start&, difference_type>)
-        {
-            start -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator<(const iota_iterator& other) const
-            noexcept (requires{
-                {start < other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start < other.start} -> meta::convertible_to<bool>;})
-        {
-            return start < other.start;
-        }
-
-        [[nodiscard]] constexpr bool operator<=(const iota_iterator& other) const
-            noexcept (requires{
-                {start <= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start <= other.start} -> meta::convertible_to<bool>;})
-        {
-            return start <= other.start;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const iota_iterator& other) const
-            noexcept (requires{
-                {start == other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start == other.start} -> meta::convertible_to<bool>;})
-        {
-            return start == other.start;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(const iota_iterator& self, NoneType)
-            noexcept (
-                requires{{!(self.start < self.stop)} noexcept -> meta::nothrow::convertible_to<bool>;} ||
-                !requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}
-            )
-            requires (
-                requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;} ||
-                meta::None<Stop>
-            )
-        {
-            if constexpr (requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}) {
-                return !(self.start < self.stop);
-            } else {
-                return false;  // infinite range
-            }
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(NoneType, const iota_iterator& self)
-            noexcept (
-                requires{{!(self.start < self.stop)} noexcept -> meta::nothrow::convertible_to<bool>;} ||
-                !requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}
-            )
-            requires (
-                requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;} ||
-                meta::None<Stop>
-            )
-        {
-            if constexpr (requires{{!(self.start < self.stop)} -> meta::convertible_to<bool>;}) {
-                return !(self.start < self.stop);
-            } else {
-                return false;  // infinite range
-            }
-        }
-
-        [[nodiscard]] constexpr bool operator!=(const iota_iterator& other) const
-            noexcept (requires{
-                {start != other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start != other.start} -> meta::convertible_to<bool>;})
-        {
-            return start != other.start;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(const iota_iterator& self, NoneType)
-            noexcept (requires{{!(self == None)} noexcept;})
-            requires (requires{{!(self == None)};})
-        {
-            return !(self == None);
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(NoneType, const iota_iterator& self)
-            noexcept (requires{{!(None == self)} noexcept;})
-            requires (requires{{!(None == self)};})
-        {
-            return !(None == self);
-        }
-
-        [[nodiscard]] constexpr bool operator>=(const iota_iterator& other) const
-            noexcept (requires{
-                {start >= other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start >= other.start} -> meta::convertible_to<bool>;})
-        {
-            return start >= other.start;
-        }
-
-        [[nodiscard]] constexpr bool operator>(const iota_iterator& other) const
-            noexcept (requires{
-                {start > other.start} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{{start > other.start} -> meta::convertible_to<bool>;})
-        {
-            return start > other.start;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const iota_iterator& other) const
-            noexcept (requires{{start <=> other.start} noexcept;})
-            requires (requires{{start <=> other.start};})
-        {
-            return start <=> other.start;
-        }
-    };
-
-    /* A replacement for `std::ranges::iota_view` that allows for an arbitrary step
-    size.  Can be used with any type, as long as the following are satisfied:
-
-        1.  `start < stop` is a valid expression returning a contextual boolean, which
-            determines the end of the range.  If a step size is given, then
-            `start > stop` must also be valid.
-        2.  Either `++start` or `start += step` are valid expressions, depending on
-            whether a step size is given.
-        3.  If `start` is omitted from the constructor, then it must be
-            default-constructible.
-
-    The resulting iota exposes `size()` and `ssize()` if `stop - start` or
-    `(stop - start) / step` yields a value that can be casted to `size_t` and/or
-    `ssize_t`, respectively.  `empty()` is always supported.
-
-    If the `--start` is also valid, then the iterators over the iota will model
-    `std::bidirectional_iterator`.  If `start` is totally ordered with respect to
-    itself, and `start + step * i`, `start - step * i`, and their in-place equivalents
-    are valid expressions, then the iterators will also model
-    `std::random_access_iterator`.  Otherwise, they will only model
-    `std::input_iterator` or `std::forward_iterator` if `start` is comparable with
-    itself. */
-    template <typename Start, typename Stop, typename Step>
-        requires (iota_concept<Start, Stop, Step>)
-    struct iota {
-        using start_type = Start;
-        using stop_type = Stop;
-        using step_type = Step;
-        using size_type = size_t;
-        using index_type = ssize_t;
-        using iterator = iota_iterator<Start, Stop, Step>;
-
-        static constexpr bool bounded = impl::iota_bounded<Start, Stop, Step>;
-
-        [[no_unique_address]] Start start;
-        [[no_unique_address]] Stop stop;
-        [[no_unique_address]] Step step;
-
-        [[nodiscard]] constexpr iota()
-            noexcept (
-                meta::nothrow::default_constructible<Start> &&
-                meta::nothrow::default_constructible<Stop> &&
-                meta::nothrow::constructible_from<Step, int>
-            )
-            requires (
-                meta::default_constructible<Start> &&
-                meta::default_constructible<Stop> &&
-                meta::constructible_from<Step, int>
-            )
-        :
-            start(),
-            stop(),
-            step(1)
-        {};
-
-        [[nodiscard]] constexpr iota(Start start, Stop stop, Step step)
-            noexcept (
-                !DEBUG &&
-                meta::nothrow::movable<Start> &&
-                meta::nothrow::movable<Stop> &&
-                meta::nothrow::movable<Step>
-            )
-        :
-            start(std::move(start)),
-            stop(std::move(stop)),
-            step(std::move(step))
-        {
-            if constexpr (DEBUG && meta::eq_returns<bool, Step&, int>) {
-                if (step == 0) {
-                    throw ValueError("step size cannot be zero");
-                }
-            }
-        }
-
-        /* Swap the contents of two iotas. */
-        constexpr void swap(iota& other)
-            noexcept (
-                meta::nothrow::swappable<Start> &&
-                meta::nothrow::swappable<Stop> &&
-                meta::nothrow::swappable<Step>
-            )
-            requires (
-                meta::swappable<Start> &&
-                meta::swappable<Stop> &&
-                meta::swappable<Step>
-            )
-        {
-            std::ranges::swap(start, other.start);
-            std::ranges::swap(stop, other.stop);
-            std::ranges::swap(step, other.step);
-        }
-
-        /* Return `true` if the iota contains no elements. */
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{iota_empty(start, stop, step)} noexcept;})
-            requires (requires{{iota_empty(start, stop, step)};})
-        {
-            return iota_empty(start, stop, step);
-        }
-
-        /* Attempt to get the size of the iota as an unsigned integer, assuming
-        `(stop - start) / step` is a valid expression whose result can be explicitly
-        converted to `size_type`. */
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (requires{{static_cast<size_type>((stop - start) / step) * !empty()} noexcept;})
-            requires (requires{{static_cast<size_type>((stop - start) / step) * !empty()};})
-        {
-            return static_cast<size_type>((stop - start) / step) * !empty();
-        }
-
-        /* Attempt to get the size of the iota as a signed integer, assuming
-        `(stop - start) / step` is a valid expression whose result can be explicitly
-        converted to `index_type`. */
-        [[nodiscard]] constexpr index_type ssize() const
-            noexcept (requires{{static_cast<index_type>((stop - start) / step) * !empty()} noexcept;})
-            requires (requires{{static_cast<index_type>((stop - start) / step) * !empty()};})
-        {
-            return static_cast<index_type>((stop - start) / step) * !empty();
-        }
-
-        /* Get the value at index `i`, assuming both `ssize()` and `start + step * i`
-        are valid expressions.  Applies Python-style wraparound for negative
-        indices. */
-        [[nodiscard]] constexpr decltype(auto) operator[](index_type i) const
-            noexcept (requires{{start + step * impl::normalize_index(ssize(), i)} noexcept;})
-            requires (requires{{start + step * impl::normalize_index(ssize(), i)};})
-        {
-            return (start + step * impl::normalize_index(ssize(), i));
-        }
-
-        /* Get the value at index `i` for an unsized iota, assuming `start + step * i`
-        is a valid expression. */
-        [[nodiscard]] constexpr decltype(auto) operator[](index_type i) const
-            noexcept (requires{{start + step * i} noexcept;})
-            requires (
-                !requires{{start + step * impl::normalize_index(ssize(), i)};} &&
-                requires{{start + step * i};}
-            )
-        {
-            return (start + step * i);
-        }
-
-        /* Get an iterator to the start of the iota. */
-        [[nodiscard]] constexpr iterator begin() const
-            noexcept (meta::nothrow::constructible_from<
-                iterator,
-                const Start&,
-                const Stop&,
-                const Step&
-            >)
-        {
-            return iterator{start, stop, step};
-        }
-
-        /* Get a sentinel for the end of the iota. */
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
-    };
-
-    /* A specialization of `iota` that lacks a step size.  This causes the iteration
-    algorithm to use prefix `++` rather than `+= step` to get the next value, which
-    allows us to ignore negative step sizes and increase performance. */
-    template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
-    struct iota<Start, Stop, void> {
-        using start_type = Start;
-        using stop_type = Stop;
-        using step_type = void;
-        using size_type = size_t;
-        using index_type = ssize_t;
-        using iterator = iota_iterator<Start, Stop, void>;
-
-        static constexpr bool bounded = impl::iota_bounded<Start, Stop, void>;
-
-        [[no_unique_address]] Start start;
-        [[no_unique_address]] Stop stop;
-
-        [[nodiscard]] constexpr iota() = default;
-
-        /* Single-argument constructor, which default-constructs the start value.  If
-        compiled in debug mode and `stop < start` is true, then an `AssertionError`
-        will be thrown. */
-        [[nodiscard]] constexpr iota(Stop stop)
-            noexcept (
-                meta::nothrow::default_constructible<Start> &&
-                meta::nothrow::movable<Stop>
-            )
-            requires (meta::default_constructible<Start>)
-        :
-            start(),
-            stop(std::move(stop))
-        {}
-
-        /* Two-argument constructor.  If compiled in debug mode and `stop < start` is
-        true, then an `AssertionError` will be thrown. */
-        [[nodiscard]] constexpr iota(Start start, Stop stop)
-            noexcept (meta::nothrow::movable<Start> && meta::nothrow::movable<Stop>)
-        :
-            start(std::forward<Start>(start)),
-            stop(std::forward<Stop>(stop))
-        {}
-
-        /* Swap the contents of two iotas. */
-        constexpr void swap(iota& other)
-            noexcept (meta::nothrow::swappable<Start> && meta::nothrow::swappable<Stop>)
-            requires (meta::swappable<Start> && meta::swappable<Stop>)
-        {
-            std::ranges::swap(start, other.start);
-            std::ranges::swap(stop, other.stop);
-        }
-
-        /* Return `true` if the iota contains no elements. */
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{!(start < stop)} noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{!(start < stop)} -> meta::convertible_to<bool>;})
-        {
-            return !(start < stop);
-        }
-
-        /* Attempt to get the size of the iota as an unsigned integer, assuming
-        `stop - start` is a valid expression whose result can be explicitly converted
-        to `size_type`. */
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (requires{{static_cast<size_type>(stop - start) * !empty()} noexcept;})
-            requires (requires{{static_cast<size_type>(stop - start) * !empty()};})
-        {
-            return static_cast<size_type>(stop - start) * !empty();
-        }
-
-        /* Attempt to get the size of the iota as a signed integer, assuming
-        `stop - start` is a valid expression whose result can be explicitly converted
-        to `index_type`. */
-        [[nodiscard]] constexpr index_type ssize() const
-            noexcept (requires{{static_cast<index_type>(stop - start) * !empty()} noexcept;})
-            requires (requires{{static_cast<index_type>(stop - start) * !empty()};})
-        {
-            return static_cast<index_type>(stop - start) * !empty();
-        }
-
-        /* Get the value at index `i`, assuming both `ssize()` and `start + i` are
-        valid expressions.  Applies Python-style wraparound for negative indices. */
-        [[nodiscard]] constexpr decltype(auto) operator[](index_type i) const
-            noexcept (requires{{start + impl::normalize_index(ssize(), i)} noexcept;})
-            requires (requires{{start + impl::normalize_index(ssize(), i)};})
-        {
-            return (start + impl::normalize_index(ssize(), i));
-        }
-
-        /* Get the value at index `i` for an unsized iota, assuming `start + i` is a
-        valid expression. */
-        [[nodiscard]] constexpr decltype(auto) operator[](index_type i) const
-            noexcept (requires{{start + i} noexcept;})
-            requires (
-                !requires{{start + impl::normalize_index(ssize(), i)};} &&
-                requires{{start + i};}
-            )
-        {
-            return (start + i);
-        }
-
-        /* Get an iterator to the start of the iota. */
-        [[nodiscard]] constexpr iterator begin() const
-            noexcept (meta::nothrow::constructible_from<iterator, const Start&, const Stop&>)
-        {
-            return iterator{start, stop};
-        }
-
-        /* Get a sentinel for the end of the iota. */
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
-    };
-
-    template <typename Stop> requires (iota_concept<Stop, Stop, void>)
-    iota(Stop) -> iota<Stop, Stop, void>;
-
-    template <typename Start, typename Stop> requires (iota_concept<Start, Stop, void>)
-    iota(Start, Stop) -> iota<Start, Stop, void>;
-
-    template <typename Start, typename Stop, typename Step>
-        requires (iota_concept<Start, Stop, Step>)
-    iota(Start, Stop, Step) -> iota<Start, Stop, Step>;
 
     template <typename... Ts>
     concept at_run_time = (meta::type_identity<Ts> && ...);
@@ -3516,7 +3904,7 @@ namespace iter {
         }
 
         /// TODO: monadic call operator, which may be forward-declared and filled in
-        /// later in op.h, once `zip{}` has been defined.
+        /// later in zip.h, once `zip{}` has been defined.
 
     };
 
