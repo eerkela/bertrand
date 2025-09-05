@@ -1226,6 +1226,9 @@ namespace meta {
     namespace detail {
 
         template <typename T>
+        constexpr bool is_class = ::std::is_class_v<unqualify<T>>;
+
+        template <typename T>
         constexpr bool is_empty = ::std::is_empty_v<unqualify<T>>;
 
         template <typename T>
@@ -1241,6 +1244,9 @@ namespace meta {
         constexpr bool is_aggregate = ::std::is_aggregate_v<unqualify<T>>;
 
     }
+
+    template <typename T>
+    concept is_class = detail::is_class<T>;
 
     template <typename T>
     concept is_empty = detail::is_empty<T>;
@@ -3052,6 +3058,20 @@ namespace meta {
 
     }
 
+    namespace detail {
+
+        template <typename T>
+        concept to_address = meta::is_class<T> && requires(T t) {
+            {::std::forward<T>(t).operator->()};
+        };
+
+        template <typename T>
+        concept address_of = !meta::is_class<T> || requires(T t) {
+            {::std::addressof(::std::forward<T>(t))};
+        };
+
+    }
+
     template <typename T>
     concept has_arrow = requires(T t) {
         { ::std::to_address(t) } -> meta::pointer;
@@ -3077,15 +3097,25 @@ namespace meta {
             nothrow::has_arrow<T> &&
             nothrow::convertible_to<nothrow::arrow_type<T>, Ret>;
 
+        template <typename T>
+        concept to_address = meta::is_class<T> && requires(T t) {
+            {::std::forward<T>(t).operator->()} noexcept;
+        };
+
+        template <typename T>
+        concept address_of = !meta::is_class<T> || requires(T t) {
+            {::std::addressof(::std::forward<T>(t))} noexcept;
+        };
+
     }
 
     template <typename T>
     constexpr auto to_arrow(T&& value)
-        noexcept (nothrow::has_arrow<T> || (!has_arrow<T> && nothrow::has_address<T>))
-        requires (has_arrow<T> || has_address<T>)
+        noexcept (nothrow::to_address<T> || (!detail::to_address<T> && nothrow::address_of<T>))
+        requires (detail::to_address<T> || detail::address_of<T>)
     {
-        if constexpr (has_arrow<T>) {
-            return ::std::to_address(::std::forward<T>(value));
+        if constexpr (detail::to_address<T>) {
+            return ::std::forward<T>(value).operator->();
         } else {
             return ::std::addressof(::std::forward<T>(value));
         }
