@@ -3058,20 +3058,6 @@ namespace meta {
 
     }
 
-    namespace detail {
-
-        template <typename T>
-        concept to_address = meta::is_class<T> && requires(T t) {
-            {::std::forward<T>(t).operator->()};
-        };
-
-        template <typename T>
-        concept address_of = !meta::is_class<T> || requires(T t) {
-            {::std::addressof(::std::forward<T>(t))};
-        };
-
-    }
-
     template <typename T>
     concept has_arrow = requires(T t) {
         { ::std::to_address(t) } -> meta::pointer;
@@ -3097,24 +3083,20 @@ namespace meta {
             nothrow::has_arrow<T> &&
             nothrow::convertible_to<nothrow::arrow_type<T>, Ret>;
 
-        template <typename T>
-        concept to_address = meta::is_class<T> && requires(T t) {
-            {::std::forward<T>(t).operator->()} noexcept;
-        };
-
-        template <typename T>
-        concept address_of = !meta::is_class<T> || requires(T t) {
-            {::std::addressof(::std::forward<T>(t))} noexcept;
-        };
-
     }
 
     template <typename T>
     constexpr auto to_arrow(T&& value)
-        noexcept (nothrow::to_address<T> || (!detail::to_address<T> && nothrow::address_of<T>))
-        requires (detail::to_address<T> || detail::address_of<T>)
+        noexcept (requires{{::std::forward<T>(value).operator->()} noexcept;} || (
+            !requires{{::std::forward<T>(value).operator->()};} &&
+            requires{{::std::addressof(::std::forward<T>(value))} noexcept;}
+        ))
+        requires (
+            requires{{::std::forward<T>(value).operator->()};} ||
+            requires{{::std::addressof(::std::forward<T>(value))};}
+        )
     {
-        if constexpr (detail::to_address<T>) {
+        if constexpr (requires{{::std::forward<T>(value).operator->()};}) {
             return ::std::forward<T>(value).operator->();
         } else {
             return ::std::addressof(::std::forward<T>(value));
