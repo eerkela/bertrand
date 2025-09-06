@@ -11,10 +11,8 @@ namespace bertrand {
 
 namespace impl {
     struct range_tag {};
+    struct sequence_tag {};
     struct iota_tag {};
-
-    /// TODO: perhaps the same inheritance trick can be used to simplify `unpack` similar
-    /// to `range`
 
     template <meta::not_rvalue C> requires (meta::iterable<C>)
     struct unpack;
@@ -623,16 +621,19 @@ namespace impl {
     }
 
 
+    /// TODO: iotas are in a pretty good place, but I still need to sort out the
+    /// messiness around the dereference and subscript operators, and implement the
+    /// non-integer step sizes, accepting any range of booleans or a boolean predicate
+    /// to build filtered iotas.
 
 
-
-    /// TODO: enable_borrowed_range should always be enabled for iotas.
 
     /* A tag indicating an iota without an upper bound, which will increment forever,
-    forming an infinite loop.  Typically, this type is listed as an implicit default
-    for the `range(start, {})` and `range(start, {}, step)` iota constructors.
-    Providing an empty initializer for the `stop` index will trigger this
-    specialization, without interfering with the other iota constructors. */
+    or one without a step size, which will increment by precisely one unit for each
+    iteration.  Typically, this type is listed as an implicit default for the
+    `range(start, {})` and `range(start, {}, {})` iota constructors.  Providing an
+    empty initializer for either index will construct this type, without interfering
+    with the other iota constructors. */
     struct iota_default {};
 
     template <typename T>
@@ -1150,6 +1151,112 @@ namespace impl {
                 {copy{*start - i, stop, step}};
             });
 
+        static constexpr bool subscript_simple =
+            (!has_step && (
+                meta::iterator<Start> && requires(difference_type i) {{*(*start + i)};}
+            ) || (
+                !meta::iterator<Start> && requires(difference_type i) {{*start + i};}
+            )) ||
+            (has_step && (
+                meta::iterator<Start> && requires(difference_type i) {{*(*start + i * (*step))};}
+            ) || (
+                !meta::iterator<Start> && requires(difference_type i) {{*start + i * (*step)};}
+            ));
+
+        template <typename Self>
+        struct access {
+            using T = meta::forward<Self>;
+
+            static constexpr decltype(auto) deref(T self)
+                noexcept (requires{{*std::forward<Self>(self).start} noexcept;})
+                requires (
+                    meta::iterator<Start> &&
+                    requires{{**std::forward<Self>(self).start};}
+                )
+            {
+                return (**std::forward<Self>(self).start);
+            }
+
+            static constexpr decltype(auto) deref(T self)
+                noexcept (requires{{*std::forward<Self>(self).start} noexcept;})
+                requires (
+                    !meta::iterator<Start> &&
+                    requires{{*std::forward<Self>(self).start};}
+                )
+            {
+                return (*std::forward<Self>(self).start);
+            }
+
+            static constexpr bool step_iterator =
+                has_step && meta::iterator<Start> && requires(T self, difference_type i) {
+                    {*(*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step))};
+                };
+
+            static constexpr decltype(auto) subscript(T self, difference_type i)
+                noexcept (requires{{
+                    *(*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step))
+                } noexcept;})
+                requires (step_iterator)
+            {
+                return (*(*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step)));
+            }
+
+            static constexpr bool step_value =
+                has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
+                    {*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step)};
+                };
+
+            static constexpr decltype(auto) subscript(T self, difference_type i)
+                noexcept (requires{{
+                    *std::forward<Self>(self).start + i * (*std::forward<Self>(self).step)
+                } noexcept;})
+                requires (step_value)
+            {
+                return (*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step));
+            }
+
+            static constexpr bool iterator =
+                !has_step && meta::iterator<Start> && requires(T self, difference_type i) {
+                    {*(*std::forward<Self>(self).start + i)};
+                };
+
+            static constexpr decltype(auto) subscript(T self, difference_type i)
+                noexcept (requires{{*(*std::forward<Self>(self).start + i)} noexcept;})
+                requires (iterator)
+            {
+                return (*(*std::forward<Self>(self).start + i));
+            }
+
+            static constexpr bool value =
+                !has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
+                    {*std::forward<Self>(self).start + i};
+                };
+
+            static constexpr decltype(auto) subscript(T self, difference_type i)
+                noexcept (requires{{*std::forward<Self>(self).start + i} noexcept;})
+                requires (value)
+            {
+                return (*std::forward<Self>(self).start + i);
+            }
+
+            static constexpr auto subscript(T self, difference_type i)
+                noexcept (requires(copy tmp) {
+                    {copy{std::forward<Self>(self)}} noexcept;
+                    {tmp += i} noexcept;
+                    {*tmp.start} noexcept -> meta::nothrow::copyable;
+                })
+                requires (!value && !iterator && !step_value && !step_iterator && requires(copy tmp) {
+                    {copy{std::forward<Self>(self)}};
+                    {tmp += i};
+                    {*tmp.start} -> meta::copyable;
+                })
+            {
+                copy tmp = std::forward<Self>(self);
+                tmp += i;
+                return *tmp.start;
+            }
+        };
+
     public:
         [[nodiscard]] constexpr iota() = default;
         [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
@@ -1270,47 +1377,114 @@ namespace impl {
             step.swap(other.step);
         }
 
-        // [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const
-        //     noexcept (false)
-        //     requires (false)
-        // {
-        //     /// TODO: implement this
-        // }
-
-        // /// TODO: restrict this overload to when the subscript operator is enabled and
-        // /// returns a different type to the dereference operator
-        // [[nodiscard]] constexpr value_type operator*() const noexcept
-        //     requires (requires(difference_type n) {{(*this)[n]};})
-        // {
-        //     if constexpr (meta::iterator<Start>) {
-        //         return **start;
-        //     } else {
-        //         return *start;
-        //     }
-        // }
-
-        /// TODO: restrict this overload to when the subscript is either disabled or
-        /// returns the same type as dereferencing start.
-        [[nodiscard]] constexpr decltype(auto) operator*() const noexcept
-            // requires (!requires(difference_type n) {{(*this)[n]};})
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires(difference_type i) {{
+                access<Self>::deref(std::forward<Self>(self))
+            } noexcept -> meta::nothrow::convertible_to<meta::common_type<
+                meta::remove_rvalue<decltype((access<Self>::deref(
+                    std::forward<Self>(self)
+                )))>,
+                meta::remove_rvalue<decltype((access<Self>::subscript(
+                    std::forward<Self>(self),
+                    i
+                )))>
+            >>;})
+            requires (requires(difference_type i) {
+                {access<Self>::subscript(std::forward<Self>(self), i)};
+                {
+                    access<Self>::deref(std::forward<Self>(self))
+                } -> meta::convertible_to<meta::common_type<
+                    meta::remove_rvalue<decltype((access<Self>::deref(
+                        std::forward<Self>(self)
+                    )))>,
+                    meta::remove_rvalue<decltype((access<Self>::subscript(
+                        std::forward<Self>(self),
+                        i
+                    )))>
+                >>;
+            })
         {
-            if constexpr (meta::iterator<Start>) {
-                return (**start);
-            } else {
-                return (*start);
-            }
+            return (meta::common_type<
+                meta::remove_rvalue<decltype((access<Self>::deref(
+                    std::forward<Self>(self)
+                )))>,
+                meta::remove_rvalue<decltype((access<Self>::subscript(
+                    std::forward<Self>(self),
+                    std::declval<difference_type>()
+                )))>
+            >(access<Self>::deref(std::forward<Self>(self))));
         }
 
-        /// TODO: the problem with to_arrow and pointer-like access is this operator,
-        /// which is being followed whenever you write `r->...`.  The only way around
-        /// this is to special-case it in the range interface, so that any iota ranges
-        /// terminate the `->` recursion at that transition.
-
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow_proxy(**this)} noexcept;})
-            requires (requires{{impl::arrow_proxy(**this)};})
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires{{access<Self>::deref(std::forward<Self>(self))} noexcept;})
+            requires (
+                !requires(difference_type i) {
+                    {access<Self>::subscript(std::forward<Self>(self), i)};
+                } &&
+                requires{{access<Self>::deref(std::forward<Self>(self))};}
+            )
         {
-            return impl::arrow_proxy(**this);
+            return (access<Self>::deref(std::forward<Self>(self)));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr auto operator->(this Self&& self)
+            noexcept (requires{{impl::arrow_proxy{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{impl::arrow_proxy{*std::forward<Self>(self)}};})
+        {
+            return impl::arrow_proxy{*std::forward<Self>(self)};
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
+            noexcept (requires{{
+                access<Self>::subscript(std::forward<Self>(self), i)
+            } noexcept -> meta::nothrow::convertible_to<meta::common_type<
+                meta::remove_rvalue<decltype((access<Self>::deref(
+                    std::forward<Self>(self)
+                )))>,
+                meta::remove_rvalue<decltype((access<Self>::subscript(
+                    std::forward<Self>(self),
+                    i
+                )))>
+            >>;})
+            requires (requires{
+                {access<Self>::deref(std::forward<Self>(self))};
+                {
+                    access<Self>::subscript(std::forward<Self>(self), i)
+                } -> meta::convertible_to<meta::common_type<
+                    meta::remove_rvalue<decltype((access<Self>::deref(
+                        std::forward<Self>(self)
+                    )))>,
+                    meta::remove_rvalue<decltype((access<Self>::subscript(
+                        std::forward<Self>(self),
+                        i
+                    )))>
+                >>;
+            })
+        {
+            return (meta::common_type<
+                meta::remove_rvalue<decltype((access<Self>::deref(
+                    std::forward<Self>(self)
+                )))>,
+                meta::remove_rvalue<decltype((access<Self>::subscript(
+                    std::forward<Self>(self),
+                    i
+                )))>
+            >(access<Self>::subscript(std::forward<Self>(self), i)));
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
+            noexcept (requires{{access<Self>::subscript(std::forward<Self>(self), i)} noexcept;})
+            requires (
+                !requires{{access<Self>::deref(std::forward<Self>(self))};} &&
+                requires{{access<Self>::subscript(std::forward<Self>(self), i)};}
+            )
+        {
+            return (access<Self>::subscript(std::forward<Self>(self), i));
         }
 
         [[nodiscard]] constexpr bool empty() const noexcept requires (infinite) {
@@ -1537,8 +1711,7 @@ namespace impl {
             return *this;
         }
 
-        /// TODO: add and subtract operators should make sure to return an iota that
-        /// explicitly copies the start type.
+        /// TODO: copy{*this} is not valid
 
         [[nodiscard]] constexpr copy operator+(difference_type i) const
             noexcept (
@@ -1556,11 +1729,11 @@ namespace impl {
 
         [[nodiscard]] constexpr copy operator+(difference_type i) const
             noexcept (requires(copy tmp) {
-                {copy{(this)}} noexcept;
+                {copy{*this}} noexcept;
                 {tmp += i} noexcept;
             })
             requires (!add_simple && requires(copy tmp) {
-                {copy{(this)}};
+                {copy{*this}};
                 {tmp += i};
             })
         {
@@ -1616,11 +1789,11 @@ namespace impl {
 
         [[nodiscard]] constexpr copy operator-(difference_type i) const
             noexcept (requires(copy tmp) {
-                {copy{(this)}} noexcept;
+                {copy{*this}} noexcept;
                 {tmp -= i} noexcept;
             })
             requires (!sub_simple && requires(copy tmp) {
-                {copy{(this)}};
+                {copy{*this}};
                 {tmp -= i};
             })
         {
@@ -1836,6 +2009,10 @@ namespace meta {
     /// optional yield type.
 
     template <typename T, typename R = void>
+    concept sequence = range<T, R> && inherits<T, impl::sequence_tag>;
+
+
+    template <typename T, typename R = void>
     concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
 
     // template <typename T, typename... Rs>
@@ -1884,6 +2061,8 @@ namespace iter {
 
 
 namespace impl {
+
+    /// TODO: all of this crap now needs to be looked at.
 
     template <typename L, typename R>
     consteval ValueError range_size_mismatch() noexcept {
@@ -2220,12 +2399,12 @@ namespace impl {
     template <meta::not_rvalue T>
     struct unpack_iterator;
 
-    template <meta::iterator T>
-    constexpr unpack_iterator<meta::remove_rvalue<T>> make_unpack_iterator(T&& iter)
-        noexcept (meta::nothrow::constructible_from<unpack_iterator<meta::remove_rvalue<T>>, T>)
-        requires (meta::constructible_from<unpack_iterator<meta::remove_rvalue<T>>, T>)
+    template <typename T>
+    constexpr auto make_unpack_iterator(T&& iter)
+        noexcept (requires{{unpack_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)}} noexcept;})
+        requires (requires{{unpack_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)}};})
     {
-        return {std::forward<T>(iter)};
+        return unpack_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)};
     }
 
     template <typename T>
@@ -2656,12 +2835,6 @@ namespace impl {
         lhs.swap(rhs);
     }
 
-
-
-
-    /// TODO: review all the range_ and iota_ helpers to streamline them and make them
-    /// more maintainable.
-
     template <typename>
     constexpr bool range_reverse_iterable = false;
     template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
@@ -2701,9 +2874,6 @@ namespace impl {
             meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
         >;
     };
-
-
-
 
     template <typename... Ts>
     concept at_run_time = (meta::type_identity<Ts> && ...);
@@ -3093,6 +3263,9 @@ namespace iter {
 
     template <typename... Is>
     at(Is&&...) -> at<type<Is>...>;
+
+    /// TODO: what about `.keys()` and `.values()`?
+
 
     /* A wrapper for an arbitrary container type that can be used to form iterable
     expressions.
@@ -3703,12 +3876,965 @@ namespace iter {
 }
 
 
+/// TODO: since sequences now encode whether they are sized at compile time, there's
+/// no need for `has_size()` and any related behavior.
+
+
+
+/// TODO: maybe sequence.h is a good idea, since I could define strings earlier and
+/// avoid circular dependencies.  Strings only really depend on ranges and unpack
+/// wrappers.  Also, as soon as strings are defined, I can define tuples, which may
+/// simplify the `shape()` stuff.
+
+
+
+namespace impl {
+
+    /// TODO: reintroduce a `copy` flag that controls whether a `.copy()` member
+    /// function gets compiled, which will do a deep copy of the underlying container.
+    /// Otherwise, the ordinary copy constructor defaults to atomic reference counting.
+
+    /* A simple aggregate that encodes the shape and capabilities of a `sequence<T>`
+    type, allowing some type information to persist after erasure.  The full class is
+    defined as:
+
+        ```
+        struct sequence_flags {
+            uint8_t dims = 0;
+            bool size = false;
+            bool subscript = false;
+            bool data = false;
+            bool reverse = false;
+        };
+        ```
+
+    Where each field has the following behavior:
+
+        1.  `ndims`: indicates the number of dimensions that the sequence supports,
+            which is always equal to the length of its final `shape()` member.  If
+            this is set to zero (the default), then no `shape()` will be
+            generated.  Note that only the lower 6 bits are significant, since
+            Python's buffer protocol does not currently support sequences with more
+            than 64 dimensions.
+        2.  `size`: if `true`, then the sequence will expose a `size()` member function
+            and insert a corresponding entry into the internal vtable.  Otherwise, no
+            `size()` member will be generated.  Typically, if `ndims > 0`, then
+            `size()` should be equal to the product of the values of `shape()`,
+            although such behavior is technically implementation-defined.  All bertrand
+            containers conform to that expectation, but user-defined classes may not,
+            and it is not a strict requirement.
+        3.  `subscript`: if `true`, then the sequence will support (possibly
+            multidimensional) indexing via the `[]` operator using unsigned integer
+            offsets.  If this flag is set in conjunction with `size`, then the
+            sequence's subscript operator will also allow signed inputs, applying
+            Python-style wraparound for negative values, as well as automatic bounds
+            checking in debug builds.  If `ndims > 1`, then the subscript operator
+            will also support multidimensional indexing, where each argument after the
+            first expands to a series of nested subscripts (akin to
+            `sequence[i][j][k]...`), up to the maximum number of dimensions.
+        4.  `data`: if `true`, then the sequence will expose a `data()` member function
+            that returns a pointer to an underlying data array, adding an entry to the
+            internal vtable.  If Python bindings are generated for such a sequence,
+            then the buffer protocol may be used to expose the data array to Python.
+        5.  `reverse`: if set, then the sequence will support reverse iteration as well
+            as forward iteration.
+
+    Typically, all of these flags will be inferred from a given initializer using CTAD.
+    If that is not available for some reason, then the `sequence` template can be
+    explicitly specialized using aggregate initialization:
+
+        ```
+        auto func() -> sequence<T, {.ndims = 3, .size = true, .subscript = true, ...}> {
+            // a 3-dimensional container holding elements of type `T` that supports
+            // `size()`, `[i, j, k]`, etc.
+        }
+
+        auto func() -> decltype(sequence(container)) {
+            // if a container is handy, which deduces all the required flags
+        }
+        ```
+
+    If no flags are given, then `sequence<T>` devolves to a simple, unsized,
+    forward-iterable range yielding values of type `T`. */
+    struct sequence_flags {
+        uint8_t ndims = 0;
+        bool size = false;
+        bool subscript = false;
+        bool data = false;
+        bool reverse = false;
+    };
+
+    template <typename C>
+    constexpr uint8_t infer_sequence_dims = 0;
+    template <typename C>
+        requires (requires(C c) {
+            {c.shape()} -> meta::tuple_like;
+            {c.shape()} -> meta::yields<size_t>;
+        })
+    constexpr uint8_t infer_sequence_dims<C> =
+        meta::tuple_size<decltype(std::declval<C>().shape())>;
+
+    /* Infer the `sequence_flags` for a container of type `C` using SFINAE. */
+    template <typename C>
+    static constexpr sequence_flags infer_sequence_flags {
+        .dims = infer_sequence_dims<C>,
+        .size = meta::has_size<C>,
+        .subscript = meta::indexable<C, size_t>,
+        .data = meta::has_data<C>,
+        .reverse = meta::reverse_iterable<C>
+    };
+
+
+    /// TODO: update and streamline error messages.  This might not be doable until
+    /// after strings are defined, since otherwise I get undefined template errors.
+
+    template <meta::not_void T> requires (meta::not_rvalue<T>)
+    struct sequence_iterator;
+
+    namespace sequence_dtor {
+        using ptr = void(*)(void*);
+
+        template <typename C>
+        constexpr void _fn(void* ptr) {
+            if constexpr (!meta::lvalue<C> || !meta::has_address<C>) {
+                delete reinterpret_cast<meta::as_pointer<C>>(ptr);
+            }
+        }
+
+        template <typename C>
+        constexpr ptr fn = &_fn<C>;
+    }
+
+    namespace sequence_size {
+        using ptr = size_t(*)(void*);
+        using err = TypeError(*)();
+
+        template <meta::const_ref C> requires (meta::has_size<C>)
+        constexpr size_t _fn(void* ptr) {
+            return std::ranges::size(*reinterpret_cast<meta::as_pointer<C>>(ptr));
+        }
+
+        template <meta::const_ref C> requires (DEBUG && !meta::has_size<C>)
+        constexpr TypeError _error() {
+            /// TODO: provide the demangled type name in the error message for clarity.
+            return TypeError("underlying container does not support size()");
+        }
+
+        template <meta::const_ref C>
+        constexpr ptr fn = nullptr;
+        template <meta::const_ref C> requires (meta::has_size<C>)
+        constexpr ptr fn<C> = &_fn<C>;
+
+        template <meta::const_ref C>
+        constexpr err error = nullptr;
+        template <meta::const_ref C> requires (DEBUG && !meta::has_size<C>)
+        constexpr err error<C> = &_error<C>;
+    }
+
+    namespace sequence_empty {
+        using ptr = bool(*)(void*);
+        using err = TypeError(*)();
+
+        template <meta::const_ref C> requires (meta::has_empty<C>)
+        constexpr bool _fn(void* ptr) {
+            return std::ranges::empty(*reinterpret_cast<meta::as_pointer<C>>(ptr));
+        }
+
+        template <meta::const_ref C> requires (DEBUG && !meta::has_empty<C>)
+        constexpr TypeError _error() {
+            /// TODO: provide the demangled type name in the error message for clarity.
+            return TypeError("underlying container does not support empty()");
+        }
+
+        template <meta::const_ref C>
+        constexpr ptr fn = nullptr;
+        template <meta::const_ref C> requires (meta::has_empty<C>)
+        constexpr ptr fn<C> = &_fn<C>;
+
+        template <meta::const_ref C>
+        constexpr err error = nullptr;
+        template <meta::const_ref C> requires (DEBUG && !meta::has_empty<C>)
+        constexpr err error<C> = &_error<C>;
+    }
+
+    namespace sequence_subscript {
+        template <meta::not_void T> requires (meta::not_rvalue<T>)
+        using ptr = T(*)(void*, size_t);
+        template <meta::not_void T> requires (meta::not_rvalue<T>)
+        using err = TypeError(*)();
+
+        template <meta::lvalue C, meta::not_void T>
+            requires (meta::not_rvalue<T> && meta::index_returns<T, C, size_t>)
+        constexpr T _fn(void* ptr, size_t i) {
+            return (*reinterpret_cast<meta::as_pointer<C>>(ptr))[i];
+        }
+
+        template <meta::lvalue C, meta::not_void T>
+            requires (meta::not_rvalue<T> && DEBUG && !meta::index_returns<T, C, size_t>)
+        constexpr TypeError _error() {
+            /// TODO: provide the demangled type name in the error message for clarity.
+            return TypeError("underlying container does not support indexing");
+        }
+
+        template <meta::lvalue C, meta::not_void T>
+        constexpr ptr<T> fn = nullptr;
+        template <meta::lvalue C, meta::not_void T>
+            requires (meta::not_rvalue<T> && meta::index_returns<T, C, size_t>)
+        constexpr ptr<T> fn<C, T> = &_fn<C, T>;
+
+        template <meta::lvalue C, meta::not_void T>
+        constexpr err<T> error = nullptr;
+        template <meta::lvalue C, meta::not_void T>
+            requires (meta::not_rvalue<T> && DEBUG && !meta::index_returns<T, C, size_t>)
+        constexpr err<T> error<C, T> = &_error<C, T>;
+    }
+
+    namespace sequence_begin {
+        template <meta::not_void T> requires (meta::not_rvalue<T>)
+        using ptr = sequence_iterator<T>(*)(void*);
+
+        template <meta::lvalue C, meta::not_void T>
+            requires (meta::not_rvalue<T> && meta::yields<C, T>)
+        constexpr sequence_iterator<T> _fn(void* ptr) {
+            return {
+                reinterpret_cast<meta::as_pointer<C>>(ptr)->begin(),
+                reinterpret_cast<meta::as_pointer<C>>(ptr)->end()
+            };
+        }
+
+        template <meta::lvalue C, meta::not_void T>
+            requires (meta::not_rvalue<T> && meta::yields<C, T>)
+        constexpr ptr<T> fn = &_fn<C, T>;
+    }
+
+    /* Sequences are reference counted in order to allow for efficient copy/move
+    semantics.  The only difference from a typical `shared_ptr` is that lvalue
+    initializers will not be copied onto the heap, and will instead simply reference
+    their current location as an optimization.  Copying large containers is potentially
+    expensive, and should be done explicitly by manually moving or copying the
+    value.
+
+    This class represents the control block for the sequence, which stores all the
+    function pointers needed to emulate the standard range interface, so that they
+    don't have to be stored on the sequence itself.  A block of this form will always
+    be heap allocated to back the underlying container when it is first converted into
+    a sequence. */
+    template <meta::not_void T> requires (meta::not_rvalue<T>)
+    struct sequence_control {
+        std::atomic<size_t> count = 0;
+        const sequence_dtor::ptr dtor = nullptr;
+        const sequence_size::ptr size_fn = nullptr;
+        const sequence_empty::ptr empty_fn = nullptr;
+        const sequence_subscript::ptr<T> subscript_fn = nullptr;
+        const sequence_begin::ptr<T> begin_fn = nullptr;
+    };
+
+    /* When compiled in debug mode, the control block stores extra function pointers
+    that throw detailed errors if `size()`, `empty()`, or `operator[]` are used when
+    they are not available. */
+    template <meta::not_void T> requires (meta::not_rvalue<T> && DEBUG)
+    struct sequence_control<T> {
+        std::atomic<size_t> count = 0;
+        const sequence_dtor::ptr dtor = nullptr;
+        const sequence_size::ptr size_fn = nullptr;
+        const sequence_size::err size_err = nullptr;
+        const sequence_empty::ptr empty_fn = nullptr;
+        const sequence_empty::err empty_err = nullptr;
+        const sequence_subscript::ptr<T> subscript_fn = nullptr;
+        const sequence_subscript::err<T> subscript_err = nullptr;
+        const sequence_begin::ptr<T> begin_fn = nullptr;
+    };
+
+    /* The underlying container type for a sequence serves as the public-facing
+    component of its shared pointer-like memory model, which updates reference counts
+    whenever it is copied or destroyed.  Note that because the underlying container
+    type is erased, there's no way to tell at compile time whether it supports size,
+    empty, or subscript access, so additional boolean properties are exposed to check
+    for these, which must be used to avoid undefined behavior. */
+    template <meta::not_void T> requires (meta::not_rvalue<T>)
+    struct sequence {
+        using type = T;
+        using size_type = size_t;
+        using index_type = ssize_t;
+
+    private:
+        void* data = nullptr;
+        sequence_control<T>* control = nullptr;
+
+        constexpr void decref() {
+            if (control && control->count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                control->dtor(data);
+                delete control;
+            }
+        }
+
+    public:
+        [[nodiscard]] constexpr sequence() = default;
+
+        template <meta::yields<T> C> requires (meta::lvalue<C> && meta::has_address<C>)
+        [[nodiscard]] constexpr sequence(C&& c) noexcept (meta::nothrow::has_address<C>) :
+            data(const_cast<meta::as_pointer<meta::remove_const<C>>>(std::addressof(c))),
+            control(new sequence_control<T>{
+                .count = 1,
+                .dtor = sequence_dtor::fn<C>,  // no-op for lvalue references
+                .size_fn = sequence_size::fn<meta::as_const_ref<C>>,
+                .empty_fn = sequence_empty::fn<meta::as_const_ref<C>>,
+                .subscript_fn = sequence_subscript::fn<meta::as_lvalue<C>, T>,
+                .begin_fn = sequence_begin::fn<meta::as_lvalue<C>, T>
+            })
+        {}
+
+        template <meta::yields<T> C> requires (!meta::lvalue<C> || !meta::has_address<C>)
+        [[nodiscard]] constexpr sequence(C&& c) :
+            data(new meta::unqualify<C>(std::forward<C>(c))),
+            control(new sequence_control<T>{
+                .count = 1,
+                .dtor = sequence_dtor::fn<C>,  // calls `delete` on `data`
+                .size_fn = sequence_size::fn<meta::as_const_ref<C>>,
+                .empty_fn = sequence_empty::fn<meta::as_const_ref<C>>,
+                .subscript_fn = sequence_subscript::fn<meta::as_lvalue<C>, T>,
+                .begin_fn = sequence_begin::fn<meta::as_lvalue<C>, T>
+            })
+        {}
+
+        [[nodiscard]] constexpr sequence(const sequence& other) noexcept :
+            data(other.data),
+            control(other.control)
+        {
+            if (control) {
+                control->count.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        [[nodiscard]] constexpr sequence(sequence&& other) noexcept :
+            data(other.data),
+            control(other.control)
+        {
+            other.data = nullptr;
+            other.control = nullptr;
+        }
+
+        constexpr sequence& operator=(const sequence& other) {
+            if (this != &other) {
+                decref();
+                data = other.data;
+                control = other.control;
+                if (control) {
+                    control->count.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            return *this;
+        }
+
+        constexpr sequence& operator=(sequence&& other) {
+            if (this != &other) {
+                decref();
+                data = other.data;
+                control = other.control;
+                other.data = nullptr;
+                other.control = nullptr;
+            }
+            return *this;
+        }
+
+        constexpr ~sequence() {
+            decref();
+            data = nullptr;
+            control = nullptr;
+        }
+
+        constexpr void swap(sequence& other) noexcept {
+            std::swap(data, other.data);
+            std::swap(control, other.control);
+        }
+
+        [[nodiscard]] constexpr bool has_size() const noexcept {
+            return control->size_fn != nullptr;
+        }
+
+        [[nodiscard]] constexpr size_type size() const {
+            return control->size_fn(data);
+        }
+
+        [[nodiscard]] constexpr index_type ssize() const {
+            return index_type(control->size_fn(data));
+        }
+
+        [[nodiscard]] constexpr bool has_empty() const noexcept {
+            return control->empty_fn != nullptr;
+        }
+
+        [[nodiscard]] constexpr bool empty() const {
+            return control->empty_fn(data);
+        }
+
+        [[nodiscard]] constexpr bool has_subscript() const noexcept {
+            return control->subscript_fn != nullptr;
+        }
+
+        [[nodiscard]] constexpr T operator[](index_type i) const {
+            if (has_size() && i < 0) {
+                i += index_type(control->size_fn(data));
+            }
+            return control->subscript_fn(data, size_type(i));
+        }
+
+        [[nodiscard]] constexpr sequence_iterator<T> begin() const {
+            return control->begin_fn(data);
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+    };
+
+    /* When compiled in debug mode, the sequence inserts extra error paths for when the
+    size, empty, or subscript operators are applied to a container which does not
+    support them, using the extra function pointers in the control block. */
+    template <meta::not_void T> requires (meta::not_rvalue<T> && DEBUG)
+    struct sequence<T> {
+        using type = T;
+        using size_type = size_t;
+        using index_type = ssize_t;
+
+    private:
+        void* data = nullptr;
+        sequence_control<T>* control = nullptr;
+
+        constexpr void decref() {
+            if (control && control->count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                control->dtor(data);
+                delete control;
+            }
+        }
+
+    public:
+        [[nodiscard]] constexpr sequence() = default;
+
+        template <meta::yields<T> C> requires (meta::lvalue<C> && meta::has_address<C>)
+        [[nodiscard]] constexpr sequence(C&& c) noexcept (meta::nothrow::has_address<C>) :
+            data(const_cast<meta::as_pointer<meta::remove_const<C>>>(std::addressof(c))),
+            control(new sequence_control<T>{
+                .count = 1,
+                .dtor = sequence_dtor::fn<C>,  // no-op for lvalue references
+                .size_fn = sequence_size::fn<meta::as_const_ref<C>>,
+                .size_err = sequence_size::error<meta::as_const_ref<C>>,
+                .empty_fn = sequence_empty::fn<meta::as_const_ref<C>>,
+                .empty_err = sequence_empty::error<meta::as_const_ref<C>>,
+                .subscript_fn = sequence_subscript::fn<meta::as_lvalue<C>, T>,
+                .subscript_err = sequence_subscript::error<meta::as_lvalue<C>, T>,
+                .begin_fn = sequence_begin::fn<meta::as_lvalue<C>, T>
+            })
+        {}
+
+        template <meta::yields<T> C> requires (!meta::lvalue<C> || !meta::has_address<C>)
+        [[nodiscard]] constexpr sequence(C&& c) :
+            data(new meta::unqualify<C>(std::forward<C>(c))),
+            control(new sequence_control<T>{
+                .count = 1,
+                .dtor = sequence_dtor::fn<C>,  // calls `delete` on `data`
+                .size_fn = sequence_size::fn<meta::as_const_ref<C>>,
+                .size_err = sequence_size::error<meta::as_const_ref<C>>,
+                .empty_fn = sequence_empty::fn<meta::as_const_ref<C>>,
+                .empty_err = sequence_empty::error<meta::as_const_ref<C>>,
+                .subscript_fn = sequence_subscript::fn<meta::as_lvalue<C>, T>,
+                .subscript_err = sequence_subscript::error<meta::as_lvalue<C>, T>,
+                .begin_fn = sequence_begin::fn<meta::as_lvalue<C>, T>
+            })
+        {}
+
+
+        [[nodiscard]] constexpr sequence(const sequence& other) noexcept :
+            data(other.data),
+            control(other.control)
+        {
+            if (control) {
+                control->count.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        [[nodiscard]] constexpr sequence(sequence&& other) noexcept :
+            data(other.data),
+            control(other.control)
+        {
+            other.data = nullptr;
+            other.control = nullptr;
+        }
+
+        constexpr sequence& operator=(const sequence& other) {
+            if (this != &other) {
+                decref();
+                data = other.data;
+                control = other.control;
+                if (control) {
+                    control->count.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            return *this;
+        }
+
+        constexpr sequence& operator=(sequence&& other) {
+            if (this != &other) {
+                decref();
+                data = other.data;
+                control = other.control;
+                other.data = nullptr;
+                other.control = nullptr;
+            }
+            return *this;
+        }
+
+        constexpr ~sequence() {
+            decref();
+            data = nullptr;
+            control = nullptr;
+        }
+
+        constexpr void swap(sequence& other) noexcept {
+            std::swap(data, other.data);
+            std::swap(control, other.control);
+        }
+
+        [[nodiscard]] constexpr bool has_size() const noexcept {
+            return control->size_fn != nullptr;
+        }
+
+        [[nodiscard]] constexpr size_type size() const {
+            if (control->size_err != nullptr) {
+                throw control->size_err();
+            }
+            return control->size_fn(data);
+        }
+
+        [[nodiscard]] constexpr index_type ssize() const {
+            if (control->size_err != nullptr) {
+                throw control->size_err();
+            }
+            return index_type(control->size_fn(data));
+        }
+
+        [[nodiscard]] constexpr bool has_empty() const noexcept {
+            return control->empty_fn != nullptr;
+        }
+
+        [[nodiscard]] constexpr bool empty() const {
+            if (control->empty_err != nullptr) {
+                throw control->empty_err();
+            }
+            return control->empty_fn(data);
+        }
+
+        [[nodiscard]] constexpr bool has_subscript() const noexcept {
+            return control->subscript_fn != nullptr;
+        }
+
+        [[nodiscard]] constexpr T operator[](index_type i) const {
+            index_type n = i;
+
+            if (has_size()) {
+                index_type size = index_type(control->size_fn(data));
+                n += size * (n < 0);
+                if (n < 0 || n >= size) {
+                    /// TODO: fix this error message
+                    throw IndexError(
+                        "index " + std::to_string(i) +
+                        " out of range for sequence of size " + std::to_string(size)
+                    );
+                }
+
+            } else if (n < 0) {
+                throw IndexError(
+                    "negative index " + std::to_string(i) + " not allowed for sequence"
+                );
+            }
+
+            return control->subscript_fn(data, size_type(n));
+        }
+
+        [[nodiscard]] constexpr sequence_iterator<T> begin() const {
+            return control->begin_fn(data);
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+    };
+
+    /* Iterators also have to be type-erased and stored as void pointers.  Reference
+    counting is not allowed in this case, however, and copying the iterator means
+    allocating a new iterator to store the copy.  The only reason we don't use
+    `std::unique_ptr` here is that it doesn't generally play well with void pointers,
+    so it's just easier to implement our own. */
+    struct sequence_iter_storage {
+        using copy = void*(*)(void*);
+        using destroy = void(*)(void*);
+
+        template <typename T>
+        static constexpr void* ctor(T&& obj) {
+            return new meta::unqualify<T>(std::forward<T>(obj));
+        }
+
+        template <meta::not_reference T>
+        static constexpr void* _copy(void* ptr) {
+            return new meta::unqualify<T>(*reinterpret_cast<meta::as_pointer<T>>(ptr));
+        }
+
+        template <meta::not_reference T>
+        static constexpr void dtor(void* ptr) {
+            delete reinterpret_cast<meta::as_pointer<T>>(ptr);
+        }
+
+        void* begin = nullptr;
+        copy begin_copy = nullptr;
+        destroy begin_dtor = nullptr;
+
+        void* end = nullptr;
+        copy end_copy = nullptr;
+        destroy end_dtor = nullptr;
+
+        [[nodiscard]] constexpr sequence_iter_storage() noexcept = default;
+
+        template <typename Begin, typename End>
+        [[nodiscard]] constexpr sequence_iter_storage(Begin&& b, End&& e) :
+            begin(ctor(std::forward<Begin>(b))),
+            begin_copy(&_copy<meta::remove_reference<Begin>>),
+            begin_dtor(&dtor<meta::remove_reference<Begin>>),
+            end(ctor(std::forward<End>(e))),
+            end_copy(&_copy<meta::remove_reference<End>>),
+            end_dtor(&dtor<meta::remove_reference<End>>)
+        {}
+
+        [[nodiscard]] constexpr sequence_iter_storage(const sequence_iter_storage& other) :
+            begin(other.begin ? other.begin_copy(other.begin) : nullptr),
+            begin_copy(other.begin_copy),
+            begin_dtor(other.begin_dtor),
+            end(other.end ? other.end_copy(other.end) : nullptr),
+            end_copy(other.end_copy),
+            end_dtor(other.end_dtor)
+        {}
+
+        [[nodiscard]] constexpr sequence_iter_storage(sequence_iter_storage&& other) noexcept :
+            begin(other.begin),
+            begin_copy(other.begin_copy),
+            begin_dtor(other.begin_dtor),
+            end(other.end),
+            end_copy(other.end_copy),
+            end_dtor(other.end_dtor)
+        {
+            other.begin = nullptr;
+            other.end = nullptr;
+        }
+
+        constexpr sequence_iter_storage& operator=(const sequence_iter_storage& other) {
+            if (this != &other) {
+                if (begin) begin_dtor(begin);
+                if (end) end_dtor(end);
+                begin = other.begin ? other.begin_copy(other.begin) : nullptr;
+                begin_copy = other.begin_copy;
+                begin_dtor = other.begin_dtor;
+                end = other.end ? other.end_copy(other.end) : nullptr;
+                end_copy = other.end_copy;
+                end_dtor = other.end_dtor;
+            }
+            return *this;
+        }
+
+        constexpr sequence_iter_storage& operator=(sequence_iter_storage& other) {
+            if (this != &other) {
+                if (begin) begin_dtor(begin);
+                if (end) end_dtor(end);
+                begin = other.begin;
+                begin_copy = other.begin_copy;
+                begin_dtor = other.begin_dtor;
+                end = other.end;
+                end_copy = other.end_copy;
+                end_dtor = other.end_dtor;
+                other.begin = nullptr;
+                other.end = nullptr;
+            }
+            return *this;
+        }
+
+        constexpr ~sequence_iter_storage() {
+            if (begin) begin_dtor(begin);
+            if (end) end_dtor(end);
+        }
+
+        constexpr void swap(sequence_iter_storage& other) noexcept {
+            std::swap(begin, other.begin);
+            std::swap(begin_copy, other.begin_copy);
+            std::swap(begin_dtor, other.begin_dtor);
+            std::swap(end, other.end);
+            std::swap(end_copy, other.end_copy);
+            std::swap(end_dtor, other.end_dtor);
+        }
+    };
+
+    namespace sequence_deref {
+        template <meta::not_void T> requires (meta::not_rvalue<T>)
+        using ptr = T(*)(void*);
+
+        template <meta::const_ref Begin, meta::not_void T>
+            requires (meta::not_rvalue<T> && meta::dereference_returns<T, Begin>)
+        constexpr T _fn(void* ptr) {
+            return **reinterpret_cast<meta::as_pointer<Begin>>(ptr);
+        }
+
+        template <meta::const_ref Begin, meta::not_void T>
+            requires (meta::not_rvalue<T> && meta::dereference_returns<T, Begin>)
+        constexpr ptr<T> fn = &_fn<Begin, T>;
+    }
+
+    namespace sequence_increment {
+        using ptr = void(*)(void*);
+
+        template <meta::lvalue Begin>
+            requires (meta::not_const<Begin> && meta::has_preincrement<Begin>)
+        constexpr void _fn(void* ptr) {
+            ++*reinterpret_cast<meta::as_pointer<Begin>>(ptr);
+        }
+
+        template <meta::lvalue Begin>
+            requires (meta::not_const<Begin> && meta::has_preincrement<Begin>)
+        constexpr ptr fn = &_fn<Begin>;
+    }
+
+    namespace sequence_compare {
+        using ptr = bool(*)(void*, void*);
+
+        template <meta::const_ref Begin, meta::const_ref End>
+            requires (meta::eq_returns<bool, Begin, End>)
+        constexpr bool _fn(void* lhs, void* rhs) {
+            return
+                *reinterpret_cast<meta::as_pointer<Begin>>(lhs) ==
+                *reinterpret_cast<meta::as_pointer<End>>(rhs);
+        }
+
+        template <meta::const_ref Begin, meta::const_ref End>
+            requires (meta::eq_returns<bool, Begin, End>)
+        constexpr ptr fn = &_fn<Begin, End>;
+    }
+
+    /// TODO: it might be best to have sequence model `std::common_range` (i.e. make
+    /// the begin and end iterators always the same type).  That would require some
+    /// careful design, but would make sequences more compatible with the standard
+    /// library algorithms if possible.
+    /// -> sequence_iter_storage would only have to store a single iterator, and the
+    /// overall iterator would be initialized with the required function pointers,
+    /// which would be manually generated in both cases with the right semantics.
+
+    /* A type-erased wrapper for an iterator that dereferences to type `T` and its
+    corresponding sentinel.  This is the type of iterator returned by a `sequence<T>`
+    range, and always models `std::input_iterator`, as well as possibly
+    `std::output_iterator<U>` if `U` is assignable to `T`. */
+    template <meta::not_void T> requires (meta::not_rvalue<T>)
+    struct sequence_iterator {
+        using iterator_category = std::input_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = meta::remove_reference<T>;
+        using reference = meta::as_lvalue<T>;
+        using pointer = meta::as_pointer<T>;
+
+    private:
+        sequence_iter_storage storage;
+        sequence_deref::ptr<T> deref_fn = nullptr;
+        sequence_increment::ptr increment_fn = nullptr;
+        sequence_compare::ptr compare_fn = nullptr;
+
+    public:
+        [[nodiscard]] constexpr sequence_iterator() = default;
+
+        template <meta::iterator Begin, meta::sentinel_for<Begin> End>
+            requires (meta::dereference_returns<T, meta::as_const_ref<Begin>>)
+        [[nodiscard]] constexpr sequence_iterator(Begin&& b, End&& e)
+            noexcept (requires{
+                {std::make_unique<meta::remove_reference<Begin>>(std::forward<Begin>(b))} noexcept;
+                {std::make_unique<meta::remove_reference<End>>(std::forward<End>(e))} noexcept;
+            })
+        :
+            storage(std::forward<Begin>(b), std::forward<End>(e)),
+            deref_fn(sequence_deref::fn<meta::as_const_ref<Begin>, T>),
+            increment_fn(sequence_increment::fn<meta::as_lvalue<meta::remove_const<Begin>>>),
+            compare_fn(sequence_compare::fn<meta::as_const_ref<Begin>, meta::as_const_ref<End>>)
+        {}
+
+        [[nodiscard]] constexpr T operator*() const {
+            return deref_fn(storage.begin);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const {
+            return impl::arrow_proxy(deref_fn(storage.begin));
+        }
+
+        constexpr sequence_iterator& operator++() {
+            increment_fn(storage.begin);
+            return *this;
+        }
+
+        [[nodiscard]] constexpr sequence_iterator operator++(int) {
+            sequence_iterator tmp = *this;
+            increment_fn(storage.begin);
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(const sequence_iterator& lhs, NoneType) {
+            return lhs.compare_fn(lhs.storage.begin, lhs.storage.end);
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(NoneType, const sequence_iterator& rhs) {
+            return rhs.compare_fn(rhs.storage.begin, rhs.storage.end);
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(const sequence_iterator& lhs, NoneType) {
+            return !lhs.compare_fn(lhs.storage.begin, lhs.storage.end);
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(NoneType, const sequence_iterator& rhs) {
+            return !rhs.compare_fn(rhs.storage.begin, rhs.storage.end);
+        }
+    };
+
+}
+
+
+namespace iter {
+
+    /* A type-erased range that forgets the underlying container type, and presents only as
+    a sequence of some type.
+
+    Because of their use as monadic expression templates, ranges can quickly become deeply
+    nested and brittle, especially when used with conditionals which may return slightly
+    different types for each branch.  A similar problem exists with C++ function objects,
+    which can be mitigated by using `std::function`, which `sequence<T>` is perfectly
+    analogous to, but for iterable containers.
+
+    The sequence constructor works by taking an arbitrary container type `C` that meets
+    the criteria and moving it onto the heap as a reference-counted void pointer.  It then
+    generates a table of function pointers that emulate the standard range interface for
+    `C`, including `size()`, `empty()`, `operator[]`, and basic input/output iterators.
+    Users should note that erasing the container type in this way can substantially reduce
+    iteration performance, especially for large containers and/or hot loops.  Non-erased
+    ranges should therefore be preferred whenever possible, and erasure should be
+    considered only as a last resort to satisfy the type checker.
+
+    Bertrand instantiates this type internally when generating bindings for ranges that
+    have no direct equivalent in the target language, and therefore cannot be translated
+    normally.  In that case, as long as the range's yield type is a valid expression in
+    the other language, then the rest of the range interface can be abstracted away, and
+    the binding can be generated anyway, albeit at a performance cost. */
+    template <meta::not_void T, impl::sequence_flags flags = {}> requires (meta::not_rvalue<T>)
+    struct sequence : range<impl::sequence<T>>, impl::sequence_tag {
+        using __type = range<impl::sequence<T>>::__type;
+
+        /* Initializing a sequence from an rvalue container will move the container onto
+        the heap, where it will be reference counted until it is no longer needed.  If the
+        initializer is an lvalue instead, then the sequence will simply take its address
+        without relocating it or requiring an allocation.  This prevents a full copy of the
+        container, but forces the user to manage the lifetime externally, ensuring that the
+        underlying container always outlives the sequence. */
+        template <meta::yields<T> C>
+        [[nodiscard]] constexpr sequence(C&& c)
+            noexcept (requires{
+                {range<impl::sequence<T>>(impl::sequence<T>{std::forward<C>(c)})} noexcept;
+            })
+        :
+            range<impl::sequence<T>>(impl::sequence<T>{std::forward<C>(c)})
+        {}
+
+        /* Swap the underlying containers for two sequences. */
+        constexpr void swap(sequence& other) noexcept
+            requires (requires{this->__value->swap(other.__value);})
+        {
+            this->__value->swap(other.__value);
+        }
+
+        /* True if the underlying container supports `size()` checks.  False otherwise. */
+        [[nodiscard]] bool has_size() const noexcept
+            requires (requires{this->__value->has_size();})
+        {
+            return this->__value->has_size();
+        }
+
+        /* Return the current size of the sequence, assuming `has_size()` evaluates to
+        true.  If `has_size()` is false, and the program is compiled in debug mode, then
+        this function will throw a TypeError. */
+        [[nodiscard]] constexpr auto size() const {
+            return this->__value->size();
+        }
+
+        /* Identical to `size()`, except that the result is a signed integer. */
+        [[nodiscard]] constexpr auto ssize() const {
+            return this->__value->ssize();
+        }
+
+        /* True if the underlying container supports `empty()` checks.  False otherwise. */
+        [[nodiscard]] constexpr bool has_empty() const noexcept {
+            return this->__value->has_empty();
+        }
+
+        /* Returns true if the underlying container is empty or false otherwise, assuming
+        `has_empty()` evaluates to true.  If `has_empty()` is false, and the program is
+        compiled in debug mode, then this function will throw a TypeError. */
+        [[nodiscard]] constexpr bool empty() const {
+            return this->__value->empty();
+        }
+
+        /* True if the underlying container supports `operator[]` accessing.  False
+        otherwise. */
+        [[nodiscard]] constexpr bool has_subscript() const noexcept {
+            return this->__value->has_subscript();
+        }
+
+        /* Index into the sequence, applying Python-style wraparound for negative
+        indices if the sequence has a known size.  Otherwise, the index must be
+        non-negative, and will be converted to `size_type`.  If the index is out of
+        bounds after normalizing, and the program is compiled in debug mode, then this
+        function will throw a TypeError. */
+        [[nodiscard]] constexpr T operator[](__type::index_type i) const {
+            return (*this->__value)[i];
+        }
+    };
+
+    template <meta::iterable C>
+    sequence(C&& c) -> sequence<
+        meta::remove_rvalue<meta::yield_type<C>>,
+        impl::infer_sequence_flags<C>
+    >;
+
+    template <typename T>
+    constexpr void swap(sequence<T>& lhs, sequence<T>& rhs)
+        noexcept (requires{{lhs.swap(rhs)} noexcept;})
+        requires (requires{{lhs.swap(rhs)};})
+    {
+        lhs.swap(rhs);
+    }
+
+}
+
+
 }
 
 
 namespace std {
 
-    /// TODO: enable_borrowed_range
+    namespace ranges {
+
+        template <>
+        inline constexpr bool enable_borrowed_range<bertrand::impl::empty_range> = true;
+
+        /// TODO: borrowed range support for single ranges and optionals if the
+        /// underlying type is an lvalue or models borrowed_range.
+
+        template <typename Start, typename Stop, typename Step>
+        constexpr bool enable_borrowed_range<bertrand::impl::iota<Start, Stop, Step>> = true;
+
+        template <typename C>
+        constexpr bool enable_borrowed_range<bertrand::iter::range<C>> =
+            std::ranges::borrowed_range<C>;
+
+        template <typename C>
+        constexpr bool enable_borrowed_range<bertrand::impl::unpack<C>> =
+            std::ranges::borrowed_range<C>;
+
+    }
 
     template <>
     struct tuple_size<bertrand::impl::empty_range> : std::integral_constant<size_t, 0> {};
@@ -3824,8 +4950,11 @@ static constexpr std::array<int, 3> arr {1, 2, 3};
 static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
 static constexpr auto r12 = iter::range(1, 4);
 
+// static_assert(meta::random_access_iterator<decltype(r12.begin())>);
+
 
 static_assert([] {
+    // auto x = r12[0];
     for (auto&& i : r12) {
         if (i != 1 && i != 2 && i != 3) {
             return false;
