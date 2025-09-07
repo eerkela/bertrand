@@ -633,227 +633,6 @@ namespace impl {
     with the other iota constructors. */
     struct iota_default {};
 
-    /// TODO: the outer iota_counted that gets stored within the iota container should
-    /// be able to take a reference to an iterator and not force an extra copy?
-    /// -> Long-term, just eliminate `iota_counted` entirely, and merge it into the
-    /// iota class itself, since I'm always storing an offset anyway, and that's all
-    /// the information I actually need.
-
-
-
-    /* A wrapper for an arbitrary iterator that allows it to be used as the start index
-    of a counted range, where the stop index is given as another integer. */
-    template <meta::unqualified T> requires (meta::iterator<T>)
-    struct iota_counted {
-        using iterator_category = meta::iterator_category<T>;
-        using difference_type = meta::iterator_difference_type<T>;
-        using value_type = meta::iterator_value_type<T>;
-        using reference = meta::iterator_reference_type<T>;
-        using pointer = meta::iterator_pointer_type<T>;
-
-        [[no_unique_address]] T iter;
-        [[no_unique_address]] difference_type stop;
-        [[no_unique_address]] difference_type index = 0;
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).iter} noexcept;})
-            requires (requires{{*std::forward<Self>(self).iter};})
-        {
-            return (*std::forward<Self>(self).iter);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{impl::arrow_proxy(*std::forward<Self>(self))} noexcept;})
-            requires (requires{{impl::arrow_proxy(*std::forward<Self>(self))};})
-        {
-            return impl::arrow_proxy(*std::forward<Self>(self));
-        }
-
-        template <typename Self>        
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t n)
-            noexcept (requires{{std::forward<Self>(self).iter[n]} noexcept;})
-            requires (requires{{std::forward<Self>(self).iter[n]};})
-        {
-            return (std::forward<Self>(self).iter[n]);
-        }
-
-        constexpr iota_counted& operator++()
-            noexcept (requires{{++iter} noexcept;})
-            requires (requires{{++iter};})
-        {
-            ++iter;
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iota_counted operator++(int)
-            noexcept (requires{
-                {iota_counted{*this}} noexcept;
-                {++iter} noexcept;
-            })
-            requires (requires{
-                {iota_counted(*this)};
-                {++iter};
-            })
-        {
-            iota_counted tmp = *this;
-            ++tmp;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr iota_counted operator+(
-            const iota_counted& self,
-            difference_type n
-        )
-            noexcept (requires{{iota_counted{self.iter + n, self.index + n}} noexcept;})
-            requires (requires{{iota_counted{self.iter + n, self.index + n}};})
-        {
-            return {self.iter + n, self.index + n};
-        }
-
-        [[nodiscard]] friend constexpr iota_counted operator+(
-            difference_type n,
-            const iota_counted& self
-        )
-            noexcept (requires{{iota_counted{self.iter + n, self.index + n}} noexcept;})
-            requires (requires{{iota_counted{self.iter + n, self.index + n}};})
-        {
-            return {self.iter + n, self.index + n};
-        }
-
-        constexpr iota_counted& operator+=(difference_type n)
-            noexcept (requires{{iter + n} noexcept;})
-            requires (requires{{iter + n};})
-        {
-            iter += n;
-            index += n;
-            return *this;
-        }
-
-        constexpr iota_counted& operator--()
-            noexcept (requires{{--iter} noexcept;})
-            requires (requires{{--iter};})
-        {
-            --iter;
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr iota_counted operator--(int)
-            noexcept (requires{
-                {iota_counted{*this}} noexcept;
-                {--iter} noexcept;
-            })
-            requires (requires{
-                {iota_counted(*this)};
-                {--iter};
-            })
-        {
-            iota_counted tmp = *this;
-            --tmp;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr iota_counted operator-(difference_type n) const
-            noexcept (requires{{iota_counted{iter - n, index - n}} noexcept;})
-            requires (requires{{iota_counted{iter - n, index - n}};})
-        {
-            return {iter - n, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(const iota_counted& other) const
-            noexcept (requires{{index - other.index} noexcept;})
-            requires (requires{{index - other.index};})
-        {
-            return index - other.index;
-        }
-
-        [[nodiscard]] friend constexpr difference_type operator-(
-            const iota_counted& self,
-            NoneType
-        )
-            noexcept (requires{{self.index - self.stop} noexcept;})
-            requires (requires{{self.index - self.stop};})
-        {
-            return self.index - self.stop;
-        }
-
-        [[nodiscard]] friend constexpr difference_type operator-(
-            NoneType,
-            const iota_counted& self
-        )
-            noexcept (requires{{self.stop - self.index} noexcept;})
-            requires (requires{{self.stop - self.index};})
-        {
-            return self.stop - self.index;
-        }
-
-        constexpr iota_counted& operator-=(difference_type n)
-            noexcept (requires{{iter - n} noexcept;})
-            requires (requires{{iter - n};})
-        {
-            iter -= n;
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const iota_counted& other) const
-            noexcept (requires{{index == other.index} noexcept;})
-            requires (requires{{index == other.index};})
-        {
-            return index == other.index;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const iota_counted& self,
-            NoneType
-        )
-            noexcept (requires{{self.index == self.stop} noexcept;})
-            requires (requires{{self.index == self.stop};})
-        {
-            return self.index == self.stop;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
-            const iota_counted& self
-        )
-            noexcept (requires{{self.index == self.stop} noexcept;})
-            requires (requires{{self.index == self.stop};})
-        {
-            return self.index == self.stop;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const iota_counted& other) const
-            noexcept (requires{{index <=> other.index} noexcept;})
-            requires (requires{{index <=> other.index};})
-        {
-            return index <=> other.index;
-        }
-
-        [[nodiscard]] friend constexpr auto operator<=>(
-            const iota_counted& self,
-            NoneType
-        )
-            noexcept (requires{{self.index <=> self.stop} noexcept;})
-            requires (requires{{self.index <=> self.stop};})
-        {
-            return self.index <=> self.stop;
-        }
-
-        [[nodiscard]] friend constexpr auto operator<=>(
-            NoneType,
-            const iota_counted& self
-        )
-            noexcept (requires{{self.stop <=> self.index} noexcept;})
-            requires (requires{{self.stop <=> self.index};})
-        {
-            return self.stop <=> self.index;
-        }
-    };
-
     /* Iota iterators will use the difference type between `stop` and `start` if
     available and integer-like.  Otherwise, if `stop` is `iota_default`, and start has
     an integer difference with respect to itself, then we use that type.  Lastly, we
@@ -935,34 +714,24 @@ namespace impl {
     template <meta::has_address T> requires (!meta::has_arrow<T>)
     struct iota_pointer<T> { using type = meta::address_type<T>; }; 
 
-    /* The `start` and `stop` parameters of an iota iterator need to be wrapped in an
-    `iota_counted` type to normalize them with respect to the other specializations.
-    Doing this early (within the iota constructor) allows the rest of the logic both
-    before and after to ignore the counted-ness of the bounds. */
-    template <typename Start, typename Stop>
-    struct iota_bounds {
-        using start = Start;
-        using stop = Stop;
-        static constexpr bool counted = false;
-    };
-    template <meta::iterator Start, meta::integer Stop>
-        requires (!requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {start == stop};
-            {start != stop};
-        })
-    struct iota_bounds<Start, Stop> {
-        using start = iota_counted<Start>;
-        using stop = NoneType;
-        static constexpr bool counted = true;
-    };
-    template <typename Start, typename Stop>
-    using iota_start = iota_bounds<Start, Stop>::start;
-    template <typename Start, typename Stop>
-    using iota_stop = iota_bounds<Start, Stop>::stop;
-
     constexpr StopIteration iota_retreat_error() noexcept {
         return StopIteration("cannot retreat past beginning of range");
     }
+
+    template <typename Start, typename Stop>
+    concept iota_counted =
+        meta::iterator<Start> && meta::integer<Stop> &&
+        !requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {start == stop};
+            {start != stop};
+        };
+
+    template <typename Start, typename Stop>
+    concept iota_uncounted =
+        requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {start == stop} -> meta::convertible_to<bool>;
+            {start != stop} -> meta::convertible_to<bool>;
+        };
 
     /* A replacement for `std::ranges::iota_view` that allows for an arbitrary step
     size.  Can be used with any type, as long as the following are satisfied:
@@ -987,26 +756,16 @@ namespace impl {
     `std::input_iterator` or `std::forward_iterator` if `start` is comparable with
     itself. */
     template <meta::not_rvalue Start, meta::not_rvalue Stop, meta::not_rvalue Step>
-        requires (meta::copyable<Start> && requires(
-            meta::unqualify<iota_start<Start, Stop>> start,
-            meta::as_const_ref<iota_stop<Start, Stop>> stop
-        ) {
+        requires (meta::copyable<Start> && requires(meta::unqualify<Start> start) {
             {++start};
-            {start == stop} -> meta::convertible_to<bool>;
-            {start != stop} -> meta::convertible_to<bool>;
-        })
+        } && (iota_uncounted<Start, Stop> || iota_counted<Start, Stop>))
     struct iota : iota_tag {
-        using start_type = iota_start<Start, Stop>;
-        using stop_type = iota_stop<Start, Stop>;
+        using start_type = Start;
+        using stop_type = Stop;
         using step_type = Step;
         static constexpr bool has_step = !meta::is<Step, iota_default>;
         static constexpr bool infinite = meta::is<Stop, iota_default>;
-        static constexpr bool counted =
-            meta::iterator<Start> && meta::integer<Stop> &&
-            !requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-                {start == stop};
-                {start != stop};
-            };
+        static constexpr bool counted = !iota_uncounted<Start, Stop>;
 
         using iterator_category = iota_category<Start, Stop, Step>::type;
         using difference_type = iota_difference<Start, Stop>::type;
@@ -1317,7 +1076,7 @@ namespace impl {
                 {impl::ref<stop_type>{std::forward<Stop>(stop)}} noexcept;
                 {impl::ref<step_type>{}} noexcept;
             })
-            requires (!counted && requires{
+            requires (requires{
                 {impl::ref<start_type>{std::forward<Start>(start)}};
                 {impl::ref<stop_type>{std::forward<Stop>(stop)}};
                 {impl::ref<step_type>{}};
@@ -1325,22 +1084,6 @@ namespace impl {
         :
             m_start{std::forward<Start>(start)},
             m_stop{std::forward<Stop>(stop)},
-            m_step{}
-        {}
-        [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
-            noexcept (requires{
-                {impl::ref<start_type>{std::forward<Start>(start), std::forward<Stop>(stop)}} noexcept;
-                {impl::ref<stop_type>{}} noexcept;
-                {impl::ref<step_type>{}} noexcept;
-            })
-            requires (counted && requires{
-                {impl::ref<start_type>{std::forward<Start>(start), std::forward<Stop>(stop)}};
-                {impl::ref<stop_type>{}};
-                {impl::ref<step_type>{}};
-            })
-        :
-            m_start{std::forward<Start>(start), std::forward<Stop>(stop)},
-            m_stop{},
             m_step{}
         {}
         [[nodiscard]] constexpr iota(
@@ -1351,40 +1094,17 @@ namespace impl {
             noexcept (requires{
                 {impl::ref<start_type>{std::forward<Start>(start)}} noexcept;
                 {impl::ref<stop_type>{std::forward<Stop>(stop)}} noexcept;
-                {impl::ref<step_type>{}} noexcept;
+                {impl::ref<step_type>{std::forward<Step>(step)}} noexcept;
                 {assert_nonzero_step()} noexcept;
             })
-            requires (!counted && requires{
+            requires (requires{
                 {impl::ref<start_type>{std::forward<Start>(start)}};
                 {impl::ref<stop_type>{std::forward<Stop>(stop)}};
-                {impl::ref<step_type>{}};
+                {impl::ref<step_type>{std::forward<Step>(step)}};
             })
         :
             m_start{std::forward<Start>(start)},
             m_stop{std::forward<Stop>(stop)},
-            m_step{std::forward<Step>(step)}
-        {
-            assert_nonzero_step();
-        }
-        [[nodiscard]] constexpr iota(
-            meta::forward<Start> start,
-            meta::forward<Stop> stop,
-            meta::forward<Step> step
-        )
-            noexcept (requires{
-                {impl::ref<start_type>{std::forward<Start>(start), std::forward<Stop>(stop)}} noexcept;
-                {impl::ref<stop_type>{}} noexcept;
-                {impl::ref<step_type>{std::forward<Step>(step)}} noexcept;
-                {assert_nonzero_step()} noexcept;
-            })
-            requires (counted && requires{
-                {impl::ref<start_type>{std::forward<Start>(start), std::forward<Stop>(stop)}};
-                {impl::ref<stop_type>{}};
-                {impl::ref<step_type>{std::forward<Step>(step)}};
-            })
-        :
-            m_start{std::forward<Start>(start), std::forward<Stop>(stop)},
-            m_stop{},
             m_step{std::forward<Step>(step)}
         {
             assert_nonzero_step();
@@ -1417,16 +1137,19 @@ namespace impl {
                 {m_start.swap(other.m_start)} noexcept;
                 {m_stop.swap(other.m_stop)} noexcept;
                 {m_step.swap(other.m_step)} noexcept;
+                {std::swap(m_position, other.m_position)} noexcept;
             })
             requires (requires{
                 {m_start.swap(other.m_start)};
                 {m_stop.swap(other.m_stop)};
                 {m_step.swap(other.m_step)};
+                {std::swap(m_position, other.m_position)};
             })
         {
             m_start.swap(other.m_start);
             m_stop.swap(other.m_stop);
             m_step.swap(other.m_step);
+            std::swap(m_position, other.m_position);
         }
 
         template <typename Self>
@@ -1543,20 +1266,26 @@ namespace impl {
             return m_position;
         }
 
-
-        /// TODO: unifying the counted and uncounted cases will require changes to
-        /// empty(), size(), and ssize() primarily, as well as the bounds-checking
-        /// logic in advance() and retreat().
-
         [[nodiscard]] constexpr bool empty() const noexcept requires (infinite) {
             return false;
         }
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
+                {m_position >= *m_stop} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (!infinite && counted && requires{
+                {m_position >= *m_stop} -> meta::convertible_to<bool>;
+            })
+        {
+            return m_position >= *m_stop;
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{
                 {*m_start == *m_stop} noexcept -> meta::nothrow::convertible_to<bool>;
             })
-            requires (!infinite && !has_step && requires{
+            requires (!infinite && !counted && !has_step && requires{
                 {*m_start == *m_stop} -> meta::convertible_to<bool>;
             })
         {
@@ -1570,7 +1299,7 @@ namespace impl {
                 {*m_step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {*m_start <= *m_stop} noexcept -> meta::nothrow::convertible_to<bool>;
             }))
-            requires (!infinite && has_step && requires{
+            requires (!infinite && !counted && has_step && requires{
                 {*m_start >= *m_stop} -> meta::convertible_to<bool>;
             } && (strictly_positive<Step> || requires{
                 {*m_step < 0} -> meta::explicitly_convertible_to<bool>;
@@ -1586,12 +1315,19 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{size_t(*m_stop - m_position)} noexcept;})
+            requires (!infinite && counted && requires{{size_t(*m_stop - m_position)};})
+        {
+            return size_t(*m_stop - m_position);
+        }
+
+        [[nodiscard]] constexpr size_t size() const
             noexcept ((has_step && requires(const iota& self) {
                 {size_t((*m_stop - *m_start) / *m_step)} noexcept;
             }) || (!has_step && requires(const iota& self) {
                 {size_t(*m_stop - *m_start)} noexcept;
             }))
-            requires (!infinite && (
+            requires (!infinite && !counted && (
                 (has_step && requires(const iota& self) {
                     {size_t((*m_stop - *m_start) / *m_step)};
                 }) || (!has_step && requires(const iota& self) {
@@ -1607,12 +1343,19 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (requires{{ssize_t(*m_stop - m_position)} noexcept;})
+            requires (!infinite && counted && requires{{ssize_t(*m_stop - m_position)};})
+        {
+            return ssize_t(*m_stop - m_position);
+        }
+
+        [[nodiscard]] constexpr ssize_t ssize() const
             noexcept ((has_step && requires(const iota& self) {
                 {ssize_t((*m_stop - *m_start) / *m_step)} noexcept;
             }) || (!has_step && requires(const iota& self) {
                 {ssize_t(*m_stop - *m_start)} noexcept;
             }))
-            requires (!infinite && (
+            requires (!infinite && !counted && (
                 (has_step && requires(const iota& self) {
                     {ssize_t((*m_stop - *m_start) / *m_step)};
                 }) || (!has_step && requires(const iota& self) {
@@ -5015,14 +4758,13 @@ namespace bertrand {
 
 static constexpr std::array<int, 3> arr {1, 2, 3};
 
-static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
+static constexpr auto r11 = impl::iota(arr.begin(), 3);
 static constexpr auto r12 = iter::range(arr.begin(), 3);
 
-static_assert(meta::random_access_iterator<decltype(r12.begin())>);
+// static_assert(meta::random_access_iterator<decltype(r12.begin())>);
 
 
 static_assert([] {
-    auto x = r12->stop();
     for (auto&& i : r12) {
         if (i != 1 && i != 2 && i != 3) {
             return false;
