@@ -620,6 +620,11 @@ namespace impl {
         lhs.swap(rhs);
     }
 
+    template <typename T>
+    concept strictly_positive = meta::unsigned_integer<T> || !requires(meta::as_const_ref<T> t) {
+        {t < 0} -> meta::explicitly_convertible_to<bool>;
+    };
+
     /* A tag indicating an iota without an upper bound, which will increment forever,
     or one without a step size, which will increment by precisely one unit for each
     iteration.  Typically, this type is listed as an implicit default for the
@@ -628,13 +633,13 @@ namespace impl {
     with the other iota constructors. */
     struct iota_default {};
 
-    template <typename T>
-    concept strictly_positive = meta::unsigned_integer<T> || !requires(meta::as_const_ref<T> t) {
-        {t < 0} -> meta::explicitly_convertible_to<bool>;
-    };
-
     /// TODO: the outer iota_counted that gets stored within the iota container should
     /// be able to take a reference to an iterator and not force an extra copy?
+    /// -> Long-term, just eliminate `iota_counted` entirely, and merge it into the
+    /// iota class itself, since I'm always storing an offset anyway, and that's all
+    /// the information I actually need.
+
+
 
     /* A wrapper for an arbitrary iterator that allows it to be used as the start index
     of a counted range, where the stop index is given as another integer. */
@@ -996,7 +1001,12 @@ namespace impl {
         using step_type = Step;
         static constexpr bool has_step = !meta::is<Step, iota_default>;
         static constexpr bool infinite = meta::is<Stop, iota_default>;
-        static constexpr bool counted = iota_bounds<Start, Stop>::counted;
+        static constexpr bool counted =
+            meta::iterator<Start> && meta::integer<Stop> &&
+            !requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+                {start == stop};
+                {start != stop};
+            };
 
         using iterator_category = iota_category<Start, Stop, Step>::type;
         using difference_type = iota_difference<Start, Stop>::type;
@@ -1004,29 +1014,74 @@ namespace impl {
         using reference = meta::as_const_ref<value_type>;
         using pointer = iota_pointer<reference>::type;
 
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) start(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_start} noexcept;})
+            requires (requires{{*std::forward<Self>(self).m_start};})
+        {
+            return (*std::forward<Self>(self).m_start);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) stop(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_stop} noexcept;})
+            requires (!infinite && requires{{*std::forward<Self>(self).m_stop};})
+        {
+            return (*std::forward<Self>(self).m_stop);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) step(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_step} noexcept;})
+            requires (has_step && requires{{*std::forward<Self>(self).m_step};})
+        {
+            return (*std::forward<Self>(self).m_step);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) curr(this Self&& self)
+            noexcept (
+                (meta::iterator<Start> && requires{{**std::forward<Self>(self).m_start} noexcept;}) ||
+                (!meta::iterator<Start> && requires{{*std::forward<Self>(self).m_start} noexcept;})
+            )
+            requires (
+                (meta::iterator<Start> && requires{{**std::forward<Self>(self).m_start};}) ||
+                (!meta::iterator<Start> && requires{{*std::forward<Self>(self).m_start};})
+            )
+        {
+            if constexpr (meta::iterator<Start>) {
+                return (**std::forward<Self>(self).m_start);
+            } else {
+                return (*std::forward<Self>(self).m_start);
+            }
+        }
+
     private:
         using copy = iota<meta::unqualify<Start>, Stop, Step>;
 
-        [[no_unique_address]] impl::ref<start_type> start;
-        [[no_unique_address]] impl::ref<stop_type> stop;
-        [[no_unique_address]] impl::ref<step_type> step;
-        [[no_unique_address]] size_t offset = 0;
+        [[no_unique_address]] impl::ref<start_type> m_start;
+        [[no_unique_address]] impl::ref<stop_type> m_stop;
+        [[no_unique_address]] impl::ref<step_type> m_step;
+        [[no_unique_address]] difference_type m_position = 0;
 
         constexpr void assert_nonzero_step()
             noexcept (
                 !DEBUG ||
-                !requires{{*step == 0} -> meta::explicitly_convertible_to<bool>;}
+                !requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
             )
         {
             if constexpr (
                 DEBUG &&
-                requires{{*step == 0} -> meta::explicitly_convertible_to<bool>;}
+                requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
             ) {
-                if (*step == 0) {
+                if (*m_step == 0) {
                     throw ValueError("step size cannot be zero");
                 }
             }
         }
+
+        /// TODO: increment_loop needs to make sure that it never steps past the end
+        /// of the range during constant evaluation.
 
         template <typename T>
         constexpr void increment_loop(const T& n)
@@ -1034,32 +1089,32 @@ namespace impl {
                 {T{}} noexcept;
                 {i < n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {++i} noexcept;
-                {++*start} noexcept;
+                {++*m_start} noexcept;
             } && (strictly_positive<T> || requires(T i) {
                 {n < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {i > n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {--i} noexcept;
-                {--*start} noexcept;
+                {--*m_start} noexcept;
             }))
             requires (requires(T i) {
                 {T{}};
                 {i < n} -> meta::explicitly_convertible_to<bool>;
                 {++i};
-                {++*start};
+                {++*m_start};
             } && (strictly_positive<T> || requires(T i) {
                 {n < 0} -> meta::explicitly_convertible_to<bool>;
                 {i > n} -> meta::explicitly_convertible_to<bool>;
                 {--i};
-                {--*start};
+                {--*m_start};
             }))
         {
             if constexpr (strictly_positive<T>) {
-                for (T i = {}; i < n; ++i) ++*start;
+                for (T i = {}; i < n; ++i) ++*m_start;
             } else {
                 if (n < 0) {
-                    for (T i = {}; i > n; --i) --*start;
+                    for (T i = {}; i > n; --i) --*m_start;
                 } else {
-                    for (T i = {}; i < n; ++i) ++*start;
+                    for (T i = {}; i < n; ++i) ++*m_start;
                 }
             }
         }
@@ -1070,94 +1125,94 @@ namespace impl {
                 {T{}} noexcept;
                 {i > n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {--i} noexcept;
-                {--*start} noexcept;
+                {--*m_start} noexcept;
             } && (strictly_positive<T> || requires(T i) {
                 {n < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {i < n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
                 {++i} noexcept;
-                {++*start} noexcept;
+                {++*m_start} noexcept;
             }))
             requires (requires(T i) {
                 {T{}};
                 {i > n} -> meta::explicitly_convertible_to<bool>;
                 {--i};
-                {--*start};
+                {--*m_start};
             } && (strictly_positive<T> || requires(T i) {
                 {n < 0} -> meta::explicitly_convertible_to<bool>;
                 {i < n} -> meta::explicitly_convertible_to<bool>;
                 {++i};
-                {++*start};
+                {++*m_start};
             }))
         {
             if constexpr (strictly_positive<T>) {
-                for (T i = {}; i > n; --i) --*start;
+                for (T i = {}; i > n; --i) --*m_start;
             } else {
                 if (n < 0) {
-                    for (T i = {}; i < n; ++i) ++*start;
+                    for (T i = {}; i < n; ++i) ++*m_start;
                 } else {
-                    for (T i = {}; i > n; --i) --*start;
+                    for (T i = {}; i > n; --i) --*m_start;
                 }
             }
         }
 
         static constexpr bool increment_simple =
-            has_step && requires{{*start += *step};};
+            has_step && requires{{*m_start += *m_step};};
 
         static constexpr bool increment_count =
-            has_step && requires(iota& self) {{self.increment_loop(*step)};};
+            has_step && requires(iota& self) {{self.increment_loop(*m_step)};};
 
         static constexpr bool decrement_simple =
-            has_step && requires{{*start -= *step};};
+            has_step && requires{{*m_start -= *m_step};};
 
         static constexpr bool decrement_count =
-            has_step && requires(iota& self) {{self.decrement_loop(*step)};};
+            has_step && requires(iota& self) {{self.decrement_loop(*m_step)};};
 
         static constexpr bool iadd_simple =
-            (!has_step && requires(difference_type i) {{*start += i};}) ||
-            (has_step && requires(difference_type i) {{*start += i * (*step)};});
+            (!has_step && requires(difference_type i) {{*m_start += i};}) ||
+            (has_step && requires(difference_type i) {{*m_start += i * (*m_step)};});
 
         static constexpr bool iadd_count =
             (!has_step && requires(iota& self, difference_type i) {
                 {self.increment_loop(i)};}
             ) || (has_step && requires(iota& self, difference_type i) {
-                {self.increment_loop(i * (*step))};
+                {self.increment_loop(i * (*m_step))};
             });
 
         static constexpr bool isub_simple =
-            (!has_step && requires(difference_type i) {{*start -= i};}) ||
-            (has_step && requires(difference_type i) {{*start -= i * (*step)};});
+            (!has_step && requires(difference_type i) {{*m_start -= i};}) ||
+            (has_step && requires(difference_type i) {{*m_start -= i * (*m_step)};});
 
         static constexpr bool isub_count =
             (!has_step && requires(iota& self, difference_type i) {
                 {self.decrement_loop(i)};}
             ) || (has_step && requires(iota& self, difference_type i) {
-                {self.decrement_loop(i * (*step))};
+                {self.decrement_loop(i * (*m_step))};
             });
 
         static constexpr bool add_simple =
             (has_step && requires(const iota& self, difference_type i) {
-                {copy{*start + i * (*step), stop, step}};
+                {copy{*m_start + i * (*m_step), m_stop, m_step}};
             }) || (!has_step && requires(const iota& self, difference_type i) {
-                {copy{*start + i, stop, step}};
+                {copy{*m_start + i, m_stop, m_step}};
             });
 
         static constexpr bool sub_simple =
             (has_step && requires(const iota& self, difference_type i) {
-                {copy{*start - i * (*step), stop, step}};
+                {copy{*m_start - i * (*m_step), m_stop, m_step}};
             }) || (!has_step && requires(const iota& self, difference_type i) {
-                {copy{*start - i, stop, step}};
+                {copy{*m_start - i, m_stop, m_step}};
             });
 
         static constexpr bool subscript_simple =
             (!has_step && (
-                meta::iterator<Start> && requires(difference_type i) {{*(*start + i)};}
+                meta::iterator<Start> && requires(difference_type i) {{*(*m_start + i)};}
             ) || (
-                !meta::iterator<Start> && requires(difference_type i) {{*start + i};}
+                !meta::iterator<Start> && requires(difference_type i) {{*m_start + i};}
             )) ||
             (has_step && (
-                meta::iterator<Start> && requires(difference_type i) {{*(*start + i * (*step))};}
+                meta::iterator<Start> && requires(difference_type i) {{*(*m_start + i * (*m_step))};}
             ) || (
-                !meta::iterator<Start> && requires(difference_type i) {{*start + i * (*step)};}
+                !meta::iterator<Start> && requires(difference_type i) {{*m_start + i * (*m_step)};}
             ));
 
         template <typename Self>
@@ -1165,92 +1220,92 @@ namespace impl {
             using T = meta::forward<Self>;
 
             static constexpr decltype(auto) deref(T self)
-                noexcept (requires{{*std::forward<Self>(self).start} noexcept;})
+                noexcept (requires{{*std::forward<Self>(self).m_start} noexcept;})
                 requires (
                     meta::iterator<Start> &&
-                    requires{{**std::forward<Self>(self).start};}
+                    requires{{**std::forward<Self>(self).m_start};}
                 )
             {
-                return (**std::forward<Self>(self).start);
+                return (**std::forward<Self>(self).m_start);
             }
 
             static constexpr decltype(auto) deref(T self)
-                noexcept (requires{{*std::forward<Self>(self).start} noexcept;})
+                noexcept (requires{{*std::forward<Self>(self).m_start} noexcept;})
                 requires (
                     !meta::iterator<Start> &&
-                    requires{{*std::forward<Self>(self).start};}
+                    requires{{*std::forward<Self>(self).m_start};}
                 )
             {
-                return (*std::forward<Self>(self).start);
+                return (*std::forward<Self>(self).m_start);
             }
 
             static constexpr bool step_iterator =
                 has_step && meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*(*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step))};
+                    {*(*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step))};
                 };
 
             static constexpr decltype(auto) subscript(T self, difference_type i)
                 noexcept (requires{{
-                    *(*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step))
+                    *(*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step))
                 } noexcept;})
                 requires (step_iterator)
             {
-                return (*(*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step)));
+                return (*(*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step)));
             }
 
             static constexpr bool step_value =
                 has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step)};
+                    {*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step)};
                 };
 
             static constexpr decltype(auto) subscript(T self, difference_type i)
                 noexcept (requires{{
-                    *std::forward<Self>(self).start + i * (*std::forward<Self>(self).step)
+                    *std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step)
                 } noexcept;})
                 requires (step_value)
             {
-                return (*std::forward<Self>(self).start + i * (*std::forward<Self>(self).step));
+                return (*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step));
             }
 
             static constexpr bool iterator =
                 !has_step && meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*(*std::forward<Self>(self).start + i)};
+                    {*(*std::forward<Self>(self).m_start + i)};
                 };
 
             static constexpr decltype(auto) subscript(T self, difference_type i)
-                noexcept (requires{{*(*std::forward<Self>(self).start + i)} noexcept;})
+                noexcept (requires{{*(*std::forward<Self>(self).m_start + i)} noexcept;})
                 requires (iterator)
             {
-                return (*(*std::forward<Self>(self).start + i));
+                return (*(*std::forward<Self>(self).m_start + i));
             }
 
             static constexpr bool value =
                 !has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*std::forward<Self>(self).start + i};
+                    {*std::forward<Self>(self).m_start + i};
                 };
 
             static constexpr decltype(auto) subscript(T self, difference_type i)
-                noexcept (requires{{*std::forward<Self>(self).start + i} noexcept;})
+                noexcept (requires{{*std::forward<Self>(self).m_start + i} noexcept;})
                 requires (value)
             {
-                return (*std::forward<Self>(self).start + i);
+                return (*std::forward<Self>(self).m_start + i);
             }
 
             static constexpr auto subscript(T self, difference_type i)
                 noexcept (requires(copy tmp) {
                     {copy{std::forward<Self>(self)}} noexcept;
                     {tmp += i} noexcept;
-                    {*tmp.start} noexcept -> meta::nothrow::copyable;
+                    {*tmp.m_start} noexcept -> meta::nothrow::copyable;
                 })
                 requires (!value && !iterator && !step_value && !step_iterator && requires(copy tmp) {
                     {copy{std::forward<Self>(self)}};
                     {tmp += i};
-                    {*tmp.start} -> meta::copyable;
+                    {*tmp.m_start} -> meta::copyable;
                 })
             {
                 copy tmp = std::forward<Self>(self);
                 tmp += i;
-                return *tmp.start;
+                return *tmp.m_start;
             }
         };
 
@@ -1268,9 +1323,9 @@ namespace impl {
                 {impl::ref<step_type>{}};
             })
         :
-            start{std::forward<Start>(start)},
-            stop{std::forward<Stop>(stop)},
-            step{}
+            m_start{std::forward<Start>(start)},
+            m_stop{std::forward<Stop>(stop)},
+            m_step{}
         {}
         [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
             noexcept (requires{
@@ -1284,9 +1339,9 @@ namespace impl {
                 {impl::ref<step_type>{}};
             })
         :
-            start{std::forward<Start>(start), std::forward<Stop>(stop)},
-            stop{},
-            step{}
+            m_start{std::forward<Start>(start), std::forward<Stop>(stop)},
+            m_stop{},
+            m_step{}
         {}
         [[nodiscard]] constexpr iota(
             meta::forward<Start> start,
@@ -1305,9 +1360,9 @@ namespace impl {
                 {impl::ref<step_type>{}};
             })
         :
-            start{std::forward<Start>(start)},
-            stop{std::forward<Stop>(stop)},
-            step{std::forward<Step>(step)}
+            m_start{std::forward<Start>(start)},
+            m_stop{std::forward<Stop>(stop)},
+            m_step{std::forward<Step>(step)}
         {
             assert_nonzero_step();
         }
@@ -1328,9 +1383,9 @@ namespace impl {
                 {impl::ref<step_type>{std::forward<Step>(step)}};
             })
         :
-            start{std::forward<Start>(start), std::forward<Stop>(stop)},
-            stop{},
-            step{std::forward<Step>(step)}
+            m_start{std::forward<Start>(start), std::forward<Stop>(stop)},
+            m_stop{},
+            m_step{std::forward<Step>(step)}
         {
             assert_nonzero_step();
         }
@@ -1338,7 +1393,7 @@ namespace impl {
             meta::as_const_ref<start_type> start,
             const impl::ref<stop_type>& stop,
             const impl::ref<step_type>& step,
-            size_t offset
+            difference_type position
         )
             noexcept (requires{
                 {impl::ref<start_type>{start}} noexcept;
@@ -1351,27 +1406,27 @@ namespace impl {
                 {impl::ref<step_type>{step}};
             })
         :
-            start{start},
-            stop{stop},
-            step{step},
-            offset{offset}
+            m_start{start},
+            m_stop{stop},
+            m_step{step},
+            m_position{position}
         {}
 
         constexpr void swap(iota& other)
             noexcept (requires{
-                {start.swap(other.start)} noexcept;
-                {stop.swap(other.stop)} noexcept;
-                {step.swap(other.step)} noexcept;
+                {m_start.swap(other.m_start)} noexcept;
+                {m_stop.swap(other.m_stop)} noexcept;
+                {m_step.swap(other.m_step)} noexcept;
             })
             requires (requires{
-                {start.swap(other.start)};
-                {stop.swap(other.stop)};
-                {step.swap(other.step)};
+                {m_start.swap(other.m_start)};
+                {m_stop.swap(other.m_stop)};
+                {m_step.swap(other.m_step)};
             })
         {
-            start.swap(other.start);
-            stop.swap(other.stop);
-            step.swap(other.step);
+            m_start.swap(other.m_start);
+            m_stop.swap(other.m_stop);
+            m_step.swap(other.m_step);
         }
 
         template <typename Self>
@@ -1484,9 +1539,14 @@ namespace impl {
             return (access<Self>::subscript(std::forward<Self>(self), i));
         }
 
-        [[nodiscard]] constexpr size_t position() const noexcept {
-            return offset;
+        [[nodiscard]] constexpr difference_type position() const noexcept {
+            return m_position;
         }
+
+
+        /// TODO: unifying the counted and uncounted cases will require changes to
+        /// empty(), size(), and ssize() primarily, as well as the bounds-checking
+        /// logic in advance() and retreat().
 
         [[nodiscard]] constexpr bool empty() const noexcept requires (infinite) {
             return false;
@@ -1494,104 +1554,104 @@ namespace impl {
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
-                {*start == *stop} noexcept -> meta::nothrow::convertible_to<bool>;
+                {*m_start == *m_stop} noexcept -> meta::nothrow::convertible_to<bool>;
             })
             requires (!infinite && !has_step && requires{
-                {*start == *stop} -> meta::convertible_to<bool>;
+                {*m_start == *m_stop} -> meta::convertible_to<bool>;
             })
         {
-            return *start == *stop;
+            return *m_start == *m_stop;
         }
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
-                {*start >= *stop} noexcept -> meta::nothrow::convertible_to<bool>;
+                {*m_start >= *m_stop} noexcept -> meta::nothrow::convertible_to<bool>;
             } && (strictly_positive<Step> || requires{
-                {*step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {*start <= *stop} noexcept -> meta::nothrow::convertible_to<bool>;
+                {*m_step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {*m_start <= *m_stop} noexcept -> meta::nothrow::convertible_to<bool>;
             }))
             requires (!infinite && has_step && requires{
-                {*start >= *stop} -> meta::convertible_to<bool>;
+                {*m_start >= *m_stop} -> meta::convertible_to<bool>;
             } && (strictly_positive<Step> || requires{
-                {*step < 0} -> meta::explicitly_convertible_to<bool>;
-                {*start <= *stop} -> meta::convertible_to<bool>;
+                {*m_step < 0} -> meta::explicitly_convertible_to<bool>;
+                {*m_start <= *m_stop} -> meta::convertible_to<bool>;
             }))
         {
             if constexpr (!strictly_positive<Step>) {
-                if (*step < 0) {
-                    return *start <= *stop;
+                if (*m_step < 0) {
+                    return *m_start <= *m_stop;
                 }
             }
-            return *start >= *stop;
+            return *m_start >= *m_stop;
         }
 
         [[nodiscard]] constexpr size_t size() const
             noexcept ((has_step && requires(const iota& self) {
-                {size_t((*stop - *start) / *step)} noexcept;
+                {size_t((*m_stop - *m_start) / *m_step)} noexcept;
             }) || (!has_step && requires(const iota& self) {
-                {size_t(*stop - *start)} noexcept;
+                {size_t(*m_stop - *m_start)} noexcept;
             }))
             requires (!infinite && (
                 (has_step && requires(const iota& self) {
-                    {size_t((*stop - *start) / *step)};
+                    {size_t((*m_stop - *m_start) / *m_step)};
                 }) || (!has_step && requires(const iota& self) {
-                    {size_t(*stop - *start)};
+                    {size_t(*m_stop - *m_start)};
                 })
             ))
         {
             if constexpr (has_step) {
-                return size_t((*stop - *start) / *step);
+                return size_t((*m_stop - *m_start) / *m_step);
             } else {
-                return size_t(*stop - *start);
+                return size_t(*m_stop - *m_start);
             }
         }
 
         [[nodiscard]] constexpr ssize_t ssize() const
             noexcept ((has_step && requires(const iota& self) {
-                {ssize_t((*stop - *start) / *step)} noexcept;
+                {ssize_t((*m_stop - *m_start) / *m_step)} noexcept;
             }) || (!has_step && requires(const iota& self) {
-                {ssize_t(*stop - *start)} noexcept;
+                {ssize_t(*m_stop - *m_start)} noexcept;
             }))
             requires (!infinite && (
                 (has_step && requires(const iota& self) {
-                    {ssize_t((*stop - *start) / *step)};
+                    {ssize_t((*m_stop - *m_start) / *m_step)};
                 }) || (!has_step && requires(const iota& self) {
-                    {ssize_t(*stop - *start)};
+                    {ssize_t(*m_stop - *m_start)};
                 })
             ))
         {
             if constexpr (has_step) {
-                return ssize_t((*stop - *start) / *step);
+                return ssize_t((*m_stop - *m_start) / *m_step);
             } else {
-                return ssize_t(*stop - *start);
+                return ssize_t(*m_stop - *m_start);
             }
         }
 
         [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{copy{*start, stop, step, offset}} noexcept;})
-            requires (requires{{copy{*start, stop, step, offset}};})
+            noexcept (requires{{copy{*m_start, m_stop, m_step, m_position}} noexcept;})
+            requires (requires{{copy{*m_start, m_stop, m_step, m_position}};})
         {
-            return copy{*start, stop, step, offset};
+            return copy{*m_start, m_stop, m_step, m_position};
         }
 
         [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
 
         /// TODO: all advance() methods need to bounds check in consteval contexts in
         /// order to not trip the compiler's UB sanitizer.  However, in order to
-        /// maintain an accurate offset count, I would need to account for the last
-        /// increment, which may be partial.  If I force the offset to be in units of
+        /// maintain an accurate position count, I would need to account for the last
+        /// increment, which may be partial.  If I force the position to be in units of
         /// `step`, then that may lead to an innacurate count when retreating.
         /// Perhaps I need to add an extra `overflow` count to track the remaining
         /// steps in the last increment that went out of bounds?  Then, when
         /// retreating, I would skip that many iterations if it is non-zero, which
-        /// should correct the offset.
+        /// should correct the position.
 
         constexpr void advance()
-            noexcept (requires{{++*start} noexcept;})
-            requires (!has_step && requires{{++*start};})
+            noexcept (requires{{++*m_start} noexcept;})
+            requires (!has_step && requires{{++*m_start};})
         {
-            ++*start;
-            ++offset;
+            ++*m_start;
+            ++m_position;
         }
 
         /// TODO: these consteval blocks are necessary to prevent the compiler from
@@ -1600,152 +1660,152 @@ namespace impl {
         /// constraint expressions, which idk exactly how to do.
 
         constexpr void advance()
-            noexcept (requires{{*start += *step} noexcept;})
+            noexcept (requires{{*m_start += *m_step} noexcept;})
             requires (increment_simple)
         {
             if consteval {
-                auto diff = (*stop - *start);
-                if (diff < *step) {
-                    *start += diff;
+                auto diff = (*m_stop - *m_start);
+                if (diff < *m_step) {
+                    *m_start += diff;
                 } else {
-                    *start += *step;
-                    ++offset;
+                    *m_start += *m_step;
+                    ++m_position;
                 }
             } else {
-                *start += *step;
-                ++offset;
+                *m_start += *m_step;
+                ++m_position;
             }
         }
 
         constexpr void advance()
-            noexcept (requires{{increment_loop(*step)} noexcept;})
+            noexcept (requires{{increment_loop(*m_step)} noexcept;})
             requires (!increment_simple && increment_count)
         {
             if consteval {
-                auto diff = (*stop - *start);
-                if (diff < *step) {
+                auto diff = (*m_stop - *m_start);
+                if (diff < *m_step) {
                     increment_loop(diff);
                 } else {
-                    increment_loop(*step);
+                    increment_loop(*m_step);
                 }
-                ++offset;
+                ++m_position;
             } else {
-                increment_loop(*step);
-                ++offset;
+                increment_loop(*m_step);
+                ++m_position;
             }
         }
 
         constexpr void advance(difference_type i)
             noexcept (
-                (has_step && requires{{*start += i * (*step)} noexcept;}) ||
-                (!has_step && requires{{*start += i} noexcept;})
+                (has_step && requires{{*m_start += i * (*m_step)} noexcept;}) ||
+                (!has_step && requires{{*m_start += i} noexcept;})
             )
             requires (iadd_simple)
         {
             if constexpr (has_step) {
-                *start += i * (*step);
+                *m_start += i * (*m_step);
             } else {
-                *start += i;
+                *m_start += i;
             }
-            offset += i;
+            m_position += i;
         }
 
         constexpr void advance(difference_type i)
             noexcept (
-                (has_step && requires{{increment_loop(i * (*step))} noexcept;}) ||
+                (has_step && requires{{increment_loop(i * (*m_step))} noexcept;}) ||
                 (!has_step && requires{{increment_loop(i)} noexcept;})
             )
             requires (!iadd_simple && iadd_count)
         {
             if constexpr (has_step) {
-                increment_loop(i * (*step));
+                increment_loop(i * (*m_step));
             } else {
                 increment_loop(i);
             }
-            offset += i;
+            m_position += i;
         }
 
         constexpr void retreat()
-            noexcept (requires{{--*start} noexcept;})
-            requires (!has_step && requires{{--*start};})
+            noexcept (requires{{--*m_start} noexcept;})
+            requires (!has_step && requires{{--*m_start};})
         {
             if consteval {
-                if (offset > 0) {
-                    --*start;
-                    --offset;
+                if (m_position > 0) {
+                    --*m_start;
+                    --m_position;
                 }
             } else {
-                --*start;
-                --offset;
+                --*m_start;
+                --m_position;
             }
         }
 
         constexpr void retreat()
-            noexcept (requires{{*start -= *step} noexcept;})
+            noexcept (requires{{*m_start -= *m_step} noexcept;})
             requires (decrement_simple)
         {
             if consteval {
-                if (offset > 0) {
-                    *start -= *step;
-                    --offset;
+                if (m_position > 0) {
+                    *m_start -= *m_step;
+                    --m_position;
                 }
             } else {
-                *start -= *step;
-                --offset;
+                *m_start -= *m_step;
+                --m_position;
             }
         }
 
         constexpr void retreat()
-            noexcept (requires{{decrement_loop(*step)} noexcept;})
+            noexcept (requires{{decrement_loop(*m_step)} noexcept;})
             requires (!decrement_simple && decrement_count)
         {
             if consteval {
-                if (offset > 0) {
-                    decrement_loop(*step);
-                    --offset;
+                if (m_position > 0) {
+                    decrement_loop(*m_step);
+                    --m_position;
                 }
             } else {
-                decrement_loop(*step);
-                --offset;
+                decrement_loop(*m_step);
+                --m_position;
             }
         }
 
         constexpr void retreat(difference_type i)
             noexcept (
-                (has_step && requires{{*start -= i * (*step)} noexcept;}) ||
-                (!has_step && requires{{*start -= i} noexcept;})
+                (has_step && requires{{*m_start -= i * (*m_step)} noexcept;}) ||
+                (!has_step && requires{{*m_start -= i} noexcept;})
             )
             requires (isub_simple)
         {
             if consteval {
-                if (i > offset) {
+                if (i > m_position) {
                     if constexpr (has_step) {
-                        *start -= (i - offset) * (*step);
+                        *m_start -= (i - m_position) * (*m_step);
                     } else {
-                        *start -= (i - offset);
+                        *m_start -= (i - m_position);
                     }
-                    offset = 0;
+                    m_position = 0;
                 } else {
                     if constexpr (has_step) {
-                        *start -= i * (*step);
+                        *m_start -= i * (*m_step);
                     } else {
-                        *start -= i;
+                        *m_start -= i;
                     }
-                    offset -= i;
+                    m_position -= i;
                 }
             } else {
                 if constexpr (has_step) {
-                    *start -= i * (*step);
+                    *m_start -= i * (*m_step);
                 } else {
-                    *start -= i;
+                    *m_start -= i;
                 }
-                offset -= i;
+                m_position -= i;
             }
         }
 
         constexpr void retreat(difference_type i)
             noexcept (
-                (has_step && requires{{decrement_loop(i * (*step))} noexcept;}) ||
+                (has_step && requires{{decrement_loop(i * (*m_step))} noexcept;}) ||
                 (!has_step && requires{{decrement_loop(i)} noexcept;})
             )
             requires (!isub_simple && isub_count)
@@ -1756,7 +1816,7 @@ namespace impl {
 
             }
             if constexpr (has_step) {
-                decrement_loop(i * (*step));
+                decrement_loop(i * (*m_step));
             } else {
                 decrement_loop(i);
             }
@@ -1770,19 +1830,17 @@ namespace impl {
             return *this;
         }
 
-        /// TODO: postincrement should return a copy that owns the start value.
-
-        [[nodiscard]] constexpr iota operator++(int)
+        [[nodiscard]] constexpr copy operator++(int)
             noexcept (requires{
-                {iota{*this}} noexcept;
+                {begin()} noexcept;
                 {++*this} noexcept;
             })
             requires (requires{
-                {iota(*this)};
+                {begin()};
                 {++*this};
             })
         {
-            iota tmp = *this;
+            copy tmp = begin();
             ++*this;
             return tmp;
         }
@@ -1795,34 +1853,32 @@ namespace impl {
             return *this;
         }
 
-        /// TODO: copy{*this} is not valid
-
         [[nodiscard]] constexpr copy operator+(difference_type i) const
             noexcept ((has_step && requires{
-                {copy{*start + i * (*step), stop, step, offset + i}} noexcept;
+                {copy{*m_start + i * (*m_step), m_stop, m_step, m_position + i}} noexcept;
             }) || (!has_step && requires{
-                {copy{*start + i, stop, step}} noexcept;
+                {copy{*m_start + i, m_stop, m_step}} noexcept;
             }))
             requires (add_simple)
         {
             if constexpr (has_step) {
-                return {*start + i * (*step), stop, step};
+                return {*m_start + i * (*m_step), m_stop, m_step};
             } else {
-                return {*start + i, stop, step};
+                return {*m_start + i, m_stop, m_step};
             }
         }
 
         [[nodiscard]] constexpr copy operator+(difference_type i) const
             noexcept (requires(copy tmp) {
-                {copy{*this}} noexcept;
+                {begin()} noexcept;
                 {tmp += i} noexcept;
             })
             requires (!add_simple && requires(copy tmp) {
-                {copy{*this}};
+                {begin()};
                 {tmp += i};
             })
         {
-            copy tmp = *this;
+            copy tmp = begin();
             tmp += i;
             return tmp;
         }
@@ -1835,17 +1891,17 @@ namespace impl {
             return *this;
         }
 
-        [[nodiscard]] constexpr iota operator--(int)
+        [[nodiscard]] constexpr copy operator--(int)
             noexcept (requires{
-                {iota{*this}} noexcept;
+                {begin()} noexcept;
                 {--*this} noexcept;
             })
             requires (requires{
-                {iota(*this)};
+                {begin()};
                 {--*this};
             })
         {
-            iota tmp = *this;
+            copy tmp = begin();
             --*this;
             return tmp;
         }
@@ -1860,42 +1916,43 @@ namespace impl {
 
         [[nodiscard]] constexpr copy operator-(difference_type i) const
             noexcept (
-                (has_step && requires{{copy{*start - i * (*step), stop, step}} noexcept;}) ||
-                (!has_step && requires{{copy{*start - i, stop, step}} noexcept;})
+                (has_step && requires{{copy{*m_start - i * (*m_step), m_stop, m_step}} noexcept;}) ||
+                (!has_step && requires{{copy{*m_start - i, m_stop, m_step}} noexcept;})
             )
             requires (sub_simple)
         {
             if constexpr (has_step) {
-                return {*start - i * (*step), stop, step};
+                return {*m_start - i * (*m_step), m_stop, m_step};
             } else {
-                return {*start - i, stop, step};
+                return {*m_start - i, m_stop, m_step};
             }
         }
 
         [[nodiscard]] constexpr copy operator-(difference_type i) const
             noexcept (requires(copy tmp) {
-                {copy{*this}} noexcept;
+                {begin()} noexcept;
                 {tmp -= i} noexcept;
             })
             requires (!sub_simple && requires(copy tmp) {
-                {copy{*this}};
+                {begin()};
                 {tmp -= i};
             })
         {
-            copy tmp = *this;
+            copy tmp = begin();
             tmp -= i;
             return tmp;
         }
 
-        [[nodiscard]] constexpr difference_type operator-(const iota& other) const
+        template <meta::is<Start> T>
+        [[nodiscard]] constexpr difference_type operator-(const iota<T, Stop, Step>& other) const
             noexcept (requires{{
-                difference_type(offset) - difference_type(other.offset)
+                difference_type(m_position) - difference_type(other.m_position)
             } noexcept -> meta::nothrow::convertible_to<difference_type>;})
             requires (requires{{
-                difference_type(offset) - difference_type(other.offset)
+                difference_type(m_position) - difference_type(other.m_position)
             } -> meta::convertible_to<difference_type>;})
         {
-            return difference_type(offset) - difference_type(other.offset);
+            return difference_type(m_position) - difference_type(other.m_position);
         }
 
         [[nodiscard]] friend constexpr difference_type operator-(
@@ -1926,12 +1983,14 @@ namespace impl {
             return self.ssize();
         }
 
-        [[nodiscard]] constexpr bool operator==(const iota& other) const noexcept {
-            return offset == other.offset;
+        template <meta::is<Start> T>
+        [[nodiscard]] constexpr bool operator==(const iota<T, Stop, Step>& other) const noexcept {
+            return m_position == other.m_position;
         }
 
-        [[nodiscard]] constexpr auto operator<=>(const iota& other) const noexcept {
-            return offset <=> other.offset;
+        template <meta::is<Start> T>
+        [[nodiscard]] constexpr auto operator<=>(const iota<T, Stop, Step>& other) const noexcept {
+            return m_position <=> other.m_position;
         }
 
         [[nodiscard]] friend constexpr bool operator==(const iota& self, NoneType)
@@ -4957,13 +5016,13 @@ namespace bertrand {
 static constexpr std::array<int, 3> arr {1, 2, 3};
 
 static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
-static constexpr auto r12 = iter::range(1, 4);
+static constexpr auto r12 = iter::range(arr.begin(), 3);
 
 static_assert(meta::random_access_iterator<decltype(r12.begin())>);
 
 
 static_assert([] {
-    // auto x = r12[0];
+    auto x = r12->stop();
     for (auto&& i : r12) {
         if (i != 1 && i != 2 && i != 3) {
             return false;
