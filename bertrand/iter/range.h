@@ -976,6 +976,110 @@ namespace impl {
             return m_offset + m_overflow;
         }
 
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{copy{start(), m_stop, m_step, m_offset, m_overflow}} noexcept;})
+            requires (requires{{copy{start(), m_stop, m_step, m_offset, m_overflow}};})
+        {
+            return copy{start(), m_stop, m_step, m_offset, m_overflow};
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept {
+            return {};
+        }
+
+    private:
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (
+                (counted && requires{{difference_type(stop() - m_offset)} noexcept;}) ||
+                (!counted && requires{{difference_type(stop() - start())} noexcept;})
+            )
+            requires (
+                (counted && requires{{difference_type(stop() - m_offset)};}) ||
+                (!counted && requires{{difference_type(stop() - start())};})
+            )
+        {
+            if constexpr (counted) {
+                return difference_type(stop() - m_offset);
+            } else {
+                return difference_type(stop() - start());
+            }
+        }
+
+        template <typename Self>
+        struct subscript {
+            using T = meta::forward<Self>;
+
+            static constexpr bool step_iterator =
+                has_step && meta::iterator<Start> && requires(T self, difference_type i) {
+                    {*(std::forward<Self>(self).start() + i * (*std::forward<Self>(self).m_step))};
+                };
+
+            static constexpr bool step_value =
+                has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
+                    {std::forward<Self>(self).start() + i * (*std::forward<Self>(self).m_step)};
+                };
+
+            static constexpr bool iterator =
+                !has_step && meta::iterator<Start> && requires(T self, difference_type i) {
+                    {*(std::forward<Self>(self).start() + i)};
+                };
+
+            static constexpr bool value =
+                !has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
+                    {std::forward<Self>(self).start() + i};
+                };
+
+            static constexpr decltype(auto) operator()(T self, difference_type i)
+                noexcept (requires{{
+                    *(std::forward<Self>(self).start() + i * (*std::forward<Self>(self).m_step))
+                } noexcept;})
+                requires (step_iterator)
+            {
+                return (*(std::forward<Self>(self).start() + i * (*std::forward<Self>(self).m_step)));
+            }
+
+            static constexpr decltype(auto) operator()(T self, difference_type i)
+                noexcept (requires{{
+                    std::forward<Self>(self).start() + i * (*std::forward<Self>(self).m_step)
+                } noexcept;})
+                requires (step_value)
+            {
+                return (std::forward<Self>(self).start() + i * (*std::forward<Self>(self).m_step));
+            }
+
+            static constexpr decltype(auto) operator()(T self, difference_type i)
+                noexcept (requires{{*(std::forward<Self>(self).start() + i)} noexcept;})
+                requires (iterator)
+            {
+                return (*(std::forward<Self>(self).start() + i));
+            }
+
+            static constexpr decltype(auto) operator()(T self, difference_type i)
+                noexcept (requires{{std::forward<Self>(self).start() + i} noexcept;})
+                requires (value)
+            {
+                return (std::forward<Self>(self).start() + i);
+            }
+
+            static constexpr auto operator()(T self, difference_type i)
+                noexcept (requires(copy tmp) {
+                    {copy{std::forward<Self>(self)}} noexcept;
+                    {tmp += i} noexcept;
+                    {tmp.curr()} noexcept -> meta::nothrow::copyable;
+                })
+                requires (!value && !iterator && !step_value && !step_iterator && requires(copy tmp) {
+                    {copy{std::forward<Self>(self)}};
+                    {tmp += i};
+                    {tmp.curr()} -> meta::copyable;
+                })
+            {
+                copy tmp = std::forward<Self>(self);
+                tmp += i;
+                return tmp.curr();
+            }
+        };
+
+    public:
         [[nodiscard]] constexpr bool empty() const noexcept requires (infinite) {
             return false;
         }
@@ -1002,238 +1106,51 @@ namespace impl {
             return start() == stop();
         }
 
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (
-                (has_step && requires{{size_type(
-                    (stop() - m_offset) / step() + ((stop() - m_offset) % step() != 0)
-                )} noexcept;}) ||
-                (!has_step && requires{{size_type(stop() - m_offset)} noexcept;})
-            )
-            requires (!infinite && counted && (
-                (has_step && requires{{size_type(
-                    (stop() - m_offset) / step() + ((stop() - m_offset) % step() != 0)
-                )};}) ||
-                (!has_step && requires{{size_type(stop() - m_offset)};})
-            ))
-        {
-            if constexpr (has_step) {
-                auto diff = stop() - m_offset;
-                return size_type(diff / step() + (diff % step() != 0));
-            } else {
-                return size_type(stop() - m_offset);
-            }
-        }
-
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (
-                (has_step && requires {{size_type(
-                    (stop() - m_offset) / step() + ((stop() - m_offset) % step() != 0)
-                )} noexcept;}) || (!has_step && requires {
-                    {size_type(stop() - start())} noexcept;
-                })
-            )
-            requires (!infinite && !counted && (
-                (has_step && requires {{size_type(
-                    (stop() - m_offset) / step() + ((stop() - m_offset) % step() != 0)
-                )};}) || (!has_step && requires {
-                    {size_type(stop() - start())};
-                })
-            ))
-        {
-            if constexpr (has_step) {
-                auto diff = stop() - start();
-                return size_type(diff / step() + (diff % step() != 0));
-            } else {
-                return size_type(stop() - start());
-            }
-        }
-
         [[nodiscard]] constexpr difference_type ssize() const
             noexcept (
-                (has_step && requires{{difference_type((stop() - m_offset) / step())} noexcept;}) ||
-                (!has_step && requires{{difference_type(stop() - m_offset)} noexcept;})
+                (has_step && requires{
+                    {difference_type(remaining() / step() + (remaining() % step() != 0))} noexcept;
+                }) || (!has_step && requires {{remaining()} noexcept;})
             )
-            requires (!infinite && counted && (
-                (has_step && requires{{difference_type((stop() - m_offset) / step())};}) ||
-                (!has_step && requires{{difference_type(stop() - m_offset)};})
+            requires (!infinite && (
+                (has_step && requires{
+                    {difference_type(remaining() / step() + (remaining() % step() != 0))};
+                }) || (!has_step && requires {{remaining()};})
             ))
         {
             if constexpr (has_step) {
-                return difference_type((stop() - m_offset) / step());
-            } else {
-                return difference_type(stop() - m_offset);
-            }
-        }
-
-        [[nodiscard]] constexpr difference_type ssize() const
-            noexcept (
-                (has_step && requires {{difference_type(
-                    (stop() - start()) / step() + ((stop() - start()) % step() != 0)
-                )} noexcept;}) || (!has_step && requires {
-                    {difference_type(stop() - start())} noexcept;
-                })
-            )
-            requires (!infinite && !counted && (
-                (has_step && requires {{difference_type(
-                    (stop() - start()) / step() + ((stop() - start()) % step() != 0)
-                )};}) || (!has_step && requires {
-                    {difference_type(stop() - start())};
-                })
-            ))
-        {
-            if constexpr (has_step) {
-                auto diff = stop() - start();
+                auto diff = remaining();
                 return difference_type(diff / step() + (diff % step() != 0));
             } else {
-                return difference_type(stop() - start());
+                return remaining();
             }
         }
 
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{copy{start(), m_stop, m_step, m_offset, m_overflow}} noexcept;})
-            requires (requires{{copy{start(), m_stop, m_step, m_offset, m_overflow}};})
+        [[nodiscard]] constexpr size_type size() const
+            noexcept (requires{{size_type(ssize())} noexcept;})
+            requires (requires{{size_type(ssize())};})
         {
-            return copy{start(), m_stop, m_step, m_offset, m_overflow};
+            return size_type(ssize());
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept {
-            return {};
-        }
-
-    private:
-        static constexpr bool subscript_simple =
-            (!has_step && (
-                (meta::iterator<Start> && requires(const iota& self, difference_type i) {
-                    {*(self.start() + i)};
-                }) || (!meta::iterator<Start> && requires(const iota& self, difference_type i) {
-                    {self.start() + i};
-                })
-            )) ||
-            (has_step && (
-                (meta::iterator<Start> && requires(const iota& self, difference_type i) {
-                    {*(self.start() + i * self.step())};
-                }) || (!meta::iterator<Start> && requires(const iota& self, difference_type i) {
-                    {self.start() + i * self.step()};
-                })
-            ));
-
-        template <typename Self>
-        struct access {
-            using T = meta::forward<Self>;
-
-            static constexpr decltype(auto) deref(T self)
-                noexcept (requires{{*std::forward<Self>(self).m_start} noexcept;})
-                requires (
-                    meta::iterator<Start> &&
-                    requires{{**std::forward<Self>(self).m_start};}
-                )
-            {
-                return (**std::forward<Self>(self).m_start);
-            }
-
-            static constexpr decltype(auto) deref(T self)
-                noexcept (requires{{*std::forward<Self>(self).m_start} noexcept;})
-                requires (
-                    !meta::iterator<Start> &&
-                    requires{{*std::forward<Self>(self).m_start};}
-                )
-            {
-                return (*std::forward<Self>(self).m_start);
-            }
-
-            static constexpr bool step_iterator =
-                has_step && meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*(*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step))};
-                };
-
-            static constexpr decltype(auto) subscript(T self, difference_type i)
-                noexcept (requires{{
-                    *(*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step))
-                } noexcept;})
-                requires (step_iterator)
-            {
-                return (*(*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step)));
-            }
-
-            static constexpr bool step_value =
-                has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step)};
-                };
-
-            static constexpr decltype(auto) subscript(T self, difference_type i)
-                noexcept (requires{{
-                    *std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step)
-                } noexcept;})
-                requires (step_value)
-            {
-                return (*std::forward<Self>(self).m_start + i * (*std::forward<Self>(self).m_step));
-            }
-
-            static constexpr bool iterator =
-                !has_step && meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*(*std::forward<Self>(self).m_start + i)};
-                };
-
-            static constexpr decltype(auto) subscript(T self, difference_type i)
-                noexcept (requires{{*(*std::forward<Self>(self).m_start + i)} noexcept;})
-                requires (iterator)
-            {
-                return (*(*std::forward<Self>(self).m_start + i));
-            }
-
-            static constexpr bool value =
-                !has_step && !meta::iterator<Start> && requires(T self, difference_type i) {
-                    {*std::forward<Self>(self).m_start + i};
-                };
-
-            static constexpr decltype(auto) subscript(T self, difference_type i)
-                noexcept (requires{{*std::forward<Self>(self).m_start + i} noexcept;})
-                requires (value)
-            {
-                return (*std::forward<Self>(self).m_start + i);
-            }
-
-            static constexpr auto subscript(T self, difference_type i)
-                noexcept (requires(copy tmp) {
-                    {copy{std::forward<Self>(self)}} noexcept;
-                    {tmp += i} noexcept;
-                    {*tmp.m_start} noexcept -> meta::nothrow::copyable;
-                })
-                requires (!value && !iterator && !step_value && !step_iterator && requires(copy tmp) {
-                    {copy{std::forward<Self>(self)}};
-                    {tmp += i};
-                    {*tmp.m_start} -> meta::copyable;
-                })
-            {
-                copy tmp = std::forward<Self>(self);
-                tmp += i;
-                return *tmp.m_start;
-            }
-        };
-
-    public:
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
             noexcept (requires(difference_type i) {{
-                access<Self>::deref(std::forward<Self>(self))
+                std::forward<Self>(self).curr()
             } noexcept -> meta::nothrow::convertible_to<meta::common_type<
-                meta::remove_rvalue<decltype((access<Self>::deref(
-                    std::forward<Self>(self)
-                )))>,
-                meta::remove_rvalue<decltype((access<Self>::subscript(
+                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((subscript<Self>{}(
                     std::forward<Self>(self),
                     i
                 )))>
             >>;})
             requires (requires(difference_type i) {
-                {access<Self>::subscript(std::forward<Self>(self), i)};
+                {subscript<Self>{}(std::forward<Self>(self), i)};
                 {
-                    access<Self>::deref(std::forward<Self>(self))
+                    std::forward<Self>(self).curr()
                 } -> meta::convertible_to<meta::common_type<
-                    meta::remove_rvalue<decltype((access<Self>::deref(
-                        std::forward<Self>(self)
-                    )))>,
-                    meta::remove_rvalue<decltype((access<Self>::subscript(
+                    meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                    meta::remove_rvalue<decltype((subscript<Self>{}(
                         std::forward<Self>(self),
                         i
                     )))>
@@ -1241,27 +1158,25 @@ namespace impl {
             })
         {
             return (meta::common_type<
-                meta::remove_rvalue<decltype((access<Self>::deref(
-                    std::forward<Self>(self)
-                )))>,
-                meta::remove_rvalue<decltype((access<Self>::subscript(
+                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((subscript<Self>{}(
                     std::forward<Self>(self),
                     std::declval<difference_type>()
                 )))>
-            >(access<Self>::deref(std::forward<Self>(self))));
+            >(std::forward<Self>(self).curr()));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{access<Self>::deref(std::forward<Self>(self))} noexcept;})
+            noexcept (requires{{std::forward<Self>(self).curr()} noexcept;})
             requires (
                 !requires(difference_type i) {
-                    {access<Self>::subscript(std::forward<Self>(self), i)};
+                    {subscript<Self>{}(std::forward<Self>(self), i)};
                 } &&
-                requires{{access<Self>::deref(std::forward<Self>(self))};}
+                requires{{std::forward<Self>(self).curr()};}
             )
         {
-            return (access<Self>::deref(std::forward<Self>(self)));
+            return (std::forward<Self>(self).curr());
         }
 
         template <typename Self>
@@ -1275,25 +1190,21 @@ namespace impl {
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
             noexcept (requires{{
-                access<Self>::subscript(std::forward<Self>(self), i)
+                subscript<Self>{}(std::forward<Self>(self), i)
             } noexcept -> meta::nothrow::convertible_to<meta::common_type<
-                meta::remove_rvalue<decltype((access<Self>::deref(
-                    std::forward<Self>(self)
-                )))>,
-                meta::remove_rvalue<decltype((access<Self>::subscript(
+                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((subscript<Self>{}(
                     std::forward<Self>(self),
                     i
                 )))>
             >>;})
             requires (requires{
-                {access<Self>::deref(std::forward<Self>(self))};
+                {std::forward<Self>(self).curr()};
                 {
-                    access<Self>::subscript(std::forward<Self>(self), i)
+                    subscript<Self>{}(std::forward<Self>(self), i)
                 } -> meta::convertible_to<meta::common_type<
-                    meta::remove_rvalue<decltype((access<Self>::deref(
-                        std::forward<Self>(self)
-                    )))>,
-                    meta::remove_rvalue<decltype((access<Self>::subscript(
+                    meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                    meta::remove_rvalue<decltype((subscript<Self>{}(
                         std::forward<Self>(self),
                         i
                     )))>
@@ -1301,45 +1212,26 @@ namespace impl {
             })
         {
             return (meta::common_type<
-                meta::remove_rvalue<decltype((access<Self>::deref(
-                    std::forward<Self>(self)
-                )))>,
-                meta::remove_rvalue<decltype((access<Self>::subscript(
+                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((subscript<Self>{}(
                     std::forward<Self>(self),
                     i
                 )))>
-            >(access<Self>::subscript(std::forward<Self>(self), i)));
+            >(subscript<Self>{}(std::forward<Self>(self), i)));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type i)
-            noexcept (requires{{access<Self>::subscript(std::forward<Self>(self), i)} noexcept;})
+            noexcept (requires{{subscript<Self>{}(std::forward<Self>(self), i)} noexcept;})
             requires (
-                !requires{{access<Self>::deref(std::forward<Self>(self))};} &&
-                requires{{access<Self>::subscript(std::forward<Self>(self), i)};}
+                !requires{{std::forward<Self>(self).curr()};} &&
+                requires{{subscript<Self>{}(std::forward<Self>(self), i)};}
             )
         {
-            return (access<Self>::subscript(std::forward<Self>(self), i));
+            return (subscript<Self>{}(std::forward<Self>(self), i));
         }
 
     private:
-        [[nodiscard]] constexpr difference_type remaining() const
-            noexcept (
-                (counted && requires{{difference_type(stop() - m_offset)} noexcept;}) ||
-                (!counted && requires{{difference_type(stop() - start())} noexcept;})
-            )
-            requires (
-                (counted && requires{{difference_type(stop() - m_offset)};}) ||
-                (!counted && requires{{difference_type(stop() - start())};})
-            )
-        {
-            if constexpr (counted) {
-                return difference_type(stop() - m_offset);
-            } else {
-                return difference_type(stop() - start());
-            }
-        }
-
         template <typename T>
         constexpr void do_increment(const T& n)
             noexcept (requires(T i) {
@@ -5329,10 +5221,11 @@ namespace bertrand {
 
 
 
-static constexpr std::array<int, 4> arr {1, 2, 3};
+static constexpr std::array<int, 3> arr {1, 2, 3};
 
-static constexpr auto r11 = impl::iota(arr.begin(), 3);
+static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
 static constexpr auto r12 = iter::range(arr.begin(), 3, 2);
+static_assert(r11.size() == 3);
 static_assert(r12.size() == 2);
 
 
