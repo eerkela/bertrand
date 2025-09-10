@@ -795,7 +795,9 @@ namespace impl {
     operators for the iterators.  These methods can be accessed via the `->` operator
     on the range object itself, along with `start()`, `stop()`, `step()`, and `curr()`,
     which obtain the corresponding initializers (if any) and the current value.
-    `stop()` and `step()` may be disabled if the range is infinite or lacks a step size.
+    `stop()` and `step()` may be disabled if the range is infinite or lacks a step
+    size.  `data()` is also provided if `start` models `std::contiguous_iterator` and
+    no step size is given.
 
     Finally, these ranges are designed to avoid undefined behavior at all times, making
     them safe to use in constant-evaluation contexts.  In particular, the `start` value
@@ -1010,6 +1012,22 @@ namespace impl {
             })
         {
             return m_offset + m_overflow;
+        }
+
+        [[nodiscard]] constexpr auto data()
+            requires (meta::contiguous_iterator<Start> && !has_step && requires{
+                {std::to_address(curr())} -> meta::pointer;
+            })
+        {
+            return std::to_address(curr());
+        }
+
+        [[nodiscard]] constexpr auto data() const
+            requires (meta::contiguous_iterator<Start> && !has_step && requires{
+                {std::to_address(curr())} -> meta::pointer;
+            })
+        {
+            return std::to_address(curr());
         }
 
         [[nodiscard]] constexpr auto begin() const
@@ -5271,11 +5289,9 @@ namespace bertrand {
 static constexpr std::array<int, 3> arr {1, 2, 3};
 
 static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
-static constexpr auto r12 = iter::range(arr.begin(), [](int x) {
-    return x == 3;
-});
+static constexpr auto r12 = iter::range(arr.begin(), 3, 2);
 static_assert(r11.size() == 3);
-// static_assert(r12.size() == 2);
+static_assert(r12.size() == 2);
 
 
 // static_assert(meta::random_access_iterator<decltype(r12.begin())>);
