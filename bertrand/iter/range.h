@@ -710,21 +710,6 @@ namespace impl {
     template <meta::iterator T>
     struct iota_pointer<T> { using type = meta::iterator_pointer_type<T>; };
 
-    template <typename Start, typename Stop>
-    concept iota_counted =
-        meta::iterator<Start> && meta::integer<Stop> &&
-        !requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {start == stop};
-            {start != stop};
-        };
-
-    template <typename Start, typename Stop>
-    concept iota_uncounted =
-        requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {start == stop} -> meta::convertible_to<bool>;
-            {start != stop} -> meta::convertible_to<bool>;
-        };
-
     constexpr AssertionError iota_negative_count() noexcept {
         return AssertionError("count cannot be negative");
     }
@@ -733,32 +718,103 @@ namespace impl {
         return AssertionError("step size cannot be zero");
     }
 
-    /* A replacement for `std::ranges::iota_view` that allows for an arbitrary step
-    size.  Can be used with any type, as long as the following are satisfied:
+    template <typename Start, typename Stop>
+    concept iota_simple =
+        requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {start == stop} -> meta::convertible_to<bool>;
+        };
 
-        1.  `start < stop` is a valid expression returning a contextual boolean, which
-            determines the end of the range.  If a step size is given, then
-            `start > stop` must also be valid.
-        2.  Either `++start` or `start += step` are valid expressions, depending on
-            whether a step size is given.
-        3.  If `start` is omitted from the constructor, then it must be
-            default-constructible.
+    template <typename Start, typename Stop>
+    concept iota_counted =
+        meta::iterator<Start> && meta::integer<Stop> &&
+        !requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {start == stop};
+        };
 
-    The resulting iota exposes `size()` and `ssize()` if `stop - start` or
-    `(stop - start) / step` yields a value that can be casted to `size_t` and/or
-    `ssize_t`, respectively.  `empty()` is always supported.
+    template <typename Start, typename Stop>
+    concept iota_predicate =
+        !requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+            {start == stop};
+        } && ((
+            meta::iterator<Start> &&
+            requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+                {stop(*start)} -> meta::convertible_to<bool>;
+            }
+        ) || (
+            !meta::iterator<Start> &&
+            requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
+                {stop(start)} -> meta::convertible_to<bool>;
+            }
+        ));
 
-    If the `--start` is also valid, then the iterators over the iota will model
-    `std::bidirectional_iterator`.  If `start` is totally ordered with respect to
-    itself, and `start + step * i`, `start - step * i`, and their in-place equivalents
-    are valid expressions, then the iterators will also model
-    `std::random_access_iterator`.  Otherwise, they will only model
-    `std::input_iterator` or `std::forward_iterator` if `start` is comparable with
-    itself. */
+    /// TODO: add boolean predicate and masking support for step.
+
+    /* A range adaptor that yields successive values in the interval `[start, stop)`,
+    incrementing by `step` on each iteration.
+
+    This class backs the 2- and 3-argument forms of `range()` via CTAD guides, and
+    effectively replaces all of the following STL constructs:
+
+        1.  `std::ranges::iota(start)` -> `range(start, {})`, which represents an
+            infinite range beginning at `start`.
+        2.  `std::ranges::iota(start, stop)` -> `range(start, stop)`, which represents
+            a half-open range beginning at `start` and ending just before `stop`, using
+            `++start` to obtain the next value, and `start == stop` to check for
+            termination.
+        3.  `std::ranges::subrange(begin, end)` -> `range(begin, end)`, which behaves
+            just like (2), but uses iterators instead of values.
+        4.  `std::ranges::counted(begin, count)` -> `range(begin, count)`, where
+            `begin` is an iterator and `count` is a positive integer.
+
+    If `step` is given, then `start` may initially be less than `stop`, and
+    `start += step` will be used to obtain the next value if possible.  If no such
+    operator is available, then `++start` or `--start` will be called in a loop
+    depending on the sign of `step`.
+
+    Both `stop` and `step` may also be given as function objects, which will be called
+    with the current value and must return a boolean.  For `stop`, a return value of
+    `true` indicates that the range should terminate at this index.  For `step`, it
+    indicates that the current value should be included in the range, and `false`
+    indicates that it should be skipped.  This form of `step` therefore acts as a
+    filter predicate, and may also be given as a `range` yielding boolean values, which
+    act as a mask.
+
+    Ranges of this form expose `size()` and `ssize()` methods as long as
+    `(stop - start) / step` is a valid expression yielding an integer-like type, and
+    will also support indexing via the subscript operator in that case.  Iterating
+    over the range equates to copying the current `start` value and incrementing it for
+    each iteration, with the iterators always being totally ordered with respect to one
+    another and the range modeling `std::borrowed_range`.  If `start` is also
+    decrementable, then the iterators will model `std::bidirectional_iterator`.  If
+    `start` supports random-access addition and subtraction with the step size, then
+    the iterators will model `std::random_access_iterator` as well.  Since the `end()`
+    iterator is an empty sentinel, the range will never model `std::common_range`.
+
+    Interval ranges such as this may also be modified in-place using the `advance()`
+    and `retreat()` methods, which behave identically to the increment and decrement
+    operators for the iterators.  These methods can be accessed via the `->` operator
+    on the range object itself, along with `start()`, `stop()`, `step()`, and `curr()`,
+    which obtain the corresponding initializers (if any) and the current value.
+    `stop()` and `step()` may be disabled if the range is infinite or lacks a step size.
+
+    Finally, these ranges are designed to avoid undefined behavior at all times, making
+    them safe to use in constant-evaluation contexts.  In particular, the `start` value
+    is guaranteed to never exceed `stop` under any circumstances, nor will it be
+    decremented below its initial value.  Additional indices are used to track this,
+    which are publicly accessible via the `index()` method, which reports the current
+    position with respect to the initial value.  This index is zero for the initial
+    value, and increases or decreases by `step` each time the range is advanced or
+    retreated.  The `start` value will not be modified unless the index is valid.  Note
+    that this adds a small amount of iteration overhead, but is necessary to ensure
+    safety in all cases. */
     template <meta::not_rvalue Start, meta::not_rvalue Stop, meta::not_rvalue Step>
         requires (meta::copyable<Start> && requires(meta::unqualify<Start> start) {
             {++start};
-        } && (iota_uncounted<Start, Stop> || iota_counted<Start, Stop>))
+        } && (
+            iota_simple<Start, Stop> ||
+            iota_counted<Start, Stop> ||
+            iota_predicate<Start, Stop>
+        ))
     struct iota : iota_tag {
         using start_type = Start;
         using stop_type = Stop;
@@ -771,8 +827,11 @@ namespace impl {
         using size_type = meta::as_unsigned<difference_type>;
 
         static constexpr bool infinite = meta::is<Stop, iota_tag>;
-        static constexpr bool counted = !iota_uncounted<Start, Stop>;
         static constexpr bool has_step = !meta::is<Step, iota_tag>;
+        static constexpr bool counted =
+            !iota_simple<Start, Stop> && iota_counted<Start, Stop>;
+        static constexpr bool predicate =
+            !iota_simple<Start, Stop> && !counted && iota_predicate<Start, Stop>;
 
     private:
         using copy = iota<meta::unqualify<Start>, Stop, Step>;
@@ -819,33 +878,10 @@ namespace impl {
 
     public:
         [[nodiscard]] constexpr iota() = default;
-        [[nodiscard]] constexpr iota(meta::forward<Start> start, meta::forward<Stop> stop)
-            noexcept (requires{
-                {impl::ref<Start>{std::forward<Start>(start)}} noexcept;
-                {impl::ref<Stop>{std::forward<Stop>(stop)}} noexcept;
-                {impl::ref<Step>{}} noexcept;
-                {difference_type{}} noexcept;
-                {assert_positive_count()} noexcept;
-            })
-            requires (requires{
-                {impl::ref<Start>{std::forward<Start>(start)}};
-                {impl::ref<Stop>{std::forward<Stop>(stop)}};
-                {impl::ref<Step>{}};
-                {difference_type{}};
-            })
-        :
-            m_start{std::forward<Start>(start)},
-            m_stop{std::forward<Stop>(stop)},
-            m_step{},
-            m_offset{},
-            m_overflow{}
-        {
-            assert_positive_count();
-        }
         [[nodiscard]] constexpr iota(
             meta::forward<Start> start,
             meta::forward<Stop> stop,
-            meta::forward<Step> step
+            meta::forward<Step> step = {}
         )
             noexcept (requires{
                 {impl::ref<Start>{std::forward<Start>(start)}} noexcept;
@@ -1097,9 +1133,20 @@ namespace impl {
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
+                {stop()(curr())} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (!infinite && !counted && predicate && requires{
+                {stop()(curr())} -> meta::convertible_to<bool>;
+            })
+        {
+            return stop()(curr());
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{
                 {start() == stop()} noexcept -> meta::nothrow::convertible_to<bool>;
             })
-            requires (!infinite && !counted && requires{
+            requires (!infinite && !counted && !predicate && requires{
                 {start() == stop()} -> meta::convertible_to<bool>;
             })
         {
@@ -3179,6 +3226,8 @@ namespace iter {
     template <auto... Is> requires (impl::at_concept<decltype(Is)...>)
     struct at {
     private:
+        /// TODO: document the internals here, since they are rather complicated.
+
         template <auto J, typename C>
         static constexpr bool index =
             requires(C c) {{meta::unpack_tuple<J>(std::forward<C>(c))};} ||
@@ -3360,6 +3409,8 @@ namespace iter {
     template <auto... Is>
         requires (impl::at_concept<decltype(Is)...> && impl::at_run_time<decltype(Is)...>)
     struct at<Is...> {
+        /// TODO: document the internals here, since they are rather complicated.
+
         [[no_unique_address]] impl::basic_tuple<typename decltype(Is)::type...> idx;
 
         [[nodiscard]] constexpr at() = default;
@@ -3795,13 +3846,10 @@ namespace iter {
             return std::ranges::empty(*__value);
         }
 
-        /// TODO: documentation for the tuple-like and runtime index operators should
-        /// reflect their newfound symmetry with `iter::at{}`.
-
-        /* Forwarding `get<I>()` accessor, provided the underlying container is
-        tuple-like.  Automatically applies Python-style wraparound for negative
+        /* Tuple-like range accessor, provided the underlying container supports
+        `get<I>()`.  Automatically applies Python-style wraparound for negative
         indices, and allows multidimensional indexing if the container is a tuple of
-        tuples. */
+        tuples.  This is equivalent to `at<Is...>{}(container)`. */
         template <auto... Is, typename Self>
         constexpr decltype(auto) get(this Self&& self)
             noexcept (requires{{at<Is...>{}(std::forward<Self>(self))} noexcept;})
@@ -3810,11 +3858,12 @@ namespace iter {
             return (at<Is...>{}(std::forward<Self>(self)));
         }
 
-        /* Integer indexing operator.  Accepts one or more signed integers and
+        /* Integer subscript operator.  Accepts one or more signed integers and
         retrieves the corresponding element from the underlying container after
         applying Python-style wraparound for negative indices, which converts the index
         to an unsigned integer.  If multiple indices are given, then each successive
-        index after the first will be used to subscript the previous result. */
+        index after the first will be used to subscript the previous result.  This is
+        equivalent to `at{is...}(container)`. */
         template <typename Self, typename... Is>
         constexpr decltype(auto) operator[](this Self&& self, Is&&... is)
             noexcept (requires{{at{std::forward<Is>(is)...}(std::forward<Self>(self))} noexcept;})
@@ -4156,12 +4205,10 @@ namespace iter {
 /// no need for `has_size()` and any related behavior.
 
 
-
 /// TODO: maybe sequence.h is a good idea, since I could define strings earlier and
 /// avoid circular dependencies.  Strings only really depend on ranges and unpack
 /// wrappers.  Also, as soon as strings are defined, I can define tuples, which may
 /// simplify the `shape()` stuff.
-
 
 
 namespace impl {
@@ -5224,9 +5271,11 @@ namespace bertrand {
 static constexpr std::array<int, 3> arr {1, 2, 3};
 
 static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
-static constexpr auto r12 = iter::range(arr.begin(), 3, 2);
+static constexpr auto r12 = iter::range(arr.begin(), [](int x) {
+    return x == 3;
+});
 static_assert(r11.size() == 3);
-static_assert(r12.size() == 2);
+// static_assert(r12.size() == 2);
 
 
 // static_assert(meta::random_access_iterator<decltype(r12.begin())>);
@@ -5234,9 +5283,9 @@ static_assert(r12.size() == 2);
 
 static_assert([] {
     for (auto&& i : r12) {
-        // if (i != 1 && i != 2 && i != 3) {
-        //     return false;
-        // }
+        if (i != 1 && i != 2 && i != 3) {
+            return false;
+        }
     }
     return true;
 }());
