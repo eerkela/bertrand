@@ -2492,10 +2492,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow_proxy{**this}} noexcept;})
-            requires (requires{{impl::arrow_proxy{**this}};})
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
         {
-            return impl::arrow_proxy{**this};
+            return impl::arrow{**this};
         }
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const
@@ -3340,10 +3340,10 @@ struct Union : impl::union_tag {
     union itself. */
     template <typename Self>
     [[nodiscard]] constexpr auto operator->(this Self&& self)
-        noexcept (requires{{impl::arrow_proxy(*std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::arrow_proxy(*std::forward<Self>(self))};})
+        noexcept (requires{{impl::arrow{*std::forward<Self>(self)}} noexcept;})
+        requires (requires{{impl::arrow{*std::forward<Self>(self)}};})
     {
-        return impl::arrow_proxy(*std::forward<Self>(self));
+        return impl::arrow{*std::forward<Self>(self)};
     }
 
     /* Forward tuple access to `Ts...`, assuming they all support it and have the same
@@ -3519,17 +3519,6 @@ struct Union : impl::union_tag {
         ));
     }
 };
-
-
-/* ADL swap() operator for `bertrand::Union<Ts...>`.  Equivalent to calling `a.swap(b)`
-as a member method. */
-template <typename... Ts>
-constexpr void swap(Union<Ts...>& a, Union<Ts...>& b)
-    noexcept (requires{{a.swap(b)} noexcept;})
-    requires (requires{{a.swap(b)};})
-{
-    a.swap(b);
-}
 
 
 ////////////////////////
@@ -5231,17 +5220,6 @@ struct Optional<T> : impl::optional_tag {
 };
 
 
-/* ADL swap() operator for `bertrand::Optional<T>`.  Equivalent to calling `a.swap(b)`
-as a member method. */
-template <typename T>
-constexpr void swap(Optional<T>& a, Optional<T>& b)
-    noexcept (requires{{a.swap(b)} noexcept;})
-    requires (requires{{a.swap(b)};})
-{
-    a.swap(b);
-}
-
-
 ////////////////////////
 ////    EXPECTED    ////
 ////////////////////////
@@ -6213,17 +6191,6 @@ struct Expected<T, E, Es...> {
         ));
     }
 };
-
-
-/* ADL swap() operator for `bertrand::Expected<T, Es...>`.  Equivalent to calling
-`a.swap(b)` as a member method. */
-template <typename T, typename... Es>
-constexpr void swap(Expected<T, Es...>& a, Expected<T, Es...>& b)
-    noexcept (requires{{a.swap(b)} noexcept;})
-    requires (requires{{a.swap(b)};})
-{
-    a.swap(b);
-}
 
 
 /////////////////////////////////

@@ -4,7 +4,6 @@
 #include "bertrand/common.h"
 #include "bertrand/except.h"
 #include "bertrand/union.h"
-#include <compare>
 
 
 namespace bertrand {
@@ -38,8 +37,6 @@ namespace impl {
             return std::make_reverse_iterator(begin());
         }
     };
-
-    constexpr void swap(empty_range& lhs, empty_range& rhs) noexcept {}
 
     /* A range over just a single scalar element.  Indexing the range perfectly
     forwards that element, and iterating over it is akin to taking its address.  A
@@ -168,14 +165,6 @@ namespace impl {
     template <typename T>
     single_range(T&&) -> single_range<meta::remove_rvalue<T>>;
 
-    template <typename T>
-    constexpr void swap(single_range<T>& lhs, single_range<T>& rhs)
-        noexcept (requires{{lhs.swap(rhs)} noexcept;})
-        requires (requires{{lhs.swap(rhs)};})
-    {
-        lhs.swap(rhs);
-    }
-
     enum class tuple_kind : uint8_t {
         EMPTY,
         TRIVIAL,
@@ -204,9 +193,9 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow_proxy(**this)} noexcept;})
+            noexcept (requires{{impl::arrow(**this)} noexcept;})
         {
-            return impl::arrow_proxy(**this);
+            return impl::arrow(**this);
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const
@@ -614,14 +603,6 @@ namespace impl {
     tuple_range(T&&) -> tuple_range<meta::remove_rvalue<T>>;
 
     template <typename T>
-    constexpr void swap(tuple_range<T>& lhs, tuple_range<T>& rhs)
-        noexcept (requires{{lhs.swap(rhs)} noexcept;})
-        requires (requires{{lhs.swap(rhs)};})
-    {
-        lhs.swap(rhs);
-    }
-
-    template <typename T>
     concept strictly_positive = meta::unsigned_integer<T> || !requires(meta::as_const_ref<T> t) {
         {t < 0} -> meta::explicitly_convertible_to<bool>;
     };
@@ -676,13 +657,20 @@ namespace impl {
             {start > start} -> meta::convertible_to<bool>;
             {start >= start} -> meta::convertible_to<bool>;
         };
+    template <typename Start, typename diff, typename Step>
+    concept iota_contiguous =
+        meta::contiguous_iterator<Start> &&
+        meta::is<Step, iota_tag> &&
+        iota_random_access<Start, diff>;
 
     /* Iota iterators default to modeling `std::input_iterator` only.  If `Start` is
     comparable with itself, then the iterator can be upgraded to model
     `std::forward_iterator`.  If `Start` is also decrementable, then the iterator can
     be further upgraded to model `std::bidirectional_iterator`.  Lastly, if `Start`
     also supports addition, subtraction, and ordered comparisons, then the iterator can
-    be upgraded to model `std::random_access_iterator`. */
+    be upgraded to model `std::random_access_iterator`.  Contiguous iterators will only
+    be generated if `Start` is itself a contiguous iterator and no step size is
+    given. */
     template <typename Start, typename Stop, typename Step>
     struct iota_category { using type = std::input_iterator_tag; };
     template <typename Start, typename Stop, typename Step>
@@ -694,6 +682,9 @@ namespace impl {
     template <typename Start, typename Stop, typename Step>
         requires (iota_random_access<Start, typename iota_difference<Start, Stop>::type>)
     struct iota_category<Start, Stop, Step> { using type = std::random_access_iterator_tag; };
+    template <typename Start, typename Stop, typename Step>
+        requires (iota_contiguous<Start, typename iota_difference<Start, Stop>::type, Step>)
+    struct iota_category<Start, Stop, Step> { using type = std::contiguous_iterator_tag; };
 
     template <typename T>
     struct iota_value_type { using type = meta::remove_reference<T>; };
@@ -1016,18 +1007,18 @@ namespace impl {
 
         [[nodiscard]] constexpr auto data()
             requires (meta::contiguous_iterator<Start> && !has_step && requires{
-                {std::to_address(curr())} -> meta::pointer;
+                {std::addressof(curr())} -> meta::pointer;
             })
         {
-            return std::to_address(curr());
+            return std::addressof(curr());
         }
 
         [[nodiscard]] constexpr auto data() const
             requires (meta::contiguous_iterator<Start> && !has_step && requires{
-                {std::to_address(curr())} -> meta::pointer;
+                {std::addressof(curr())} -> meta::pointer;
             })
         {
-            return std::to_address(curr());
+            return std::addressof(curr());
         }
 
         [[nodiscard]] constexpr auto begin() const
@@ -1246,10 +1237,10 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{impl::arrow_proxy{*std::forward<Self>(self)}} noexcept;})
-            requires (requires{{impl::arrow_proxy{*std::forward<Self>(self)}};})
+            noexcept (requires{{impl::arrow{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{impl::arrow{*std::forward<Self>(self)}};})
         {
-            return impl::arrow_proxy{*std::forward<Self>(self)};
+            return impl::arrow{*std::forward<Self>(self)};
         }
 
         template <typename Self>
@@ -1533,9 +1524,6 @@ namespace impl {
 
         static constexpr bool isub_random_access =
             requires (iota& self, difference_type i, difference_type delta) {
-                {self.step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {delta = m_offset / -self.step()} noexcept;
-                {delta = m_offset / self.step()} noexcept;
                 {i >= delta} -> meta::explicitly_convertible_to<bool>;
                 {i > 0} -> meta::explicitly_convertible_to<bool>;
             } && (
@@ -1545,6 +1533,8 @@ namespace impl {
                     difference_type delta,
                     difference_type epsilon
                 ) {
+                    {delta = m_offset / -self.step()};
+                    {delta = m_offset / self.step()};
                     {self.step() < 0} -> meta::explicitly_convertible_to<bool>;
                     {delta > 0} -> meta::explicitly_convertible_to<bool>;
                     {self.retreat()};
@@ -1556,7 +1546,7 @@ namespace impl {
                     {self.m_overflow -= (i - delta) * self.step()};
                 }) ||
                 (!has_step && requires(iota& self, difference_type i, difference_type delta) {
-                    {self.start() == i};
+                    {self.start() -= i};
                     {self.m_offset -= i};
                     {self.m_overflow -= i - delta};
                 })
@@ -1685,10 +1675,14 @@ namespace impl {
             requires (isub_random_access)
         {
             difference_type delta;
-            if (step() < 0) {
-                delta = m_offset / -step();
+            if constexpr (has_step) {
+                if (step() < 0) {
+                    delta = m_offset / -step();
+                } else {
+                    delta = m_offset / step();
+                }
             } else {
-                delta = m_offset / step();
+                delta = m_offset;
             }
             if (i >= delta) {
                 if constexpr (has_step) {
@@ -2300,14 +2294,6 @@ namespace impl {
         meta::remove_rvalue<Step>
     >;
 
-    template <typename Start, typename Stop, typename Step>
-    constexpr void swap(iota<Start, Stop, Step>& a, iota<Start, Stop, Step>& b)
-        noexcept (requires{{a.swap(b)} noexcept;})
-        requires (requires{{a.swap(b)};})
-    {
-        a.swap(b);
-    }
-
 }
 
 
@@ -2373,6 +2359,17 @@ namespace meta {
 
 
 namespace iter {
+
+    /* A generalized `swap()` operator that allows any type in the `bertrand::iter`
+    namespace that exposes a `.swap()` member method to be used in conjunction with
+    `std::ranges::swap()`. */
+    template <typename T>
+    constexpr void swap(T& lhs, T& rhs)
+        noexcept (requires{{lhs.swap(rhs)} noexcept;})
+        requires (requires{{lhs.swap(rhs)};})
+    {
+        lhs.swap(rhs);
+    }
 
     template <meta::not_rvalue C = impl::empty_range>
     struct range;
@@ -2490,17 +2487,17 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{impl::arrow_proxy(*iter)} noexcept;})
-            requires (requires{{impl::arrow_proxy(*iter)};})
+            noexcept (requires{{impl::arrow(*iter)} noexcept;})
+            requires (requires{{impl::arrow(*iter)};})
         {
-            return impl::arrow_proxy(*iter);
+            return impl::arrow(*iter);
         }
 
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow_proxy(*iter)} noexcept;})
-            requires (requires{{impl::arrow_proxy(*iter)};})
+            noexcept (requires{{impl::arrow(*iter)} noexcept;})
+            requires (requires{{impl::arrow(*iter)};})
         {
-            return impl::arrow_proxy(*iter);
+            return impl::arrow(*iter);
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type n)
@@ -2926,17 +2923,17 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{impl::arrow_proxy(*iter)} noexcept;})
-            requires (requires{{impl::arrow_proxy(*iter)};})
+            noexcept (requires{{impl::arrow(*iter)} noexcept;})
+            requires (requires{{impl::arrow(*iter)};})
         {
-            return impl::arrow_proxy(*iter);
+            return impl::arrow(*iter);
         }
 
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow_proxy(*iter)} noexcept;})
-            requires (requires{{impl::arrow_proxy(*iter)};})
+            noexcept (requires{{impl::arrow(*iter)} noexcept;})
+            requires (requires{{impl::arrow(*iter)};})
         {
-            return impl::arrow_proxy(*iter);
+            return impl::arrow(*iter);
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type n)
@@ -3136,14 +3133,6 @@ namespace impl {
             return iter <=> other.iter;
         }
     };
-
-    template <typename C>
-    constexpr void swap(unpack<C>& lhs, unpack<C>& rhs)
-        noexcept (requires{{lhs.swap(rhs)} noexcept;})
-        requires (requires{{lhs.swap(rhs)};})
-    {
-        lhs.swap(rhs);
-    }
 
 
     /// TODO: all of this crap now needs to be looked at.
@@ -3751,26 +3740,22 @@ namespace iter {
             return impl::unpack(*std::forward<Self>(self).__value);
         }
 
-        /// TODO: to_arrow frequently fails SFINAE due to a buggy implementation in
-        /// libc++.  A better design would probably just delete it entirely, and figure
-        /// out a better implementation.
-
         /* Indirectly access a member of the wrapped container. */
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
             noexcept (
                 meta::inherits<C, impl::iota_tag> ||
-                requires{{impl::arrow_proxy{*std::forward<Self>(self).__value}} noexcept;}
+                requires{{impl::arrow{*std::forward<Self>(self).__value}} noexcept;}
             )
             requires (
                 meta::inherits<C, impl::iota_tag> ||
-                requires{{impl::arrow_proxy{*std::forward<Self>(self).__value}};}
+                requires{{impl::arrow{*std::forward<Self>(self).__value}};}
             )
         {
             if constexpr (meta::inherits<C, impl::iota_tag>) {
                 return std::addressof(*std::forward<Self>(self).__value);
             } else {
-                return impl::arrow_proxy{*std::forward<Self>(self).__value};
+                return impl::arrow{*std::forward<Self>(self).__value};
             }
         }
 
@@ -4206,15 +4191,6 @@ namespace iter {
     struct range<C> : range<impl::single_range<C>> {
         using range<impl::single_range<C>>::range;
     };
-
-    /* ADL `swap()` operator for ranges. */
-    template <typename C>
-    constexpr void swap(range<C>& lhs, range<C>& rhs)
-        noexcept (requires{{lhs.swap(rhs)} noexcept;})
-        requires (requires{{lhs.swap(rhs)};})
-    {
-        lhs.swap(rhs);
-    }
 
 }
 
@@ -5002,7 +4978,7 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->() const {
-            return impl::arrow_proxy(deref_fn(storage.begin));
+            return impl::arrow(deref_fn(storage.begin));
         }
 
         constexpr sequence_iterator& operator++() {
@@ -5139,14 +5115,6 @@ namespace iter {
         meta::remove_rvalue<meta::yield_type<C>>,
         impl::infer_sequence_flags<C>
     >;
-
-    template <typename T>
-    constexpr void swap(sequence<T>& lhs, sequence<T>& rhs)
-        noexcept (requires{{lhs.swap(rhs)} noexcept;})
-        requires (requires{{lhs.swap(rhs)};})
-    {
-        lhs.swap(rhs);
-    }
 
 }
 
@@ -5288,21 +5256,31 @@ namespace bertrand {
 
 static constexpr std::array<int, 3> arr {1, 2, 3};
 
-static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
-static constexpr auto r12 = iter::range(arr.begin(), 3, 2);
-static_assert(r11.size() == 3);
-static_assert(r12.size() == 2);
+// static constexpr auto r11 = impl::iota(arr.begin(), arr.end());
+static constexpr auto r12 = iter::range(arr.begin(), 3);
+// static constexpr auto r13 = iter::range(arr);
+// static_assert(r11.size() == 3);
+// static_assert(r12.size() == 2);
 
 
-// static_assert(meta::random_access_iterator<decltype(r12.begin())>);
+static_assert(meta::random_access_iterator<decltype(r12.begin())>);
+static_assert(meta::contiguous_iterator<decltype(r12.begin())>);
+// static_assert(std::ranges::contiguous_range<decltype(r12)>);
 
 
 static_assert([] {
-    for (auto&& i : r12) {
-        if (i != 1 && i != 2 && i != 3) {
-            return false;
-        }
-    }
+    auto it = r12.begin();
+    if (*it != 1) return false;
+    it += 1;
+    if (*it != 2) return false;
+    it -= 1;
+    if (*it != 1) return false;
+
+    // for (auto&& i : r12) {
+    //     if (i != 1 && i != 2 && i != 3) {
+    //         return false;
+    //     }
+    // }
     return true;
 }());
 

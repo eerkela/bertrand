@@ -2988,6 +2988,8 @@ namespace meta {
     template <typename T, typename Char = char>
     concept formattable = ::std::formattable<T, Char>;
 
+    /// TODO: has_operator_bool -> truthy
+
     template <typename T>
     concept has_operator_bool = requires(T t) {
         { static_cast<bool>(t) } -> convertible_to<bool>;
@@ -2999,6 +3001,33 @@ namespace meta {
         concept has_operator_bool =
             meta::has_operator_bool<T> &&
             noexcept((static_cast<bool>(::std::declval<T>())));
+
+    }
+
+    template <typename T>
+    concept has_dereference = requires(T t) { *t; };
+
+    template <has_dereference T>
+    using dereference_type = decltype((*::std::declval<T>()));
+
+    template <typename Ret, typename T>
+    concept dereference_returns =
+        has_dereference<T> && convertible_to<dereference_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_dereference =
+            meta::has_dereference<T> &&
+            noexcept((*::std::declval<T>()));
+
+        template <nothrow::has_dereference T>
+        using dereference_type = meta::dereference_type<T>;
+
+        template <typename Ret, typename T>
+        concept dereference_returns =
+            nothrow::has_dereference<T> &&
+            nothrow::convertible_to<nothrow::dereference_type<T>, Ret>;
 
     }
 
@@ -3032,33 +3061,6 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_dereference = requires(T t) { *t; };
-
-    template <has_dereference T>
-    using dereference_type = decltype((*::std::declval<T>()));
-
-    template <typename Ret, typename T>
-    concept dereference_returns =
-        has_dereference<T> && convertible_to<dereference_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept has_dereference =
-            meta::has_dereference<T> &&
-            noexcept((*::std::declval<T>()));
-
-        template <nothrow::has_dereference T>
-        using dereference_type = meta::dereference_type<T>;
-
-        template <typename Ret, typename T>
-        concept dereference_returns =
-            nothrow::has_dereference<T> &&
-            nothrow::convertible_to<nothrow::dereference_type<T>, Ret>;
-
-    }
-
-    template <typename T>
     concept has_arrow = requires(T t) {
         { ::std::to_address(t) } -> meta::pointer;
     };
@@ -3087,17 +3089,17 @@ namespace meta {
 
     template <typename T>
     constexpr auto to_arrow(T&& value)
-        noexcept (requires{{::std::forward<T>(value).operator->()} noexcept;} || (
-            !requires{{::std::forward<T>(value).operator->()};} &&
+        noexcept (requires{{::std::to_address(::std::forward<T>(value))} noexcept;} || (
+            !requires{{::std::to_address(::std::forward<T>(value))};} &&
             requires{{::std::addressof(::std::forward<T>(value))} noexcept;}
         ))
         requires (
-            requires{{::std::forward<T>(value).operator->()};} ||
+            requires{{::std::to_address(::std::forward<T>(value))};} ||
             requires{{::std::addressof(::std::forward<T>(value))};}
         )
     {
-        if constexpr (requires{{::std::forward<T>(value).operator->()};}) {
-            return ::std::forward<T>(value).operator->();
+        if constexpr (requires{{::std::to_address(::std::forward<T>(value))};}) {
+            return ::std::to_address(::std::forward<T>(value));
         } else {
             return ::std::addressof(::std::forward<T>(value));
         }
@@ -4750,27 +4752,30 @@ template <meta::hashable T>
 }
 
 
+/* A generalized `swap()` operator that allows any type in the `bertrand::` namespace
+that exposes a `.swap()` member method to be used in conjunction with
+`std::ranges::swap()`. */
+template <typename T>
+constexpr void swap(T& lhs, T& rhs)
+    noexcept (requires{{lhs.swap(rhs)} noexcept;})
+    requires (requires{{lhs.swap(rhs)};})
+{
+    lhs.swap(rhs);
+}
+
+
 namespace impl {
 
-    /* A helper for defining iterators and other objects that wish to expose the `->`
-    operator, but may dereference to a temporary result, which would otherwise
-    encounter lifetime issues.  Because the built-in `operator->` recursively invokes
-    itself on the return value, this proxy will guarantee that the address of the
-    temporary remains valid for the full duration of the `->` expression, and then be
-    released immediately afterwards. */
+    /* A generalized `swap()` operator that allows any type in the `bertrand::impl`
+    namespace that exposes a `.swap()` member method to be used in conjunction with
+    `std::ranges::swap()`. */
     template <typename T>
-    struct arrow_proxy {
-        meta::remove_rvalue<T> value;
-        constexpr auto operator->() &&
-            noexcept (requires{{meta::to_arrow(value)} noexcept;})
-            requires (requires{{meta::to_arrow(value)};})
-        {
-            return meta::to_arrow(value);
-        }
-    };
-
-    template <typename T>
-    arrow_proxy(T&&) -> arrow_proxy<T>;
+    constexpr void swap(T& lhs, T& rhs)
+        noexcept (requires{{lhs.swap(rhs)} noexcept;})
+        requires (requires{{lhs.swap(rhs)};})
+    {
+        lhs.swap(rhs);
+    }
 
     /* A simple wrapper for an arbitrarily-qualified type that strips rvalue references
     (taking ownership over the referenced object) and preserves lvalues (converting
@@ -4807,17 +4812,18 @@ namespace impl {
 
         template <typename Self>
         constexpr auto operator->(this Self&& self)
-            noexcept (requires{{arrow_proxy{*std::forward<Self>(self)}} noexcept;})
-            requires (requires{{arrow_proxy{*std::forward<Self>(self)}};})
+            noexcept (requires{{std::addressof(*self)} noexcept;})
+            requires (requires{{std::addressof(*self)};})
         {
-            return arrow_proxy{*std::forward<Self>(self)};
+            return std::addressof(*self);
         }
     };
 
-    /* Specialization of `ref` for lvalue references.  Assigning to an lvalue reference
-    will rebind the reference itself, without affecting the referenced object.  The
-    reference can also be default-constructed, placing it in a null state that can be
-    assigned to later. */
+    /* Specialization of `ref<T>` for lvalue references.  Assigning to an lvalue
+    reference will rebind the reference itself, without affecting the referenced
+    object.  The reference can also be default-constructed, placing it in a null state
+    that can be assigned to later.  Dereferencing a null reference triggers undefined
+    behavior. */
     template <meta::not_void T> requires (meta::lvalue<T>)
     struct ref<T> {
         using type = T;
@@ -4864,25 +4870,37 @@ namespace impl {
 
         template <typename Self>
         constexpr auto operator->(this Self&& self)
-            noexcept (requires{{arrow_proxy{*std::forward<Self>(self)}} noexcept;})
-            requires (requires{{arrow_proxy{*std::forward<Self>(self)}};})
+            noexcept (requires{{std::addressof(*self)} noexcept;})
+            requires (requires{{std::addressof(*self)};})
         {
-            return arrow_proxy{*std::forward<Self>(self)};
+            return std::addressof(*self);
         }
     };
 
-    /* CTAD allows reference types to be inferred from an initializer. */
     template <typename T>
     ref(T&&) -> ref<meta::remove_rvalue<T>>;
 
-    /* ADL swap() operator for `impl::ref<T>`. */
+    /* An extension of `ref<T>` that recursively forwards the `->` operator if
+    possible.  This helps when defining iterators and other objects that wish to expose
+    the `->` operator, but may dereference to a temporary result, which would otherwise
+    encounter lifetime issues.  Because the built-in `operator->` recursively invokes
+    itself until a non pointer-like type is encountered, this proxy will effectively
+    guarantee that the address of the temporary remains valid for the full duration of
+    the `->` expression, and then be released immediately afterwards. */
     template <typename T>
-    constexpr void swap(ref<T>& a, ref<T>& b)
-        noexcept (requires{{a.swap(b)} noexcept;})
-        requires (requires{{a.swap(b)};})
-    {
-        a.swap(b);
-    }
+    struct arrow : ref<T> {
+        using ref<T>::ref;
+        template <typename Self>
+        constexpr auto operator->(this Self&& self)
+            noexcept (requires{{meta::to_arrow(*self)} noexcept;})
+            requires (requires{{meta::to_arrow(*self)};})
+        {
+            return meta::to_arrow(*self);
+        }
+    };
+
+    template <typename T>
+    arrow(T&&) -> arrow<T>;
 
     /* A generic overload set implemented using recursive inheritance.  This allows the
     overload set to accept functions by reference, as well as index into them as if
@@ -5000,6 +5018,7 @@ namespace impl {
         static constexpr size_t size() noexcept { return sizeof...(Ts) + 1; }
         static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
         static constexpr bool empty() noexcept { return false; }
+        constexpr void swap(vtable& other) noexcept { std::ranges::swap(index, other.index); }
 
     private:
         template <typename... A>
@@ -5087,6 +5106,10 @@ namespace impl {
         using pointer = meta::address_type<T>;
 
         pointer ptr = nullptr;
+
+        constexpr void swap(contiguous_iterator& other) noexcept {
+            std::ranges::swap(ptr, other.ptr);
+        }
 
         [[nodiscard]] constexpr reference operator*() const noexcept {
             return *ptr;
@@ -5657,6 +5680,14 @@ namespace impl {
     };
 
 }
+
+
+static_assert([] {
+    impl::ref x = 1;
+    impl::ref y = 2;
+    std::ranges::swap(x, y);
+    return *y == 1 && *x == 2;
+}());
 
 
 /// TODO: static_str<N> -> Str<Optional<N> = None>?
