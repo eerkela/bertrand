@@ -621,12 +621,6 @@ public:
 #undef INHERIT_STD_EXCEPTION
 
 
-/* Non-member ADL swap algorithm for Bertrand exceptions. */
-constexpr void swap(Exception& a, Exception& b) noexcept {
-    a.swap(b);
-}
-
-
 #define BERTRAND_EXCEPTION(CLS, BASE)                                                   \
     struct CLS : BASE {                                                                 \
     protected:                                                                          \
