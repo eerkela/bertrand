@@ -1146,18 +1146,24 @@ namespace impl {
 
         [[nodiscard]] constexpr difference_type index() const
             noexcept ((
-                iota_subrange<Start> && requires{{
-                    m_index.first + m_index.second
-                } noexcept -> meta::nothrow::convertible_to<difference_type>;}
+                iota_subrange<Start> && requires{
+                    {
+                        m_index.first + m_index.second
+                    } noexcept -> meta::nothrow::convertible_to<difference_type>;
+                    {m_index.first} noexcept -> meta::nothrow::convertible_to<difference_type>;
+                }
             ) || (
                 !iota_subrange<Start> && requires{{
                     m_index
                 } noexcept -> meta::nothrow::convertible_to<difference_type>;}
             ))
             requires ((
-                iota_subrange<Start> && requires{{
-                    m_index.first + m_index.second
-                } -> meta::convertible_to<difference_type>;}
+                iota_subrange<Start> && requires{
+                    {
+                        m_index.first + m_index.second
+                    } -> meta::convertible_to<difference_type>;
+                    {m_index.first} -> meta::convertible_to<difference_type>;
+                }
             ) || (
                 !iota_subrange<Start> && requires{{
                     m_index
@@ -1165,7 +1171,11 @@ namespace impl {
             ))
         {
             if constexpr (iota_subrange<Start>) {
-                return m_index.first + m_index.second;
+                if consteval {
+                    return m_index.first + m_index.second;
+                } else {
+                    return m_index.first;
+                }
             } else {
                 return m_index;
             }
@@ -1515,10 +1525,6 @@ namespace impl {
         }
 
     private:
-        /// TODO: update the increment internals to integrate the new flags and only
-        /// apply strict bounds checks at compile time, so that the runtime loop
-        /// performance is comparable to a typical C loop.
-
         constexpr bool filter() const
             noexcept (requires{{step()(curr())} noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{step()(curr())} -> meta::convertible_to<bool>;})
@@ -1531,6 +1537,14 @@ namespace impl {
         /// -> The trick in that case is that I'm going to have to increment the mask
         /// iterator every time I increment the start iterator, so that necessitates
         /// changes to increment_while(), decrement_while(), and first_filtered()
+
+
+        /// TODO: It might be that the only way to make the index() coherent is to
+        /// put it in units of `step`, so that non-integer step sizes don't cause any
+        /// problems.  If you use a conditional step size, then the index will be
+        /// incremented every time the start iterator is incremented.  Or maybe I
+        /// need that behavior in the non-subrange case, and for subranges, the index
+        /// would always be aligned.
 
         template <typename T>
         constexpr void increment_for(const T& n)
@@ -1969,49 +1983,95 @@ namespace impl {
                     {m_overflow += i - delta} noexcept;
                 })
             ))
-            requires (iadd_random_access)
+            requires (
+                iadd_random_access &&
+                iota_unit<Start, Step> &&
+                iota_subrange<Start>
+            )
         {
-            difference_type delta = ssize();
-            if (i >= delta) {
-                if constexpr (has_step) {
-                    if (step() < 0) {
-                        if (delta > 0) {
-                            difference_type epsilon = (delta - 1) * -step();
-                            start() -= epsilon;
-                            m_offset += epsilon;
-                            advance();  // last step may be partial
-                        }
-                        m_overflow += (i - delta) * -step();
-                    } else {
-                        if (delta > 0) {
-                            difference_type epsilon = (delta - 1) * step();
-                            start() += epsilon;
-                            m_offset += epsilon;
-                            advance();  // last step may be partial
-                        }
-                        m_overflow += (i - delta) * step();
-                    }
-                } else {
+            if consteval {
+                difference_type delta = ssize();
+                if (i >= delta) {
                     start() += delta;
-                    m_offset += delta;
-                    m_overflow += i - delta;
-                }
-            } else if (i > 0) {
-                if constexpr (has_step) {
-                    if (step() < 0) {
-                        delta = i * -step();
-                        start() -= delta;
-                    } else {
-                        delta = i * step();
-                        start() += delta;
-                    }
-                    m_offset += delta;
+                    m_index.first += delta;
+                    m_index.second += i - delta;
                 } else {
                     start() += i;
-                    m_offset += i;
+                    m_index.first += i;
                 }
+            } else {
+                start() += i;
+                m_index.first += i;
             }
         }
+
+        constexpr void advance_impl(difference_type i)
+            noexcept (requires{
+                {start() += i} noexcept;
+                {m_index += i} noexcept;
+            })
+            requires (
+                iadd_random_access &&
+                iota_unit<Start, Step> &&
+                !iota_subrange<Start>
+            )
+        {
+            start() += i;
+            m_index += i;
+        }
+
+        constexpr void advance_impl(difference_type i)
+            requires (
+                iadd_random_access &&
+                !iota_unit<Start, Step> &&
+                iota_subrange<Start>
+            )
+        {
+            if consteval {
+                difference_type delta = ssize();
+                if (i >= delta) {
+                    if (step() < 0) {
+                        if (delta > 0) {
+                            auto epsilon = (delta - 1) * -step();
+                            start() -= epsilon;
+                            m_index.first += epsilon;
+                            advance();  // last step may be partial
+                        }
+                        m_index.second += (i - delta) * -step();
+                    } else {
+                        if (delta > 0) {
+                            auto epsilon = (delta - 1) * step();
+                            start() += epsilon;
+                            m_index.first += epsilon;
+                            advance();  // last step may be partial
+                        }
+                        m_index.second += (i - delta) * step();
+                    }
+                    return;
+                }
+            }
+            auto epsilon = i * step();
+            start() += epsilon;
+            m_index.first += epsilon;
+        }
+
+        constexpr void advance_impl(difference_type i)
+            requires (
+                iadd_random_access &&
+                !iota_unit<Start, Step> &&
+                !iota_subrange<Start>
+            )
+        {
+            auto epsilon = i * step();
+            start() += epsilon;
+            m_index += epsilon;
+        }
+
+
+
+
+
+
 
         constexpr void advance_impl(difference_type i)
             noexcept ((iota_unit<Start, Step> && requires{
