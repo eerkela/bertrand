@@ -502,6 +502,11 @@ namespace meta {
         template <typename T, typename... Ts>
         struct unpack_type<0, T, Ts...> { using type = T; };
 
+        template <typename... Ts>
+        struct first_type { using type = void; };
+        template <typename T, typename... Ts>
+        struct first_type<T, Ts...> { using type = T; };
+
         template <size_t I, auto V, auto... Vs>
         constexpr auto unpack_value = unpack_value<I - 1, Vs...>;
         template <auto V, auto... Vs>
@@ -538,6 +543,11 @@ namespace meta {
         impl::normalize_index<sizeof...(Ts), I>(),
         Ts...
     >::type;
+
+    /* Extract the first type in a parameter pack, assuming it is not empty.  If it
+    is empty, the result will be `void` instead. */
+    template <typename... Ts>
+    using first_type = detail::first_type<Ts...>::type;
 
     /* Unpack the non-type template parameter at a particular index of a parameter
     pack. */

@@ -5,16 +5,16 @@
 #include "bertrand/except.h"
 #include "bertrand/math.h"
 #include "bertrand/union.h"
-#include <new>
 
 
 namespace bertrand {
 
 
 namespace impl {
+    struct range_tag {};
     struct iota_tag {};
     struct subrange_tag {};
-    struct range_tag {};
+    struct unpack_tag {};
     struct sequence_tag {};
 
     template <meta::not_rvalue C> requires (meta::iterable<C>)
@@ -25,58 +25,89 @@ namespace impl {
 
 namespace meta {
 
-    namespace detail {
+    /* Detect whether a type is a `range`.  If additional types are provided, then they
+    equate to a convertibility check against the range's yield type.  If more than one
+    type is provided, then the yield type must be tuple-like, and destructurable to the
+    given types. */
+    template <typename T, typename... Rs>
+    concept range = inherits<T, impl::range_tag> && (
+        sizeof...(Rs) == 0 ||
+        (sizeof...(Rs) == 1 && convertible_to<yield_type<T>, first_type<Rs...>>) ||
+        structured_with<yield_type<T>, Rs...>
+    );
 
-        template <typename>
-        constexpr bool unpack = false;
-        template <typename C>
-        constexpr bool unpack<impl::unpack<C>> = true;
+    /* A refinement of `meta::range<T, Rs...>` that only matches iota ranges (i.e.
+    those of the form `[start, stop[, step]]`, where `start` is not an iterator). */
+    template <typename T, typename... Rs>
+    concept iota = range<T, Rs...> && requires(T r) {
+        {*r.__value} -> inherits<impl::iota_tag>;
+    };
 
-        template <typename T, bool done, size_t I, typename... Rs>
-        constexpr bool _unpack_convert = done;
-        template <typename T, bool done, size_t I, typename R> requires (I < meta::tuple_size<T>)
-        constexpr bool _unpack_convert<T, done, I, R> =
-            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, true, I + 1, R>;
-        template <typename T, bool done, size_t I, typename R, typename... Rs>
-            requires (I < meta::tuple_size<T>)
-        constexpr bool _unpack_convert<T, done, I, R, Rs...> =
-            meta::convertible_to<meta::get_type<T, I>, R> && _unpack_convert<T, done, I + 1, Rs...>;
-        template <typename T, typename... Rs>
-        constexpr bool unpack_convert = _unpack_convert<T, false, 0, Rs...>;
+    /* A refinement of `meta::range<T, Rs...>` that only matches subranges (i.e.
+    those of the form `[start, stop[, step]]`, where `start` is an iterator type). */
+    template <typename T, typename... Rs>
+    concept subrange = range<T, Rs...> && requires(T r) {
+        {*r.__value} -> inherits<impl::subrange_tag>;
+    };
 
-    }
+    /* A refinement of `meta::range<T, Rs...>` that only matches unpacked ranges, which
+    are produced by the prefix `*` operator, and may have special effects when provided
+    to a range algorithm or function call. */
+    template <typename T, typename... Rs>
+    concept unpack = range<T, Rs...> && inherits<T, impl::unpack_tag>;
 
-    /// TODO: this idea is actually fantastic, and can be scaled to all other types
-    /// as well.  The idea is that for every class, you would have a meta:: concept
-    /// that takes the class as the first template argument, and then optionally
-    /// takes any number of additional template arguments, which would mirror the
-    /// exact signature of the class.
+    /* A refinement of `meta::range<T, Rs...>` that only matches type-erased sequences,
+    where the underlying container type is hidden from the user. */
+    template <typename T, typename... Rs>
+    concept sequence = range<T, Rs...> && inherits<T, impl::sequence_tag>;
 
-    template <typename T, typename R = void>
-    concept range = inherits<T, impl::range_tag> && (is_void<R> || yields<T, R>);
+    /* A refinement of `meta::range<T, Rs...>` that specifies that the range's begin
+    and end iterators are the same type.  Ranges of this form may be required for
+    legacy algorithms, and simplify some iterator access patterns. */
+    template <typename T, typename... Rs>
+    concept common_range = range<T, Rs...> && ::std::ranges::common_range<T>;
 
-    /// TODO: perhaps I should add `bidirectional_range`, `random_access_range`,
-    /// `contiguous_range`, `output_range`, `common_range`, all possibly with an
-    /// optional yield type.
+    /* A refinement of `meta::range<T>` that specifies that the range's begin iterator
+    satisfies `std::output_iterator`, meaning that its dereference type can be assigned
+    to. */
+    template <typename T, typename V>
+    concept output_range = range<T> && output_iterator<begin_type<T>, V>;
 
-    template <typename T, typename R = void>
-    concept sequence = range<T, R> && inherits<T, impl::sequence_tag>;
+    /* A refinement of `meta::range<T, Rs...>` that specifies that the range's begin
+    iterator is equality comparable against itself. */
+    template <typename T, typename... Rs>
+    concept forward_range = range<T, Rs...> && forward_iterator<begin_type<T>>;
 
-    template <typename T, typename R = void>
-    concept unpack = range<T, R> && detail::unpack<unqualify<T>>;
+    /* A refinement of `meta::forward_range<T, Rs...>` that specifies that the range's
+    begin iterator can be decremented as well as incremented. */
+    template <typename T, typename... Rs>
+    concept bidirectional_range =
+        forward_range<T, Rs...> && bidirectional_iterator<begin_type<T>>;
 
-    // template <typename T, typename... Rs>
-    // concept unpack_to = detail::unpack<unqualify<T>> && (
-    //     (tuple_like<T> && tuple_size<T> == sizeof...(Rs) && detail::unpack_convert<T, Rs...>) ||
-    //     (!tuple_like<T> && ... && yields<T, Rs>)
-    // );
+    /* A refinement of `meta::bidirectional_range<T, Rs...>` that specifies that the
+    range's begin iterator can be randomly accessed (i.e. advanced by more than one
+    index at a time and supports distance, subscripting, etc.). */
+    template <typename T, typename... Rs>
+    concept random_access_range =
+        bidirectional_range<T, Rs...> && random_access_iterator<begin_type<T>>;
+
+    /* A refinement of `meta::random_access_range<T, Rs...>` that specifies that the
+    range's begin iterator is contiguous (i.e. the elements are laid out in a single
+    contiguous block of memory). */
+    template <typename T, typename... Rs>
+    concept contiguous_range =
+        random_access_range<T, Rs...> && contiguous_iterator<begin_type<T>>;
 
     namespace detail {
 
         template <meta::range T>
         constexpr bool prefer_constructor<T> = true;
 
-        /// TODO: wraparound<T>
+        template <meta::range T>
+        constexpr bool wraparound<T> = true;
+
+        /// TODO: declare wraparound<T> for each of the underlying containers, so that
+        /// `range` never needs to do it more than once.
 
     }
 
@@ -1550,12 +1581,18 @@ namespace impl {
             {stop(*start)} -> meta::convertible_to<bool>;
         };
 
+    /// TODO: these concepts probably need some updates to fully cover the increment
+    /// operator and properly include all the various constraints.
+
     template <typename Start, typename Step>
     concept subrange_simple =
         subrange_empty<Step> &&
         requires(meta::unqualify<Start>& start) {
             {++start};
         };
+
+    /// TODO: subrange_linear can only be used if the stop condition supports distance
+    /// checks.
 
     template <typename Start, typename Stop, typename Step>
     concept subrange_linear =
@@ -1570,19 +1607,19 @@ namespace impl {
         !subrange_simple<Start, Step> &&
         !subrange_linear<Start, Stop, Step> &&
         meta::convertible_to<Step, subrange_difference<Start, Stop>> &&
+        meta::default_constructible<subrange_difference<Start, Stop>> &&
         requires(
             meta::unqualify<Start>& start,
-            meta::as_const_ref<Step> step,
-            meta::unqualify<Step> i
+            subrange_difference<Start, Stop> step,
+            subrange_difference<Start, Stop> i
         ) {
-            {meta::unqualify<Step>{}};
             {i < step};
             {++i};
             {++start};
         } && (strictly_positive<Step> || requires(
             meta::unqualify<Start>& start,
-            meta::as_const_ref<Step> step,
-            meta::unqualify<Step> i
+            subrange_difference<Start, Stop> step,
+            subrange_difference<Start, Stop> i
         ) {
             {i > step};
             {--i};
@@ -1590,7 +1627,8 @@ namespace impl {
         });
 
     /// TODO: the step function should take the subrange itself as an argument, rather
-    /// than just the start index.
+    /// than just the start index, but that is not currently possible due to the
+    /// circular dependence on the subrange concepts.
 
     template <typename Start, typename Stop, typename Step>
     concept subrange_nonlinear =
@@ -1604,6 +1642,50 @@ namespace impl {
     constexpr AssertionError negative_count_error() noexcept {
         return AssertionError("count cannot be negative");
     }
+
+
+    /* Subranges require additional bounds checking logic compared to iotas, since
+    overstepping the end of the subrange may lead to undefined behavior, which would
+    otherwise prevent compilation when used in constant expressions.  This default
+    case always performs that check at both compile time and run time, making the
+    behavior consistent, but slightly reducing iteration performance as a tradeoff. */
+    template <typename Start, typename Stop, typename Step>
+    struct subrange_storage {
+        /// TODO: default specialization equates to the "always boundscheck" case.
+        /// This is slightly more complicated, so once the "never boundscheck" case is
+        /// figured out, then this is the next target.
+    };
+
+    /* If either the stop or step index is empty, then the bounds check can be elided
+    at both compile time and run time, since there either is no bound or no possibility
+    of overstepping it due to a unitary step size.  This increases iteration
+    performance without the possibility of undefined behavior. */
+    template <typename Start, typename Stop, typename Step>
+        requires (subrange_infinite<Stop> || subrange_simple<Start, Step>)
+    struct subrange_storage<Start, Stop, Step> {
+        /// TODO: this is the simplest possible case, so I should probably start here
+    };
+
+    /* If the subrange's start index is totally ordered with respect to the stop index
+    and uses random-access or a loop to acquire the next value, then the bounds check
+    can be elided only at run time, since doing so at compile time could overstep the
+    bound.  Because of the total ordering, eliding the check will never cause a problem
+    at run time. */
+    template <typename Start, typename Stop, typename Step>
+        requires (
+            !subrange_infinite<Stop> &&
+            !subrange_simple<Start, Step> &&
+            (subrange_bounded<Start, Stop, Step> || subrange_counted<Start, Stop, Step>) &&
+            (subrange_linear<Start, Stop, Step> || subrange_loop<Start, Stop, Step>)
+        )
+    struct subrange_storage<Start, Stop, Step> {
+        /// TODO: this specialization blends between the two cases above based on an
+        /// `if consteval` branch, and is therefore implemented last.
+    };
+
+
+
+
 
     /* A simple subrange that yields successive values in the interval `[start, stop)`,
     incrementing by `step` on each iteration.
@@ -1666,7 +1748,31 @@ namespace impl {
         using value_type = meta::iterator_value_type<Start>;
         using reference = meta::iterator_reference_type<Start>;
         using pointer = meta::iterator_pointer_type<Start>;
-        using iterator_category = void;  // TODO: fill this in similar to iotas
+        using iterator_category = std::conditional_t<
+            !subrange_nonlinear<Start, Stop, Step> && meta::bidirectional_iterator<Start>,
+            std::conditional_t<
+                meta::random_access_iterator<Start>,
+                std::conditional_t<
+                    meta::contiguous_iterator<Start> && subrange_empty<Step> && (
+                        subrange_infinite<Stop> ||
+                        (subrange_counted<Start, Stop, Step> && requires(
+                            meta::as_const_ref<Stop> stop,
+                            difference_type index
+                        ) {{
+                            difference_type(stop) - index
+                        } -> meta::convertible_to<difference_type>;}) ||
+                        (!subrange_counted<Start, Stop, Step> && requires(
+                            meta::as_const_ref<Stop> stop,
+                            meta::as_const_ref<Start> start
+                        ) {{stop - start} -> meta::convertible_to<difference_type>;})
+                    ),
+                    std::contiguous_iterator_tag,
+                    std::random_access_iterator_tag
+                >,
+                std::bidirectional_iterator_tag
+            >,
+            std::forward_iterator_tag
+        >;
         using start_type = Start;
         using stop_type = Stop;
         using step_type = std::conditional_t<
@@ -1836,6 +1942,24 @@ namespace impl {
             requires (requires{{*std::forward<Self>(self).start()};})
         {
             return (*std::forward<Self>(self).start());
+        }
+
+        [[nodiscard]] constexpr auto data()
+            noexcept (requires{{std::addressof(curr())} noexcept;})
+            requires (meta::is<iterator_category, std::contiguous_iterator_tag> && requires{
+                {std::addressof(curr())};
+            })
+        {
+            return std::addressof(curr());
+        }
+
+        [[nodiscard]] constexpr auto data() const
+            noexcept (requires{{std::addressof(curr())} noexcept;})
+            requires (meta::is<iterator_category, std::contiguous_iterator_tag> && requires{
+                {std::addressof(curr())};
+            })
+        {
+            return std::addressof(curr());
         }
 
         [[nodiscard]] constexpr copy begin() const
@@ -2096,9 +2220,13 @@ namespace impl {
             return difference_type(stop()) - m_index;
         }
 
-        [[nodiscard]] constexpr auto remaining() const
-            noexcept (requires{{stop() - start()} noexcept;})
-            requires (!subrange_counted<Start, Stop, Step> && requires{{stop() - start()};})
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (requires{
+                {stop() - start()} noexcept -> meta::nothrow::convertible_to<difference_type>;
+            })
+            requires (!subrange_counted<Start, Stop, Step> && requires{
+                {stop() - start()} -> meta::convertible_to<difference_type>;
+            })
         {
             return stop() - start();
         }
@@ -2108,6 +2236,9 @@ namespace impl {
             subrange_infinite<Stop> ||
             subrange_bounded<Start, Stop, Step> ||
             subrange_counted<Start, Stop, Step>;
+
+        /// TODO: if the subrange is infinite, then remaining() will not be available,
+        // and we never need to use the bounds checking logic.
 
         constexpr void advance_by(difference_type n)
             noexcept (requires(difference_type delta) {
@@ -2335,14 +2466,14 @@ namespace impl {
         }
 
     public:
-        [[nodiscard]] difference_type ssize() const
+        [[nodiscard]] constexpr difference_type ssize() const
             noexcept (requires{{difference_type{remaining()}} noexcept;})
             requires (subrange_empty<Step> && requires{{difference_type{remaining()}};})
         {
             return difference_type{remaining()};
         }
 
-        [[nodiscard]] difference_type ssize() const
+        [[nodiscard]] constexpr difference_type ssize() const
             noexcept (requires{{
                 difference_type{math::div::ceil<
                     meta::unqualify<decltype(remaining())>,
@@ -2362,7 +2493,7 @@ namespace impl {
             >{}(remaining(), step())};
         }
 
-        [[nodiscard]] size_type size() const
+        [[nodiscard]] constexpr size_type size() const
             noexcept (requires{{size_type(ssize())} noexcept;})
             requires (requires{{size_type(ssize())};})
         {
@@ -2401,6 +2532,13 @@ namespace impl {
                 }
             }
         }
+
+        /// TODO: right now, the linear case doesn't permit infinite ranges, since
+        /// they don't support remaining().  That should be fixed.  I should also
+        /// consider pulling out all the index requirements, since the index is
+        /// guaranteed to be an integer type, and should support all the necessary
+        /// operations.  I also never consider comparisons between step and
+        /// difference_type.
 
         constexpr void increment()
             noexcept (
@@ -2577,7 +2715,7 @@ namespace impl {
                 {start() += n} noexcept;
                 {m_index += n < 0 ? -n : n} noexcept;
             }))
-            requires (iota_empty<Step> && requires{
+            requires (subrange_empty<Step> && requires{
                 {n < 0} -> meta::explicitly_convertible_to<bool>;
                 {retreat_by(-n)};
                 {advance_by(n)};
@@ -2617,7 +2755,7 @@ namespace impl {
                 {start() += delta} noexcept;
                 {m_index += delta < 0 ? -delta : delta} noexcept;
             }))
-            requires (!iota_empty<Step> && requires(difference_type delta) {
+            requires (!subrange_empty<Step> && requires(difference_type delta) {
                 {n * step()} -> meta::convertible_to<difference_type>;
                 {delta < 0} -> meta::explicitly_convertible_to<bool>;
                 {retreat_by(-delta)};
@@ -2703,7 +2841,7 @@ namespace impl {
                 {m_index += n} noexcept;
             }))
             requires (
-                iota_empty<Step> &&
+                subrange_empty<Step> &&
                 !requires{{*this += n};} &&
                 requires{
                     {n < 0} -> meta::explicitly_convertible_to<bool>;
@@ -2765,7 +2903,7 @@ namespace impl {
                 {m_index += delta} noexcept;
             }))
             requires (
-                !iota_empty<Step> &&
+                !subrange_empty<Step> &&
                 !requires{{*this += n};} &&
                 requires(difference_type delta) {
                     {n * step()} -> meta::convertible_to<difference_type>;
@@ -3023,7 +3161,7 @@ namespace impl {
                 {start() -= n} noexcept;
                 {m_index -= n < 0 ? -n : n} noexcept;
             }))
-            requires (iota_empty<Step> && requires{
+            requires (subrange_empty<Step> && requires{
                 {n < 0} -> meta::explicitly_convertible_to<bool>;
                 {advance_by(-n)};
                 {retreat_by(n)};
@@ -3063,7 +3201,7 @@ namespace impl {
                 {start() -= delta} noexcept;
                 {m_index -= delta < 0 ? -delta : delta} noexcept;
             }))
-            requires (!iota_empty<Step> && requires(difference_type delta) {
+            requires (!subrange_empty<Step> && requires(difference_type delta) {
                 {n * step()} -> meta::convertible_to<difference_type>;
                 {delta < 0} -> meta::explicitly_convertible_to<bool>;
                 {advance_by(-delta)};
@@ -3134,7 +3272,7 @@ namespace impl {
                 {m_index -= n} noexcept;
             }))
             requires (
-                iota_empty<Step> &&
+                subrange_empty<Step> &&
                 !requires{{*this += n};} &&
                 requires{
                     {n < 0} -> meta::explicitly_convertible_to<bool>;
@@ -3196,7 +3334,7 @@ namespace impl {
                 {m_index -= delta} noexcept;
             }))
             requires (
-                !iota_empty<Step> &&
+                !subrange_empty<Step> &&
                 !requires{{*this += n};} &&
                 requires(difference_type delta) {
                     {n * step()} -> meta::convertible_to<difference_type>;
@@ -6180,7 +6318,8 @@ namespace bertrand {
 static constexpr std::array<int, 3> arr {1, 2, 3};
 
 static constexpr auto r11 = impl::subrange(arr.begin(), 3);
-static constexpr auto r12 = iter::range(arr.begin(), arr.end(), 2);
+static constexpr auto r12 = iter::range(arr.begin(), arr.end());
+static constexpr auto d = r11.data();
 // static constexpr auto r13 = iter::range(arr);
 // static_assert(r11.size() == 3);
 // static_assert(r12.size() == 2);
@@ -6188,16 +6327,16 @@ static constexpr auto r12 = iter::range(arr.begin(), arr.end(), 2);
 
 // static_assert(meta::random_access_iterator<decltype(r12.begin())>);
 // static_assert(meta::contiguous_iterator<decltype(r12.begin())>);
-// static_assert(std::ranges::contiguous_range<decltype(r12)>);
+// static_assert(std::ranges::contiguous_range<decltype(r11)>);
 
 
 static_assert([] {
-    // auto it = r12.begin();
-    // if (*it != 1) return false;
-    // it += 1;
-    // if (*it != 2) return false;
-    // it -= 1;
-    // if (*it != 1) return false;
+    auto it = r12->begin();
+    if (*it != 1) return false;
+    it += 1;
+    if (*it != 2) return false;
+    it -= 1;
+    if (*it != 1) return false;
 
     // if (r12[-3] != 1) return false;
 
@@ -6223,6 +6362,14 @@ static_assert([] {
     }
     return true;
 }());
+
+
+
+
+// static_assert(meta::range<decltype(iter::range(std::array{std::pair{1, 2}})), int>);
+
+
+static_assert(meta::iota<decltype(iter::range(0, 5, 2))>);
 
 
 }
