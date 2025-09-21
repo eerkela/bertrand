@@ -711,12 +711,12 @@ namespace impl {
     difference with respect to itself, then we use that type.  Lastly, we default to
     `std::ptrdiff_t` as a fallback. */
     template <typename Start, typename Stop>
-    struct iota_difference { using type = std::ptrdiff_t; };
+    struct _iota_difference { using type = std::ptrdiff_t; };
     template <typename Start, typename Stop>
         requires (requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
             {stop - start} -> meta::signed_integer;
         })
-    struct iota_difference<Start, Stop> {
+    struct _iota_difference<Start, Stop> {
         using type = meta::unqualify<decltype(
             std::declval<meta::as_const_ref<Stop>>() -
             std::declval<meta::as_const_ref<Start>>()
@@ -728,7 +728,7 @@ namespace impl {
         } && requires(meta::as_const_ref<Start> start) {
             {start - start} -> meta::signed_integer;
         })
-    struct iota_difference<Start, Stop> {
+    struct _iota_difference<Start, Stop> {
         using type = meta::unqualify<decltype(
             std::declval<meta::as_const_ref<Start>>() -
             std::declval<meta::as_const_ref<Start>>()
@@ -741,12 +741,14 @@ namespace impl {
         } && requires(meta::as_const_ref<Stop> stop) {
             {stop - stop} -> meta::signed_integer;
         })
-    struct iota_difference<Start, Stop> {
+    struct _iota_difference<Start, Stop> {
         using type = meta::unqualify<decltype(
             std::declval<meta::as_const_ref<Stop>>() -
             std::declval<meta::as_const_ref<Stop>>()
         )>;
     };
+    template <typename Start, typename Stop>
+    using iota_difference = _iota_difference<Start, Stop>::type;
 
     template <typename T>
     concept iota_empty = meta::is<T, iota_tag>;
@@ -871,7 +873,7 @@ namespace impl {
         using start_type = Start;
         using stop_type = Stop;
         using step_type = Step;
-        using difference_type = iota_difference<Start, Stop>::type;
+        using difference_type = iota_difference<Start, Stop>;
         using size_type = meta::as_unsigned<difference_type>;
         using value_type = meta::unqualify<Start>;
         using reference = meta::as_lvalue<value_type>;
@@ -1306,32 +1308,52 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool operator==(const iota& other) const
-            noexcept (requires{
-                {other.ssize() == ssize()} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {other.ssize() == ssize()} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{
+                (other.stop() - other.start()) == (stop() - start())
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                (other.stop() - other.start()) == (stop() - start())
+            } -> meta::convertible_to<bool>;})
         {
-            return other.ssize() == ssize();
+            return (other.stop() - other.start()) == (stop() - start());
         }
 
         [[nodiscard]] constexpr auto operator<=>(const iota& other) const
-            noexcept (requires{{other.ssize() <=> ssize()} noexcept;})
-            requires (requires{{other.ssize() <=> ssize()};})
+            noexcept (requires{{(other.stop() - other.start()) <=> (stop() - start())} noexcept;})
+            requires (requires{{(other.stop() - other.start()) <=> (stop() - start())};})
         {
-            return other.ssize() <=> ssize();
+            return (other.stop() - other.start()) <=> (stop() - start());
         }
 
         [[nodiscard]] constexpr difference_type operator-(const iota& other) const
-            noexcept (requires{
-                {other.ssize() - ssize()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-            })
-            requires (requires{
-                {other.ssize() - ssize()} -> meta::convertible_to<difference_type>;
-            })
+            noexcept (requires{{
+                (other.stop() - other.start()) - (stop() - start())
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (iota_empty<Step> && requires{{
+                (other.stop() - other.start()) - (stop() - start())
+            } -> meta::convertible_to<difference_type>;})
         {
-            return other.ssize() - ssize();
+            return (other.stop() - other.start()) - (stop() - start());
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(const iota& other) const
+            noexcept (requires{{
+                difference_type{math::div::ceil<
+                    meta::unqualify<decltype(stop() - start())>,
+                    meta::unqualify<Step>
+                >{}((other.stop() - other.start()) - (stop() - start()), step())}
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (!iota_empty<Step> && requires{{
+                difference_type{math::div::ceil<
+                    meta::unqualify<decltype(stop() - start())>,
+                    meta::unqualify<Step>
+                >{}((other.stop() - other.start()) - (stop() - start()), step())}
+            };})
+        {
+            return difference_type{math::div::ceil<
+                meta::unqualify<decltype(stop() - start())>,
+                meta::unqualify<Step>
+            >{}((other.stop() - other.start()) - (stop() - start()), step())};
         }
 
         [[nodiscard]] friend constexpr difference_type operator-(const iota& self, NoneType)
@@ -1529,7 +1551,7 @@ namespace impl {
     >;
 
     template <typename Start, typename Stop>
-    using subrange_difference = iota_difference<Start, Stop>::type;
+    using subrange_difference = iota_difference<Start, Stop>;
 
     template <typename T>
     concept subrange_empty = meta::is<T, subrange_tag>;
@@ -1592,7 +1614,7 @@ namespace impl {
         };
 
     /// TODO: subrange_linear can only be used if the stop condition supports distance
-    /// checks.
+    /// checks?
 
     template <typename Start, typename Stop, typename Step>
     concept subrange_linear =
@@ -1643,6 +1665,437 @@ namespace impl {
         return AssertionError("count cannot be negative");
     }
 
+    /// TODO: now that the actual increment/decrement algorithms are abstracted into
+    /// subrange_core, I may be able to merge the three specializations of
+    /// subrange_storage into one by switching on the "safe" concepts.  And, if I
+    /// collapse all of the storage types into one, then I can probably merge that with
+    /// the core type as well, and actually flatten everything into the base subrange
+    /// type itself.  To do that, I would start by eliminating the storage type and
+    /// moving its contents into subrange_core, such that the various increment helpers
+    /// are renamed to advance_xyz() private helper methods, and the public versions
+    /// would choose between them using overloads and/or if constexpr.  Once that is
+    /// done, then that whole implementation can be lifted into the main subrange type
+    /// once and for all.
+
+    template <typename Start, typename Stop, typename Step>
+    concept subrange_safe = subrange_infinite<Stop> || subrange_simple<Start, Step>;
+
+    template <typename Start, typename Stop, typename Step>
+    concept subrange_safe_at_runtime =
+        !subrange_safe<Start, Stop, Step> &&
+        (subrange_bounded<Start, Stop, Step> || subrange_counted<Start, Stop, Step>) &&
+        (subrange_linear<Start, Stop, Step> || subrange_loop<Start, Stop, Step>);
+
+    template <typename Start, typename Stop, typename Step>
+    struct subrange_core {
+        using difference_type = subrange_difference<Start, Stop>;
+
+        [[no_unique_address]] impl::ref<Start> start {};
+        [[no_unique_address]] impl::ref<Stop> stop {};
+        [[no_unique_address]] impl::ref<Step> step {};
+        [[no_unique_address]] difference_type index {};
+
+        constexpr void swap(subrange_core& other)
+            noexcept (requires{
+                {std::ranges::swap(start, other.start)} noexcept;
+                {std::ranges::swap(stop, other.stop)} noexcept;
+                {std::ranges::swap(step, other.step)} noexcept;
+                {std::ranges::swap(index, other.index)} noexcept;
+            })
+            requires (requires{
+                {std::ranges::swap(start, other.start)};
+                {std::ranges::swap(stop, other.stop)};
+                {std::ranges::swap(step, other.step)};
+                {std::ranges::swap(index, other.index)};
+            })
+        {
+            std::ranges::swap(start, other.start);
+            std::ranges::swap(stop, other.stop);
+            std::ranges::swap(step, other.step);
+            std::ranges::swap(index, other.index);
+        }
+
+        [[nodiscard]] static constexpr bool empty() noexcept requires (subrange_infinite<Stop>) {
+            return false;
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{
+                {*start < *stop} noexcept -> meta::nothrow::convertible_to<bool>;
+            } && (strictly_positive<Step> || requires{
+                {*step < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {*start > *stop} noexcept -> meta::nothrow::convertible_to<bool>;
+            }))
+            requires (subrange_bounded<Start, Stop, Step>)
+        {
+            if constexpr (strictly_positive<Step>) {
+                return !bool(*start < *stop);
+            } else {
+                if (*step < 0) {
+                    return !bool(*start > *stop);
+                } else {
+                    return !bool(*start < *stop);
+                }
+            }
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{
+                {*start == *stop} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (subrange_equal<Start, Stop, Step>)
+        {
+            return *start == *stop;
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{
+                {index >= difference_type{*stop}} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (subrange_counted<Start, Stop, Step>)
+        {
+            return index >= difference_type{*stop};
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{
+                {(*stop)(start())} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (subrange_conditional<Start, Stop, Step>)
+        {
+            return !static_cast<bool>((*stop)(start()));
+        }
+
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (requires{{
+                difference_type(*stop) - index
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (subrange_counted<Start, Stop, Step> && requires{{
+                difference_type(*stop) - index
+            } -> meta::convertible_to<difference_type>;})
+        {
+            return difference_type(*stop) - index;
+        }
+
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (requires{
+                {*stop - *start} noexcept -> meta::nothrow::convertible_to<difference_type>;
+            })
+            requires (!subrange_counted<Start, Stop, Step> && requires{
+                {*stop - *start} -> meta::convertible_to<difference_type>;
+            })
+        {
+            return *stop - *start;
+        }
+
+        constexpr void increment()
+            noexcept (requires{{++*start} noexcept;})
+            requires (requires{{++*start};})
+        {
+            ++*start;
+            ++index;
+        }
+
+        constexpr void increment(difference_type& overflow)
+            noexcept (requires{
+                {empty()} noexcept;
+                {++*start} noexcept;
+            })
+            requires (requires{
+                {empty()};
+                {++*start};
+            })
+        {
+            if (empty() || overflow < 0) {
+                ++overflow;
+            } else {
+                ++*start;
+                ++index;
+            }
+        }
+
+        constexpr void decrement()
+            noexcept (requires{{--*start} noexcept;})
+            requires (requires{{--*start};})
+        {
+            --*start;
+            --index;
+        }
+
+        constexpr void decrement(difference_type& overflow)
+            noexcept (requires{{--*start} noexcept;})
+            requires (requires{{--*start};})
+        {
+            if (index == 0 || overflow > 0) {
+                --overflow;
+            } else {
+                --*start;
+                --index;
+            }
+        }
+
+        constexpr void increment_by(difference_type n)
+            noexcept (requires{{*start += n} noexcept;})
+            requires (requires{{*start += n};})
+        {
+            *start += n;
+            index += n;
+        }
+
+        constexpr void increment_by(difference_type& overflow, difference_type n)
+            noexcept (requires(difference_type delta) {
+                {*start -= index} noexcept;
+                {*start += n} noexcept;
+                {empty()} noexcept;
+                {remaining()} noexcept;
+            })
+            requires (requires{
+                {*start -= index};
+                {*start += n};
+                {empty()};
+                {remaining()};
+            })
+        {
+            if (n < 0) {
+                if (index == 0) {
+                    overflow += n;
+                    return;
+                }
+                if (overflow > 0) {
+                    overflow += n;
+                    if (overflow > 0) {
+                        return;
+                    }
+                    n = overflow;
+                    overflow = 0;
+                }
+                if (-n > index) {
+                    *start -= index;
+                    overflow += index + n;
+                    index = 0;
+                } else {
+                    *start += n;
+                    index += n;
+                }
+            } else {
+                if (empty()) {
+                    overflow += n;
+                    return;
+                }
+                if (overflow < 0) {
+                    overflow += n;
+                    if (overflow < 0) {
+                        return;
+                    }
+                    n = overflow;
+                    overflow = 0;
+                }
+                difference_type delta = remaining();
+                if (n > delta) {
+                    *start += delta;
+                    overflow += n - delta;
+                    index += delta;
+                } else {
+                    *start += n;
+                    index += n;
+                }
+            }
+        }
+
+        constexpr void decrement_by(difference_type n)
+            noexcept (requires{{*start -= n} noexcept;})
+            requires (requires{{*start -= n};})
+        {
+            *start -= n;
+            index -= n;
+        }
+
+        constexpr void decrement_by(difference_type& overflow, difference_type n)
+            noexcept (requires(difference_type delta) {
+                {empty()} noexcept;
+                {remaining()} noexcept;
+                {*start += delta} noexcept;
+                {*start -= n} noexcept;
+            })
+            requires (requires(difference_type delta) {
+                {empty()};
+                {remaining()};
+                {*start += delta};
+                {*start -= n};
+            })
+        {
+            if (n < 0) {
+                if (empty()) {
+                    overflow -= n;
+                    return;
+                }
+                if (overflow < 0) {
+                    overflow -= n;
+                    if (overflow < 0) {
+                        return;
+                    }
+                    n = overflow;
+                    overflow = 0;
+                }
+                difference_type delta = remaining();
+                if (-n > delta) {
+                    *start += delta;
+                    overflow -= n + delta;
+                    index += delta;
+                } else {
+                    *start -= n;
+                    index -= n;
+                }
+            } else {
+                if (index == 0) {
+                    overflow -= n;
+                    return;
+                }
+                if (overflow > 0) {
+                    overflow -= n;
+                    if (overflow > 0) {
+                        return;
+                    }
+                    n = -overflow;
+                    overflow = 0;
+                }
+                if (n > index) {
+                    *start -= index;
+                    overflow += index - n;
+                    index = 0;
+                } else {
+                    *start -= n;
+                    index -= n;
+                }
+            }
+        }
+
+        constexpr void increment_for_positive(difference_type n)
+            noexcept (requires{{++*start} noexcept;})
+            requires (requires{{++*start};})
+        {
+            for (difference_type i {}; i < n; ++i) ++*start;
+            index += n;
+        }
+
+        constexpr void increment_for_positive(difference_type& overflow, difference_type n)
+            noexcept (requires{
+                {empty()} noexcept;
+                {++*start} noexcept;
+            })
+            requires (requires{
+                {empty()};
+                {++*start};
+            })
+        {
+            for (difference_type i {}; i < n; ++i) {
+                if (empty() || overflow < 0) {
+                    ++overflow;
+                } else {
+                    ++index;
+                    ++*start;
+                }
+            }
+        }
+
+        constexpr void increment_for_negative(difference_type n)
+            noexcept (requires{{--*start} noexcept;})
+            requires (requires{{--*start};})
+        {
+            for (difference_type i {}; i > n; --i) --*start;
+            index -= n;
+        }
+
+        constexpr void increment_for_negative(difference_type& overflow, difference_type n)
+            noexcept (requires{
+                {empty()} noexcept;
+                {--*start} noexcept;
+            })
+            requires (requires{
+                {empty()};
+                {--*start};
+            })
+        {
+            for (difference_type i {}; i > n; --i) {
+                if (empty() || overflow < 0) {
+                    ++overflow;
+                } else {
+                    ++index;
+                    --*start;
+                }
+            }
+        }
+
+        constexpr void decrement_for_positive(difference_type n)
+            noexcept (requires{{--*start} noexcept;})
+            requires (requires{{--*start};})
+        {
+            for (difference_type i {}; i < n; ++i) --*start;
+            index -= n;
+        }
+
+        constexpr void decrement_for_positive(difference_type& overflow, difference_type n)
+            noexcept (requires{{--*start} noexcept;})
+            requires (requires{{--*start};})
+        {
+            for (difference_type i {}; i < n; ++i) {
+                if (index == 0 || overflow > 0) {
+                    --overflow;
+                } else {
+                    --index;
+                    --*start;
+                }
+            }
+        }
+
+        constexpr void decrement_for_negative(difference_type n)
+            noexcept (requires{{++*start} noexcept;})
+            requires (requires{{++*start};})
+        {
+            for (difference_type i {}; i > n; --i) ++*start;
+            index += n;
+        }
+
+        constexpr void retreat_for_negative(difference_type& overflow, difference_type n)
+            noexcept (requires{{++*start} noexcept;})
+            requires (requires{{++*start};})
+        {
+            for (difference_type i {}; i > n; --i) {
+                if (index == 0 || overflow > 0) {
+                    --overflow;
+                } else {
+                    --index;
+                    ++*start;
+                }
+            }
+        }
+
+        constexpr void increment_func()
+            noexcept (requires{{(*step)(start())} noexcept;})
+            requires (requires{{(*step)(start())};})
+        {
+            (*step)(start());
+            ++index;
+        }
+
+        constexpr void increment_func(difference_type& overflow)
+            noexcept (requires{
+                {empty()} noexcept;
+                {(*step)(start())} noexcept;
+            })
+            requires (requires{
+                {empty()};
+                {(*step)(start())};
+            })
+        {
+            if (empty() || overflow < 0) {
+                ++overflow;
+            } else {
+                (*step)(start());
+                ++index;
+            }
+        }
+    };
 
     /* Subranges require additional bounds checking logic compared to iotas, since
     overstepping the end of the subrange may lead to undefined behavior, which would
@@ -1651,9 +2104,176 @@ namespace impl {
     behavior consistent, but slightly reducing iteration performance as a tradeoff. */
     template <typename Start, typename Stop, typename Step>
     struct subrange_storage {
-        /// TODO: default specialization equates to the "always boundscheck" case.
-        /// This is slightly more complicated, so once the "never boundscheck" case is
-        /// figured out, then this is the next target.
+        using base = subrange_core<Start, Stop, Step>;
+        using copy = subrange_storage<meta::unqualify<Start>, Stop, Step>;
+        using difference_type = base::difference_type;
+
+        [[no_unique_address]] base inner {};
+        [[no_unique_address]] difference_type overflow {};
+
+        constexpr void swap(subrange_storage& other)
+            noexcept (requires{
+                {inner.swap(other.inner)} noexcept;
+                {std::ranges::swap(overflow, other.m_overflow)} noexcept;
+            })
+            requires (requires{
+                {inner.swap(other.inner)};
+                {std::ranges::swap(overflow, other.m_overflow)};
+            })
+        {
+            inner.swap(other.m_innerbase);
+            std::ranges::swap(overflow, other.m_overflow);
+        }
+
+        [[nodiscard]] constexpr copy begin() const
+            noexcept (requires{{copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                },
+                .overflow = overflow
+            }} noexcept;})
+            requires (requires{{copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                },
+                .overflow = overflow
+            }};})
+        {
+            return copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                },
+                .overflow = overflow
+            };
+        }
+
+        [[nodiscard]] constexpr copy begin() &&
+            noexcept (requires{{copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                },
+                .overflow = std::move(overflow)
+            }} noexcept;})
+            requires (requires{{copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                },
+                .overflow = std::move(overflow)
+            }};})
+        {
+            return copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                },
+                .overflow = std::move(overflow)
+            };
+        }
+
+        [[nodiscard]] constexpr difference_type index() const
+            noexcept (requires{{
+                inner.index + overflow
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (requires{{
+                inner.index + overflow
+            } -> meta::convertible_to<difference_type>;})
+        {
+            return inner.index + overflow;
+        }
+
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (requires{{inner.remaining()} noexcept;})
+            requires (requires{{inner.remaining()};})
+        {
+            return inner.remaining();
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{inner.empty()} noexcept;})
+            requires (requires{{inner.empty()};})
+        {
+            return inner.empty();
+        }
+
+        constexpr void increment()
+            noexcept (requires{{inner.increment(overflow)} noexcept;})
+            requires (requires{{inner.increment(overflow)};})
+        {
+            inner.increment(overflow);
+        }
+
+        constexpr void decrement()
+            noexcept (requires{{inner.decrement(overflow)} noexcept;})
+            requires (requires{{inner.decrement(overflow)};})
+        {
+            inner.decrement(overflow);
+        }
+
+        constexpr void increment_by(difference_type n)
+            noexcept (requires{{inner.increment_by(overflow, n)} noexcept;})
+            requires (requires{{inner.increment_by(overflow, n)};})
+        {
+            inner.increment_by(overflow, n);
+        }
+
+        constexpr void decrement_by(difference_type n)
+            noexcept (requires{{inner.decrement_by(overflow, n)} noexcept;})
+            requires (requires{{inner.decrement_by(overflow, n)};})
+        {
+            inner.decrement_by(overflow, n);
+        }
+
+        constexpr void increment_for_positive(difference_type n)
+            noexcept (requires{{inner.increment_for_positive(overflow, n)} noexcept;})
+            requires (requires{{inner.increment_for_positive(overflow, n)};})
+        {
+            inner.increment_for_positive(overflow, n);
+        }
+
+        constexpr void increment_for_negative(difference_type n)
+            noexcept (requires{{inner.increment_for_negative(overflow, n)} noexcept;})
+            requires (requires{{inner.increment_for_negative(overflow, n)};})
+        {
+            inner.increment_for_negative(overflow, n);
+        }
+
+        constexpr void decrement_for_positive(difference_type n)
+            noexcept (requires{{inner.decrement_for_positive(overflow, n)} noexcept;})
+            requires (requires{{inner.decrement_for_positive(overflow, n)};})
+        {
+            inner.decrement_for_positive(overflow, n);
+        }
+
+        constexpr void decrement_for_negative(difference_type n)
+            noexcept (requires{{inner.decrement_for_negative(overflow, n)} noexcept;})
+            requires (requires{{inner.decrement_for_negative(overflow, n)};})
+        {
+            inner.decrement_for_negative(overflow, n);
+        }
+
+        constexpr void increment_func()
+            noexcept (requires{{inner.increment_func(overflow)} noexcept;})
+            requires (requires{{inner.increment_func(overflow)};})
+        {
+            inner.increment_func(overflow);
+        }
     };
 
     /* If either the stop or step index is empty, then the bounds check can be elided
@@ -1663,7 +2283,158 @@ namespace impl {
     template <typename Start, typename Stop, typename Step>
         requires (subrange_infinite<Stop> || subrange_simple<Start, Step>)
     struct subrange_storage<Start, Stop, Step> {
-        /// TODO: this is the simplest possible case, so I should probably start here
+        using base = subrange_core<Start, Stop, Step>;
+        using copy = subrange_storage<meta::unqualify<Start>, Stop, Step>;
+        using difference_type = base::difference_type;
+
+        [[no_unique_address]] base inner {};
+
+        constexpr void swap(subrange_storage& other)
+            noexcept (requires{{inner.swap(other.inner)} noexcept;})
+            requires (requires{{inner.swap(other.inner)};})
+        {
+            inner.swap(other.inner);
+        }
+
+        [[nodiscard]] constexpr copy begin() const
+            noexcept (requires{{copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                }
+            }} noexcept;})
+            requires (requires{{copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                }
+            }};})
+        {
+            return copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                }
+            };
+        }
+
+        [[nodiscard]] constexpr copy begin() &&
+            noexcept (requires{{copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                }
+            }} noexcept;})
+            requires (requires{{copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                }
+            }};})
+        {
+            return copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                }
+            };
+        }
+
+        [[nodiscard]] constexpr difference_type index() const
+            noexcept (meta::nothrow::copyable<difference_type>)
+            requires (meta::copyable<difference_type>)
+        {
+            return inner.index;
+        }
+
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (requires{{inner.remaining()} noexcept;})
+            requires (requires{{inner.remaining()};})
+        {
+            return inner.remaining();
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{inner.empty()} noexcept;})
+            requires (requires{{inner.empty()};})
+        {
+            return inner.empty();
+        }
+
+        constexpr void increment()
+            noexcept (requires{{inner.increment()} noexcept;})
+            requires (requires{{inner.increment()};})
+        {
+            inner.increment();
+        }
+
+        constexpr void decrement()
+            noexcept (requires{{inner.decrement()} noexcept;})
+            requires (requires{{inner.decrement()};})
+        {
+            inner.decrement();
+        }
+
+        constexpr void increment_by(difference_type n)
+            noexcept (requires{{inner.increment_by(n)} noexcept;})
+            requires (requires{{inner.increment_by(n)};})
+        {
+            inner.increment_by(n);
+        }
+
+        constexpr void decrement_by(difference_type n)
+            noexcept (requires{{inner.decrement_by(n)} noexcept;})
+            requires (requires{{inner.decrement_by(n)};})
+        {
+            inner.decrement_by(n);
+        }
+
+        constexpr void increment_for_positive(difference_type n)
+            noexcept (requires{{inner.increment_for_positive(n)} noexcept;})
+            requires (requires{{inner.increment_for_positive(n)};})
+        {
+            inner.increment_for_positive(n);
+        }
+
+        constexpr void increment_for_negative(difference_type n)
+            noexcept (requires{{inner.increment_for_negative(n)} noexcept;})
+            requires (requires{{inner.increment_for_negative(n)};})
+        {
+            inner.increment_for_negative(n);
+        }
+
+        constexpr void decrement_for_positive(difference_type n)
+            noexcept (requires{{inner.decrement_for_positive(n)} noexcept;})
+            requires (requires{{inner.decrement_for_positive(n)};})
+        {
+            inner.decrement_for_positive(n);
+        }
+
+        constexpr void decrement_for_negative(difference_type n)
+            noexcept (requires{{inner.decrement_for_negative(n)} noexcept;})
+            requires (requires{{inner.decrement_for_negative(n)};})
+        {
+            inner.decrement_for_negative(n);
+        }
+
+        constexpr void increment_func()
+            noexcept (requires{{inner.increment_func()} noexcept;})
+            requires (requires{{inner.increment_func()};})
+        {
+            inner.increment_func();
+        }
     };
 
     /* If the subrange's start index is totally ordered with respect to the stop index
@@ -1679,13 +2450,271 @@ namespace impl {
             (subrange_linear<Start, Stop, Step> || subrange_loop<Start, Stop, Step>)
         )
     struct subrange_storage<Start, Stop, Step> {
-        /// TODO: this specialization blends between the two cases above based on an
-        /// `if consteval` branch, and is therefore implemented last.
+        using base = subrange_core<Start, Stop, Step>;
+        using copy = subrange_storage<meta::unqualify<Start>, Stop, Step>;
+        using difference_type = base::difference_type;
+
+        [[no_unique_address]] base inner {};
+        [[no_unique_address]] difference_type overflow {};
+
+        constexpr void swap(subrange_storage& other)
+            noexcept (requires{
+                {inner.swap(other.inner)} noexcept;
+                {std::ranges::swap(overflow, other.overflow)} noexcept;
+            })
+            requires (requires{
+                {inner.swap(other.inner)};
+                {std::ranges::swap(overflow, other.overflow)};
+            })
+        {
+            inner.swap(other.inner);
+            std::ranges::swap(overflow, other.overflow);
+        }
+
+        [[nodiscard]] constexpr copy begin() const
+            noexcept (requires{{copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                },
+                .overflow = overflow
+            }} noexcept;})
+            requires (requires{{copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                },
+                .overflow = overflow
+            }};})
+        {
+            return copy{
+                .inner = {
+                    .start = *inner.start,
+                    .stop = inner.stop,
+                    .step = inner.step,
+                    .index = inner.index
+                },
+                .overflow = overflow
+            };
+        }
+
+        [[nodiscard]] constexpr copy begin() &&
+            noexcept (requires{{copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                },
+                .overflow = std::move(overflow)
+            }} noexcept;})
+            requires (requires{{copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                },
+                .overflow = std::move(overflow)
+            }};})
+        {
+            return copy{
+                .inner = {
+                    .start = *std::move(inner).start,
+                    .stop = std::move(inner).stop,
+                    .step = std::move(inner).step,
+                    .index = std::move(inner).index
+                },
+                .overflow = std::move(overflow)
+            };
+        }
+
+        [[nodiscard]] constexpr difference_type index() const
+            noexcept (meta::nothrow::copyable<difference_type> && requires{{
+                inner.index + overflow
+            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (meta::copyable<difference_type> && requires{{
+                inner.index + overflow
+            } -> meta::convertible_to<difference_type>;})
+        {
+            if consteval {
+                return inner.index + overflow;
+            } else {
+                return inner.index;
+            }
+        }
+
+        [[nodiscard]] constexpr difference_type remaining() const
+            noexcept (requires{{inner.remaining()} noexcept;})
+            requires (requires{{inner.remaining()};})
+        {
+            return inner.remaining();
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{inner.empty()} noexcept;})
+            requires (requires{{inner.empty()};})
+        {
+            return inner.empty();
+        }
+
+        constexpr void increment()
+            noexcept (requires{
+                {inner.increment(overflow)} noexcept;
+                {inner.increment()} noexcept;
+            })
+            requires (requires{
+                {inner.increment(overflow)};
+                {inner.increment()};
+            })
+        {
+            if consteval {
+                inner.increment(overflow);
+            } else {
+                inner.increment();
+            }
+        }
+
+        constexpr void decrement()
+            noexcept (requires{
+                {inner.decrement(overflow)} noexcept;
+                {inner.decrement()} noexcept;
+            })
+            requires (requires{
+                {inner.decrement(overflow)};
+                {inner.decrement()};
+            })
+        {
+            if consteval {
+                inner.decrement(overflow);
+            } else {
+                inner.decrement();
+            }
+        }
+
+        constexpr void increment_by(difference_type n)
+            noexcept (requires{
+                {inner.increment_by(overflow, n)} noexcept;
+                {inner.increment_by(n)} noexcept;
+            })
+            requires (requires{
+                {inner.increment_by(overflow, n)};
+                {inner.increment_by(n)};
+            })
+        {
+            if consteval {
+                inner.increment_by(overflow, n);
+            } else {
+                inner.increment_by(n);
+            }
+        }
+
+        constexpr void decrement_by(difference_type n)
+            noexcept (requires{
+                {inner.decrement_by(overflow, n)} noexcept;
+                {inner.decrement_by(n)} noexcept;
+            })
+            requires (requires{
+                {inner.decrement_by(overflow, n)};
+                {inner.decrement_by(n)};
+            })
+        {
+            if consteval {
+                inner.decrement_by(overflow, n);
+            } else {
+                inner.decrement_by(n);
+            }
+        }
+
+        constexpr void increment_for_positive(difference_type n)
+            noexcept (requires{
+                {inner.increment_for_positive(overflow, n)} noexcept;
+                {inner.increment_for_positive(n)} noexcept;
+            })
+            requires (requires{
+                {inner.increment_for_positive(overflow, n)};
+                {inner.increment_for_positive(n)};
+            })
+        {
+            if consteval {
+                inner.increment_for_positive(overflow, n);
+            } else {
+                inner.increment_for_positive(n);
+            }
+        }
+
+        constexpr void increment_for_negative(difference_type n)
+            noexcept (requires{
+                {inner.increment_for_negative(overflow, n)} noexcept;
+                {inner.increment_for_negative(n)} noexcept;
+            })
+            requires (requires{
+                {inner.increment_for_negative(overflow, n)};
+                {inner.increment_for_negative(n)};
+            })
+        {
+            if consteval {
+                inner.increment_for_negative(overflow, n);
+            } else {
+                inner.increment_for_negative(n);
+            }
+        }
+
+        constexpr void decrement_for_positive(difference_type n)
+            noexcept (requires{
+                {inner.decrement_for_positive(overflow, n)} noexcept;
+                {inner.decrement_for_positive(n)} noexcept;
+            })
+            requires (requires{
+                {inner.decrement_for_positive(overflow, n)};
+                {inner.decrement_for_positive(n)};
+            })
+        {
+            if consteval {
+                inner.decrement_for_positive(overflow, n);
+            } else {
+                inner.decrement_for_positive(n);
+            }
+        }
+
+        constexpr void decrement_for_negative(difference_type n)
+            noexcept (requires{
+                {inner.decrement_for_negative(overflow, n)} noexcept;
+                {inner.decrement_for_negative(n)} noexcept;
+            })
+            requires (requires{
+                {inner.decrement_for_negative(overflow, n)};
+                {inner.decrement_for_negative(n)};
+            })
+        {
+            if consteval {
+                inner.decrement_for_negative(overflow, n);
+            } else {
+                inner.decrement_for_negative(n);
+            }
+        }
+
+        constexpr void increment_func()
+            noexcept (requires{
+                {inner.increment_func(overflow)} noexcept;
+                {inner.increment_func()} noexcept;
+            })
+            requires (requires{
+                {inner.increment_func(overflow)};
+                {inner.increment_func()};
+            })
+        {
+            if consteval {
+                inner.increment_func(overflow);
+            } else {
+                inner.increment_func();
+            }
+        }
     };
-
-
-
-
 
     /* A simple subrange that yields successive values in the interval `[start, stop)`,
     incrementing by `step` on each iteration.
@@ -1782,158 +2811,90 @@ namespace impl {
         >;
 
     private:
+        using storage = subrange_storage<start_type, stop_type, step_type>;
         using copy = subrange<meta::unqualify<start_type>, stop_type, step_type>;
+        using copy_storage = subrange_storage<meta::unqualify<start_type>, stop_type, step_type>;
 
-        [[no_unique_address]] impl::ref<start_type> m_start {};
-        [[no_unique_address]] impl::ref<stop_type> m_stop {};
-        [[no_unique_address]] impl::ref<step_type> m_step {};
-        [[no_unique_address]] difference_type m_index {};
-        [[no_unique_address]] difference_type m_overflow {};
+        [[no_unique_address]] storage m_storage {};
 
     public:
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) start(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_storage.inner.start);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) stop(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_storage.inner.stop);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) step(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_storage.inner.step);
+        }
+
         [[nodiscard]] constexpr subrange() = default;
         [[nodiscard]] constexpr subrange(
             meta::forward<start_type> start,
             meta::forward<stop_type> stop,
             meta::forward<step_type> step = {}
         )
-            noexcept (requires{
-                {impl::ref<start_type>{std::forward<start_type>(start)}} noexcept;
-                {impl::ref<stop_type>{std::forward<stop_type>(stop)}} noexcept;
-                {impl::ref<step_type>{std::forward<step_type>(step)}} noexcept;
-            } && (
+            noexcept (requires{{storage{{
+                .start = impl::ref<start_type>{std::forward<start_type>(start)},
+                .stop = impl::ref<stop_type>{std::forward<stop_type>(stop)},
+                .step = impl::ref<step_type>{std::forward<step_type>(step)}
+            }}} noexcept;} && (
                 !DEBUG ||
                 (!subrange_linear<Start, Stop, Step> && !subrange_loop<Start, Stop, Step>) ||
-                !requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
+                !requires{{this->step() == 0} -> meta::explicitly_convertible_to<bool>;}
             ) && (
                 !DEBUG ||
                 !subrange_counted<Start, Stop, Step> ||
-                !requires{{*m_stop < 0} -> meta::explicitly_convertible_to<bool>;}
+                !requires{{this->stop() < 0} -> meta::explicitly_convertible_to<bool>;}
             ))
-            requires (requires{
-                {impl::ref<start_type>{std::forward<start_type>(start)}};
-                {impl::ref<stop_type>{std::forward<stop_type>(stop)}};
-                {impl::ref<step_type>{std::forward<step_type>(step)}};
-            })
+            requires (requires{{storage{{
+                .start = std::forward<start_type>(start),
+                .stop = std::forward<stop_type>(stop),
+                .step = std::forward<step_type>(step)
+            }}};})
         :
-            m_start{std::forward<start_type>(start)},
-            m_stop{std::forward<stop_type>(stop)},
-            m_step{std::forward<step_type>(step)},
-            m_index{},
-            m_overflow{}
+            m_storage{{
+                .start = std::forward<start_type>(start),
+                .stop = std::forward<stop_type>(stop),
+                .step = std::forward<step_type>(step)
+            }}
         {
             if constexpr (DEBUG) {
                 if constexpr (
                     (subrange_linear<Start, Stop, Step> || subrange_loop<Start, Stop, Step>) &&
-                    requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
+                    requires{{this->step() == 0} -> meta::explicitly_convertible_to<bool>;}
                 ) {
-                    if (*m_step == 0) {
+                    if (this->step() == 0) {
                         throw zero_step_error();
                     }
                 }
                 if constexpr (
                     subrange_counted<Start, Stop, Step> &&
-                    requires{{*m_stop < 0} -> meta::explicitly_convertible_to<bool>;}
+                    requires{{this->stop() < 0} -> meta::explicitly_convertible_to<bool>;}
                 ) {
-                    if (*m_stop < 0) {
+                    if (this->stop() < 0) {
                         throw negative_count_error();
                     }
                 }
             }
         }
-        [[nodiscard]] constexpr subrange(
-            const meta::unqualify<start_type>& start,
-            const impl::ref<stop_type>& stop,
-            const impl::ref<step_type>& step,
-            const difference_type& index,
-            const difference_type& overflow
-        )
-            noexcept (requires{
-                {impl::ref<start_type>{start}} noexcept;
-                {impl::ref<stop_type>{stop}} noexcept;
-                {impl::ref<step_type>{step}} noexcept;
-                {difference_type{index}} noexcept;
-                {difference_type{overflow}} noexcept;
-            })
-            requires (requires{
-                {impl::ref<start_type>{start}};
-                {impl::ref<stop_type>{stop}};
-                {impl::ref<step_type>{step}};
-                {difference_type{index}};
-                {difference_type{overflow}};
-            })
+        [[nodiscard]] constexpr subrange(storage&& store)
+            noexcept (requires{{storage(std::move(store))} noexcept;})
+            requires (requires{{storage(std::move(store))};})
         :
-            m_start{start},
-            m_stop{stop},
-            m_step{step},
-            m_index{index},
-            m_overflow{overflow}
-        {}
-        [[nodiscard]] constexpr subrange(
-            meta::unqualify<start_type>&& start,
-            impl::ref<stop_type>&& stop,
-            impl::ref<step_type>&& step,
-            difference_type&& index,
-            difference_type&& overflow
-        )
-            noexcept (requires{
-                {impl::ref<start_type>{std::move(start)}} noexcept;
-                {impl::ref<stop_type>{std::move(stop)}} noexcept;
-                {impl::ref<step_type>{std::move(step)}} noexcept;
-                {difference_type{std::move(index)}} noexcept;
-                {difference_type{std::move(overflow)}} noexcept;
-            })
-            requires (requires{
-                {impl::ref<start_type>{std::move(start)}};
-                {impl::ref<stop_type>{std::move(stop)}};
-                {impl::ref<step_type>{std::move(step)}};
-                {difference_type{std::move(index)}};
-                {difference_type{std::move(overflow)}};
-            })
-        :
-            m_start{std::move(start)},
-            m_stop{std::move(stop)},
-            m_step{std::move(step)},
-            m_index{std::move(index)},
-            m_overflow{std::move(overflow)}
+            m_storage(std::move(store))
         {}
 
         constexpr void swap(subrange& other)
-            noexcept (requires{
-                {std::ranges::swap(m_start, other.m_start)} noexcept;
-                {std::ranges::swap(m_stop, other.m_stop)} noexcept;
-                {std::ranges::swap(m_step, other.m_step)} noexcept;
-                {std::ranges::swap(m_index, other.m_index)} noexcept;
-                {std::ranges::swap(m_overflow, other.m_overflow)} noexcept;
-            })
-            requires (requires{
-                {std::ranges::swap(m_start, other.m_start)};
-                {std::ranges::swap(m_stop, other.m_stop)};
-                {std::ranges::swap(m_step, other.m_step)};
-                {std::ranges::swap(m_index, other.m_index)};
-                {std::ranges::swap(m_overflow, other.m_overflow)};
-            })
+            noexcept (requires{{m_storage.swap(other.m_storage)} noexcept;})
+            requires (requires{{m_storage.swap(other.m_storage)};})
         {
-            std::ranges::swap(m_start, other.m_start);
-            std::ranges::swap(m_stop, other.m_stop);
-            std::ranges::swap(m_step, other.m_step);
-            std::ranges::swap(m_index, other.m_index);
-            std::ranges::swap(m_overflow, other.m_overflow);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) start(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_start);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) stop(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_stop);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) step(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_step);
+            m_storage.swap(other.m_storage);
         }
 
         template <typename Self>
@@ -1963,35 +2924,17 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr copy begin() const
-            noexcept (requires{{copy{start(), m_stop, m_step, m_index, m_overflow}} noexcept;})
-            requires (requires{{copy{start(), m_stop, m_step, m_index, m_overflow}};})
+            noexcept (requires{{copy{m_storage.begin()}} noexcept;})
+            requires (requires{{copy{m_storage.begin()}};})
         {
-            return copy{start(), m_stop, m_step, m_index, m_overflow};
+            return copy{m_storage.begin()};
         }
 
         [[nodiscard]] constexpr copy begin() &&
-            noexcept (requires{{copy{
-                std::move(start()),
-                std::move(m_stop),
-                std::move(m_step),
-                std::move(m_index),
-                std::move(m_overflow)
-            }} noexcept;})
-            requires (requires{{copy{
-                std::move(start()),
-                std::move(m_stop),
-                std::move(m_step),
-                std::move(m_index),
-                std::move(m_overflow)
-            }};})
+            noexcept (requires{{copy{std::move(m_storage).begin()}} noexcept;})
+            requires (requires{{copy{std::move(m_storage).begin()}};})
         {
-            return copy{
-                std::move(start()),
-                std::move(m_stop),
-                std::move(m_step),
-                std::move(m_index),
-                std::move(m_overflow)
-            };
+            return copy{std::move(m_storage).begin()};
         }
 
         [[nodiscard]] static constexpr NoneType end() noexcept {
@@ -2034,55 +2977,11 @@ namespace impl {
             return impl::arrow{*std::forward<Self>(self)};
         }
 
-        [[nodiscard]] static constexpr bool empty() noexcept requires (subrange_infinite<Stop>) {
-            return false;
-        }
-
         [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {start() < stop()} noexcept -> meta::nothrow::convertible_to<bool>;
-            } && (strictly_positive<Step> || requires{
-                {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {start() > stop()} noexcept -> meta::nothrow::convertible_to<bool>;
-            }))
-            requires (subrange_bounded<Start, Stop, Step>)
+            noexcept (requires{{m_storage.empty()} noexcept;})
+            requires (requires{{m_storage.empty()};})
         {
-            if constexpr (strictly_positive<Step>) {
-                return !static_cast<bool>(start() < stop());
-            } else {
-                if (step() < 0) {
-                    return !static_cast<bool>(start() > stop());
-                } else {
-                    return !static_cast<bool>(start() < stop());
-                }
-            }
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {start() == stop()} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (subrange_equal<Start, Stop, Step>)
-        {
-            return start() == stop();
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {m_index >= difference_type{stop()}} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (subrange_counted<Start, Stop, Step>)
-        {
-            return m_index >= difference_type{stop()};
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {stop()(start())} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (subrange_conditional<Start, Stop, Step>)
-        {
-            return !static_cast<bool>(stop()(start()));
+            return m_storage.empty();
         }
 
         [[nodiscard]] friend constexpr bool operator<(const subrange& self, NoneType)
@@ -2158,14 +3057,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr difference_type index() const
-            noexcept (requires{
-                {m_index + m_overflow} noexcept -> meta::nothrow::convertible_to<difference_type>;
-            })
-            requires (requires{
-                {m_index + m_overflow} -> meta::convertible_to<difference_type>;
-            })
+            noexcept (requires{{m_storage.index()} noexcept;})
+            requires (requires{{m_storage.index()};})
         {
-            return m_index + m_overflow;
+            return m_storage.index();
         }
 
         [[nodiscard]] constexpr bool operator==(const subrange& other) const
@@ -2208,289 +3103,31 @@ namespace impl {
             return (index() - other.index()) / step();
         }
 
-    private:
-        [[nodiscard]] constexpr difference_type remaining() const
-            noexcept (requires{{
-                difference_type(stop()) - m_index
-            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-            requires (subrange_counted<Start, Stop, Step> && requires{{
-                difference_type(stop()) - m_index
-            } -> meta::convertible_to<difference_type>;})
-        {
-            return difference_type(stop()) - m_index;
-        }
-
-        [[nodiscard]] constexpr difference_type remaining() const
-            noexcept (requires{
-                {stop() - start()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-            })
-            requires (!subrange_counted<Start, Stop, Step> && requires{
-                {stop() - start()} -> meta::convertible_to<difference_type>;
-            })
-        {
-            return stop() - start();
-        }
-
-        static constexpr bool safe =
-            subrange_empty<Step> ||
-            subrange_infinite<Stop> ||
-            subrange_bounded<Start, Stop, Step> ||
-            subrange_counted<Start, Stop, Step>;
-
-        /// TODO: if the subrange is infinite, then remaining() will not be available,
-        // and we never need to use the bounds checking logic.
-
-        constexpr void advance_by(difference_type n)
-            noexcept (requires(difference_type delta) {
-                {empty()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {m_overflow += n} noexcept;
-                {m_overflow < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {n = m_overflow} noexcept;
-                {m_overflow = 0} noexcept;
-                {remaining()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                {n > delta} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {start() += delta} noexcept;
-                {m_overflow = n - delta} noexcept;
-                {m_index += delta} noexcept;
-            })
-            requires (requires(difference_type delta) {
-                {empty()} -> meta::explicitly_convertible_to<bool>;
-                {m_overflow += n};
-                {m_overflow < 0} -> meta::explicitly_convertible_to<bool>;
-                {n = m_overflow};
-                {m_overflow = 0};
-                {remaining()} -> meta::convertible_to<difference_type>;
-                {n > delta} -> meta::explicitly_convertible_to<bool>;
-                {start() += delta};
-                {m_overflow = n - delta};
-                {m_index += delta};
-            })
-        {
-            if (empty()) {
-                m_overflow += n;
-                return;
-            }
-            if (m_overflow < 0) {
-                m_overflow += n;
-                if (m_overflow < 0) {
-                    return;
-                }
-                n = m_overflow;
-                m_overflow = 0;
-            }
-            difference_type delta = remaining();
-            if (n > delta) {
-                start() += delta;
-                m_overflow = n - delta;
-                m_index += delta;
-            } else {
-                start() += n;
-                m_index += n;
-            }
-        }
-
-        constexpr void retreat_by(difference_type n)
-            noexcept (requires {
-                {m_index == 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {m_overflow -= n} noexcept;
-                {m_overflow > 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {n = -m_overflow} noexcept;
-                {m_overflow = 0} noexcept;
-                {n > m_index} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {start() -= m_index} noexcept;
-                {m_overflow = m_index - n} noexcept;
-                {m_index = 0} noexcept;
-                {m_index -= n} noexcept;
-            })
-            requires (requires {
-                {m_index == 0} -> meta::explicitly_convertible_to<bool>;
-                {m_overflow -= n};
-                {m_overflow > 0} -> meta::explicitly_convertible_to<bool>;
-                {n = -m_overflow};
-                {m_overflow = 0};
-                {n > m_index} -> meta::explicitly_convertible_to<bool>;
-                {start() -= m_index};
-                {m_overflow = m_index - n};
-                {m_index = 0};
-                {m_index -= n};
-            })
-        {
-            if (m_index == 0) {
-                m_overflow -= n;
-                return;
-            }
-            if (m_overflow > 0) {
-                m_overflow -= n;
-                if (m_overflow > 0) {
-                    return;
-                }
-                n = -m_overflow;
-                m_overflow = 0;
-            }
-            if (n > m_index) {
-                start() -= m_index;
-                m_overflow = m_index - n;
-                m_index = 0;
-            } else {
-                start() -= n;
-                m_index -= n;
-            }
-        }
-
-        constexpr void advance_for_positive(difference_type n)
-            noexcept (requires(difference_type i) {
-                {difference_type{}} noexcept;
-                {i < n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++i} noexcept;
-                {
-                    empty() || m_overflow < 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++m_overflow} noexcept;
-                {++m_index} noexcept;
-                {++start()} noexcept;
-            })
-            requires (requires(difference_type i) {
-                {difference_type{}};
-                {i < n} -> meta::explicitly_convertible_to<bool>;
-                {++i};
-                {empty() || m_overflow < 0} -> meta::explicitly_convertible_to<bool>;
-                {++m_overflow};
-                {++m_index};
-                {++start()};
-            })
-        {
-            for (difference_type i {}; i < n; ++i) {
-                if (empty() || m_overflow < 0) {
-                    ++m_overflow;
-                } else {
-                    ++m_index;
-                    ++start();
-                }
-            }
-        }
-
-        constexpr void advance_for_negative(difference_type n)
-            noexcept (requires(difference_type i) {
-                {difference_type{}} noexcept;
-                {i > n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--i} noexcept;
-                {
-                    empty() || m_overflow < 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++m_overflow} noexcept;
-                {++m_index} noexcept;
-                {--start()} noexcept;
-            })
-            requires (requires(difference_type i) {
-                {difference_type{}};
-                {i > n} -> meta::explicitly_convertible_to<bool>;
-                {--i};
-                {empty() || m_overflow < 0} -> meta::explicitly_convertible_to<bool>;
-                {++m_overflow};
-                {++m_index};
-                {--start()};
-            })
-        {
-            for (difference_type i {}; i > n; --i) {
-                if (empty() || m_overflow < 0) {
-                    ++m_overflow;
-                } else {
-                    ++m_index;
-                    --start();
-                }
-            }
-        }
-
-        constexpr void retreat_for_positive(difference_type n)
-            noexcept (requires(difference_type i) {
-                {difference_type{}} noexcept;
-                {i < n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++i} noexcept;
-                {
-                    m_index == 0 || m_overflow > 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--m_overflow} noexcept;
-                {--m_index} noexcept;
-                {--start()} noexcept;
-            })
-            requires (requires(difference_type i) {
-                {difference_type{}};
-                {i < n} -> meta::explicitly_convertible_to<bool>;
-                {++i};
-                {m_index == 0 || m_overflow > 0} -> meta::explicitly_convertible_to<bool>;
-                {--m_overflow};
-                {--m_index};
-                {--start()};
-            })
-        {
-            for (difference_type i {}; i < n; ++i) {
-                if (m_index == 0 || m_overflow > 0) {
-                    --m_overflow;
-                } else {
-                    --m_index;
-                    --start();
-                }
-            }
-        }
-
-        constexpr void retreat_for_negative(difference_type n)
-            noexcept (requires(difference_type i) {
-                {difference_type{}} noexcept;
-                {i > n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--i} noexcept;
-                {
-                    m_index == 0 || m_overflow > 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--m_overflow} noexcept;
-                {--m_index} noexcept;
-                {++start()} noexcept;
-            })
-            requires (requires(difference_type i) {
-                {difference_type{}};
-                {i > n} -> meta::explicitly_convertible_to<bool>;
-                {--i};
-                {m_index == 0 || m_overflow > 0} -> meta::explicitly_convertible_to<bool>;
-                {--m_overflow};
-                {--m_index};
-                {++start()};
-            })
-        {
-            for (difference_type i {}; i > n; --i) {
-                if (m_index == 0 || m_overflow > 0) {
-                    --m_overflow;
-                } else {
-                    --m_index;
-                    ++start();
-                }
-            }
-        }
-
-    public:
         [[nodiscard]] constexpr difference_type ssize() const
-            noexcept (requires{{difference_type{remaining()}} noexcept;})
-            requires (subrange_empty<Step> && requires{{difference_type{remaining()}};})
+            noexcept (requires{{m_storage.remaining()} noexcept;})
+            requires (subrange_empty<Step> && requires{{m_storage.remaining()};})
         {
-            return difference_type{remaining()};
+            return m_storage.remaining();
         }
 
         [[nodiscard]] constexpr difference_type ssize() const
             noexcept (requires{{
                 difference_type{math::div::ceil<
-                    meta::unqualify<decltype(remaining())>,
+                    difference_type,
                     meta::unqualify<step_type>
-                >{}(remaining(), step())}
+                >{}(m_storage.remaining(), step())}
             } noexcept -> meta::nothrow::convertible_to<difference_type>;})
             requires (!subrange_empty<Step> && requires{{
                 difference_type{math::div::ceil<
-                    meta::unqualify<decltype(remaining())>,
+                    difference_type,
                     meta::unqualify<step_type>
-                >{}(remaining(), step())}
+                >{}(m_storage.remaining(), step())}
             };})
         {
             return difference_type{math::div::ceil<
-                meta::unqualify<decltype(remaining())>,
+                difference_type,
                 meta::unqualify<step_type>
-            >{}(remaining(), step())};
+            >{}(m_storage.remaining(), step())};
         }
 
         [[nodiscard]] constexpr size_type size() const
@@ -2501,186 +3138,43 @@ namespace impl {
         }
 
         constexpr void increment()
-            noexcept (requires{
-                {
-                    empty() || m_overflow < 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++m_overflow} noexcept;
-                {++start()} noexcept;
-                {++m_index} noexcept;
-            })
+            noexcept (requires{{m_storage.increment()} noexcept;})
             requires (subrange_simple<Start, Step>)
         {
-            if consteval {
-                if (empty() || m_overflow < 0) {
-                    ++m_overflow;
-                } else {
-                    ++start();
-                    ++m_index;
-                }
-            } else {
-                if constexpr (!safe) {
-                    if (empty() || m_overflow < 0) {
-                        ++m_overflow;
-                    } else {
-                        ++start();
-                        ++m_index;
-                    }
-                } else {
-                    ++start();
-                    ++m_index;
-                }
-            }
+            m_storage.increment();
         }
 
-        /// TODO: right now, the linear case doesn't permit infinite ranges, since
-        /// they don't support remaining().  That should be fixed.  I should also
-        /// consider pulling out all the index requirements, since the index is
-        /// guaranteed to be an integer type, and should support all the necessary
-        /// operations.  I also never consider comparisons between step and
-        /// difference_type.
-
         constexpr void increment()
-            noexcept (
-                requires{{advance_by(step())} noexcept;} &&
-                (strictly_positive<Step> || requires{
-                    {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {retreat_by(-step())} noexcept;
-                }) && (!safe || (
-                    requires{
-                        {start() += step()} noexcept;
-                        {m_index += step()} noexcept;
-                    } && (strictly_positive<Step> || requires{
-                        {m_index += step() < 0 ? -step() : step()} noexcept;
-                    })
-                ))
-            )
+            noexcept (requires{{m_storage.increment_by(step())} noexcept;})
             requires (subrange_linear<Start, Stop, Step>)
         {
-            if consteval {
-                if constexpr (strictly_positive<Step>) {
-                    advance_by(step());
-                } else {
-                    if (step() < 0) {
-                        retreat_by(-step());
-                    } else {
-                        advance_by(step());
-                    }
-                }
-            } else {
-                if constexpr (!safe) {
-                    if constexpr (strictly_positive<Step>) {
-                        advance_by(step());
-                    } else {
-                        if (step() < 0) {
-                            retreat_by(-step());
-                        } else {
-                            advance_by(step());
-                        }
-                    }
-                } else {
-                    start() += step();
-                    if constexpr (strictly_positive<Step>) {
-                        m_index += step();
-                    } else {
-                        m_index += step() < 0 ? -step() : step();
-                    }
-                }
-            }
-        }
-
-        constexpr void increment()
-            noexcept (
-                requires{{advance_for_positive(step())} noexcept;} &&
-                (strictly_positive<Step> || requires{
-                    {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {advance_for_negative(step())} noexcept;
-                }) && (!safe || (
-                    requires(difference_type i) {
-                        {difference_type{}} noexcept;
-                        {i < step()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                        {++i} noexcept;
-                        {++start()} noexcept;
-                        {m_index += step()} noexcept;
-                    } && (strictly_positive<Step> || requires(difference_type i) {
-                        {i > step()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                        {--i} noexcept;
-                        {--start()} noexcept;
-                        {m_index -= step()} noexcept;
-                    })
-                ))
-            )
-            requires (subrange_loop<Start, Stop, Step>)
-        {
-            if consteval {
-                if constexpr (strictly_positive<Step>) {
-                    advance_for_positive(step());
-                } else {
-                    if (step() < 0) {
-                        advance_for_negative(step());
-                    } else {
-                        advance_for_positive(step());
-                    }
-                }
-            } else {
-                if constexpr (!safe) {
-                    if constexpr (strictly_positive<Step>) {
-                        advance_for_positive(step());
-                    } else {
-                        if (step() < 0) {
-                            advance_for_negative(step());
-                        } else {
-                            advance_for_positive(step());
-                        }
-                    }
-                } else {
-                    if constexpr (strictly_positive<Step>) {
-                        for (difference_type i {}; i < step(); ++i) ++start();
-                        m_index += step();
-                    } else {
-                        if (step() < 0) {
-                            for (difference_type i {}; i > step(); --i) --start();
-                            m_index -= step();
-                        } else {
-                            for (difference_type i {}; i < step(); ++i) ++start();
-                            m_index += step();
-                        }
-                    }
-                }
-            }
+            m_storage.increment_by(step());
         }
 
         constexpr void increment()
             noexcept (requires{
-                {
-                    empty() || m_overflow < 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++m_overflow} noexcept;
-                {step()(start())} noexcept;
-                {++m_index} noexcept;
-            })
-            requires (subrange_nonlinear<Start, Stop, Step>)
+                {m_storage.increment_for_positive(step())} noexcept;
+            } && (strictly_positive<Step> || requires{
+                {m_storage.increment_for_negative(step())} noexcept;
+            }))
+            requires (subrange_loop<Start, Stop, Step>)
         {
-            if consteval {
-                if (empty() || m_overflow < 0) {
-                    ++m_overflow;
-                } else {
-                    step()(start());
-                    ++m_index;
-                }
+            if constexpr (strictly_positive<Step>) {
+                m_storage.increment_for_positive(step());
             } else {
-                if constexpr (!safe) {
-                    if (empty() || m_overflow < 0) {
-                        ++m_overflow;
-                    } else {
-                        step()(start());
-                        ++m_index;
-                    }
+                if (step() < 0) {
+                    m_storage.increment_for_negative(step());
                 } else {
-                    step()(start());
-                    ++m_index;
+                    m_storage.increment_for_positive(step());
                 }
             }
+        }
+
+        constexpr void increment()
+            noexcept (requires{{m_storage.increment_func()} noexcept;})
+            requires (subrange_nonlinear<Start, Stop, Step>)
+        {
+            m_storage.increment_func();
         }
 
         constexpr subrange& operator++()
@@ -2707,83 +3201,18 @@ namespace impl {
         }
 
         constexpr subrange& operator+=(difference_type n)
-            noexcept (requires{
-                {n < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {retreat_by(-n)} noexcept;
-                {advance_by(n)} noexcept;
-            } && (!safe || requires{
-                {start() += n} noexcept;
-                {m_index += n < 0 ? -n : n} noexcept;
-            }))
-            requires (subrange_empty<Step> && requires{
-                {n < 0} -> meta::explicitly_convertible_to<bool>;
-                {retreat_by(-n)};
-                {advance_by(n)};
-            } && (!safe || requires{
-                {start() += n};
-                {m_index += n < 0 ? -n : n};
-            }))
+            noexcept (requires{{m_storage.increment_by(n)} noexcept;})
+            requires (subrange_empty<Step> && requires{{m_storage.increment_by(n)};})
         {
-            if consteval {
-                if (n < 0) {
-                    retreat_by(-n);
-                } else {
-                    advance_by(n);
-                }
-            } else {
-                if constexpr (!safe) {
-                    if (n < 0) {
-                        retreat_by(-n);
-                    } else {
-                        advance_by(n);
-                    }
-                } else {
-                    start() += n;
-                    m_index += n < 0 ? -n : n;
-                }
-            }
+            m_storage.increment_by(n);
             return *this;
         }
 
         constexpr subrange& operator+=(difference_type n)
-            noexcept (requires(difference_type delta) {
-                {n * step()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                {delta < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {retreat_by(-delta)} noexcept;
-                {advance_by(delta)} noexcept;
-            } && (!safe || requires(difference_type delta) {
-                {start() += delta} noexcept;
-                {m_index += delta < 0 ? -delta : delta} noexcept;
-            }))
-            requires (!subrange_empty<Step> && requires(difference_type delta) {
-                {n * step()} -> meta::convertible_to<difference_type>;
-                {delta < 0} -> meta::explicitly_convertible_to<bool>;
-                {retreat_by(-delta)};
-                {advance_by(delta)};
-            } && (!safe || requires(difference_type delta) {
-                {start() += delta};
-                {m_index += delta < 0 ? -delta : delta};
-            }))
+            noexcept (requires{{m_storage.increment_by(n * step())} noexcept;})
+            requires (!subrange_empty<Step> && requires{{m_storage.increment_by(n * step())};})
         {
-            difference_type delta = n * step();
-            if consteval {
-                if (delta < 0) {
-                    retreat_by(-delta);
-                } else {
-                    advance_by(delta);
-                }
-            } else {
-                if constexpr (!safe) {
-                    if (delta < 0) {
-                        retreat_by(-delta);
-                    } else {
-                        advance_by(delta);
-                    }
-                } else {
-                    start() += delta;
-                    m_index += delta < 0 ? -delta : delta;
-                }
-            }
+            m_storage.increment_by(n * step());
             return *this;
         }
 
@@ -2826,305 +3255,79 @@ namespace impl {
 
         constexpr void increment(difference_type n)
             noexcept (requires{
-                {n < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {advance_for_negative(n)} noexcept;
-                {advance_for_positive(n)} noexcept;
-            } && (!safe || requires(difference_type i) {
-                {difference_type{}} noexcept;
-                {i > n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--i} noexcept;
-                {--start()} noexcept;
-                {m_index -= n} noexcept;
-                {i < n} noexcept;
-                {++i} noexcept;
-                {++start()} noexcept;
-                {m_index += n} noexcept;
-            }))
-            requires (
-                subrange_empty<Step> &&
-                !requires{{*this += n};} &&
-                requires{
-                    {n < 0} -> meta::explicitly_convertible_to<bool>;
-                    {advance_for_negative(n)};
-                    {advance_for_positive(n)};
-                } && (!safe || requires(difference_type i) {
-                    {difference_type{}};
-                    {i > n} -> meta::explicitly_convertible_to<bool>;
-                    {--i};
-                    {--start()};
-                    {m_index -= n};
-                    {i < n};
-                    {++i};
-                    {++start()};
-                    {m_index += n};
-                })
-            )
+                {m_storage.increment_for_negative(n)} noexcept;
+                {m_storage.increment_for_positive(n)} noexcept;
+            })
+            requires (subrange_empty<Step> && !requires{{*this += n};} && requires{
+                {m_storage.increment_for_negative(n)};
+                {m_storage.increment_for_positive(n)};
+            })
         {
-            if consteval {
-                if (n < 0) {
-                    advance_for_negative(n);
-                } else {
-                    advance_for_positive(n);
-                }
+            if (n < 0) {
+                m_storage.increment_for_negative(n);
             } else {
-                if constexpr (!safe) {
-                    if (n < 0) {
-                        advance_for_negative(n);
-                    } else {
-                        advance_for_positive(n);
-                    }
-                } else {
-                    if (n < 0) {
-                        for (difference_type i {}; i > n; --i) --start();
-                        m_index -= n;
-                    } else {
-                        for (difference_type i {}; i < n; ++i) ++start();
-                        m_index += n;
-                    }
-                }
+                m_storage.increment_for_positive(n);
             }
         }
 
         constexpr void increment(difference_type n)
-            noexcept (requires(difference_type delta) {
-                {n * step()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                {delta < 0} noexcept -> meta::nothrow::explicitly_convertible_to<difference_type>;
-                {advance_for_negative(delta)} noexcept;
-                {advance_for_positive(delta)} noexcept;
-            } && (!safe || requires(difference_type delta, difference_type i) {
-                {difference_type{}} noexcept;
-                {i > delta} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--i} noexcept;
-                {--start()} noexcept;
-                {m_index -= delta} noexcept;
-                {i < delta} noexcept;
-                {++i} noexcept;
-                {++start()} noexcept;
-                {m_index += delta} noexcept;
-            }))
+            noexcept (requires{
+                {m_storage.increment_for_negative(n * step())} noexcept;
+                {m_storage.increment_for_positive(n * step())} noexcept;
+            })
+            requires (!subrange_empty<Step> && !requires{{*this += n};} && requires{
+                {m_storage.increment_for_negative(n * step())};
+                {m_storage.increment_for_positive(n * step())};
+            })
+        {
+            n *= step();
+            if (n < 0) {
+                m_storage.increment_for_negative(n);
+            } else {
+                m_storage.increment_for_positive(n);
+            }
+        }
+
+        constexpr void decrement()
+            noexcept (requires{{m_storage.decrement()} noexcept;})
+            requires (subrange_empty<Step> && requires{{m_storage.decrement()};})
+        {
+            m_storage.decrement();
+        }
+
+        constexpr void decrement()
+            noexcept (requires{{m_storage.decrement_by(step())} noexcept;})
             requires (
                 !subrange_empty<Step> &&
-                !requires{{*this += n};} &&
-                requires(difference_type delta) {
-                    {n * step()} -> meta::convertible_to<difference_type>;
-                    {delta < 0} -> meta::explicitly_convertible_to<bool>;
-                    {advance_for_negative(delta)};
-                    {advance_for_positive(delta)};
-                } && (!safe || requires(difference_type delta, difference_type i) {
-                    {difference_type{}};
-                    {i > delta} -> meta::explicitly_convertible_to<bool>;
-                    {--i};
-                    {--start()};
-                    {m_index -= delta};
-                    {i < delta};
-                    {++i};
-                    {++start()};
-                    {m_index += delta};
+                requires{{m_storage.decrement_by(step())};}
+            )
+        {
+            m_storage.decrement_by(step());
+        }
+
+        constexpr void decrement()
+            noexcept (
+                requires{{m_storage.decrement_for_positive(step())} noexcept;} &&
+                (strictly_positive<Step> || requires{
+                    {m_storage.decrement_for_negative(step())} noexcept;
+                })
+            )
+            requires (
+                !subrange_empty<Step> &&
+                !requires{{m_storage.decrement_by(step())};} &&
+                requires{{m_storage.decrement_for_positive(step())};} &&
+                (strictly_positive<Step> || requires{
+                    {m_storage.decrement_for_negative(step())};
                 })
             )
         {
-            difference_type delta = n * step();
-            if consteval {
-                if (delta < 0) {
-                    advance_for_negative(delta);
-                } else {
-                    advance_for_positive(delta);
-                }
+            if constexpr (strictly_positive<Step>) {
+                m_storage.decrement_for_positive(step());
             } else {
-                if constexpr (!safe) {
-                    if (delta < 0) {
-                        advance_for_negative(-delta);
-                    } else {
-                        advance_for_positive(delta);
-                    }
+                if (step() < 0) {
+                    m_storage.decrement_for_negative(step());
                 } else {
-                    if (delta < 0) {
-                        for (difference_type i {}; i > delta; --i) --start();
-                        m_index -= delta;
-                    } else {
-                        for (difference_type i {}; i < delta; ++i) ++start();
-                        m_index += delta;
-                    }
-                }
-            }
-        }
-
-        constexpr void decrement()
-            noexcept (requires{
-                {
-                    m_index == 0 || m_overflow < 0
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--m_overflow} noexcept;
-                {--start()} noexcept;
-                {--m_index} noexcept;
-            })
-            requires (requires{
-                {m_index == 0 || m_overflow < 0} -> meta::explicitly_convertible_to<bool>;
-                {--m_overflow};
-                {--start()};
-                {--m_index};
-            })
-        {
-            if consteval {
-                if (m_index == 0 || m_overflow < 0) {
-                    --m_overflow;
-                } else {
-                    --start();
-                    --m_index;
-                }
-            } else {
-                if constexpr (!safe) {
-                    if (m_index == 0 || m_overflow < 0) {
-                        --m_overflow;
-                    } else {
-                        --start();
-                        --m_index;
-                    }
-                } else {
-                    --start();
-                    --m_index;
-                }
-            }
-        }
-
-        constexpr void decrement()
-            noexcept (
-                requires{{retreat_by(step())} noexcept;} &&
-                (strictly_positive<Step> || requires{
-                    {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {advance_by(-step())} noexcept;
-                }) && (!safe || (
-                    requires{
-                        {start() -= step()} noexcept;
-                        {m_index -= step()} noexcept;
-                    } && (strictly_positive<Step> || requires{
-                        {m_index -= step() < 0 ? -step() : step()} noexcept;
-                    })
-                ))
-            )
-            requires (
-                requires{{retreat_by(step())};} &&
-                (strictly_positive<Step> || requires{
-                    {step() < 0} -> meta::explicitly_convertible_to<bool>;
-                    {advance_by(-step())};
-                }) && (!safe || (
-                    requires{
-                        {start() -= step()};
-                        {m_index -= step()};
-                    } && (strictly_positive<Step> || requires{
-                        {m_index -= step() < 0 ? -step() : step()};
-                    })
-                ))
-            )
-        {
-            if consteval {
-                if constexpr (strictly_positive<Step>) {
-                    retreat_by(step());
-                } else {
-                    if (step() < 0) {
-                        advance_by(-step());
-                    } else {
-                        retreat_by(step());
-                    }
-                }
-            } else {
-                if constexpr (!safe) {
-                    if constexpr (strictly_positive<Step>) {
-                        retreat_by(step());
-                    } else {
-                        if (step() < 0) {
-                            advance_by(-step());
-                        } else {
-                            retreat_by(step());
-                        }
-                    }
-                } else {
-                    start() -= step();
-                    if constexpr (strictly_positive<Step>) {
-                        m_index -= step();
-                    } else {
-                        m_index -= step() < 0 ? -step() : step();
-                    }
-                }
-            }
-        }
-
-        constexpr void decrement()
-            noexcept (
-                requires{{retreat_for_positive(step())} noexcept;} &&
-                (strictly_positive<Step> || requires{
-                    {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {retreat_for_negative(step())} noexcept;
-                } && (!safe || (
-                    requires(difference_type i) {
-                        {difference_type{}} noexcept;
-                        {i < step()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                        {++i} noexcept;
-                        {--start()} noexcept;
-                        {m_index -= step()} noexcept;
-                    } && (strictly_positive<Step> || requires(difference_type i) {
-                        {i > step()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                        {--i} noexcept;
-                        {++start()} noexcept;
-                        {m_index += step()} noexcept;
-                    })
-                )))
-            )
-            requires (
-                requires{{retreat_for_positive(step())};} &&
-                (strictly_positive<Step> || requires{
-                    {step() < 0} -> meta::explicitly_convertible_to<bool>;
-                    {retreat_for_negative(step())};
-                } && (!safe || (
-                    requires(difference_type i) {
-                        {difference_type{}};
-                        {i < step()} -> meta::explicitly_convertible_to<bool>;
-                        {++i};
-                        {--start()};
-                        {m_index -= step()};
-                    } && (strictly_positive<Step> || requires(difference_type i) {
-                        {i > step()} -> meta::explicitly_convertible_to<bool>;
-                        {--i};
-                        {++start()};
-                        {m_index += step()};
-                    })
-                )))
-            )
-        {
-            if consteval {
-                if constexpr (strictly_positive<Step>) {
-                    retreat_for_positive(step());
-                } else {
-                    if (step() < 0) {
-                        retreat_for_negative(step());
-                    } else {
-                        retreat_for_positive(step());
-                    }
-                }
-            } else {
-                if constexpr (!safe) {
-                    if constexpr (strictly_positive<Step>) {
-                        retreat_for_positive(step());
-                    } else {
-                        if (step() < 0) {
-                            retreat_for_negative(step());
-                        } else {
-                            retreat_for_positive(step());
-                        }
-                    }
-                } else {
-                    if constexpr (strictly_positive<Step>) {
-                        for (difference_type i {}; i < step(); ++i) --start();
-                        m_index -= step();
-                    } else {
-                        if (step() < 0) {
-                            for (difference_type i {}; i > step(); --i) ++start();
-                            m_index += step();
-                        } else {
-                            for (difference_type i {}; i < step(); ++i) --start();
-                            m_index -= step();
-                        }
-                    }
+                    m_storage.decrement_for_positive(step());
                 }
             }
         }
@@ -3153,83 +3356,18 @@ namespace impl {
         }
 
         constexpr subrange& operator-=(difference_type n)
-            noexcept (requires{
-                {n < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {advance_by(-n)} noexcept;
-                {retreat_by(n)} noexcept;
-            } && (!safe || requires{
-                {start() -= n} noexcept;
-                {m_index -= n < 0 ? -n : n} noexcept;
-            }))
-            requires (subrange_empty<Step> && requires{
-                {n < 0} -> meta::explicitly_convertible_to<bool>;
-                {advance_by(-n)};
-                {retreat_by(n)};
-            } && (!safe || requires{
-                {start() -= n};
-                {m_index -= n < 0 ? -n : n};
-            }))
+            noexcept (requires{{m_storage.decrement_by(n)} noexcept;})
+            requires (subrange_empty<Step> && requires{{m_storage.decrement_by(n)};})
         {
-            if consteval {
-                if (n < 0) {
-                    advance_by(-n);
-                } else {
-                    retreat_by(n);
-                }
-            } else {
-                if constexpr (!safe) {
-                    if (n < 0) {
-                        advance_by(-n);
-                    } else {
-                        retreat_by(n);
-                    }
-                } else {
-                    start() -= n;
-                    m_index -= n < 0 ? -n : n;
-                }
-            }
+            m_storage.decrement_by(n);
             return *this;
         }
 
         constexpr subrange& operator-=(difference_type n)
-            noexcept (requires(difference_type delta) {
-                {n * step()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                {delta < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {advance_by(-delta)} noexcept;
-                {retreat_by(delta)} noexcept;
-            } && (!safe || requires(difference_type delta) {
-                {start() -= delta} noexcept;
-                {m_index -= delta < 0 ? -delta : delta} noexcept;
-            }))
-            requires (!subrange_empty<Step> && requires(difference_type delta) {
-                {n * step()} -> meta::convertible_to<difference_type>;
-                {delta < 0} -> meta::explicitly_convertible_to<bool>;
-                {advance_by(-delta)};
-                {retreat_by(delta)};
-            } && (!safe || requires(difference_type delta) {
-                {start() -= delta};
-                {m_index -= delta < 0 ? -delta : delta};
-            }))
+            noexcept (requires{{m_storage.decrement_by(n * step())} noexcept;})
+            requires (!subrange_empty<Step> && requires{{m_storage.decrement_by(n * step())};})
         {
-            difference_type delta = n * step();
-            if consteval {
-                if (delta < 0) {
-                    advance_by(-delta);
-                } else {
-                    retreat_by(delta);
-                }
-            } else {
-                if constexpr (!safe) {
-                    if (delta < 0) {
-                        advance_by(-delta);
-                    } else {
-                        retreat_by(delta);
-                    }
-                } else {
-                    start() -= delta;
-                    m_index -= delta < 0 ? -delta : delta;
-                }
-            }
+            m_storage.decrement_by(n * step());
             return *this;
         }
 
@@ -3256,127 +3394,37 @@ namespace impl {
         }
 
         constexpr void decrement(difference_type n)
-            noexcept (requires {
-                {n < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {retreat_for_negative(n)} noexcept;
-                {retreat_for_positive(n)} noexcept;
-            } && (!safe || requires(difference_type i) {
-                {difference_type{}} noexcept;
-                {i > n} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--i} noexcept;
-                {++start()} noexcept;
-                {m_index += n} noexcept;
-                {i < n} noexcept;
-                {++i} noexcept;
-                {--start()} noexcept;
-                {m_index -= n} noexcept;
-            }))
-            requires (
-                subrange_empty<Step> &&
-                !requires{{*this += n};} &&
-                requires{
-                    {n < 0} -> meta::explicitly_convertible_to<bool>;
-                    {advance_for_negative(n)};
-                    {advance_for_positive(n)};
-                } && (!safe || requires(difference_type i) {
-                    {difference_type{}};
-                    {i > n} -> meta::explicitly_convertible_to<bool>;
-                    {--i};
-                    {++start()};
-                    {m_index += n};
-                    {i < n};
-                    {++i};
-                    {--start()};
-                    {m_index -= n};
-                })
-            )
+            noexcept (requires{
+                {m_storage.decrement_for_negative(n)} noexcept;
+                {m_storage.decrement_for_positive(n)} noexcept;
+            })
+            requires (subrange_empty<Step> && !requires{{*this += n};} && requires{
+                {m_storage.decrement_for_negative(n)};
+                {m_storage.decrement_for_positive(n)};
+            })
         {
-            if consteval {
-                if (n < 0) {
-                    retreat_for_negative(n);
-                } else {
-                    retreat_for_positive(n);
-                }
+            if (n < 0) {
+                m_storage.decrement_for_negative(n);
             } else {
-                if constexpr (!safe) {
-                    if (n < 0) {
-                        retreat_for_negative(n);
-                    } else {
-                        retreat_for_positive(n);
-                    }
-                } else {
-                    if (n < 0) {
-                        for (difference_type i {}; i > n; --i) ++start();
-                        m_index += n;
-                    } else {
-                        for (difference_type i {}; i < n; ++i) --start();
-                        m_index -= n;
-                    }
-                }
+                m_storage.decrement_for_positive(n);
             }
         }
 
         constexpr void decrement(difference_type n)
-            noexcept (requires(difference_type delta) {
-                {n * step()} noexcept -> meta::nothrow::convertible_to<difference_type>;
-                {delta < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {retreat_for_negative(delta)} noexcept;
-                {retreat_for_positive(delta)} noexcept;
-            } && (!safe || requires(difference_type delta, difference_type i) {
-                {difference_type{}} noexcept;
-                {i > delta} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {--i} noexcept;
-                {++start()} noexcept;
-                {m_index += delta} noexcept;
-                {i < delta} noexcept;
-                {++i} noexcept;
-                {--start()} noexcept;
-                {m_index -= delta} noexcept;
-            }))
-            requires (
-                !subrange_empty<Step> &&
-                !requires{{*this += n};} &&
-                requires(difference_type delta) {
-                    {n * step()} -> meta::convertible_to<difference_type>;
-                    {delta < 0} -> meta::explicitly_convertible_to<bool>;
-                    {retreat_for_negative(delta)};
-                    {retreat_for_positive(delta)};
-                } && (!safe || requires(difference_type delta, difference_type i) {
-                    {difference_type{}};
-                    {i > delta} -> meta::explicitly_convertible_to<bool>;
-                    {--i};
-                    {++start()};
-                    {m_index += delta};
-                    {i < delta};
-                    {++i};
-                    {--start()};
-                    {m_index -= delta};
-                })
-            )
+            noexcept (requires{
+                {m_storage.decrement_for_negative(n * step())} noexcept;
+                {m_storage.decrement_for_positive(n * step())} noexcept;
+            })
+            requires (!subrange_empty<Step> && !requires{{*this += n};} && requires{
+                {m_storage.decrement_for_negative(n * step())};
+                {m_storage.decrement_for_positive(n * step())};
+            })
         {
-            difference_type delta = n * step();
-            if consteval {
-                if (delta < 0) {
-                    advance_for_negative(delta);
-                } else {
-                    advance_for_positive(delta);
-                }
+            n *= step();
+            if (n < 0) {
+                m_storage.decrement_for_negative(n);
             } else {
-                if constexpr (!safe) {
-                    if (delta < 0) {
-                        advance_for_negative(-delta);
-                    } else {
-                        advance_for_positive(delta);
-                    }
-                } else {
-                    if (delta < 0) {
-                        for (difference_type i {}; i > delta; --i) --start();
-                        m_index -= delta;
-                    } else {
-                        for (difference_type i {}; i < delta; ++i) ++start();
-                        m_index += delta;
-                    }
-                }
+                m_storage.decrement_for_positive(n);
             }
         }
     };
@@ -3403,6 +3451,9 @@ namespace iter {
     {
         lhs.swap(rhs);
     }
+
+    /// TODO: it might be a good idea to constrain `range<C>` to iterable `C` once
+    /// again, for debugging purposes?
 
     template <meta::not_rvalue C = impl::empty_range>
     struct range;
@@ -3434,6 +3485,9 @@ namespace iter {
         meta::remove_rvalue<Stop>,
         meta::remove_rvalue<Step>
     >>;
+
+    /// TODO: unpack() may be another public type that equates to adding a `*`
+    /// prefix to a compatible container type.
 
 }
 
@@ -6311,8 +6365,6 @@ namespace bertrand {
 
 // static constexpr iter::range r10 = std::tuple<int, double>{1, 2.5};
 // // static_assert(r10[1] == 2.5);
-
-
 
 
 static constexpr std::array<int, 3> arr {1, 2, 3};
