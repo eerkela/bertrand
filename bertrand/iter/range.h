@@ -2345,6 +2345,35 @@ namespace impl {
             }
         }
 
+        constexpr void increment_by(difference_type n)
+            noexcept ((
+                check == subrange_check::NEVER ||
+                requires{{safe_increment_by(n)} noexcept;}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_increment_by(n)} noexcept;}
+            ))
+            requires ((
+                check == subrange_check::NEVER ||
+                requires{{safe_increment_by(n)};}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_increment_by(n)};}
+            ))
+        {
+            if constexpr (check == subrange_check::NEVER) {
+                unsafe_increment_by(n);
+            } else if constexpr (check == subrange_check::ALWAYS) {
+                safe_increment_by(n);
+            } else {
+                if consteval {
+                    safe_increment_by(n);
+                } else {
+                    unsafe_increment_by(n);
+                }
+            }
+        }
+
         constexpr void unsafe_decrement_by(difference_type n)
             noexcept (requires{{start() -= n} noexcept;})
             requires (check != subrange_check::ALWAYS && requires{{start() -= n};})
@@ -2413,6 +2442,35 @@ namespace impl {
             }
         }
 
+        constexpr void decrement_by(difference_type n)
+            noexcept ((
+                check == subrange_check::NEVER ||
+                requires{{safe_decrement_by(n)} noexcept;}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_decrement_by(n)} noexcept;}
+            ))
+            requires ((
+                check == subrange_check::NEVER ||
+                requires{{safe_decrement_by(n)};}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_decrement_by(n)};}
+            ))
+        {
+            if constexpr (check == subrange_check::NEVER) {
+                unsafe_decrement_by(n);
+            } else if constexpr (check == subrange_check::ALWAYS) {
+                safe_decrement_by(n);
+            } else {
+                if consteval {
+                    safe_decrement_by(n);
+                } else {
+                    unsafe_decrement_by(n);
+                }
+            }
+        }
+
         constexpr void unsafe_increment_for_positive(difference_type n)
             noexcept (requires{{++start()} noexcept;})
             requires (check != subrange_check::ALWAYS && requires{{++start()};})
@@ -2437,6 +2495,35 @@ namespace impl {
                 } else {
                     ++m_index;
                     ++start();
+                }
+            }
+        }
+
+        constexpr void increment_for_positive(difference_type n)
+            noexcept ((
+                check == subrange_check::NEVER ||
+                requires{{safe_increment_for_positive(n)} noexcept;}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_increment_for_positive(n)} noexcept;}
+            ))
+            requires ((
+                check == subrange_check::NEVER ||
+                requires{{safe_increment_for_positive(n)};}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_increment_for_positive(n)};}
+            ))
+        {
+            if constexpr (check == subrange_check::NEVER) {
+                unsafe_increment_for_positive(n);
+            } else if constexpr (check == subrange_check::ALWAYS) {
+                safe_increment_for_positive(n);
+            } else {
+                if consteval {
+                    safe_increment_for_positive(n);
+                } else {
+                    unsafe_increment_for_positive(n);
                 }
             }
         }
@@ -2469,6 +2556,35 @@ namespace impl {
             }
         }
 
+        constexpr void increment_for_negative(difference_type n)
+            noexcept ((
+                check == subrange_check::NEVER ||
+                requires{{safe_increment_for_negative(n)} noexcept;}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_increment_for_negative(n)} noexcept;}
+            ))
+            requires ((
+                check == subrange_check::NEVER ||
+                requires{{safe_increment_for_negative(n)};}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_increment_for_negative(n)};}
+            ))
+        {
+            if constexpr (check == subrange_check::NEVER) {
+                unsafe_increment_for_negative(n);
+            } else if constexpr (check == subrange_check::ALWAYS) {
+                safe_increment_for_negative(n);
+            } else {
+                if consteval {
+                    safe_increment_for_negative(n);
+                } else {
+                    unsafe_increment_for_negative(n);
+                }
+            }
+        }
+
         constexpr void unsafe_decrement_for_positive(difference_type n)
             noexcept (requires{{--start()} noexcept;})
             requires (check != subrange_check::ALWAYS && requires{{--start()};})
@@ -2491,6 +2607,35 @@ namespace impl {
             }
         }
 
+        constexpr void decrement_for_positive(difference_type n)
+            noexcept ((
+                check == subrange_check::NEVER ||
+                requires{{safe_decrement_for_positive(n)} noexcept;}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_decrement_for_positive(n)} noexcept;}
+            ))
+            requires ((
+                check == subrange_check::NEVER ||
+                requires{{safe_decrement_for_positive(n)};}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_decrement_for_positive(n)};}
+            ))
+        {
+            if constexpr (check == subrange_check::NEVER) {
+                unsafe_decrement_for_positive(n);
+            } else if constexpr (check == subrange_check::ALWAYS) {
+                safe_decrement_for_positive(n);
+            } else {
+                if consteval {
+                    safe_decrement_for_positive(n);
+                } else {
+                    unsafe_decrement_for_positive(n);
+                }
+            }
+        }
+
         constexpr void unsafe_decrement_for_negative(difference_type n)
             noexcept (requires{{++start()} noexcept;})
             requires (check != subrange_check::ALWAYS && requires{{++start()};})
@@ -2509,6 +2654,35 @@ namespace impl {
                 } else {
                     --m_index;
                     ++start();
+                }
+            }
+        }
+
+        constexpr void decrement_for_negative(difference_type n)
+            noexcept ((
+                check == subrange_check::NEVER ||
+                requires{{safe_decrement_for_negative(n)} noexcept;}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_decrement_for_negative(n)} noexcept;}
+            ))
+            requires ((
+                check == subrange_check::NEVER ||
+                requires{{safe_decrement_for_negative(n)};}
+            ) && (
+                check == subrange_check::ALWAYS ||
+                requires{{unsafe_decrement_for_negative(n)};}
+            ))
+        {
+            if constexpr (check == subrange_check::NEVER) {
+                unsafe_decrement_for_negative(n);
+            } else if constexpr (check == subrange_check::ALWAYS) {
+                safe_decrement_for_negative(n);
+            } else {
+                if consteval {
+                    safe_decrement_for_negative(n);
+                } else {
+                    unsafe_decrement_for_negative(n);
                 }
             }
         }
@@ -2598,83 +2772,26 @@ namespace impl {
         }
 
         constexpr void increment()
-            noexcept ((
-                check == subrange_check::NEVER ||
-                requires{{safe_increment_by(step())} noexcept;}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_increment_by(step())} noexcept;}
-            ))
+            noexcept (requires{{increment_by(step())} noexcept;})
             requires (subrange_linear<Start, Stop, Step>)
         {
-            if constexpr (check == subrange_check::NEVER) {
-                unsafe_increment_by(step());
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                safe_increment_by(step());
-            } else {
-                if consteval {
-                    safe_increment_by(step());
-                } else {
-                    unsafe_increment_by(step());
-                }
-            }
+            increment_by(step());
         }
 
         constexpr void increment()
-            noexcept ((check == subrange_check::NEVER || (
-                requires{{safe_increment_for_positive(step())} noexcept;} && (
-                    strictly_positive<Step> ||
-                    requires{{safe_increment_for_negative(step())} noexcept;}
-                )
-            )) && (check == subrange_check::ALWAYS || (
-                requires{{unsafe_increment_for_positive(step())} noexcept;} && (
-                    strictly_positive<Step> ||
-                    requires{{unsafe_increment_for_negative(step())} noexcept;}
-                )
-            )))
+            noexcept (requires{{increment_for_positive(step())} noexcept;} && (
+                strictly_positive<Step> ||
+                requires{{increment_for_negative(step())} noexcept;}
+            ))
             requires (subrange_loop<Start, Stop, Step>)
         {
-            if constexpr (check == subrange_check::NEVER) {
-                if constexpr (strictly_positive<Step>) {
-                    unsafe_increment_for_positive(step());
-                } else {
-                    if (step() < 0) {
-                        unsafe_increment_for_negative(step());
-                    } else {
-                        unsafe_increment_for_positive(step());
-                    }
-                }
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                if constexpr (strictly_positive<Step>) {
-                    safe_increment_for_positive(step());
-                } else {
-                    if (step() < 0) {
-                        safe_increment_for_negative(step());
-                    } else {
-                        safe_increment_for_positive(step());
-                    }
-                }
+            if constexpr (strictly_positive<Step>) {
+                increment_for_positive(step());
             } else {
-                if consteval {
-                    if constexpr (strictly_positive<Step>) {
-                        safe_increment_for_positive(step());
-                    } else {
-                        if (step() < 0) {
-                            safe_increment_for_negative(step());
-                        } else {
-                            safe_increment_for_positive(step());
-                        }
-                    }
+                if (step() < 0) {
+                    increment_for_negative(step());
                 } else {
-                    if constexpr (strictly_positive<Step>) {
-                        unsafe_increment_for_positive(step());
-                    } else {
-                        if (step() < 0) {
-                            unsafe_increment_for_negative(step());
-                        } else {
-                            unsafe_increment_for_positive(step());
-                        }
-                    }
+                    increment_for_positive(step());
                 }
             }
         }
@@ -2726,62 +2843,18 @@ namespace impl {
         }
 
         constexpr subrange& operator+=(difference_type n)
-            noexcept (subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_increment_by(n)} noexcept;}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_increment_by(n)} noexcept;}
-            ))
-            requires (subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_increment_by(n)};}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_increment_by(n)};}
-            ))
+            noexcept (requires{{increment_by(n)} noexcept;})
+            requires (subrange_empty<Step> && requires{{increment_by(n)};})
         {
-            if constexpr (check == subrange_check::NEVER) {
-                unsafe_increment_by(n);
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                safe_increment_by(n);
-            } else {
-                if consteval {
-                    safe_increment_by(n);
-                } else {
-                    unsafe_increment_by(n);
-                }
-            }
+            increment_by(n);
             return *this;
         }
 
         constexpr subrange& operator+=(difference_type n)
-            noexcept (subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_increment_by(n * step())} noexcept;}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_increment_by(n * step())} noexcept;}
-            ))
-            requires (subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_increment_by(n * step())};}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_increment_by(n * step())};}
-            ))
+            noexcept (requires{{increment_by(n * step())} noexcept;})
+            requires (subrange_empty<Step> && requires{{increment_by(n * step())};})
         {
-            if constexpr (check == subrange_check::NEVER) {
-                unsafe_increment_by(n * step());
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                safe_increment_by(n * step());
-            } else {
-                if consteval {
-                    safe_increment_by(n * step());
-                } else {
-                    unsafe_increment_by(n * step());
-                }
-            }
+            increment_by(n * step());
             return *this;
         }
 
@@ -2823,97 +2896,37 @@ namespace impl {
         }
 
         constexpr void increment(difference_type n)
-            noexcept ((check == subrange_check::NEVER || requires{
-                {safe_increment_for_negative(n)} noexcept;
-                {safe_increment_for_positive(n)} noexcept;
-            }) && (check == subrange_check::ALWAYS || requires{
-                {unsafe_increment_for_positive(n)} noexcept;
-                {unsafe_increment_for_negative(n)} noexcept;
-            }))
-            requires (subrange_empty<Step> && !requires{{*this += n};} &&
-                (check == subrange_check::NEVER || requires{
-                    {safe_increment_for_negative(n)};
-                    {safe_increment_for_positive(n)};
-                }) && (check == subrange_check::ALWAYS || requires{
-                    {unsafe_increment_for_positive(n)};
-                    {unsafe_increment_for_negative(n)};
-                })
-            )
+            noexcept (requires{
+                {increment_for_negative(n)} noexcept;
+                {increment_for_positive(n)} noexcept;
+            })
+            requires (subrange_empty<Step> && !requires{{*this += n};} && requires{
+                {increment_for_negative(n)};
+                {increment_for_positive(n)};
+            })
         {
-            if constexpr (check == subrange_check::NEVER) {
-                if (n < 0) {
-                    unsafe_increment_for_negative(n);
-                } else {
-                    unsafe_increment_for_positive(n);
-                }
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                if (n < 0) {
-                    safe_increment_for_negative(n);
-                } else {
-                    safe_increment_for_positive(n);
-                }
+            if (n < 0) {
+                increment_for_negative(n);
             } else {
-                if consteval {
-                    if (n < 0) {
-                        safe_increment_for_negative(n);
-                    } else {
-                        safe_increment_for_positive(n);
-                    }
-                } else {
-                    if (n < 0) {
-                        unsafe_increment_for_negative(n);
-                    } else {
-                        unsafe_increment_for_positive(n);
-                    }
-                }
+                increment_for_positive(n);
             }
         }
 
         constexpr void increment(difference_type n)
-            noexcept ((check == subrange_check::NEVER || requires{
-                {safe_increment_for_negative(n * step())} noexcept;
-                {safe_increment_for_positive(n * step())} noexcept;
-            }) && (check == subrange_check::ALWAYS || requires{
-                {unsafe_increment_for_positive(n * step())} noexcept;
-                {unsafe_increment_for_negative(n * step())} noexcept;
-            }))
-            requires (!subrange_empty<Step> && !requires{{*this += n};} &&
-                (check == subrange_check::NEVER || requires{
-                    {safe_increment_for_negative(n * step())};
-                    {safe_increment_for_positive(n * step())};
-                }) && (check == subrange_check::ALWAYS || requires{
-                    {unsafe_increment_for_positive(n * step())};
-                    {unsafe_increment_for_negative(n * step())};
-                })
-            )
+            noexcept (requires{
+                {increment_for_negative(n * step())} noexcept;
+                {increment_for_positive(n * step())} noexcept;
+            })
+            requires (!subrange_empty<Step> && !requires{{*this += n};} && requires{
+                {increment_for_negative(n * step())};
+                {increment_for_positive(n * step())};
+            })
         {
             n *= step();
-            if constexpr (check == subrange_check::NEVER) {
-                if (n < 0) {
-                    unsafe_increment_for_negative(n);
-                } else {
-                    unsafe_increment_for_positive(n);
-                }
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                if (n < 0) {
-                    safe_increment_for_negative(n);
-                } else {
-                    safe_increment_for_positive(n);
-                }
+            if (n < 0) {
+                increment_for_negative(n);
             } else {
-                if consteval {
-                    if (n < 0) {
-                        safe_increment_for_negative(n);
-                    } else {
-                        safe_increment_for_positive(n);
-                    }
-                } else {
-                    if (n < 0) {
-                        unsafe_increment_for_negative(n);
-                    } else {
-                        unsafe_increment_for_positive(n);
-                    }
-                }
+                increment_for_positive(n);
             }
         }
 
@@ -2947,108 +2960,31 @@ namespace impl {
         }
 
         constexpr void decrement()
-            noexcept ((
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(step())} noexcept;}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(step())} noexcept;}
-            ))
-            requires (!subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(step())};}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(step())};}
-            ))
+            noexcept (requires{{decrement_by(step())} noexcept;})
+            requires (!subrange_empty<Step> && requires{{decrement_by(step())};})
         {
-            if constexpr (check == subrange_check::NEVER) {
-                unsafe_decrement_by(step());
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                safe_decrement_by(step());
-            } else {
-                if consteval {
-                    safe_decrement_by(step());
-                } else {
-                    unsafe_decrement_by(step());
-                }
-            }
+            decrement_by(step());
         }
 
         constexpr void decrement()
-            noexcept ((check == subrange_check::NEVER || (
-                requires{{safe_decrement_for_positive(step())} noexcept;} && (
-                    strictly_positive<Step> ||
-                    requires{{safe_decrement_for_negative(step())} noexcept;}
-                )
-            )) && (check == subrange_check::ALWAYS || (
-                requires{{unsafe_decrement_for_positive(step())} noexcept;} && (
-                    strictly_positive<Step> ||
-                    requires{{unsafe_decrement_for_negative(step())} noexcept;}
-                )
-            )))
-            requires (!subrange_empty<Step> && !((
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(step())};}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(step())};}
-            )) && (
-                (check == subrange_check::NEVER || (
-                    requires{{safe_decrement_for_positive(step())};} && (
-                        strictly_positive<Step> ||
-                        requires{{safe_decrement_for_negative(step())};}
-                    )
-                )) &&
-                (check == subrange_check::ALWAYS || (
-                    requires{{unsafe_decrement_for_positive(step())};} && (
-                        strictly_positive<Step> ||
-                        requires{{unsafe_decrement_for_negative(step())};}
-                    )
-                ))
-            ))
+            noexcept (requires{{decrement_for_positive(step())};} && (
+                strictly_positive<Step> ||
+                requires{{decrement_for_negative(step())};
+            }))
+            requires (!subrange_empty<Step> && !requires{{decrement_by(step())};} && requires{
+                {decrement_for_positive(step())};
+            } && (
+                strictly_positive<Step> ||
+                requires{{decrement_for_negative(step())};
+            }))
         {
-            if constexpr (check == subrange_check::NEVER) {
-                if constexpr (strictly_positive<Step>) {
-                    unsafe_decrement_for_positive(step());
-                } else {
-                    if (step() < 0) {
-                        unsafe_decrement_for_negative(step());
-                    } else {
-                        unsafe_decrement_for_positive(step());
-                    }
-                }
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                if constexpr (strictly_positive<Step>) {
-                    safe_decrement_for_positive(step());
-                } else {
-                    if (step() < 0) {
-                        safe_decrement_for_negative(step());
-                    } else {
-                        safe_decrement_for_positive(step());
-                    }
-                }
+            if constexpr (strictly_positive<Step>) {
+                decrement_for_positive(step());
             } else {
-                if consteval {
-                    if constexpr (strictly_positive<Step>) {
-                        safe_decrement_for_positive(step());
-                    } else {
-                        if (step() < 0) {
-                            safe_decrement_for_negative(step());
-                        } else {
-                            safe_decrement_for_positive(step());
-                        }
-                    }
+                if (step() < 0) {
+                    decrement_for_negative(step());
                 } else {
-                    if constexpr (strictly_positive<Step>) {
-                        unsafe_decrement_for_positive(step());
-                    } else {
-                        if (step() < 0) {
-                            unsafe_decrement_for_negative(step());
-                        } else {
-                            unsafe_decrement_for_positive(step());
-                        }
-                    }
+                    decrement_for_positive(step());
                 }
             }
         }
@@ -3077,62 +3013,18 @@ namespace impl {
         }
 
         constexpr subrange& operator-=(difference_type n)
-            noexcept ((
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(n)} noexcept;}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(n)} noexcept;}
-            ))
-            requires (subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(n)};}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(n)};}
-            ))
+            noexcept (requires{{decrement_by(n)} noexcept;})
+            requires (subrange_empty<Step> && requires{{decrement_by(n)};})
         {
-            if constexpr (check == subrange_check::NEVER) {
-                unsafe_decrement_by(n);
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                safe_decrement_by(n);
-            } else {
-                if consteval {
-                    safe_decrement_by(n);
-                } else {
-                    unsafe_decrement_by(n);
-                }
-            }
+            decrement_by(n);
             return *this;
         }
 
         constexpr subrange& operator-=(difference_type n)
-            noexcept ((
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(n * step())} noexcept;}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(n * step())} noexcept;}
-            ))
-            requires (!subrange_empty<Step> && (
-                check == subrange_check::NEVER ||
-                requires{{safe_decrement_by(n * step())};}
-            ) && (
-                check == subrange_check::ALWAYS ||
-                requires{{unsafe_decrement_by(n * step())};}
-            ))
+            noexcept (requires{{decrement_by(n * step())} noexcept;})
+            requires (!subrange_empty<Step> && requires{{decrement_by(n * step())};})
         {
-            if constexpr (check == subrange_check::NEVER) {
-                unsafe_decrement_by(n * step());
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                safe_decrement_by(n * step());
-            } else {
-                if consteval {
-                    safe_decrement_by(n * step());
-                } else {
-                    unsafe_decrement_by(n * step());
-                }
-            }
+            decrement_by(n * step());
             return *this;
         }
 
@@ -3159,97 +3051,37 @@ namespace impl {
         }
 
         constexpr void decrement(difference_type n)
-            noexcept ((check == subrange_check::NEVER || requires{
-                {safe_decrement_for_negative(n)} noexcept;
-                {safe_decrement_for_positive(n)} noexcept;
-            }) && (check == subrange_check::ALWAYS || requires{
-                {unsafe_decrement_for_positive(n)} noexcept;
-                {unsafe_decrement_for_negative(n)} noexcept;
-            }))
-            requires (subrange_empty<Step> && !requires{{*this -= n};} &&
-                (check == subrange_check::NEVER || requires{
-                    {safe_decrement_for_negative(n)};
-                    {safe_decrement_for_positive(n)};
-                }) && (check == subrange_check::ALWAYS || requires{
-                    {unsafe_decrement_for_positive(n)};
-                    {unsafe_decrement_for_negative(n)};
-                })
-            )
+            noexcept (requires{
+                {decrement_for_negative(n)} noexcept;
+                {decrement_for_positive(n)} noexcept;
+            })
+            requires (subrange_empty<Step> && !requires{{*this -= n};} && requires{
+                {decrement_for_negative(n)};
+                {decrement_for_positive(n)};
+            })
         {
-            if constexpr (check == subrange_check::NEVER) {
-                if (n < 0) {
-                    unsafe_decrement_for_negative(n);
-                } else {
-                    unsafe_decrement_for_positive(n);
-                }
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                if (n < 0) {
-                    safe_decrement_for_negative(n);
-                } else {
-                    safe_decrement_for_positive(n);
-                }
+            if (n < 0) {
+                decrement_for_negative(n);
             } else {
-                if consteval {
-                    if (n < 0) {
-                        safe_decrement_for_negative(n);
-                    } else {
-                        safe_decrement_for_positive(n);
-                    }
-                } else {
-                    if (n < 0) {
-                        unsafe_decrement_for_negative(n);
-                    } else {
-                        unsafe_decrement_for_positive(n);
-                    }
-                }
+                decrement_for_positive(n);
             }
         }
 
         constexpr void decrement(difference_type n)
-            noexcept ((check == subrange_check::NEVER || requires{
-                {safe_decrement_for_negative(n * step())} noexcept;
-                {safe_decrement_for_positive(n * step())} noexcept;
-            }) && (check == subrange_check::ALWAYS || requires{
-                {unsafe_decrement_for_positive(n * step())} noexcept;
-                {unsafe_decrement_for_negative(n * step())} noexcept;
-            }))
-            requires (!subrange_empty<Step> && !requires{{*this -= n};} &&
-                (check == subrange_check::NEVER || requires{
-                    {safe_decrement_for_negative(n * step())};
-                    {safe_decrement_for_positive(n * step())};
-                }) && (check == subrange_check::ALWAYS || requires{
-                    {unsafe_decrement_for_positive(n * step())};
-                    {unsafe_decrement_for_negative(n * step())};
-                })
-            )
+            noexcept (requires{
+                {decrement_for_negative(n * step())} noexcept;
+                {decrement_for_positive(n * step())} noexcept;
+            })
+            requires (!subrange_empty<Step> && !requires{{*this -= n};} && requires{
+                {decrement_for_negative(n * step())};
+                {decrement_for_positive(n * step())};
+            })
         {
             n *= step();
-            if constexpr (check == subrange_check::NEVER) {
-                if (n < 0) {
-                    unsafe_decrement_for_negative(n);
-                } else {
-                    unsafe_decrement_for_positive(n);
-                }
-            } else if constexpr (check == subrange_check::ALWAYS) {
-                if (n < 0) {
-                    safe_decrement_for_negative(n);
-                } else {
-                    safe_decrement_for_positive(n);
-                }
+            if (n < 0) {
+                decrement_for_negative(n);
             } else {
-                if consteval {
-                    if (n < 0) {
-                        safe_decrement_for_negative(n);
-                    } else {
-                        safe_decrement_for_positive(n);
-                    }
-                } else {
-                    if (n < 0) {
-                        unsafe_decrement_for_negative(n);
-                    } else {
-                        unsafe_decrement_for_positive(n);
-                    }
-                }
+                decrement_for_positive(n);
             }
         }
     };
