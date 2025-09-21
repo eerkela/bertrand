@@ -1651,6 +1651,7 @@ namespace impl {
     /// TODO: the step function should take the subrange itself as an argument, rather
     /// than just the start index, but that is not currently possible due to the
     /// circular dependence on the subrange concepts.
+    /// -> No, this is probably counterintuitive, and messes with the concepts too much
 
     template <typename Start, typename Stop, typename Step>
     concept subrange_nonlinear =
@@ -1782,9 +1783,9 @@ namespace impl {
             difference_type
         >;
 
-        [[no_unique_address]] impl::ref<Start> m_start {};
-        [[no_unique_address]] impl::ref<Stop> m_stop {};
-        [[no_unique_address]] impl::ref<Step> m_step {};
+        [[no_unique_address]] impl::ref<start_type> m_start {};
+        [[no_unique_address]] impl::ref<stop_type> m_stop {};
+        [[no_unique_address]] impl::ref<step_type> m_step {};
         [[no_unique_address]] difference_type m_index {};
         [[no_unique_address]] overflow_type m_overflow {};
 
@@ -1846,14 +1847,14 @@ namespace impl {
 
         [[nodiscard]] constexpr subrange() = default;
         [[nodiscard]] constexpr subrange(
-            meta::forward<start_type> start,
-            meta::forward<stop_type> stop,
-            meta::forward<step_type> step = {}
+            meta::forward<Start> start,
+            meta::forward<Stop> stop,
+            meta::forward<Step> step = {}
         )
             noexcept (requires{
-                {impl::ref<start_type>{std::forward<start_type>(start)}} noexcept;
-                {impl::ref<stop_type>{std::forward<stop_type>(stop)}} noexcept;
-                {impl::ref<step_type>{std::forward<step_type>(step)}} noexcept;
+                {impl::ref<start_type>{std::forward<Start>(start)}} noexcept;
+                {impl::ref<stop_type>{std::forward<Stop>(stop)}} noexcept;
+                {impl::ref<step_type>{std::forward<Step>(step)}} noexcept;
             } && (
                 !DEBUG ||
                 (!subrange_linear<Start, Stop, Step> && !subrange_loop<Start, Stop, Step>) ||
@@ -1864,14 +1865,14 @@ namespace impl {
                 !requires{{this->stop() < 0} -> meta::explicitly_convertible_to<bool>;}
             ))
             requires (requires{
-                {impl::ref<start_type>{std::forward<start_type>(start)}};
-                {impl::ref<stop_type>{std::forward<stop_type>(stop)}};
-                {impl::ref<step_type>{std::forward<step_type>(step)}};
+                {impl::ref<start_type>{std::forward<Start>(start)}};
+                {impl::ref<stop_type>{std::forward<Stop>(stop)}};
+                {impl::ref<step_type>{std::forward<Step>(step)}};
             })
         :
-            m_start{std::forward<start_type>(start)},
-            m_stop{std::forward<stop_type>(stop)},
-            m_step{std::forward<step_type>(step)}
+            m_start{std::forward<Start>(start)},
+            m_stop{std::forward<Stop>(stop)},
+            m_step{std::forward<Step>(step)}
         {
             if constexpr (DEBUG) {
                 if constexpr (
@@ -2852,7 +2853,7 @@ namespace impl {
 
         constexpr subrange& operator+=(difference_type n)
             noexcept (requires{{increment_by(n * step())} noexcept;})
-            requires (subrange_empty<Step> && requires{{increment_by(n * step())};})
+            requires (!subrange_empty<Step> && requires{{increment_by(n * step())};})
         {
             increment_by(n * step());
             return *this;
@@ -6024,10 +6025,10 @@ namespace bertrand {
 // // static_assert(r10[1] == 2.5);
 
 
-static constexpr std::array<int, 3> arr {1, 2, 3};
+static constexpr std::array<int, 4> arr {1, 2, 3, 4};
 
 static constexpr auto r11 = impl::subrange(arr.begin(), 3);
-static constexpr auto r12 = iter::range(arr.begin(), arr.end());
+static constexpr auto r12 = iter::range(arr.begin(), arr.end(), 2);
 static constexpr auto d = r11.data();
 // static constexpr auto r13 = iter::range(arr);
 // static_assert(r11.size() == 3);
@@ -6040,14 +6041,14 @@ static constexpr auto d = r11.data();
 
 
 static_assert([] {
-    auto it = r12->begin();
+    auto it = r12.begin();
     if (*it != 1) return false;
     it += 1;
-    if (*it != 2) return false;
+    if (*it != 3) return false;
     it -= 1;
     if (*it != 1) return false;
 
-    // if (r12[-3] != 1) return false;
+    if (r12[-2] != 1) return false;
 
     for (auto&& i : r12) {
         if (i != 1 && i != 2 && i != 3) {
