@@ -2781,6 +2781,9 @@ namespace meta {
 
     namespace nothrow {
 
+        /// TODO: nothrow::iterable should also require that incrementing,
+        /// dereferencing, and comparing the iterators are noexcept as well
+
         template <typename T>
         concept iterable =
             meta::iterable<T> && nothrow::has_begin<T> && nothrow::has_end<T>;
