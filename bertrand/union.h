@@ -1895,10 +1895,7 @@ namespace impl {
         typename Self,
         typename = std::make_index_sequence<visitable<Self>::alternatives::size()>
     >
-    struct union_tuple {
-        static constexpr bool enable = false;
-        static constexpr size_t size = 0;
-    };
+    struct union_tuple { static constexpr bool enable = false; };
     template <typename Self, size_t I, size_t... Is>
         requires ((
             meta::tuple_like<decltype(std::declval<Self>().__value.template get<I>())> &&
@@ -1912,33 +1909,44 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr size_t size =
             meta::tuple_size<decltype(std::declval<Self>().__value.template get<I>())>;
-    };
-    template <
-        typename Self,
-        ssize_t I,
-        typename = std::make_index_sequence<visitable<Self>::alternatives::size()>
-    >
-    struct union_get {};
-    template <typename Self, ssize_t I, size_t... Js>
-        requires (union_tuple<Self>::enable && (requires(Self self) {
-            {meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<Js>())};
-        } && ...))
-    struct union_get<Self, I, std::index_sequence<Js...>> {
-        using Union = meta::union_type<
-            decltype((meta::unpack_tuple<I>(std::declval<Self>().__value.template get<Js>())))...
+
+        template <ssize_t J>
+        static constexpr size_t wrap = size_t(impl::normalize_index<size, J>());
+
+        template <ssize_t J>
+        using type = meta::union_type<
+            decltype((meta::get<wrap<J>>(std::declval<Self>().__value.template get<I>()))),
+            decltype((meta::get<wrap<J>>(std::declval<Self>().__value.template get<Is>())))...
         >;
+
+        template <ssize_t J, ssize_t K>
+        static constexpr type<J> get(meta::forward<Self> self)
+            noexcept (requires{{
+                meta::get<wrap<J>>(std::forward<Self>(self).__value.template get<K>())
+            } noexcept -> meta::nothrow::convertible_to<type<J>>;})
+            requires (requires{{
+                meta::get<wrap<J>>(std::forward<Self>(self).__value.template get<K>())
+            } -> meta::convertible_to<type<J>>;})
+        {
+            return meta::get<wrap<J>>(std::forward<Self>(self).__value.template get<K>());
+        }
+    };
+    template <typename Self, ssize_t I>
+        requires (union_tuple<Self>::enable && impl::valid_index<union_tuple<Self>::size, I>)
+    struct union_get {
+        using Union = union_tuple<Self>::template type<I>;
 
         template <size_t J>
         struct fn {
             static constexpr Union operator()(meta::forward<Self> self)
                 noexcept (requires{{
-                    meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<J>())
+                    union_tuple<meta::forward<Self>>::template get<I, J>(std::forward<Self>(self))
                 } noexcept -> meta::nothrow::convertible_to<Union>;})
                 requires (requires{{
-                    meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<J>())
+                    union_tuple<meta::forward<Self>>::template get<I, J>(std::forward<Self>(self))
                 } -> meta::convertible_to<Union>;})
             {
-                return meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<J>());
+                return union_tuple<meta::forward<Self>>::template get<I, J>(std::forward<Self>(self));
             }
         };
 
@@ -1984,12 +1992,12 @@ namespace impl {
         requires (
             (meta::iterator<Ts> && ... && (sizeof...(Ts) > 1)) &&
             meta::has_common_type<meta::iterator_category<Ts>...> &&
-            meta::has_common_type<meta::iterator_difference_type<Ts>...>
+            meta::has_common_type<meta::iterator_difference<Ts>...>
         )
     struct union_iterator {
         using types = meta::pack<Ts...>;
         using iterator_category = meta::common_type<meta::iterator_category<Ts>...>;
-        using difference_type = meta::common_type<meta::iterator_difference_type<Ts>...>;
+        using difference_type = meta::common_type<meta::iterator_difference<Ts>...>;
         using reference = union_iterator_ref<Ts...>;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::address_type<reference>;
@@ -3352,7 +3360,11 @@ struct Union : impl::union_tag {
     template <ssize_t I, typename Self>
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
         noexcept (requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))};})
+        requires (
+            impl::union_tuple<Self>::enable &&
+            impl::valid_index<impl::union_tuple<Self>::size, I> &&
+            requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))};}
+        )
     {
         return (impl::union_get<Self, I>{}(std::forward<Self>(self)));
     }
@@ -3924,31 +3936,34 @@ namespace impl {
             impl::valid_index<meta::tuple_size<typename visitable<Self>::value>, I>
         )
     struct optional_get {
-        using Optional = bertrand::Optional<meta::remove_rvalue<decltype((meta::unpack_tuple<I>(
-            std::declval<Self>().__value.template get<1>()
-        )))>>;
+        using value = visitable<Self>::value;
+        static constexpr size_t idx = size_t(impl::normalize_index<meta::tuple_size<value>, I>());
+        using Optional = bertrand::Optional<
+            meta::remove_rvalue<decltype((meta::get<idx>(std::declval<value>())))>
+        >;
 
         template <size_t J>
         struct fn {
             static constexpr Optional operator()(meta::forward<Self> self)
-                noexcept (requires{
-                    {
-                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<1>())
-                    } noexcept -> meta::nothrow::convertible_to<Optional>;
-                    {None} noexcept -> meta::nothrow::convertible_to<Optional>;
-                })
-                requires (requires{
-                    {
-                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<1>())
-                    } -> meta::convertible_to<Optional>;
-                    {None} -> meta::convertible_to<Optional>;
-                })
+                noexcept (requires{{meta::get<idx>(
+                    visitable<Self>::template get<J>(std::forward<Self>(self))
+                )} noexcept -> meta::nothrow::convertible_to<Optional>;})
+                requires (requires{{meta::get<idx>(
+                    visitable<Self>::template get<J>(std::forward<Self>(self))
+                )} -> meta::convertible_to<Optional>;})
             {
-                if constexpr (J == 1) {
-                    return meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<1>());
-                } else {
-                    return None;
-                }
+                return meta::get<idx>(
+                    visitable<Self>::template get<J>(std::forward<Self>(self))
+                );
+            }
+        };
+        template <>
+        struct fn<0> {
+            static constexpr Optional operator()(meta::forward<Self> self)
+                noexcept (meta::nothrow::default_constructible<Optional>)
+                requires (meta::default_constructible<Optional>)
+            {
+                return {};
             }
         };
 
@@ -4012,10 +4027,10 @@ namespace impl {
 
     public:
         using iterator_category = meta::iterator_category<T>;
-        using difference_type = meta::iterator_difference_type<T>;
-        using value_type = meta::iterator_value_type<T>;
-        using reference = meta::iterator_reference_type<T>;
-        using pointer = meta::iterator_pointer_type<T>;
+        using difference_type = meta::iterator_difference<T>;
+        using value_type = meta::iterator_value<T>;
+        using reference = meta::iterator_reference<T>;
+        using pointer = meta::iterator_pointer<T>;
 
         [[no_unique_address]] storage __value;
         [[no_unique_address]] bool initialized;
@@ -5430,9 +5445,9 @@ namespace impl {
             impl::valid_index<meta::tuple_size<typename visitable<Self>::value>, I>
         )
     struct expected_get {
-        using T = meta::remove_rvalue<decltype((meta::unpack_tuple<I>(
-            std::declval<Self>().__value.template get<0>()
-        )))>;
+        using value = visitable<Self>::value;
+        static constexpr size_t idx = size_t(impl::normalize_index<meta::tuple_size<value>, I>());
+        using T = meta::remove_rvalue<decltype((meta::get<idx>(std::declval<value>())))>;
         template <typename... Es>
         using _Expected = bertrand::Expected<T, Es...>;
         using Expected = visitable<Self>::errors::template eval<_Expected>;
@@ -5440,28 +5455,27 @@ namespace impl {
         template <size_t J>
         struct fn {
             static constexpr Expected operator()(meta::forward<Self> self)
-                noexcept (requires{
-                    {
-                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<0>())
-                    } noexcept -> meta::nothrow::convertible_to<Expected>;
-                    {
-                        std::forward<Self>(self).__value.template get<J>()
-                    } noexcept -> meta::nothrow::convertible_to<Expected>;
-                })
-                requires (requires{
-                    {
-                        meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<0>())
-                    } -> meta::convertible_to<Expected>;
-                    {
-                        std::forward<Self>(self).__value.template get<J>()
-                    } -> meta::convertible_to<Expected>;
-                })
+                noexcept (requires{{
+                    visitable<Self>::template get<J>(std::forward<Self>(self))
+                } noexcept -> meta::nothrow::convertible_to<Expected>;})
+                requires (requires{{
+                    visitable<Self>::template get<J>(std::forward<Self>(self))
+                } -> meta::convertible_to<Expected>;})
             {
-                if constexpr (J == 0) {
-                    return meta::unpack_tuple<I>(std::forward<Self>(self).__value.template get<0>());
-                } else {
-                    return std::forward<Self>(self).__value.template get<J>();
-                }
+                return visitable<Self>::template get<J>(std::forward<Self>(self));
+            }
+        };
+        template <>
+        struct fn<0> {
+            static constexpr Expected operator()(meta::forward<Self> self)
+                noexcept (requires{{meta::get<idx>(
+                    visitable<Self>::template get<0>(std::forward<Self>(self))
+                )} noexcept -> meta::nothrow::convertible_to<Expected>;})
+                requires (requires{{meta::get<idx>(
+                    visitable<Self>::template get<0>(std::forward<Self>(self))
+                )} -> meta::convertible_to<Expected>;})
+            {
+                return meta::get<idx>(visitable<Self>::template get<0>(std::forward<Self>(self)));
             }
         };
 

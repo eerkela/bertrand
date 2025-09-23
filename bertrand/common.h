@@ -1519,6 +1519,7 @@ namespace meta {
 
     }
 
+    /* Explicitly invoke a copy constructor for the given type. */
     template <copyable T>
     constexpr T copy(const T& v) noexcept (nothrow::copyable<T>) {
         return v;
@@ -1596,6 +1597,12 @@ namespace meta {
 
     }
 
+    /* Explicitly invoke a copy or move constructor for the given type. */
+    template <movable T>
+    constexpr unqualify<T> move(T&& v) noexcept (nothrow::movable<T>) {
+        return ::std::forward<T>(v);
+    }
+
     template <typename T>
     concept swappable = ::std::swappable<T>;
 
@@ -1632,6 +1639,24 @@ namespace meta {
             ));
 
     }
+
+    /* Explicitly invoke a member `l.swap(r)` method, if available. */
+    template <typename L, typename R>
+    constexpr void swap(L& l, R& r)
+        noexcept (requires{{l.swap(r)} noexcept;})
+        requires (requires{{l.swap(r)};})
+    {
+        l.swap(r);
+    };
+
+    /* Explicitly invoke an ADL `swap()` method using `std::ranges::swap()`. */
+    template <typename L, typename R>
+    constexpr void swap(L& l, R& r)
+        noexcept (requires{{::std::ranges::swap(l, r)} noexcept;})
+        requires (!requires{{l.swap(r)};} && requires{{::std::ranges::swap(l, r)};})
+    {
+        ::std::ranges::swap(l, r);
+    };
 
     namespace detail {
 
@@ -1705,8 +1730,7 @@ namespace meta {
     namespace detail {
 
         template <typename T>
-        constexpr bool function_signature =
-            ::std::is_function_v<remove_pointer<unqualify<T>>>;
+        constexpr bool function = ::std::is_function_v<unqualify<remove_pointer<unqualify<T>>>>;
 
         template <typename F, typename... A>
         constexpr bool callable = ::std::invocable<F, A...>;
@@ -1714,11 +1738,11 @@ namespace meta {
         template <typename F, typename... A>
         constexpr bool nothrow_callable = ::std::is_nothrow_invocable_v<F, A...>;
 
-        template <typename S>
-        struct call_operator { static constexpr bool enable = false; };
+        template <typename>
+        struct call_operator { static constexpr bool exists = false; };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...)> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1730,7 +1754,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1742,7 +1766,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1754,7 +1778,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1766,7 +1790,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) volatile> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1778,7 +1802,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) volatile noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1790,7 +1814,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const volatile> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1802,7 +1826,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const volatile noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1814,7 +1838,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) &> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1826,7 +1850,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) & noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1838,7 +1862,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const &> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1850,7 +1874,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const & noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1862,7 +1886,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) volatile &> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1874,7 +1898,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) volatile & noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1886,7 +1910,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const volatile &> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1898,7 +1922,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const volatile & noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1910,7 +1934,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) &&> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1922,7 +1946,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) && noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1934,7 +1958,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const &&> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1946,7 +1970,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const && noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1958,7 +1982,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) volatile &&> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1970,7 +1994,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) volatile && noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1982,7 +2006,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const volatile &&> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -1994,7 +2018,7 @@ namespace meta {
         };
         template <typename R, typename C, typename... A>
         struct call_operator<R(C::*)(A...) const volatile && noexcept> {
-            static constexpr bool enable = true;
+            static constexpr bool exists = true;
             using return_type = R;
             using args = meta::pack<A...>;
             using class_type = C;
@@ -2008,18 +2032,12 @@ namespace meta {
     }
 
     template <typename T>
-    concept function_signature = detail::function_signature<T>;
+    concept function = detail::function<T>;
 
     template <typename T>
-    concept function_pointer = pointer<T> && function_signature<remove_pointer<T>>;
-
-    template <typename T>
-    concept has_call_operator =
-        requires() { &remove_reference<T>::operator(); } &&
-        detail::call_operator<decltype(&remove_reference<T>::operator())>::enable;
-
-    template <has_call_operator T>
-    using call_operator = detail::call_operator<decltype(&remove_reference<T>::operator())>;
+    struct call_operator { static constexpr bool exists = false; };
+    template <typename T> requires (requires{{&remove_reference<T>::operator()};})
+    struct call_operator<T> : detail::call_operator<decltype(&remove_reference<T>::operator())> {};
 
     template <typename F, typename... A>
     concept callable = detail::callable<F, A...>;
@@ -2065,17 +2083,6 @@ namespace meta {
         constexpr bool member_object_of<volatile T(C2::*), C> = inherits<C, C2>;
         template <typename T, typename C2, typename C>
         constexpr bool member_object_of<const volatile T(C2::*), C> = inherits<C, C2>;
-
-    }
-
-    template <typename T>
-    concept member_object = detail::member_object<T>;
-
-    template <typename T, typename C>
-    concept member_object_of =
-        member_object<T> && detail::member_object_of<unqualify<T>, C>;
-
-    namespace detail {
 
         template <typename T>
         constexpr bool member_function =
@@ -2135,17 +2142,31 @@ namespace meta {
     }
 
     template <typename T>
+    concept member_object = detail::member_object<T>;
+
+    template <typename T, typename C>
+    concept member_object_of =
+        member_object<T> &&
+        is_class<C> &&
+        detail::member_object_of<unqualify<T>, C>;
+
+    template <typename T>
     concept member_function = detail::member_function<T>;
 
     template <typename T, typename C>
     concept member_function_of =
-        member_function<T> && detail::member_function_of<unqualify<T>, C>;
+        member_function<T> &&
+        is_class<C> &&
+        detail::member_function_of<unqualify<T>, C>;
 
     template <typename T>
     concept member = member_object<T> || member_function<T>;
 
     template <typename T, typename C>
-    concept member_of = member<T> && (member_object_of<T, C> || member_function_of<T, C>);
+    concept member_of =
+        member<T> &&
+        is_class<C> &&
+        (member_object_of<T, C> || member_function_of<T, C>);
 
     namespace detail {
 
@@ -2208,11 +2229,8 @@ namespace meta {
         
     }
 
-    template <typename T, typename C>
-    using as_member = detail::as_member<
-        ::std::conditional_t<function_pointer<T>, remove_pointer<T>, remove_reference<T>>,
-        C
-    >::type;
+    template <typename T, is_class C>
+    using as_member = detail::as_member<remove_pointer<remove_reference<T>>, C>::type;
 
     namespace detail {
 
@@ -2278,10 +2296,6 @@ namespace meta {
     ////    STRUCTURED BINDINGS    ////
     ///////////////////////////////////
 
-    /// TODO: include typed_get concepts, as well as get_if() support, then generalize
-    /// unpack_tuple() for both cases?  This becomes dramatically simpler if/when
-    /// universal template parameters become available.
-
     namespace detail {
 
         namespace adl {
@@ -2308,124 +2322,154 @@ namespace meta {
 
         }
 
-    }
-
-    template <typename T, auto... A>
-    concept has_member_get = requires(T t) {
-        t.template get<A...>();
-    };
-
-    template <typename T, auto... A> requires (has_member_get<T, A...>)
-    using member_get_type = decltype(::std::declval<T>().template get<A...>());
-
-    template <typename Ret, typename T, auto... A>
-    concept member_get_returns =
-        has_member_get<T, A...> && convertible_to<member_get_type<T, A...>, Ret>;
-
-    template <typename T, auto... A>
-    concept has_member_get_if = requires(T t) {
-        t.template get_if<A...>();
-    };
-
-    template <typename T, auto... A> requires (has_member_get_if<T, A...>)
-    using member_get_if_type = decltype(::std::declval<T>().template get_if<A...>());
-
-    template <typename Ret, typename T, auto... A>
-    concept member_get_if_returns =
-        has_member_get_if<T, A...> && convertible_to<member_get_if_type<T, A...>, Ret>;
-
-    template <typename T, auto... A>
-    concept has_adl_get = detail::adl::has_get<T, A...>;
-
-    template <typename T, auto... A> requires (has_adl_get<T, A...>)
-    using adl_get_type = detail::adl::get_type<T, A...>;
-
-    template <typename Ret, typename T, auto... A>
-    concept adl_get_returns =
-        has_adl_get<T, A...> && convertible_to<adl_get_type<T, A...>, Ret>;
-
-    template <typename T, auto... A>
-    concept has_adl_get_if = detail::adl::has_get_if<T, A...>;
-
-    template <typename T, auto... A> requires (has_adl_get_if<T, A...>)
-    using adl_get_if_type = detail::adl::get_if_type<T, A...>;
-
-    template <typename Ret, typename T, auto... A>
-    concept adl_get_if_returns =
-        has_adl_get_if<T, A...> && convertible_to<adl_get_if_type<T, A...>, Ret>;
-
-    namespace nothrow {
-
         template <typename T, auto... A>
-        concept has_member_get =
-            meta::has_member_get<T, A...> &&
-            requires(T t) { {t.template get<A...>()} noexcept; };
+        concept has_member_get = requires(T t) {{t.template get<A...>()};};
 
-        template <typename T, auto... A> requires (nothrow::has_member_get<T, A...>)
-        using member_get_type = meta::member_get_type<T, A...>;
+        template <typename T, auto... A> requires (has_member_get<T, A...>)
+        using member_get_type = decltype(::std::declval<T>().template get<A...>());
 
         template <typename Ret, typename T, auto... A>
         concept member_get_returns =
-            nothrow::has_member_get<T, A...> &&
-            nothrow::convertible_to<nothrow::member_get_type<T, A...>, Ret>;
+            has_member_get<T, A...> && convertible_to<member_get_type<T, A...>, Ret>;
 
         template <typename T, auto... A>
-        concept has_member_get_if =
-            meta::has_member_get_if<T, A...> &&
-            requires(T t) { {t.template get_if<A...>()} noexcept; };
+        concept has_adl_get = detail::adl::has_get<T, A...>;
 
-        template <typename T, auto... A> requires (nothrow::has_member_get_if<T, A...>)
-        using member_get_if_type = meta::member_get_if_type<T, A...>;
-
-        template <typename Ret, typename T, auto... A>
-        concept member_get_if_returns =
-            nothrow::has_member_get_if<T, A...> &&
-            nothrow::convertible_to<nothrow::member_get_if_type<T, A...>, Ret>;
-
-        template <typename T, auto... A>
-        concept has_adl_get =
-            meta::has_adl_get<T, A...> && detail::adl::nothrow_has_get<T, A...>;
-
-        template <typename T, auto... A> requires (nothrow::has_adl_get<T, A...>)
-        using adl_get_type = meta::adl_get_type<T, A...>;
+        template <typename T, auto... A> requires (has_adl_get<T, A...>)
+        using adl_get_type = detail::adl::get_type<T, A...>;
 
         template <typename Ret, typename T, auto... A>
         concept adl_get_returns =
-            nothrow::has_adl_get<T, A...> &&
-            nothrow::convertible_to<nothrow::adl_get_type<T, A...>, Ret>;
+            has_adl_get<T, A...> && convertible_to<adl_get_type<T, A...>, Ret>;
 
         template <typename T, auto... A>
-        concept has_adl_get_if =
-            meta::has_adl_get_if<T, A...> && detail::adl::nothrow_has_get_if<T, A...>;
+        concept has_member_get_if = requires(T t) {{t.template get_if<A...>()};};
 
-        template <typename T, auto... A> requires (nothrow::has_adl_get_if<T, A...>)
-        using adl_get_if_type = meta::adl_get_if_type<T, A...>;
+        template <typename T, auto... A> requires (has_member_get_if<T, A...>)
+        using member_get_if_type = decltype(::std::declval<T>().template get_if<A...>());
+
+        template <typename Ret, typename T, auto... A>
+        concept member_get_if_returns =
+            has_member_get_if<T, A...> && convertible_to<member_get_if_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
+        concept has_adl_get_if = detail::adl::has_get_if<T, A...>;
+
+        template <typename T, auto... A> requires (has_adl_get_if<T, A...>)
+        using adl_get_if_type = detail::adl::get_if_type<T, A...>;
 
         template <typename Ret, typename T, auto... A>
         concept adl_get_if_returns =
-            nothrow::has_adl_get_if<T, A...> &&
-            nothrow::convertible_to<nothrow::adl_get_if_type<T, A...>, Ret>;
+            has_adl_get_if<T, A...> && convertible_to<adl_get_if_type<T, A...>, Ret>;
 
-    }
+        template <typename T, auto... A>
+        concept nothrow_has_member_get =
+            has_member_get<T, A...> &&
+            requires(T t) {{t.template get<A...>()} noexcept;};
 
-    namespace detail {
+        template <typename T, auto... A> requires (nothrow_has_member_get<T, A...>)
+        using nothrow_member_get_type = member_get_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept nothrow_member_get_returns =
+            nothrow_has_member_get<T, A...> &&
+            nothrow::convertible_to<nothrow_member_get_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
+        concept nothrow_has_adl_get =
+            has_adl_get<T, A...> && adl::nothrow_has_get<T, A...>;
+
+        template <typename T, auto... A> requires (nothrow_has_adl_get<T, A...>)
+        using nothrow_adl_get_type = adl_get_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept nothrow_adl_get_returns =
+            nothrow_has_adl_get<T, A...> &&
+            nothrow::convertible_to<nothrow_adl_get_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
+        concept nothrow_has_member_get_if =
+            has_member_get_if<T, A...> &&
+            requires(T t) {{t.template get_if<A...>()} noexcept;};
+
+        template <typename T, auto... A> requires (nothrow_has_member_get_if<T, A...>)
+        using nothrow_member_get_if_type = member_get_if_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept nothrow_member_get_if_returns =
+            nothrow_has_member_get_if<T, A...> &&
+            nothrow::convertible_to<nothrow_member_get_if_type<T, A...>, Ret>;
+
+        template <typename T, auto... A>
+        concept nothrow_has_adl_get_if =
+            has_adl_get_if<T, A...> && adl::nothrow_has_get_if<T, A...>;
+
+        template <typename T, auto... A> requires (nothrow_has_adl_get_if<T, A...>)
+        using nothrow_adl_get_if_type = adl_get_if_type<T, A...>;
+
+        template <typename Ret, typename T, auto... A>
+        concept nothrow_adl_get_if_returns =
+            nothrow_has_adl_get_if<T, A...> &&
+            nothrow::convertible_to<nothrow_adl_get_if_type<T, A...>, Ret>;
 
         template <typename T, auto... A>
         struct get_type { using type = member_get_type<T, A...>; };
         template <typename T, auto... A>
-            requires (!meta::has_member_get<T, A...> && meta::has_adl_get<T, A...>)
-        struct get_type<T, A...> { using type = meta::adl_get_type<T, A...>; };
+            requires (!has_member_get<T, A...> && has_adl_get<T, A...>)
+        struct get_type<T, A...> { using type = adl_get_type<T, A...>; };
 
         template <typename T, auto... A>
         struct get_if_type { using type = member_get_if_type<T, A...>; };
         template <typename T, auto... A>
-            requires (!meta::has_member_get_if<T, A...> && meta::has_adl_get_if<T, A...>)
-        struct get_if_type<T, A...> { using type = meta::adl_get_if_type<T, A...>; };
+            requires (!has_member_get_if<T, A...> && has_adl_get_if<T, A...>)
+        struct get_if_type<T, A...> { using type = adl_get_if_type<T, A...>; };
 
+        template <auto... K>
+        struct get_fn {
+            template <typename T>
+            static constexpr decltype(auto) operator()(T&& t)
+                noexcept (nothrow_has_member_get<T, K...>)
+                requires (has_member_get<T, K...>)
+            {
+                return (::std::forward<T>(t).template get<K...>());
+            }
+            template <typename T>
+            static constexpr decltype(auto) operator()(T&& t)
+                noexcept (nothrow_has_adl_get<T, K...>)
+                requires (!has_member_get<T, K...> && has_adl_get<T, K...>)
+            {
+                using ::std::get;
+                return (get<K...>(::std::forward<T>(t)));
+            }
+        };
+
+        template <auto... K>
+        struct get_if_fn {
+            template <typename T>
+            static constexpr decltype(auto) operator()(T&& t)
+                noexcept (nothrow_has_member_get_if<T, K...>)
+                requires (has_member_get_if<T, K...>)
+            {
+                return (::std::forward<T>(t).template get_if<K...>());
+            }
+            template <typename T>
+            static constexpr decltype(auto) operator()(T&& t)
+                noexcept (nothrow_has_adl_get_if<T, K...>)
+                requires (!has_member_get_if<T, K...> && has_adl_get_if<T, K...>)
+            {
+                using ::std::get_if;
+                return (get_if<K...>(::std::forward<T>(t)));
+            }
+        };
     }
 
+    /* Do a generalized `get<K...>(t)` access by first checking for a `t.get<K...>()`
+    member method and then falling back to an ADL-enabled `get<K...>(t)` method. */
+    template <auto... K>
+    constexpr detail::get_fn<K...> get;
+
     template <typename T, auto... A>
-    concept has_get = has_member_get<T, A...> || has_adl_get<T, A...>;
+    concept has_get = detail::has_member_get<T, A...> || detail::has_adl_get<T, A...>;
 
     template <typename T, auto... A> requires (has_get<T, A...>)
     using get_type = detail::get_type<T, A...>::type;
@@ -2433,8 +2477,14 @@ namespace meta {
     template <typename Ret, typename T, auto... A>
     concept get_returns = has_get<T, A...> && convertible_to<get_type<T, A...>, Ret>;
 
+    /* Do a generalized `get_if<K...>(t)` access by first checking for a
+    `t.get_if<K...>()` member method and then falling back to an ADL-enabled
+    `get_if<K...>(t)` method. */
+    template <auto... K>
+    constexpr detail::get_if_fn<K...> get_if;
+
     template <typename T, auto... A>
-    concept has_get_if = has_member_get_if<T, A...> || has_adl_get_if<T, A...>;
+    concept has_get_if = detail::has_member_get_if<T, A...> || detail::has_adl_get_if<T, A...>;
 
     template <typename T, auto... A> requires (has_get_if<T, A...>)
     using get_if_type = typename detail::get_if_type<T, A...>::type;
@@ -2447,8 +2497,8 @@ namespace meta {
 
         template <typename T, auto... A>
         concept has_get = meta::has_get<T, A...> && (
-            nothrow::has_member_get<T, A...> ||
-            nothrow::has_adl_get<T, A...>
+            detail::nothrow_has_member_get<T, A...> ||
+            detail::nothrow_has_adl_get<T, A...>
         );
 
         template <typename T, auto... A> requires (nothrow::has_get<T, A...>)
@@ -2461,8 +2511,8 @@ namespace meta {
 
         template <typename T, auto... A>
         concept has_get_if = meta::has_get_if<T, A...> && (
-            nothrow::has_member_get_if<T, A...> ||
-            nothrow::has_adl_get_if<T, A...>
+            detail::nothrow_has_member_get_if<T, A...> ||
+            detail::nothrow_has_adl_get_if<T, A...>
         );
 
         template <typename T, auto... A> requires (nothrow::has_get_if<T, A...>)
@@ -2558,33 +2608,8 @@ namespace meta {
         template <typename T, typename... Ts>
         concept structured_with =
             nothrow::structured<T, sizeof...(Ts)> &&
-            detail::structured_with<T, ::std::index_sequence_for<Ts...>, Ts...>;
+            detail::nothrow_structured_with<T, ::std::index_sequence_for<Ts...>, Ts...>;
 
-    }
-
-    /* Do an integer-based `get<I>()` access on a tuple-like type by first checking for
-    a `t.get<I>()` member method.  Also applies Python-style wraparound for negative
-    indices. */
-    template <ssize_t I, tuple_like T>
-    constexpr decltype(auto) unpack_tuple(T&& t)
-        noexcept (nothrow::has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
-        requires (has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
-    {
-        return (::std::forward<T>(t).template get<impl::normalize_index<meta::tuple_size<T>, I>()>());
-    }
-
-    /* If no `t.get<I>()` member method is found, attempt an ADL-enabled `get<I>(t)`
-    instead.  Also applies Python-style wraparound for negative indices. */
-    template <ssize_t I, tuple_like T>
-    constexpr decltype(auto) unpack_tuple(T&& t)
-        noexcept (nothrow::has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>)
-        requires (
-            !has_member_get<T, impl::normalize_index<meta::tuple_size<T>, I>()> &&
-            has_adl_get<T, impl::normalize_index<meta::tuple_size<T>, I>()>
-        )
-    {
-        using ::std::get;
-        return (get<impl::normalize_index<meta::tuple_size<T>, I>()>(::std::forward<T>(t)));
     }
 
     /////////////////////////
@@ -2592,32 +2617,32 @@ namespace meta {
     /////////////////////////
 
     template <typename T>
-    concept iterator = ::std::input_or_output_iterator<T>;
+    concept iterator = ::std::input_or_output_iterator<unqualify<T>>;
 
     template <typename T, typename V>
-    concept output_iterator = iterator<T> && ::std::output_iterator<T, V>;
+    concept output_iterator = iterator<T> && ::std::output_iterator<unqualify<T>, V>;
 
     template <typename T>
-    concept forward_iterator = iterator<T> && ::std::forward_iterator<T>;
+    concept forward_iterator = iterator<T> && ::std::forward_iterator<unqualify<T>>;
 
     template <typename T>
     concept bidirectional_iterator =
-        forward_iterator<T> && ::std::bidirectional_iterator<T>;
+        forward_iterator<T> && ::std::bidirectional_iterator<unqualify<T>>;
 
     template <typename T>
     concept random_access_iterator =
-        bidirectional_iterator<T> && ::std::random_access_iterator<T>;
+        bidirectional_iterator<T> && ::std::random_access_iterator<unqualify<T>>;
 
     template <typename T>
     concept contiguous_iterator =
-        random_access_iterator<T> && ::std::contiguous_iterator<T>;
+        random_access_iterator<T> && ::std::contiguous_iterator<unqualify<T>>;
 
     template <typename T, typename Iter>
-    concept sentinel_for = ::std::sentinel_for<T, Iter>;
+    concept sentinel_for = ::std::sentinel_for<unqualify<T>, Iter>;
 
     template <typename T, typename Iter>
     concept sized_sentinel_for =
-        sentinel_for<T, Iter> && ::std::sized_sentinel_for<T, Iter>;
+        sentinel_for<T, Iter> && ::std::sized_sentinel_for<unqualify<T>, Iter>;
 
     template <iterator T>
     using iterator_category = std::conditional_t<
@@ -2627,25 +2652,109 @@ namespace meta {
     >;
 
     template <iterator T>
-    using iterator_difference_type = ::std::iterator_traits<unqualify<T>>::difference_type;
+    using iterator_difference = ::std::iterator_traits<unqualify<T>>::difference_type;
 
     template <iterator T>
-    using iterator_value_type = ::std::iterator_traits<unqualify<T>>::value_type;
+    using iterator_value = ::std::iterator_traits<unqualify<T>>::value_type;
 
     template <iterator T>
-    using iterator_reference_type = ::std::iterator_traits<unqualify<T>>::reference;
+    using iterator_reference = ::std::iterator_traits<unqualify<T>>::reference;
 
     template <iterator T>
-    using iterator_pointer_type = ::std::iterator_traits<unqualify<T>>::pointer;
+    using iterator_pointer = ::std::iterator_traits<unqualify<T>>::pointer;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept iterator =
+            meta::iterator<T> &&
+            nothrow::movable<unqualify<T>> &&
+            nothrow::assignable<unqualify<T>&, T> &&
+            nothrow::swappable<unqualify<T>> &&
+            requires(unqualify<T> t) {
+                {++t} noexcept;
+                {t++} noexcept;
+                {*t} noexcept;
+            };
+
+        template <typename T, typename V>
+        concept output_iterator =
+            nothrow::iterator<T> &&
+            meta::output_iterator<T, V> &&
+            requires(unqualify<T> t, V&& v) {
+                {*t = ::std::forward<V>(v)} noexcept;
+            };
+
+        template <typename T>
+        concept forward_iterator =
+            nothrow::iterator<T> &&
+            meta::forward_iterator<T> &&
+            requires(as_const_ref<T> t) {
+                {t == t} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t != t} noexcept -> nothrow::explicitly_convertible_to<bool>;
+            };
+
+        template <typename T>
+        concept bidirectional_iterator =
+            nothrow::forward_iterator<T> &&
+            meta::bidirectional_iterator<T> &&
+            requires(unqualify<T> t) {
+                {--t} noexcept;
+                {t--} noexcept;
+            };
+
+        template <typename T>
+        concept random_access_iterator =
+            nothrow::bidirectional_iterator<T> &&
+            meta::random_access_iterator<T> &&
+            requires(unqualify<T> t, iterator_difference<T> n) {
+                {t += n} noexcept;
+                {t + n} noexcept;
+                {n + t} noexcept;
+                {t -= n} noexcept;
+                {t - n} noexcept;
+                {t[n]} noexcept;
+            } && requires(as_const_ref<T> t1, as_const_ref<T> t2) {
+                {t1 < t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t1 > t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t1 <= t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t1 >= t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
+            };
+
+        template <typename T>
+        concept contiguous_iterator =
+            nothrow::random_access_iterator<T> &&
+            meta::contiguous_iterator<T>;
+
+        template <typename T, typename Iter>
+        concept sentinel_for =
+            meta::sentinel_for<T, Iter> &&
+            requires(as_const_ref<T> t, as_const_ref<Iter> i) {
+                {t == i} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {i == t} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t != i} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {i != t} noexcept -> nothrow::explicitly_convertible_to<bool>;
+            };
+
+        template <typename T, typename Iter>
+        concept sized_sentinel_for =
+            nothrow::sentinel_for<T, Iter> &&
+            meta::sized_sentinel_for<T, Iter> &&
+            requires(as_const_ref<T> t, as_const_ref<Iter> i) {
+                {i - t} noexcept -> nothrow::convertible_to<iterator_difference<Iter>>;
+                {t - i} noexcept -> nothrow::convertible_to<iterator_difference<Iter>>;
+            };
+
+    }
 
     template <typename T>
-    concept has_begin = requires(T& t) { ::std::ranges::begin(t); };
+    concept has_begin = requires(as_lvalue<T> t) { ::std::ranges::begin(t); };
 
     template <has_begin T>
     using begin_type = decltype(::std::ranges::begin(::std::declval<as_lvalue<T>>()));
 
     template <typename T>
-    concept has_cbegin = requires(T& t) { ::std::ranges::cbegin(t); };
+    concept has_cbegin = requires(as_lvalue<T> t) { ::std::ranges::cbegin(t); };
 
     template <has_cbegin T>
     using cbegin_type = decltype(::std::ranges::cbegin(::std::declval<as_lvalue<T>>()));
@@ -2671,13 +2780,13 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_end = requires(T& t) { ::std::ranges::end(t); };
+    concept has_end = requires(as_lvalue<T> t) { ::std::ranges::end(t); };
 
     template <has_end T>
     using end_type = decltype(::std::ranges::end(::std::declval<as_lvalue<T>>()));
 
     template <typename T>
-    concept has_cend = requires(T& t) { ::std::ranges::cend(t); };
+    concept has_cend = requires(as_lvalue<T> t) { ::std::ranges::cend(t); };
 
     template <has_cend T>
     using cend_type = decltype(::std::ranges::cend(::std::declval<as_lvalue<T>>()));
@@ -2703,13 +2812,13 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_rbegin = requires(T& t) { ::std::ranges::rbegin(t); };
+    concept has_rbegin = requires(as_lvalue<T> t) { ::std::ranges::rbegin(t); };
 
     template <has_rbegin T>
     using rbegin_type = decltype(::std::ranges::rbegin(::std::declval<as_lvalue<T>>()));
 
     template <typename T>
-    concept has_crbegin = requires(T& t) { ::std::ranges::crbegin(t); };
+    concept has_crbegin = requires(as_lvalue<T> t) { ::std::ranges::crbegin(t); };
 
     template <has_crbegin T>
     using crbegin_type = decltype(::std::ranges::crbegin(::std::declval<as_lvalue<T>>()));
@@ -2735,13 +2844,13 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_rend = requires(T& t) { ::std::ranges::rend(t); };
+    concept has_rend = requires(as_lvalue<T> t) { ::std::ranges::rend(t); };
 
     template <has_rend T>
     using rend_type = decltype(::std::ranges::rend(::std::declval<as_lvalue<T>>()));
 
     template <typename T>
-    concept has_crend = requires(T& t) { ::std::ranges::crend(t); };
+    concept has_crend = requires(as_lvalue<T> t) { ::std::ranges::crend(t); };
 
     template <has_crend T>
     using crend_type = decltype(::std::ranges::crend(::std::declval<as_lvalue<T>>()));
@@ -2767,26 +2876,26 @@ namespace meta {
     }
 
     template <typename T>
-    concept iterable = requires(T& t) {
+    concept iterable = requires(as_lvalue<T> t) {
         { ::std::ranges::begin(t) } -> iterator;
         { ::std::ranges::end(t) } -> sentinel_for<decltype(::std::ranges::begin(t))>;
     };
 
     template <iterable T>
-    using yield_type =
-        decltype(*::std::ranges::begin(::std::declval<meta::as_lvalue<T>>()));
+    using yield_type = decltype(*::std::ranges::begin(::std::declval<meta::as_lvalue<T>>()));
 
     template <typename T, typename Ret>
     concept yields = iterable<T> && convertible_to<yield_type<T>, Ret>;
 
     namespace nothrow {
 
-        /// TODO: nothrow::iterable should also require that incrementing,
-        /// dereferencing, and comparing the iterators are noexcept as well
-
         template <typename T>
         concept iterable =
-            meta::iterable<T> && nothrow::has_begin<T> && nothrow::has_end<T>;
+            meta::iterable<T> &&
+            nothrow::has_begin<T> &&
+            nothrow::has_end<T> &&
+            nothrow::iterator<begin_type<T>> &&
+            nothrow::sentinel_for<end_type<T>, begin_type<T>>;
 
         template <nothrow::iterable T>
         using yield_type = meta::yield_type<T>;
@@ -2799,7 +2908,7 @@ namespace meta {
     }
 
     template <typename T>
-    concept const_iterable = requires(T& t) {
+    concept const_iterable = requires(as_lvalue<T> t) {
         { ::std::ranges::cbegin(t) } -> iterator;
         { ::std::ranges::cend(t) } -> sentinel_for<decltype(::std::ranges::cbegin(t))>;
     };
@@ -2816,7 +2925,11 @@ namespace meta {
 
         template <typename T>
         concept const_iterable =
-            meta::const_iterable<T> && nothrow::has_cbegin<T> && nothrow::has_cend<T>;
+            meta::const_iterable<T> &&
+            nothrow::has_cbegin<T> &&
+            nothrow::has_cend<T> &&
+            nothrow::iterator<cbegin_type<T>> &&
+            nothrow::sentinel_for<cend_type<T>, cbegin_type<T>>;
 
         template <nothrow::const_iterable T>
         using const_yield_type = meta::const_yield_type<T>;
@@ -2829,7 +2942,7 @@ namespace meta {
     }
 
     template <typename T>
-    concept reverse_iterable = requires(T& t) {
+    concept reverse_iterable = requires(as_lvalue<T> t) {
         { ::std::ranges::rbegin(t) } -> iterator;
         { ::std::ranges::rend(t) } -> sentinel_for<decltype(::std::ranges::rbegin(t))>;
     };
@@ -2846,7 +2959,11 @@ namespace meta {
 
         template <typename T>
         concept reverse_iterable =
-            meta::reverse_iterable<T> && nothrow::has_rbegin<T> && nothrow::has_rend<T>;
+            meta::reverse_iterable<T> &&
+            nothrow::has_rbegin<T> &&
+            nothrow::has_rend<T> &&
+            nothrow::iterator<rbegin_type<T>> &&
+            nothrow::sentinel_for<rend_type<T>, rbegin_type<T>>;
 
         template <nothrow::reverse_iterable T>
         using reverse_yield_type = meta::reverse_yield_type<T>;
@@ -2859,7 +2976,7 @@ namespace meta {
     }
 
     template <typename T>
-    concept const_reverse_iterable = requires(T& t) {
+    concept const_reverse_iterable = requires(as_lvalue<T> t) {
         { ::std::ranges::crbegin(t) } -> iterator;
         { ::std::ranges::crend(t) } -> sentinel_for<decltype(::std::ranges::crbegin(t))>;
     };
@@ -2876,7 +2993,11 @@ namespace meta {
 
         template <typename T>
         concept const_reverse_iterable =
-            meta::const_reverse_iterable<T> && nothrow::has_crbegin<T> && nothrow::has_crend<T>;
+            meta::const_reverse_iterable<T> &&
+            nothrow::has_crbegin<T> &&
+            nothrow::has_crend<T> &&
+            nothrow::iterator<crbegin_type<T>> &&
+            nothrow::sentinel_for<crend_type<T>, crbegin_type<T>>;
 
         template <nothrow::const_reverse_iterable T>
         using const_reverse_yield_type = meta::const_reverse_yield_type<T>;
@@ -2885,34 +3006,6 @@ namespace meta {
         concept const_reverse_yields =
             nothrow::const_reverse_iterable<T> &&
             nothrow::convertible_to<nothrow::const_reverse_yield_type<T>, Ret>;
-
-    }
-
-    template <typename T, typename Idx = ssize_t>
-    concept has_at = requires (T t, Idx i) {
-        { t.at(i) } -> meta::iterator;
-    };
-
-    template <typename T, typename Idx = ssize_t> requires (has_at<T, Idx>)
-    using at_type = decltype(::std::declval<T>().at(::std::declval<Idx>()));
-
-    template <typename Ret, typename T, typename Idx = ssize_t>
-    concept at_returns = has_at<T, Idx> && convertible_to<at_type<T, Idx>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T, typename Idx = ssize_t>
-        concept has_at =
-            meta::has_at<T, Idx> &&
-            noexcept(::std::declval<T>().at(::std::declval<Idx>()));
-
-        template <typename T, typename Idx = ssize_t> requires (nothrow::has_at<T, Idx>)
-        using at_type = meta::at_type<T, Idx>;
-
-        template <typename Ret, typename T, typename Idx = ssize_t>
-        concept at_returns =
-            nothrow::has_at<T, Idx> &&
-            nothrow::convertible_to<nothrow::at_type<T, Idx>, Ret>;
 
     }
 

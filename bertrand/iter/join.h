@@ -12,6 +12,49 @@ namespace bertrand {
 
 namespace impl {
 
+    template <typename>
+    constexpr bool range_reverse_iterable = false;
+    template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
+    constexpr bool range_reverse_iterable<meta::pack<A...>> = true;
+
+    /* An index sequence records the positions of the incoming ranges. */
+    template <typename out, size_t, typename...>
+    struct _range_indices { using type = out; };
+    template <size_t... Is, size_t I, typename T, typename... Ts>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is...>, I + 1, Ts...>
+    {};
+    template <size_t... Is, size_t I, meta::range T, typename... Ts>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
+    {};
+    template <meta::not_rvalue... A>
+    using range_indices = _range_indices<std::index_sequence<>, 0, A...>::type;
+
+    /* Zip iterators preserve as much of the iterator interface as possible. */
+    template <typename, meta::not_rvalue... Iters>
+    struct range_category;
+    template <size_t... Is, meta::not_rvalue... Iters>
+    struct range_category<std::index_sequence<Is...>, Iters...> {
+        using type = meta::common_type<
+            meta::iterator_category<meta::unpack_type<Is, Iters...>>...
+        >;
+    };
+
+    /* The difference type between zip iterators (if any) is the common type for all
+    constituent ranges. */
+    template <typename, meta::not_rvalue... Iters>
+    struct range_difference;
+    template <size_t... Is, meta::not_rvalue... Iters>
+    struct range_difference<std::index_sequence<Is...>, Iters...> {
+        using type = meta::common_type<
+            meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
+        >;
+    };
+
+
+
+
     template <typename Sep, typename... A>
     concept join_concept =
         sizeof...(A) > 0 &&

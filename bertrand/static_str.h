@@ -16,6 +16,10 @@
 namespace bertrand {
 
 
+/// TODO: look in to boyer-moore string searching algorithm
+
+
+
 /* A wrapper class for a template string that exposes a Python-style string interface,
 allowing for straightforward compile-time manipulation.
 
