@@ -217,9 +217,6 @@ namespace meta {
     /////////////////////////////
 
     template <typename T>
-    using forward = decltype(::std::forward<T>(::std::declval<T>()));
-
-    template <typename T>
     using unqualify = ::std::remove_cvref_t<T>;
 
     template <typename T>
@@ -1291,6 +1288,13 @@ namespace meta {
     ////////////////////////////
     ////    CONSTRUCTION    ////
     ////////////////////////////
+
+    template <typename T>
+    using forward = ::std::conditional_t<
+        is_class<T>,
+        decltype(::std::forward<T>(::std::declval<T>())),
+        remove_reference<T>
+    >;
 
     namespace detail {
 
