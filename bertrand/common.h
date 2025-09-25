@@ -472,6 +472,13 @@ namespace meta {
         !::std::same_as<remove_reference<T>, remove_reference<U>> &&
         detail::more_qualified_than<remove_reference<T>, remove_reference<U>>;
 
+    template <typename T>
+    using forward = ::std::conditional_t<
+        pointer<T>,
+        remove_reference<T>,
+        decltype(::std::forward<T>(::std::declval<T>()))
+    >;
+
     /////////////////////
     ////    PACKS    ////
     /////////////////////
@@ -1289,13 +1296,6 @@ namespace meta {
     ////    CONSTRUCTION    ////
     ////////////////////////////
 
-    template <typename T>
-    using forward = ::std::conditional_t<
-        is_class<T>,
-        decltype(::std::forward<T>(::std::declval<T>())),
-        remove_reference<T>
-    >;
-
     namespace detail {
 
         template <typename T, typename... Args>
@@ -1398,12 +1398,22 @@ namespace meta {
     /* Trigger implicit conversion operators and/or implicit constructors, but not
     explicit ones.  In contrast, static_cast<>() will trigger explicit constructors on
     the target type, which can give unexpected results and violate type safety. */
-    template <typename To, typename From>
-    constexpr To implicit_cast(From&& value)
+    template <not_void To, typename From>
+    [[nodiscard]] constexpr To implicit_cast(From&& v)
         noexcept(nothrow::convertible_to<From, To>)
         requires(convertible_to<From, To>)
     {
-        return ::std::forward<From>(value);
+        return ::std::forward<From>(v);
+    }
+
+    /* Extend the lifetime of an rvalue input by converting rvalues into prvalues and
+    leaving lvalues unchanged. */
+    template <typename T>
+    [[nodiscard]] constexpr meta::remove_rvalue<T> decay(T&& v)
+        noexcept (nothrow::convertible_to<T, meta::remove_rvalue<T>>)
+        requires (convertible_to<T, meta::remove_rvalue<T>>)
+    {
+        return ::std::forward<T>(v);
     }
 
     namespace detail {
@@ -1525,7 +1535,7 @@ namespace meta {
 
     /* Explicitly invoke a copy constructor for the given type. */
     template <copyable T>
-    constexpr T copy(const T& v) noexcept (nothrow::copyable<T>) {
+    [[nodiscard]] constexpr T copy(const T& v) noexcept (nothrow::copyable<T>) {
         return v;
     }
 
@@ -1603,7 +1613,7 @@ namespace meta {
 
     /* Explicitly invoke a copy or move constructor for the given type. */
     template <movable T>
-    constexpr unqualify<T> move(T&& v) noexcept (nothrow::movable<T>) {
+    [[nodiscard]] constexpr unqualify<T> move(T&& v) noexcept (nothrow::movable<T>) {
         return ::std::forward<T>(v);
     }
 

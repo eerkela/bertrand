@@ -5,7 +5,6 @@
 #include "bertrand/except.h"
 #include "bertrand/math.h"
 #include "bertrand/union.h"
-#include <iterator>
 
 
 namespace bertrand {
@@ -38,10 +37,10 @@ namespace meta {
     no nesting (meaning the range directly adapts an underlying container), while 1
     indicates a range of ranges, and so on. */
     template <typename T>
-    constexpr size_t range_nested = 0;
+    constexpr size_t nested_range = 0;
     template <meta::range T> requires (meta::range<decltype(*::std::declval<T>().__value)>)
-    constexpr size_t range_nested<T> =
-        range_nested<decltype(*::std::declval<T>().__value)> + 1;
+    constexpr size_t nested_range<T> =
+        nested_range<decltype(*::std::declval<T>().__value)> + 1;
 
     /* A refinement of `meta::range<T, Rs...>` that only matches iota ranges (i.e.
     those of the form `[start, stop[, step]]`, where `start` is not an iterator). */
@@ -204,6 +203,22 @@ namespace impl {
             requires (requires{{__value == None ? nullptr : std::addressof(*__value)};})
         {
             return __value == None ? nullptr : std::addressof(*__value);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).__value} noexcept;})
+            requires (requires{{*std::forward<Self>(self).__value};})
+        {
+            return (*std::forward<Self>(self).__value);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).__value} noexcept;})
+            requires (requires{{*std::forward<Self>(self).__value};})
+        {
+            return (*std::forward<Self>(self).__value);
         }
 
         template <size_t I, typename Self> requires (I == 0)
@@ -411,6 +426,8 @@ namespace impl {
         static constexpr tuple_kind kind =
             meta::trivial_union<T, Ts...> ? tuple_kind::TRIVIAL : tuple_kind::VTABLE;
     };
+
+    /// TODO: add a front() and back() method to tuple_range
 
     /* A wrapper around a generic tuple type that allows it to be indexed and iterated
     over at runtime, by dispatching to a reference array or vtable.  If the tuple
@@ -1051,7 +1068,7 @@ namespace impl {
         }
 
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) curr(this Self&& self) noexcept {
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
             return (std::forward<Self>(self).start());
         }
 
@@ -1080,63 +1097,63 @@ namespace impl {
         template <typename Self>
         [[nodiscard]] constexpr auto operator[](this Self&& self, difference_type i)
             noexcept (requires{{
-                std::forward<Self>(self).curr() + i
+                std::forward<Self>(self).start() + i
             } noexcept -> meta::nothrow::convertible_to<meta::common_type<
-                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((std::forward<Self>(self).start()))>,
                 meta::remove_rvalue<decltype(
-                    (std::forward<Self>(self).curr() + i)
+                    (std::forward<Self>(self).start() + i)
                 )>
             >>;})
             -> meta::common_type<
-                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((std::forward<Self>(self).start()))>,
                 meta::remove_rvalue<decltype(
-                    (std::forward<Self>(self).curr() + i)
+                    (std::forward<Self>(self).start() + i)
                 )>
             >
             requires (iota_empty<Step> && requires{
                 {self.ssize()};
                 {
-                    std::forward<Self>(self).curr() + i
+                    std::forward<Self>(self).start() + i
                 } -> meta::convertible_to<meta::common_type<
-                    meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                    meta::remove_rvalue<decltype((std::forward<Self>(self).start()))>,
                     meta::remove_rvalue<decltype(
-                        (std::forward<Self>(self).curr() + i)
+                        (std::forward<Self>(self).start() + i)
                     )>
                 >>;
             })
         {
-            return std::forward<Self>(self).curr() + i;
+            return std::forward<Self>(self).start() + i;
         }
 
         template <typename Self>
         [[nodiscard]] constexpr auto operator[](this Self&& self, difference_type i)
             noexcept (requires{{
-                std::forward<Self>(self).curr() + i * std::forward<Self>(self).step()
+                std::forward<Self>(self).start() + i * std::forward<Self>(self).step()
             } noexcept -> meta::nothrow::convertible_to<meta::common_type<
-                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((std::forward<Self>(self).start()))>,
                 meta::remove_rvalue<decltype(
-                    (std::forward<Self>(self).curr() + i * std::forward<Self>(self).step())
+                    (std::forward<Self>(self).start() + i * std::forward<Self>(self).step())
                 )>
             >>;})
             -> meta::common_type<
-                meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                meta::remove_rvalue<decltype((std::forward<Self>(self).start()))>,
                 meta::remove_rvalue<decltype(
-                    (std::forward<Self>(self).curr() + i * std::forward<Self>(self).step())
+                    (std::forward<Self>(self).start() + i * std::forward<Self>(self).step())
                 )>
             >
             requires (!iota_empty<Step> && requires{
                 {self.ssize()};
                 {
-                    std::forward<Self>(self).curr() + i * std::forward<Self>(self).step()
+                    std::forward<Self>(self).start() + i * std::forward<Self>(self).step()
                 } -> meta::convertible_to<meta::common_type<
-                    meta::remove_rvalue<decltype((std::forward<Self>(self).curr()))>,
+                    meta::remove_rvalue<decltype((std::forward<Self>(self).start()))>,
                     meta::remove_rvalue<decltype(
-                        (std::forward<Self>(self).curr() + i * std::forward<Self>(self).step())
+                        (std::forward<Self>(self).start() + i * std::forward<Self>(self).step())
                     )>
                 >>;
             })
         {
-            return std::forward<Self>(self).curr() + i * std::forward<Self>(self).step();
+            return std::forward<Self>(self).start() + i * std::forward<Self>(self).step();
         }
 
         template <typename Self>
@@ -1151,19 +1168,19 @@ namespace impl {
             )>
             requires (requires(difference_type i) {
                 {std::forward<Self>(self)[i]};
-                {std::forward<Self>(self).curr()} -> meta::convertible_to<
+                {std::forward<Self>(self).start()} -> meta::convertible_to<
                     meta::remove_rvalue<decltype((std::forward<Self>(self)[i]))>
                 >;
             })
         {
-            return std::forward<Self>(self).curr();
+            return std::forward<Self>(self).start();
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept
             requires (!requires(difference_type i) {{std::forward<Self>(self)[i]};})
         {
-            return (std::forward<Self>(self).curr());
+            return (std::forward<Self>(self).start());
         }
 
         template <typename Self>
@@ -1842,7 +1859,7 @@ namespace impl {
         }
 
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) curr(this Self&& self)
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
             noexcept (requires{{*std::forward<Self>(self).start()} noexcept;})
             requires (requires{{*std::forward<Self>(self).start()};})
         {
@@ -1850,21 +1867,21 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto data()
-            noexcept (requires{{std::addressof(curr())} noexcept;})
+            noexcept (requires{{std::addressof(front())} noexcept;})
             requires (meta::is<iterator_category, std::contiguous_iterator_tag> && requires{
-                {std::addressof(curr())};
+                {std::addressof(front())};
             })
         {
-            return std::addressof(curr());
+            return std::addressof(front());
         }
 
         [[nodiscard]] constexpr auto data() const
-            noexcept (requires{{std::addressof(curr())} noexcept;})
+            noexcept (requires{{std::addressof(front())} noexcept;})
             requires (meta::is<iterator_category, std::contiguous_iterator_tag> && requires{
-                {std::addressof(curr())};
+                {std::addressof(front())};
             })
         {
-            return std::addressof(curr());
+            return std::addressof(front());
         }
 
         [[nodiscard]] constexpr subrange() = default;
@@ -2053,10 +2070,10 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self).curr()} noexcept;})
-            requires (requires{{std::forward<Self>(self).curr()};})
+            noexcept (requires{{std::forward<Self>(self).front()} noexcept;})
+            requires (requires{{std::forward<Self>(self).front()};})
         {
-            return (std::forward<Self>(self).curr());
+            return (std::forward<Self>(self).front());
         }
 
         template <typename Self>
@@ -3209,14 +3226,6 @@ namespace impl {
     struct range_iterator;
 
     template <typename T>
-    constexpr auto make_range_iterator(T&& iter)
-        noexcept (requires{{range_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)}} noexcept;})
-        requires (requires{{range_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)}};})
-    {
-        return range_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)};
-    }
-
-    template <typename T>
     constexpr bool _is_range_iterator = false;
     template <typename T>
     constexpr bool _is_range_iterator<range_iterator<T>> = true;
@@ -3239,6 +3248,9 @@ namespace impl {
         using reference = meta::iterator_reference<T>;
         using pointer = meta::iterator_pointer<T>;
     };
+
+    /// TODO: range iterators may need to apply nested ranges to the result of the
+    /// arrow operator as well?
 
     /* A wrapper for an iterator over an `iter::range()` object.  This acts as a
     transparent adaptor for the underlying iterator type, and does not change its
@@ -3505,6 +3517,13 @@ namespace impl {
         }
     };
 
+    template <typename T>
+    range_iterator(T&&) -> range_iterator<meta::remove_rvalue<T>>;
+    template <typename T>
+    range_iterator(const range_iterator<T>&) -> range_iterator<range_iterator<T>>;
+    template <typename T>
+    range_iterator(range_iterator<T>&&) -> range_iterator<range_iterator<T>>;
+
     /* A wrapper for an iterator over an `iter::unpack()` object.  This acts as a
     transparent adaptor for the underlying iterator type, and does not change its
     behavior in any way.  The only caveat is for nested ranges, whereby the wrapped
@@ -3512,14 +3531,6 @@ namespace impl {
     promoted to an `unpack` range. */
     template <meta::not_rvalue T>
     struct unpack_iterator;
-
-    template <typename T>
-    constexpr auto make_unpack_iterator(T&& iter)
-        noexcept (requires{{unpack_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)}} noexcept;})
-        requires (requires{{unpack_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)}};})
-    {
-        return unpack_iterator<meta::remove_rvalue<T>>{std::forward<T>(iter)};
-    }
 
     template <typename T>
     constexpr bool _is_unpack_iterator = false;
@@ -3788,12 +3799,18 @@ namespace impl {
         }
     };
 
+    template <typename T>
+    unpack_iterator(T&&) -> unpack_iterator<meta::remove_rvalue<T>>;
+    template <typename T>
+    unpack_iterator(const unpack_iterator<T>&) -> unpack_iterator<unpack_iterator<T>>;
+    template <typename T>
+    unpack_iterator(unpack_iterator<T>&&) -> unpack_iterator<unpack_iterator<T>>;
 
-    static constexpr std::tuple<int, double> test_tuple{1, 1.5};
-    static_assert(meta::get<1>(test_tuple) == 1.5);
+    inline constexpr AssertionError range_front_error =
+        AssertionError("Attempted to access the front of an empty range");
 
-
-    /// TODO: all of this crap now needs to be looked at.
+    inline constexpr AssertionError range_back_error =
+        AssertionError("Attempted to access the back of an empty range");
 
     template <typename L, typename R>
     consteval ValueError range_size_mismatch() noexcept {
@@ -3822,400 +3839,16 @@ namespace impl {
         ((meta::get<Is>(container) = meta::get<Is>(std::forward<T>(r))), ...);
     }
 
-    template <meta::lvalue T>
-    struct find_iterator {
-        using indices = meta::unqualify<T>::indices;
-        using container = decltype((*std::declval<T>().container));
-        using iterator = meta::begin_type<container>;
-        using sentinel = meta::end_type<container>;
-        using subrange_type = subrange<iterator, sentinel>;
-        using iterator_category = std::forward_iterator_tag;
-        using difference_type = subrange_type::difference_type;
-        using value_type = subrange<iterator, meta::as_unsigned<difference_type>>;
-        using reference = value_type&;
-        using pointer = value_type*;
-
-    private:
-        [[no_unique_address]] meta::as_pointer<T> ptr = nullptr;
-        [[no_unique_address]] subrange_type subrange;
-        [[no_unique_address]] iterator next = subrange.start();
-        [[no_unique_address]] difference_type idx = 0;
-
-        template <typename V> requires (!meta::range<V>)
-        constexpr bool match(const V& value)
-            noexcept (requires{
-                {subrange.curr() == value} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {next = subrange.start()} noexcept;
-                {++next} noexcept;
-                {idx = subrange.index() + 1} noexcept;
-            })
-            requires (requires{
-                {subrange.curr() == value} -> meta::explicitly_convertible_to<bool>;
-                {next = subrange.start()};
-                {++next};
-                {idx = subrange.index() + 1};
-            })
-        {
-            if (subrange.curr() == value) {
-                next = subrange.start();
-                ++next;
-                idx = subrange.index() + 1;
-                return true;
-            }
-            return false;
-        }
-
-        template <typename V> requires (!meta::range<V>)
-        constexpr bool match(const V& value)
-            noexcept (requires{
-                {value(subrange.curr())} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {next = subrange.start()} noexcept;
-                {++next} noexcept;
-                {idx = subrange.index() + 1} noexcept;
-            })
-            requires (
-                !requires{{subrange.curr() == value} -> meta::explicitly_convertible_to<bool>;} &&
-                requires{
-                    {value(subrange.curr())} -> meta::explicitly_convertible_to<bool>;
-                    {next = subrange.start()};
-                    {++next};
-                    {idx = subrange.index() + 1};
-                }
-            )
-        {
-            if (value(subrange.curr())) {
-                next = subrange.start();
-                ++next;
-                idx = subrange.index() + 1;
-                return true;
-            }
-            return false;
-        }
-
-        template <meta::range V>
-        constexpr bool match(const V& value)
-            noexcept (requires(decltype(value.begin()) it, decltype(value.end()) end) {
-                {!subrange.empty()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {value.empty()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {next = subrange.start()} noexcept;
-                {++next} noexcept;
-                {idx = subrange.index() + 1} noexcept;
-                {value.begin()} noexcept;
-                {value.end()} noexcept;
-                {*next == *it} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {++it} noexcept;
-                {++idx} noexcept;
-                {it == end} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {next == subrange.stop()} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-            })
-            requires (requires(decltype(value.begin()) it, decltype(value.end()) end) {
-                {!subrange.empty()} -> meta::explicitly_convertible_to<bool>;
-                {value.empty()} -> meta::explicitly_convertible_to<bool>;
-                {next = subrange.start()};
-                {++next};
-                {idx = subrange.index() + 1};
-                {value.begin()};
-                {value.end()};
-                {*next == *it} -> meta::explicitly_convertible_to<bool>;
-                {++it};
-                {++idx};
-                {it == end} -> meta::explicitly_convertible_to<bool>;
-                {next == subrange.stop()} -> meta::explicitly_convertible_to<bool>;
-            })
-        {
-            if (!subrange.empty()) {
-                if (value.empty()) {
-                    next = subrange.start();
-                    ++next;
-                    idx = subrange.index() + 1;
-                    return true;
-                }
-                next = subrange.start();
-                idx = subrange.index();
-                auto it = value.begin();
-                auto end = value.end();
-                while (*next == *it) {
-                    ++it;
-                    ++next;
-                    ++idx;
-                    if (it == end) {
-                        return true;
-                    }
-                    if (next == subrange.stop()) {
-                        break;
-                    }
-                }
-            }
-            return false;
-        }
-
-        template <size_t... Is>
-        constexpr void advance(std::index_sequence<Is...>)
-            noexcept (requires{
-                {subrange.empty()} noexcept;
-                {subrange.increment()} noexcept;
-                {(match(ptr->args.template get<Is>()) || ...)} noexcept;
-            })
-            requires (requires{
-                {subrange.empty()};
-                {subrange.increment()};
-                {(match(ptr->args.template get<Is>()) || ...)};
-            })
-        {
-            while (!subrange.empty() && !(match(ptr->args.template get<Is>()) || ...)) {
-                subrange.increment();
-            }
-        }
-
-    public:
-        [[nodiscard]] constexpr find_iterator() = default;
-        [[nodiscard]] constexpr find_iterator(T self)
-            noexcept (requires{
-                {std::addressof(self)} noexcept;
-                {std::ranges::begin(*self.container)} noexcept;
-                {std::ranges::end(*self.container)} noexcept;
-                {advance(indices{})} noexcept;
-            })
-            requires (requires{
-                {std::addressof(self)};
-                {std::ranges::begin(*self.container)};
-                {std::ranges::end(*self.container)};
-                {advance(indices{})};
-            })
-        :
-            ptr(std::addressof(self)),
-            subrange(
-                std::ranges::begin(*self.container),
-                std::ranges::end(*self.container)
-            )
-        {
-            advance(indices{});
-        }
-
-        [[nodiscard]] constexpr value_type operator*() const
-            noexcept (requires{{value_type{
-                subrange.start(),
-                meta::to_unsigned(idx - subrange.index())
-            }} noexcept;})
-            requires (requires{{value_type{
-                subrange.start(),
-                meta::to_unsigned(idx - subrange.index())
-            }};})
-        {
-            return value_type{
-                subrange.start(),
-                meta::to_unsigned(idx - subrange.index())
-            };
-        }
-
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow{**this}} noexcept;})
-            requires (requires{{impl::arrow{**this}};})
-        {
-            return impl::arrow{**this};
-        }
-
-        constexpr find_iterator& operator++()
-            noexcept (requires{
-                {subrange.start() = next} noexcept;
-                {subrange.index() = idx} noexcept;
-                {advance(indices{})} noexcept;
-            })
-            requires (requires{
-                {subrange.start() = next};
-                {subrange.index() = idx};
-                {advance(indices{})};
-            })
-        {
-            subrange.start() = next;
-            subrange.index() = idx;
-            advance(indices{});
-            return *this;
-        }
-
-        [[nodiscard]] constexpr find_iterator operator++(int)
-            noexcept (requires(find_iterator tmp) {
-                {find_iterator{*this}} noexcept;
-                {++tmp} noexcept;
-            })
-            requires (requires(find_iterator tmp) {
-                {find_iterator{*this}};
-                {++tmp};
-            })
-        {
-            find_iterator tmp = *this;
-            ++*this;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr bool operator<(const find_iterator& self, NoneType)
-            noexcept (requires{{self.subrange < NoneType{}} noexcept;})
-            requires (requires{{self.subrange < NoneType{}};})
-        {
-            return self.subrange < NoneType{};
-        }
-
-        [[nodiscard]] friend constexpr bool operator<(NoneType, const find_iterator& self)
-            noexcept (requires{{NoneType{} < self.subrange} noexcept;})
-            requires (requires{{NoneType{} < self.subrange};})
-        {
-            return NoneType{} < self.subrange;
-        }
-
-        [[nodiscard]] friend constexpr bool operator<=(const find_iterator& self, NoneType)
-            noexcept (requires{{self.subrange <= NoneType{}} noexcept;})
-            requires (requires{{self.subrange <= NoneType{}};})
-        {
-            return self.subrange <= NoneType{};
-        }
-
-        [[nodiscard]] friend constexpr bool operator<=(NoneType, const find_iterator& self)
-            noexcept (requires{{NoneType{} <= self.subrange} noexcept;})
-            requires (requires{{NoneType{} <= self.subrange};})
-        {
-            return NoneType{} <= self.subrange;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(const find_iterator& self, NoneType)
-            noexcept (requires{{self.subrange == NoneType{}} noexcept;})
-            requires (requires{{self.subrange == NoneType{}};})
-        {
-            return self.subrange == NoneType{};
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(NoneType, const find_iterator& self)
-            noexcept (requires{{NoneType{} == self.subrange} noexcept;})
-            requires (requires{{NoneType{} == self.subrange};})
-        {
-            return NoneType{} == self.subrange;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(const find_iterator& self, NoneType)
-            noexcept (requires{{self.subrange != NoneType{}} noexcept;})
-            requires (requires{{self.subrange != NoneType{}};})
-        {
-            return self.subrange != NoneType{};
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(NoneType, const find_iterator& self)
-            noexcept (requires{{NoneType{} != self.subrange} noexcept;})
-            requires (requires{{NoneType{} != self.subrange};})
-        {
-            return NoneType{} != self.subrange;
-        }
-
-        [[nodiscard]] friend constexpr bool operator>=(const find_iterator& self, NoneType)
-            noexcept (requires{{self.subrange >= NoneType{}} noexcept;})
-            requires (requires{{self.subrange >= NoneType{}};})
-        {
-            return self.subrange >= NoneType{};
-        }
-
-        [[nodiscard]] friend constexpr bool operator>=(NoneType, const find_iterator& self)
-            noexcept (requires{{NoneType{} >= self.subrange} noexcept;})
-            requires (requires{{NoneType{} >= self.subrange};})
-        {
-            return NoneType{} >= self.subrange;
-        }
-
-        [[nodiscard]] friend constexpr bool operator>(const find_iterator& self, NoneType)
-            noexcept (requires{{self.subrange > NoneType{}} noexcept;})
-            requires (requires{{self.subrange > NoneType{}};})
-        {
-            return self.subrange > NoneType{};
-        }
-
-        [[nodiscard]] friend constexpr bool operator>(NoneType, const find_iterator& self)
-            noexcept (requires{{NoneType{} > self.subrange} noexcept;})
-            requires (requires{{NoneType{} > self.subrange};})
-        {
-            return NoneType{} > self.subrange;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const find_iterator& other) const
-            noexcept (requires{{subrange == other.subrange} noexcept;})
-            requires (requires{{subrange == other.subrange};})
-        {
-            return subrange == other.subrange;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const find_iterator& other) const
-            noexcept (requires{{subrange <=> other.subrange} noexcept;})
-            requires (requires{{subrange <=> other.subrange};})
-        {
-            return subrange <=> other.subrange;
-        }
-    };
-
-
-
-    /// TODO: a generic `front()` accessor should be available from `iter::range`,
-    /// which either calls the underlying container's `front()` method, or returns
-    /// `*begin()`.  A debug assertion can be added to ensure that the range is not
-    /// empty before doing so.  That means that `f.front()` would be a
-    /// generically-available monadic demotion method for ranges of a single element,
-    /// which `find{}` subranges would frequently be.  A further `.front()` call would
-    /// unwrap the inner element, or the `->` operator could be used to indirectly
-    /// access members of the inner element.  That could probably be wrapped into
-    /// a ->value() method on the find container type, which boils down to a
-    /// `front().front()` call.
-
-
-
-    /* The result of an `iter::find{A...}(C)` operation.  See that function for
-    more information. */
-    template <meta::not_rvalue C, meta::not_rvalue... A> requires (meta::iterable<C>)
-    struct find {
-        using indices = std::index_sequence_for<A...>;
-
-        [[no_unique_address]] impl::ref<C> container;
-        [[no_unique_address]] impl::basic_tuple<A...> args;
-
-        constexpr void swap(find& other)
-            noexcept (requires{
-                {container.swap(other.container)} noexcept;
-                {args.swap(other.args)} noexcept;
-            })
-            requires (requires{
-                {container.swap(other.container)};
-                {args.swap(other.args)};
-            })
-        {
-            container.swap(other.container);
-            args.swap(other.args);
-        }
-
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{find_iterator<const find&>{*this}} noexcept;})
-            requires (requires{{find_iterator<const find&>{*this}};})
-        {
-            return find_iterator<const find&>{*this};
-        }
-
-        [[nodiscard]] static constexpr NoneType end() noexcept {
-            return {};
-        }
-
-        /// TODO: front(), which returns the result of dereferencing begin(), after
-        /// asserting that the range is not empty (debug).
-
-        /// TODO: value(), which returns front().front(), and is used in scalar
-        /// `find{}` calls.
-    };
-
-    template <typename C, typename... A>
-    find(C&&, impl::basic_tuple<A...>&&) -> find<meta::remove_rvalue<C>, meta::remove_rvalue<A>...>;
-
-
+    template <typename... Ts>
+    concept multidimensional_index_runtime = (meta::type_identity<Ts> && ...);
 
     template <typename... Ts>
-    concept at_run_time = (meta::type_identity<Ts> && ...);
+    concept multidimensional_index_comptime = (!meta::type_identity<Ts> && ...);
 
     template <typename... Ts>
-    concept at_compile_time = (!meta::type_identity<Ts> && ...);
-
-    template <typename... Ts>
-    concept at_concept = at_run_time<Ts...> || at_compile_time<Ts...>;
+    concept multidimensional_index =
+        multidimensional_index_runtime<Ts...> ||
+        multidimensional_index_comptime<Ts...>;
 
 }
 
@@ -4346,96 +3979,6 @@ namespace iter {
     template <typename F>
     all(F&&) -> all<meta::remove_rvalue<F>>;
 
-    /* Search an iterable container for the first occurrence of a particular value or
-    subsequence.
-
-    The initializer may be either a single value (which will be linearly searched using
-    the equality operator), a function predicate returning a value explicitly
-    convertible to `bool`, or a flat range of values.  In the range case, the entire
-    subsequence must be present in order for a match to be found, and the resulting
-    subrange will start at the first element of the subsequence.  All subranges will
-    be non-overlapping.
-
-    If the container is supplied as an rvalue, then its lifetime will be extended to
-    match that of the return value.
-
-    This algorithm returns an `impl::find` object, which acts like an iterator to the
-    first subrange matching at least one of the search conditions.  It exhibits the
-    following behavior:
-
-        1.  Dereferencing the `find` object yields the first value in the current
-            subrange, allowing this function to be used intuitively for single-value
-            lookups.  The `curr()` method is equivalent to the dereference operator.
-        2.  Comparisons against `None`, `nullopt`, `nullptr`, the `empty()` method, or
-            contextual conversions to bool indicate whether a match was found.
-        3.  `find` objects are always totally ordered with respect to one another, as
-            long as they refer to the same container (otherwise the behavior is
-            undefined).
-        4.  The `subrange()` method can be used to access the current subrange, which
-            begins at `start()` and ends at `stop()`.  The `stop()` value is always
-            equivalent to the container's `end()` iterator.
-        5.  `index()` can be used to determine the current index within the original
-            container.
-        6.  `data()` may be conditionally exposed if the container's iterators are
-            contiguous, and always returns a pointer to `curr()`.
-        7.  Incrementing the `find` object will advance it to the next non-overlapping,
-            matching subrange, as will the `increment()` member function.
-        8.  Iterating over the `find` object yields the current `subrange()` followed
-            by all subsequent non-overlapping, matching subranges.  Incrementing the
-            iterator has the same effect as for the parent `find` object.
-     */
-    template <meta::not_rvalue... Ts> requires ((!meta::range<Ts> || !meta::range_nested<Ts>) && ...)
-    struct find {
-        [[no_unique_address]] impl::basic_tuple<Ts...> v;
-
-        [[nodiscard]] constexpr find() = default;
-        [[nodiscard]] constexpr find(meta::forward<Ts>... k)
-            noexcept (requires{{impl::basic_tuple<Ts...>{std::forward<Ts>(k)...}} noexcept;})
-            requires (requires{{impl::basic_tuple<Ts...>{std::forward<Ts>(k)...}};})
-        :
-            v{std::forward<Ts>(k)...}
-        {}
-
-    private:
-        template <typename Self, typename C, size_t... Is>
-        constexpr decltype(auto) call(this Self&& self, C&& c, std::index_sequence<Is...>)
-            noexcept (requires{{iter::range(iter::range(impl::find{
-                std::forward<C>(c),
-                impl::basic_tuple{std::forward<Self>(self).v.template get<Is>()...}
-            }))} noexcept;})
-            requires (requires{{iter::range(iter::range(impl::find{
-                std::forward<C>(c),
-                impl::basic_tuple{std::forward<Self>(self).v.template get<Is>()...}
-            }))};})
-        {
-            return (iter::range(iter::range(impl::find{
-                std::forward<C>(c),
-                impl::basic_tuple{std::forward<Self>(self).v.template get<Is>()...}
-            })));
-        }
-
-    public:
-        template <typename Self, meta::iterable C>
-        [[nodiscard]] constexpr decltype(auto) operator()(this Self&& self, C&& c)
-            noexcept (requires{{std::forward<Self>(self).call(
-                std::forward<C>(c),
-                std::index_sequence_for<Ts...>{}
-            )} noexcept;})
-            requires (requires{{std::forward<Self>(self).call(
-                std::forward<C>(c),
-                std::index_sequence_for<Ts...>{}
-            )};})
-        {
-            return (std::forward<Self>(self).call(
-                std::forward<C>(c),
-                std::index_sequence_for<Ts...>{}
-            ));
-        }
-    };
-
-    template <typename... Ts>
-    find(Ts&&...) -> find<meta::remove_rvalue<Ts>...>;
-
     /* Check to see whether a particular value or consecutive subsequence is present
     in the arguments.  Multiple arguments may be supplied, in which case the search
     will proceed from left to right, stopping as soon as a match is found.
@@ -4445,8 +3988,9 @@ namespace iter {
         1.  A single value for which `value == arg` is well-formed.
         2.  A function object for which `value(arg)` is well-formed and returns a type
             explicitly convertible to `bool`, where `true` terminates the search.
-        3.  A valid input to the argument's `.contains()` method, if it exists.
-        4.  A valid input to `find{value}(arg)`, which performs a linear search.
+        3.  A valid input to an `arg.contains()` method, if it exists.
+        4.  A linear search through the top-level elements of a tuple or iterable type,
+            applying (1) and (2) to each result.
     */
     template <meta::not_rvalue T>
     struct contains {
@@ -4505,8 +4049,9 @@ namespace iter {
 
         template <typename V, typename A>
         static constexpr bool search =
-            meta::iterable<const A&> && requires(const V& value, const A& arg) {
-                {!find{value}(arg).empty()};
+            meta::iterable<const A&> &&
+            requires(const V& value, meta::as_const_ref<meta::yield_type<const A&>> x) {
+                {invoke(value, x)} -> meta::explicitly_convertible_to<bool>;
             };
 
         // 1) prefer `arg == value` if it is well-formed, and neither argument is a
@@ -4574,9 +4119,19 @@ namespace iter {
             )
         struct call<V, A> {
             static constexpr bool operator()(const V& value, const A& arg)
-                noexcept (requires{{!find{value}(arg).empty()} noexcept;})
+                noexcept (
+                    meta::nothrow::iterable<const A&> &&
+                    requires(meta::as_const_ref<meta::yield_type<const A&>> x) {{
+                        invoke(value, x)
+                    } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;}
+                )
             {
-                return !find{value}(arg).empty();
+                for (const auto& x : arg) {
+                    if (invoke(value, x)) {
+                        return true;
+                    }
+                }
+                return false;
             }
         };
 
@@ -4593,12 +4148,14 @@ namespace iter {
     template <typename T>
     contains(T&&) -> contains<meta::remove_rvalue<T>>;
 
+    /// TODO: update `at{}` documentation to consider function predicates (i.e. range
+    /// adaptors) to be applied correctly.
+
+    /// TODO: at{} should also maybe support integer indices no matter what, in which
+    /// case it would retrieve the value by offsetting the `begin()` iterator
+    /// accordingly.
 
 
-
-    /// TODO: separating out the predicate functions is still the best/most explicit
-    /// way to go here, and should make it easier for me to integrate `at{}` with
-    /// multidimensional indexing operators on the container types themselves.
 
     /* Range-based multidimensional indexing operator.  Accepts any number of values,
     which will be used to index into a container when called.  If more than one index
@@ -4615,126 +4172,46 @@ namespace iter {
     This specialization accepts the indices as non-type template parameters, allowing
     them to be applied via the tuple protocol if the container supports it, which may
     yield a more exact type with lower overhead. */
-    template <auto... Is> requires (impl::at_concept<decltype(Is)...>)
+    template <auto... K> requires (impl::multidimensional_index<decltype(K)...>)
     struct at {
     private:
-        template <auto J, typename C>
-        static constexpr bool comptime_index = requires(C c) {
-            {meta::get<J>(std::forward<C>(c))};
-        };
-
-        template <auto J, typename C>
-        static constexpr bool runtime_index = requires(C c) {
-            {std::forward<C>(c)[J]};
-        };
-
-        // 1a) `J` is an integer index into a non-range container.  Tuple indexing is
-        //     preferred if available.
-        template <auto J, typename C> requires (!meta::range<C>)
+        // 1) Prefer tuple indexing if available
+        template <auto A, typename C> requires (!meta::range<C>)
         static constexpr decltype(auto) call(C&& c)
-            noexcept (requires{{meta::get<J>(std::forward<C>(c))} noexcept;})
-            requires (comptime_index<J, C>)
+            noexcept (requires{{meta::get<A>(std::forward<C>(c))} noexcept;})
+            requires (requires{{meta::get<A>(std::forward<C>(c))};})
         {
-            return (meta::get<J>(std::forward<C>(c)));
+            return (meta::get<A>(std::forward<C>(c)));
         }
 
-        // 1b) If tuple indexing is not possible, then we fall back to runtime
-        //     indexing.
-        template <auto J, typename C> requires (!meta::range<C>)
+        // 2) If tuple indexing is not possible, fall back to runtime indexing
+        template <auto A, typename C> requires (!meta::range<C>)
         static constexpr decltype(auto) call(C&& c)
-            noexcept (requires{{std::forward<C>(c)[J]} noexcept;})
-            requires (!comptime_index<J, C> && runtime_index<J, C>)
-        {
-            return (std::forward<C>(c)[J]);
-        }
-
-        template <size_t N, meta::tuple_like C>
-        struct search {
-            using type = Optional<meta::union_type<meta::tuple_types<C>>>;
-            template <typename F>
-            static constexpr type operator()(const F& f, meta::forward<C> c)
-                noexcept (requires {
-                    {
-                        f(meta::get<N>(std::forward<C>(c)))
-                    } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                    {
-                        meta::get<N>(std::forward<C>(c))
-                    } noexcept -> meta::nothrow::convertible_to<type>;
-                    {search<N + 1, C>{}(f, std::forward<C>(c))} noexcept;
-                })
-                requires (requires {
-                    {f(meta::get<N>(std::forward<C>(c)))} -> meta::explicitly_convertible_to<bool>;
-                    {meta::get<N>(std::forward<C>(c))} -> meta::convertible_to<type>;
-                    {search<N + 1, C>{}(f, std::forward<C>(c))};
-                })
-            {
-                decltype(auto) x = meta::get<N>(std::forward<C>(c));
-                if (f(std::forward<decltype(x)>(x))) {
-                    return std::forward<decltype(x)>(x);
-                }
-                return search<N + 1, C>{}(f, std::forward<C>(c));
-            }
-        };
-        template <meta::tuple_like C>
-        struct search<meta::tuple_size<C>, C> {
-            using type = Optional<meta::union_type<meta::tuple_types<C>>>;
-            template <typename F>
-            static constexpr type operator()(const F& f, meta::forward<C> c)
-                noexcept (meta::nothrow::default_constructible<type>)
-                requires (meta::default_constructible<type>)
-            {
-                return {};
-            }
-        };
-
-        // 2a) `J` is a predicate function to be applied over a non-range container.
-        //     The function will be called using tuple indexing to access each element
-        //     if possible, in which case it will always receive an exact type.
-        template <auto F, typename C> requires (!meta::range<C>)
-        static constexpr auto call(C&& c)
-            noexcept (requires{{search<0, C>{}(F, std::forward<C>(c))} noexcept;})
+            noexcept (requires{{std::forward<C>(c)[A]} noexcept;})
             requires (
-                !comptime_index<F, C> &&
-                !runtime_index<F, C> &&
-                requires{{search<0, C>{}(F, std::forward<C>(c))};}
+                !requires{{meta::get<A>(std::forward<C>(c))};} &&
+                requires{{std::forward<C>(c)[A]};}
             )
         {
-            return search<0, C>{}(F, std::forward<C>(c));
+            return (std::forward<C>(c)[A]);
         }
 
-        template <meta::iterable C>
-        using search_type = Optional<meta::remove_rvalue<meta::yield_type<C>>>;
-
-        // 2b) If tuple indexing is not possible, iteration will be used instead.
-        template <auto F, typename C> requires (!meta::range<C>)
-        static constexpr search_type<C> call(C&& c)
-            noexcept (meta::nothrow::iterable<C> && requires(meta::yield_type<C> x) {
-                {
-                    F(std::forward<decltype(x)>(x))
-                } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {std::forward<decltype(x)>(x)} -> meta::nothrow::convertible_to<search_type<C>>;
-            })
+        // 3) If indexing is not possible, the current argument must be a predicate
+        //    function that can be called with the container and does not return void
+        template <auto A, typename C> requires (!meta::range<C>)
+        static constexpr decltype(auto) call(C&& c)
+            noexcept (requires{{A(std::forward<C>(c))} noexcept;})
             requires (
-                !comptime_index<F, C> &&
-                !runtime_index<F, C> &&
-                !requires{{search<0, C>{}(F, std::forward<C>(c))};} &&
-                meta::iterable<C> &&
-                requires(meta::yield_type<C> x) {
-                    {F(std::forward<decltype(x)>(x))} -> meta::explicitly_convertible_to<bool>;
-                    {std::forward<decltype(x)>(x)} -> meta::convertible_to<search_type<C>>;
-                }
+                !requires{{meta::get<A>(std::forward<C>(c))};} &&
+                !requires{{std::forward<C>(c)[A]};} &&
+                requires{{A(std::forward<C>(c))} -> meta::not_void;}
             )
         {
-            for (auto&& x : c) {
-                if (F(std::forward<decltype(x)>(x))) {
-                    return std::forward<decltype(x)>(x);
-                }
-            }
-            return {};
+            return (A(std::forward<C>(c)));
         }
 
-        // 3a) If the container is a range, then the indexing will be forwarded to the
-        //     underlying container using overloads (1) and (2).
+        // 4a) If the container is a range, then the indexing will be forwarded to the
+        //     underlying container using overloads (1), (2), and (3)
         template <auto J, meta::range R>
         static constexpr decltype(auto) call(R&& r)
             noexcept (requires{{call<J>(*std::forward<R>(r).__value)} noexcept;})
@@ -4746,8 +4223,8 @@ namespace iter {
             return (call<J>(*std::forward<R>(r).__value));
         }
 
-        // 3b) If the container is a nested range, then the result will be promoted to
-        //     a range in order to propagate the nested structure.
+        // 4b) If the container is a nested range, then the result will be promoted to
+        //     a range in order to preserve the nested structure
         template <auto J, meta::range R>
         static constexpr decltype(auto) call(R&& r)
             noexcept (requires{
@@ -4761,9 +4238,9 @@ namespace iter {
             return (iter::range(call<J>(*std::forward<R>(r).__value)));
         }
 
-        // 3c) If the container is an `iter::unpack<T>`, where `T` is a range, then
+        // 4c) If the container is an `iter::unpack<T>`, where `T` is a range, then
         //     the result will be promoted to an `iter::unpack` range in order to
-        //     propagate the unpacking structure.
+        //     preserve the unpacking structure
         template <auto J, meta::unpack R>
         static constexpr decltype(auto) call(R&& r)
             noexcept (requires{
@@ -4805,13 +4282,13 @@ namespace iter {
     public:
         template <typename C>
         static constexpr decltype(auto) operator()(C&& c)
-            noexcept (sizeof...(Is) == 0 || requires{{eval<Is...>{}(std::forward<C>(c))} noexcept;})
-            requires (sizeof...(Is) == 0 || requires{{eval<Is...>{}(std::forward<C>(c))};})
+            noexcept (sizeof...(K) == 0 || requires{{eval<K...>{}(std::forward<C>(c))} noexcept;})
+            requires (sizeof...(K) == 0 || requires{{eval<K...>{}(std::forward<C>(c))};})
         {
-            if constexpr (sizeof...(Is) == 0) {
+            if constexpr (sizeof...(K) == 0) {
                 return (std::forward<C>(c));
             } else {
-                return (eval<Is...>{}(std::forward<C>(c)));
+                return (eval<K...>{}(std::forward<C>(c)));
             }
         }
     };
@@ -4833,113 +4310,68 @@ namespace iter {
     tuple-like but not otherwise subscriptable, the indexing will be done using a
     vtable dispatch that maps indices to the appropriate element, possibly returning a
     union if the tuple contains heterogenous types. */
-    template <auto... Is>
-        requires (impl::at_concept<decltype(Is)...> && impl::at_run_time<decltype(Is)...>)
-    struct at<Is...> {
-        [[no_unique_address]] impl::basic_tuple<typename decltype(Is)::type...> idx;
+    template <auto... K>
+        requires (
+            impl::multidimensional_index<decltype(K)...> &&
+            impl::multidimensional_index_runtime<decltype(K)...>
+        )
+    struct at<K...> {
+        [[no_unique_address]] impl::basic_tuple<typename decltype(K)::type...> idx;
 
         [[nodiscard]] constexpr at() = default;
-        [[nodiscard]] constexpr at(meta::forward<typename decltype(Is)::type>... args)
+        [[nodiscard]] constexpr at(meta::forward<typename decltype(K)::type>... args)
             noexcept (meta::nothrow::constructible_from<
-                impl::basic_tuple<typename decltype(Is)::type...>,
-                meta::forward<typename decltype(Is)::type>...
+                impl::basic_tuple<typename decltype(K)::type...>,
+                meta::forward<typename decltype(K)::type>...
             >)
             requires (meta::constructible_from<
-                impl::basic_tuple<typename decltype(Is)::type...>,
-                meta::forward<typename decltype(Is)::type>...
+                impl::basic_tuple<typename decltype(K)::type...>,
+                meta::forward<typename decltype(K)::type>...
             >)
         :
-            idx{std::forward<typename decltype(Is)::type>(args)...}
+            idx{std::forward<typename decltype(K)::type>(args)...}
         {}
 
     private:
-        template <size_t N, typename C>
-        static constexpr bool index =
-            (meta::wraparound<C> && requires(C c) {{std::forward<C>(c)[idx.template get<N>()]};}) ||
-            requires(C c) {{std::forward<C>(c)[
-                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-            ]};} || requires(C c) {{impl::tuple_range(std::forward<C>(c))[
-                size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
-            ]};};
-
-        template <size_t N, typename C> requires (!meta::range<C> && index<N, C>)
+        // 1) Prefer direct indexing if available
+        template <size_t N, typename C> requires (!meta::range<C>)
         constexpr decltype(auto) call(C&& c) const
-            noexcept ((meta::wraparound<C> && requires{
-                {std::forward<C>(c)[idx.template get<N>()]} noexcept;
-            }) || (
-                (!meta::wraparound<C> || !requires{
-                    {std::forward<C>(c)[idx.template get<N>()]};
-                }) && (
-                    requires{{std::forward<C>(c)[
-                        size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-                    ]} noexcept;} || (
-                        !requires{{std::forward<C>(c)[
-                            size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-                        ]};} && requires{{impl::tuple_range(std::forward<C>(c))[
-                            size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
-                        ]} noexcept;}
-                    )
-                )
-            ))
+            noexcept (requires{{std::forward<C>(c)[idx.template get<N>()]} noexcept;})
+            requires (requires{{std::forward<C>(c)[idx.template get<N>()]};})
         {
-            if constexpr (meta::wraparound<C> && requires{
-                {std::forward<C>(c)[idx.template get<N>()]};
-            }) {
-                return (std::forward<C>(c)[idx.template get<N>()]);
-            } else if constexpr (requires{{std::forward<C>(c)[
-                size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-            ]};}) {
-                return (std::forward<C>(c)[
-                    size_t(impl::normalize_index(std::ranges::ssize(c), idx.template get<N>()))
-                ]);
-            } else {
-                return (impl::tuple_range(std::forward<C>(c))[
-                    size_t(impl::normalize_index(meta::tuple_size<C>, idx.template get<N>()))
-                ]);
-            }
+            return (std::forward<C>(c)[idx.template get<N>()]);
         }
 
-        template <size_t N, typename C> requires (!meta::range<C> && !index<N, C>)
+        // 2) wrap tuple-like types that do not support direct indexing
+        template <size_t N, typename C> requires (!meta::range<C>)
         constexpr decltype(auto) call(C&& c) const
-            requires ((
-                meta::iterable<meta::as_lvalue<C>> &&
-                requires(
-                    decltype((idx.template get<N>())) f,
-                    decltype((*std::ranges::begin(c))) x
-                ) {
-                    {f(std::forward<decltype(x)>(x))} -> meta::convertible_to<bool>;
-                    {meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x))};
-                }
-            ) || (
-                !meta::iterable<meta::as_lvalue<C>> &&
-                requires(
-                    decltype((idx.template get<N>())) f,
-                    decltype((*impl::tuple_range(std::forward<C>(c)).begin())) x
-                ) {
-                    {f(std::forward<decltype(x)>(x))} -> meta::convertible_to<bool>;
-                    {meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x))};
-                }
-            ))
+            noexcept (requires{
+                {impl::tuple_range(std::forward<C>(c))[idx.template get<N>()]} noexcept;
+            })
+            requires (
+                !requires{{std::forward<C>(c)[idx.template get<N>()]};} &&
+                requires{{impl::tuple_range(std::forward<C>(c))[idx.template get<N>()]};}
+            )
         {
-            const auto& f = idx.template get<N>();
-            if constexpr (meta::iterable<meta::as_lvalue<C>>) {
-                for (auto&& x : c) {
-                    if (f(std::forward<decltype(x)>(x))) {
-                        return (meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x)));
-                    }
-                }
-            } else {
-                auto t = impl::tuple_range(std::forward<C>(c));
-                for (auto&& x : t) {
-                    if (f(std::forward<decltype(x)>(x))) {
-                        return (meta::remove_rvalue<decltype(x)>(std::forward<decltype(x)>(x)));
-                    }
-                }
-            }
-            /// TODO: think of a better error message.
-            throw ValueError("no element found matching predicate");
+            return (impl::tuple_range(std::forward<C>(c))[idx.template get<N>()]);
         }
 
+        // 3) If indexing is not possible, the current argument must be a predicate
+        //    function that can be called with the container and does not return void
+        template <size_t N, typename C> requires (!meta::range<C>)
+        constexpr decltype(auto) call(C&& c) const
+            noexcept (requires{{idx.template get<N>()(std::forward<C>(c))} noexcept;})
+            requires (
+                !requires{{std::forward<C>(c)[idx.template get<N>()]};} &&
+                !requires{{impl::tuple_range(std::forward<C>(c))[idx.template get<N>()]};} &&
+                requires{{idx.template get<N>()(std::forward<C>(c))} -> meta::not_void;}
+            )
+        {
+            return (idx.template get<N>()(std::forward<C>(c)));
+        }
+
+        // 4a) If the container is a range, then the indexing will be forwarded to the
+        //     underlying container using overloads (1), (2), and (3)
         template <size_t N, meta::range R>
         constexpr decltype(auto) call(R&& r) const
             noexcept (requires{{call<N>(*std::forward<R>(r).__value)} noexcept;})
@@ -4951,6 +4383,8 @@ namespace iter {
             return (call<N>(*std::forward<R>(r).__value));
         }
 
+        // 4b) If the container is a nested range, then the result will be promoted to
+        //     a range in order to preserve the nested structure
         template <size_t N, meta::range R>
         constexpr decltype(auto) call(R&& r) const
             noexcept (requires{
@@ -4964,6 +4398,9 @@ namespace iter {
             return (iter::range(call<N>(*std::forward<R>(r).__value)));
         }
 
+        // 4c) If the container is an `iter::unpack<T>`, where `T` is a range, then
+        //     the result will be promoted to an `iter::unpack` range in order to
+        //     preserve the unpacking structure
         template <size_t N, meta::unpack R>
         constexpr decltype(auto) call(R&& r) const
             noexcept (requires{
@@ -4978,7 +4415,7 @@ namespace iter {
         }
 
     public:
-        template <size_t N = 0, typename C> requires (N == sizeof...(Is))
+        template <size_t N = 0, typename C> requires (N == sizeof...(K))
         constexpr decltype(auto) operator()(C&& c) const
             noexcept (requires{{std::forward<C>(c)} noexcept;})
             requires (requires{{std::forward<C>(c)};})
@@ -4986,20 +4423,20 @@ namespace iter {
             return (std::forward<C>(c));
         }
 
-        template <size_t N = 0, typename C> requires (N < sizeof...(Is))
+        template <size_t N = 0, typename C> requires (N < sizeof...(K))
         constexpr decltype(auto) operator()(C&& c) const
-            noexcept ((N + 1 == sizeof...(Is) && requires{
+            noexcept ((N + 1 == sizeof...(K) && requires{
                 {call<N>(std::forward<C>(c))} noexcept;
-            }) || (N + 1 < sizeof...(Is) && requires{
+            }) || (N + 1 < sizeof...(K) && requires{
                 {(*this).template operator()<N + 1>(call<N>(std::forward<C>(c)))} noexcept;
             }))
-            requires ((N + 1 == sizeof...(Is) && requires{
+            requires ((N + 1 == sizeof...(K) && requires{
                 {call<N>(std::forward<C>(c))};
-            }) || (N + 1 < sizeof...(Is) && requires{
+            }) || (N + 1 < sizeof...(K) && requires{
                 {(*this).template operator()<N + 1>(call<N>(std::forward<C>(c)))};
             }))
         {
-            if constexpr (N + 1 == sizeof...(Is)) {
+            if constexpr (N + 1 == sizeof...(K)) {
                 return (call<N>(std::forward<C>(c)));
             } else {
                 return ((*this).template operator()<N + 1>(call<N>(std::forward<C>(c))));
@@ -5007,15 +4444,8 @@ namespace iter {
         }
     };
 
-    template <typename... Is>
-    at(Is&&...) -> at<type<Is>...>;
-
-
-
-
-
-
-
+    template <typename... K>
+    at(K&&...) -> at<type<meta::remove_rvalue<K>>...>;
 
     /* A wrapper for an arbitrary container type that can be used to form iterable
     expressions.
@@ -5131,11 +4561,7 @@ namespace iter {
         )
             requires (!meta::iterator<Start> && meta::inherits<C, impl::iota_tag>)
         :
-            __value(
-                std::forward<Start>(start),
-                std::forward<Stop>(stop),
-                std::forward<Step>(step)
-            )
+            __value(std::forward<Start>(start), std::forward<Stop>(stop), std::forward<Step>(step))
         {}
 
         template <typename Start, typename Stop = impl::subrange_tag, typename Step = impl::subrange_tag>
@@ -5146,20 +4572,119 @@ namespace iter {
         )
             requires (meta::iterator<Start> && meta::inherits<C, impl::subrange_tag>)
         :
-            __value(
-                std::forward<Start>(start),
-                std::forward<Stop>(stop),
-                std::forward<Step>(step)
-            )
+            __value(std::forward<Start>(start), std::forward<Stop>(stop), std::forward<Step>(step))
         {}
 
         /* `swap()` operator between ranges. */
         constexpr void swap(range& other)
-            noexcept (meta::nothrow::swappable<impl::ref<C>>)
-            requires (meta::swappable<impl::ref<C>>)
+            noexcept (requires{{std::ranges::swap(__value, other.__value)} noexcept;})
+            requires (requires{{std::ranges::swap(__value, other.__value)};})
         {
             std::ranges::swap(__value, other.__value);
         }
+
+        /* Get a forward iterator to the start of the range. */
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{impl::range_iterator{std::ranges::begin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::begin(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::begin(*__value)};
+        }
+
+        /* Get a forward iterator to the start of the range. */
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{impl::range_iterator{std::ranges::begin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::begin(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::begin(*__value)};
+        }
+
+        /* Get a forward iterator to the start of the range. */
+        [[nodiscard]] constexpr auto cbegin() const
+            noexcept (requires{{impl::range_iterator{std::ranges::cbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::cbegin(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::cbegin(*__value)};
+        }
+
+        /* Get a forward iterator to one past the last element of the range. */
+        [[nodiscard]] constexpr auto end()
+            noexcept (requires{{impl::range_iterator{std::ranges::end(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::end(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::end(*__value)};
+        }
+
+        /* Get a forward iterator to one past the last element of the range. */
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{impl::range_iterator{std::ranges::end(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::end(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::end(*__value)};
+        }
+
+        /* Get a forward iterator to one past the last element of the range. */
+        [[nodiscard]] constexpr auto cend() const
+            noexcept (requires{{impl::range_iterator{std::ranges::cend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::cend(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::cend(*__value)};
+        }
+
+        /* Get a reverse iterator to the last element of the range. */
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::rbegin(*__value)};
+        }
+
+        /* Get a reverse iterator to the last element of the range. */
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::rbegin(*__value)};
+        }
+
+        /* Get a reverse iterator to the last element of the range. */
+        [[nodiscard]] constexpr auto crbegin() const
+            noexcept (requires{{impl::range_iterator{std::ranges::crbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::crbegin(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::crbegin(*__value)};
+        }
+
+        /* Get a reverse iterator to one before the first element of the range. */
+        [[nodiscard]] constexpr auto rend()
+            noexcept (requires{{impl::range_iterator{std::ranges::rend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rend(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::rend(*__value)};
+        }
+
+        /* Get a reverse iterator to one before the first element of the range. */
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (requires{{impl::range_iterator{std::ranges::rend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rend(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::rend(*__value)};
+        }
+
+        /* Get a reverse iterator to one before the first element of the range. */
+        [[nodiscard]] constexpr auto crend() const
+            noexcept (requires{{impl::range_iterator{std::ranges::crend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::crend(*__value)}};})
+        {
+            return impl::range_iterator{std::ranges::crend(*__value)};
+        }
+
+        /// TODO: it might just be better overall to have the dereference operator
+        /// yield the underlying container, and force explicit `unpack()` calls for
+        /// container unpacking.  That would be more consistent with the `->` operator
+        /// and essentially be the inverse of a nested `range()` constructor.  So
+        /// `*range(container)` would be equivalent to `container`, as would
+        /// `**range(range(container))`.
 
         /* Dereferencing a range promotes it into a trivial `unpack` subclass, which allows
         it to be destructured when used as an argument to a Bertrand function. */
@@ -5223,169 +4748,224 @@ namespace iter {
 
         /* Forwarding `size()` operator for the underlying container, provided the
         container supports it. */
-        [[nodiscard]] constexpr auto size() const
-            noexcept (meta::nothrow::has_size<C>)
-            requires (meta::has_size<C>)
+        [[nodiscard]] constexpr decltype(auto) size() const
+            noexcept (requires{{std::ranges::size(*__value)} noexcept;})
+            requires (requires{{std::ranges::size(*__value)};})
         {
-            return std::ranges::size(*__value);
+            return (std::ranges::size(*__value));
         }
 
         /* Forwarding `ssize()` operator for the underlying container, provided the
         container supports it. */
-        [[nodiscard]] constexpr auto ssize() const
-            noexcept (meta::nothrow::has_ssize<C>)
-            requires (meta::has_ssize<C>)
+        [[nodiscard]] constexpr decltype(auto) ssize() const
+            noexcept (requires{{__value->ssize()} noexcept;})
+            requires (requires{{__value->ssize()} -> meta::signed_integer;})
         {
-            return std::ranges::ssize(*__value);
+            return (__value->ssize());
+        }
+
+        /* Forwarding `ssize()` operator for the underlying container, provided the
+        container supports it. */
+        [[nodiscard]] constexpr decltype(auto) ssize() const
+            noexcept (requires{{std::ranges::ssize(*__value)} noexcept;})
+            requires (
+                !requires{{__value->ssize()} -> meta::signed_integer;} &&
+                requires{{std::ranges::ssize(*__value)};}
+            )
+        {
+            return (std::ranges::ssize(*__value));
         }
 
         /* Forwarding `empty()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr bool empty() const
-            noexcept (meta::nothrow::has_empty<C>)
-            requires (meta::has_empty<C>)
+            noexcept (requires{{std::ranges::empty(*__value)} noexcept;})
+            requires (requires{{std::ranges::empty(*__value)};})
         {
             return std::ranges::empty(*__value);
         }
 
-        /* Tuple-like range accessor, provided the underlying container supports
-        `get<I>()`.  Automatically applies Python-style wraparound for negative
-        indices, and allows multidimensional indexing if the container is a tuple of
-        tuples.  This is equivalent to `at<Is...>{}(container)`. */
-        template <auto... Is, typename Self>
-        constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{at<Is...>{}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{at<Is...>{}(std::forward<Self>(self))};})
-        {
-            return (at<Is...>{}(std::forward<Self>(self)));
-        }
-
-        /* Integer subscript operator.  Accepts one or more signed integers and
-        retrieves the corresponding element from the underlying container after
-        applying Python-style wraparound for negative indices, which converts the index
-        to an unsigned integer.  If multiple indices are given, then each successive
-        index after the first will be used to subscript the previous result.  This is
-        equivalent to `at{is...}(container)`. */
-        template <typename Self, typename... Is>
-        constexpr decltype(auto) operator[](this Self&& self, Is&&... is)
-            noexcept (requires{{at{std::forward<Is>(is)...}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{at{std::forward<Is>(is)...}(std::forward<Self>(self))};})
-        {
-            return (at{std::forward<Is>(is)...}(std::forward<Self>(self)));
-        }
-
-        /* Get a forward iterator to the start of the range. */
-        [[nodiscard]] constexpr auto begin()
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::begin(*__value))} noexcept;
+        /* Access the first element in the underlying container, assuming the container
+        exposes a `.front()` member method.  A debug `AssertionError` may be thrown if
+        the container is empty when this method is called. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
+            noexcept (!DEBUG && requires{
+                {meta::decay((*std::forward<Self>(self).__value).front())} noexcept;
             })
-            requires (requires{{impl::make_range_iterator(std::ranges::begin(*__value))};})
+            requires (requires{{meta::decay((*std::forward<Self>(self).__value).front())};})
         {
-            return impl::make_range_iterator(std::ranges::begin(*__value));
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_front_error;
+                }
+            }
+            if constexpr (meta::range<C>) {
+                return (iter::range((*std::forward<Self>(self).__value).front()));
+            } else {
+                return (meta::decay((*std::forward<Self>(self).__value).front()));
+            }
         }
 
-        /* Get a forward iterator to the start of the range. */
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::begin(*__value))} noexcept;
-            })
-            requires (requires{{impl::make_range_iterator(std::ranges::begin(*__value))};})
-        {
-            return impl::make_range_iterator(std::ranges::begin(*__value));
-        }
-
-        /* Get a forward iterator to the start of the range. */
-        [[nodiscard]] constexpr auto cbegin() const
-            noexcept (requires{{begin()} noexcept;})
-            requires (requires{{begin()};})
-        {
-            return begin();
-        }
-
-        /* Get a forward iterator to one past the last element of the range. */
-        [[nodiscard]] constexpr auto end()
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::end(*__value))} noexcept;
-            })
-            requires (requires{{impl::make_range_iterator(std::ranges::end(*__value))};})
-        {
-            return impl::make_range_iterator(std::ranges::end(*__value));
-        }
-
-        /* Get a forward iterator to one past the last element of the range. */
-        [[nodiscard]] constexpr auto end() const
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::end(*__value))} noexcept;
-            })
-            requires (requires{{impl::make_range_iterator(std::ranges::end(*__value))};})
-        {
-            return impl::make_range_iterator(std::ranges::end(*__value));
-        }
-
-        /* Get a forward iterator to one past the last element of the range. */
-        [[nodiscard]] constexpr auto cend() const
-            noexcept (requires{{end()} noexcept;})
-            requires (requires{{end()};})
-        {
-            return end();
-        }
-
-        /* Get a reverse iterator to the last element of the range. */
-        [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::rbegin(*__value))} noexcept;
-            })
-            requires (requires{{impl::make_range_iterator(std::ranges::rbegin(*__value))};})
-        {
-            return impl::make_range_iterator(std::ranges::rbegin(*__value));
-        }
-
-        /* Get a reverse iterator to the last element of the range. */
-        [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::rbegin(*__value))} noexcept;
-            })
-            requires (requires{{impl::make_range_iterator(std::ranges::rbegin(*__value))};})
-        {
-            return impl::make_range_iterator(std::ranges::rbegin(*__value));
-        }
-
-        /* Get a reverse iterator to the last element of the range. */
-        [[nodiscard]] constexpr auto crbegin() const
-            noexcept (requires{{rbegin()} noexcept;}
+        /* Access the first element in the underlying container by manually
+        dereferencing the `begin()` iterator.  This overload is only chosen if a
+        `.front()` member method is unavailable for the underlying container.  A debug
+        `AssertionError` may be thrown if the container is empty when this method is
+        called. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
+            noexcept (!DEBUG && requires{{meta::decay(*self.begin())} noexcept;})
+            requires (
+                !requires{{meta::decay((*std::forward<Self>(self).__value).front())};} &&
+                requires{{meta::decay(*self.begin())};}
             )
-            requires (requires{{rbegin()};})
         {
-            return rbegin();
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_front_error;
+                }
+            }
+            return (meta::decay(*self.begin()));
         }
 
-        /* Get a reverse iterator to one before the first element of the range. */
-        [[nodiscard]] constexpr auto rend()
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::rend(*__value))} noexcept;
+        /* Access the last element in the underlying container, assuming the container
+        exposes a `.back()` member method.  A debug `AssertionError` may be thrown if
+        the container is empty when this method is called. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
+            noexcept (!DEBUG && requires{
+                {meta::decay((*std::forward<Self>(self).__value).back())} noexcept;
             })
-            requires (requires{{impl::make_range_iterator(std::ranges::rend(*__value))};})
+            requires (requires{{meta::decay((*std::forward<Self>(self).__value).back())};})
         {
-            return impl::make_range_iterator(std::ranges::rend(*__value));
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_back_error;
+                }
+            }
+            if constexpr (meta::range<C>) {
+                return (iter::range((*std::forward<Self>(self).__value).back()));
+            } else {
+                return (meta::decay((*std::forward<Self>(self).__value).back()));
+            }
         }
 
-        /* Get a reverse iterator to one before the first element of the range. */
-        [[nodiscard]] constexpr auto rend() const
-            noexcept (requires{
-                {impl::make_range_iterator(std::ranges::rend(*__value))} noexcept;
+        /* Access the last element in the underlying container by manually
+        dereferencing the `rbegin()` iterator, assuming one exists.  This overload is
+        only chosen if a `.back()` member method does not exist for the underlying
+        container.  A debug `AssertionError` may be thrown if the container is empty
+        when this method is called. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
+            noexcept (!DEBUG && requires{{meta::decay(*self.rbegin())} noexcept;})
+            requires (
+                !requires{{meta::decay((*std::forward<Self>(self).__value).back())};} &&
+                requires{{meta::decay(*self.rbegin())};}
+            )
+        {
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_back_error;
+                }
+            }
+            return (meta::decay(*self.rbegin()));
+        }
+
+        /* Access the last element in the underlying container by offsetting the
+        `begin()` iterator, assuming it supports random access and the underlying
+        container is sized.  This overload is only chosen if a `.back()` member method
+        does not exist for the underlying container, and the container is not
+        reverse-iterable.  A debug `AssertionError` may be thrown if the container is
+        empty when this method is called. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
+            noexcept (!DEBUG && requires{
+                {meta::decay(*(self.begin() + self.ssize() - 1))} noexcept;
             })
-            requires (requires{{impl::make_range_iterator(std::ranges::rend(*__value))};})
+            requires (
+                !requires{{meta::decay((*std::forward<Self>(self).__value).back())};} &&
+                !requires{{meta::decay(*self.rbegin())};} &&
+                requires{{meta::decay(*(self.begin() + self.ssize() - 1))};}
+            )
         {
-            return impl::make_range_iterator(std::ranges::rend(*__value));
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_back_error;
+                }
+            }
+            return (meta::decay(*(self.begin() + self.ssize() - 1)));
         }
 
-        /* Get a reverse iterator to one before the first element of the range. */
-        [[nodiscard]] constexpr auto crend() const
-            noexcept (requires{{rend()} noexcept;})
-            requires (requires{{rend()};})
+        /* Access the first value in the range, accounting for nested ranges.  This is
+        equivalent to recursively calling `.front()` until a non-range value is
+        encountered.  It is primarily useful for quickly demoting ranges of one
+        element, regardless of their nested depth, such as `find{}` expressions. */
+        template <typename Self> requires (meta::range<C>)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).front().value()} noexcept;})
+            requires (requires{{std::forward<Self>(self).front().value()};})
         {
-            return rend();
+            return (std::forward<Self>(self).front().value());
         }
+
+        /* Access the first value in the range, accounting for nested ranges.  This is
+        equivalent to recursively calling `.front()` until a non-range value is
+        encountered.  It is primarily useful for quickly demoting ranges of one
+        element, regardless of their nested depth, such as `find{}` expressions. */
+        template <typename Self> requires (!meta::range<C>)
+        [[nodiscard]] constexpr decltype(auto) value(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).front()} noexcept;})
+            requires (requires{{std::forward<Self>(self).front()};})
+        {
+            return (std::forward<Self>(self).front());
+        }
+
+        /* Range-based, multidimensional tuple accessor.  Accepts any number of
+        non-type template parameters with arbitrary type and forwards them one at a
+        time to the underlying container's `get<K>()` method.  The result of one
+        `get<K>()` operation is passed as the container to the next operation,
+        effectively equating to a chain of `get<K>(get<J>(get<I>(container)))...`
+        calls.  Both ADL and member `get<K>()` methods are supported.  If any of the
+        containers do not support the given index, then it must be a predicate function
+        that accepts the container as an argument, which includes any of the range
+        adaptors in the `iter::` namespace.  This is expression-equivalent to
+        `iter::at<K...>{}(self)`. */
+        template <auto... K, typename Self>
+        constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{at<K...>{}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{at<K...>{}(std::forward<Self>(self))};})
+        {
+            return (at<K...>{}(std::forward<Self>(self)));
+        }
+
+        /* Range-based, multidimensional indexing operator.  Accepts any number of
+        values of arbitrary type and forwards them one at a time to the underlying
+        container's indexing operator.  The result of one indexing operation is
+        passed as the container to the next indexing operation, effectively equating
+        to a chain of `container[i][j][k]...` calls.  If any of the containers do not
+        support the given index, then it must be a predicate function that accepts the
+        container as an argument, which includes any of the range adaptors in the
+        `iter::` namespace.  This is expression-equivalent to `iter::at{k...}(self)`. */
+        template <typename Self, typename... K>
+        constexpr decltype(auto) operator[](this Self&& self, K&&... k)
+            noexcept (requires{{at{std::forward<K>(k)...}(std::forward<Self>(self))} noexcept;})
+            requires (requires{{at{std::forward<K>(k)...}(std::forward<Self>(self))};})
+        {
+            return (at{std::forward<K>(k)...}(std::forward<Self>(self)));
+        }
+
+        /* Check if the range contains a specific value.  This is expression-equivalent
+        to `contains{value}(self)`, but with a more convenient member method syntax,
+        which may open up further metaprogramming opportunities in generic code. */
+        template <typename T>
+        [[nodiscard]] constexpr bool contains(const T& value) const
+            noexcept (requires{{iter::contains{value}(*__value)} noexcept;})
+            requires (requires{{iter::contains{value}(*__value)};})
+        {
+            return (iter::contains{value}(*__value));
+        }
+
+
 
         /// TODO: I'm not entirely sure how the conversion operators should behave,
         /// or the basis on which to judge them, so this needs to be thought through
@@ -5591,188 +5171,159 @@ namespace iter {
         using range<impl::single_range<C>>::range;
     };
 
-    static constexpr impl::find foo {
-        .container = std::array{1, 2, 3},
-        .args = impl::basic_tuple{2, 3}
-    };
-
-
-    static_assert([] {
-        using sv = std::string_view;
-        auto f = find{sv{"b"}, sv{"c"}}(
-            std::array{sv{"a"}, sv{"b"}, sv{"c"}}
-        );
-        for (auto&& s : f) {
-            for (auto&& v : s) {
-                if (v != sv{"b"} && v != sv{"c"}) {
-                    return false;
-                }
-            }
-        }
-
-
-        // if (f == None) return false;
-
-        // auto s = (f->subrange.start());
-        // if (s != f->m_container.begin() + 1) return false;
-        // if (s != sv{"b"}) return false;
-
-        // if (f->curr() != "b") return false;
-
-        // for (auto&& s : f) {
-        //     if (s != sv{"b"}) {
-        //         return false;
-        //     }
-        // }
-
-        // if (*f != sv{"b"}) return false;
-        // if (f.index() != 1) return false;
-        // ++f;
-        // if (*f != sv{"c"}) return false;
-        // if (f.index() != 2) return false;
-        // if (f->size() != 1) return false;
-
-        // for (auto&& s : f) {
-        //     if (s.index() != 1 && s.index() != 2) {
-        //         return false;
-        //     }
-        // }
-        return true;
-    }());
-
-    // static_assert(find{"b"}(
-    //     std::array<std::string_view, 3>{"a", "b", "c"}
-    // )->size() == 1);
-
-
-
     /* A trivial subclass of `range` that allows the range to be destructured when
     used as an argument to a Bertrand function. */
     template <meta::not_rvalue C>
     struct unpack : iter::range<C> {
         using iter::range<C>::range;
 
+        /// TODO: include nested range promotion for front(), back(), and the indexing
+        /// operators.  Also, if I drop the `*` operator from `range` and reduce it
+        /// to just a container accessor, then I can decouple ranges somewhat from
+        /// unpacking types, which would reduce the number of circular references.
+
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::begin(*this->__value))} noexcept;
+                {impl::unpack_iterator{std::ranges::begin(*this->__value)}} noexcept;
             })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::begin(*this->__value))};
+                {impl::unpack_iterator{std::ranges::begin(*this->__value)}};
             })
         {
-            return impl::make_unpack_iterator(std::ranges::begin(*this->__value));
+            return impl::unpack_iterator{std::ranges::begin(*this->__value)};
         }
 
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto begin() const
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::begin(*this->__value))} noexcept;
+                {impl::unpack_iterator{std::ranges::begin(*this->__value)}} noexcept;
             })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::begin(*this->__value))};
+                {impl::unpack_iterator{std::ranges::begin(*this->__value)}};
             })
         {
-            return impl::make_unpack_iterator(std::ranges::begin(*this->__value));
+            return impl::unpack_iterator{std::ranges::begin(*this->__value)};
         }
 
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto cbegin() const
-            noexcept (requires{{begin()} noexcept;})
-            requires (requires{{begin()};})
+            noexcept (requires{
+                {impl::unpack_iterator{std::ranges::cbegin(*this->__value)}} noexcept;
+            })
+            requires (requires{
+                {impl::unpack_iterator{std::ranges::cbegin(*this->__value)}};
+            })
         {
-            return begin();
+            return impl::unpack_iterator{std::ranges::cbegin(*this->__value)};
         }
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto end()
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::end(*this->__value))} noexcept;
+                {impl::unpack_iterator{std::ranges::end(*this->__value)}} noexcept;
             })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::end(*this->__value))};
+                {impl::unpack_iterator{std::ranges::end(*this->__value)}};
             })
         {
-            return impl::make_unpack_iterator(std::ranges::end(*this->__value));
+            return impl::unpack_iterator{std::ranges::end(*this->__value)};
         }
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto end() const
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::end(*this->__value))} noexcept;
+                {impl::unpack_iterator{std::ranges::end(*this->__value)}} noexcept;
             })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::end(*this->__value))};
+                {impl::unpack_iterator{std::ranges::end(*this->__value)}};
             })
         {
-            return impl::make_unpack_iterator(std::ranges::end(*this->__value));
+            return impl::unpack_iterator{std::ranges::end(*this->__value)};
         }
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto cend() const
-            noexcept (requires{{end()} noexcept;})
-            requires (requires{{end()};})
+            noexcept (requires{
+                {impl::unpack_iterator{std::ranges::cend(*this->__value)}} noexcept;
+            })
+            requires (requires{
+                {impl::unpack_iterator{std::ranges::cend(*this->__value)}};
+            })
         {
-            return end();
+            return impl::unpack_iterator{std::ranges::cend(*this->__value)};
         }
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto rbegin()
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::rbegin(*this->__value))} noexcept;})
+                {impl::unpack_iterator{std::ranges::rbegin(*this->__value)}} noexcept;
+            })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::rbegin(*this->__value))};})
+                {impl::unpack_iterator{std::ranges::rbegin(*this->__value)}};
+            })
         {
-            return impl::make_unpack_iterator(std::ranges::rbegin(*this->__value));
+            return impl::unpack_iterator{std::ranges::rbegin(*this->__value)};
         }
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto rbegin() const
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::rbegin(*this->__value))} noexcept;})
+                {impl::unpack_iterator{std::ranges::rbegin(*this->__value)}} noexcept;
+            })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::rbegin(*this->__value))};})
+                {impl::unpack_iterator{std::ranges::rbegin(*this->__value)}};
+            })
         {
-            return impl::make_unpack_iterator(std::ranges::rbegin(*this->__value));
+            return impl::unpack_iterator{std::ranges::rbegin(*this->__value)};
         }
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto crbegin() const
-            noexcept (requires{{rbegin()} noexcept;}
-            )
-            requires (requires{{rbegin()};})
+            noexcept (requires{
+                {impl::unpack_iterator{std::ranges::crbegin(*this->__value)}} noexcept;
+            })
+            requires (requires{
+                {impl::unpack_iterator{std::ranges::crbegin(*this->__value)}};
+            })
         {
-            return rbegin();
+            return impl::unpack_iterator{std::ranges::crbegin(*this->__value)};
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto rend()
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::rend(*this->__value))} noexcept;
+                {impl::unpack_iterator{std::ranges::rend(*this->__value)}} noexcept;
             })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::rend(*this->__value))};})
+                {impl::unpack_iterator{std::ranges::rend(*this->__value)}};
+            })
         {
-            return impl::make_unpack_iterator(std::ranges::rend(*this->__value));
+            return impl::unpack_iterator{std::ranges::rend(*this->__value)};
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto rend() const
             noexcept (requires{
-                {impl::make_unpack_iterator(std::ranges::rend(*this->__value))} noexcept;
+                {impl::unpack_iterator{std::ranges::rend(*this->__value)}} noexcept;
             })
             requires (requires{
-                {impl::make_unpack_iterator(std::ranges::rend(*this->__value))};})
+                {impl::unpack_iterator{std::ranges::rend(*this->__value)}};
+            })
         {
-            return impl::make_unpack_iterator(std::ranges::rend(*this->__value));
+            return impl::unpack_iterator{std::ranges::rend(*this->__value)};
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto crend() const
-            noexcept (requires{{rend()} noexcept;})
-            requires (requires{{rend()};})
+            noexcept (requires{
+                {impl::unpack_iterator{std::ranges::crend(*this->__value)}} noexcept;
+            })
+            requires (requires{
+                {impl::unpack_iterator{std::ranges::crend(*this->__value)}};
+            })
         {
-            return rend();
+            return impl::unpack_iterator{std::ranges::crend(*this->__value)};
         }
     };
 
@@ -6806,117 +6357,9 @@ namespace std {
 }
 
 
-namespace bertrand {
+namespace bertrand::iter {
 
 
-
-// static constexpr auto arr = std::array{
-//     std::array{1, 2},
-//     std::array{2, 3},
-//     std::array{3, 4}
-// };
-// static constexpr auto y3 = iter::at<0, [](int x) { return x == 2; }>{}(arr);
-// static_assert(y3 == 2);
-
-
-// static constexpr std::tuple tup {1, 2, 3.5};
-// static constexpr std::tuple tup2 {std::tuple{1, 2}, std::tuple{2, 2}, std::tuple{3.5, 3.5}};
-// static constexpr auto r1 = iter::range(tup2);
-// static constexpr auto r2 = iter::range(iter::range(tup2));
-// static constexpr auto x1 = r1[0];
-// static constexpr auto x2 = r2[0];
-// static constexpr auto y1 = r1[0, 1];
-// static constexpr auto y2 = r2[0, 1];
-// static constexpr auto y4 = iter::at<2, 1>{}(tup2);
-// static constexpr auto y5 = r1[0, [](int x) { return x == 2; }];
-// static_assert(y2 == y1);
-// static_assert(y5 == 2);
-// static_assert([] {
-//     for (auto&& x : r2) {
-//         for (auto&& y : x) {
-//             if (y != 1 && y != 2 && y != 3.5) {
-//                 return false;
-//             }
-//         }
-//     }
-
-//     // for (auto&& i : iter::range(tup)) {
-//     //     if (i != 1 && i != 2 && i != 3.5) {
-//     //         return false;
-//     //     }
-//     // }
-//     // // if (iter::range<Optional<int>>().size() == 0) {
-//     // //     return false;
-//     // // }
-//     // iter::range r = std::tuple{1, 2, 3};
-//     // for (auto&& i : iter::range(5)) {
-//     //     if (i != 5) {
-//     //         return false;
-//     //     }
-//     // }
-//     return true;
-// }());
-
-
-// static constexpr iter::range r10 = std::tuple<int, double>{1, 2.5};
-// // static_assert(r10[1] == 2.5);
-
-
-static constexpr std::array<int, 4> arr {1, 2, 3, 4};
-
-static constexpr auto r11 = impl::subrange(arr.begin(), 3);
-static constexpr auto r12 = iter::range(arr.begin(), arr.end(), 2);
-static constexpr auto d = r11.data();
-// static constexpr auto r13 = iter::range(arr);
-// static_assert(r11.size() == 3);
-// static_assert(r12.size() == 2);
-
-
-// static_assert(meta::random_access_iterator<decltype(r12.begin())>);
-// static_assert(meta::contiguous_iterator<decltype(r12.begin())>);
-// static_assert(std::ranges::contiguous_range<decltype(r11)>);
-
-
-static_assert([] {
-    auto it = r12.begin();
-    if (*it != 1) return false;
-    it += 1;
-    if (*it != 3) return false;
-    it -= 1;
-    if (*it != 1) return false;
-
-    if (r12[-2] != 1) return false;
-
-    for (auto&& i : r12) {
-        if (i != 1 && i != 2 && i != 3) {
-            return false;
-        }
-    }
-    return true;
-}());
-
-
-static constexpr auto r13 = iter::range(1.5, 3.5, 1.5);
-static_assert(r13->start() < r13->stop());
-static_assert(!r13.empty());
-
-
-static_assert([] {
-    for (auto&& i : iter::range(1.5, 3.5, 1.5)) {
-        if (i != 1.5 && i != 3.0) {
-            return false;
-        }
-    }
-    return true;
-}());
-
-
-
-
-// static_assert(meta::range<decltype(iter::range(std::array{std::pair{1, 2}})), int>);
-
-
-static_assert(meta::iota<decltype(iter::range(0, 5, 2))>);
 
 
 }
