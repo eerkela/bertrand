@@ -29,15 +29,7 @@ namespace impl {
         using subrange_type = subrange<iterator, sentinel>;
         using iterator_category = std::forward_iterator_tag;
         using difference_type = subrange_type::difference_type;
-        struct value_type : impl::subrange<iterator, meta::as_unsigned<difference_type>> {
-            difference_type offset;
-            constexpr auto operator->() const = delete;
-            [[nodiscard]] constexpr difference_type index() const noexcept {
-                return
-                    impl::subrange<iterator, meta::as_unsigned<difference_type>>::index() +
-                    offset;
-            }
-        };
+        using value_type = subrange<iterator, meta::as_unsigned<difference_type>>;
         using reference = value_type&;
         using pointer = value_type*;
 
@@ -215,28 +207,18 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr value_type operator*() const
-            noexcept (requires{{value_type{
-                {
-                    subrange.start(),
-                    meta::to_unsigned(idx - subrange.index())
-                },
-                subrange.index()
-            }} noexcept;})
-            requires (requires{{value_type{
-                {
-                    subrange.start(),
-                    meta::to_unsigned(idx - subrange.index())
-                },
-                subrange.index()
-            }};})
+            noexcept (requires(value_type result) {
+                {value_type{meta::copy(subrange.start()), meta::to_unsigned(idx)}} noexcept;
+                {result.index() = subrange.index()} noexcept;
+            })
+            requires (requires(value_type result) {
+                {value_type{meta::copy(subrange.start()), meta::to_unsigned(idx)}};
+                {result.index() = subrange.index()};
+            })
         {
-            return value_type{
-                {
-                    subrange.start(),
-                    meta::to_unsigned(idx - subrange.index())
-                },
-                subrange.index()
-            };
+            value_type result {meta::copy(subrange.start()), meta::to_unsigned(idx)};
+            result.index() = subrange.index();
+            return result;
         }
 
         [[nodiscard]] constexpr auto operator->() const
@@ -480,7 +462,7 @@ namespace iter {
 
     private:
         template <typename Self, typename C, size_t... Is>
-        constexpr decltype(auto) call(this Self&& self, C&& c, std::index_sequence<Is...>)
+        constexpr auto call(this Self&& self, C&& c, std::index_sequence<Is...>)
             noexcept (requires{{iter::range(iter::range(impl::find{
                 std::forward<C>(c),
                 impl::basic_tuple{std::forward<Self>(self).v.template get<Is>()...}
@@ -490,15 +472,15 @@ namespace iter {
                 impl::basic_tuple{std::forward<Self>(self).v.template get<Is>()...}
             }))};})
         {
-            return (iter::range(iter::range(impl::find{
+            return iter::range(iter::range(impl::find{
                 std::forward<C>(c),
                 impl::basic_tuple{std::forward<Self>(self).v.template get<Is>()...}
-            })));
+            }));
         }
 
     public:
         template <typename Self, meta::iterable C>
-        [[nodiscard]] constexpr decltype(auto) operator()(this Self&& self, C&& c)
+        [[nodiscard]] constexpr auto operator()(this Self&& self, C&& c)
             noexcept (requires{{std::forward<Self>(self).call(
                 std::forward<C>(c),
                 std::index_sequence_for<Ts...>{}
@@ -508,10 +490,10 @@ namespace iter {
                 std::index_sequence_for<Ts...>{}
             )};})
         {
-            return (std::forward<Self>(self).call(
+            return std::forward<Self>(self).call(
                 std::forward<C>(c),
                 std::index_sequence_for<Ts...>{}
-            ));
+            );
         }
     };
 
@@ -523,6 +505,12 @@ namespace iter {
     /// TODO: split{} is just the converse of find{}
 
 
+    static constexpr auto r = range(std::array{1, 2, 3});
+    static constexpr auto i = r[0];
+    static constexpr auto r2 = r[find(2)];
+    static constexpr auto r3 = meta::copy(find(2)(r));
+
+    static_assert(r[find(2)].front()->stop() == 2);
 
 
 

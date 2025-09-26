@@ -1533,9 +1533,21 @@ namespace meta {
 
     }
 
+    /* Explicitly invoke a `.copy()` member method for the given type. */
+    template <typename T>
+    [[nodiscard]] constexpr T copy(const T& v)
+        noexcept (requires{{v.copy()} noexcept -> nothrow::convertible_to<T>;})
+        requires (requires{{v.copy()} -> convertible_to<T>;})
+    {
+        return v.copy();
+    }
+
     /* Explicitly invoke a copy constructor for the given type. */
-    template <copyable T>
-    [[nodiscard]] constexpr T copy(const T& v) noexcept (nothrow::copyable<T>) {
+    template <typename T>
+    [[nodiscard]] constexpr T copy(const T& v)
+        noexcept (nothrow::copyable<T>)
+        requires (!requires{{v.copy()} -> convertible_to<T>;} && copyable<T>)
+    {
         return v;
     }
 
@@ -4919,8 +4931,8 @@ namespace impl {
         {};
 
         constexpr void swap(ref& other)
-            noexcept (meta::nothrow::swappable<type>)
-            requires (meta::swappable<type>)
+            noexcept (requires{{std::ranges::swap(data, other.data)} noexcept;})
+            requires (requires{{std::ranges::swap(data, other.data)};})
         {
             std::ranges::swap(data, other.data);
         }
@@ -4930,12 +4942,18 @@ namespace impl {
             return (std::forward<Self>(self).data);
         }
 
-        template <typename Self>
-        constexpr auto operator->(this Self&& self)
-            noexcept (requires{{std::addressof(*self)} noexcept;})
-            requires (requires{{std::addressof(*self)};})
+        constexpr auto operator->()
+            noexcept (requires{{std::addressof(data)} noexcept;})
+            requires (requires{{std::addressof(data)};})
         {
-            return std::addressof(*self);
+            return std::addressof(data);
+        }
+
+        constexpr auto operator->() const
+            noexcept (requires{{std::addressof(data)} noexcept;})
+            requires (requires{{std::addressof(data)};})
+        {
+            return std::addressof(data);
         }
     };
 
@@ -4950,14 +4968,14 @@ namespace impl {
 
     private:
         union maybe_null {
-            struct { type value; } wrapper;
+            struct storage { type value; } wrapper;
             constexpr maybe_null() noexcept {}
             constexpr maybe_null(type v) noexcept : wrapper(v) {}
             constexpr maybe_null(const maybe_null& other) noexcept :
-                wrapper(other.wrapper.value)
+                wrapper(other.wrapper)
             {}
             constexpr maybe_null& operator=(const maybe_null& other) noexcept {
-                std::construct_at(this, other.wrapper.value);
+                std::construct_at(this, other.wrapper);
                 return *this;
             }
             constexpr ~maybe_null() noexcept {}
@@ -4968,7 +4986,6 @@ namespace impl {
 
         constexpr ref() noexcept : data{} {}
         constexpr ref(type v) noexcept : data{v} {}
-        constexpr ref(const ref& other) noexcept : data{*other} {}
 
         constexpr ref& operator=(const ref& other) noexcept {
             data = other.data;
@@ -4988,12 +5005,18 @@ namespace impl {
             return (std::forward<Self>(self).data.wrapper.value);
         }
 
-        template <typename Self>
-        constexpr auto operator->(this Self&& self)
-            noexcept (requires{{std::addressof(*self)} noexcept;})
-            requires (requires{{std::addressof(*self)};})
+        constexpr auto operator->()
+            noexcept (requires{{std::addressof(data.wrapper.value)} noexcept;})
+            requires (requires{{std::addressof(data.wrapper.value)};})
         {
-            return std::addressof(*self);
+            return std::addressof(data.wrapper.value);
+        }
+
+        constexpr auto operator->() const
+            noexcept (requires{{std::addressof(data.wrapper.value)} noexcept;})
+            requires (requires{{std::addressof(data.wrapper.value)};})
+        {
+            return std::addressof(data.wrapper.value);
         }
     };
 
@@ -5007,15 +5030,20 @@ namespace impl {
     itself until a non pointer-like type is encountered, this proxy will effectively
     guarantee that the address of the temporary remains valid for the full duration of
     the `->` expression, and then be released immediately afterwards. */
-    template <typename T>
+    template <meta::not_void T>
     struct arrow : ref<T> {
         using ref<T>::ref;
-        template <typename Self>
-        constexpr auto operator->(this Self&& self)
-            noexcept (requires{{meta::to_arrow(*self)} noexcept;})
-            requires (requires{{meta::to_arrow(*self)};})
+        constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(**this)} noexcept;})
+            requires (requires{{meta::to_arrow(**this)};})
         {
-            return meta::to_arrow(*self);
+            return meta::to_arrow(**this);
+        }
+        constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(**this)} noexcept;})
+            requires (requires{{meta::to_arrow(**this)};})
+        {
+            return meta::to_arrow(**this);
         }
     };
 
