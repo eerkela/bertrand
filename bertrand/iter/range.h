@@ -3958,6 +3958,18 @@ namespace impl {
         return (*it);
     }
 
+    template <typename T>
+    concept range_forward = meta::range<T> || impl::range_transparent<T>;
+
+    template <range_forward T>
+    constexpr decltype(auto) range_value(T&& t) noexcept {
+        if constexpr (requires{{*std::forward<T>(t)} -> range_forward;}) {
+            return (range_value(*std::forward<T>(t)));
+        } else {
+            return (*std::forward<T>(t));
+        }
+    }
+
     inline constexpr AssertionError range_front_error =
         AssertionError("Attempted to access the front of an empty range");
 
@@ -3965,8 +3977,12 @@ namespace impl {
         AssertionError("Attempted to access the back of an empty range");
 
     template <meta::tuple_like to, meta::range R, size_t... Is>
-        requires (meta::tuple_like<R> && sizeof...(Is) == meta::tuple_size<to>)
-    constexpr to range_tuple_convert(R&& r, std::index_sequence<Is...>)
+        requires (
+            meta::tuple_like<R> &&
+            meta::tuple_size<R> == meta::tuple_size<to> &&
+            sizeof...(Is) == meta::tuple_size<to>
+        )
+    constexpr to range_tuple_to_tuple(R&& r, std::index_sequence<Is...>)
         noexcept (requires{{to{std::forward<R>(r).template get<Is>()...}} noexcept;})
         requires (requires{{to{std::forward<R>(r).template get<Is>()...}};})
     {
@@ -3977,67 +3993,51 @@ namespace impl {
     /// and integer <-> string conversions.
 
     template <size_t Expected>
-    constexpr TypeError range_tuple_size_mismatch(size_t actual) noexcept {
+    constexpr TypeError range_iter_to_tuple_size_error(size_t actual) noexcept {
         return TypeError(
-            "Cannot convert iterable range of size " + std::to_string(actual) +
+            "Cannot convert range of size " + std::to_string(actual) +
             " to tuple of size " + std::to_string(Expected)
         );
     }
 
-    template <meta::iterator Iter>
-    constexpr decltype(auto) _range_iter_convert(Iter& it)
-        requires (requires{
-            {*it};
-            {++it};
-        })
-    {
-        decltype(auto) val = *it;
-        ++it;
-        return val;
-    }
-
-    template <meta::tuple_like to, meta::range R, size_t... Is>
-        requires (!meta::tuple_like<R> && sizeof...(Is) == meta::tuple_size<to>)
-    constexpr to range_iter_convert(R&& r, std::index_sequence<Is...>)
-        requires (requires(decltype(r.begin()) it) {
-            {r.size() != sizeof...(Is)} -> meta::explicitly_convertible_to<bool>;
-            {r.begin()};
-            {to{(void(Is), _range_iter_convert(it))...}};
-        })
-    {
-        if (size_t size = r.size(); size != sizeof...(Is)) {
-            throw range_tuple_size_mismatch<sizeof...(Is)>(size);
-        }
-        auto it = r.begin();
-        return to{(void(Is), _range_iter_convert(it))...};
-    }
-
     template <size_t I, size_t N>
-    constexpr TypeError range_iter_too_small() noexcept {
+    constexpr TypeError range_iter_to_tuple_too_small() noexcept {
         return TypeError(
-            "Cannot convert iterable range of size " + std::to_string(I) +
+            "Cannot convert range of size " + std::to_string(I) +
             " to tuple of size " + std::to_string(N)
         );
     }
 
     template <size_t N>
-    constexpr TypeError range_iter_too_big() noexcept {
+    constexpr TypeError range_iter_to_tuple_too_big() noexcept {
         return TypeError(
-            "Cannot convert iterable range of more than " + std::to_string(N) +
+            "Cannot convert range of more than " + std::to_string(N) +
             " elements to tuple of size " + std::to_string(N)
         );
     }
 
-    template <size_t I, size_t N, meta::iterator Iter, meta::sentinel_for<Iter> End>
-    constexpr decltype(auto) _range_iter_convert(Iter& it, End& end)
+    template <meta::iterator Iter>
+    constexpr decltype(auto) _range_iter_to_tuple(Iter& it)
         requires (requires{
-            {it == end} -> meta::convertible_to<bool>;
+            {*it};
+            {++it};
+        })
+    {
+        decltype(auto) val = *it;
+        ++it;
+        return val;
+    }
+
+    template <size_t I, size_t N, meta::iterator Iter, meta::sentinel_for<Iter> End>
+    constexpr decltype(auto) _range_iter_to_tuple(Iter& it, End& end)
+        requires (requires{
+            {it == end} -> meta::explicitly_convertible_to<bool>;
             {*it};
             {++it};
         })
     {
         if (it == end) {
-            throw range_iter_too_small<I, N>();
+            throw range_iter_to_tuple_too_small<I, N>();
         }
         decltype(auto) val = *it;
         ++it;
@@ -4046,21 +4046,37 @@ namespace impl {
 
     template <meta::tuple_like to, meta::range R, size_t... Is>
         requires (!meta::tuple_like<R> && sizeof...(Is) == meta::tuple_size<to>)
-    constexpr to range_iter_convert(R&& r, std::index_sequence<Is...>)
+    constexpr to range_iter_to_tuple(R&& r, std::index_sequence<Is...>)
+        requires (requires(decltype(r.begin()) it) {
+            {r.size() != sizeof...(Is)} -> meta::explicitly_convertible_to<bool>;
+            {r.begin()};
+            {to{(void(Is), _range_iter_to_tuple(it))...}};
+        })
+    {
+        if (size_t size = r.size(); size != sizeof...(Is)) {
+            throw range_iter_to_tuple_size_error<sizeof...(Is)>(size);
+        }
+        auto it = r.begin();
+        return to{(void(Is), _range_iter_to_tuple(it))...};
+    }
+
+    template <meta::tuple_like to, meta::range R, size_t... Is>
+        requires (!meta::tuple_like<R> && sizeof...(Is) == meta::tuple_size<to>)
+    constexpr to range_iter_to_tuple(R&& r, std::index_sequence<Is...>)
         requires (
             !requires{{r.size()};} &&
             requires(decltype(r.begin()) it, decltype(r.end()) end) {
                 {r.begin()};
                 {r.end()};
-                {to{_range_iter_convert<Is, sizeof...(Is)>(it, end)...}};
+                {to{_range_iter_to_tuple<Is, sizeof...(Is)>(it, end)...}};
             }
         )
     {
         auto it = r.begin();
         auto end = r.end();
-        to result {_range_iter_convert<Is, sizeof...(Is)>(it, end)...};
-        if (it != end) {
-            throw range_iter_too_big<sizeof...(Is)>();
+        to result {_range_iter_to_tuple<Is, sizeof...(Is)>(it, end)...};
+        if (!bool(it == end)) {
+            throw range_iter_to_tuple_too_big<sizeof...(Is)>();
         }
         return result;
     }
@@ -4071,26 +4087,180 @@ namespace impl {
 
 
 
-
-
-    template <typename L, typename R>
-    consteval ValueError range_size_mismatch() noexcept {
-        static constexpr static_str msg =
-            "Size mismatch during range assignment: " + demangle<L>() + " = " + demangle<R>();
-        return ValueError(msg);
+    template <meta::range Self, meta::range R, size_t... Is>
+    constexpr void range_tuple_from_tuple(Self& self, R&& r, std::index_sequence<Is...>)
+        noexcept (requires{
+            {((self.template get<Is>() = std::forward<R>(r).template get<Is>()), ...)} noexcept;
+        })
+        requires (
+            meta::tuple_like<Self> &&
+            meta::tuple_like<R> &&
+            meta::tuple_size<Self> == meta::tuple_size<R> &&
+            sizeof...(Is) == meta::tuple_size<R> &&
+            requires{{((self.template get<Is>() = std::forward<R>(r).template get<Is>()), ...)};}
+        )
+    {
+        ((self.template get<Is>() = std::forward<R>(r).template get<Is>()), ...);
     }
 
+    /// TODO: error messages can be improved after `repr()` and integer <-> string
+    /// conversions are defined.
 
-    template <typename C, typename T, size_t... Is>
-    constexpr void range_tuple_assignment(C& container, T&& r, std::index_sequence<Is...>)
-        noexcept (requires{{
-            ((meta::get<Is>(container) = meta::get<Is>(std::forward<T>(r))), ...)
-        } noexcept;})
-        requires (requires{{
-            ((meta::get<Is>(container) = meta::get<Is>(std::forward<T>(r))), ...)
-        };})
+    inline constexpr TypeError range_size_error(size_t expected, size_t actual) noexcept {
+        return TypeError(
+            "Cannot assign range of size " + std::to_string(actual) +
+            " to a range with " + std::to_string(expected) + " elements"
+        );
+    }
+
+    inline constexpr TypeError range_iter_assign_too_small(size_t n) noexcept {
+        return TypeError(
+            "Cannot assign range of size " + std::to_string(n) +
+            " to a range with >" + std::to_string(n) + " elements"
+        );
+    }
+
+    inline constexpr TypeError range_iter_assign_too_big(size_t n) noexcept {
+        return TypeError(
+            "Cannot assign range of >" + std::to_string(n) +
+            " elements to a range of size " + std::to_string(n)
+        );
+    }
+
+    template <size_t I, meta::range R, meta::iterator Iter>
+    constexpr void _range_iter_from_tuple(R&& r, Iter& it)
+        requires (requires{
+            {*it = std::forward<R>(r).template get<I>()};
+            {++it};
+        })
     {
-        ((meta::get<Is>(container) = meta::get<Is>(std::forward<T>(r))), ...);
+        *it = std::forward<R>(r).template get<I>();
+        ++it;
+    }
+
+    template <size_t I, meta::range Self, meta::iterator Iter>
+    constexpr void _range_tuple_from_iter(Self& s, Iter& it)
+        requires (requires{
+            {s.template get<I>() = *it};
+            {++it};
+        })
+    {
+        s.template get<I>() = *it;
+        ++it;
+    }
+
+    template <size_t I, meta::range R, meta::iterator Iter, meta::sentinel_for<Iter> End>
+    constexpr void _range_iter_from_tuple(R&& r, Iter& it, End& end)
+        requires (requires{
+            {it == end} -> meta::explicitly_convertible_to<bool>;
+            {*it = std::forward<R>(r).template get<I>()};
+            {++it};
+        })
+    {
+        if (it == end) {
+            throw range_iter_assign_too_big(I);
+        }
+        *it = std::forward<R>(r).template get<I>();
+        ++it;
+    }
+
+    template <size_t I, meta::range Self, meta::iterator Iter, meta::sentinel_for<Iter> End>
+    constexpr void _range_tuple_from_iter(Self& s, Iter& it, End& end)
+        requires (requires{
+            {it == end} -> meta::explicitly_convertible_to<bool>;
+            {s.template get<I>() = *it};
+            {++it};
+        })
+    {
+        if (it == end) {
+            throw range_iter_assign_too_small(I);
+        }
+        s.template get<I>() = *it;
+        ++it;
+    }
+
+    template <meta::range Self, meta::range R, size_t... Is>
+    constexpr void range_iter_from_tuple(Self& self, R&& r, std::index_sequence<Is...>)
+        requires (
+            !meta::tuple_like<Self> &&
+            meta::tuple_like<R> &&
+            sizeof...(Is) == meta::tuple_size<R> &&
+            requires(decltype(self.begin()) it) {
+                {self.size() != sizeof...(Is)} -> meta::explicitly_convertible_to<bool>;
+                {self.begin()};
+                {(_range_iter_from_tuple<Is>(std::forward<R>(r), it), ...)};
+            }
+        )
+    {
+        if (self.size() != sizeof...(Is)) {
+            throw range_size_error(self.size(), sizeof...(Is));
+        }
+        auto it = self.begin();
+        (_range_iter_from_tuple<Is>(std::forward<R>(r), it), ...);
+    }
+
+    template <meta::range Self, meta::range R, size_t... Is>
+    constexpr void range_tuple_from_iter(Self& self, R&& r, std::index_sequence<Is...>)
+        requires (
+            meta::tuple_like<Self> &&
+            !meta::tuple_like<R> &&
+            sizeof...(Is) == meta::tuple_size<Self> &&
+            requires(decltype(r.begin()) it) {
+                {sizeof...(Is) != r.size()} -> meta::explicitly_convertible_to<bool>;
+                {r.begin()};
+                {(_range_tuple_from_iter<Is>(self, it), ...)};
+            }
+        )
+    {
+        if (sizeof...(Is) != r.size()) {
+            throw range_size_error(sizeof...(Is), r.size());
+        }
+        auto it = r.begin();
+        (_range_tuple_from_iter<Is>(self, it), ...);
+    }
+
+    template <meta::range Self, meta::range R, size_t... Is>
+    constexpr void range_iter_from_tuple(Self& self, R&& r, std::index_sequence<Is...>)
+        requires (
+            !meta::tuple_like<Self> &&
+            meta::tuple_like<R> &&
+            sizeof...(Is) == meta::tuple_size<R> &&
+            !requires{{self.size()};} &&
+            requires(decltype(self.begin()) it, decltype(self.end()) end) {
+                {self.begin()};
+                {self.end()};
+                {(_range_iter_from_tuple<Is>(std::forward<R>(r), it, end), ...)};
+            }
+        )
+    {
+        auto it = self.begin();
+        auto end = self.end();
+        (_range_iter_from_tuple<Is>(std::forward<R>(r), it, end), ...);
+        if (!bool(it == end)) {
+            throw range_iter_assign_too_small(sizeof...(Is));
+        }
+    }
+
+    template <meta::range Self, meta::range R, size_t... Is>
+    constexpr void range_tuple_from_iter(Self& self, R&& r, std::index_sequence<Is...>)
+        requires (
+            meta::tuple_like<Self> &&
+            !meta::tuple_like<R> &&
+            sizeof...(Is) == meta::tuple_size<Self> &&
+            !requires{{r.size()};} &&
+            requires(decltype(r.begin()) it, decltype(r.end()) end) {
+                {r.begin()};
+                {r.end()};
+                {(_range_tuple_from_iter<Is>(self, it, end), ...)};
+            }
+        )
+    {
+        auto it = r.begin();
+        auto end = r.end();
+        (_range_tuple_from_iter<Is>(self, it, end), ...);
+        if (!bool(it == end)) {
+            throw range_iter_assign_too_big(sizeof...(Is));
+        }
     }
 
 }
@@ -4993,187 +5163,179 @@ namespace iter {
         operator skips nested ranges, and always returns a pointer directly to the
         underlying container.  Use `*` if you want to strip just one level at a time. */
         [[nodiscard]] constexpr auto operator->() noexcept {
-            if constexpr (meta::range<C> || impl::range_transparent<C>) {
-                return (**this).operator->();
-            } else {
-                return std::addressof(**this);
-            }
+            return std::addressof(impl::range_value(*this));
         }
 
         /* Indirectly access a member of the underlying container.  Note that this
         operator skips nested ranges, and always returns a pointer directly to the
         underlying container.  Use `*` if you want to strip just one level at a time. */
         [[nodiscard]] constexpr auto operator->() const noexcept {
-            if constexpr (meta::range<C> || impl::range_transparent<C>) {
-                return (**this).operator->();
-            } else {
-                return std::addressof(**this);
-            }
+            return std::addressof(impl::range_value(*this));
         }
 
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto begin()
-            noexcept (requires{{impl::range_iterator{std::ranges::begin(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::begin(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::begin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::begin(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::begin(**this)};
+            return impl::range_iterator{std::ranges::begin(*__value)};
         }
 
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{impl::range_iterator{std::ranges::begin(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::begin(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::begin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::begin(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::begin(**this)};
+            return impl::range_iterator{std::ranges::begin(*__value)};
         }
 
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto cbegin() const
-            noexcept (requires{{impl::range_iterator{std::ranges::cbegin(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::cbegin(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::cbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::cbegin(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::cbegin(**this)};
+            return impl::range_iterator{std::ranges::cbegin(*__value)};
         }
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto end()
-            noexcept (requires{{impl::range_iterator{std::ranges::end(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::end(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::end(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::end(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::end(**this)};
+            return impl::range_iterator{std::ranges::end(*__value)};
         }
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto end() const
-            noexcept (requires{{impl::range_iterator{std::ranges::end(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::end(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::end(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::end(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::end(**this)};
+            return impl::range_iterator{std::ranges::end(*__value)};
         }
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto cend() const
-            noexcept (requires{{impl::range_iterator{std::ranges::cend(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::cend(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::cend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::cend(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::cend(**this)};
+            return impl::range_iterator{std::ranges::cend(*__value)};
         }
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires{{impl::range_iterator{std::ranges::rbegin(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::rbegin(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::rbegin(**this)};
+            return impl::range_iterator{std::ranges::rbegin(*__value)};
         }
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires{{impl::range_iterator{std::ranges::rbegin(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::rbegin(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rbegin(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::rbegin(**this)};
+            return impl::range_iterator{std::ranges::rbegin(*__value)};
         }
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto crbegin() const
-            noexcept (requires{{impl::range_iterator{std::ranges::crbegin(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::crbegin(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::crbegin(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::crbegin(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::crbegin(**this)};
+            return impl::range_iterator{std::ranges::crbegin(*__value)};
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto rend()
-            noexcept (requires{{impl::range_iterator{std::ranges::rend(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::rend(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::rend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rend(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::rend(**this)};
+            return impl::range_iterator{std::ranges::rend(*__value)};
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto rend() const
-            noexcept (requires{{impl::range_iterator{std::ranges::rend(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::rend(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::rend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::rend(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::rend(**this)};
+            return impl::range_iterator{std::ranges::rend(*__value)};
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto crend() const
-            noexcept (requires{{impl::range_iterator{std::ranges::crend(**this)}} noexcept;})
-            requires (requires{{impl::range_iterator{std::ranges::crend(**this)}};})
+            noexcept (requires{{impl::range_iterator{std::ranges::crend(*__value)}} noexcept;})
+            requires (requires{{impl::range_iterator{std::ranges::crend(*__value)}};})
         {
-            return impl::range_iterator{std::ranges::crend(**this)};
+            return impl::range_iterator{std::ranges::crend(*__value)};
         }
 
         /* Get a pointer to the underlying data array, if one exists.  This is
         identical to a `std::ranges::data()` call on the underlying value, assuming
         that expression is well-formed. */
         [[nodiscard]] constexpr auto data()
-            noexcept (requires{{std::ranges::data(**this)} noexcept;})
-            requires (requires{{std::ranges::data(**this)};})
+            noexcept (requires{{std::ranges::data(*__value)} noexcept;})
+            requires (requires{{std::ranges::data(*__value)};})
         {
-            return std::ranges::data(**this);
+            return std::ranges::data(*__value);
         }
 
         /* Get a pointer to the underlying data array, if one exists.  This is
         identical to a `std::ranges::data()` call on the underlying value, assuming
         that expression is well-formed. */
         [[nodiscard]] constexpr auto data() const
-            noexcept (requires{{std::ranges::data(**this)} noexcept;})
-            requires (requires{{std::ranges::data(**this)};})
+            noexcept (requires{{std::ranges::data(*__value)} noexcept;})
+            requires (requires{{std::ranges::data(*__value)};})
         {
-            return std::ranges::data(**this);
+            return std::ranges::data(*__value);
         }
 
         /* Get a pointer to the underlying data array, if one exists.  This is
         identical to a `std::ranges::cdata()` call on the underlying value, assuming
         that expression is well-formed. */
         [[nodiscard]] constexpr auto cdata() const
-            noexcept (requires{{std::ranges::cdata(**this)} noexcept;})
-            requires (requires{{std::ranges::cdata(**this)};})
+            noexcept (requires{{std::ranges::cdata(*__value)} noexcept;})
+            requires (requires{{std::ranges::cdata(*__value)};})
         {
-            return std::ranges::cdata(**this);
+            return std::ranges::cdata(*__value);
         }
 
         /* Forwarding `size()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr decltype(auto) size() const
-            noexcept (requires{{std::ranges::size(**this)} noexcept;})
-            requires (requires{{std::ranges::size(**this)};})
+            noexcept (requires{{std::ranges::size(*__value)} noexcept;})
+            requires (requires{{std::ranges::size(*__value)};})
         {
-            return (std::ranges::size(**this));
+            return (std::ranges::size(*__value));
         }
 
         /* Forwarding `ssize()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr decltype(auto) ssize() const
-            noexcept (requires{{(**this).ssize()} noexcept;})
-            requires (requires{{(**this).ssize()} -> meta::signed_integer;})
+            noexcept (requires{{__value->ssize()} noexcept;})
+            requires (requires{{__value->ssize()} -> meta::signed_integer;})
         {
-            return (**this).ssize();
+            return __value->ssize();
         }
 
         /* Forwarding `ssize()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr decltype(auto) ssize() const
-            noexcept (requires{{std::ranges::ssize(**this)} noexcept;})
+            noexcept (requires{{std::ranges::ssize(*__value)} noexcept;})
             requires (
-                !requires{{(**this).ssize()} -> meta::signed_integer;} &&
-                requires{{std::ranges::ssize(**this)};}
+                !requires{{__value->ssize()} -> meta::signed_integer;} &&
+                requires{{std::ranges::ssize(*__value)};}
             )
         {
-            return (std::ranges::ssize(**this));
+            return (std::ranges::ssize(*__value));
         }
 
         /* Forwarding `empty()` operator for the underlying container, provided the
         container supports it. */
         [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{std::ranges::empty(**this)} noexcept;})
-            requires (requires{{std::ranges::empty(**this)};})
+            noexcept (requires{{std::ranges::empty(*__value)} noexcept;})
+            requires (requires{{std::ranges::empty(*__value)};})
         {
-            return std::ranges::empty(**this);
+            return std::ranges::empty(*__value);
         }
 
         /* Access the first element in the underlying container, assuming the container
@@ -5181,8 +5343,8 @@ namespace iter {
         the container is empty when this method is called. */
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
-            noexcept (!DEBUG && requires{{(*std::forward<Self>(self)).front()} noexcept;})
-            requires (requires{{(*std::forward<Self>(self)).front()};})
+            noexcept (!DEBUG && requires{{(*std::forward<Self>(self).__value).front()} noexcept;})
+            requires (requires{{(*std::forward<Self>(self).__value).front()};})
         {
             if constexpr (DEBUG) {
                 if (self.empty()) {
@@ -5190,9 +5352,9 @@ namespace iter {
                 }
             }
             if constexpr (meta::range<C>) {
-                return (iter::range((*std::forward<Self>(self)).front()));
+                return (iter::range((*std::forward<Self>(self).__value).front()));
             } else {
-                return ((*std::forward<Self>(self)).front());
+                return ((*std::forward<Self>(self).__value).front());
             }
         }
 
@@ -5205,7 +5367,7 @@ namespace iter {
         [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
             noexcept (!DEBUG && requires{{*self.begin()} noexcept;})
             requires (
-                !requires{{(*std::forward<Self>(self)).front()};} &&
+                !requires{{(*std::forward<Self>(self).__value).front()};} &&
                 requires{{*self.begin()};}
             )
         {
@@ -5222,8 +5384,8 @@ namespace iter {
         the container is empty when this method is called. */
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
-            noexcept (!DEBUG && requires{{(*std::forward<Self>(self)).back()} noexcept;})
-            requires (requires{{(*std::forward<Self>(self)).back()};})
+            noexcept (!DEBUG && requires{{(*std::forward<Self>(self).__value).back()} noexcept;})
+            requires (requires{{(*std::forward<Self>(self).__value).back()};})
         {
             if constexpr (DEBUG) {
                 if (self.empty()) {
@@ -5231,9 +5393,9 @@ namespace iter {
                 }
             }
             if constexpr (meta::range<C>) {
-                return (iter::range((*std::forward<Self>(self)).back()));
+                return (iter::range((*std::forward<Self>(self).__value).back()));
             } else {
-                return ((*std::forward<Self>(self)).back());
+                return ((*std::forward<Self>(self).__value).back());
             }
         }
 
@@ -5246,7 +5408,7 @@ namespace iter {
         [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
             noexcept (!DEBUG && requires{{*self.rbegin()} noexcept;})
             requires (
-                !requires{{(*std::forward<Self>(self)).back()};} &&
+                !requires{{(*std::forward<Self>(self).__value).back()};} &&
                 requires{{*self.rbegin()};}
             )
         {
@@ -5358,19 +5520,37 @@ namespace iter {
             return (iter::contains{k}(*this));
         }
 
-        /* Implicit conversion from `range` to any other type `T` that includes a
-        `T(std::from_range, self)` constructor. */
+        /* Prefer direct conversions for the underlying container if possible.  Note
+        that this skips over any intermediate ranges if the type is nested. */
+        template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
+        [[nodiscard]] constexpr operator to(this Self&& self)
+            noexcept (requires{{
+                impl::range_value(std::forward<Self>(self))
+            } noexcept -> meta::nothrow::convertible_to<to>;})
+            requires (requires{
+                {impl::range_value(std::forward<Self>(self))} -> meta::convertible_to<to>;
+            })
+        {
+            return to(impl::range_value(std::forward<Self>(self)));
+        }
+
+        /* If no direct conversion exists, allow conversion to any type `T` that
+        implements a constructor of the form `T(std::from_range, self)`. */
         template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
         [[nodiscard]] constexpr operator to(this Self&& self)
             noexcept (requires{{to(std::from_range, std::forward<Self>(self))} noexcept;})
-            requires (requires{{to(std::from_range, std::forward<Self>(self))};})
+            requires (
+                !requires{
+                    {impl::range_value(std::forward<Self>(self))} -> meta::convertible_to<to>;
+                } && requires{
+                    {to(std::from_range, std::forward<Self>(self))};
+                })
         {
             return to(std::from_range, std::forward<Self>(self));
         }
 
-        /* Implicit conversion from `range` to any other type `T` that can be
-        constructed from a `begin()` and `end()` iterator pair.  This overload will
-        only be chosen if a `std::from_range` constructor is not available. */
+        /* If neither a direct conversion nor a `std::from_range` constructor exist,
+        check for a constructor of the form `T(begin(), end())`. */
         template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
         [[nodiscard]] constexpr operator to(this Self&& self)
             noexcept (requires{{to(self.begin(), self.end())} noexcept;})
@@ -5382,13 +5562,13 @@ namespace iter {
             return to(self.begin(), self.end());
         }
 
-        /* Implicit conversion from a tuple-like `range` to any tuple-like type `T`
-        that can be directly initialized (via braced initialization) from the current
-        contents.  This overload will only be chosen if a `std::from_range` or coupled
-        `begin()`/`end()` constructor is not available. */
+        /* If no direct conversion or constructor exists, and both the range and the
+        target type are tuple-like, then a fold expression may be used to directly
+        construct (via braced initialization) the target from the elements of the
+        range. */
         template <typename Self, meta::tuple_like to> requires (!meta::prefer_constructor<to>)
         [[nodiscard]] constexpr operator to(this Self&& self)
-            noexcept (requires{{impl::range_tuple_convert<to>(
+            noexcept (requires{{impl::range_tuple_to_tuple<to>(
                 std::forward<Self>(self),
                 std::make_index_sequence<meta::tuple_size<to>>{}
             )} noexcept;})
@@ -5397,108 +5577,110 @@ namespace iter {
                 !requires{{to(self.begin(), self.end())};} &&
                 meta::tuple_like<C> &&
                 meta::tuple_size<to> == meta::tuple_size<C> &&
-                requires{{impl::range_tuple_convert<to>(
+                requires{{impl::range_tuple_to_tuple<to>(
                     std::forward<Self>(self),
                     std::make_index_sequence<meta::tuple_size<to>>{}
                 )};}
             )
         {
-            return impl::range_tuple_convert<to>(
+            return impl::range_tuple_to_tuple<to>(
                 std::forward<Self>(self),
                 std::make_index_sequence<meta::tuple_size<to>>{}
             );
         }
 
-        /* Implicit conversion from a non-tuple-like `range` to a tuple-like type `T`
-        that can be directly initialized (via braced initialization) from this range's
-        iterator dereference type.  This overload will only be chosen if a
-        `std::from_range` or coupled `begin()`/`end()` constructor is not available.
-        A `TypeError` will be thrown if the range size does not exactly match the
-        destination tuple size. */
+        /* If no direct conversion or constructor exists, and the target type is
+        tuple-like but the range is not, then an iterator-based fold expression may be
+        used to directly construct (via braced initialization) the target, which
+        dereferences the iterator at each step.  If the range size does not exactly
+        match the target tuple size, then a `TypeError` will be thrown at run time. */
         template <typename Self, meta::tuple_like to> requires (!meta::prefer_constructor<to>)
         [[nodiscard]] constexpr operator to(this Self&& self)
             requires (
                 !requires{{to(std::from_range, std::forward<Self>(self))};} &&
                 !requires{{to(self.begin(), self.end())};} &&
                 !meta::tuple_like<C> &&
-                requires{{impl::range_iter_convert<to>(
+                requires{{impl::range_iter_to_tuple<to>(
                     std::forward<Self>(self),
                     std::make_index_sequence<meta::tuple_size<to>>{}
                 )};}
             )
         {
-            return impl::range_iter_convert<to>(
+            return impl::range_iter_to_tuple<to>(
                 std::forward<Self>(self),
                 std::make_index_sequence<meta::tuple_size<to>>{}
             );
         }
-
+    
         constexpr range& operator=(const range&) = default;
         constexpr range& operator=(range&&) = default;
 
-        /* Direct assignment to the underlying container, if available.  This will
-        usually be the fastest way to overwrite the contents of a range, assuming
-        another container of the same type is readily available. */
+        /* Prefer direct assignment to the underlying container if possible.  Note that
+        this skips over any intermediate ranges if the type is nested. */
         template <typename Self, typename C2> requires (!meta::range<C2>)
         constexpr Self operator=(this Self&& self, C2&& c)
-            noexcept (requires{
-                {*std::forward<Self>(self) = std::forward<C2>(c)} noexcept;
-                {std::forward<Self>(self)} noexcept -> meta::nothrow::convertible_to<Self>;
-            })
-            requires (requires{
-                {*std::forward<Self>(self) = std::forward<C2>(c)};
-                {std::forward<Self>(self)} -> meta::convertible_to<Self>;
-            })
+            noexcept (requires{{impl::range_value(self) = std::forward<C2>(c)} noexcept;})
+            requires (requires{{impl::range_value(self) = std::forward<C2>(c)};})
         {
-            *std::forward<Self>(self) = std::forward<C2>(c);
-            return std::forward<Self>(self);
+            impl::range_value(self) = std::forward<C2>(c);
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
+            }
         }
 
-        /* If the other operand is not directly assignable to the underlying container
-        type, then it must be a scalar that can be assigned across the range using the
-        `begin()` type as an output iterator. */
+        /* If no direct assignment exists, and the other operand is not a range, then
+        it must be a scalar that can be assigned across the range using `begin()` as
+        an output iterator. */
         template <typename Self, typename V> requires (!meta::range<V>)
         constexpr Self operator=(this Self&& self, const V& v)
             noexcept (meta::nothrow::iterable<Self> && requires(meta::yield_type<Self> x) {
                 {std::forward<decltype(x)>(x) = v} noexcept;
-                {std::forward<Self>(self)} noexcept -> meta::nothrow::convertible_to<Self>;
             })
             requires (
-                !requires{{*std::forward<Self>(self) = std::forward<V>(v)};} &&
+                !requires{{impl::range_value(self) = std::forward<V>(v)};} &&
                 meta::iterable<Self> &&
                 meta::output_iterator<decltype(begin()), const V&> &&
-                requires(meta::yield_type<Self> x) {
-                    {std::forward<decltype(x)>(x) = v};
-                    {std::forward<Self>(self)} -> meta::convertible_to<Self>;
-                }
+                requires(meta::yield_type<Self> x) {{std::forward<decltype(x)>(x) = v};}
             )
         {
             for (auto&& x : self) std::forward<decltype(x)>(x) = v;
-            return std::forward<Self>(self);
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
+            }
         }
 
-        /* Direct assignment can be extended to ranges if their underlying container
-        types are compatible. */
+        /* Direct assignment can be extended to range operands if their underlying
+        container types are compatible. */
         template <typename Self, meta::range R>
         constexpr Self operator=(this Self&& self, R&& r)
             noexcept (requires{
-                {*std::forward<Self>(self) = *std::forward<R>(r)} noexcept;
-                {std::forward<Self>(self)} noexcept -> meta::nothrow::convertible_to<Self>;
+                {impl::range_value(self) = impl::range_value(std::forward<R>(r))} noexcept;
             })
             requires (requires{
-                {*std::forward<Self>(self) = *std::forward<R>(r)};
-                {std::forward<Self>(self)} -> meta::convertible_to<Self>;
+                {impl::range_value(self) = impl::range_value(std::forward<R>(r))};
             })
         {
-            *std::forward<Self>(self) = *std::forward<R>(r);
-            return std::forward<Self>(self);
+            impl::range_value(self) = impl::range_value(std::forward<R>(r));
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
+            }
         }
 
-        /* Fall back to elementwise assignment between ranges, stopping when the first
-        range is exhausted. */
+        /* If the other operand is a range and direct assignment is not available, then
+        fall back to elementwise assignment by iterating over both ranges using
+        `begin()` as an output iterator.  If the ranges are not the same size, then a
+        `TypeError` will be thrown at run time.  If both ranges are tuple-like, then
+        the size check will be performed at compile-time instead, causing this method
+        to fail compilation. */
         template <typename Self, meta::range R>
         constexpr Self operator=(this Self&& self, R&& r)
-            noexcept (requires(
+            noexcept (meta::tuple_like<C> && meta::tuple_like<R> && requires(
                 decltype(self.begin()) s_it,
                 decltype(self.end()) s_end,
                 decltype(r.begin()) r_it,
@@ -5513,10 +5695,9 @@ namespace iter {
                 {*s_it = *r_it} noexcept;
                 {++s_it} noexcept;
                 {++r_it} noexcept;
-                {std::forward<Self>(self)} noexcept -> meta::nothrow::convertible_to<Self>;
             })
             requires (!requires{
-                {*std::forward<Self>(self) = *std::forward<R>(r)};
+                {impl::range_value(self) = impl::range_value(std::forward<R>(r))};
             } && requires(
                 decltype(self.begin()) s_it,
                 decltype(self.end()) s_end,
@@ -5532,161 +5713,198 @@ namespace iter {
                 {*s_it = *r_it};
                 {++s_it};
                 {++r_it};
-                {std::forward<Self>(self)} -> meta::convertible_to<Self>;
-            })
+            } && (
+                !meta::tuple_like<C> ||
+                !meta::tuple_like<R> ||
+                meta::tuple_size<C> == meta::tuple_size<R>
+            ))
         {
+            static constexpr bool sized = requires{{self.size()};} && requires{{r.size()};};
+            if constexpr (sized && (!meta::tuple_like<C> || !meta::tuple_like<R>)) {
+                if (self.size() != r.size()) {
+                    throw impl::range_size_error(self.size(), r.size());
+                }
+            }
             auto s_it = self.begin();
             auto s_end = self.end();
             auto r_it = r.begin();
             auto r_end = r.end();
-            while (s_it != s_end && r_it != r_end) {
-                *s_it = *r_it;
-                ++s_it;
-                ++r_it;
+            if constexpr (sized) {
+                while (s_it != s_end && r_it != r_end) {
+                    *s_it = *r_it;
+                    ++s_it;
+                    ++r_it;
+                }
+            } else {
+                size_t n = 0;
+                while (s_it != s_end && r_it != r_end) {
+                    *s_it = *r_it;
+                    ++s_it;
+                    ++r_it;
+                    ++n;
+                }
+                if (s_it != s_end) {
+                    throw impl::range_iter_assign_too_small(n);
+                }
+                if (r_it != r_end) {
+                    throw impl::range_iter_assign_too_big(n);
+                }
             }
-            return std::forward<Self>(self);
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
+            }
         }
 
-
-        /// TODO: figure out the remaining assignment operators.
-
-
-
-
-
-
-
-        /// TODO: if the current range is tuple-like and the above overload is not
-        /// available, then we should be able to do a fold expression that assigns
-        /// each element one by one if the other range is also tuple-like, or using an
-        /// iterator if not.
-
-
-
-
-        /// TODO: range assignment would require 2 overloads: one that uses the
-        /// begin() iterator as an output iterator and terminates early if either
-        /// range is exhausted, and one that uses a recursive tuple algorithm if the
-        /// output iterator case is not available.
-
-
-
-
-
-        /* Assigning a range to another range triggers elementwise assignment between their
-        contents.  If both ranges are tuple-like, then they must have the same size, such
-        that the assignment can be done via a single fold expression. */
-        template <typename L, meta::range R>
-        constexpr L operator=(this L&& lhs, R&& rhs)
-            noexcept (requires{{impl::range_tuple_assignment(
-                lhs,
-                std::forward<R>(rhs),
-                std::make_index_sequence<meta::tuple_size<L>>{}
+        /* If the other operand is a range and neither direct assignment nor
+        elementwise assignment using iterators is available, then check for
+        tuple-based elementwise assignment using a fold expression.  This will only
+        be chosen if both ranges are tuple-like, and their sizes match exactly. */
+        template <typename Self, meta::range R>
+        constexpr Self operator=(this Self&& self, R&& r)
+            noexcept (requires{{impl::range_tuple_from_tuple(
+                self,
+                std::forward<R>(r),
+                std::make_index_sequence<meta::tuple_size<C>>{}
             )} noexcept;})
-            requires (
-                meta::tuple_like<L> && meta::tuple_like<R> &&
-                meta::tuple_size<L> == meta::tuple_size<R> &&
-                requires{{impl::range_tuple_assignment(
-                    lhs,
-                    std::forward<R>(rhs),
-                    std::make_index_sequence<meta::tuple_size<L>>{}
+            requires (!requires(
+                decltype(self.begin()) s_it,
+                decltype(self.end()) s_end,
+                decltype(r.begin()) r_it,
+                decltype(r.end()) r_end
+            ) {
+                {impl::range_value(self) = impl::range_value(std::forward<R>(r))};
+                {self.begin()};
+                {self.end()};
+                {r.begin()};
+                {r.end()};
+                {s_it != s_end} -> meta::explicitly_convertible_to<bool>;
+                {r_it != r_end} -> meta::explicitly_convertible_to<bool>;
+                {*s_it = *r_it};
+                {++s_it};
+                {++r_it};
+            } && (
+                meta::tuple_like<C> &&
+                meta::tuple_like<R> &&
+                meta::tuple_size<C> == meta::tuple_size<R> &&
+                requires{{impl::range_tuple_from_tuple(
+                    self,
+                    std::forward<R>(r),
+                    std::make_index_sequence<meta::tuple_size<C>>{}
                 )};}
-            )
+            ))
         {
-            impl::range_tuple_assignment(
-                lhs,
-                std::forward<R>(rhs),
-                std::make_index_sequence<meta::tuple_size<L>>{}
+            impl::range_tuple_from_tuple(
+                self,
+                std::forward<R>(r),
+                std::make_index_sequence<meta::tuple_size<C>>{}
             );
-            return std::forward<L>(lhs);
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
+            }
         }
 
-        /* Assigning a range to another range triggers elementwise assignment between their
-        contents.  If either range is not tuple-like, then the assignment must be done with
-        an elementwise loop. */
-        template <typename L, meta::range R>
-        constexpr L operator=(this L&& lhs, R&& rhs)
-            requires (
-                (!meta::tuple_like<L> || !meta::tuple_like<R>) &&
-                requires(
-                    decltype(std::ranges::begin(lhs)) lhs_it,
-                    decltype(std::ranges::end(lhs)) lhs_end,
-                    decltype(std::ranges::begin(rhs)) rhs_it,
-                    decltype(std::ranges::end(rhs)) rhs_end
-                ){
-                    {lhs_it != lhs_end};
-                    {rhs_it != rhs_end};
-                    {*lhs_it = *rhs_it};
-                    {++lhs_it};
-                    {++rhs_it};
-                }
-            )
+        /* If the other operand is a tuple-like range but this range is not, and
+        elementwise assignment using their iterators is not possible, then check for an
+        algorithm that uses this range's `begin()` iterator as an output iterator and
+        assigns elements from the other range using tuple indexing.  If the ranges are
+        not the same size, then a `TypeError` will be thrown. */
+        template <typename Self, meta::range R>
+        constexpr Self operator=(this Self&& self, R&& r)
+            noexcept (requires{{impl::range_iter_from_tuple(
+                self,
+                std::forward<R>(r),
+                std::make_index_sequence<meta::tuple_size<C>>{}
+            )} noexcept;})
+            requires (!requires(
+                decltype(self.begin()) s_it,
+                decltype(self.end()) s_end,
+                decltype(r.begin()) r_it,
+                decltype(r.end()) r_end
+            ) {
+                {impl::range_value(self) = impl::range_value(std::forward<R>(r))};
+                {self.begin()};
+                {self.end()};
+                {r.begin()};
+                {r.end()};
+                {s_it != s_end} -> meta::explicitly_convertible_to<bool>;
+                {r_it != r_end} -> meta::explicitly_convertible_to<bool>;
+                {*s_it = *r_it};
+                {++s_it};
+                {++r_it};
+            } && (
+                !meta::tuple_like<C> &&
+                meta::tuple_like<R> &&
+                requires{{impl::range_iter_from_tuple(
+                    self,
+                    std::forward<R>(r),
+                    std::make_index_sequence<meta::tuple_size<R>>{}
+                )};}
+            ))
         {
-            constexpr bool sized_lhs = meta::has_size<L>;
-            constexpr bool sized_rhs = meta::has_size<R>;
-
-            // ensure the sizes match if they can be determined in constant time
-            size_t lhs_size = 0;
-            size_t rhs_size = 0;
-            if constexpr (sized_lhs && sized_rhs) {
-                lhs_size = std::ranges::size(lhs);
-                rhs_size = std::ranges::size(rhs);
-                if (lhs_size != rhs_size) {
-                    if consteval {
-                        throw impl::range_size_mismatch<L, R>();
-                    } else {
-                        throw ValueError(
-                            "cannot assign a range of size " + std::to_string(rhs_size) +
-                            " to a slice of size " + std::to_string(lhs_size)
-                        );
-                    }
-                }
-            } else if constexpr (sized_lhs) {
-                lhs_size = std::ranges::size(lhs);
-            } else if constexpr (sized_rhs) {
-                rhs_size = std::ranges::size(rhs);
+            impl::range_iter_from_tuple(
+                self,
+                std::forward<R>(r),
+                std::make_index_sequence<meta::tuple_size<R>>{}
+            );
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
             }
+        }
 
-            // iterate over the range and assign each element
-            auto lhs_it = std::ranges::begin(lhs);
-            auto lhs_end = std::ranges::end(lhs);
-            auto rhs_it = std::ranges::begin(rhs);
-            auto rhs_end = std::ranges::end(rhs);
-            while (lhs_it != lhs_end && rhs_it != rhs_end) {
-                *lhs_it = *rhs_it;
-                ++lhs_it;
-                ++rhs_it;
-                if constexpr (!sized_lhs) { ++lhs_size; }
-                if constexpr (!sized_rhs) { ++rhs_size; }
+        /* If this range is tuple-like but the other operand is not, and elementwise
+        assignment using their iterators is not possible, then check for an algorithm
+        that uses the other range's `begin()` iterator as an input iterator and assigns
+        each element to this range using tuple indexing.  If the ranges are not the
+        same size, then a `TypeError` will be thrown. */
+        template <typename Self, meta::range R>
+        constexpr Self operator=(this Self&& self, R&& r)
+            noexcept (requires{{impl::range_tuple_from_iter(
+                self,
+                std::forward<R>(r),
+                std::make_index_sequence<meta::tuple_size<C>>{}
+            )} noexcept;})
+            requires (!requires(
+                decltype(self.begin()) s_it,
+                decltype(self.end()) s_end,
+                decltype(r.begin()) r_it,
+                decltype(r.end()) r_end
+            ) {
+                {impl::range_value(self) = impl::range_value(std::forward<R>(r))};
+                {self.begin()};
+                {self.end()};
+                {r.begin()};
+                {r.end()};
+                {s_it != s_end} -> meta::explicitly_convertible_to<bool>;
+                {r_it != r_end} -> meta::explicitly_convertible_to<bool>;
+                {*s_it = *r_it};
+                {++s_it};
+                {++r_it};
+            } && (
+                meta::tuple_like<C> &&
+                !meta::tuple_like<R> &&
+                requires{{impl::range_tuple_from_iter(
+                    self,
+                    std::forward<R>(r),
+                    std::make_index_sequence<meta::tuple_size<R>>{}
+                )};}
+            ))
+        {
+            impl::range_tuple_from_iter(
+                self,
+                std::forward<R>(r),
+                std::make_index_sequence<meta::tuple_size<R>>{}
+            );
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
             }
-
-            // if the observed sizes do not match, then throw an error
-            if constexpr (!sized_lhs || !sized_rhs) {
-                if (lhs_it != lhs_end || rhs_it != rhs_end) {
-                    if consteval {
-                        throw impl::range_size_mismatch<L, R>();
-                    } else {
-                        if constexpr (!sized_lhs) {
-                            while (lhs_it != lhs_end) {
-                                ++lhs_it;
-                                ++lhs_size;
-                            }
-                        }
-                        if constexpr (!sized_rhs) {
-                            while (rhs_it != rhs_end) {
-                                ++rhs_it;
-                                ++rhs_size;
-                            }
-                        }
-                        throw ValueError(
-                            "cannot assign a range of size " + std::to_string(rhs_size) +
-                            " to a slice of size " + std::to_string(lhs_size)
-                        );
-                    }
-                }
-            }
-
-            return std::forward<L>(lhs);
         }
 
         /// TODO: monadic call operator, which may be forward-declared and filled in
@@ -6838,6 +7056,16 @@ namespace std {
 
 
 namespace bertrand::iter {
+
+    // static_assert([] {
+    //     auto r = (range(range(std::array{1, 2, 3})) = std::array{4, 5, 6});
+    //     if (r[0].front() != 4) return false;
+
+    //     // auto r2 = range(5);
+    //     // auto r3 = *r2;
+
+    //     return true;
+    // }());
 
 
     // static_assert(range(std::array{1, 2, 3}).contains(2));
