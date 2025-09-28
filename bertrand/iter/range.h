@@ -5704,6 +5704,21 @@ namespace iter {
             }
         }
 
+        /* A special case of direct assignment from an initializer list, assuming the
+        container supports it. */
+        template <typename Self, typename T>
+        constexpr Self operator=(this Self&& self, std::initializer_list<T> il)
+            noexcept (requires{{impl::range_value(self) = std::move(il)} noexcept;})
+            requires (impl::range_assign::direct<Self, std::initializer_list<T>>)
+        {
+            impl::range_value(self) = std::move(il);
+            if constexpr (meta::rvalue<Self>) {
+                return std::move(self);
+            } else {
+                return self;
+            }
+        }
+
         /* If no direct assignment exists, and the other operand is not a range, then
         it must be a scalar that can be assigned across the range using `begin()` as
         an output iterator. */
@@ -6965,7 +6980,7 @@ namespace iter {
 }
 
 
-namespace std {
+_LIBCPP_BEGIN_NAMESPACE_STD
 
     namespace ranges {
 
@@ -7036,17 +7051,147 @@ namespace std {
         return (bertrand::meta::get<I>(std::forward<R>(r)));
     }
 
-}
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::character<bertrand::meta::yield_type<R>>)
+    basic_string(R&& r) -> basic_string<
+        bertrand::meta::unqualify<bertrand::meta::yield_type<R>>
+    >;
+
+    template <bertrand::meta::contiguous_range R>
+        requires (bertrand::meta::character<bertrand::meta::yield_type<R>>)
+    basic_string_view(R&& r) -> basic_string_view<
+        bertrand::meta::unqualify<bertrand::meta::yield_type<R>>
+    >;
+
+    template <bertrand::meta::range R> requires (bertrand::meta::tuple_like<R>)
+    array(R&& r) -> array<
+        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>,
+        bertrand::meta::tuple_size<R>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 2)
+    pair(R&& r) -> pair<bertrand::meta::get_type<R, 0>, bertrand::meta::get_type<R, 1>>;
+
+    /// TODO: tuple, but that will have to be bounded within a finite range or omitted
+    /// entirely, since C++ currently doesn't allow me to unpack types directly into
+    /// a CTAD guide.
+
+    template <bertrand::meta::range R>
+    vector(R&& r) -> vector<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    deque(R&& r) -> deque<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    list(R&& r) -> list<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    forward_list(R&& r) -> forward_list<
+        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+    >;
+
+    template <bertrand::meta::range R>
+    set(R&& r) -> set<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    multiset(R&& r) -> multiset<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    unordered_set(R&& r) -> unordered_set<
+        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+    >;
+
+    template <bertrand::meta::range R>
+    unordered_multiset(R&& r) -> unordered_multiset<
+        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (
+            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
+            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+        )
+    map(R&& r) -> map<
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+        >,
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+        >
+    >;
+
+    template <bertrand::meta::range R>
+        requires (
+            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
+            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+        )
+    multimap(R&& r) -> multimap<
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+        >,
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+        >
+    >;
+
+    template <bertrand::meta::range R>
+        requires (
+            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
+            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+        )
+    unordered_map(R&& r) -> unordered_map<
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+        >,
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+        >
+    >;
+
+    template <bertrand::meta::range R>
+        requires (
+            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
+            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+        )
+    unordered_multimap(R&& r) -> unordered_multimap<
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+        >,
+        bertrand::meta::remove_reference<
+            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+        >
+    >;
+
+    template <bertrand::meta::range R>
+    stack(R&& r) -> stack<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    queue(R&& r) -> queue<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+
+    template <bertrand::meta::range R>
+    priority_queue(R&& r) -> priority_queue<
+        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+    >;
+
+    /// TODO: a deduction guide for `std::mdspan` which gathers the correct extents
+    /// based on the shape() of the range, where such a thing is possible, and where
+    /// that information can be known at compile time.
+
+_LIBCPP_END_NAMESPACE_STD
 
 
 namespace bertrand::iter {
 
     static_assert([] {
-        std::tuple arr {1, 2, 3.5};
-        range{arr} = {3, 2, 1};
-        if (meta::get<0>(arr) != 3) return false;
-        if (meta::get<1>(arr) != 2) return false;
-        if (meta::get<2>(arr) != 1) return false;
+        std::tuple arr {'a', 'b'};
+        range{arr} = {'b', 'a'};
+        // if (meta::get<0>(arr) != 3) return false;
+        // if (meta::get<1>(arr) != 2) return false;
+        // if (meta::get<2>(arr) != 1) return false;
+
+        std::string arr2 = range(arr);
+        if (arr2 != "ba") return false;
 
         return true;
     }());

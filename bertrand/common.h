@@ -12,21 +12,31 @@
 #include <exception>
 #include <expected>
 #include <filesystem>
+#include <forward_list>
 #include <functional>
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <list>
+#include <map>
+#include <mdspan>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <queue>
 #include <random>
 #include <ranges>
+#include <set>
+#include <span>
 #include <sstream>
+#include <stack>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <typeindex>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -1183,6 +1193,16 @@ namespace meta {
     }
 
     template <typename T>
+    concept character = 
+        is<T, char> ||
+        is<T, signed char> ||
+        is<T, unsigned char> ||
+        is<T, wchar_t> ||
+        is<T, char8_t> ||
+        is<T, char16_t> ||
+        is<T, char32_t>;
+
+    template <typename T>
     concept string_literal = detail::string_literal<T>;
 
     template <string_literal T>
@@ -1351,6 +1371,10 @@ namespace meta {
 
         template <typename T>
         constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
+        template <typename T, auto Extent>
+        constexpr bool prefer_constructor<::std::span<T, Extent>> = true;
+        template <typename... Ts>
+        constexpr bool prefer_constructor<::std::mdspan<Ts...>> = true;
 
         template <typename L, typename R>
         constexpr bool convertible_to = ::std::convertible_to<L, R>;
