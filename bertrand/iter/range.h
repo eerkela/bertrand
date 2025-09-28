@@ -16,7 +16,6 @@ namespace impl {
     struct tuple_range_tag {};
     struct iota_tag {};
     struct subrange_tag {};
-    struct owning_subrange_tag {};
     struct unpack_tag {};
     struct sequence_tag {};
 
@@ -66,14 +65,6 @@ namespace meta {
     template <typename T, typename... Rs>
     concept subrange = range<T, Rs...> && requires(T r) {
         {*r.__value} -> inherits<impl::subrange_tag>;
-    };
-
-    /* A refinement of `meta::subrange<T, Rs...>` that only matches subranges which
-    own the underlying container, extending its lifespan.  Such ranges are heavier than
-    their non-borrowed alternatives, and disable `std::ranges::borrowed_range`. */
-    template <typename T, typename... Rs>
-    concept owning_subrange = subrange<T, Rs...> && requires(T r) {
-        {*r.__value} -> inherits<impl::owning_subrange_tag>;
     };
 
     /* A refinement of `meta::range<T, Rs...>` that only matches unpacked ranges, which
@@ -929,13 +920,12 @@ namespace impl {
     Ranges of this form expose `size()` and `ssize()` methods as long as
     `(stop - start) / step` is a valid expression whose result can be explicitly
     converted to `difference_type`, and will also support indexing via the subscript
-    operator if possible.  The range always models `std::borrowed_range`, and if
-    `start` is decrementable, then the iterators will model
-    `std::bidirectional_iterator`.  If `start` supports random-access addition and
-    subtraction with the step size, then the iterators will model
-    `std::random_access_iterator` as well.  Since the `end()` iterator is an empty
-    sentinel, the range will never model `std::common_range` (but the sentinel may
-    model `std::sized_sentinel_for<Begin>` if `ssize()` is available).
+    operator if possible.  If `start` is decrementable, then the iterators will model
+    `std::bidirectional_iterator`, and possibly also `std::random_access_iterator` if
+    it supports random-access addition and subtraction with the step size.  Since the
+    `end()` iterator is an empty sentinel, the range will never model
+    `std::common_range` (but the sentinel may model `std::sized_sentinel_for<Begin>` if
+    `ssize()` is available).
 
     The indices are meant to reflect typical loop syntax in a variety of languages,
     and can effectively replace any C-style `for` or `while` loop with zero overhead.
@@ -1035,11 +1025,15 @@ namespace impl {
         >;
 
     private:
-        using copy = iota<meta::unqualify<Start>, Stop, Step>;
+        using copy = iota<
+            meta::unqualify<start_type>,
+            meta::as_const_ref<stop_type>,
+            meta::as_const_ref<step_type>
+        >;
 
-        [[no_unique_address]] impl::ref<Start> m_start {};
-        [[no_unique_address]] impl::ref<Stop> m_stop {};
-        [[no_unique_address]] impl::ref<Step> m_step {};
+        [[no_unique_address]] impl::ref<start_type> m_start {};
+        [[no_unique_address]] impl::ref<stop_type> m_stop {};
+        [[no_unique_address]] impl::ref<step_type> m_step {};
 
     public:
         [[nodiscard]] constexpr iota() = default;
@@ -1049,18 +1043,18 @@ namespace impl {
             meta::forward<Step> step = {}
         )
             noexcept (requires{
-                {impl::ref<Start>{std::forward<Start>(start)}} noexcept;
-                {impl::ref<Stop>{std::forward<Stop>(stop)}} noexcept;
-                {impl::ref<Step>{std::forward<Step>(step)}} noexcept;
+                {impl::ref<start_type>{std::forward<Start>(start)}} noexcept;
+                {impl::ref<stop_type>{std::forward<Stop>(stop)}} noexcept;
+                {impl::ref<step_type>{std::forward<Step>(step)}} noexcept;
             } && (
                 !DEBUG ||
                 !iota_linear<Start, Step> ||
                 !requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
             ))
             requires (requires{
-                {impl::ref<Start>{std::forward<Start>(start)}};
-                {impl::ref<Stop>{std::forward<Stop>(stop)}};
-                {impl::ref<Step>{std::forward<Step>(step)}};
+                {impl::ref<start_type>{std::forward<Start>(start)}};
+                {impl::ref<stop_type>{std::forward<Stop>(stop)}};
+                {impl::ref<step_type>{std::forward<Step>(step)}};
             })
         :
             m_start{std::forward<Start>(start)},
@@ -1079,8 +1073,8 @@ namespace impl {
         }
         [[nodiscard]] constexpr iota(
             const meta::unqualify<Start>& start,
-            const impl::ref<Stop>& stop,
-            const impl::ref<Step>& step
+            const meta::unqualify<Stop>& stop,
+            const meta::unqualify<Step>& step
         )
             noexcept (requires{
                 {impl::ref<Start>{start}} noexcept;
@@ -1096,26 +1090,6 @@ namespace impl {
             m_start{start},
             m_stop{stop},
             m_step{step}
-        {}
-        [[nodiscard]] constexpr iota(
-            meta::unqualify<Start>&& start,
-            impl::ref<Stop>&& stop,
-            impl::ref<Step>&& step
-        )
-            noexcept (requires{
-                {impl::ref<Start>{std::move(start)}} noexcept;
-                {impl::ref<Stop>{std::move(stop)}} noexcept;
-                {impl::ref<Step>{std::move(step)}} noexcept;
-            })
-            requires (requires{
-                {impl::ref<Start>{std::move(start)}};
-                {impl::ref<Stop>{std::move(stop)}};
-                {impl::ref<Step>{std::move(step)}};
-            })
-        :
-            m_start{std::move(start)},
-            m_stop{std::move(stop)},
-            m_step{std::move(step)}
         {}
 
         constexpr void swap(iota& other)
@@ -1156,21 +1130,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr copy begin() const
-            noexcept (requires{{copy{start(), m_stop, m_step}} noexcept;})
-            requires (requires{{copy{start(), m_stop, m_step}};})
+            noexcept (requires{{copy{start(), stop(), step()}} noexcept;})
+            requires (requires{{copy{start(), stop(), step()}};})
         {
-            return copy{start(), m_stop, m_step};
-        }
-
-        [[nodiscard]] constexpr copy begin() &&
-            noexcept (requires{
-                {copy{std::move(start()), std::move(m_stop), std::move(m_step)}} noexcept;
-            })
-            requires (requires{
-                {copy{std::move(start()), std::move(m_stop), std::move(m_step)}};
-            })
-        {
-            return copy{std::move(start()), std::move(m_stop), std::move(m_step)};
+            return copy{start(), stop(), step()};
         }
 
         [[nodiscard]] static constexpr NoneType end() noexcept {
@@ -1832,15 +1795,14 @@ namespace impl {
 
     Ranges of this form expose `size()` and `ssize()` methods as long as
     `(stop - start) / step` is a valid expression, and will also support indexing via
-    the subscript operator if the underlying iterator supports it.  The range always
-    models `std::borrowed_range`, and if the underlying iterator is also bidirectional,
-    then the range will model `std::bidirectional_range` as well.  If the iterator is
-    random-access, then the range will model `std::random_access_range`, and if
-    it is contiguous and no step size is given, then the range will model
-    `std::contiguous_range` and provide a `data()` method as well.  Since the `end()`
-    iterator is an empty sentinel, the range will never model `std::common_range`
-    (but the sentinel may model `std::sized_sentinel_for<Begin>` if `ssize()` is
-    available). */
+    the subscript operator if the underlying iterator supports it.  If the underlying
+    iterator is also bidirectional, then the range will model
+    `std::bidirectional_range` as well.  If the iterator is random-access, then the
+    range will model `std::random_access_range`, and if it is contiguous and no step
+    size is given, then the range will model `std::contiguous_range` and provide a
+    `data()` method as well.  Since the `end()` iterator is an empty sentinel, the
+    range will never model `std::common_range` (but the sentinel may model
+    `std::sized_sentinel_for<Begin>` if `ssize()` is available). */
     template <typename Start, typename Stop = subrange_tag, typename Step = subrange_tag>
         requires (subrange_concept<Start, Stop, Step>)
     struct subrange : subrange_tag {
@@ -1883,7 +1845,11 @@ namespace impl {
         >;
 
     private:
-        using copy = subrange<meta::unqualify<start_type>, stop_type, step_type>;
+        using copy = subrange<
+            meta::unqualify<start_type>,
+            meta::as_const_ref<stop_type>,
+            meta::as_const_ref<step_type>
+        >;
 
         static constexpr subrange_check check =
             (subrange_infinite<Stop> || subrange_simple<Start, Step>) ?
@@ -2023,8 +1989,8 @@ namespace impl {
         }
         [[nodiscard]] constexpr subrange(
             const meta::unqualify<start_type>& start,
-            const impl::ref<stop_type>& stop,
-            const impl::ref<step_type>& step,
+            const meta::unqualify<stop_type>& stop,
+            const meta::unqualify<step_type>& step,
             const difference_type& index,
             const overflow_type& overflow
         )
@@ -2048,34 +2014,6 @@ namespace impl {
             m_step{step},
             m_index(index),
             m_overflow(overflow)
-        {}
-        [[nodiscard]] constexpr subrange(
-            meta::unqualify<start_type>&& start,
-            impl::ref<stop_type>&& stop,
-            impl::ref<step_type>&& step,
-            difference_type&& index,
-            overflow_type&& overflow
-        )
-            noexcept (requires{
-                {impl::ref<start_type>{std::move(start)}} noexcept;
-                {impl::ref<stop_type>{std::move(stop)}} noexcept;
-                {impl::ref<step_type>{std::move(step)}} noexcept;
-                {difference_type(std::move(index))} noexcept;
-                {overflow_type(std::move(overflow))} noexcept;
-            })
-            requires (requires{
-                {impl::ref<start_type>{std::move(start)}};
-                {impl::ref<stop_type>{std::move(stop)}};
-                {impl::ref<step_type>{std::move(step)}};
-                {difference_type(std::move(index))};
-                {overflow_type(std::move(overflow))};
-            })
-        :
-            m_start{std::move(start)},
-            m_stop{std::move(stop)},
-            m_step{std::move(step)},
-            m_index(std::move(index)),
-            m_overflow(std::move(overflow))
         {}
 
         constexpr void swap(subrange& other)
@@ -2102,35 +2040,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr copy begin() const
-            noexcept (requires{{copy{start(), m_stop, m_step, m_index, m_overflow}} noexcept;})
-            requires (requires{{copy{start(), m_stop, m_step, m_index, m_overflow}};})
+            noexcept (requires{{copy{start(), stop(), step(), m_index, m_overflow}} noexcept;})
+            requires (requires{{copy{start(), stop(), step(), m_index, m_overflow}};})
         {
-            return copy{start(), m_stop, m_step, m_index, m_overflow};
-        }
-
-        [[nodiscard]] constexpr copy begin() &&
-            noexcept (requires{{copy{
-                std::move(start()),
-                std::move(m_stop),
-                std::move(m_step),
-                std::move(m_index),
-                std::move(m_overflow)
-            }} noexcept;})
-            requires (requires{{copy{
-                std::move(start()),
-                std::move(m_stop),
-                std::move(m_step),
-                std::move(m_index),
-                std::move(m_overflow)
-            }};})
-        {
-            return copy{
-                std::move(start()),
-                std::move(m_stop),
-                std::move(m_step),
-                std::move(m_index),
-                std::move(m_overflow)
-            };
+            return copy{start(), stop(), step(), m_index, m_overflow};
         }
 
         [[nodiscard]] static constexpr NoneType end() noexcept {
@@ -3989,12 +3902,12 @@ namespace impl {
         };
 
         template <typename Self, typename to>
-        concept constructor = requires(Self self) {
+        concept construct = requires(Self self) {
             {to(std::from_range, std::forward<Self>(self))};
         };
 
         template <typename Self, typename to>
-        concept subrange = requires(Self self) {
+        concept traverse = requires(Self self) {
             {to(self.begin(), self.end())};
         };
 
@@ -5646,7 +5559,7 @@ namespace iter {
             } noexcept -> meta::nothrow::convertible_to<to>;})
             requires (impl::range_convert::direct<Self, to>)
         {
-            return to(impl::range_value(std::forward<Self>(self)));
+            return impl::range_value(std::forward<Self>(self));
         }
 
         /* If no direct conversion exists, allow conversion to any type `T` that
@@ -5656,7 +5569,7 @@ namespace iter {
             noexcept (requires{{to(std::from_range, std::forward<Self>(self))} noexcept;})
             requires (
                 !impl::range_convert::direct<Self, to> &&
-                impl::range_convert::constructor<Self, to>
+                impl::range_convert::construct<Self, to>
             )
         {
             return to(std::from_range, std::forward<Self>(self));
@@ -5669,8 +5582,8 @@ namespace iter {
             noexcept (requires{{to(self.begin(), self.end())} noexcept;})
             requires (
                 !impl::range_convert::direct<Self, to> &&
-                !impl::range_convert::constructor<Self, to> &&
-                impl::range_convert::subrange<Self, to>
+                !impl::range_convert::construct<Self, to> &&
+                impl::range_convert::traverse<Self, to>
             )
         {
             return to(self.begin(), self.end());
@@ -5688,8 +5601,8 @@ namespace iter {
             )} noexcept;})
             requires (
                 !impl::range_convert::direct<Self, to> &&
-                !impl::range_convert::constructor<Self, to> &&
-                !impl::range_convert::subrange<Self, to> &&
+                !impl::range_convert::construct<Self, to> &&
+                !impl::range_convert::traverse<Self, to> &&
                 impl::range_convert::tuple_to_tuple<Self, to>
             )
         {
@@ -5708,8 +5621,8 @@ namespace iter {
         [[nodiscard]] constexpr operator to(this Self&& self)
             requires (
                 !impl::range_convert::direct<Self, to> &&
-                !impl::range_convert::constructor<Self, to> &&
-                !impl::range_convert::subrange<Self, to> &&
+                !impl::range_convert::construct<Self, to> &&
+                !impl::range_convert::traverse<Self, to> &&
                 !impl::range_convert::tuple_to_tuple<Self, to> &&
                 impl::range_convert::iter_to_tuple<Self, to>
             )
@@ -7002,18 +6915,13 @@ namespace std {
         /// underlying type is an lvalue or models borrowed_range.
 
         template <typename Start, typename Stop, typename Step>
-        constexpr bool enable_borrowed_range<bertrand::impl::iota<Start, Stop, Step>> = true;
-
-        template <typename Start, typename Stop, typename Step>
         constexpr bool enable_borrowed_range<bertrand::impl::subrange<Start, Stop, Step>> = true;
 
         template <typename C>
-        constexpr bool enable_borrowed_range<bertrand::iter::range<C>> =
-            std::ranges::borrowed_range<C>;
+        constexpr bool enable_borrowed_range<bertrand::iter::range<C>> = borrowed_range<C>;
 
         template <typename C>
-        constexpr bool enable_borrowed_range<bertrand::iter::unpack<C>> =
-            std::ranges::borrowed_range<C>;
+        constexpr bool enable_borrowed_range<bertrand::iter::unpack<C>> = borrowed_range<C>;
 
     }
 
@@ -7071,6 +6979,23 @@ namespace std {
 
 
 namespace bertrand::iter {
+
+    static_assert([] {
+        int limit = 3;
+        auto r = range(0, [&](int x) {
+            return x < limit;
+        });
+
+        std::array arr {1, 2, 3};
+        auto end = arr.end();
+        auto r2 = range(arr.begin(), [&end](const auto& it) {
+            return it != end;
+        });
+
+
+        return true;
+    }());
+
 
     // static_assert([] {
     //     auto r = (range(range(std::array{1, 2, 3})) = std::array{4, 5, 6});
