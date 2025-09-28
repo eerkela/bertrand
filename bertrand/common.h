@@ -176,6 +176,7 @@ static_assert(
 
 
 namespace impl {
+    struct prefer_constructor_tag {};
     struct basic_tuple_tag {};
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
@@ -1349,7 +1350,7 @@ namespace meta {
     namespace detail {
 
         template <typename T>
-        constexpr bool prefer_constructor = false;
+        constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
 
         template <typename L, typename R>
         constexpr bool convertible_to = ::std::convertible_to<L, R>;
@@ -4830,7 +4831,7 @@ where all relevant information is isolated to the begin iterator.  Special signi
 is also given to this type within the monadic union interface, where it represents
 either the empty state of an `Optional` or the result state of an `Expected<void>`,
 depending on context. */
-struct NoneType {
+struct NoneType : impl::prefer_constructor_tag {
     [[nodiscard]] constexpr NoneType() = default;
     [[nodiscard]] constexpr NoneType(std::nullopt_t) noexcept {}
     [[nodiscard]] constexpr NoneType(std::nullptr_t) noexcept {}
@@ -4922,14 +4923,6 @@ namespace impl {
 
         [[no_unique_address]] type data;
 
-        template <typename... A>
-        [[nodiscard]] constexpr ref(A&&... args) 
-            noexcept (requires{{type{std::forward<A>(args)...}} noexcept;})
-            requires (requires{{type{std::forward<A>(args)...}};})
-        :
-            data{std::forward<A>(args)...}
-        {};
-
         constexpr void swap(ref& other)
             noexcept (requires{{std::ranges::swap(data, other.data)} noexcept;})
             requires (requires{{std::ranges::swap(data, other.data)};})
@@ -4968,14 +4961,14 @@ namespace impl {
 
     private:
         union maybe_null {
-            struct storage { type value; } wrapper;
+            struct storage : impl::prefer_constructor_tag { type value; } wrapper;
             constexpr maybe_null() noexcept {}
-            constexpr maybe_null(type v) noexcept : wrapper(v) {}
+            constexpr maybe_null(type v) noexcept : wrapper{{}, v} {}
             constexpr maybe_null(const maybe_null& other) noexcept :
                 wrapper(other.wrapper)
             {}
             constexpr maybe_null& operator=(const maybe_null& other) noexcept {
-                std::construct_at(this, other.wrapper);
+                std::construct_at(this, other);
                 return *this;
             }
             constexpr ~maybe_null() noexcept {}
@@ -4983,16 +4976,6 @@ namespace impl {
 
     public:
         maybe_null data;
-
-        constexpr ref() noexcept : data{} {}
-        constexpr ref(type v) noexcept : data{v} {}
-
-        constexpr ref& operator=(const ref& other) noexcept {
-            data = other.data;
-            return *this;
-        }
-
-        constexpr ~ref() noexcept {}
 
         constexpr void swap(ref& other) noexcept {
             ref tmp{*this};
@@ -5032,7 +5015,6 @@ namespace impl {
     the `->` expression, and then be released immediately afterwards. */
     template <meta::not_void T>
     struct arrow : ref<T> {
-        using ref<T>::ref;
         constexpr auto operator->()
             noexcept (requires{{meta::to_arrow(**this)} noexcept;})
             requires (requires{{meta::to_arrow(**this)};})
@@ -5060,7 +5042,7 @@ namespace impl {
     need to store multiple values of different types, some of which may be lvalues,
     which should be stored by reference rather than by value. */
     template <meta::not_rvalue...>
-    struct basic_tuple : impl::basic_tuple_tag {
+    struct basic_tuple : impl::basic_tuple_tag, impl::prefer_constructor_tag {
         [[nodiscard]] constexpr basic_tuple() noexcept {};
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
@@ -5338,7 +5320,7 @@ namespace impl {
 
     /* A simple functor that implements a universal, non-cryptographic FNV-1a string
     hashing algorithm, which is stable at both compile time and runtime. */
-    struct fnv1a {
+    struct fnv1a : impl::prefer_constructor_tag {
         static constexpr size_t seed =
             sizeof(size_t) > 4 ? size_t(14695981039346656037ULL) : size_t(2166136261U);
 
@@ -5391,7 +5373,7 @@ namespace impl {
     /// functions.
 
     template <typename T>
-    struct Construct {
+    struct Construct : impl::prefer_constructor_tag {
         template <typename... Args>
         static constexpr T operator()(Args&&... args)
             noexcept (meta::nothrow::constructible_from<T, Args...>)
@@ -5401,7 +5383,7 @@ namespace impl {
         }
     };
 
-    struct Assign {
+    struct Assign : impl::prefer_constructor_tag {
         template <typename T, typename U>
         static constexpr decltype(auto) operator()(T&& curr, U&& other)
             noexcept (meta::nothrow::assignable<T, U>)
@@ -5412,7 +5394,7 @@ namespace impl {
     };
 
     template <meta::not_void T>
-    struct ConvertTo {
+    struct ConvertTo : impl::prefer_constructor_tag {
         template <meta::convertible_to<T> U>
         static constexpr T operator()(U&& value)
             noexcept (meta::nothrow::convertible_to<U, T>)
@@ -5422,7 +5404,7 @@ namespace impl {
     };
 
     template <meta::not_void T>
-    struct ExplicitConvertTo {
+    struct ExplicitConvertTo : impl::prefer_constructor_tag {
         template <meta::explicitly_convertible_to<T> U>
         static constexpr T operator()(U&& value)
             noexcept (meta::nothrow::explicitly_convertible_to<U, T>)
@@ -5431,7 +5413,7 @@ namespace impl {
         }
     };
 
-    struct Hash {
+    struct Hash : impl::prefer_constructor_tag {
         template <meta::hashable T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept (meta::nothrow::hashable<T>)
@@ -5440,7 +5422,7 @@ namespace impl {
         }
     };
 
-    struct AddressOf {
+    struct AddressOf : impl::prefer_constructor_tag {
         template <meta::has_address T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_address<T>)
@@ -5449,7 +5431,7 @@ namespace impl {
         }
     };
 
-    struct Dereference {
+    struct Dereference : impl::prefer_constructor_tag {
         template <meta::has_dereference T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_dereference<T>)
@@ -5458,7 +5440,7 @@ namespace impl {
         }
     };
 
-    struct Arrow {
+    struct Arrow : impl::prefer_constructor_tag {
         template <meta::has_arrow T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_arrow<T>)
@@ -5467,7 +5449,7 @@ namespace impl {
         }
     };
 
-    struct ArrowDereference {
+    struct ArrowDereference : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_arrow_dereference<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_arrow_dereference<L, R>)
@@ -5476,7 +5458,7 @@ namespace impl {
         }
     };
 
-    struct Call {
+    struct Call : impl::prefer_constructor_tag {
         template <typename F, typename... A> requires (meta::callable<F, A...>)
         static constexpr decltype(auto) operator()(F&& f, A&&... args)
             noexcept(meta::nothrow::callable<F, A...>)
@@ -5485,7 +5467,7 @@ namespace impl {
         }
     };
 
-    struct Subscript {
+    struct Subscript : impl::prefer_constructor_tag {
         template <typename T, typename... K> requires (meta::indexable<T, K...>)
         static constexpr decltype(auto) operator()(T&& value, K&&... keys)
             noexcept(meta::nothrow::indexable<T, K...>)
@@ -5494,7 +5476,7 @@ namespace impl {
         }
     };
 
-    struct Pos {
+    struct Pos : impl::prefer_constructor_tag {
         template <meta::has_pos T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_pos<T>)
@@ -5503,7 +5485,7 @@ namespace impl {
         }
     };
 
-    struct Neg {
+    struct Neg : impl::prefer_constructor_tag {
         template <meta::has_neg T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_neg<T>)
@@ -5512,7 +5494,7 @@ namespace impl {
         }
     };
 
-    struct PreIncrement {
+    struct PreIncrement : impl::prefer_constructor_tag {
         template <meta::has_preincrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_preincrement<T>)
@@ -5521,7 +5503,7 @@ namespace impl {
         }
     };
 
-    struct PostIncrement {
+    struct PostIncrement : impl::prefer_constructor_tag {
         template <meta::has_postincrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_postincrement<T>)
@@ -5530,7 +5512,7 @@ namespace impl {
         }
     };
 
-    struct PreDecrement {
+    struct PreDecrement : impl::prefer_constructor_tag {
         template <meta::has_predecrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_predecrement<T>)
@@ -5539,7 +5521,7 @@ namespace impl {
         }
     };
 
-    struct PostDecrement {
+    struct PostDecrement : impl::prefer_constructor_tag {
         template <meta::has_postdecrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_postdecrement<T>)
@@ -5548,7 +5530,7 @@ namespace impl {
         }
     };
 
-    struct LogicalNot {
+    struct LogicalNot : impl::prefer_constructor_tag {
         template <meta::has_logical_not T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_logical_not<T>)
@@ -5557,7 +5539,7 @@ namespace impl {
         }
     };
 
-    struct LogicalAnd {
+    struct LogicalAnd : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_logical_and<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_logical_and<L, R>)
@@ -5566,7 +5548,7 @@ namespace impl {
         }
     };
 
-    struct LogicalOr {
+    struct LogicalOr : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_logical_or<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_logical_or<L, R>)
@@ -5575,7 +5557,7 @@ namespace impl {
         }
     };
 
-    struct Less {
+    struct Less : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_lt<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_lt<L, R>)
@@ -5584,7 +5566,7 @@ namespace impl {
         }
     };
 
-    struct LessEqual {
+    struct LessEqual : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_le<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_le<L, R>)
@@ -5593,7 +5575,7 @@ namespace impl {
         }
     };
 
-    struct Equal {
+    struct Equal : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_eq<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_eq<L, R>)
@@ -5602,7 +5584,7 @@ namespace impl {
         }
     };
 
-    struct NotEqual {
+    struct NotEqual : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_ne<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ne<L, R>)
@@ -5611,7 +5593,7 @@ namespace impl {
         }
     };
 
-    struct GreaterEqual {
+    struct GreaterEqual : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_ge<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ge<L, R>)
@@ -5620,7 +5602,7 @@ namespace impl {
         }
     };
 
-    struct Greater {
+    struct Greater : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_gt<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_gt<L, R>)
@@ -5629,7 +5611,7 @@ namespace impl {
         }
     };
 
-    struct Spaceship {
+    struct Spaceship : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_spaceship<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_spaceship<L, R>)
@@ -5638,7 +5620,7 @@ namespace impl {
         }
     };
 
-    struct Add {
+    struct Add : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_add<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_add<L, R>)
@@ -5647,7 +5629,7 @@ namespace impl {
         }
     };
 
-    struct InplaceAdd {
+    struct InplaceAdd : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_iadd<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_iadd<L, R>)
@@ -5656,7 +5638,7 @@ namespace impl {
         }
     };
 
-    struct Subtract {
+    struct Subtract : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_sub<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_sub<L, R>)
@@ -5665,7 +5647,7 @@ namespace impl {
         }
     };
 
-    struct InplaceSubtract {
+    struct InplaceSubtract : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_isub<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_isub<L, R>)
@@ -5674,7 +5656,7 @@ namespace impl {
         }
     };
 
-    struct Multiply {
+    struct Multiply : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_mul<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_mul<L, R>)
@@ -5683,7 +5665,7 @@ namespace impl {
         }
     };
 
-    struct InplaceMultiply {
+    struct InplaceMultiply : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_imul<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_imul<L, R>)
@@ -5692,7 +5674,7 @@ namespace impl {
         }
     };
 
-    struct Divide {
+    struct Divide : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_div<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_div<L, R>)
@@ -5701,7 +5683,7 @@ namespace impl {
         }
     };
 
-    struct InplaceDivide {
+    struct InplaceDivide : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_idiv<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_idiv<L, R>)
@@ -5710,7 +5692,7 @@ namespace impl {
         }
     };
 
-    struct Modulus {
+    struct Modulus : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_mod<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_mod<L, R>)
@@ -5719,7 +5701,7 @@ namespace impl {
         }
     };
 
-    struct InplaceModulus {
+    struct InplaceModulus : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_imod<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_imod<L, R>)
@@ -5728,7 +5710,7 @@ namespace impl {
         }
     };
 
-    struct LeftShift {
+    struct LeftShift : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_lshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_lshift<L, R>)
@@ -5737,7 +5719,7 @@ namespace impl {
         }
     };
 
-    struct InplaceLeftShift {
+    struct InplaceLeftShift : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_ilshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ilshift<L, R>)
@@ -5746,7 +5728,7 @@ namespace impl {
         }
     };
 
-    struct RightShift {
+    struct RightShift : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_rshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_rshift<L, R>)
@@ -5755,7 +5737,7 @@ namespace impl {
         }
     };
 
-    struct InplaceRightShift {
+    struct InplaceRightShift : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_irshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_irshift<L, R>)
@@ -5764,7 +5746,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseNot {
+    struct BitwiseNot : impl::prefer_constructor_tag {
         template <meta::has_bitwise_not T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_bitwise_not<T>)
@@ -5773,7 +5755,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseAnd {
+    struct BitwiseAnd : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_and<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_and<L, R>)
@@ -5782,7 +5764,7 @@ namespace impl {
         }
     };
 
-    struct InplaceBitwiseAnd {
+    struct InplaceBitwiseAnd : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_iand<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_iand<L, R>)
@@ -5791,7 +5773,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseOr {
+    struct BitwiseOr : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_or<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_or<L, R>)
@@ -5800,7 +5782,7 @@ namespace impl {
         }
     };
 
-    struct InplaceBitwiseOr {
+    struct InplaceBitwiseOr : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_ior<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ior<L, R>)
@@ -5809,7 +5791,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseXor {
+    struct BitwiseXor : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_xor<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_xor<L, R>)
@@ -5818,7 +5800,7 @@ namespace impl {
         }
     };
 
-    struct InplaceBitwiseXor {
+    struct InplaceBitwiseXor : impl::prefer_constructor_tag {
         template <typename L, typename R> requires (meta::has_ixor<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ixor<L, R>)
@@ -5828,14 +5810,6 @@ namespace impl {
     };
 
 }
-
-
-static_assert([] {
-    impl::ref x = 1;
-    impl::ref y = 2;
-    std::ranges::swap(x, y);
-    return *y == 1 && *x == 2;
-}());
 
 
 /// TODO: static_str<N> -> Str<Optional<N> = None>?
@@ -6048,6 +6022,15 @@ namespace meta {
         constexpr bool static_str = false;
         template <size_t N>
         constexpr bool static_str<bertrand::static_str<N>> = true;
+
+        template <typename T>
+        constexpr bool prefer_constructor<impl::ref<T>> = true;
+        template <typename T>
+        constexpr bool prefer_constructor<impl::arrow<T>> = true;
+        template <template <auto> typename F, auto... Ts>
+        constexpr bool prefer_constructor<impl::vtable<F, Ts...>> = true;
+        template <typename T>
+        constexpr bool prefer_constructor<impl::contiguous_iterator<T>> = true;
 
     }
 

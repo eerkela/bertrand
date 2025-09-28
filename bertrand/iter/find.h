@@ -538,7 +538,7 @@ namespace iter {
         // auto f = find{"b", "c"}(
         //     std::array{sv{"a"}, sv{"b"}, sv{"c"}}
         // );
-        if (f.value() != "b") return false;
+        if (f.front().front() != "b") return false;
 
         size_t i = 0;
         for (auto&& s : f) {

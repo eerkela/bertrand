@@ -1328,10 +1328,10 @@ namespace impl {
 
             template <typename... A>
             constexpr _type(tag<0>, A&&... args)
-                noexcept (meta::nothrow::constructible_from<U, A...>)
-                requires (meta::constructible_from<U, A...>)
+                noexcept (requires{{U(std::forward<A>(args)...)} noexcept;})
+                requires (requires{{U(std::forward<A>(args)...)};})
             :
-                curr(std::forward<A>(args)...)
+                curr{U(std::forward<A>(args)...)}
             {}
 
             template <size_t I, typename... A> requires (I > 0)
@@ -1354,13 +1354,13 @@ namespace impl {
             template <size_t I, typename... A> requires (I == 0)
             constexpr void construct(A&&... args)
                 noexcept (requires{
-                    {std::construct_at(&curr, std::forward<A>(args)...)} noexcept;
+                    {std::construct_at(&curr, U(std::forward<A>(args)...))} noexcept;
                 })
                 requires (requires{
-                    {std::construct_at(&curr, std::forward<A>(args)...)};
+                    {std::construct_at(&curr, U(std::forward<A>(args)...))};
                 })
             {
-                std::construct_at(&curr, std::forward<A>(args)...);
+                std::construct_at(&curr, U(std::forward<A>(args)...));
             }
 
             template <size_t I, typename... A> requires (I > 0)
