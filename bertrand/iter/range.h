@@ -190,9 +190,6 @@ namespace impl {
         [[nodiscard]] constexpr size_t size() const noexcept { return __value != None; }
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return __value != None; }
         [[nodiscard]] constexpr bool empty() const noexcept { return __value == None; }
-        [[nodiscard]] constexpr std::array<size_t, 1> shape() const noexcept {
-            return {size()};
-        }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
@@ -436,13 +433,6 @@ namespace impl {
         };
         using dispatch = impl::basic_vtable<fn, meta::tuple_size<C>>;
     };
-
-
-
-    /// TODO: tuple ranges should conditionally expose `shape()` if all of the elements
-    /// are the same size?
-
-
 
     template <typename>
     struct _tuple_range : tuple_range_tag {
@@ -6166,9 +6156,11 @@ namespace impl {
     struct sequence_flags {
         uint8_t ndims = 0;
         bool size = false;
-        bool subscript = false;
         bool data = false;
+        bool subscript = false;
         bool reverse = false;
+        bool contains = false;
+        bool copy = false;
     };
 
     template <typename C>
@@ -6493,6 +6485,23 @@ namespace impl {
 
         [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
     };
+
+    /// TODO: this specialization is probably not necessary, since I'll just encode
+    /// the presence of these operators at compile time, and therefore no errors
+    /// should occur.
+
+    /// TODO: it might also make sense to convert `sequence<>` into just a `using`
+    /// directive that aliases to a specialization of `range<impl::sequence<>>` rather
+    /// than a separate class.  That might be slightly more general and maintainable
+    /// on that basis.
+    /// -> Actually, sequences might need to be able to adapt ranges, and may need to
+    /// convert all of the nested ranges into nested sequences in order to avoid
+    /// leaking type information.
+
+    /// TODO: maybe `sequence` should be a strict container type rather than a range
+    /// at all?  You would instead need to convert the sequence to a range in order
+    /// to treat it like one.
+
 
     /* When compiled in debug mode, the sequence inserts extra error paths for when the
     size, empty, or subscript operators are applied to a container which does not
@@ -7216,7 +7225,7 @@ _LIBCPP_END_NAMESPACE_STD
 
 namespace bertrand::iter {
 
-    static_assert(range(range(std::array{1, 2, 3})).shape().size() == 2);
+    static_assert(range(range(std::array{std::tuple{1, 2, 3}})).shape()[0] == 1);
 
 
     // static_assert([] {

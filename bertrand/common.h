@@ -4273,8 +4273,6 @@ namespace meta {
 
     namespace detail {
 
-
-
         namespace adl {
 
             template <typename T>
