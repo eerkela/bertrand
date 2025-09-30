@@ -6248,10 +6248,7 @@ constexpr decltype(auto) operator->*(T&& val, F&& func)
 template <meta::visit_monad T>
 constexpr decltype(auto) operator!(T&& val)
     noexcept (meta::nothrow::force_visit<1, impl::LogicalNot, T>)
-    requires (
-        !meta::explicitly_convertible_to<T, bool> &&
-        meta::force_visit<1, impl::LogicalNot, T>
-    )
+    requires (!meta::truthy<T> && meta::force_visit<1, impl::LogicalNot, T>)
 {
     return (impl::visit<1>(impl::LogicalNot{}, std::forward<T>(val)));
 }
@@ -6261,8 +6258,8 @@ template <typename L, typename R>
 constexpr decltype(auto) operator&&(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::force_visit<1, impl::LogicalAnd, L, R>)
     requires ((
-        (meta::visit_monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
-        (meta::visit_monad<R> && !meta::explicitly_convertible_to<R, bool>)
+        (meta::visit_monad<L> && !meta::truthy<L>) ||
+        (meta::visit_monad<R> && !meta::truthy<R>)
     ) && meta::force_visit<1, impl::LogicalAnd, L, R>)
 {
     return (impl::visit<1>(
@@ -6277,8 +6274,8 @@ template <typename L, typename R>
 constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
     noexcept (meta::nothrow::force_visit<1, impl::LogicalOr, L, R>)
     requires ((
-        (meta::visit_monad<L> && !meta::explicitly_convertible_to<L, bool>) ||
-        (meta::visit_monad<R> && !meta::explicitly_convertible_to<R, bool>)
+        (meta::visit_monad<L> && !meta::truthy<L>) ||
+        (meta::visit_monad<R> && !meta::truthy<R>)
     ) && meta::force_visit<1, impl::LogicalOr, L, R>)
 {
     return (impl::visit<1>(
@@ -6787,7 +6784,7 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 }  // namespace bertrand
 
 
-namespace std {
+_LIBCPP_BEGIN_NAMESPACE_STD
 
     template <bertrand::meta::visit_monad T>
         requires (bertrand::meta::force_visit<1, bertrand::impl::Hash, T>)
@@ -6997,7 +6994,22 @@ namespace std {
         return (std::forward<T>(t).template get<I>());
     }
 
-}
+    /// TODO: a CTAD guide from Union<Ts...> to variant<Ts...>.  This will require
+    /// manual specialization for a given number of types, since CTAD doesn't allow
+    /// unpacking variadic parameter packs in a deduction guide.
+
+    template <bertrand::meta::Optional T>
+    optional(T&&) -> optional<
+        bertrand::meta::remove_reference<typename bertrand::impl::visitable<T>::value>
+    >;
+
+    template <bertrand::meta::Expected T>
+    expected(T&&) -> expected<
+        bertrand::meta::remove_reference<typename bertrand::impl::visitable<T>::value>,
+        typename bertrand::impl::visitable<T>::errors::template eval<bertrand::meta::union_type>
+    >;
+
+_LIBCPP_END_NAMESPACE_STD
 
 
 #endif  // BERTRAND_UNION_H

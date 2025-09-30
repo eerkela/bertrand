@@ -1393,12 +1393,15 @@ namespace meta {
 
     template <typename L, typename R>
     concept explicitly_convertible_to = requires(L from) {
-        { static_cast<R>(from) } -> ::std::same_as<R>;
+        {static_cast<R>(from)} -> ::std::same_as<R>;
     };
+
+    template <typename T>
+    concept truthy = explicitly_convertible_to<T, bool>;
 
     template <typename L, typename R>
     concept bit_castable_to = requires(L from) {
-        { ::std::bit_cast<R>(from) } -> ::std::same_as<R>;
+        {::std::bit_cast<R>(from)} -> ::std::same_as<R>;
     };
 
     namespace nothrow {
@@ -1411,12 +1414,19 @@ namespace meta {
         template <typename L, typename R>
         concept explicitly_convertible_to =
             meta::explicitly_convertible_to<L, R> &&
-            noexcept(static_cast<R>(::std::declval<L>()));
+            requires(L from) {
+                {static_cast<R>(from)} noexcept -> ::std::same_as<R>;
+            };
+
+        template <typename T>
+        concept truthy = meta::truthy<T> && nothrow::explicitly_convertible_to<T, bool>;
 
         template <typename L, typename R>
         concept bit_castable_to =
             meta::bit_castable_to<L, R> &&
-            noexcept(::std::bit_cast<R>(::std::declval<L>()));
+            requires(L from) {
+                {::std::bit_cast<R>(from)} noexcept -> ::std::same_as<R>;
+            };
 
     }
 
@@ -2357,7 +2367,8 @@ namespace meta {
             concept has_get = requires(T t) { get<A...>(t); };
 
             template <typename T, auto... A>
-            concept nothrow_has_get = requires(T t) { {get<A...>(t)} noexcept; };
+            concept nothrow_has_get =
+                has_get<T, A...> && requires(T t) {{get<A...>(t)} noexcept;};
 
             template <typename T, auto... A> requires (has_get<T, A...>)
             using get_type = decltype(get<A...>(::std::declval<T>()));
@@ -2366,128 +2377,65 @@ namespace meta {
             concept has_get_if = requires(T t) { get_if<A...>(t); };
 
             template <typename T, auto... A>
-            concept nothrow_has_get_if = requires(T t) { {get_if<A...>(t)} noexcept; };
+            concept nothrow_has_get_if =
+                has_get_if<T, A...> && requires(T t) {{get_if<A...>(t)} noexcept;};
 
             template <typename T, auto... A> requires (has_get_if<T, A...>)
             using get_if_type = decltype(get_if<A...>(::std::declval<T>()));
 
         }
 
-        template <typename T, auto... A>
-        concept has_member_get = requires(T t) {{t.template get<A...>()};};
+        namespace member {
 
-        template <typename T, auto... A> requires (has_member_get<T, A...>)
-        using member_get_type = decltype(::std::declval<T>().template get<A...>());
+            template <typename T, auto... A>
+            concept has_get = requires(T t) {{t.template get<A...>()};};
 
-        template <typename Ret, typename T, auto... A>
-        concept member_get_returns =
-            has_member_get<T, A...> && convertible_to<member_get_type<T, A...>, Ret>;
+            template <typename T, auto... A>
+            concept nothrow_has_get =
+                has_get<T, A...> &&
+                requires(T t) {{t.template get<A...>()} noexcept;};
 
-        template <typename T, auto... A>
-        concept has_adl_get = detail::adl::has_get<T, A...>;
+            template <typename T, auto... A> requires (has_get<T, A...>)
+            using get_type = decltype(::std::declval<T>().template get<A...>());
 
-        template <typename T, auto... A> requires (has_adl_get<T, A...>)
-        using adl_get_type = detail::adl::get_type<T, A...>;
+            template <typename T, auto... A>
+            concept has_get_if = requires(T t) {{t.template get_if<A...>()};};
 
-        template <typename Ret, typename T, auto... A>
-        concept adl_get_returns =
-            has_adl_get<T, A...> && convertible_to<adl_get_type<T, A...>, Ret>;
+            template <typename T, auto... A>
+            concept nothrow_has_get_if =
+                has_get_if<T, A...> &&
+                requires(T t) {{t.template get_if<A...>()} noexcept;};
 
-        template <typename T, auto... A>
-        concept has_member_get_if = requires(T t) {{t.template get_if<A...>()};};
+            template <typename T, auto... A> requires (has_get_if<T, A...>)
+            using get_if_type = decltype(::std::declval<T>().template get_if<A...>());
 
-        template <typename T, auto... A> requires (has_member_get_if<T, A...>)
-        using member_get_if_type = decltype(::std::declval<T>().template get_if<A...>());
-
-        template <typename Ret, typename T, auto... A>
-        concept member_get_if_returns =
-            has_member_get_if<T, A...> && convertible_to<member_get_if_type<T, A...>, Ret>;
+        }
 
         template <typename T, auto... A>
-        concept has_adl_get_if = detail::adl::has_get_if<T, A...>;
-
-        template <typename T, auto... A> requires (has_adl_get_if<T, A...>)
-        using adl_get_if_type = detail::adl::get_if_type<T, A...>;
-
-        template <typename Ret, typename T, auto... A>
-        concept adl_get_if_returns =
-            has_adl_get_if<T, A...> && convertible_to<adl_get_if_type<T, A...>, Ret>;
+        struct get_type { using type = member::get_type<T, A...>; };
+        template <typename T, auto... A>
+            requires (!member::has_get<T, A...> && adl::has_get<T, A...>)
+        struct get_type<T, A...> { using type = adl::get_type<T, A...>; };
 
         template <typename T, auto... A>
-        concept nothrow_has_member_get =
-            has_member_get<T, A...> &&
-            requires(T t) {{t.template get<A...>()} noexcept;};
-
-        template <typename T, auto... A> requires (nothrow_has_member_get<T, A...>)
-        using nothrow_member_get_type = member_get_type<T, A...>;
-
-        template <typename Ret, typename T, auto... A>
-        concept nothrow_member_get_returns =
-            nothrow_has_member_get<T, A...> &&
-            nothrow::convertible_to<nothrow_member_get_type<T, A...>, Ret>;
-
+        struct get_if_type { using type = member::get_if_type<T, A...>; };
         template <typename T, auto... A>
-        concept nothrow_has_adl_get =
-            has_adl_get<T, A...> && adl::nothrow_has_get<T, A...>;
-
-        template <typename T, auto... A> requires (nothrow_has_adl_get<T, A...>)
-        using nothrow_adl_get_type = adl_get_type<T, A...>;
-
-        template <typename Ret, typename T, auto... A>
-        concept nothrow_adl_get_returns =
-            nothrow_has_adl_get<T, A...> &&
-            nothrow::convertible_to<nothrow_adl_get_type<T, A...>, Ret>;
-
-        template <typename T, auto... A>
-        concept nothrow_has_member_get_if =
-            has_member_get_if<T, A...> &&
-            requires(T t) {{t.template get_if<A...>()} noexcept;};
-
-        template <typename T, auto... A> requires (nothrow_has_member_get_if<T, A...>)
-        using nothrow_member_get_if_type = member_get_if_type<T, A...>;
-
-        template <typename Ret, typename T, auto... A>
-        concept nothrow_member_get_if_returns =
-            nothrow_has_member_get_if<T, A...> &&
-            nothrow::convertible_to<nothrow_member_get_if_type<T, A...>, Ret>;
-
-        template <typename T, auto... A>
-        concept nothrow_has_adl_get_if =
-            has_adl_get_if<T, A...> && adl::nothrow_has_get_if<T, A...>;
-
-        template <typename T, auto... A> requires (nothrow_has_adl_get_if<T, A...>)
-        using nothrow_adl_get_if_type = adl_get_if_type<T, A...>;
-
-        template <typename Ret, typename T, auto... A>
-        concept nothrow_adl_get_if_returns =
-            nothrow_has_adl_get_if<T, A...> &&
-            nothrow::convertible_to<nothrow_adl_get_if_type<T, A...>, Ret>;
-
-        template <typename T, auto... A>
-        struct get_type { using type = member_get_type<T, A...>; };
-        template <typename T, auto... A>
-            requires (!has_member_get<T, A...> && has_adl_get<T, A...>)
-        struct get_type<T, A...> { using type = adl_get_type<T, A...>; };
-
-        template <typename T, auto... A>
-        struct get_if_type { using type = member_get_if_type<T, A...>; };
-        template <typename T, auto... A>
-            requires (!has_member_get_if<T, A...> && has_adl_get_if<T, A...>)
-        struct get_if_type<T, A...> { using type = adl_get_if_type<T, A...>; };
+            requires (!member::has_get_if<T, A...> && adl::has_get_if<T, A...>)
+        struct get_if_type<T, A...> { using type = adl::get_if_type<T, A...>; };
 
         template <auto... K>
         struct get_fn {
             template <typename T>
             static constexpr decltype(auto) operator()(T&& t)
-                noexcept (nothrow_has_member_get<T, K...>)
-                requires (has_member_get<T, K...>)
+                noexcept (member::nothrow_has_get<T, K...>)
+                requires (member::has_get<T, K...>)
             {
                 return (::std::forward<T>(t).template get<K...>());
             }
             template <typename T>
             static constexpr decltype(auto) operator()(T&& t)
-                noexcept (nothrow_has_adl_get<T, K...>)
-                requires (!has_member_get<T, K...> && has_adl_get<T, K...>)
+                noexcept (adl::nothrow_has_get<T, K...>)
+                requires (!member::has_get<T, K...> && adl::has_get<T, K...>)
             {
                 using ::std::get;
                 return (get<K...>(::std::forward<T>(t)));
@@ -2498,15 +2446,15 @@ namespace meta {
         struct get_if_fn {
             template <typename T>
             static constexpr decltype(auto) operator()(T&& t)
-                noexcept (nothrow_has_member_get_if<T, K...>)
-                requires (has_member_get_if<T, K...>)
+                noexcept (member::nothrow_has_get_if<T, K...>)
+                requires (member::has_get_if<T, K...>)
             {
                 return (::std::forward<T>(t).template get_if<K...>());
             }
             template <typename T>
             static constexpr decltype(auto) operator()(T&& t)
-                noexcept (nothrow_has_adl_get_if<T, K...>)
-                requires (!has_member_get_if<T, K...> && has_adl_get_if<T, K...>)
+                noexcept (adl::nothrow_has_get_if<T, K...>)
+                requires (!member::has_get_if<T, K...> && adl::has_get_if<T, K...>)
             {
                 using ::std::get_if;
                 return (get_if<K...>(::std::forward<T>(t)));
@@ -2520,7 +2468,7 @@ namespace meta {
     constexpr detail::get_fn<K...> get;
 
     template <typename T, auto... A>
-    concept has_get = detail::has_member_get<T, A...> || detail::has_adl_get<T, A...>;
+    concept has_get = detail::member::has_get<T, A...> || detail::adl::has_get<T, A...>;
 
     template <typename T, auto... A> requires (has_get<T, A...>)
     using get_type = detail::get_type<T, A...>::type;
@@ -2535,7 +2483,7 @@ namespace meta {
     constexpr detail::get_if_fn<K...> get_if;
 
     template <typename T, auto... A>
-    concept has_get_if = detail::has_member_get_if<T, A...> || detail::has_adl_get_if<T, A...>;
+    concept has_get_if = detail::member::has_get_if<T, A...> || detail::adl::has_get_if<T, A...>;
 
     template <typename T, auto... A> requires (has_get_if<T, A...>)
     using get_if_type = typename detail::get_if_type<T, A...>::type;
@@ -2548,8 +2496,10 @@ namespace meta {
 
         template <typename T, auto... A>
         concept has_get = meta::has_get<T, A...> && (
-            detail::nothrow_has_member_get<T, A...> ||
-            detail::nothrow_has_adl_get<T, A...>
+            detail::member::nothrow_has_get<T, A...> || (
+                !detail::member::nothrow_has_get<T, A...> &&
+                detail::adl::nothrow_has_get<T, A...>
+            )
         );
 
         template <typename T, auto... A> requires (nothrow::has_get<T, A...>)
@@ -2562,8 +2512,10 @@ namespace meta {
 
         template <typename T, auto... A>
         concept has_get_if = meta::has_get_if<T, A...> && (
-            detail::nothrow_has_member_get_if<T, A...> ||
-            detail::nothrow_has_adl_get_if<T, A...>
+            detail::member::nothrow_has_get_if<T, A...> || (
+                !detail::member::nothrow_has_get_if<T, A...> &&
+                detail::adl::nothrow_has_get_if<T, A...>
+            )
         );
 
         template <typename T, auto... A> requires (nothrow::has_get_if<T, A...>)
@@ -2741,8 +2693,8 @@ namespace meta {
             nothrow::iterator<T> &&
             meta::forward_iterator<T> &&
             requires(as_const_ref<T> t) {
-                {t == t} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {t != t} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t == t} noexcept -> nothrow::truthy;
+                {t != t} noexcept -> nothrow::truthy;
             };
 
         template <typename T>
@@ -2766,10 +2718,10 @@ namespace meta {
                 {t - n} noexcept;
                 {t[n]} noexcept;
             } && requires(as_const_ref<T> t1, as_const_ref<T> t2) {
-                {t1 < t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {t1 > t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {t1 <= t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {t1 >= t2} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t1 < t2} noexcept -> nothrow::truthy;
+                {t1 > t2} noexcept -> nothrow::truthy;
+                {t1 <= t2} noexcept -> nothrow::truthy;
+                {t1 >= t2} noexcept -> nothrow::truthy;
             };
 
         template <typename T>
@@ -2781,10 +2733,10 @@ namespace meta {
         concept sentinel_for =
             meta::sentinel_for<T, Iter> &&
             requires(as_const_ref<T> t, as_const_ref<Iter> i) {
-                {t == i} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {i == t} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {t != i} noexcept -> nothrow::explicitly_convertible_to<bool>;
-                {i != t} noexcept -> nothrow::explicitly_convertible_to<bool>;
+                {t == i} noexcept -> nothrow::truthy;
+                {i == t} noexcept -> nothrow::truthy;
+                {t != i} noexcept -> nothrow::truthy;
+                {i != t} noexcept -> nothrow::truthy;
             };
 
         template <typename T, typename Iter>
@@ -3144,22 +3096,6 @@ namespace meta {
 
     template <typename T, typename Char = char>
     concept formattable = ::std::formattable<T, Char>;
-
-    /// TODO: has_operator_bool -> truthy
-
-    template <typename T>
-    concept has_operator_bool = requires(T t) {
-        { static_cast<bool>(t) } -> convertible_to<bool>;
-    };
-
-    namespace nothrow {
-
-        template <typename T>
-        concept has_operator_bool =
-            meta::has_operator_bool<T> &&
-            noexcept((static_cast<bool>(::std::declval<T>())));
-
-    }
 
     template <typename T>
     concept has_dereference = requires(T t) { *t; };
@@ -4240,30 +4176,6 @@ namespace meta {
     ///////////////////////////////////
 
     template <typename T>
-    concept has_value = requires(T t) { t.value(); };
-
-    template <has_value T>
-    using value_type = decltype(::std::declval<T>().value());
-
-    template <typename Ret, typename T>
-    concept value_returns = has_value<T> && convertible_to<value_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept has_value =
-            meta::has_value<T> && noexcept(::std::declval<T>().value());
-
-        template <nothrow::has_value T>
-        using value_type = meta::value_type<T>;
-
-        template <typename Ret, typename T>
-        concept value_returns =
-            nothrow::has_value<T> && nothrow::convertible_to<nothrow::value_type<T>, Ret>;
-
-    }
-
-    template <typename T>
     concept has_data = requires(T t) { ::std::ranges::data(t); };
 
     template <has_data T>
@@ -4300,22 +4212,6 @@ namespace meta {
     template <typename Ret, typename T>
     concept size_returns = has_size<T> && convertible_to<size_type<T>, Ret>;
 
-    template <typename T>
-    concept has_ssize = requires(T t) {
-        { ::std::ranges::ssize(t) } -> signed_integer;
-    };
-
-    template <has_ssize T>
-    using ssize_type = decltype(::std::ranges::ssize(::std::declval<T>()));
-
-    template <typename Ret, typename T>
-    concept ssize_returns = has_ssize<T> && convertible_to<ssize_type<T>, Ret>;
-
-    template <typename T>
-    concept has_empty = requires(T t) {
-        { ::std::ranges::empty(t) } -> convertible_to<bool>;
-    };
-
     namespace nothrow {
 
         template <typename T>
@@ -4331,6 +4227,21 @@ namespace meta {
             nothrow::has_size<T> &&
             nothrow::convertible_to<nothrow::size_type<T>, Ret>;
 
+    }
+
+    template <typename T>
+    concept has_ssize = requires(T t) {
+        { ::std::ranges::ssize(t) } -> signed_integer;
+    };
+
+    template <has_ssize T>
+    using ssize_type = decltype(::std::ranges::ssize(::std::declval<T>()));
+
+    template <typename Ret, typename T>
+    concept ssize_returns = has_ssize<T> && convertible_to<ssize_type<T>, Ret>;
+
+    namespace nothrow {
+
         template <typename T>
         concept has_ssize =
             meta::has_ssize<T> &&
@@ -4344,10 +4255,215 @@ namespace meta {
             nothrow::has_ssize<T> &&
             nothrow::convertible_to<nothrow::ssize_type<T>, Ret>;
 
+    }
+
+    template <typename T>
+    concept has_empty = requires(T t) {
+        { ::std::ranges::empty(t) } -> convertible_to<bool>;
+    };
+
+    namespace nothrow {
+
         template <typename T>
         concept has_empty =
             meta::has_empty<T> &&
             noexcept(::std::ranges::empty(::std::declval<T>()));
+
+    }
+
+    namespace detail {
+
+
+
+        namespace adl {
+
+            template <typename T>
+            concept has_shape = requires(T t) {
+                {shape(::std::forward<T>(t))} -> meta::tuple_like;
+            };
+
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_shape = requires(T t) {
+                {::std::forward<T>(t).shape()} -> meta::tuple_like;
+            };
+
+        }
+
+        struct shape_fn {
+        private:
+            template <meta::tuple_like T, size_t... Is>
+            static constexpr ::std::array<size_t, meta::tuple_size<T>> _normalize(
+                T&& t,
+                ::std::index_sequence<Is...>
+            )
+                noexcept (requires{{::std::array<size_t, meta::tuple_size<T>>{
+                    size_t(meta::get<Is>(::std::forward<T>(t)))...
+                }} noexcept;})
+                requires (requires{{::std::array<size_t, meta::tuple_size<T>>{
+                    size_t(meta::get<Is>(::std::forward<T>(t)))...
+                }};})
+            {
+                return {size_t(meta::get<Is>(::std::forward<T>(t)))...};
+            }
+
+            template <meta::tuple_like T>
+            static constexpr auto normalize(T&& t)
+                noexcept (requires{{_normalize(
+                    ::std::forward<T>(t),
+                    ::std::make_index_sequence<meta::tuple_size<T>>{}
+                )} noexcept;})
+                requires (requires{{_normalize(
+                    ::std::forward<T>(t),
+                    ::std::make_index_sequence<meta::tuple_size<T>>{}
+                )};})
+            {
+                return _normalize(
+                    ::std::forward<T>(t),
+                    ::std::make_index_sequence<meta::tuple_size<T>>{}
+                );
+            }
+
+        public:
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{normalize(::std::forward<T>(t).shape())} noexcept;})
+                requires (
+                    member::has_shape<T> &&
+                    requires{{normalize(::std::forward<T>(t).shape())};}
+                )
+            {
+                return normalize(::std::forward<T>(t).shape());
+            }
+
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{normalize(shape(::std::forward<T>(t)))} noexcept;})
+                requires (
+                    !member::has_shape<T> &&
+                    adl::has_shape<T> &&
+                    requires{{normalize(shape(::std::forward<T>(t)))};}
+                )
+            {
+                return normalize(shape(::std::forward<T>(t)));
+            }
+
+        private:
+            template <
+                meta::tuple_like T,
+                typename = ::std::make_index_sequence<meta::tuple_size<T>>
+            >
+            static constexpr ::std::pair<bool, size_t> dimension {
+                meta::tuple_size<T> == 0,
+                0
+            };
+            template <meta::tuple_like T, size_t I, size_t... Is>
+                requires ((
+                    meta::tuple_like<meta::get_type<T, I>> &&
+                    ... &&
+                    meta::tuple_like<meta::get_type<T, Is>>
+                ) && ((
+                    meta::tuple_size<meta::get_type<T, I>> ==
+                    meta::tuple_size<meta::get_type<T, Is>>
+                ) && ...))
+            static constexpr ::std::pair<bool, size_t> dimension<
+                T,
+                ::std::index_sequence<I, Is...>
+            > {
+                true,
+                meta::tuple_size<meta::get_type<T, I>>
+            };
+
+            template <typename, size_t... Is>
+            struct eval {
+                static constexpr auto operator()() noexcept {
+                    return std::array<size_t, sizeof...(Is)>{Is...};
+                }
+                static constexpr auto operator()(size_t n) noexcept {
+                    return std::array<size_t, sizeof...(Is) + 1>{n, Is...};
+                }
+            };
+            template <meta::tuple_like T, meta::tuple_like... Ts, size_t... Is>
+                requires (
+                    (dimension<T>.first && ... && dimension<Ts>.first) &&
+                    ((dimension<T>.second == dimension<Ts>.second) && ...)
+                )
+            struct eval<meta::pack<T, Ts...>, Is...> : eval<
+                meta::concat<meta::tuple_types<T>, meta::tuple_types<Ts>...>,
+                Is...,
+                dimension<T>.second
+            > {};
+
+        public:
+            template <typename T>
+            static constexpr auto operator()(T&& t) noexcept
+                requires (
+                    !member::has_shape<T> &&
+                    !adl::has_shape<T> &&
+                    meta::tuple_like<T>
+                )
+            {
+                return eval<meta::pack<T>, meta::tuple_size<T>>{}();
+            }
+
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (meta::nothrow::size_returns<size_t, T>)
+                requires (
+                    !member::has_shape<T> &&
+                    !adl::has_shape<T> &&
+                    !meta::tuple_like<T> &&
+                    meta::iterable<T> &&
+                    meta::size_returns<size_t, T>
+                )
+            {
+                return eval<meta::pack<meta::yield_type<T>>>{}(::std::ranges::size(t));
+            }
+        };
+
+    }
+
+    /* Retrieve the `shape()` of a generic type by first checking for a `t.shape()`
+    member method and then falling back to an ADL-enabled `shape(t)` method.  If
+    neither is present, then a shape may be synthesized according to the following
+    rules:
+
+        1.  If the type is tuple-like, then the first element of the shape is equal
+            to its `tuple_size`.  If all of its elements are also tuple-like and have
+            the same size, then that size will be appended to the shape as the next
+            element, and so on until a non-tuple-like element or a size mismatch is
+            encountered, which marks the end of the shape.
+        2.  If the type is not tuple-like, but is both sized and iterable, then its
+            size will form the first element of the shape, and its yield type will be
+            examined as in (1) to form the rest of the shape.
+
+    Note that the result will always be returned as a `std::array<size_t, N>`, where
+    `N` is the number of dimensions that could be found. */
+    inline constexpr detail::shape_fn shape;
+
+    template <typename T>
+    concept has_shape = requires(T t) {{shape(t)};};
+
+    template <has_shape T>
+    using shape_type = decltype(shape(::std::declval<T>()));
+
+    template <typename Ret, typename T>
+    concept shape_returns = has_shape<T> && convertible_to<shape_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_shape = meta::has_shape<T> && requires(T t) {{shape(t)} noexcept;};
+
+        template <nothrow::has_shape T>
+        using shape_type = meta::shape_type<T>;
+
+        template <typename Ret, typename T>
+        concept shape_returns =
+            nothrow::has_shape<T> && nothrow::convertible_to<nothrow::shape_type<T>, Ret>;
 
     }
 

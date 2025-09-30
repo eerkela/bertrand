@@ -12,6 +12,7 @@ namespace bertrand {
 
 namespace impl {
     struct range_tag {};
+    struct empty_range_tag {};
     struct single_range_tag {};
     struct tuple_range_tag {};
     struct iota_tag {};
@@ -138,10 +139,14 @@ namespace impl {
 
     /* A trivial range with zero elements.  This is the default type for the `range`
     class template, allowing it to be default-constructed. */
-    struct empty_range {
+    struct empty_range : empty_range_tag {
+        [[nodiscard]] constexpr empty_range() noexcept = default;
+        [[nodiscard]] constexpr empty_range(const empty_range&) noexcept = default;
+        [[nodiscard]] constexpr empty_range(empty_range&&) noexcept = default;
         static constexpr void swap(empty_range&) noexcept {}
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
+        [[nodiscard]] static constexpr std::array<size_t, 0> shape() noexcept { return {}; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
         [[nodiscard]] static constexpr auto begin() noexcept {
             return empty_iterator<const NoneType&>{};
@@ -185,6 +190,9 @@ namespace impl {
         [[nodiscard]] constexpr size_t size() const noexcept { return __value != None; }
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return __value != None; }
         [[nodiscard]] constexpr bool empty() const noexcept { return __value == None; }
+        [[nodiscard]] constexpr std::array<size_t, 1> shape() const noexcept {
+            return {size()};
+        }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
@@ -428,6 +436,13 @@ namespace impl {
         };
         using dispatch = impl::basic_vtable<fn, meta::tuple_size<C>>;
     };
+
+
+
+    /// TODO: tuple ranges should conditionally expose `shape()` if all of the elements
+    /// are the same size?
+
+
 
     template <typename>
     struct _tuple_range : tuple_range_tag {
@@ -800,7 +815,7 @@ namespace impl {
 
     template <typename T>
     concept strictly_positive = meta::unsigned_integer<T> || !requires(meta::as_const_ref<T> t) {
-        {t < 0} -> meta::explicitly_convertible_to<bool>;
+        {t < 0} -> meta::truthy;
     };
 
     /* Iota iterators will use the difference type between `stop` and `start` if
@@ -857,12 +872,12 @@ namespace impl {
     concept iota_bounded =
         !iota_infinite<Stop> &&
         requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {start < stop} -> meta::convertible_to<bool>;
+            {start < stop} -> meta::truthy;
         } && (strictly_positive<Step> || requires(
             meta::as_const_ref<Start> start,
             meta::as_const_ref<Stop> stop
         ) {
-            {start > stop} -> meta::convertible_to<bool>;
+            {start > stop} -> meta::truthy;
         });
 
     template <typename Start, typename Stop, typename Step>
@@ -870,7 +885,7 @@ namespace impl {
         !iota_infinite<Stop> &&
         !iota_bounded<Start, Stop, Step> &&
         requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {stop(start)} -> meta::explicitly_convertible_to<bool>;
+            {stop(start)} -> meta::truthy;
         };
 
     template <typename Start, typename Step>
@@ -1049,7 +1064,7 @@ namespace impl {
             } && (
                 !DEBUG ||
                 !iota_linear<Start, Step> ||
-                !requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
+                !requires{{*m_step == 0} -> meta::truthy;}
             ))
             requires (requires{
                 {impl::ref<start_type>{std::forward<Start>(start)}};
@@ -1064,7 +1079,7 @@ namespace impl {
             if constexpr (
                 DEBUG &&
                 iota_linear<Start, Step> &&
-                requires{{*m_step == 0} -> meta::explicitly_convertible_to<bool>;}
+                requires{{*m_step == 0} -> meta::truthy;}
             ) {
                 if (*m_step == 0) {
                     throw zero_step_error();
@@ -1249,10 +1264,10 @@ namespace impl {
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
-                {start() < stop()} noexcept -> meta::nothrow::convertible_to<bool>;
+                {start() < stop()} noexcept -> meta::nothrow::truthy;
             } && (strictly_positive<Step> || requires{
-                {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {start() > stop()} noexcept -> meta::nothrow::convertible_to<bool>;
+                {step() < 0} noexcept -> meta::nothrow::truthy;
+                {start() > stop()} noexcept -> meta::nothrow::truthy;
             }))
             requires (iota_bounded<Start, Stop, Step>)
         {
@@ -1268,9 +1283,7 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {stop()(start())} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
+            noexcept (requires{{stop()(start())} noexcept -> meta::nothrow::truthy;})
             requires (iota_conditional<Start, Stop, Step>)
         {
             return !bool(stop()(start()));
@@ -1392,12 +1405,12 @@ namespace impl {
         [[nodiscard]] constexpr bool operator==(const iota& other) const
             noexcept (requires{{
                 (other.stop() - other.start()) == (stop() - start())
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            } noexcept -> meta::nothrow::truthy;})
             requires (requires{{
                 (other.stop() - other.start()) == (stop() - start())
-            } -> meta::convertible_to<bool>;})
+            } -> meta::truthy;})
         {
-            return (other.stop() - other.start()) == (stop() - start());
+            return bool((other.stop() - other.start()) == (stop() - start()));
         }
 
         [[nodiscard]] constexpr auto operator<=>(const iota& other) const
@@ -1645,12 +1658,12 @@ namespace impl {
     concept subrange_bounded =
         !subrange_infinite<Stop> &&
         requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {start < stop} -> meta::convertible_to<bool>;
+            {start < stop} -> meta::truthy;
         } && (strictly_positive<Step> || requires(
             meta::as_const_ref<Start> start,
             meta::as_const_ref<Stop> stop
         ) {
-            {start > stop} -> meta::convertible_to<bool>;
+            {start > stop} -> meta::truthy;
         });
 
     template <typename Start, typename Stop, typename Step>
@@ -1659,7 +1672,7 @@ namespace impl {
         !subrange_bounded<Start, Stop, Step> &&
         subrange_empty<Step> &&
         requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {start == stop} -> meta::convertible_to<bool>;
+            {start == stop} -> meta::truthy;
         };
 
     template <typename Start, typename Stop, typename Step>
@@ -1672,7 +1685,7 @@ namespace impl {
             subrange_difference<Start, Stop> index,
             meta::as_const_ref<Stop> stop
         ) {
-            {index >= subrange_difference<Start, Stop>(stop)} -> meta::convertible_to<bool>;
+            {index >= subrange_difference<Start, Stop>(stop)} -> meta::truthy;
         };
 
     template <typename Start, typename Stop, typename Step>
@@ -1682,7 +1695,7 @@ namespace impl {
         !subrange_equal<Start, Stop, Step> &&
         !subrange_counted<Start, Stop, Step> &&
         requires(meta::as_const_ref<Start> start, meta::as_const_ref<Stop> stop) {
-            {stop(start)} -> meta::explicitly_convertible_to<bool>;
+            {stop(start)} -> meta::truthy;
         };
 
     template <typename Start, typename Step>
@@ -1952,11 +1965,11 @@ namespace impl {
             } && (
                 !DEBUG ||
                 (!subrange_linear<Start, Stop, Step> && !subrange_loop<Start, Stop, Step>) ||
-                !requires{{this->step() == 0} -> meta::explicitly_convertible_to<bool>;}
+                !requires{{this->step() == 0} -> meta::truthy;}
             ) && (
                 !DEBUG ||
                 !subrange_counted<Start, Stop, Step> ||
-                !requires{{this->stop() < 0} -> meta::explicitly_convertible_to<bool>;}
+                !requires{{this->stop() < 0} -> meta::truthy;}
             ))
             requires (requires{
                 {impl::ref<start_type>{std::forward<Start>(start)}};
@@ -1971,7 +1984,7 @@ namespace impl {
             if constexpr (DEBUG) {
                 if constexpr (
                     (subrange_linear<Start, Stop, Step> || subrange_loop<Start, Stop, Step>) &&
-                    requires{{this->step() == 0} -> meta::explicitly_convertible_to<bool>;}
+                    requires{{this->step() == 0} -> meta::truthy;}
                 ) {
                     if (this->step() == 0) {
                         throw zero_step_error();
@@ -1979,7 +1992,7 @@ namespace impl {
                 }
                 if constexpr (
                     subrange_counted<Start, Stop, Step> &&
-                    requires{{this->stop() < 0} -> meta::explicitly_convertible_to<bool>;}
+                    requires{{this->stop() < 0} -> meta::truthy;}
                 ) {
                     if (this->stop() < 0) {
                         throw negative_count_error();
@@ -2092,10 +2105,10 @@ namespace impl {
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
-                {start() < stop()} noexcept -> meta::nothrow::convertible_to<bool>;
+                {start() < stop()} noexcept -> meta::nothrow::truthy;
             } && (strictly_positive<Step> || requires{
-                {step() < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {start() > stop()} noexcept -> meta::nothrow::convertible_to<bool>;
+                {step() < 0} noexcept -> meta::nothrow::truthy;
+                {start() > stop()} noexcept -> meta::nothrow::truthy;
             }))
             requires (subrange_bounded<Start, Stop, Step>)
         {
@@ -2111,27 +2124,23 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {start() == stop()} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
+            noexcept (requires{{start() == stop()} noexcept -> meta::nothrow::truthy;})
             requires (subrange_equal<Start, Stop, Step>)
         {
-            return start() == stop();
+            return bool(start() == stop());
         }
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{
-                {index() >= difference_type(stop())} noexcept -> meta::nothrow::convertible_to<bool>;
+                {index() >= difference_type(stop())} noexcept -> meta::nothrow::truthy;
             })
             requires (subrange_counted<Start, Stop, Step>)
         {
-            return index() >= difference_type(stop());
+            return bool(index() >= difference_type(stop()));
         }
 
         [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{
-                {stop()(start())} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
+            noexcept (requires{{stop()(start())} noexcept -> meta::nothrow::truthy;})
             requires (subrange_conditional<Start, Stop, Step>)
         {
             return !bool(stop()(start()));
@@ -2217,14 +2226,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool operator==(const subrange& other) const
-            noexcept (requires{
-                {index() == other.index()} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {index() == other.index()} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{index() == other.index()} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{index() == other.index()} -> meta::truthy;})
         {
-            return index() == other.index();
+            return bool(index() == other.index());
         }
 
         [[nodiscard]] constexpr auto operator<=>(const subrange& other) const
@@ -3407,74 +3412,50 @@ namespace impl {
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<(const range_iterator<U>& other) const
-            noexcept (requires{
-                {iter < other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter < other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter < other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter < other.iter} -> meta::truthy;})
         {
-            return iter < other.iter;
+            return bool(iter < other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<=(const range_iterator<U>& other) const
-            noexcept (requires{
-                {iter <= other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter <= other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter <= other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter <= other.iter} -> meta::truthy;})
         {
-            return iter <= other.iter;
+            return bool(iter <= other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator==(const range_iterator<U>& other) const
-            noexcept (requires{
-                {iter == other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter == other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter == other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter == other.iter} -> meta::truthy;})
         {
-            return iter == other.iter;
+            return bool(iter == other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator!=(const range_iterator<U>& other) const
-            noexcept (requires{
-                {iter != other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter != other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter != other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter != other.iter} -> meta::truthy;})
         {
-            return iter != other.iter;
+            return bool(iter != other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>=(const range_iterator<U>& other) const
-            noexcept (requires{
-                {iter >= other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter >= other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter >= other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter >= other.iter} -> meta::truthy;})
         {
-            return iter >= other.iter;
+            return bool(iter >= other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>(const range_iterator<U>& other) const
-            noexcept (requires{
-                {iter > other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter > other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter > other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter > other.iter} -> meta::truthy;})
         {
-            return iter > other.iter;
+            return bool(iter > other.iter);
         }
 
         template <typename U>
@@ -3659,74 +3640,50 @@ namespace impl {
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<(const unpack_iterator<U>& other) const
-            noexcept (requires{
-                {iter < other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter < other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter < other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter < other.iter} -> meta::truthy;})
         {
-            return iter < other.iter;
+            return bool(iter < other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator<=(const unpack_iterator<U>& other) const
-            noexcept (requires{
-                {iter <= other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter <= other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter <= other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter <= other.iter} -> meta::truthy;})
         {
-            return iter <= other.iter;
+            return bool(iter <= other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator==(const unpack_iterator<U>& other) const
-            noexcept (requires{
-                {iter == other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter == other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter == other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter == other.iter} -> meta::truthy;})
         {
-            return iter == other.iter;
+            return bool(iter == other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator!=(const unpack_iterator<U>& other) const
-            noexcept (requires{
-                {iter != other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter != other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter != other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter != other.iter} -> meta::truthy;})
         {
-            return iter != other.iter;
+            return bool(iter != other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>=(const unpack_iterator<U>& other) const
-            noexcept (requires{
-                {iter >= other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter >= other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter >= other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter >= other.iter} -> meta::truthy;})
         {
-            return iter >= other.iter;
+            return bool(iter >= other.iter);
         }
 
         template <typename U>
         [[nodiscard]] constexpr bool operator>(const unpack_iterator<U>& other) const
-            noexcept (requires{
-                {iter > other.iter} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {iter > other.iter} -> meta::convertible_to<bool>;
-            })
+            noexcept (requires{{iter > other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter > other.iter} -> meta::truthy;})
         {
-            return iter > other.iter;
+            return bool(iter > other.iter);
         }
 
         template <typename U>
@@ -3789,10 +3746,10 @@ namespace impl {
     constexpr decltype(auto) at_offset(A&& a, C&& c)
         noexcept (requires(meta::begin_type<C> it) {
             {std::forward<C>(c).begin()} noexcept;
-            {a > 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+            {a > 0} noexcept -> meta::nothrow::truthy;
             {++it} noexcept;
             {--a} noexcept;
-            {a < 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+            {a < 0} noexcept -> meta::nothrow::truthy;
             {--it} noexcept;
             {++a} noexcept;
             {*it} noexcept;
@@ -3806,10 +3763,10 @@ namespace impl {
             } &&
             requires(meta::begin_type<C> it) {
                 {std::forward<C>(c).begin()};
-                {a > 0} -> meta::explicitly_convertible_to<bool>;
+                {a > 0} -> meta::truthy;
                 {++it};
                 {--a};
-                {a < 0} -> meta::explicitly_convertible_to<bool>;
+                {a < 0} -> meta::truthy;
                 {--it};
                 {++a};
                 {*it};
@@ -3832,7 +3789,7 @@ namespace impl {
     constexpr decltype(auto) at_offset(A&& a, C&& c)
         noexcept (requires(meta::begin_type<C> it) {
             {std::forward<C>(c).begin()} noexcept;
-            {a > 0} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+            {a > 0} noexcept -> meta::nothrow::truthy;
             {++it} noexcept;
             {--a} noexcept;
             {*it} noexcept;
@@ -3846,17 +3803,17 @@ namespace impl {
             } &&
             !requires(meta::begin_type<C> it) {
                 {std::forward<C>(c).begin()};
-                {a > 0} -> meta::explicitly_convertible_to<bool>;
+                {a > 0} -> meta::truthy;
                 {++it};
                 {--a};
-                {a < 0} -> meta::explicitly_convertible_to<bool>;
+                {a < 0} -> meta::truthy;
                 {--it};
                 {++a};
                 {*it};
             } &&
             requires(meta::begin_type<C> it) {
                 {std::forward<C>(c).begin()};
-                {a > 0} -> meta::explicitly_convertible_to<bool>;
+                {a > 0} -> meta::truthy;
                 {++it};
                 {--a};
                 {*it};
@@ -3871,20 +3828,17 @@ namespace impl {
         return (*it);
     }
 
-    template <typename T>
-    concept range_forward = meta::range<T> || impl::range_transparent<T>;
-
-    template <typename T> requires (!range_forward<T>)
-    constexpr decltype(auto) range_value(T&& t) noexcept {
+    template <typename T> requires (!meta::range<T>)
+    constexpr decltype(auto) range_container(T&& t) noexcept {
         return (std::forward<T>(t));
     }
 
-    template <range_forward T>
-    constexpr decltype(auto) range_value(T&& t) noexcept {
-        if constexpr (requires{{*std::forward<T>(t)} -> range_forward;}) {
-            return (range_value(*std::forward<T>(t)));
+    template <meta::range T>
+    constexpr decltype(auto) range_container(T&& t) noexcept {
+        if constexpr (requires{{*std::forward<T>(t)} -> meta::range;}) {
+            return (range_container(*std::forward<T>(t).__value));
         } else {
-            return (*std::forward<T>(t));
+            return (*std::forward<T>(t).__value);
         }
     }
 
@@ -3894,11 +3848,42 @@ namespace impl {
     inline constexpr AssertionError range_back_error =
         AssertionError("Attempted to access the back of an empty range");
 
+    namespace range_shape {
+
+        template <size_t I, meta::tuple_like T> requires (I < meta::tuple_size<T>)
+        constexpr size_t _get(T&& shape)
+            noexcept (requires{{meta::get<I>(std::forward<T>(shape))} noexcept;})
+            requires (requires{{meta::get<I>(std::forward<T>(shape))};})
+        {
+            return meta::get<I>(std::forward<T>(shape));
+        }
+
+        template <size_t I, meta::tuple_like T> requires (I >= meta::tuple_size<T>)
+        constexpr size_t _get(T&& shape) noexcept {
+            return 1;
+        }
+
+        template <typename T, size_t... Is> requires (sizeof...(Is) == meta::nested_range<T> + 1)
+        constexpr auto get(const T& self, std::index_sequence<Is...>)
+            noexcept (requires{{std::array<size_t, sizeof...(Is)>{
+                _get<Is>(meta::shape(range_container(self)))...
+            }} noexcept;})
+            requires (requires{{std::array<size_t, sizeof...(Is)>{
+                _get<Is>(meta::shape(range_container(self)))...
+            }};})
+        {
+            return std::array<size_t, sizeof...(Is)>{
+                _get<Is>(meta::shape(range_container(self)))...
+            };
+        }
+
+    }
+
     namespace range_convert {
 
         template <typename Self, typename to>
         concept direct = requires(Self self) {
-            {impl::range_value(std::forward<Self>(self))} -> meta::convertible_to<to>;
+            {range_container(std::forward<Self>(self))} -> meta::convertible_to<to>;
         };
 
         template <typename Self, typename to>
@@ -3977,7 +3962,7 @@ namespace impl {
         template <size_t I, size_t N, meta::iterator Iter, meta::sentinel_for<Iter> End>
         constexpr decltype(auto) _iter_to_tuple_fn(Iter& it, End& end)
             requires (requires{
-                {it == end} -> meta::explicitly_convertible_to<bool>;
+                {it == end} -> meta::truthy;
                 {*it};
                 {++it};
             })
@@ -3994,7 +3979,7 @@ namespace impl {
             requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
         constexpr to iter_to_tuple_fn(Self& self, std::index_sequence<Is...>)
             requires (requires(decltype(self.begin()) it, decltype(self.end()) end) {
-                {self.size() != sizeof...(Is)} -> meta::explicitly_convertible_to<bool>;
+                {self.size() != sizeof...(Is)} -> meta::truthy;
                 {self.begin()};
                 {to{(void(Is), _iter_to_tuple_fn(it, end))...}};
             })
@@ -4068,7 +4053,7 @@ namespace impl {
 
         template <typename Self, typename T>
         concept direct = requires(Self self, T c) {
-            {impl::range_value(self) = impl::range_value(std::forward<T>(c))};
+            {range_container(self) = range_container(std::forward<T>(c))};
         };
 
         template <typename Self, typename T>
@@ -4091,8 +4076,8 @@ namespace impl {
             {self.end()};
             {r.begin()};
             {r.end()};
-            {s_it != s_end} -> meta::explicitly_convertible_to<bool>;
-            {r_it != r_end} -> meta::explicitly_convertible_to<bool>;
+            {s_it != s_end} -> meta::truthy;
+            {r_it != r_end} -> meta::truthy;
             {*s_it = *r_it};
             {++s_it};
             {++r_it};
@@ -4114,8 +4099,8 @@ namespace impl {
                 {self.end()} noexcept;
                 {r.begin()} noexcept;
                 {r.end()} noexcept;
-                {s_it != s_end} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                {r_it != r_end} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {s_it != s_end} noexcept -> meta::nothrow::truthy;
+                {r_it != r_end} noexcept -> meta::nothrow::truthy;
                 {*s_it = *r_it} noexcept;
                 {++s_it} noexcept;
                 {++r_it} noexcept;
@@ -4198,7 +4183,7 @@ namespace impl {
         template <size_t I, meta::range R, meta::iterator Iter, meta::sentinel_for<Iter> End>
         constexpr void _iter_from_tuple_fn(R&& r, Iter& it, End& end)
             requires (requires{
-                {it == end} -> meta::explicitly_convertible_to<bool>;
+                {it == end} -> meta::truthy;
                 {*it = std::forward<R>(r).template get<I>()};
                 {++it};
             })
@@ -4224,7 +4209,7 @@ namespace impl {
         template <size_t I, meta::range Self, meta::iterator Iter, meta::sentinel_for<Iter> End>
         constexpr void _tuple_from_iter_fn(Self& s, Iter& it, End& end)
             requires (requires{
-                {it == end} -> meta::explicitly_convertible_to<bool>;
+                {it == end} -> meta::truthy;
                 {s.template get<I>() = *it};
                 {++it};
             })
@@ -4243,7 +4228,7 @@ namespace impl {
                 meta::tuple_like<R> &&
                 sizeof...(Is) == meta::tuple_size<R> &&
                 requires(decltype(self.begin()) it) {
-                    {self.size() != sizeof...(Is)} -> meta::explicitly_convertible_to<bool>;
+                    {self.size() != sizeof...(Is)} -> meta::truthy;
                     {self.begin()};
                     {(_iter_from_tuple_fn<Is>(std::forward<R>(r), it), ...)};
                 }
@@ -4285,7 +4270,7 @@ namespace impl {
                 !meta::tuple_like<R> &&
                 sizeof...(Is) == meta::tuple_size<Self> &&
                 requires(decltype(r.begin()) it) {
-                    {sizeof...(Is) != r.size()} -> meta::explicitly_convertible_to<bool>;
+                    {sizeof...(Is) != r.size()} -> meta::truthy;
                     {r.begin()};
                     {(_tuple_from_iter_fn<Is>(self, it), ...)};
                 }
@@ -4362,14 +4347,8 @@ namespace iter {
         template <typename T>
         struct call {
             static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{
-                    {
-                        func(std::forward<T>(v))
-                    } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-                })
-                requires (requires{
-                    {func(std::forward<T>(v))} -> meta::explicitly_convertible_to<bool>;
-                })
+                noexcept (requires{{func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
+                requires (requires{{func(std::forward<T>(v))} -> meta::truthy;})
             {
                 return bool(func(std::forward<T>(v)));
             }
@@ -4381,12 +4360,10 @@ namespace iter {
                 noexcept (meta::nothrow::iterable<T> && requires(meta::yield_type<T> x) {
                     {
                         call<decltype(x)>{}(func, std::forward<decltype(x)>(x))
-                    } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                    } noexcept -> meta::nothrow::truthy;
                 })
                 requires (requires(meta::yield_type<T> x) {
-                    {
-                        call<decltype(x)>{}(func, std::forward<decltype(x)>(x))
-                    } -> meta::explicitly_convertible_to<bool>;
+                    {call<decltype(x)>{}(func, std::forward<decltype(x)>(x))} -> meta::truthy;
                 })
             {
                 for (auto&& x : v) {
@@ -4425,12 +4402,10 @@ namespace iter {
         struct call {
             static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
                 noexcept (requires{
-                    {
-                        func(std::forward<T>(v))
-                    } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                    {func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;
                 })
                 requires (requires{
-                    {func(std::forward<T>(v))} -> meta::explicitly_convertible_to<bool>;
+                    {func(std::forward<T>(v))} -> meta::truthy;
                 })
             {
                 return bool(func(std::forward<T>(v)));
@@ -4443,12 +4418,10 @@ namespace iter {
                 noexcept (meta::nothrow::iterable<T> && requires(meta::yield_type<T> x) {
                     {
                         !call<decltype(x)>{}(func, std::forward<decltype(x)>(x))
-                    } noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                    } noexcept -> meta::nothrow::truthy;
                 })
                 requires (requires(meta::yield_type<T> x) {
-                    {
-                        !call<decltype(x)>{}(func, std::forward<decltype(x)>(x))
-                    } -> meta::explicitly_convertible_to<bool>;
+                    {!call<decltype(x)>{}(func, std::forward<decltype(x)>(x))} -> meta::truthy;
                 })
             {
                 for (auto&& x : v) {
@@ -4498,22 +4471,20 @@ namespace iter {
         template <typename K, typename A>
         static constexpr bool equality =
             !meta::range<K> && !meta::range<A> && requires(const K& k, const A& a) {
-                {k == a} -> meta::explicitly_convertible_to<bool>;
+                {k == a} -> meta::truthy;
             };
 
         template <typename K, typename A>
         static constexpr bool predicate =
             !meta::range<K> && requires(const K& k, const A& a) {
-                {k(a)} -> meta::explicitly_convertible_to<bool>;
+                {k(a)} -> meta::truthy;
             };
 
         // 1a) prefer `arg == value` if it is well-formed, and neither argument is a
         //     range
         template <typename K, typename A>
         static constexpr bool scalar(const K& k, const A& a)
-            noexcept (requires{
-                {k == a} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-            })
+            noexcept (requires{{k == a} noexcept -> meta::nothrow::truthy;})
             requires (equality<K, A>)
         {
             return bool(k == a);
@@ -4523,9 +4494,7 @@ namespace iter {
         //     is not a range
         template <typename K, typename A>
         static constexpr bool scalar(const K& k, const A& a)
-            noexcept (requires{
-                {k(a)} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
-            })
+            noexcept (requires{{k(a)} noexcept -> meta::nothrow::truthy;})
             requires (!equality<K, A> && predicate<K, A>)
         {
             return bool(k(a));
@@ -4544,22 +4513,20 @@ namespace iter {
         static constexpr bool member = false;
         template <typename K, typename A> requires (!meta::range<A>)
         static constexpr bool member<K, A> = requires(const K& k, const A& a) {
-            {a.contains(k)} -> meta::convertible_to<bool>;
+            {a.contains(k)} -> meta::truthy;
         };
 
         // 2) prefer `arg.contains(value)` if it exists and `arg` is not a range
         template <typename K, typename A>
         static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{
-                {a.contains(k)} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
+            noexcept (requires{{a.contains(k)} noexcept -> meta::nothrow::truthy;})
             requires (
                 !equality<K, A> &&
                 !predicate<K, A> &&
                 member<K, A>
             )
         {
-            return a.contains(k);
+            return bool(a.contains(k));
         }
 
         template <typename K, typename A>
@@ -4586,10 +4553,10 @@ namespace iter {
         ) {
             {k.begin()} -> meta::copyable;
             {k.end()};
-            {k_it == k_end} -> meta::explicitly_convertible_to<bool>;
+            {k_it == k_end} -> meta::truthy;
             {std::ranges::begin(arg)};
             {std::ranges::end(arg)};
-            {a_it != a_end} -> meta::explicitly_convertible_to<bool>;
+            {a_it != a_end} -> meta::truthy;
             {scalar(*k_it, *a_it)};
             {++k_it};
             {k_it = k_begin};
@@ -4607,10 +4574,10 @@ namespace iter {
             ) {
                 {k.begin()} noexcept -> meta::nothrow::copyable;
                 {k.end()} noexcept;
-                {k_it == k_end} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {k_it == k_end} noexcept -> meta::nothrow::truthy;
                 {std::ranges::begin(a)} noexcept;
                 {std::ranges::end(a)} noexcept;
-                {a_it != a_end} noexcept -> meta::nothrow::explicitly_convertible_to<bool>;
+                {a_it != a_end} noexcept -> meta::nothrow::truthy;
                 {scalar(*k_it, *a_it)} noexcept;
                 {++k_it} noexcept;
                 {k_it = k_begin} noexcept;
@@ -5246,14 +5213,22 @@ namespace iter {
         operator skips nested ranges, and always returns a pointer directly to the
         underlying container.  Use `*` if you want to strip just one level at a time. */
         [[nodiscard]] constexpr auto operator->() noexcept {
-            return std::addressof(impl::range_value(*this));
+            if constexpr (impl::range_transparent<decltype(range_container(*this))>) {
+                return std::addressof(*range_container(*this));
+            } else {
+                return std::addressof(range_container(*this));
+            }
         }
 
         /* Indirectly access a member of the underlying container.  Note that this
         operator skips nested ranges, and always returns a pointer directly to the
         underlying container.  Use `*` if you want to strip just one level at a time. */
         [[nodiscard]] constexpr auto operator->() const noexcept {
-            return std::addressof(impl::range_value(*this));
+            if constexpr (impl::range_transparent<decltype(range_container(*this))>) {
+                return std::addressof(*range_container(*this));
+            } else {
+                return std::addressof(range_container(*this));
+            }
         }
 
         /* Get a forward iterator to the start of the range. */
@@ -5410,6 +5385,61 @@ namespace iter {
             )
         {
             return (std::ranges::ssize(*__value));
+        }
+
+        /* The empty range always produces a shape with zero dimensions. */
+        [[nodiscard]] constexpr std::array<size_t, 0> shape() const noexcept
+            requires (meta::inherits<C, impl::empty_range_tag>)
+        {
+            return {};
+        }
+
+        /* Forwarding `shape()` operator for the underlying container, provided it has
+        a `shape()` ADL or member method, or a shape can be deduced.  Note that sized
+        containers always produce a shape of at least one dimension.
+
+        This method always returns a `std::array<size_t, N>`, where `N` is equal to the
+        number of nested ranges in this type.  If the container's `shape()` has more
+        than `N` dimensions, then it will be truncated to the first `N` indices.  If
+        it has less than `N` dimensions, then the remaining indices will be filled
+        with ones to reflect the promotion of single-element ranges.
+
+        No range (except for the empty range) can produce a `shape()` with zero
+        dimensions. */
+        [[nodiscard]] constexpr auto shape() const
+            noexcept (requires{{impl::range_shape::get(
+                *this,
+                std::make_index_sequence<meta::nested_range<range> + 1>{}
+            )} noexcept;})
+            requires (
+                !meta::inherits<C, impl::empty_range_tag> &&
+                requires{{impl::range_shape::get(
+                    *this,
+                    std::make_index_sequence<meta::nested_range<range> + 1>{}
+                )};}
+            )
+        {
+            return impl::range_shape::get(
+                *this,
+                std::make_index_sequence<meta::nested_range<range> + 1>{}
+            );
+        }
+
+        /* If the underlying container is not empty and does not expose a `shape()`
+        ADL or member method, but is otherwise sized, then the shape will be
+        one-dimensional, with the size as its only element. */
+        [[nodiscard]] constexpr std::array<size_t, 1> shape() const
+            noexcept (requires{{size()} noexcept -> meta::nothrow::convertible_to<size_t>;})
+            requires (
+                !meta::inherits<C, impl::empty_range_tag> &&
+                !requires{{impl::range_shape::get(
+                    *this,
+                    std::make_index_sequence<meta::nested_range<range> + 1>{}
+                )};} &&
+                requires{{size()} -> meta::convertible_to<size_t>;}
+            )
+        {
+            return {size()};
         }
 
         /* Forwarding `empty()` operator for the underlying container, provided the
@@ -5608,11 +5638,11 @@ namespace iter {
         template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
         [[nodiscard]] constexpr operator to(this Self&& self)
             noexcept (requires{{
-                impl::range_value(std::forward<Self>(self))
+                impl::range_container(std::forward<Self>(self))
             } noexcept -> meta::nothrow::convertible_to<to>;})
             requires (impl::range_convert::direct<Self, to>)
         {
-            return impl::range_value(std::forward<Self>(self));
+            return impl::range_container(std::forward<Self>(self));
         }
 
         /* If no direct conversion exists, allow conversion to any type `T` that
@@ -5693,10 +5723,12 @@ namespace iter {
         this skips over any intermediate ranges if the type is nested. */
         template <typename Self, typename T>
         constexpr Self operator=(this Self&& self, T&& c)
-            noexcept (requires{{impl::range_value(self) = std::forward<T>(c)} noexcept;})
+            noexcept (requires{
+                {impl::range_container(self) = impl::range_container(std::forward<T>(c))} noexcept;
+            })
             requires (impl::range_assign::direct<Self, T>)
         {
-            impl::range_value(self) = impl::range_value(std::forward<T>(c));
+            impl::range_container(self) = impl::range_container(std::forward<T>(c));
             if constexpr (meta::rvalue<Self>) {
                 return std::move(self);
             } else {
@@ -5708,10 +5740,10 @@ namespace iter {
         container supports it. */
         template <typename Self, typename T>
         constexpr Self operator=(this Self&& self, std::initializer_list<T> il)
-            noexcept (requires{{impl::range_value(self) = std::move(il)} noexcept;})
+            noexcept (requires{{impl::range_container(self) = std::move(il)} noexcept;})
             requires (impl::range_assign::direct<Self, std::initializer_list<T>>)
         {
-            impl::range_value(self) = std::move(il);
+            impl::range_container(self) = std::move(il);
             if constexpr (meta::rvalue<Self>) {
                 return std::move(self);
             } else {
@@ -7076,6 +7108,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     /// TODO: tuple, but that will have to be bounded within a finite range or omitted
     /// entirely, since C++ currently doesn't allow me to unpack types directly into
     /// a CTAD guide.
+    /// -> Unions and variants have the same problem.
 
     template <bertrand::meta::range R>
     vector(R&& r) -> vector<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
@@ -7183,18 +7216,41 @@ _LIBCPP_END_NAMESPACE_STD
 
 namespace bertrand::iter {
 
-    static_assert([] {
-        std::tuple arr {'a', 'b'};
-        range{arr} = {'b', 'a'};
-        // if (meta::get<0>(arr) != 3) return false;
-        // if (meta::get<1>(arr) != 2) return false;
-        // if (meta::get<2>(arr) != 1) return false;
+    static_assert(range(range(std::array{1, 2, 3})).shape().size() == 2);
 
-        std::string arr2 = range(arr);
-        if (arr2 != "ba") return false;
 
-        return true;
-    }());
+    // static_assert([] {
+    //     std::tuple arr {'a', 'b'};
+    //     range{arr} = {'b', 'a'};
+    //     // if (meta::get<0>(arr) != 3) return false;
+    //     // if (meta::get<1>(arr) != 2) return false;
+    //     // if (meta::get<2>(arr) != 1) return false;
+
+    //     std::string arr2 = range(arr);
+    //     if (arr2 != "ba") return false;
+
+    //     return true;
+    // }());
+
+
+
+
+    /// TODO: conversion to nested containers seems not to work, at least not for
+    /// vectors.  It does work for pairs, weirdly enough
+
+    // static_assert([] {
+    //     std::array arr {std::array{1, 2}, std::array{3, 4}};
+
+    //     std::pair<std::pair<int, int>, std::pair<int, int>> p = range(range(arr));
+    //     if (p.first.first != 1) return false;
+    //     if (p.first.second != 2) return false;
+    //     if (p.second.first != 3) return false;
+    //     if (p.second.second != 4) return false;
+
+    //     std::vector<std::vector<int>> vec = range(arr);
+    //     return true;
+    // }());
+
 
 
     // static_assert([] {
