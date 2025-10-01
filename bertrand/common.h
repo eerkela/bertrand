@@ -336,6 +336,12 @@ namespace meta {
         >
     >;
 
+    /* Forward an arbitrary argument as a const-qualified type. */
+    template <typename T>
+    [[nodiscard]] constexpr decltype(auto) to_const(T&& t) noexcept {
+        return (std::forward<as_const<T>>(t));
+    }
+
     template <typename T>
     using remove_const = ::std::conditional_t<
         is_const<T>,
