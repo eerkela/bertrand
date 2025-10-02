@@ -11,7 +11,6 @@ namespace bertrand {
 namespace impl {
     struct array_tag {};
     struct array_view_tag {};
-
 }
 
 
@@ -93,85 +92,9 @@ namespace impl {
     template <size_t... Ns>
     constexpr Array<size_t, sizeof...(Ns)> array_shape {Ns...};
 
-    /* Indices are always computed in C (row-major) memory order for simplicity and
-    compatibility with C++.  If an index is signed, then Python-style wraparound will
-    be applied to handle negative values.  A bounds check is then applied as a debug
-    assertion, which throws an `IndexError` if the index is out of bounds. */
-    template <size_t M, size_t... Ms, meta::unsigned_integer I, typename... Is>
-    constexpr size_t array_index(const I& i, const Is&... is)
-        noexcept (!DEBUG && meta::nothrow::explicitly_convertible_to<I, size_t>)
-        requires (meta::explicitly_convertible_to<I, size_t>)
-    {
-        if constexpr (DEBUG) {
-            if (i >= M) {
-                /// TODO: figure out a better error message, and possibly centralize
-                /// it in `impl::` to prevent duplication.
-                throw IndexError(::std::to_string(i));
-            }
-        }
-        if constexpr (sizeof...(Is) == 0) {
-            return size_t(i) * (Ms * ... * 1);
-        } else {
-            return size_t(i) * (Ms * ... * 1) + array_index<Ms...>(is...);
-        }
-    }
-    template <size_t M, size_t... Ms, meta::signed_integer I, typename... Is>
-    constexpr size_t array_index(const I& i, const Is&... is)
-        noexcept (!DEBUG && meta::nothrow::explicitly_convertible_to<I, ssize_t>)
-        requires (meta::explicitly_convertible_to<I, ssize_t>)
-    {
-        ssize_t j = ssize_t(i) + ssize_t(M) * (i < 0);
-        if constexpr (DEBUG) {
-            if (j < 0 || j > ssize_t(M)) {
-                /// TODO: figure out a better error message, and possibly centralize
-                /// it in `impl::` to prevent duplication.
-                throw IndexError(::std::to_string(i));
-            }
-        }
-        if constexpr (sizeof...(Is) == 0) {
-            return size_t(j) * (Ms * ... * 1);
-        } else {
-            return size_t(j) * (Ms * ... * 1) + array_index<Ms...>(is...);
-        }
-    }
-
-    template <typename... I>
-    concept valid_array_indices =
-        (meta::integer<I> && ...) &&
-        ((meta::unsigned_integer<I> ?
-            meta::explicitly_convertible_to<I, size_t> :
-            meta::explicitly_convertible_to<I, ssize_t>
-        ) && ...);
-
-    template <typename... I>
-    concept nothrow_array_indices =
-        !DEBUG &&
-        (meta::integer<I> && ...) &&
-        ((meta::unsigned_integer<I> ?
-            meta::nothrow::explicitly_convertible_to<I, size_t> :
-            meta::nothrow::explicitly_convertible_to<I, ssize_t>
-        ) && ...);
-
-    /* Tuple access for array types always takes signed integers and applies both
-    wraparound and bounds-checking at compile time. */
-    template <ssize_t... I>
-    struct valid_array_access {
-        template <size_t... N>
-        static constexpr bool value = true;
-        template <size_t... N>
-        static constexpr size_t index = 0;
-    };
-    template <ssize_t I, ssize_t... Is>
-    struct valid_array_access<I, Is...> {
-        template <size_t N, size_t... Ns>
-        static constexpr bool value = false;
-        template <size_t N, size_t... Ns> requires (impl::valid_index<N, I>)
-        static constexpr bool value<N, Ns...> = valid_array_access<Is...>::template value<Ns...>;
-
-        template <size_t N, size_t... Ns>
-        static constexpr size_t index =
-            array_index<N, Ns...>(I) + valid_array_access<Is...>::template index<Ns...>;
-    };
+    /// TODO: array_storage can be trivial after this paper is implemented, which also
+    /// possibly affects union types (especially together with reflection):
+    /// https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p3074r7.html
 
     /* Array elements are stored as unions in order to sidestep default constructors,
     and allow the array to be allocated in an uninitialized state.  This is crucial to
@@ -179,11 +102,6 @@ namespace impl {
     template <meta::not_reference T>
     union array_storage {
         using type = T;
-        using size_type = size_t;
-        using index_type = ssize_t;
-        using value_type = T;
-        using reference = meta::as_lvalue<T>;
-        using pointer = meta::as_pointer<T>;
 
         T value;
 
@@ -229,14 +147,6 @@ namespace impl {
                 std::destroy_at(&value);
             }
         }
-
-        [[nodiscard]] constexpr auto data() noexcept {
-            return std::addressof(value);
-        }
-
-        [[nodiscard]] constexpr auto data() const noexcept {
-            return std::addressof(value);
-        }
     };
 
     template <typename T>
@@ -265,30 +175,18 @@ namespace impl {
         }
     }
 
-    /* When indexing into a multidimensional array, the result might be returned as a
-    view or full array with reduced shape based on the number of indices that were
-    provided.  If fewer indices than dimensions are given, this helper will deduce the
-    reduced shape. */
-    template <typename T, size_t I, size_t N, size_t... Ns>
-    struct subarray : subarray<T, I - 1, Ns...> {};
-    template <is_array_storage T, size_t N, size_t... Ns>
-    struct subarray<T, 0, N, Ns...> {
-        using array = Array<typename T::type, N, Ns...>;
-        using view = ArrayView<T, N, Ns...>;
-    };
-    template <typename T, size_t N, size_t... Ns>
-    struct subarray<T, 0, N, Ns...> {
-        using array = Array<T, N, Ns...>;
-        using view = ArrayView<T, N, Ns...>;
-    };
+    template <meta::not_reference T>
+    struct _array_type { using type = T; };
+    template <meta::not_reference T> requires (is_array_storage<T>)
+    struct _array_type<T> { using type = meta::unqualify<T>::type; };
+    template <meta::not_reference T>
+    using array_type = _array_type<T>::type;
 
     /* The outermost array value type also needs to be promoted to an array view if
     it is multidimensional, and needs to correct for the `array_storage` normalization
     as well. */
     template <typename T, size_t... Ns>
-    struct _array_value { using type = T; };
-    template <is_array_storage T>
-    struct _array_value<T> { using type = meta::unqualify<T>::value_type; };
+    struct _array_value { using type = array_type<T>; };
     template <typename T, size_t N, size_t... Ns>
     struct _array_value<T, N, Ns...> { using type = ArrayView<T, N, Ns...>; };
     template <typename T, size_t... Ns>
@@ -300,7 +198,13 @@ namespace impl {
     ensuring zero-cost iteration, without interfering with compile-time uses. */
     template <meta::not_reference T, size_t N, size_t... Ns>
     struct array_iterator {
-        using iterator_category = std::random_access_iterator_tag;
+        /// TODO: the iterator tag should always be contiguous, but is this always
+        /// the case for transpose views?
+        using iterator_category = std::conditional_t<
+            sizeof...(Ns) == 0,
+            std::contiguous_iterator_tag,
+            std::random_access_iterator_tag
+        >;
         using difference_type = std::ptrdiff_t;
         using value_type = array_value<T, Ns...>;
         using reference = meta::as_lvalue<value_type>;
@@ -486,6 +390,117 @@ namespace impl {
         }
     };
 
+    /// TODO: index errors are defined after filling in int <-> str conversions.
+
+    inline constexpr IndexError array_index_error(size_t i) noexcept;
+
+    /* Indices are always computed in C (row-major) memory order for simplicity and
+    compatibility with C++.  If an index is signed, then Python-style wraparound will
+    be applied to handle negative values.  A bounds check is then applied as a debug
+    assertion, which throws an `IndexError` if the index is out of bounds. */
+    template <size_t M, size_t... Ms, meta::unsigned_integer I, typename... Is>
+    constexpr size_t array_index(const I& i, const Is&... is)
+        noexcept (!DEBUG && meta::nothrow::explicitly_convertible_to<I, size_t>)
+        requires (meta::explicitly_convertible_to<I, size_t>)
+    {
+        if constexpr (DEBUG) {
+            if (i >= M) {
+                throw array_index_error(i);
+            }
+        }
+        if constexpr (sizeof...(Is) == 0) {
+            return size_t(i) * (Ms * ... * 1);
+        } else {
+            return size_t(i) * (Ms * ... * 1) + array_index<Ms...>(is...);
+        }
+    }
+    template <size_t M, size_t... Ms, meta::signed_integer I, typename... Is>
+    constexpr size_t array_index(const I& i, const Is&... is)
+        noexcept (!DEBUG && meta::nothrow::explicitly_convertible_to<I, ssize_t>)
+        requires (meta::explicitly_convertible_to<I, ssize_t>)
+    {
+        ssize_t j = ssize_t(i) + ssize_t(M) * (i < 0);
+        if constexpr (DEBUG) {
+            if (j < 0 || j > ssize_t(M)) {
+                throw array_index_error(i);
+            }
+        }
+        if constexpr (sizeof...(Is) == 0) {
+            return size_t(j) * (Ms * ... * 1);
+        } else {
+            return size_t(j) * (Ms * ... * 1) + array_index<Ms...>(is...);
+        }
+    }
+
+    /* Tuple access for array types always takes signed integers and applies both
+    wraparound and bounds-checking at compile time. */
+    template <ssize_t... I>
+    struct valid_array_index {
+        template <size_t... N>
+        static constexpr bool value = true;
+        template <size_t... N>
+        static constexpr size_t index = 0;
+    };
+    template <ssize_t I, ssize_t... Is>
+    struct valid_array_index<I, Is...> {
+        template <size_t N, size_t... Ns>
+        static constexpr bool value = false;
+        template <size_t N, size_t... Ns> requires (impl::valid_index<N, I>)
+        static constexpr bool value<N, Ns...> = valid_array_index<Is...>::template value<Ns...>;
+
+        template <size_t N, size_t... Ns>
+        static constexpr size_t index =
+            array_index<N, Ns...>(I) + valid_array_index<Is...>::template index<Ns...>;
+    };
+
+    /* When indexing into a multidimensional array, the result might be returned as a
+    view or full array with reduced shape based on the number of indices that were
+    provided.  If fewer indices than dimensions are given, this helper will deduce a
+    reduced shape. */
+    template <typename T, size_t I, size_t N, size_t... Ns>
+    struct subarray : subarray<T, I - 1, Ns...> {};
+    template <typename T, size_t N, size_t... Ns>
+    struct subarray<T, 0, N, Ns...> {
+        using array = Array<T, N, Ns...>;
+        using view = ArrayView<T, N, Ns...>;
+    };
+
+    /* Squeezing an array removes all singleton dimensions unless that is the only
+    remaining dimension. */
+    template <typename T, size_t... Ns>
+    struct _array_squeeze {
+        template <size_t... M>
+        using array = Array<T, M...>;
+        template <size_t... M>
+        using view = ArrayView<T, M...>;
+    };
+    template <typename T, size_t N, size_t... Ns>
+    struct _array_squeeze<T, N, Ns...> {
+        template <size_t... M>
+        using array = _array_squeeze<T, Ns...>::template array<M..., N>;
+        template <size_t... M>
+        using view = _array_squeeze<T, Ns...>::template view<M..., N>;
+    };
+    template <typename T, size_t... Ns>
+    struct _array_squeeze<T, 1, Ns...> {
+        template <size_t... M>
+        struct type {
+            using array = _array_squeeze<T, Ns...>::template array<M...>;
+            using view = _array_squeeze<T, Ns...>::template view<M...>;
+        };
+        template <size_t... M> requires (sizeof...(Ns) == 0 && sizeof...(M) == 0)
+        struct type<M...> {
+            using array = Array<T, 1>;
+            using view = ArrayView<T, 1>;
+        };
+        template <size_t... M>
+        using array = type<M...>::array;
+        template <size_t... M>
+        using view = type<M...>::view;
+    };
+    template <typename T, size_t... Ns>
+    using array_squeeze = _array_squeeze<T, Ns...>;
+
     /// TODO: transposing the array can be done by returning a special kind of view
     /// + iterator that effectively reverses the ordering of the shape dimensions,
     /// and applies the same transformation to the indexing operations, such that
@@ -508,25 +523,6 @@ namespace impl {
     };
 
 }
-
-
-/// TODO: it might be possible later in `Union` to provide a specialization of
-/// `Array<Optional<T>>` where the boolean flags are stored in a packed format
-/// alongside the data, rather than requiring padding between each element.  Indexing
-/// will return an optional reference where `None` represents a missing value.
-/// -> Union can just be included here and those specializations would be implemented
-/// inline.
-/// -> This would require some way to easily vectorize a union type, such that I can
-/// provide a requested size for the data buffer, and produce a struct of arrays
-/// representation.
-
-
-
-
-/// TODO: array views are going to need to expose all the same features as the
-/// main array type, including reshape(), transpose(), etc.  They only ever have
-/// to return new views, however, and never need to construct a new array type.
-
 
 
 /* A non-owning view into a contiguous memory buffer that interprets it as a
@@ -563,7 +559,9 @@ public:
     using pointer = meta::as_pointer<reference>;
     using const_pointer = meta::as_pointer<const_reference>;
     using iterator = impl::array_iterator<T, N, Ns...>;
+    using const_iterator = impl::array_iterator<meta::as_const<T>, N, Ns...>;
     using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
     T* ptr = nullptr;
 
@@ -572,7 +570,7 @@ public:
 
     template <typename A> requires (meta::data_returns<T*, A>)
     [[nodiscard]] constexpr ArrayView(A& arr) noexcept:
-        ptr(arr.data())
+        ptr(std::ranges::data(arr))
     {}
 
     constexpr void swap(ArrayView& other) noexcept {
@@ -612,18 +610,115 @@ public:
         return N == 0;
     }
 
-    template <size_t M, size_t... Ms> requires ((M * ... * Ms) == total())
-    using view = ArrayView<T, M, Ms...>;
+    template <size_t... Ms> requires (sizeof...(Ms) > 0 && (Ms * ... * 1) == total())
+    using view = ArrayView<T, Ms...>;
 
-    [[nodiscard]] constexpr auto data() const noexcept {
+    template <size_t... Ms> requires (sizeof...(Ms) > 0 && (Ms * ... * 1) == total())
+    using const_view = ArrayView<meta::as_const<T>, Ms...>;
+
+    [[nodiscard]] constexpr auto data() noexcept {
         if constexpr (impl::is_array_storage<T>) {
-            return ptr->data();
+            return std::addressof(ptr->value);
         } else {
             return ptr;
         }
     }
 
-    [[nodiscard]] constexpr decltype(auto) front() const noexcept {
+    [[nodiscard]] constexpr auto data() const noexcept {
+        if constexpr (impl::is_array_storage<T>) {
+            return std::addressof(static_cast<meta::as_const<T>*>(ptr)->value);
+        } else {
+            return static_cast<meta::as_const<T>*>(ptr);
+        }
+    }
+
+    [[nodiscard]] constexpr iterator begin() noexcept {
+        return {ptr};
+    }
+
+    [[nodiscard]] constexpr const_iterator begin() const noexcept {
+        return {ptr};
+    }
+
+    [[nodiscard]] constexpr const_iterator cbegin() const noexcept {
+        return begin();
+    }
+
+    [[nodiscard]] constexpr iterator end() noexcept {
+        if consteval {
+            return {ptr + (N - 1) * outer_stride, N};
+        } else {
+            return {ptr + N * outer_stride};
+        }
+    }
+
+    [[nodiscard]] constexpr const_iterator end() const noexcept {
+        if consteval {
+            return {ptr + (N - 1) * outer_stride, N};
+        } else {
+            return {ptr + N * outer_stride};
+        }
+    }
+
+    [[nodiscard]] constexpr const_iterator cend() const noexcept {
+        return end();
+    }
+
+    [[nodiscard]] constexpr reverse_iterator rbegin() noexcept {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept {
+        return rbegin();
+    }
+
+    [[nodiscard]] constexpr reverse_iterator rend() noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept {
+        return rend();
+    }
+
+    [[nodiscard]] constexpr view<total()> flatten() noexcept {
+        return {ptr};
+    }
+
+    [[nodiscard]] constexpr const_view<total()> flatten() const noexcept {
+        return {ptr};
+    }
+
+    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
+    [[nodiscard]] constexpr view<M, Ms...> reshape() noexcept {
+        return {ptr};
+    }
+
+    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
+    [[nodiscard]] constexpr const_view<M, Ms...> reshape() const noexcept {
+        return {ptr};
+    }
+
+    [[nodiscard]] constexpr auto squeeze() noexcept {
+        using view = impl::array_squeeze<T, N, Ns...>::template view<>;
+        return view{ptr};
+    }
+
+    [[nodiscard]] constexpr auto squeeze() const noexcept {
+        using const_view = impl::array_squeeze<meta::as_const<T>, N, Ns...>::template view<>;
+        return const_view{static_cast<meta::as_const<T>*>(ptr)};
+    }
+
+    /// TODO: transpose()
+
+    [[nodiscard]] constexpr decltype(auto) front() noexcept {
         if constexpr (sizeof...(Ns) == 0) {
             return (impl::array_access(ptr));
         } else {
@@ -632,7 +727,16 @@ public:
         }
     }
 
-    [[nodiscard]] constexpr decltype(auto) back() const noexcept {
+    [[nodiscard]] constexpr decltype(auto) front() const noexcept {
+        if constexpr (sizeof...(Ns) == 0) {
+            return (impl::array_access(static_cast<meta::as_const<T>*>(ptr)));
+        } else {
+            using const_view = ArrayView<meta::as_const<T>, Ns...>;
+            return const_view{static_cast<meta::as_const<T>*>(ptr)};
+        }
+    }
+
+    [[nodiscard]] constexpr decltype(auto) back() noexcept {
         if constexpr (sizeof...(Ns) == 0) {
             return (impl::array_access(ptr, (N - 1) * outer_stride));
         } else {
@@ -641,13 +745,25 @@ public:
         }
     }
 
+    [[nodiscard]] constexpr decltype(auto) back() const noexcept {
+        if constexpr (sizeof...(Ns) == 0) {
+            return (impl::array_access(
+                static_cast<meta::as_const<T>*>(ptr),
+                (N - 1) * outer_stride
+            ));
+        } else {
+            using const_view = ArrayView<meta::as_const<T>, Ns...>;
+            return const_view{static_cast<meta::as_const<T>*>(ptr) + (N - 1) * outer_stride};
+        }
+    }
+
     template <index_type... I>
         requires (
             sizeof...(I) <= ndim() &&
-            impl::valid_array_access<I...>::template value<N, Ns...>
+            impl::valid_array_index<I...>::template value<N, Ns...>
         )
-    [[nodiscard]] constexpr decltype(auto) get() const noexcept {
-        constexpr size_type j = impl::valid_array_access<I...>::template index<N, Ns...>;
+    [[nodiscard]] constexpr decltype(auto) get() noexcept {
+        constexpr size_type j = impl::valid_array_index<I...>::template index<N, Ns...>;
         if constexpr (sizeof...(I) == ndim()) {
             return (array_access(ptr, j));
         } else {
@@ -656,10 +772,31 @@ public:
         }
     }
 
-    template <typename... I> requires (sizeof...(I) <= ndim())
-    [[nodiscard]] constexpr decltype(auto) operator[](const I&... i) const
-        noexcept (impl::nothrow_array_indices<I...>)
-        requires (impl::valid_array_indices<I...>)
+    template <index_type... I>
+        requires (
+            sizeof...(I) <= ndim() &&
+            impl::valid_array_index<I...>::template value<N, Ns...>
+        )
+    [[nodiscard]] constexpr decltype(auto) get() const noexcept {
+        constexpr size_type j = impl::valid_array_index<I...>::template index<N, Ns...>;
+        if constexpr (sizeof...(I) == ndim()) {
+            return (array_access(static_cast<meta::as_const<T>*>(ptr), j));
+        } else {
+            using view = impl::subarray<meta::as_const<T>, sizeof...(I), N, Ns...>::view;
+            return view{static_cast<meta::as_const<T>*>(ptr) + j};
+        }
+    }
+
+    template <meta::integer... I> requires (sizeof...(I) <= ndim())
+    [[nodiscard]] constexpr decltype(auto) operator[](const I&... i)
+        noexcept (!DEBUG && ((meta::unsigned_integer<I> ?
+            meta::nothrow::explicitly_convertible_to<I, size_t> :
+            meta::nothrow::explicitly_convertible_to<I, ssize_t>
+        ) && ...))
+        requires ((meta::unsigned_integer<I> ?
+            meta::explicitly_convertible_to<I, size_t> :
+            meta::explicitly_convertible_to<I, ssize_t>
+        ) && ...)
     {
         size_type j = impl::array_index<N, Ns...>(i...);
         if constexpr (sizeof...(I) == ndim()) {
@@ -670,24 +807,24 @@ public:
         }
     }
 
-    [[nodiscard]] constexpr iterator begin() const noexcept {
-        return {ptr};
-    }
-
-    [[nodiscard]] constexpr iterator end() const noexcept {
-        if consteval {
-            return {ptr + (N - 1) * outer_stride, N};
+    template <meta::integer... I> requires (sizeof...(I) <= ndim())
+    [[nodiscard]] constexpr decltype(auto) operator[](const I&... i) const
+        noexcept (!DEBUG && ((meta::unsigned_integer<I> ?
+            meta::nothrow::explicitly_convertible_to<I, size_t> :
+            meta::nothrow::explicitly_convertible_to<I, ssize_t>
+        ) && ...))
+        requires ((meta::unsigned_integer<I> ?
+            meta::explicitly_convertible_to<I, size_t> :
+            meta::explicitly_convertible_to<I, ssize_t>
+        ) && ...)
+    {
+        size_type j = impl::array_index<N, Ns...>(i...);
+        if constexpr (sizeof...(I) == ndim()) {
+            return (array_access(static_cast<meta::as_const<T>*>(ptr), j));
         } else {
-            return {ptr + N * outer_stride};
+            using const_view = impl::subarray<meta::as_const<T>, sizeof...(I), N, Ns...>::view;
+            return const_view{static_cast<meta::as_const<T>*>(ptr) + j};
         }
-    }
-
-    [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
-        return std::make_reverse_iterator(end());
-    }
-
-    [[nodiscard]] constexpr reverse_iterator rend() const noexcept {
-        return std::make_reverse_iterator(begin());
     }
 
     template <typename U>
@@ -895,10 +1032,6 @@ template <typename T, size_t... N>
 ArrayView(const Array<T, N...>&) -> ArrayView<const impl::array_storage<T>, N...>;
 
 
-/// TODO: maybe allowing `void` as a type would be useful for creating arrays of
-/// raw bytes.
-
-
 /* A generalized, multidimensional array type with fixed shape known at compile time.
 
 Arrays can be of any shape and dimension as long as none are zero or negative.  The
@@ -971,7 +1104,7 @@ public:
     using size_type = size_t;
     using index_type = ssize_t;
     using value_type = impl::array_value<T, Ns...>;
-    using reference = meta::as_lvalue<T>;
+    using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
     using pointer = meta::as_pointer<reference>;
     using const_pointer = meta::as_pointer<const_reference>;
@@ -1156,7 +1289,7 @@ public:
     is guaranteed to be accurate at run time, but technically invokes undefined
     behavior, which prevents it from being used in constant expressions. */
     [[nodiscard]] constexpr auto data() noexcept {
-        return ptr[0].data();
+        return std::addressof(ptr->value);
     }
 
     /* Get a pointer to the underlying data buffer.  Note that this is always a flat,
@@ -1167,261 +1300,9 @@ public:
     revision of C++ may eliminate this issue, and obviate the need for normalization to
     begin with. */
     [[nodiscard]] constexpr auto data() const noexcept {
-        return ptr[0].data();
+        return std::addressof(ptr->value);
     }
 
-    /* Return a 1-dimensional view over the array, which equates to a flat view over
-    the raw data buffer. */
-    [[nodiscard]] constexpr view<total()> flatten() & noexcept {
-        return {ptr};
-    }
-
-    /* Return a 1-dimensional view over the array, which equates to a flat view over
-    the raw data buffer. */
-    [[nodiscard]] constexpr const_view<total()> flatten() const & noexcept {
-        return {ptr};
-    }
-
-    /* Return a 1-dimensional version of the array, moving the current contents to a
-    new array. */
-    [[nodiscard]] constexpr Array<T, total()> flatten() &&
-        noexcept (meta::nothrow::movable<T>)
-        requires (meta::movable<T>)
-    {
-        auto result = Array<T, total()>::reserve();
-        for (size_type i = 0; i < total(); ++i) {
-            std::construct_at(
-                &result.ptr[i].value,
-                std::move(ptr[i].value)
-            );
-        }
-        return result;
-    }
-
-    /* Return a 1-dimensional version of the array, copying the current contents to a
-    new array. */
-    [[nodiscard]] constexpr Array<T, total()> flatten() const &&
-        noexcept (meta::nothrow::copyable<T>)
-        requires (meta::copyable<T>)
-    {
-        auto result = Array<T, total()>::reserve();
-        for (size_type i = 0; i < total(); ++i) {
-            std::construct_at(
-                &result.ptr[i].value,
-                ptr[i].value
-            );
-        }
-        return result;
-    }
-
-    /* Return a view over the array with a different shape, as long as the total number
-    of elements is the same. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr view<M, Ms...> reshape() & noexcept {
-        return {ptr};
-    }
-
-    /* Return a view over the array with a different shape, as long as the total number
-    of elements is the same. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr const_view<M, Ms...> reshape() const & noexcept {
-        return {ptr};
-    }
-
-    /* Return a new array with a different shape, as long as the total number of
-    elements is the same.  This overload moves the current contents of the existing
-    array. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr Array<T, M, Ms...> reshape() &&
-        noexcept (meta::nothrow::movable<T>)
-        requires (meta::movable<T>)
-    {
-        auto result = Array<T, M, Ms...>::reserve();
-        for (size_type i = 0; i < total(); ++i) {
-            std::construct_at(
-                &result.ptr[i].value,
-                std::move(ptr[i].value)
-            );
-        }
-        return result;
-    }
-
-    /* Return a new array with a different shape, as long as the total number of
-    elements is the same.  This overload copies the current contents of the existing
-    array. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr Array<T, M, Ms...> reshape() const &&
-        noexcept (meta::nothrow::copyable<T>)
-        requires (meta::copyable<T>)
-    {
-        auto result = Array<T, M, Ms...>::reserve();
-        for (size_type i = 0; i < total(); ++i) {
-            std::construct_at(
-                &result.ptr[i].value,
-                ptr[i].value
-            );
-        }
-        return result;
-    }
-
-    // using transpose_type = impl::array_transpose<T, N...>::template type<>;
-
-    // /// TODO: transpose would need to copy/move the data into a new array if called on
-    // /// an rvalue.
-
-    // [[nodiscard]] constexpr transpose_type transpose() const
-    // {
-    //     transpose_type result;
-    //     /// TODO: figure out the indexing needed to transpose the array.
-    //     return result;
-    // }
-
-    // [[nodiscard]] constexpr transpose_type transpose() &&
-    // {
-    //     transpose_type result;
-    //     /// TODO: figure out the indexing needed to transpose the array.
-    //     return result;
-    // }
-
-
-    /// TODO: reflect across the diagonal without changing shape.  This can possibly
-    /// be an in-place operation, doing elementwise swaps.
-
-
-
-
-    /* Access the first item in the array, assuming it isn't empty.  If the array is
-    one-dimensional, then this will be a reference to the first underlying value.
-    Otherwise, if the array is an lvalue, then it will be a view over the first
-    sub-array.  If the array is an rvalue, then the view will be replaced by a full
-    array containing the moved contents of the sub-array, to prevent lifetime
-    issues. */
-    template <typename Self> requires (!empty())
-    [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
-        if constexpr (sizeof...(Ns) == 0) {
-            return ((*std::forward<Self>(self).ptr).value);
-        } else if constexpr (meta::lvalue<Self>) {
-            if constexpr (meta::is_const<Self>) {
-                return const_view<Ns...>{self.ptr};
-            } else {
-                return view<Ns...>{self.ptr};
-            }
-        } else {
-            auto result = Array<T, Ns...>::reserve();
-            for (size_type i = 0; i < outer_stride; ++i) {
-                std::construct_at(
-                    &result.ptr[i].value,
-                    std::move(self.ptr[i].value)
-                );
-            }
-            return result;
-        }
-    }
-
-    /* Access the last item in the array, assuming it isn't empty.  If the array is
-    one-dimensional, then this will be a reference to the last underlying value.
-    Otherwise, if the array is an lvalue, then it will be a view over the last
-    sub-array.  If the array is an rvalue, then the view will be replaced by a full
-    array containing the moved contents of the sub-array, to prevent lifetime
-    issues. */
-    template <typename Self> requires (!empty())
-    [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
-        constexpr size_type j = (N - 1) * outer_stride;
-        if constexpr (sizeof...(Ns) == 0) {
-            return (std::forward<Self>(self).ptr[j].value);
-        } else if constexpr (meta::lvalue<Self>) {
-            if constexpr (meta::is_const<Self>) {
-                return const_view<Ns...>{self.ptr + j};
-            } else {
-                return view<Ns...>{self.ptr + j};
-            }
-        } else {
-            auto result = Array<T, Ns...>::reserve();
-            for (size_type i = 0; i < outer_stride; ++i) {
-                std::construct_at(
-                    &result.ptr[i].value,
-                    std::move(self.ptr[i + j].value)
-                );
-            }
-            return result;
-        }
-    }
-
-    /* Access an element of the array by its multidimensional index.  The total number
-    of indices must be less than or equal to the number of dimensions in the array.
-    If fewer indices are provided, then a view over the corresponding sub-array will
-    be returned instead, which will be promoted to a full array if the indexing is done
-    on an rvalue to avoid lifetime issues.  Signed indices are interpreted using
-    Python-style wraparound, meaning negative indices count backwards from the end of
-    their respective dimension.  This method will fail to compile if any of the
-    provided indices are out of range, and is always zero-cost at run time. */
-    template <index_type... I, typename Self>
-        requires (
-            sizeof...(I) <= ndim() &&
-            impl::valid_array_access<I...>::template value<N, Ns...>
-        )
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        constexpr size_type j = impl::valid_array_access<I...>::template index<N, Ns...>;
-        if constexpr (sizeof...(I) == ndim()) {
-            return (std::forward<Self>(self).ptr[j].value);
-        } else if constexpr (meta::lvalue<Self>) {
-            if constexpr (meta::is_const<Self>) {
-                using const_view = impl::subarray<const storage, sizeof...(I), N, Ns...>::view;
-                return const_view{self.ptr + j};
-            } else {
-                using view = impl::subarray<storage, sizeof...(I), N, Ns...>::view;
-                return view{self.ptr + j};
-            }
-        } else {
-            using array = impl::subarray<storage, sizeof...(I), N, Ns...>::array;
-            auto result = array::reserve();
-            for (size_type k = 0; k < array::total(); ++k) {
-                std::construct_at(
-                    &result.ptr[k].value,
-                    std::move(self.ptr[j + k].value)
-                );
-            }
-            return result;
-        }
-    }
-
-    /* Access an element of the array by its multidimensional index.  The number
-    of indices must be less than or equal to the number of dimensions in the array.
-    If fewer indices are provided, then a view over the corresponding sub-array will
-    be returned instead, which will be promoted to a full array if the indexing is done
-    on an rvalue to avoid lifetime issues.  Signed indices are interpreted using
-    Python-style wraparound, meaning negative indices count backwards from the end of
-    their respective dimension.  In debug builds, all indices will be bounds-checked,
-    throwing an `IndexError` if any are out of range after normalization.  For unsigned
-    indices in release builds, this operator is always zero-cost at run time. */
-    template <typename Self, typename... I> requires (sizeof...(I) <= ndim())
-    [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, const I&... i)
-        noexcept (impl::nothrow_array_indices<I...>)
-        requires (impl::valid_array_indices<I...>)
-    {
-        size_type j = impl::array_index<N, Ns...>(i...);
-        if constexpr (sizeof...(I) == ndim()) {
-            return (std::forward<Self>(self).ptr[j].value);
-        } else if constexpr (meta::lvalue<Self>) {
-            if constexpr (meta::is_const<Self>) {
-                using const_view = impl::subarray<const storage, sizeof...(I), N, Ns...>::view;
-                return const_view{self.ptr + j};
-            } else {
-                using view = impl::subarray<storage, sizeof...(I), N, Ns...>::view;
-                return view{self.ptr + j};
-            }
-        } else {
-            using array = impl::subarray<storage, sizeof...(I), N, Ns...>::array;
-            auto result = array::reserve();
-            for (size_type k = 0; k < array::total(); ++k) {
-                std::construct_at(
-                    &result.ptr[k].value,
-                    std::move(self.ptr[j + k].value)
-                );
-            }
-            return result;
-        }
-    }
 
     /* Get a forward iterator over the first dimension of the array.  For
     multidimensional arrays, the iterator will yield recursively nested views over
@@ -1450,7 +1331,7 @@ public:
             return {ptr};
         } else {
             if consteval {
-                return {ptr + (total() - 1), size()};
+                return {ptr + total() - outer_stride, size()};
             } else {
                 return {ptr + total()};
             }
@@ -1463,7 +1344,7 @@ public:
             return {ptr};
         } else {
             if consteval {
-                return {ptr + (total() - 1), size()};
+                return {ptr + total() - outer_stride, size()};
             } else {
                 return {ptr + total()};
             }
@@ -1521,6 +1402,323 @@ public:
     type and shape. */
     [[nodiscard]] constexpr operator ArrayView<const storage, N, Ns...>() const noexcept {
         return {ptr};
+    }
+
+    /* Return a 1-dimensional view over the array, which equates to a flat view over
+    the raw data buffer. */
+    [[nodiscard]] constexpr view<total()> flatten() & noexcept {
+        return {ptr};
+    }
+
+    /* Return a 1-dimensional view over the array, which equates to a flat view over
+    the raw data buffer. */
+    [[nodiscard]] constexpr const_view<total()> flatten() const & noexcept {
+        return {static_cast<const storage*>(ptr)};
+    }
+
+    /* Return a 1-dimensional version of the array, moving the current contents to a
+    new array. */
+    [[nodiscard]] constexpr Array<T, total()> flatten() &&
+        noexcept (meta::nothrow::movable<T>)
+        requires (meta::movable<T>)
+    {
+        auto result = Array<T, total()>::reserve();
+        for (size_type i = 0; i < total(); ++i) {
+            std::construct_at(
+                &result.ptr[i].value,
+                std::move(ptr[i].value)
+            );
+        }
+        return result;
+    }
+
+    /* Return a 1-dimensional version of the array, copying the current contents to a
+    new array. */
+    [[nodiscard]] constexpr Array<T, total()> flatten() const &&
+        noexcept (meta::nothrow::copyable<T>)
+        requires (meta::copyable<T>)
+    {
+        auto result = Array<T, total()>::reserve();
+        for (size_type i = 0; i < total(); ++i) {
+            std::construct_at(
+                &result.ptr[i].value,
+                ptr[i].value
+            );
+        }
+        return result;
+    }
+
+    /* Return a view over the array with a different shape, as long as the total number
+    of elements is the same. */
+    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
+    [[nodiscard]] constexpr view<M, Ms...> reshape() & noexcept {
+        return {ptr};
+    }
+
+    /* Return a view over the array with a different shape, as long as the total number
+    of elements is the same. */
+    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
+    [[nodiscard]] constexpr const_view<M, Ms...> reshape() const & noexcept {
+        return {static_cast<const storage*>(ptr)};
+    }
+
+    /* Return a new array with a different shape, as long as the total number of
+    elements is the same.  This overload moves the current contents of the existing
+    array. */
+    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
+    [[nodiscard]] constexpr Array<T, M, Ms...> reshape() &&
+        noexcept (meta::nothrow::movable<T>)
+        requires (meta::movable<T>)
+    {
+        auto result = Array<T, M, Ms...>::reserve();
+        for (size_type i = 0; i < total(); ++i) {
+            std::construct_at(
+                &result.ptr[i].value,
+                std::move(ptr[i].value)
+            );
+        }
+        return result;
+    }
+
+    /* Return a new array with a different shape, as long as the total number of
+    elements is the same.  This overload copies the current contents of the existing
+    array. */
+    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
+    [[nodiscard]] constexpr Array<T, M, Ms...> reshape() const &&
+        noexcept (meta::nothrow::copyable<T>)
+        requires (meta::copyable<T>)
+    {
+        auto result = Array<T, M, Ms...>::reserve();
+        for (size_type i = 0; i < total(); ++i) {
+            std::construct_at(
+                &result.ptr[i].value,
+                ptr[i].value
+            );
+        }
+        return result;
+    }
+
+
+    /* Return a view over the array with all singleton dimensions removed, unless that
+    is the only remaining dimension. */
+    [[nodiscard]] constexpr auto squeeze() & noexcept {
+        using view = impl::array_squeeze<storage, N, Ns...>::template view<>;
+        return view{ptr};
+    }
+
+    /* Return a view over the array with all singleton dimensions removed, unless that
+    is the only remaining dimension. */
+    [[nodiscard]] constexpr auto squeeze() const & noexcept {
+        using const_view = impl::array_squeeze<const storage, N, Ns...>::template view<>;
+        return const_view{static_cast<const storage*>(ptr)};
+    }
+
+    /* Return a new array with a different shape, as long as the total number of
+    elements is the same.  This overload moves the current contents of the existing
+    array. */
+    [[nodiscard]] constexpr auto squeeze() &&
+        noexcept (meta::nothrow::movable<T>)
+        requires (meta::movable<T>)
+    {
+        using subarray = impl::array_squeeze<T, N, Ns...>::template array<>;
+        auto result = subarray::reserve();
+        for (size_type i = 0; i < total(); ++i) {
+            std::construct_at(
+                &result.ptr[i].value,
+                std::move(ptr[i].value)
+            );
+        }
+        return result;
+    }
+
+    /* Return a new array with a different shape, as long as the total number of
+    elements is the same.  This overload copies the current contents of the existing
+    array. */
+    [[nodiscard]] constexpr auto squeeze() const &&
+        noexcept (meta::nothrow::copyable<T>)
+        requires (meta::copyable<T>)
+    {
+        using subarray = impl::array_squeeze<meta::as_const<T>, N, Ns...>::template array<>;
+        auto result = subarray::reserve();
+        for (size_type i = 0; i < total(); ++i) {
+            std::construct_at(
+                &result.ptr[i].value,
+                ptr[i].value
+            );
+        }
+        return result;
+    }
+
+
+
+
+
+    // using transpose_type = impl::array_transpose<T, N...>::template type<>;
+
+    // /// TODO: transpose would need to copy/move the data into a new array if called on
+    // /// an rvalue.
+
+    // [[nodiscard]] constexpr transpose_type transpose() const
+    // {
+    //     transpose_type result;
+    //     /// TODO: figure out the indexing needed to transpose the array.
+    //     return result;
+    // }
+
+    // [[nodiscard]] constexpr transpose_type transpose() &&
+    // {
+    //     transpose_type result;
+    //     /// TODO: figure out the indexing needed to transpose the array.
+    //     return result;
+    // }
+
+
+    /// TODO: squeeze
+
+
+
+
+    /* Access the first item in the array, assuming it isn't empty.  If the array is
+    one-dimensional, then this will be a reference to the first underlying value.
+    Otherwise, if the array is an lvalue, then it will be a view over the first
+    sub-array.  If the array is an rvalue, then the view will be replaced by a full
+    array containing the moved contents of the sub-array, to prevent lifetime
+    issues. */
+    template <typename Self> requires (!empty())
+    [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
+        if constexpr (sizeof...(Ns) == 0) {
+            return ((*std::forward<Self>(self).ptr).value);
+        } else if constexpr (meta::lvalue<Self>) {
+            if constexpr (meta::is_const<Self>) {
+                using const_view = ArrayView<const storage, Ns...>;
+                return const_view{static_cast<const storage*>(self.ptr)};
+            } else {
+                using view = ArrayView<storage, Ns...>;
+                return view{self.ptr};
+            }
+        } else {
+            auto result = Array<T, Ns...>::reserve();
+            for (size_type i = 0; i < outer_stride; ++i) {
+                std::construct_at(
+                    &result.ptr[i].value,
+                    std::move(self.ptr[i].value)
+                );
+            }
+            return result;
+        }
+    }
+
+    /* Access the last item in the array, assuming it isn't empty.  If the array is
+    one-dimensional, then this will be a reference to the last underlying value.
+    Otherwise, if the array is an lvalue, then it will be a view over the last
+    sub-array.  If the array is an rvalue, then the view will be replaced by a full
+    array containing the moved contents of the sub-array, to prevent lifetime
+    issues. */
+    template <typename Self> requires (!empty())
+    [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
+        constexpr size_type j = (N - 1) * outer_stride;
+        if constexpr (sizeof...(Ns) == 0) {
+            return (std::forward<Self>(self).ptr[j].value);
+        } else if constexpr (meta::lvalue<Self>) {
+            if constexpr (meta::is_const<Self>) {
+                using const_view = ArrayView<const storage, Ns...>;
+                return const_view{static_cast<const storage*>(self.ptr) + j};
+            } else {
+                using view = ArrayView<storage, Ns...>;
+                return view{self.ptr + j};
+            }
+        } else {
+            auto result = Array<T, Ns...>::reserve();
+            for (size_type i = 0; i < outer_stride; ++i) {
+                std::construct_at(
+                    &result.ptr[i].value,
+                    std::move(self.ptr[i + j].value)
+                );
+            }
+            return result;
+        }
+    }
+
+    /* Access an element of the array by its multidimensional index.  The total number
+    of indices must be less than or equal to the number of dimensions in the array.
+    If fewer indices are provided, then a view over the corresponding sub-array will
+    be returned instead, which will be promoted to a full array if the indexing is done
+    on an rvalue to avoid lifetime issues.  Signed indices are interpreted using
+    Python-style wraparound, meaning negative indices count backwards from the end of
+    their respective dimension.  This method will fail to compile if any of the
+    provided indices are out of range, and is always zero-cost at run time. */
+    template <index_type... I, typename Self>
+        requires (
+            sizeof...(I) <= ndim() &&
+            impl::valid_array_index<I...>::template value<N, Ns...>
+        )
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+        constexpr size_type j = impl::valid_array_index<I...>::template index<N, Ns...>;
+        if constexpr (sizeof...(I) == ndim()) {
+            return (std::forward<Self>(self).ptr[j].value);
+        } else if constexpr (meta::lvalue<Self>) {
+            if constexpr (meta::is_const<Self>) {
+                using const_view = impl::subarray<const storage, sizeof...(I), N, Ns...>::view;
+                return const_view{static_cast<const storage*>(self.ptr) + j};
+            } else {
+                using view = impl::subarray<storage, sizeof...(I), N, Ns...>::view;
+                return view{self.ptr + j};
+            }
+        } else {
+            using array = impl::subarray<T, sizeof...(I), N, Ns...>::array;
+            auto result = array::reserve();
+            for (size_type k = 0; k < array::total(); ++k) {
+                std::construct_at(
+                    &result.ptr[k].value,
+                    std::move(self.ptr[j + k].value)
+                );
+            }
+            return result;
+        }
+    }
+
+    /* Access an element of the array by its multidimensional index.  The number
+    of indices must be less than or equal to the number of dimensions in the array.
+    If fewer indices are provided, then a view over the corresponding sub-array will
+    be returned instead, which will be promoted to a full array if the indexing is done
+    on an rvalue to avoid lifetime issues.  Signed indices are interpreted using
+    Python-style wraparound, meaning negative indices count backwards from the end of
+    their respective dimension.  In debug builds, all indices will be bounds-checked,
+    throwing an `IndexError` if any are out of range after normalization.  For unsigned
+    indices in release builds, this operator is always zero-cost at run time. */
+    template <typename Self, typename... I> requires (sizeof...(I) <= ndim())
+    [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, const I&... i)
+        noexcept (!DEBUG && ((meta::unsigned_integer<I> ?
+            meta::nothrow::explicitly_convertible_to<I, size_t> :
+            meta::nothrow::explicitly_convertible_to<I, ssize_t>
+        ) && ...))
+        requires ((meta::unsigned_integer<I> ?
+            meta::explicitly_convertible_to<I, size_t> :
+            meta::explicitly_convertible_to<I, ssize_t>
+        ) && ...)
+    {
+        size_type j = impl::array_index<N, Ns...>(i...);
+        if constexpr (sizeof...(I) == ndim()) {
+            return (std::forward<Self>(self).ptr[j].value);
+        } else if constexpr (meta::lvalue<Self>) {
+            if constexpr (meta::is_const<Self>) {
+                using const_view = impl::subarray<const storage, sizeof...(I), N, Ns...>::view;
+                return const_view{static_cast<const storage*>(self.ptr) + j};
+            } else {
+                using view = impl::subarray<storage, sizeof...(I), N, Ns...>::view;
+                return view{self.ptr + j};
+            }
+        } else {
+            using array = impl::subarray<T, sizeof...(I), N, Ns...>::array;
+            auto result = array::reserve();
+            for (size_type k = 0; k < array::total(); ++k) {
+                std::construct_at(
+                    &result.ptr[k].value,
+                    std::move(self.ptr[j + k].value)
+                );
+            }
+            return result;
+        }
     }
 
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
@@ -1703,11 +1901,18 @@ Array(Ts...) -> Array<meta::common_type<Ts...>, sizeof...(Ts)>;
 
 
 template <typename T, size_t N, size_t... Ns>
-Array(ArrayView<T, N, Ns...>) -> Array<impl::array_value<T, Ns...>, N, Ns...>;
+Array(ArrayView<T, N, Ns...>) -> Array<impl::array_type<T>, N, Ns...>;
 
 
-template <typename T, size_t N, size_t... Ns>
-Array(ArrayView<const T, N, Ns...>) -> Array<impl::array_value<const T, Ns...>, N, Ns...>;
+/// TODO: it might be possible later in `Union` to provide a specialization of
+/// `Array<Optional<T>>` where the boolean flags are stored in a packed format
+/// alongside the data, rather than requiring padding between each element.  Indexing
+/// will return an optional reference where `None` represents a missing value.
+/// -> Union can just be included here and those specializations would be implemented
+/// inline.
+/// -> This would require some way to easily vectorize a union type, such that I can
+/// provide a requested size for the data buffer, and produce a struct of arrays
+/// representation.
 
 
 }
@@ -1799,6 +2004,10 @@ namespace bertrand {
     static constexpr ArrayView test7 = test3;
 
 
+    static constexpr auto test8 = Array<int, 1, 3>{Array{1, 2, 3}};
+    static constexpr auto test9 = test8.squeeze();
+    static constexpr auto test10 = Array<int, 1, 3>{Array{1, 2, 3}}.squeeze();
+
     static_assert([] {
         Array<int, 2, 2> arr {
             Array{1, 2},
@@ -1844,13 +2053,13 @@ namespace bertrand {
     static_assert([] {
         Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
         auto it = arr.rbegin();
-        if ((*it)[0] != 6) return false;
+        if ((*it) != Array{5, 6}) return false;
         ++it;
-        if (*it != Array{4, 5}) return false;
-        // ++it;
-        // if (*it != 1) return false;
-        // ++it;
-        // if (it != arr.rend()) return false;
+        if (*it != Array{3, 4}) return false;
+        ++it;
+        if (*it != Array{1, 2}) return false;
+        ++it;
+        if (it != arr.rend()) return false;
 
         it = arr.rbegin();
         auto end = arr.rend();
@@ -1858,6 +2067,23 @@ namespace bertrand {
 
             ++it;
         }
+
+        return true;
+    }());
+
+    static_assert([] {
+        Array<int, 2, 3> arr {
+            Array{1, 2, 3},
+            Array{4, 5, 6}
+        };
+        const auto view = arr[0];
+        auto& x = view[1];
+        for (auto& y : view) {
+
+        }
+        auto z = view.data();
+
+        auto f = view.back();
 
         return true;
     }());
