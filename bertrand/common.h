@@ -4182,10 +4182,10 @@ namespace meta {
     ///////////////////////////////////
 
     template <typename T>
-    concept has_data = requires(T t) { ::std::ranges::data(t); };
+    concept has_data = requires(as_lvalue<T> t) { ::std::ranges::data(t); };
 
     template <has_data T>
-    using data_type = decltype(::std::ranges::data(::std::declval<T>()));
+    using data_type = decltype(::std::ranges::data(::std::declval<as_lvalue<T>>()));
 
     template <typename Ret, typename T>
     concept data_returns = has_data<T> && convertible_to<data_type<T>, Ret>;
@@ -4429,6 +4429,10 @@ namespace meta {
         };
 
     }
+
+    /// TODO: add a separate, static_shape<T> helper that determines whether the shape
+    /// can be determined entirely at compile time.
+
 
     /* Retrieve the `shape()` of a generic type by first checking for a `t.shape()`
     member method and then falling back to an ADL-enabled `shape(t)` method.  If
