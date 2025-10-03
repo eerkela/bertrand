@@ -1316,8 +1316,20 @@ namespace impl {
         static constexpr bool empty() noexcept { return (sizeof...(Ts) == 0); }
 
     private:
+        template <size_t I, typename T>
+        static constexpr decltype(auto) get_at(T&& u) noexcept {
+            if constexpr (I == 0) {
+                return (std::forward<T>(u));
+            } else {
+                return (get_at<I - 1>(std::forward<T>(u).rest));
+            }
+        }
+
         template <typename... Us>
-        union _type { constexpr ~_type() noexcept {}; };
+        union _type {
+            constexpr _type() noexcept {};
+            constexpr ~_type() noexcept {};
+        };
         template <typename U, typename... Us>
         union _type<U, Us...> {
             [[no_unique_address]] impl::ref<U> curr;
@@ -1342,62 +1354,42 @@ namespace impl {
                 rest(tag<I - 1>{}, std::forward<A>(args)...)  // recur
             {}
 
-            template <size_t I, typename Self>
-            constexpr decltype(auto) get(this Self&& self) noexcept {
-                if constexpr (I == 0) {
-                    return (*std::forward<Self>(self).curr);
-                } else {
-                    return (std::forward<Self>(self).rest.template get<I - 1>());
-                }
-            }
+            constexpr _type(_type&& other)
+                noexcept (meta::nothrow::movable<impl::ref<U>>)
+                requires (meta::movable<impl::ref<U>>)
+            :
+                curr(std::move(other).curr)
+            {}
 
-            template <size_t I, typename... A> requires (I == 0)
-            constexpr void construct(A&&... args)
-                noexcept (requires{
-                    {std::construct_at(&curr, U(std::forward<A>(args)...))} noexcept;
-                })
-                requires (requires{
-                    {std::construct_at(&curr, U(std::forward<A>(args)...))};
-                })
-            {
-                std::construct_at(&curr, U(std::forward<A>(args)...));
-            }
+            template <typename... Vs> requires (sizeof...(Vs) <= sizeof...(Us))
+            constexpr _type(_type<Vs...>&& other)
+                noexcept (meta::nothrow::movable<_type<Us...>>)
+                requires (meta::movable<_type<Us...>>)
+            :
+                rest(std::move(other).rest)
+            {}
 
-            template <size_t I, typename... A> requires (I > 0)
-            constexpr void construct(A&&... args)
-                noexcept (requires{
-                    {rest.template construct<I - 1>(std::forward<A>(args)...)} noexcept;
-                })
-                requires (requires{
-                    {rest.template construct<I - 1>(std::forward<A>(args)...)};
-                })
-            {
-                rest.template construct<I - 1>(std::forward<A>(args)...);
-            }
+            /// TODO: maybe copy/move constructors can bypass the issue with
+            /// the swap operator?  I would just take a top-level move/assign
+            /// against the upper union, which might be smart enough to do what I
+            /// need.
 
-            template <size_t I> requires (I == 0)
-            constexpr void destroy()
-                noexcept (
-                    meta::trivially_destructible<U> ||
-                    requires{{std::destroy_at(&curr)} noexcept;}
-                )
-                requires (
-                    meta::trivially_destructible<U> ||
-                    requires{{std::destroy_at(&curr)};}
-                )
-            {
-                if constexpr (!meta::trivially_destructible<U>) {
-                    std::destroy_at(&curr);
-                }
-            }
+            /// -> The first move would call the move constructor of the top-level
+            /// type with the detected subtype from the current union.  Then, the
+            /// top-level assignment operator would destroy the leftover value and
+            /// then move-construct the new value in the appropriate place.  It's a
+            /// long shot, but that might be sophisticated enough to actually work.
 
-            template <size_t I> requires (I > 0)
-            constexpr void destroy()
-                noexcept (requires{{rest.template destroy<I - 1>()} noexcept;})
-                requires (requires{{rest.template destroy<I - 1>()};})
-            {
-                rest.template destroy<I - 1>();
-            }
+            /// I would need to use some kind of `owning_tag<I, _type&&>` class for
+            /// the assignment operator.  If `I` reaches zero, then I would destroy the
+            /// moved-from value at this index.  Then, if the moved type is further
+            /// down the chain, I would construct `rest` with
+            /// `owning_tag<I - 1, _type&&>` until the type is found, at which point
+            /// I use it to move-construct the new value in place.  If the `__type&&`
+            /// is above the zeroth index in the chain, then I would destroy `rest`
+            /// for every index between it and the new value, and then move-construct
+            /// the new value at the end.  This should hopefully ensure that I never
+            /// access a `rest` object that is outside its lifetime at any point.
         };
 
     public:
@@ -1422,7 +1414,7 @@ namespace impl {
             noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
             requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         :
-            m_data(t, std::forward<A>(args)...),
+            m_data(tag<I>{}, std::forward<A>(args)...),
             m_index(I)
         {}
 
@@ -1435,13 +1427,13 @@ namespace impl {
         time. */
         template <size_t I, typename Self> requires (I < sizeof...(Ts))
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (std::forward<Self>(self).m_data.template get<I>());
+            return (*get_at<I>(std::forward<Self>(self).m_data).curr);
         }
 
         /* Access a specific type, assuming it is present in the union. */
         template <typename T, typename Self> requires (types::template contains<T>())
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (std::forward<Self>(self).m_data.template get<meta::index_of<T, Ts...>>());
+            return (*get_at<meta::index_of<T, Ts...>>(std::forward<Self>(self).m_data).curr);
         }
 
         /* Get a pointer to a specific value by index if it is the active alternative.
@@ -1454,7 +1446,7 @@ namespace impl {
         [[nodiscard]] constexpr auto get_if() noexcept
             -> meta::address_type<meta::as_lvalue<meta::unpack_type<I, Ts...>>>
         {
-            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+            return m_index == I ? std::addressof(get<I>()) : nullptr;
         }
 
         /* Get a pointer to a specific value by index if it is the active alternative.
@@ -1467,7 +1459,7 @@ namespace impl {
         [[nodiscard]] constexpr auto get_if() const noexcept
             -> meta::address_type<meta::as_const_ref<meta::unpack_type<I, Ts...>>>
         {
-            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+            return m_index == I ? std::addressof(get<I>()) : nullptr;
         }
 
         /* Get a pointer to a specific type if it is the active alternative.  Returns
@@ -1481,7 +1473,7 @@ namespace impl {
             -> meta::address_type<meta::as_lvalue<T>>
         {
             constexpr size_t I = meta::index_of<T, Ts...>;
-            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+            return m_index == I ? std::addressof(get<I>()) : nullptr;
         }
 
         /* Get a pointer to a specific type if it is the active alternative.  Returns
@@ -1495,7 +1487,7 @@ namespace impl {
             -> meta::address_type<meta::as_const_ref<T>>
         {
             constexpr size_t I = meta::index_of<T, Ts...>;
-            return m_index == I ? std::addressof(m_data.template get<I>()) : nullptr;
+            return m_index == I ? std::addressof(get<I>()) : nullptr;
         }
 
     private:
@@ -1533,7 +1525,7 @@ namespace impl {
             static constexpr type operator()(const basic_union& other)
                 noexcept (nothrow_copyable)
             {
-                return {tag<I>{}, other.m_data.template get<I>()};
+                return {tag<I>{}, other.template get<I>()};
             }
         };
 
@@ -1542,16 +1534,19 @@ namespace impl {
             static constexpr type operator()(basic_union&& other)
                 noexcept (nothrow_movable)
             {
-                return {tag<I>{}, std::move(other).m_data.template get<I>()};
+                return {tag<I>{}, std::move(other).template get<I>()};
             }
         };
 
         template <size_t I>
         struct destroy {
-            static constexpr void operator()(basic_union& self)
+            static constexpr void operator()(type& u)
                 noexcept (nothrow_destructible)
+                requires (requires{{std::destroy_at(std::addressof(get_at<I>(u).curr))};})
             {
-                self.m_data.template destroy<I>();
+                if constexpr (!meta::trivially_destructible<decltype(get_at<I>(u).curr)>) {
+                    std::destroy_at(std::addressof(get_at<I>(u).curr));
+                }
             }
         };
 
@@ -1566,51 +1561,43 @@ namespace impl {
 
                 // prefer a direct swap if the indices match and a corresponding operator
                 // is available
-                if constexpr (J == K && !meta::lvalue<T> && meta::swappable<T>) {
+                if constexpr (J == K) {
                     std::ranges::swap(
-                        self.m_data.template get<J>(),
-                        other.m_data.template get<K>()
+                        get_at<J>(self.m_data).curr,
+                        get_at<K>(other.m_data).curr
                     );
-
-                // otherwise, if the indices match and the types are move assignable, use a
-                // temporary variable with best-effort error recovery
-                } else if constexpr (J == K && !meta::lvalue<T> && meta::move_assignable<T>) {
-                    T temp(std::move(self).m_data.template get<J>());
-                    try {
-                        self.m_data.template get<J>() = std::move(other).m_data.template get<K>();
-                        try {
-                            other.m_data.template get<K>() = std::move(temp);
-                        } catch (...) {
-                            other.m_data.template get<K>() =
-                                std::move(self).m_data.template get<J>();
-                            throw;
-                        }
-                    } catch (...) {
-                        self.m_data.template get<J>() = std::move(temp);
-                        throw;
-                    }
 
                 // If the indices differ or the types are lvalues, then we need to move
                 // construct and destroy the original value behind us.
                 } else {
-                    T temp(std::move(self).m_data.template get<J>());
-                    self.m_data.template destroy<J>();
+                    type temp(get_at<J>(std::move(self).m_data));
+                    destroy<J>{}(self.m_data);
                     try {
-                        self.m_data.template construct<K>(
-                            std::move(other).m_data.template get<K>()
+                        std::construct_at(
+                            &self.m_data,
+                            get_at<K>(std::move(other).m_data)
                         );
-                        other.m_data.template destroy<K>();
+                        destroy<K>{}(other.m_data);
                         try {
-                            other.m_data.template construct<J>(std::move(temp));
-                        } catch (...) {
-                            other.m_data.template construct<K>(
-                                std::move(self).m_data.template get<K>()
+                            std::construct_at(
+                                &other.m_data,
+                                get_at<J>(std::move(temp))
                             );
-                            self.m_data.template destroy<K>();
+                            destroy<J>{}(temp);
+                        } catch (...) {
+                            std::construct_at(
+                                &other.m_data,
+                                get_at<K>(std::move(self).m_data)
+                            );
+                            destroy<K>{}(self.m_data);
                             throw;
                         }
                     } catch (...) {
-                        self.m_data.template construct<J>(std::move(temp));
+                        std::construct_at(
+                            &self.m_data,
+                            get_at<J>(std::move(temp))
+                        );
+                        destroy<J>{}(temp);
                         throw;
                     }
                     other.m_index = J;
@@ -1638,7 +1625,7 @@ namespace impl {
             requires (destructible)
         {
             if constexpr (!trivially_destructible) {
-                impl::basic_vtable<destroy, size()>{self.index()}(self);
+                impl::basic_vtable<destroy, size()>{self.index()}(self.m_data);
             }
         }
 
@@ -1694,7 +1681,6 @@ namespace impl {
             noexcept (nothrow_destructible)
             requires (destructible)
         {
-            
             dispatch_destroy(*this);
         }
 
@@ -3538,6 +3524,10 @@ struct Union : impl::union_tag {
 ////////////////////////
 
 
+/// TODO: optionals and expecteds can conditionally expose `data()`, returning a
+/// null pointer if empty.
+
+
 namespace impl {
 
     /* Return a standardized error if an optional is dereferenced while in the empty
@@ -4597,10 +4587,7 @@ struct Optional : impl::optional_tag {
         noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
         requires (meta::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
     : 
-        __value(impl::visit(
-            impl::optional_convert_from<T, from>{},
-            std::forward<from>(v)
-        ))
+        __value(impl::visit(impl::optional_convert_from<T, from>{}, std::forward<from>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the value type's
@@ -4614,10 +4601,7 @@ struct Optional : impl::optional_tag {
             meta::visit_exhaustive<impl::optional_construct_from<T>, A...>
         )
     :
-        __value(impl::visit(
-            impl::optional_construct_from<T>{},
-            std::forward<A>(args)...
-        ))
+        __value(impl::visit(impl::optional_construct_from<T>{}, std::forward<A>(args)...))
     {}
 
     /* Swap the contents of two optionals as efficiently as possible. */

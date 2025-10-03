@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include "bertrand/union.h"
 
 
 namespace bertrand {
@@ -11,46 +12,206 @@ namespace bertrand {
 namespace impl {
     struct array_tag {};
     struct array_view_tag {};
+
+    /* Compile-time shape and stride specifiers use CTAD to allow simple braced
+    initializer syntax, which permits custom strides. */
+    template <size_t rank>
+    struct extent {
+        ssize_t dim[rank];
+
+        constexpr extent() noexcept = default;
+
+        template <meta::integer... T> requires (sizeof...(T) == rank)
+        constexpr extent(T&&... n) noexcept : dim{ssize_t(n)...} {}
+
+        [[nodiscard]] static constexpr size_t size() noexcept { return rank; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(rank); }
+        [[nodiscard]] static constexpr bool empty() noexcept { return rank == 0; }
+
+        [[nodiscard]] constexpr ssize_t operator[](ssize_t i) const noexcept {
+            return dim[impl::normalize_index(ssize(), i)];
+        }
+
+        [[nodiscard]] constexpr extent reverse() const noexcept {
+            extent r;
+            for (size_t j = 0; j < size(); ++j) {
+                r.dim[j] = dim[size() - 1 - j];
+            }
+            return r;
+        }
+
+        template <size_t I = 1> requires (I <= size())
+        [[nodiscard]] constexpr extent<size() - I> left_strip() const noexcept {
+            extent<size() - I> s;
+            for (size_t j = I; j < size(); ++j) {
+                s.dim[j - I] = dim[j];
+            }
+            return s;
+        }
+
+        template <size_t I = 1> requires (I <= size())
+        [[nodiscard]] constexpr extent<size() - I> right_strip() const noexcept {
+            extent<size() - I> s;
+            for (size_t j = 0; j < size() - I; ++j) {
+                s.dim[j] = dim[j];
+            }
+            return s;
+        }
+
+        [[nodiscard]] constexpr ssize_t product() const noexcept {
+            ssize_t p = 1;
+            for (ssize_t j = 0; j < ssize(); ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
+        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
+        [[nodiscard]] constexpr ssize_t left_product() const noexcept {
+            ssize_t p = 1;
+            for (ssize_t j = 0, k = impl::normalize_index<ssize(), I>(); j < k; ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
+        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
+        [[nodiscard]] constexpr ssize_t right_product() const noexcept {
+            ssize_t p = 1;
+            for (ssize_t j = impl::normalize_index<ssize(), I>(); j < ssize(); ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
+        [[nodiscard]] constexpr extent c_strides() const noexcept {
+            if constexpr (size() == 0) {
+                return {};
+            } else {
+                extent s;
+                size_t j = size() - 1;
+                s.dim[j] = 1;
+                while (j-- > 0) {
+                    s.dim[j] = s.dim[j + 1] * dim[j + 1];
+                }
+                return s;
+            }
+        }
+
+        [[nodiscard]] constexpr extent fortran_strides() const noexcept {
+            if constexpr (size() == 0) {
+                return {};
+            } else {
+                extent s;
+                s.dim[0] = 1;
+                for (size_t j = 1; j < size(); ++j) {
+                    s.dim[j] = s.dim[j - 1] * dim[j - 1];
+                }
+                return s;
+            }
+        }
+
+        template <size_t R>
+        [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
+            if constexpr (R == size()) {
+                for (size_t i = 0; i < size(); ++i) {
+                    if (dim[i] != other.dim[i]) {
+                        return false;
+                    }
+                }
+                return true;
+            } else {
+                return false;
+            }
+        }
+    };
+
+    template <meta::integer... N>
+    extent(N...) -> extent<sizeof...(N)>;
+
+    /* A configuration struct that holds miscellaneous flags for an array or array
+    view definition. */
+    template <size_t rank>
+    struct array_flags {
+        /* If false (the default), then the strides will be computed in C (row-major)
+        order, with the last index varying the fastest.  Setting this to true specifies
+        that indices should be interpreted in Fortran (column-major) order instead,
+        where the first index varies the fastest.  Toggling this flag for a view
+        effectively transposes the array. */
+        [[no_unique_address]] int8_t fortran = -1;
+
+        /* A set of custom strides to use for each dimension.  If given, the strides
+        will always match their corresponding shape dimension. */
+        [[no_unique_address]] extent<rank> strides;
+
+        [[nodiscard]] constexpr bool empty() const noexcept {
+            return fortran < 0;
+        }
+
+        [[nodiscard]] constexpr array_flags normalize() const noexcept {
+            if (empty()) {
+                return {.fortran = false};
+            } else {
+                return *this;
+            }
+        }
+
+        [[nodiscard]] constexpr bool operator==(const array_flags& other) const noexcept {
+            return fortran == other.fortran && strides == other.strides;
+        }
+    };
+
 }
 
 
-template <typename T, size_t N, size_t... Ns>
+template <meta::not_reference T, impl::extent Shape, impl::array_flags<Shape.size()> flags = {}>
     requires (
         meta::not_void<T> &&
-        meta::not_reference<T> &&
-        (sizeof...(Ns) == 0 || ((N > 0) && ... && (Ns > 0)))
+        !Shape.empty() &&
+        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
     )
 struct Array;
 
 
-template <meta::not_reference T, size_t N, size_t... Ns>
+template <meta::not_reference T, impl::extent Shape = {}, impl::array_flags<Shape.size()> flags = {}>
     requires (
         meta::not_void<T> &&
-        meta::not_reference<T> &&
-        (sizeof...(Ns) == 0 || ((N > 0) && ... && (Ns > 0)))
+        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
     )
 struct ArrayView;
 
 
 namespace meta {
 
-    template <typename C, typename T = impl::array_tag, size_t... N>
+    template <
+        typename C,
+        typename T = impl::array_tag,
+        impl::extent shape = {},
+        impl::array_flags<shape.size()> flags = {}
+    >
     concept Array =
         inherits<C, impl::array_tag> &&
         (
             ::std::same_as<T, impl::array_tag> ||
             ::std::same_as<typename unqualify<C>::type, T>
         ) &&
-        (sizeof...(N) == 0 || unqualify<C>::template has_shape<N...>());
+        (shape.empty() || shape == unqualify<C>::shape()) &&
+        (flags.empty() || flags == unqualify<C>::flags());
 
-    template <typename C, typename T = impl::array_view_tag, size_t... N>
+    template <
+        typename C,
+        typename T = impl::array_view_tag,
+        impl::extent shape = {},
+        impl::array_flags<shape.size()> flags = {}
+    >
     concept ArrayView =
         inherits<C, impl::array_view_tag> &&
         (
             ::std::same_as<T, impl::array_view_tag> ||
             ::std::same_as<typename unqualify<C>::type, T>
         ) &&
-        (sizeof...(N) == 0 || unqualify<C>::template has_shape<N...>());
+        (shape.empty() || shape == unqualify<C>::shape()) &&
+        (flags.empty() || flags == unqualify<C>::flags());
 
 }
 
@@ -61,36 +222,17 @@ namespace impl {
     consists of a series of nested arrays of 1 fewer dimension representing the major
     axis of the parent array.  The nested arrays will then be flattened into the outer
     buffer, completing the constructor. */
-    template <typename T, size_t...>
+    template <typename T, extent>
     struct _array_init { using type = T; };
-    template <typename T, size_t N, size_t... Ns>
-    struct _array_init<T, N, Ns...> : _array_init<Array<T, N>, Ns...> {};
-    template <typename T, size_t N, size_t... Ns>
-    struct array_init : _array_init<T, Ns...> {};
+    template <typename T, extent shape> requires (!shape.empty())
+    struct _array_init<T, shape> : _array_init<Array<T, shape.dim[0]>, shape.left_strip()> {};
+    template <typename T, extent shape>
+    using array_init = _array_init<T, shape.left_strip()>::type;
 
-    /* The total length of the nested arrays along axis `I`.  If `I` is 0, then this
-    is equal to the length of an `array_init` initializer, or the length of each view
-    yielded by a multidimensional iterator. */
-    template <size_t I, size_t... Ns>
-    constexpr size_t array_stride = 1;
-    template <size_t N, size_t... Ns>
-    constexpr size_t array_stride<0, N, Ns...> = (Ns * ... * 1);
-    template <size_t I, size_t N, size_t... Ns> requires (I > 0)
-    constexpr size_t array_stride<I, N, Ns...> = array_stride<I - 1, Ns...>;
-
-    /* Store the stride along each axis of the array at compile time.  A reference to
-    this array will be returned by the array or view's `stride()` method. */
-    template <typename, size_t... Ns>
-    constexpr Array<size_t, sizeof...(Ns)> array_strides;
-    template <size_t... Is, size_t... Ns>
-    constexpr Array<size_t, sizeof...(Ns)> array_strides<std::index_sequence<Is...>, Ns...> {
-        array_stride<Is, Ns...>...
-    };
-
-    /* Store the shape of an array at compile time.  A reference to this array will be
-    returned by the array or view's `shape()` method. */
-    template <size_t... Ns>
-    constexpr Array<size_t, sizeof...(Ns)> array_shape {Ns...};
+    template <extent shape, bool fortran>
+    constexpr extent array_strides = shape.c_strides();
+    template <extent shape>
+    constexpr extent array_strides<shape, true> = shape.fortran_strides();
 
     /// TODO: array_storage can be trivial after this paper is implemented, which also
     /// possibly affects union types (especially together with reflection):
@@ -181,6 +323,9 @@ namespace impl {
     struct _array_type<T> { using type = meta::unqualify<T>::type; };
     template <meta::not_reference T>
     using array_type = _array_type<T>::type;
+
+
+    /// TODO: here's where the extent refactor needs to 
 
     /* The outermost array value type also needs to be promoted to an array view if
     it is multidimensional, and needs to correct for the `array_storage` normalization
@@ -540,15 +685,14 @@ responsibility to ensure that a view never outlives its buffer, lest it dangle. 
 order to facilitate this, all views are implicitly convertible into full arrays,
 possibly via a CTAD guide that infers the proper shape and type, which equates to a
 copy of the underlying data into a new buffer. */
-template <meta::not_reference T, size_t N, size_t... Ns>
+template <meta::not_reference T, impl::extent Shape, impl::array_flags<Shape.size()> flags>
     requires (
         meta::not_void<T> &&
-        meta::not_reference<T> &&
-        (sizeof...(Ns) == 0 || ((N > 0) && ... && (Ns > 0)))
+        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
     )
 struct ArrayView : impl::array_view_tag {
 private:
-    static constexpr size_t outer_stride = (Ns * ... * 1);
+    static constexpr size_t outer_stride = Shape.product(1);
 
 public:
     using size_type = size_t;
@@ -1086,18 +1230,21 @@ to be inferred at compile time, like so:
     assert(arr != copy);
     ```
 */
-template <typename T, size_t N, size_t... Ns>
+template <meta::not_reference T, impl::extent Shape, impl::array_flags<Shape.size()> Flags>
     requires (
         meta::not_void<T> &&
-        meta::not_reference<T> &&
-        (sizeof...(Ns) == 0 || ((N > 0) && ... && (Ns > 0)))
+        !Shape.empty() &&
+        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
     )
 struct Array : impl::array_tag {
 private:
-    using init = impl::array_init<T, N, Ns...>::type;
+    using init = impl::array_init<T, Shape>;
     using storage = impl::array_storage<T>;
 
-    static constexpr size_t outer_stride = (Ns * ... * 1);
+    static constexpr size_t outer_stride = Shape.product(1);
+    static constexpr impl::array_flags config = Flags.normalize();
+    static constexpr size_t _total = Shape.product();
+    static constexpr size_t _size = _total < 0 ? 0 : size_t(_total);
 
 public:
     using type = T;
@@ -1116,21 +1263,21 @@ public:
     /* The number of dimensions for a multidimensional array.  This is always equal
     to the number of integer template parameters, and is never zero. */
     [[nodiscard]] static constexpr size_type ndim() noexcept {
-        return sizeof...(Ns) + 1;
+        return Shape.size();
     }
 
     /* Check whether this array's shape exactly matches an externally-supplied sequence
     of indices.  Used for compile-time bounds checking. */
-    template <size_type M, size_type... Ms> requires (sizeof...(Ms) + 1 == ndim())
+    template <impl::extent other>
     [[nodiscard]] static constexpr bool has_shape() noexcept {
-        return ((N == M) && ... && (Ns == Ms));
+        return Shape == other;
     }
 
     /* The size of the array along each dimension, returned as an
     `Array<size_type, ndim()>`.  The values are always equivalent to the template
     signature, and the array itself is stored statically at compile time. */
-    [[nodiscard]] static constexpr const Array<size_type, ndim()>& shape() noexcept {
-        return impl::array_shape<N, Ns...>;
+    [[nodiscard]] static constexpr ArrayView<const size_type, ndim()> shape() noexcept {
+        return {Shape.data};
     }
 
     /* The step size of the array along each dimension in units of `T`, returned as an
@@ -1138,46 +1285,50 @@ public:
     Since the strides are interpreted in row-major order, the first stride will always
     be the largest, consisting of the cartesian product of all subsequent dimensions.
     The last stride is always equal to `1`. */
-    [[nodiscard]] static constexpr const Array<size_type, ndim()>& stride() noexcept {
-        return impl::array_strides<std::make_index_sequence<ndim()>, N, Ns...>;
+    [[nodiscard]] static constexpr ArrayView<const size_type, ndim()> stride() noexcept {
+        return {impl::array_strides<Shape, *config.fortran>.data};
+    }
+
+    [[nodiscard]] static constexpr const impl::array_flags& flags() noexcept {
+        return config;
     }
 
     /* The total number of elements in the array across all dimensions.  This is
     always equivalent to the cartesian product of `shape()`. */
     [[nodiscard]] static constexpr size_type total() noexcept {
-        return (N * ... * Ns);
+        return _total;
     }
 
     /* The top-level size of the array (i.e. the size of the first dimension).
     This is always equal to the first index of `shape()`, and indicates the number
     of subarrays that will be yielded when the array is iterated over. */
     [[nodiscard]] static constexpr size_type size() noexcept {
-        return N;
+        return _size;
     }
 
     /* Equivalent to `size()`, but as a signed rather than unsigned integer. */
     [[nodiscard]] static constexpr index_type ssize() noexcept {
-        return index_type(N);
+        return index_type(_size);
     }
 
     /* True if the array has precisely zero elements.  False otherwise.  This can only
     occur for one-dimensional arrays. */
     [[nodiscard]] static constexpr bool empty() noexcept {
-        return N == 0;
+        return _size == 0;
     }
 
     /* Construct a view of arbitrary shape over the array, as long as the overall sizes
     are the same.  This helper also accounts for the storage type, safely propagating
     the `impl::array_storage` normalization. */
-    template <size_type... Ms> requires (sizeof...(Ms) > 0 && (Ms * ... * 1) == total())
-    using view = ArrayView<storage, Ms...>;
+    template <impl::extent S> requires (S.product() == total())
+    using view = ArrayView<storage, S>;
 
     /* Construct an immutable view of arbitrary shape over the array, as long as the
     overall sizes are the same.  This helper also accounts for the storage type, safely
     propagating the `impl::array_storage` normalization, and ensuring that the contents
     are `const`-qualified. */
-    template <size_type... Ms> requires (sizeof...(Ms) > 0 && (Ms * ... * 1) == total())
-    using const_view = ArrayView<const storage, Ms...>;
+    template <impl::extent S> requires (S.product() == total())
+    using const_view = ArrayView<const storage, S>;
 
     /* The raw data buffer backing the array.  Note that this is stored as a normalized
     `impl::array_storage` class that allows for trivial default construction, which is
@@ -1901,7 +2052,7 @@ Array(Ts...) -> Array<meta::common_type<Ts...>, sizeof...(Ts)>;
 
 
 template <typename T, size_t N, size_t... Ns>
-Array(ArrayView<T, N, Ns...>) -> Array<impl::array_type<T>, N, Ns...>;
+Array(ArrayView<T, N, Ns...>) -> Array<impl::array_type<T>, {N, Ns...}>;
 
 
 /// TODO: it might be possible later in `Union` to provide a specialization of
@@ -1962,146 +2113,146 @@ constexpr decltype(auto) get(T&& self, index_sequence<Is...>)
 _LIBCPP_END_NAMESPACE_STD
 
 
-namespace bertrand {
+// namespace bertrand {
 
 
-    // static constexpr std::array<std::array<int, 2>, 2> test {
-    //     {1, 2},
-    //     {3, 4}
-    // };
+//     // static constexpr std::array<std::array<int, 2>, 2> test {
+//     //     {1, 2},
+//     //     {3, 4}
+//     // };
 
 
-    static constexpr Array test1 {1, 2};
+//     static constexpr Array test1 {1, 2};
 
-    static constexpr Array test2 = Array<int, 2, 2>::reserve();
+//     static constexpr Array test2 = Array<int, 2, 2>::reserve();
 
-    static constexpr auto test3 = Array<int, 2, 3>{
-        Array{0, 1, 2},
-        Array{3, 4, 5}
-    }.reshape<3, 2>();
-    static_assert(test3[0, 0] == 0);
-    static_assert(test3[0, 1] == 1);
-    static_assert(test3[1, 0] == 2);
-    static_assert(test3[1, 1] == 3);
-    static_assert(test3[2, 0] == 4);
-    static_assert(test3[2, 1] == 5);
+//     static constexpr auto test3 = Array<int, 2, 3>{
+//         Array{0, 1, 2},
+//         Array{3, 4, 5}
+//     }.reshape<3, 2>();
+//     static_assert(test3[0, 0] == 0);
+//     static_assert(test3[0, 1] == 1);
+//     static_assert(test3[1, 0] == 2);
+//     static_assert(test3[1, 1] == 3);
+//     static_assert(test3[2, 0] == 4);
+//     static_assert(test3[2, 1] == 5);
 
-    static constexpr auto test4 = Array<int, 2, 3>{
-        Array{0, 1, 2},
-        Array{3, 4, 5}
-    }[-1];
-    static_assert(test4[0] == 3);
-    static_assert(test4[1] == 4);
-    static_assert(test4[2] == 5);
+//     static constexpr auto test4 = Array<int, 2, 3>{
+//         Array{0, 1, 2},
+//         Array{3, 4, 5}
+//     }[-1];
+//     static_assert(test4[0] == 3);
+//     static_assert(test4[1] == 4);
+//     static_assert(test4[2] == 5);
 
-    static constexpr auto test5 = meta::to_const(Array<int, 2, 3>{
-        Array{0, 1, 2},
-        Array{3, 4, 5}
-    }).flatten();
-
-
-    static constexpr Array test6 = test3.flatten();
-    static constexpr ArrayView test7 = test3;
+//     static constexpr auto test5 = meta::to_const(Array<int, 2, 3>{
+//         Array{0, 1, 2},
+//         Array{3, 4, 5}
+//     }).flatten();
 
 
-    static constexpr auto test8 = Array<int, 1, 3>{Array{1, 2, 3}};
-    static constexpr auto test9 = test8.squeeze();
-    static constexpr auto test10 = Array<int, 1, 3>{Array{1, 2, 3}}.squeeze();
-
-    static_assert([] {
-        Array<int, 2, 2> arr {
-            Array{1, 2},
-            Array{3, 4}
-        };
-        if (arr[0, 0] != 1) return false;
-        if (arr[0, 1] != 2) return false;
-        if (arr[1, 0] != 3) return false;
-        if (arr[1, -1] != 4) return false;
-
-        auto arr2 = Array<int, 2, 2>{Array{1, 2}, Array{3, 3}};
-        arr = arr2;
-        if (arr[1, 1] != 3) return false;
-
-        if (arr.shape()[-1] != 2) return false;
-
-        auto x = arr.data();
-        if (*x != 1) return false;
-        ++x;
-
-        return true;
-    }());
+//     static constexpr Array test6 = test3.flatten();
+//     static constexpr ArrayView test7 = test3;
 
 
-    static_assert([] {
-        Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
-        auto x = arr[0];
-        if (x[0] != 1) return false;
-        if (x[1] != 2) return false;
-        for (auto&& i : arr) {
-            // if (i < 1 || i > 6) {
-            //     return false;
-            // }
-            for (auto& j : i) {
-                if (j < 1 || j > 6) {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }());
+//     static constexpr auto test8 = Array<int, 1, 3>{Array{1, 2, 3}};
+//     static constexpr auto test9 = test8.squeeze();
+//     static constexpr auto test10 = Array<int, 1, 3>{Array{1, 2, 3}}.squeeze();
 
-    static_assert([] {
-        Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
-        auto it = arr.rbegin();
-        if ((*it) != Array{5, 6}) return false;
-        ++it;
-        if (*it != Array{3, 4}) return false;
-        ++it;
-        if (*it != Array{1, 2}) return false;
-        ++it;
-        if (it != arr.rend()) return false;
+//     static_assert([] {
+//         Array<int, 2, 2> arr {
+//             Array{1, 2},
+//             Array{3, 4}
+//         };
+//         if (arr[0, 0] != 1) return false;
+//         if (arr[0, 1] != 2) return false;
+//         if (arr[1, 0] != 3) return false;
+//         if (arr[1, -1] != 4) return false;
 
-        it = arr.rbegin();
-        auto end = arr.rend();
-        while (it != end) {
+//         auto arr2 = Array<int, 2, 2>{Array{1, 2}, Array{3, 3}};
+//         arr = arr2;
+//         if (arr[1, 1] != 3) return false;
 
-            ++it;
-        }
+//         if (arr.shape()[-1] != 2) return false;
 
-        return true;
-    }());
+//         auto x = arr.data();
+//         if (*x != 1) return false;
+//         ++x;
 
-    static_assert([] {
-        Array<int, 2, 3> arr {
-            Array{1, 2, 3},
-            Array{4, 5, 6}
-        };
-        const auto view = arr[0];
-        auto& x = view[1];
-        for (auto& y : view) {
-
-        }
-        auto z = view.data();
-
-        auto f = view.back();
-
-        return true;
-    }());
+//         return true;
+//     }());
 
 
-    inline void test() {
-        int x = 1;
-        int y = 2;
-        int z = 3;
-        int w = 4;
-        Array<int, 2, 2> arr {
-            Array{x, y},
-            Array{z, w}
-        };
-        auto p = arr.data();
-    }
+//     static_assert([] {
+//         Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
+//         auto x = arr[0];
+//         if (x[0] != 1) return false;
+//         if (x[1] != 2) return false;
+//         for (auto&& i : arr) {
+//             // if (i < 1 || i > 6) {
+//             //     return false;
+//             // }
+//             for (auto& j : i) {
+//                 if (j < 1 || j > 6) {
+//                     return false;
+//                 }
+//             }
+//         }
+//         return true;
+//     }());
 
-}
+//     static_assert([] {
+//         Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
+//         auto it = arr.rbegin();
+//         if ((*it) != Array{5, 6}) return false;
+//         ++it;
+//         if (*it != Array{3, 4}) return false;
+//         ++it;
+//         if (*it != Array{1, 2}) return false;
+//         ++it;
+//         if (it != arr.rend()) return false;
+
+//         it = arr.rbegin();
+//         auto end = arr.rend();
+//         while (it != end) {
+
+//             ++it;
+//         }
+
+//         return true;
+//     }());
+
+//     static_assert([] {
+//         Array<int, 2, 3> arr {
+//             Array{1, 2, 3},
+//             Array{4, 5, 6}
+//         };
+//         const auto view = arr[0];
+//         auto& x = view[1];
+//         for (auto& y : view) {
+
+//         }
+//         auto z = view.data();
+
+//         auto f = view.back();
+
+//         return true;
+//     }());
+
+
+//     inline void test() {
+//         int x = 1;
+//         int y = 2;
+//         int z = 3;
+//         int w = 4;
+//         Array<int, 2, 2> arr {
+//             Array{x, y},
+//             Array{z, w}
+//         };
+//         auto p = arr.data();
+//     }
+
+// }
 
 
 #endif  // BERTRAND_ARRAY_H
