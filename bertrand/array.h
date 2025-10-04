@@ -13,102 +13,392 @@ namespace impl {
     struct array_tag {};
     struct array_view_tag {};
 
+    template <size_t ndim>
+    struct extent;
+
+    /* Run-time shape and stride specifiers can represent dynamic data, and may require
+    a heap allocation if they are more than 1-dimensional.  They otherwise mirror
+    their compile-time equivalents exactly. */
+    template <>
+    struct extent<0> {
+    private:
+        using heap = std::allocator<size_t>;
+
+    public:
+        size_t* dim = nullptr;
+        size_t ndim = 0;
+
+        [[nodiscard]] constexpr extent() noexcept = default;
+        [[nodiscard]] constexpr extent(size_t n) noexcept : dim(nullptr), ndim(n) {}
+        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) :
+            dim(heap{}.allocate(n.size())),
+            ndim(n.size())
+        {
+            if (dim == nullptr) {
+                throw MemoryError();
+            }
+            size_t i = 0;
+            auto it = n.begin();
+            auto end = n.end();
+            while (it != end) {
+                std::construct_at(&dim[i], *it);
+                ++i;
+                ++it;
+            }
+        }
+        template <typename T>
+        [[nodiscard]] constexpr extent(T&& n)
+            requires (
+                !meta::convertible_to<T, size_t> &&
+                !meta::convertible_to<T, std::initializer_list<size_t>> &&
+                meta::iterable<T> &&
+                meta::has_size<T> &&
+                meta::convertible_to<meta::yield_type<T>, size_t>
+            )
+        :
+            dim(heap{}.allocate(n.size())),
+            ndim(n.size())
+        {
+            if (dim == nullptr) {
+                throw MemoryError();
+            }
+            size_t i = 0;
+            auto it = std::ranges::begin(n);
+            auto end = std::ranges::end(n);
+            while (i < ndim && it != end) {
+                std::construct_at(&dim[i], *it);
+                ++i;
+                ++it;
+            }
+        }
+
+        [[nodiscard]] constexpr extent(const extent& other) :
+            dim(heap{}.allocate(other.ndim)),
+            ndim(other.ndim)
+        {
+            if (dim == nullptr) {
+                throw MemoryError();
+            }
+            for (size_t i = 0; i < ndim; ++i) {
+                std::construct_at(&dim[i], other.dim[i]);
+            }
+        }
+
+        [[nodiscard]] constexpr extent(extent&& other) noexcept :
+            dim(other.dim),
+            ndim(other.ndim)
+        {
+            other.dim = nullptr;
+            other.ndim = 0;
+        }
+
+        constexpr extent& operator=(const extent& other) {
+            if (this != &other) {
+                if (ndim != other.ndim) {
+                    if (dim) {
+                        heap{}.deallocate(dim, ndim);
+                    }
+                    dim = heap{}.allocate(other.ndim);
+                    if (dim == nullptr) {
+                        throw MemoryError();
+                    }
+                    ndim = other.ndim;
+                }
+                for (size_t i = 0; i < ndim; ++i) {
+                    std::construct_at(&dim[i], other.dim[i]);
+                }
+            }
+            return *this;
+        }
+
+        constexpr extent& operator=(extent&& other) noexcept {
+            if (this != &other) {
+                if (dim) {
+                    heap{}.deallocate(dim, ndim);
+                }
+                dim = other.dim;
+                ndim = other.ndim;
+                other.dim = nullptr;
+                other.ndim = 0;
+            }
+            return *this;
+        }
+
+        constexpr ~extent() {
+            if (dim) {
+                heap{}.deallocate(dim, ndim);
+            }
+        }
+
+        constexpr void swap(extent& other) noexcept {
+            std::swap(dim, other.dim);
+            std::swap(ndim, other.ndim);
+        }
+
+        [[nodiscard]] constexpr size_t size() const noexcept {
+            return dim == nullptr ? ndim > 0 : ndim;
+        }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return ndim == 0; }
+        [[nodiscard]] constexpr size_t* data() noexcept { return dim; }
+        [[nodiscard]] constexpr const size_t* data() const noexcept { return dim; }
+    
+        [[nodiscard]] constexpr size_t operator[](ssize_t i) const {
+            ssize_t j = impl::normalize_index(ssize(), i);
+            if (dim == nullptr) {
+                return ndim;
+            }
+            return dim[j];
+        }
+
+        [[nodiscard]] constexpr extent reverse() const {
+            extent r;
+            r.ndim = ndim;
+            if (dim) {
+                r.dim = heap{}.allocate(ndim);
+                if (r.dim == nullptr) {
+                    throw MemoryError();
+                }
+                for (size_t j = 0; j < ndim; ++j) {
+                    std::construct_at(&r.dim[j], dim[ndim - 1 - j]);
+                }
+            }
+            return r;
+        }
+
+        [[nodiscard]] constexpr extent strip(size_t n, bool fortran) const {
+            if (n == 0) {
+                return *this;
+            }
+            extent s;
+            if (dim && n < ndim) {
+                if (ndim == n + 1) {
+                    s.ndim = fortran ? dim[0] : dim[n];
+                } else {
+                    s.dim = heap{}.allocate(ndim - n);
+                    if (s.dim == nullptr) {
+                        throw MemoryError();
+                    }
+                    s.ndim = ndim - n;
+                    if (fortran) {
+                        for (size_t j = 0; j < s.ndim; ++j) {
+                            std::construct_at(&s.dim[j], dim[j]);
+                        }
+                    } else {
+                        for (size_t j = n; j < ndim; ++j) {
+                            std::construct_at(&s.dim[j - n], dim[j]);
+                        }
+                    }
+                }
+            }
+            return s;
+        }
+
+        [[nodiscard]] constexpr size_t product() const noexcept {
+            if (dim == nullptr) {
+                return ndim;
+            }
+            size_t p = 1;
+            for (size_t j = 0; j < ndim; ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
+        [[nodiscard]] constexpr size_t product(size_t n, bool fortran) const noexcept {
+            size_t len = size();
+            if (n >= len) {
+                return 0;
+            }
+            size_t p = 1;
+            if (dim == nullptr) {
+                p = ndim;
+            } else if (fortran) {
+                for (size_t j = 0; j < len - n; ++j) {
+                    p *= dim[j];
+                }
+            } else {
+                for (size_t j = n; j < len; ++j) {
+                    p *= dim[j];
+                }
+            }
+            return p;
+        }
+
+        [[nodiscard]] constexpr extent strides(bool fortran) const {
+            if (dim == nullptr) {
+                return 1;
+            }
+            extent s;
+            s.dim = heap{}.allocate(ndim);
+            if (s.dim == nullptr) {
+                throw MemoryError();
+            }
+            s.ndim = ndim;
+            if (fortran) {
+                std::construct_at(&s.dim[0], 1);
+                for (size_t j = 1; j < ndim; ++j) {
+                    std::construct_at(&s.dim[j], s.dim[j - 1] * dim[j - 1]);
+                }
+            } else {
+                size_t j = size() - 1;
+                std::construct_at(&s.dim[j], 1);
+                while (j-- > 0) {
+                    std::construct_at(&s.dim[j], s.dim[j + 1] * dim[j + 1]);
+                }
+            }
+            return s;
+        }
+
+        template <size_t R>
+        [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
+            if constexpr (R == 0) {
+                if (ndim != other.ndim) {
+                    return false;
+                }
+                if (dim) {
+                    for (size_t i = 0; i < ndim; ++i) {
+                        if (dim[i] != other.dim[i]) {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            } else {
+                return false;
+            }
+        }
+
+    };
+
     /* Compile-time shape and stride specifiers use CTAD to allow simple braced
     initializer syntax, which permits custom strides. */
-    template <size_t rank>
+    template <size_t ndim>
     struct extent {
-        ssize_t dim[rank];
+        size_t dim[ndim];
 
-        constexpr extent() noexcept = default;
+        [[nodiscard]] constexpr extent() noexcept = default;
+        [[nodiscard]] constexpr extent(size_t n) noexcept requires (ndim == 1) : dim{n} {}
+        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) noexcept {
+            size_t i = 0;
+            auto it = n.begin();
+            auto end = n.end();
+            while (i < ndim && it != end) {
+                std::construct_at(&dim[i], *it);
+                ++i;
+                ++it;
+            }
+        }
+        template <meta::yields<size_t> T>
+        [[nodiscard]] constexpr extent(T&& n)
+            noexcept (meta::nothrow::yields<T, size_t>)
+            requires (
+                !meta::convertible_to<T, size_t> &&
+                !meta::convertible_to<T, std::initializer_list<size_t>> &&
+                meta::tuple_like<T> &&
+                meta::tuple_size<T> == ndim
+            )
+        {
+            size_t i = 0;
+            auto it = std::ranges::begin(n);
+            auto end = std::ranges::end(n);
+            while (i < ndim && it != end) {
+                std::construct_at(&dim[i], *it);
+                ++i;
+                ++it;
+            }
+        }
 
-        template <meta::integer... T> requires (sizeof...(T) == rank)
-        constexpr extent(T&&... n) noexcept : dim{ssize_t(n)...} {}
+        constexpr void swap(extent& other) noexcept {
+            for (size_t i = 0; i < ndim; ++i) {
+                std::swap(dim[i], other.dim[i]);
+            }
+        }
 
-        [[nodiscard]] static constexpr size_t size() noexcept { return rank; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(rank); }
-        [[nodiscard]] static constexpr bool empty() noexcept { return rank == 0; }
+        [[nodiscard]] static constexpr size_t size() noexcept { return ndim; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(ndim); }
+        [[nodiscard]] static constexpr bool empty() noexcept { return ndim == 0; }
+        [[nodiscard]] constexpr size_t* data() noexcept { return dim; }
+        [[nodiscard]] constexpr const size_t* data() const noexcept { return dim; }
 
-        [[nodiscard]] constexpr ssize_t operator[](ssize_t i) const noexcept {
+        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
+        [[nodiscard]] constexpr size_t get() const noexcept {
+            return dim[impl::normalize_index<ssize(), I>()];
+        }
+
+        [[nodiscard]] constexpr size_t operator[](ssize_t i) const {
             return dim[impl::normalize_index(ssize(), i)];
         }
 
         [[nodiscard]] constexpr extent reverse() const noexcept {
             extent r;
             for (size_t j = 0; j < size(); ++j) {
-                r.dim[j] = dim[size() - 1 - j];
+                std::construct_at(&r.dim[j], dim[size() - 1 - j]);
             }
             return r;
         }
 
-        template <size_t I = 1> requires (I <= size())
-        [[nodiscard]] constexpr extent<size() - I> left_strip() const noexcept {
-            extent<size() - I> s;
-            for (size_t j = I; j < size(); ++j) {
-                s.dim[j - I] = dim[j];
-            }
-            return s;
-        }
-
-        template <size_t I = 1> requires (I <= size())
-        [[nodiscard]] constexpr extent<size() - I> right_strip() const noexcept {
-            extent<size() - I> s;
-            for (size_t j = 0; j < size() - I; ++j) {
-                s.dim[j] = dim[j];
-            }
-            return s;
-        }
-
-        [[nodiscard]] constexpr ssize_t product() const noexcept {
-            ssize_t p = 1;
-            for (ssize_t j = 0; j < ssize(); ++j) {
-                p *= dim[j];
-            }
-            return p;
-        }
-
-        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
-        [[nodiscard]] constexpr ssize_t left_product() const noexcept {
-            ssize_t p = 1;
-            for (ssize_t j = 0, k = impl::normalize_index<ssize(), I>(); j < k; ++j) {
-                p *= dim[j];
-            }
-            return p;
-        }
-
-        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
-        [[nodiscard]] constexpr ssize_t right_product() const noexcept {
-            ssize_t p = 1;
-            for (ssize_t j = impl::normalize_index<ssize(), I>(); j < ssize(); ++j) {
-                p *= dim[j];
-            }
-            return p;
-        }
-
-        [[nodiscard]] constexpr extent c_strides() const noexcept {
-            if constexpr (size() == 0) {
-                return {};
+        template <size_t N>
+        [[nodiscard]] constexpr auto strip(bool fortran) const noexcept {
+            if constexpr (N >= size()) {
+                return extent<0>{};
             } else {
-                extent s;
-                size_t j = size() - 1;
-                s.dim[j] = 1;
-                while (j-- > 0) {
-                    s.dim[j] = s.dim[j + 1] * dim[j + 1];
+                extent<size() - N> s;
+                if (fortran) {
+                    for (size_t j = 0; j < size() - N; ++j) {
+                        std::construct_at(&s.dim[j], dim[j]);
+                    }
+                } else {
+                    for (size_t j = N; j < size(); ++j) {
+                        std::construct_at(&s.dim[j - N], dim[j]);
+                    }
                 }
                 return s;
             }
         }
 
-        [[nodiscard]] constexpr extent fortran_strides() const noexcept {
-            if constexpr (size() == 0) {
-                return {};
+        [[nodiscard]] constexpr size_t product() const noexcept {
+            size_t p = 1;
+            for (size_t j = 0; j < size(); ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
+        template <size_t N>
+        [[nodiscard]] constexpr size_t product(bool fortran) const noexcept {
+            if constexpr (N >= size()) {
+                return 0;
             } else {
-                extent s;
-                s.dim[0] = 1;
+                size_t p = 1;
+                if (fortran) {
+                    for (size_t j = 0; j < size() - N; ++j) {
+                        p *= dim[j];
+                    }
+                } else {
+                    for (size_t j = N; j < size(); ++j) {
+                        p *= dim[j];
+                    }
+                }
+                return p;
+            }
+        }
+
+        [[nodiscard]] constexpr extent strides(bool fortran) const noexcept {
+            extent s;
+            if (fortran) {
+                std::construct_at(&s.dim[0], 1);
                 for (size_t j = 1; j < size(); ++j) {
-                    s.dim[j] = s.dim[j - 1] * dim[j - 1];
+                    std::construct_at(&s.dim[j], s.dim[j - 1] * dim[j - 1]);
                 }
-                return s;
+            } else {
+                size_t j = size() - 1;
+                std::construct_at(&s.dim[j], 1);
+                while (j-- > 0) {
+                    std::construct_at(&s.dim[j], s.dim[j + 1] * dim[j + 1]);
+                }
             }
+            return s;
         }
 
         template <size_t R>
@@ -129,55 +419,57 @@ namespace impl {
     template <meta::integer... N>
     extent(N...) -> extent<sizeof...(N)>;
 
+    template <meta::yields<size_t> T> requires (!meta::integer<T> && meta::tuple_like<T>)
+    extent(T&&) -> extent<meta::tuple_size<T>>;
+
     /* A configuration struct that holds miscellaneous flags for an array or array
-    view definition. */
-    template <size_t rank>
+    view type. */
+    template <extent shape>
     struct array_flags {
         /* If false (the default), then the strides will be computed in C (row-major)
         order, with the last index varying the fastest.  Setting this to true specifies
         that indices should be interpreted in Fortran (column-major) order instead,
         where the first index varies the fastest.  Toggling this flag for a view
         effectively transposes the array. */
-        [[no_unique_address]] int8_t fortran = -1;
+        bool fortran = false;
 
         /* A set of custom strides to use for each dimension.  If given, the strides
         will always match their corresponding shape dimension. */
-        [[no_unique_address]] extent<rank> strides;
-
-        [[nodiscard]] constexpr bool empty() const noexcept {
-            return fortran < 0;
-        }
-
-        [[nodiscard]] constexpr array_flags normalize() const noexcept {
-            if (empty()) {
-                return {.fortran = false};
-            } else {
-                return *this;
-            }
-        }
+        extent<shape.size()> strides = shape.strides(fortran);
 
         [[nodiscard]] constexpr bool operator==(const array_flags& other) const noexcept {
             return fortran == other.fortran && strides == other.strides;
         }
     };
 
+    /* Due to a compiler bug, `array_flags<{}>` with an empty shape will not compile
+    as a non-type template parameter unless an instance of that type has been
+    previously constructed.  This value is not actually used anywhere. */
+    static constexpr array_flags<{}> _dynamic_array_flags;
+
+    template <typename T, extent shape, array_flags<shape> flags>
+    concept array_concept =
+        meta::not_void<T> &&
+        meta::not_reference<T> &&
+        !shape.empty() &&
+        (shape.product() > 0 || shape.size() == 1);
+
+    template <typename T, extent shape, array_flags<shape> flags>
+    concept array_view_concept =
+        meta::not_void<T> &&
+        meta::not_reference<T> &&
+        (shape.product() > 0 || shape.size() <= 1);
+
 }
 
 
-template <meta::not_reference T, impl::extent Shape, impl::array_flags<Shape.size()> flags = {}>
-    requires (
-        meta::not_void<T> &&
-        !Shape.empty() &&
-        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
-    )
+template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags = {}>
+    requires (impl::array_concept<T, Shape, Flags>)
 struct Array;
 
 
-template <meta::not_reference T, impl::extent Shape = {}, impl::array_flags<Shape.size()> flags = {}>
-    requires (
-        meta::not_void<T> &&
-        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
-    )
+template <typename T, impl::extent Shape = {}, impl::array_flags<Shape> Flags = {}>
+    requires (impl::array_view_concept<T, Shape, Flags>)
 struct ArrayView;
 
 
@@ -187,7 +479,7 @@ namespace meta {
         typename C,
         typename T = impl::array_tag,
         impl::extent shape = {},
-        impl::array_flags<shape.size()> flags = {}
+        impl::array_flags<shape> flags = {}
     >
     concept Array =
         inherits<C, impl::array_tag> &&
@@ -196,13 +488,13 @@ namespace meta {
             ::std::same_as<typename unqualify<C>::type, T>
         ) &&
         (shape.empty() || shape == unqualify<C>::shape()) &&
-        (flags.empty() || flags == unqualify<C>::flags());
+        (shape.empty() || flags == unqualify<C>::flags());
 
     template <
         typename C,
         typename T = impl::array_view_tag,
         impl::extent shape = {},
-        impl::array_flags<shape.size()> flags = {}
+        impl::array_flags<shape> flags = {}
     >
     concept ArrayView =
         inherits<C, impl::array_view_tag> &&
@@ -211,7 +503,7 @@ namespace meta {
             ::std::same_as<typename unqualify<C>::type, T>
         ) &&
         (shape.empty() || shape == unqualify<C>::shape()) &&
-        (flags.empty() || flags == unqualify<C>::flags());
+        (shape.empty() || flags == unqualify<C>::flags());
 
 }
 
@@ -222,17 +514,23 @@ namespace impl {
     consists of a series of nested arrays of 1 fewer dimension representing the major
     axis of the parent array.  The nested arrays will then be flattened into the outer
     buffer, completing the constructor. */
-    template <typename T, extent>
+    template <meta::not_reference T, extent shape, array_flags<shape> flags>
     struct _array_init { using type = T; };
-    template <typename T, extent shape> requires (!shape.empty())
-    struct _array_init<T, shape> : _array_init<Array<T, shape.dim[0]>, shape.left_strip()> {};
-    template <typename T, extent shape>
-    using array_init = _array_init<T, shape.left_strip()>::type;
-
-    template <extent shape, bool fortran>
-    constexpr extent array_strides = shape.c_strides();
-    template <extent shape>
-    constexpr extent array_strides<shape, true> = shape.fortran_strides();
+    template <meta::not_reference T, extent shape, array_flags<shape> flags>
+        requires (!shape.empty())
+    struct _array_init<T, shape, flags> : _array_init<
+        Array<T, shape.dim[0], {
+            .fortran = flags.fortran,
+            .strides = flags.strides.dim[0]
+        }>,
+        shape.template strip<1>(flags.fortran),
+        {
+            .fortran = flags.fortran,
+            .strides = flags.strides.template strip<1>(flags.fortran)
+        }
+    > {};
+    template <meta::not_reference T, extent shape, array_flags<shape> flags>
+    using array_init = _array_init<T, shape.template strip<1>(flags.fortran), flags>::type;
 
     /// TODO: array_storage can be trivial after this paper is implemented, which also
     /// possibly affects union types (especially together with reflection):
@@ -325,33 +623,42 @@ namespace impl {
     using array_type = _array_type<T>::type;
 
 
-    /// TODO: here's where the extent refactor needs to 
+
+    /// TODO: array_value may or may not work for all shapes, including empty ones.
+
+
 
     /* The outermost array value type also needs to be promoted to an array view if
     it is multidimensional, and needs to correct for the `array_storage` normalization
     as well. */
-    template <typename T, size_t... Ns>
+    template <meta::not_reference T, extent shape, array_flags<shape> flags>
     struct _array_value { using type = array_type<T>; };
-    template <typename T, size_t N, size_t... Ns>
-    struct _array_value<T, N, Ns...> { using type = ArrayView<T, N, Ns...>; };
-    template <typename T, size_t... Ns>
-    using array_value = _array_value<T, Ns...>::type;
+    template <meta::not_reference T, extent shape, array_flags<shape> flags>
+        requires (!shape.empty())
+    struct _array_value<T, shape, flags> { using type = ArrayView<T, shape, flags>; };
+    template <meta::not_reference T, extent shape, array_flags<shape> flags>
+    using array_value = _array_value<
+        T,
+        shape.template strip<1>(flags.fortran),
+        {
+            .fortran = flags.fortran,
+            .strides = flags.strides.template strip<1>(flags.fortran)
+        }
+    >::type;
 
     /* Array iterators are implemented as raw pointers into the array buffer.  Due to
     aggressive UB sanitization during constant evaluation, an extra count is required
     to avoid overstepping the end of the array.  This index is ignored at run time,
     ensuring zero-cost iteration, without interfering with compile-time uses. */
-    template <meta::not_reference T, size_t N, size_t... Ns>
+    template <meta::not_reference T, extent Shape, array_flags<Shape> Flags>
     struct array_iterator {
-        /// TODO: the iterator tag should always be contiguous, but is this always
-        /// the case for transpose views?
         using iterator_category = std::conditional_t<
-            sizeof...(Ns) == 0,
+            Flags.strides.dim[0] == 1,
             std::contiguous_iterator_tag,
             std::random_access_iterator_tag
         >;
         using difference_type = std::ptrdiff_t;
-        using value_type = array_value<T, Ns...>;
+        using value_type = array_value<T, Shape, Flags>;
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::as_pointer<value_type>;
 
@@ -361,10 +668,12 @@ namespace impl {
     public:
         T* ptr = nullptr;
         difference_type count = 0;
-        static constexpr difference_type stride = (Ns * ... * 1);
+        static constexpr const size_t* shape = Shape.dim;
+        static constexpr const size_t* strides = Flags.strides.dim;
+        static constexpr const size_t ndim = Shape.size();
 
         [[nodiscard]] constexpr decltype(auto) operator*() const noexcept {
-            if constexpr (sizeof...(Ns) == 0) {
+            if constexpr (ndim == 1) {
                 return array_access(ptr);
             } else {
                 return view{ptr};
@@ -372,7 +681,7 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->() const noexcept {
-            if constexpr (sizeof...(Ns) == 0) {
+            if constexpr (ndim == 1) {
                 return std::addressof(**this);
             } else {
                 return impl::arrow{**this};
@@ -380,21 +689,21 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const noexcept {
-            if constexpr (sizeof...(Ns) == 0) {
+            if constexpr (ndim == 1) {
                 return array_access(ptr, n);
             } else {
-                return view{ptr + n * stride};
+                return view{ptr + n * strides[0]};
             }
         }
 
         constexpr array_iterator& operator++() noexcept {
             if consteval {
                 ++count;
-                if (count > 0 && count < N) {
-                    ptr += stride;
+                if (count > 0 && count < shape[0]) {
+                    ptr += strides[0];
                 }
             } else {
-                ptr += stride;
+                ptr += strides[0];
             }
             return *this;
         }
@@ -412,14 +721,17 @@ namespace impl {
             if consteval {
                 difference_type new_count = self.count + n;
                 if (new_count < 0) {
-                    return {self.ptr - self.count * (self.count > 0) * stride, new_count};
-                } else if (new_count >= N) {
-                    return {self.ptr + (N - self.count - 1) * (self.count < N) * stride, new_count};
+                    return {self.ptr - self.count * (self.count > 0) * strides[0], new_count};
+                } else if (new_count >= shape[0]) {
+                    return {
+                        self.ptr + (shape[0] - self.count - 1) * (self.count < shape[0]) * strides[0],
+                        new_count
+                    };
                 } else {
-                    return {self.ptr + n * stride, new_count};
+                    return {self.ptr + n * strides[0], new_count};
                 }
             } else {
-                return {self.ptr + n * stride};
+                return {self.ptr + n * strides[0]};
             }
         }
 
@@ -430,14 +742,17 @@ namespace impl {
             if consteval {
                 difference_type new_count = self.count + n;
                 if (new_count < 0) {
-                    return {self.ptr - self.count * (self.count > 0) * stride, new_count};
-                } else if (new_count >= N) {
-                    return {self.ptr + (N - self.count - 1) * (self.count < N) * stride, new_count};
+                    return {self.ptr - self.count * (self.count > 0) * strides[0], new_count};
+                } else if (new_count >= shape[0]) {
+                    return {
+                        self.ptr + (shape[0] - self.count - 1) * (self.count < shape[0]) * strides[0],
+                        new_count
+                    };
                 } else {
-                    return {self.ptr + n * stride, new_count};
+                    return {self.ptr + n * strides[0], new_count};
                 }
             } else {
-                return {self.ptr + n * stride};
+                return {self.ptr + n * strides[0]};
             }
         }
 
@@ -445,27 +760,27 @@ namespace impl {
             if consteval {
                 difference_type new_count = count + n;
                 if (new_count < 0) {
-                    ptr -= count * (count > 0) * stride;
-                } else if (new_count >= N) {
-                    ptr += (N - count - 1) * (count < N) * stride;
+                    ptr -= count * (count > 0) * strides[0];
+                } else if (new_count >= shape[0]) {
+                    ptr += (shape[0] - count - 1) * (count < shape[0]) * strides[0];
                 } else {
-                    ptr += n * stride;
+                    ptr += n * strides[0];
                 }
                 count = new_count;
             } else {
-                ptr += n * stride;
+                ptr += n * strides[0];
             }
             return *this;
         }
 
         constexpr array_iterator& operator--() noexcept {
             if consteval {
-                if (count > 0 && count < N) {
-                    ptr -= stride;
+                if (count > 0 && count < shape[0]) {
+                    ptr -= strides[0];
                 }
                 --count;
             } else {
-                ptr -= stride;
+                ptr -= strides[0];
             }
             return *this;
         }
@@ -480,14 +795,17 @@ namespace impl {
             if consteval {
                 difference_type new_count = count - n;
                 if (new_count < 0) {
-                    return {ptr - count * (count > 0) * stride, new_count};
-                } else if (new_count >= N) {
-                    return {ptr + (N - count - 1) * (count < N) * stride, new_count};
+                    return {ptr - count * (count > 0) * strides[0], new_count};
+                } else if (new_count >= shape[0]) {
+                    return {
+                        ptr + (shape[0] - count - 1) * (count < shape[0]) * strides[0],
+                        new_count
+                    };
                 } else {
-                    return {ptr - n * stride, new_count};
+                    return {ptr - n * strides[0], new_count};
                 }
             } else {
-                return {ptr - n * stride};
+                return {ptr - n * strides[0]};
             }
         }
 
@@ -497,7 +815,7 @@ namespace impl {
             if consteval {
                 return count - other.count;
             } else {
-                return (ptr - other.ptr) / stride;
+                return (ptr - other.ptr) / strides[0];
             }
         }
 
@@ -505,15 +823,15 @@ namespace impl {
             if consteval {
                 difference_type new_count = count - n;
                 if (new_count < 0) {
-                    ptr -= count * (count > 0) * stride;
-                } else if (new_count >= N) {
-                    ptr += (N - count - 1) * (count < N) * stride;
+                    ptr -= count * (count > 0) * strides[0];
+                } else if (new_count >= shape[0]) {
+                    ptr += (shape[0] - count - 1) * (count < shape[0]) * strides[0];
                 } else {
-                    ptr -= n * stride;
+                    ptr -= n * strides[0];
                 }
                 count = new_count;
             } else {
-                ptr -= n * stride;
+                ptr -= n * strides[0];
             }
             return *this;
         }
@@ -533,6 +851,32 @@ namespace impl {
                 return ptr <=> other.ptr;
             }
         }
+    };
+
+    template <meta::not_reference T, extent Shape, array_flags<Shape> Flags>
+        requires (Shape.empty())
+    struct array_iterator<T, Shape, Flags> {
+        using iterator_category = std::random_access_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using value_type = ArrayView<T, Shape, Flags>;
+        using reference = meta::as_lvalue<value_type>;
+        using pointer = meta::as_pointer<value_type>;
+
+    private:
+        using view = value_type;
+
+    public:
+        T* ptr = nullptr;
+        difference_type count = 0;
+        size_t* shape = nullptr;
+        size_t* strides = nullptr;
+        size_t ndim = 0;
+
+        [[nodiscard]] constexpr value_type operator*() const noexcept {
+            return {ptr};
+        }
+
+
     };
 
     /// TODO: index errors are defined after filling in int <-> str conversions.
@@ -685,11 +1029,8 @@ responsibility to ensure that a view never outlives its buffer, lest it dangle. 
 order to facilitate this, all views are implicitly convertible into full arrays,
 possibly via a CTAD guide that infers the proper shape and type, which equates to a
 copy of the underlying data into a new buffer. */
-template <meta::not_reference T, impl::extent Shape, impl::array_flags<Shape.size()> flags>
-    requires (
-        meta::not_void<T> &&
-        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
-    )
+template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
+    requires (impl::array_view_concept<T, Shape, Flags>)
 struct ArrayView : impl::array_view_tag {
 private:
     static constexpr size_t outer_stride = Shape.product(1);
@@ -697,13 +1038,13 @@ private:
 public:
     using size_type = size_t;
     using index_type = ssize_t;
-    using value_type = impl::array_value<T, Ns...>;
+    using value_type = impl::array_value<T, Shape, Flags>;
     using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
     using pointer = meta::as_pointer<reference>;
     using const_pointer = meta::as_pointer<const_reference>;
-    using iterator = impl::array_iterator<T, N, Ns...>;
-    using const_iterator = impl::array_iterator<meta::as_const<T>, N, Ns...>;
+    using iterator = impl::array_iterator<T, Shape, Flags>;
+    using const_iterator = impl::array_iterator<meta::as_const<T>, Shape, Flags>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
@@ -722,12 +1063,12 @@ public:
     }
 
     [[nodiscard]] static constexpr size_type ndim() noexcept {
-        return sizeof...(Ns) + 1;
+        return Shape.size();
     }
 
-    template <size_type M, size_type... Ms> requires ((sizeof...(Ms) + 1) == ndim())
+    template <impl::extent S>
     [[nodiscard]] static constexpr bool has_shape() noexcept {
-        return ((N == M) && ... && (Ns == Ms));
+        return Shape == S;
     }
 
     [[nodiscard]] static constexpr const Array<size_type, ndim()>& shape() noexcept {
@@ -1160,6 +1501,18 @@ public:
 };
 
 
+template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
+    requires (impl::array_view_concept<T, Shape, Flags> && Shape.empty())
+struct ArrayView<T, Shape, Flags> : impl::array_view_tag {
+
+    /// TODO: constructor takes a pointer, a span<size_t> describing the shape (or a
+    /// scalar for 1-D), and a span<size_t> describing the strides (or a scalar if 1-D).
+    /// Maybe array_flags can provide a specialization for this case, which allows the
+    /// same syntax as the template signature.
+
+};
+
+
 template <typename T, size_t N>
 ArrayView(T(&)[N]) -> ArrayView<T, N>;
 
@@ -1230,19 +1583,19 @@ to be inferred at compile time, like so:
     assert(arr != copy);
     ```
 */
-template <meta::not_reference T, impl::extent Shape, impl::array_flags<Shape.size()> Flags>
-    requires (
-        meta::not_void<T> &&
-        !Shape.empty() &&
-        (Shape.size() > 1 ? Shape.product() > 0 : Shape.product() >= 0)
-    )
+template <meta::not_reference T, impl::extent Shape, impl::array_flags<T, Shape> Flags>
+    requires (meta::not_void<T> && !Shape.empty() && (Shape.product() > 0 || Shape.size() == 1))
 struct Array : impl::array_tag {
 private:
     using init = impl::array_init<T, Shape>;
     using storage = impl::array_storage<T>;
 
     static constexpr size_t outer_stride = Shape.product(1);
-    static constexpr impl::array_flags config = Flags.normalize();
+    static constexpr impl::array_flags config {
+        .fortran = Flags.fortran > 0,
+        .strides = !Flags.strides.trivial ?
+            Flags.strides : Shape.strides(fortran),
+    };
     static constexpr size_t _total = Shape.product();
     static constexpr size_t _size = _total < 0 ? 0 : size_t(_total);
 
@@ -1277,7 +1630,7 @@ public:
     `Array<size_type, ndim()>`.  The values are always equivalent to the template
     signature, and the array itself is stored statically at compile time. */
     [[nodiscard]] static constexpr ArrayView<const size_type, ndim()> shape() noexcept {
-        return {Shape.data};
+        return {Shape.data()};
     }
 
     /* The step size of the array along each dimension in units of `T`, returned as an
@@ -1286,7 +1639,7 @@ public:
     be the largest, consisting of the cartesian product of all subsequent dimensions.
     The last stride is always equal to `1`. */
     [[nodiscard]] static constexpr ArrayView<const size_type, ndim()> stride() noexcept {
-        return {impl::array_strides<Shape, *config.fortran>.data};
+        return {config.stride.data()};
     }
 
     [[nodiscard]] static constexpr const impl::array_flags& flags() noexcept {
