@@ -16,8 +16,6 @@ namespace impl {
     template <size_t ndim>
     struct extent;
 
-    /// TODO: operator| for concatenating dynamic extents?
-
     /* Run-time shape and stride specifiers can represent dynamic data, and may require
     a heap allocation if they are more than 1-dimensional.  They otherwise mirror
     their compile-time equivalents exactly. */
@@ -499,10 +497,7 @@ namespace impl {
     }
 
     template <size_t N>
-    [[nodiscard]] constexpr extent<N + 1> operator|(
-        size_t other,
-        const extent<N>& self
-    ) noexcept {
+    [[nodiscard]] constexpr extent<N + 1> operator|(size_t other, const extent<N>& self) noexcept {
         extent<N + 1> s;
         std::construct_at(&s.dim[0], other);
         for (size_t j = 1; j <= N; ++j) {
@@ -1177,6 +1172,7 @@ template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
     requires (impl::array_view_concept<T, Shape, Flags>)
 struct ArrayView : impl::array_view_tag {
 private:
+    static constexpr size_t _total = Shape.product();
     static constexpr size_t step = Flags.strides.dim[0];
 
 public:
@@ -1194,13 +1190,14 @@ public:
 
     [[nodiscard]] static constexpr bool dynamic() noexcept { return false; }
     [[nodiscard]] static constexpr size_t itemsize() noexcept { return sizeof(T); }
-    [[nodiscard]] static constexpr size_type ndim() noexcept { return Shape.size(); }
     [[nodiscard]] static constexpr const auto& shape() noexcept { return Shape; }
     [[nodiscard]] static constexpr const auto& strides() noexcept { return Flags.strides; }
-    [[nodiscard]] static constexpr size_type total() noexcept { return Shape.product(); }
+    [[nodiscard]] static constexpr const auto& flags() noexcept { return Flags; }
+    [[nodiscard]] static constexpr size_type ndim() noexcept { return Shape.size(); }
+    [[nodiscard]] static constexpr size_type total() noexcept { return _total; }
     [[nodiscard]] static constexpr size_type size() noexcept { return Shape.dim[0]; }
     [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
-    [[nodiscard]] static constexpr bool empty() noexcept { return Shape.dim[0] == 0; }
+    [[nodiscard]] static constexpr bool empty() noexcept { return size() == 0; }
 
     T* ptr = nullptr;
 
@@ -1212,7 +1209,9 @@ public:
         ptr(std::ranges::data(arr))
     {}
 
-    constexpr void swap(ArrayView& other) noexcept { std::swap(ptr, other.ptr); }
+    constexpr void swap(ArrayView& other) noexcept {
+        std::swap(ptr, other.ptr);
+    }
 
     template <meta::integer... I> requires (sizeof...(I) <= ndim())
     [[nodiscard]] constexpr auto data(const I&... i) noexcept {
@@ -1347,7 +1346,7 @@ public:
     /// TODO: transpose()
 
     [[nodiscard]] constexpr decltype(auto) front() noexcept {
-        if constexpr (Shape.size() == 1) {
+        if constexpr (ndim() == 1) {
             return (impl::array_access(ptr));
         } else {
             using view = impl::array_reduce<Shape, Flags>::template view<T>;
@@ -1356,7 +1355,7 @@ public:
     }
 
     [[nodiscard]] constexpr decltype(auto) front() const noexcept {
-        if constexpr (Shape.size() == 1) {
+        if constexpr (ndim() == 1) {
             return (impl::array_access(static_cast<meta::as_const<T>*>(ptr)));
         } else {
             using view = impl::array_reduce<Shape, Flags>::template view<meta::as_const<T>>;
@@ -1365,7 +1364,7 @@ public:
     }
 
     [[nodiscard]] constexpr decltype(auto) back() noexcept {
-        if constexpr (Shape.size() == 1) {
+        if constexpr (ndim() == 1) {
             return (impl::array_access(ptr, (size() - 1) * step));
         } else {
             using view = value_type;
@@ -1374,11 +1373,8 @@ public:
     }
 
     [[nodiscard]] constexpr decltype(auto) back() const noexcept {
-        if constexpr (Shape.size() == 1) {
-            return (impl::array_access(
-                static_cast<meta::as_const<T>*>(ptr),
-                (size() - 1) * step
-            ));
+        if constexpr (ndim() == 1) {
+            return (impl::array_access(static_cast<meta::as_const<T>*>(ptr), (size() - 1) * step));
         } else {
             using view = impl::array_reduce<Shape, Flags>::template view<meta::as_const<T>>;
             return view{static_cast<meta::as_const<T>*>(ptr) + (size() - 1) * step};
@@ -1477,33 +1473,30 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr bool operator==(const Array<U, Shape, Flags>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr bool operator==(const Array<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_eq<
-                const_reference,
-                typename Array<U, Shape, Flags>::const_reference
-            > &&
+            meta::nothrow::has_eq<const_reference, typename Array<U, S, F>::const_reference> &&
             meta::nothrow::truthy<meta::eq_type<
                 const_reference,
-                typename Array<U, Shape, Flags>::const_reference
+                typename Array<U, S, F>::const_reference
             >>
         )
         requires (
-            meta::has_eq<
-                const_reference,
-                typename Array<U, Shape, Flags>::const_reference
-            > &&
-            meta::truthy<meta::eq_type<
-                const_reference,
-                typename Array<U, Shape, Flags>::const_reference
-            >>
+            meta::has_eq<const_reference, typename Array<U, S, F>::const_reference> &&
+            meta::truthy<meta::eq_type<const_reference, typename Array<U, S, F>::const_reference>>
         )
     {
-        for (size_type i = 0; i < total(); ++i) {
-            if (!bool(impl::array_access(ptr, i) == impl::array_access(other.ptr, i))) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (!bool(*it1 == *it2)) {
                 return false;
             }
+            ++it1;
+            ++it2;
         }
         return true;
     }
@@ -1511,33 +1504,33 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr bool operator==(const ArrayView<U, Shape, Flags>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr bool operator==(const ArrayView<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_eq<
-                const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
-            > &&
+            meta::nothrow::has_eq<const_reference, typename ArrayView<U, S, F>::const_reference> &&
             meta::nothrow::truthy<meta::eq_type<
                 const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >>
         )
         requires (
-            meta::has_eq<
-                const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
-            > &&
+            meta::has_eq<const_reference, typename ArrayView<U, S, F>::const_reference> &&
             meta::truthy<meta::eq_type<
                 const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >>
         )
     {
-        for (size_type i = 0; i < total(); ++i) {
-            if (!bool(impl::array_access(ptr, i) == impl::array_access(other.ptr, i))) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (!bool(*it1 == *it2)) {
                 return false;
             }
+            ++it1;
+            ++it2;
         }
         return true;
     }
@@ -1545,51 +1538,45 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr auto operator<=>(const Array<U, Shape, Flags>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr auto operator<=>(const Array<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_lt<
-                const_reference,
-                typename Array<U, Shape, Flags>::const_reference
-            > &&
-            meta::nothrow::has_lt<
-                typename Array<U, Shape, Flags>::const_reference,
-                const_reference
-            > &&
+            meta::nothrow::has_lt<const_reference, typename Array<U, S, F>::const_reference> &&
+            meta::nothrow::has_lt<typename Array<U, S, F>::const_reference, const_reference> &&
             meta::nothrow::truthy<meta::lt_type<
                 const_reference,
-                typename Array<U, Shape, Flags>::const_reference
+                typename Array<U, S, F>::const_reference
             >> &&
             meta::nothrow::truthy<meta::lt_type<
-                typename Array<U, Shape, Flags>::const_reference,
+                typename Array<U, S, F>::const_reference,
                 const_reference
             >>
         )
         requires (
-            meta::has_lt<
-                const_reference,
-                typename Array<U, Shape, Flags>::const_reference
-            > &&
-            meta::has_lt<
-                typename Array<U, Shape, Flags>::const_reference,
-                const_reference
-            > &&
+            meta::has_lt<const_reference, typename Array<U, S, F>::const_reference> &&
+            meta::has_lt<typename Array<U, S, F>::const_reference, const_reference> &&
             meta::truthy<meta::lt_type<
                 const_reference,
-                typename Array<U, Shape, Flags>::const_reference
+                typename Array<U, S, F>::const_reference
             >> &&
             meta::truthy<meta::lt_type<
-                typename Array<U, Shape, Flags>::const_reference,
+                typename Array<U, S, F>::const_reference,
                 const_reference
             >>
         )
     {
-        for (size_t i = 0; i < total(); ++i) {
-            if (impl::array_access(ptr, i) < impl::array_access(other.ptr, i)) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (bool(*it1 < *it2)) {
                 return std::strong_ordering::less;
-            } else if (impl::array_access(other.ptr, i) < impl::array_access(ptr, i)) {
+            } else if (bool(*it2 < *it1)) {
                 return std::strong_ordering::greater;
             }
+            ++it1;
+            ++it2;
         }
         return std::strong_ordering::equal;
     }
@@ -1597,51 +1584,45 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr auto operator<=>(const ArrayView<U, Shape, Flags>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr auto operator<=>(const ArrayView<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_lt<
-                const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
-            > &&
-            meta::nothrow::has_lt<
-                typename ArrayView<U, Shape, Flags>::const_reference,
-                const_reference
-            > &&
+            meta::nothrow::has_lt<const_reference, typename ArrayView<U, S, F>::const_reference> &&
+            meta::nothrow::has_lt<typename ArrayView<U, S, F>::const_reference, const_reference> &&
             meta::nothrow::truthy<meta::lt_type<
                 const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >> &&
             meta::nothrow::truthy<meta::lt_type<
-                typename ArrayView<U, Shape, Flags>::const_reference,
+                typename ArrayView<U, S, F>::const_reference,
                 const_reference
             >>
         )
         requires (
-            meta::has_lt<
-                const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
-            > &&
-            meta::has_lt<
-                typename ArrayView<U, Shape, Flags>::const_reference,
-                const_reference
-            > &&
+            meta::has_lt<const_reference, typename ArrayView<U, S, F>::const_reference> &&
+            meta::has_lt<typename ArrayView<U, S, F>::const_reference, const_reference> &&
             meta::truthy<meta::lt_type<
                 const_reference,
-                typename ArrayView<U, Shape, Flags>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >> &&
             meta::truthy<meta::lt_type<
-                typename ArrayView<U, Shape, Flags>::const_reference,
+                typename ArrayView<U, S, F>::const_reference,
                 const_reference
             >>
         )
     {
-        for (size_t i = 0; i < total(); ++i) {
-            if (impl::array_access(ptr, i) < impl::array_access(other.ptr, i)) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (bool(*it1 < *it2)) {
                 return std::strong_ordering::less;
-            } else if (impl::array_access(other.ptr, i) < impl::array_access(ptr, i)) {
+            } else if (bool(*it2 < *it1)) {
                 return std::strong_ordering::greater;
             }
+            ++it1;
+            ++it2;
         }
         return std::strong_ordering::equal;
     }
@@ -1667,16 +1648,21 @@ template <typename T, size_t N>
 ArrayView(T(&)[N]) -> ArrayView<T, N>;
 
 
+/// TODO: change this ctad guide to accept any type that exposes `.data()` and is
+/// tuple-like (in which case its shape can be deduced at compile time via the
+/// `meta::shape()` helper).
+
+
 template <typename T, size_t N>
 ArrayView(const std::array<T, N>&) -> ArrayView<const T, N>;
 
 
-template <typename T, size_t... N>
-ArrayView(Array<T, N...>&) -> ArrayView<impl::array_storage<T>, N...>;
+template <typename T, impl::extent shape, impl::array_flags<shape> flags>
+ArrayView(Array<T, shape, flags>&) -> ArrayView<impl::array_storage<T>, shape, flags>;
 
 
-template <typename T, size_t... N>
-ArrayView(const Array<T, N...>&) -> ArrayView<const impl::array_storage<T>, N...>;
+template <typename T, impl::extent shape, impl::array_flags<shape> flags>
+ArrayView(const Array<T, shape, flags>&) -> ArrayView<const impl::array_storage<T>, shape, flags>;
 
 
 /* A generalized, multidimensional array type with fixed shape known at compile time.
@@ -1841,7 +1827,7 @@ public:
 private:
     constexpr Array(storage) noexcept {}
 
-    template <typename V> requires (sizeof...(Ns) == 0)
+    template <typename V> requires (ndim() == 1)
     constexpr void build(size_type& i, V&& v)
         noexcept (meta::nothrow::convertible_to<V, T>)
         requires (meta::convertible_to<V, T>)
@@ -1852,18 +1838,18 @@ private:
 
     constexpr void build(size_type& i, const init& v)
         noexcept (meta::nothrow::copyable<impl::ref<T>>)
-        requires (sizeof...(Ns) > 0 && meta::copyable<impl::ref<T>>)
+        requires (ndim() > 1 && meta::copyable<impl::ref<T>>)
     {
-        for (size_type j = 0; j < outer_stride; ++j, ++i) {
+        for (size_type j = 0; j < step; ++j, ++i) {
             std::construct_at(&ptr[i].value, v.ptr[j].value);
         }
     }
 
     constexpr void build(size_type& i, init&& v)
         noexcept (meta::nothrow::movable<impl::ref<T>>)
-        requires (sizeof...(Ns) > 0 && meta::movable<impl::ref<T>>)
+        requires (ndim() > 1 && meta::movable<impl::ref<T>>)
     {
-        for (size_type j = 0; j < outer_stride; ++j, ++i) {
+        for (size_type j = 0; j < step; ++j, ++i) {
             std::construct_at(&ptr[i].value, std::move(v.ptr[j].value));
         }
     }
@@ -1979,7 +1965,7 @@ public:
             return {ptr};
         } else {
             if consteval {
-                return {ptr + total() - outer_stride, size()};
+                return {ptr + total() - step, size()};
             } else {
                 return {ptr + total()};
             }
@@ -1992,7 +1978,7 @@ public:
             return {ptr};
         } else {
             if consteval {
-                return {ptr + total() - outer_stride, size()};
+                return {ptr + total() - step, size()};
             } else {
                 return {ptr + total()};
             }
@@ -2042,26 +2028,28 @@ public:
 
     /* Get a view over the array.  This backs by a CTAD guide to allow inference of
     type and shape. */
-    [[nodiscard]] constexpr operator ArrayView<storage, N, Ns...>() noexcept {
+    [[nodiscard]] constexpr operator ArrayView<storage, Shape, Flags>() noexcept {
         return {ptr};
     }
 
     /* Get a view over the array.  This backs by a CTAD guide to allow inference of
     type and shape. */
-    [[nodiscard]] constexpr operator ArrayView<const storage, N, Ns...>() const noexcept {
+    [[nodiscard]] constexpr operator ArrayView<const storage, Shape, Flags>() const noexcept {
         return {ptr};
     }
 
     /* Return a 1-dimensional view over the array, which equates to a flat view over
     the raw data buffer. */
-    [[nodiscard]] constexpr view<total()> flatten() & noexcept {
-        return {ptr};
+    [[nodiscard]] constexpr auto flatten() & noexcept {
+        using view = ArrayView<storage, total()>;
+        return view{ptr};
     }
 
     /* Return a 1-dimensional view over the array, which equates to a flat view over
     the raw data buffer. */
-    [[nodiscard]] constexpr const_view<total()> flatten() const & noexcept {
-        return {static_cast<const storage*>(ptr)};
+    [[nodiscard]] constexpr auto flatten() const & noexcept {
+        using view = ArrayView<const storage, total()>;
+        return view{static_cast<const storage*>(ptr)};
     }
 
     /* Return a 1-dimensional version of the array, moving the current contents to a
@@ -2070,7 +2058,8 @@ public:
         noexcept (meta::nothrow::movable<T>)
         requires (meta::movable<T>)
     {
-        auto result = Array<T, total()>::reserve();
+        using array = Array<T, total()>;
+        array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2086,7 +2075,8 @@ public:
         noexcept (meta::nothrow::copyable<T>)
         requires (meta::copyable<T>)
     {
-        auto result = Array<T, total()>::reserve();
+        using array = Array<T, total()>;
+        array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2098,27 +2088,30 @@ public:
 
     /* Return a view over the array with a different shape, as long as the total number
     of elements is the same. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr view<M, Ms...> reshape() & noexcept {
-        return {ptr};
+    template <impl::extent S, impl::array_flags<S> F = {}> requires (S.product() == total())
+    [[nodiscard]] constexpr auto reshape() & noexcept {
+        using view = ArrayView<storage, S, F>;
+        return view{ptr};
     }
 
     /* Return a view over the array with a different shape, as long as the total number
     of elements is the same. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr const_view<M, Ms...> reshape() const & noexcept {
-        return {static_cast<const storage*>(ptr)};
+    template <impl::extent S, impl::array_flags<S> F = {}> requires (S.product() == total())
+    [[nodiscard]] constexpr auto reshape() const & noexcept {
+        using view = ArrayView<const storage, S, F>;
+        return view{static_cast<const storage*>(ptr)};
     }
 
     /* Return a new array with a different shape, as long as the total number of
     elements is the same.  This overload moves the current contents of the existing
     array. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr Array<T, M, Ms...> reshape() &&
+    template <impl::extent S, impl::array_flags<S> F = {}> requires (S.product() == total())
+    [[nodiscard]] constexpr auto reshape() &&
         noexcept (meta::nothrow::movable<T>)
         requires (meta::movable<T>)
     {
-        auto result = Array<T, M, Ms...>::reserve();
+        using array = Array<T, S, F>;
+        array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2131,12 +2124,13 @@ public:
     /* Return a new array with a different shape, as long as the total number of
     elements is the same.  This overload copies the current contents of the existing
     array. */
-    template <size_type M, size_type... Ms> requires ((M * ... * Ms) == total())
-    [[nodiscard]] constexpr Array<T, M, Ms...> reshape() const &&
+    template <impl::extent S, impl::array_flags<S> F = {}> requires (S.product() == total())
+    [[nodiscard]] constexpr auto reshape() const &&
         noexcept (meta::nothrow::copyable<T>)
         requires (meta::copyable<T>)
     {
-        auto result = Array<T, M, Ms...>::reserve();
+        using array = Array<T, S, F>;
+        array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2150,14 +2144,20 @@ public:
     /* Return a view over the array with all singleton dimensions removed, unless that
     is the only remaining dimension. */
     [[nodiscard]] constexpr auto squeeze() & noexcept {
-        using view = impl::array_squeeze<storage, N, Ns...>::template view<>;
+        using view = impl::array_squeeze<storage, Shape, Flags>::template view<
+            {},
+            {.fortran = Flags.fortran}
+        >;
         return view{ptr};
     }
 
     /* Return a view over the array with all singleton dimensions removed, unless that
     is the only remaining dimension. */
     [[nodiscard]] constexpr auto squeeze() const & noexcept {
-        using view = impl::array_squeeze<const storage, N, Ns...>::template view<>;
+        using view = impl::array_squeeze<const storage, Shape, Flags>::template view<
+            {},
+            {.fortran = Flags.fortran}
+        >;
         return view{static_cast<const storage*>(ptr)};
     }
 
@@ -2168,8 +2168,11 @@ public:
         noexcept (meta::nothrow::movable<T>)
         requires (meta::movable<T>)
     {
-        using subarray = impl::array_squeeze<T, N, Ns...>::template array<>;
-        auto result = subarray::reserve();
+        using array = impl::array_squeeze<T, Shape, Flags>::template array<
+            {},
+            {.fortran = Flags.fortran}
+        >;
+        array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2186,8 +2189,11 @@ public:
         noexcept (meta::nothrow::copyable<T>)
         requires (meta::copyable<T>)
     {
-        using subarray = impl::array_squeeze<meta::as_const<T>, N, Ns...>::template array<>;
-        auto result = subarray::reserve();
+        using array = impl::array_squeeze<meta::as_const<T>, Shape, Flags>::template array<
+            {},
+            {.fortran = Flags.fortran}
+        >;
+        array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2234,7 +2240,7 @@ public:
     issues. */
     template <typename Self> requires (!empty())
     [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
-        if constexpr (sizeof...(Ns) == 0) {
+        if constexpr (ndim() == 1) {
             return ((*std::forward<Self>(self).ptr).value);
         } else if constexpr (meta::lvalue<Self>) {
             if constexpr (meta::is_const<Self>) {
@@ -2246,8 +2252,8 @@ public:
             }
         } else {
             using array = impl::array_reduce<Shape, Flags>::template array<T>;
-            auto result = array::reserve();
-            for (size_type i = 0; i < outer_stride; ++i) {
+            array result = array::reserve();
+            for (size_type i = 0; i < step; ++i) {
                 std::construct_at(
                     &result.ptr[i].value,
                     std::move(self.ptr[i].value)
@@ -2265,8 +2271,8 @@ public:
     issues. */
     template <typename Self> requires (!empty())
     [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
-        constexpr size_type j = (N - 1) * outer_stride;
-        if constexpr (sizeof...(Ns) == 0) {
+        constexpr size_type j = (size() - 1) * step;
+        if constexpr (ndim() == 1) {
             return (std::forward<Self>(self).ptr[j].value);
         } else if constexpr (meta::lvalue<Self>) {
             if constexpr (meta::is_const<Self>) {
@@ -2278,8 +2284,8 @@ public:
             }
         } else {
             using array = impl::array_reduce<Shape, Flags>::template array<T>;
-            auto result = array::reserve();
-            for (size_type i = 0; i < outer_stride; ++i) {
+            array result = array::reserve();
+            for (size_type i = 0; i < step; ++i) {
                 std::construct_at(
                     &result.ptr[i].value,
                     std::move(self.ptr[i + j].value)
@@ -2318,7 +2324,7 @@ public:
             }
         } else {
             using array = impl::array_reduce<Shape, Flags, sizeof...(I)>::template array<T>;
-            auto result = array::reserve();
+            array result = array::reserve();
             for (size_type k = 0; k < array::total(); ++k) {
                 std::construct_at(
                     &result.ptr[k].value,
@@ -2349,7 +2355,7 @@ public:
             meta::explicitly_convertible_to<I, ssize_t>
         ) && ...)
     {
-        size_type j = impl::array_index<N, Ns...>(i...);
+        size_type j = impl::array_index<Shape, Flags>(i...);
         if constexpr (sizeof...(I) == ndim()) {
             return (std::forward<Self>(self).ptr[j].value);
         } else if constexpr (meta::lvalue<Self>) {
@@ -2364,7 +2370,7 @@ public:
             }
         } else {
             using array = impl::array_reduce<Shape, Flags, sizeof...(I)>::template array<T>;
-            auto result = array::reserve();
+            array result = array::reserve();
             for (size_type k = 0; k < array::total(); ++k) {
                 std::construct_at(
                     &result.ptr[k].value,
@@ -2378,33 +2384,30 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr bool operator==(const Array<U, N, Ns...>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr bool operator==(const Array<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_eq<
-                const_reference,
-                typename Array<U, N, Ns...>::const_reference
-            > &&
+            meta::nothrow::has_eq<const_reference, typename Array<U, S, F>::const_reference> &&
             meta::nothrow::truthy<meta::eq_type<
                 const_reference,
-                typename Array<U, N, Ns...>::const_reference
+                typename Array<U, S, F>::const_reference
             >>
         )
         requires (
-            meta::has_eq<
-                const_reference,
-                typename Array<U, N, Ns...>::const_reference
-            > &&
-            meta::truthy<meta::eq_type<
-                const_reference,
-                typename Array<U, N, Ns...>::const_reference
-            >>
+            meta::has_eq<const_reference, typename Array<U, S, F>::const_reference> &&
+            meta::truthy<meta::eq_type<const_reference, typename Array<U, S, F>::const_reference>>
         )
     {
-        for (size_type i = 0; i < total(); ++i) {
-            if (!bool(impl::array_access(ptr, i) == impl::array_access(other.ptr, i))) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (!bool(*it1 == *it2)) {
                 return false;
             }
+            ++it1;
+            ++it2;
         }
         return true;
     }
@@ -2412,33 +2415,33 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr bool operator==(const ArrayView<U, N, Ns...>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr bool operator==(const ArrayView<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_eq<
-                const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
-            > &&
+            meta::nothrow::has_eq<const_reference, typename ArrayView<U, S, F>::const_reference> &&
             meta::nothrow::truthy<meta::eq_type<
                 const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >>
         )
         requires (
-            meta::has_eq<
-                const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
-            > &&
+            meta::has_eq<const_reference, typename ArrayView<U, S, F>::const_reference> &&
             meta::truthy<meta::eq_type<
                 const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >>
         )
     {
-        for (size_type i = 0; i < total(); ++i) {
-            if (!bool(impl::array_access(ptr, i) == impl::array_access(other.ptr, i))) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (!bool(*it1 == *it2)) {
                 return false;
             }
+            ++it1;
+            ++it2;
         }
         return true;
     }
@@ -2446,51 +2449,45 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr auto operator<=>(const Array<U, N, Ns...>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr auto operator<=>(const Array<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_lt<
-                const_reference,
-                typename Array<U, N, Ns...>::const_reference
-            > &&
-            meta::nothrow::has_lt<
-                typename Array<U, N, Ns...>::const_reference,
-                const_reference
-            > &&
+            meta::nothrow::has_lt<const_reference, typename Array<U, S, F>::const_reference> &&
+            meta::nothrow::has_lt<typename Array<U, S, F>::const_reference, const_reference> &&
             meta::nothrow::truthy<meta::lt_type<
                 const_reference,
-                typename Array<U, N, Ns...>::const_reference
+                typename Array<U, S, F>::const_reference
             >> &&
             meta::nothrow::truthy<meta::lt_type<
-                typename Array<U, N, Ns...>::const_reference,
+                typename Array<U, S, F>::const_reference,
                 const_reference
             >>
         )
         requires (
-            meta::has_lt<
-                const_reference,
-                typename Array<U, N, Ns...>::const_reference
-            > &&
-            meta::has_lt<
-                typename Array<U, N, Ns...>::const_reference,
-                const_reference
-            > &&
+            meta::has_lt<const_reference, typename Array<U, S, F>::const_reference> &&
+            meta::has_lt<typename Array<U, S, F>::const_reference, const_reference> &&
             meta::truthy<meta::lt_type<
                 const_reference,
-                typename Array<U, N, Ns...>::const_reference
+                typename Array<U, S, F>::const_reference
             >> &&
             meta::truthy<meta::lt_type<
-                typename Array<U, N, Ns...>::const_reference,
+                typename Array<U, S, F>::const_reference,
                 const_reference
             >>
         )
     {
-        for (size_t i = 0; i < total(); ++i) {
-            if (impl::array_access(ptr, i) < impl::array_access(other.ptr, i)) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (bool(*it1 < *it2)) {
                 return std::strong_ordering::less;
-            } else if (impl::array_access(other.ptr, i) < impl::array_access(ptr, i)) {
+            } else if (bool(*it2 < *it1)) {
                 return std::strong_ordering::greater;
             }
+            ++it1;
+            ++it2;
         }
         return std::strong_ordering::equal;
     }
@@ -2498,64 +2495,57 @@ public:
     /* Compare two arrays of the same shape for lexicographic equality.  Iteration
     always begins at index 0 across all dimensions and advances the last index first,
     following row-major order. */
-    template <typename U>
-    [[nodiscard]] constexpr auto operator<=>(const ArrayView<U, N, Ns...>& other) const
+    template <typename U, impl::extent S, impl::array_flags<S> F> requires (S.product() == total())
+    [[nodiscard]] constexpr auto operator<=>(const ArrayView<U, S, F>& other) const
         noexcept (
-            meta::nothrow::has_lt<
-                const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
-            > &&
-            meta::nothrow::has_lt<
-                typename ArrayView<U, N, Ns...>::const_reference,
-                const_reference
-            > &&
+            meta::nothrow::has_lt<const_reference, typename ArrayView<U, S, F>::const_reference> &&
+            meta::nothrow::has_lt<typename ArrayView<U, S, F>::const_reference, const_reference> &&
             meta::nothrow::truthy<meta::lt_type<
                 const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >> &&
             meta::nothrow::truthy<meta::lt_type<
-                typename ArrayView<U, N, Ns...>::const_reference,
+                typename ArrayView<U, S, F>::const_reference,
                 const_reference
             >>
         )
         requires (
-            meta::has_lt<
-                const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
-            > &&
-            meta::has_lt<
-                typename ArrayView<U, N, Ns...>::const_reference,
-                const_reference
-            > &&
+            meta::has_lt<const_reference, typename ArrayView<U, S, F>::const_reference> &&
+            meta::has_lt<typename ArrayView<U, S, F>::const_reference, const_reference> &&
             meta::truthy<meta::lt_type<
                 const_reference,
-                typename ArrayView<U, N, Ns...>::const_reference
+                typename ArrayView<U, S, F>::const_reference
             >> &&
             meta::truthy<meta::lt_type<
-                typename ArrayView<U, N, Ns...>::const_reference,
+                typename ArrayView<U, S, F>::const_reference,
                 const_reference
             >>
         )
     {
-        for (size_t i = 0; i < total(); ++i) {
-            if (impl::array_access(ptr, i) < impl::array_access(other.ptr, i)) {
+        auto it1 = flatten().begin();
+        auto end1 = flatten().end();
+        auto it2 = other.flatten().begin();
+        auto end2 = other.flatten().end();
+        while (it1 != end1 && it2 != end2) {
+            if (bool(*it1 < *it2)) {
                 return std::strong_ordering::less;
-            } else if (impl::array_access(other.ptr, i) < impl::array_access(ptr, i)) {
+            } else if (bool(*it2 < *it1)) {
                 return std::strong_ordering::greater;
             }
+            ++it1;
+            ++it2;
         }
         return std::strong_ordering::equal;
     }
 };
 
 
-template <typename... Ts>
-    requires (!meta::ArrayView<Ts> && ... && meta::has_common_type<Ts...>)
+template <typename... Ts> requires (!meta::ArrayView<Ts> && ... && meta::has_common_type<Ts...>)
 Array(Ts...) -> Array<meta::common_type<Ts...>, sizeof...(Ts)>;
 
 
-template <typename T, size_t N, size_t... Ns>
-Array(ArrayView<T, N, Ns...>) -> Array<impl::array_type<T>, {N, Ns...}>;
+template <typename T, impl::extent shape, impl::array_flags<shape> flags>
+Array(ArrayView<T, shape, flags>) -> Array<impl::array_type<T>, shape, flags>;
 
 
 /// TODO: it might be possible later in `Union` to provide a specialization of
@@ -2624,146 +2614,146 @@ constexpr decltype(auto) get(T&& self, index_sequence<Is...>)
 _LIBCPP_END_NAMESPACE_STD
 
 
-// namespace bertrand {
+namespace bertrand {
 
 
-//     // static constexpr std::array<std::array<int, 2>, 2> test {
-//     //     {1, 2},
-//     //     {3, 4}
-//     // };
+    // static constexpr std::array<std::array<int, 2>, 2> test {
+    //     {1, 2},
+    //     {3, 4}
+    // };
 
 
-//     static constexpr Array test1 {1, 2};
+    static constexpr Array test1 {1, 2};
 
-//     static constexpr Array test2 = Array<int, 2, 2>::reserve();
+    static constexpr Array test2 = Array<int, {2, 2}>::reserve();
 
-//     static constexpr auto test3 = Array<int, 2, 3>{
-//         Array{0, 1, 2},
-//         Array{3, 4, 5}
-//     }.reshape<3, 2>();
-//     static_assert(test3[0, 0] == 0);
-//     static_assert(test3[0, 1] == 1);
-//     static_assert(test3[1, 0] == 2);
-//     static_assert(test3[1, 1] == 3);
-//     static_assert(test3[2, 0] == 4);
-//     static_assert(test3[2, 1] == 5);
+    static constexpr auto test3 = Array<int, {2, 3}>{
+        Array{0, 1, 2},
+        Array{3, 4, 5}
+    }.reshape<{3, 2}>();
+    static_assert(test3[0, 0] == 0);
+    static_assert(test3[0, 1] == 1);
+    static_assert(test3[1, 0] == 2);
+    static_assert(test3[1, 1] == 3);
+    static_assert(test3[2, 0] == 4);
+    static_assert(test3[2, 1] == 5);
 
-//     static constexpr auto test4 = Array<int, 2, 3>{
-//         Array{0, 1, 2},
-//         Array{3, 4, 5}
-//     }[-1];
-//     static_assert(test4[0] == 3);
-//     static_assert(test4[1] == 4);
-//     static_assert(test4[2] == 5);
+    static constexpr auto test4 = Array<int, {2, 3}>{
+        Array{0, 1, 2},
+        Array{3, 4, 5}
+    }[-1];
+    static_assert(test4[0] == 3);
+    static_assert(test4[1] == 4);
+    static_assert(test4[2] == 5);
 
-//     static constexpr auto test5 = meta::to_const(Array<int, 2, 3>{
-//         Array{0, 1, 2},
-//         Array{3, 4, 5}
-//     }).flatten();
-
-
-//     static constexpr Array test6 = test3.flatten();
-//     static constexpr ArrayView test7 = test3;
+    static constexpr auto test5 = meta::to_const(Array<int, {2, 3}>{
+        Array{0, 1, 2},
+        Array{3, 4, 5}
+    }).flatten();
 
 
-//     static constexpr auto test8 = Array<int, 1, 3>{Array{1, 2, 3}};
-//     static constexpr auto test9 = test8.squeeze();
-//     static constexpr auto test10 = Array<int, 1, 3>{Array{1, 2, 3}}.squeeze();
-
-//     static_assert([] {
-//         Array<int, 2, 2> arr {
-//             Array{1, 2},
-//             Array{3, 4}
-//         };
-//         if (arr[0, 0] != 1) return false;
-//         if (arr[0, 1] != 2) return false;
-//         if (arr[1, 0] != 3) return false;
-//         if (arr[1, -1] != 4) return false;
-
-//         auto arr2 = Array<int, 2, 2>{Array{1, 2}, Array{3, 3}};
-//         arr = arr2;
-//         if (arr[1, 1] != 3) return false;
-
-//         if (arr.shape()[-1] != 2) return false;
-
-//         auto x = arr.data();
-//         if (*x != 1) return false;
-//         ++x;
-
-//         return true;
-//     }());
+    static constexpr Array test6 = test3.flatten();
+    static constexpr ArrayView test7 = test3;
 
 
-//     static_assert([] {
-//         Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
-//         auto x = arr[0];
-//         if (x[0] != 1) return false;
-//         if (x[1] != 2) return false;
-//         for (auto&& i : arr) {
-//             // if (i < 1 || i > 6) {
-//             //     return false;
-//             // }
-//             for (auto& j : i) {
-//                 if (j < 1 || j > 6) {
-//                     return false;
-//                 }
-//             }
-//         }
-//         return true;
-//     }());
+    static constexpr auto test8 = Array<int, {1, 3}>{Array{1, 2, 3}};
+    static constexpr auto test9 = test8.squeeze();
+    static constexpr auto test10 = Array<int, {1, 3}>{Array{1, 2, 3}}.squeeze();
 
-//     static_assert([] {
-//         Array<int, 3, 2> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
-//         auto it = arr.rbegin();
-//         if ((*it) != Array{5, 6}) return false;
-//         ++it;
-//         if (*it != Array{3, 4}) return false;
-//         ++it;
-//         if (*it != Array{1, 2}) return false;
-//         ++it;
-//         if (it != arr.rend()) return false;
+    static_assert([] {
+        Array<int, {2, 2}> arr {
+            Array{1, 2},
+            Array{3, 4}
+        };
+        if (arr[0, 0] != 1) return false;
+        if (arr[0, 1] != 2) return false;
+        if (arr[1, 0] != 3) return false;
+        if (arr[1, -1] != 4) return false;
 
-//         it = arr.rbegin();
-//         auto end = arr.rend();
-//         while (it != end) {
+        auto arr2 = Array<int, {2, 2}>{Array{1, 2}, Array{3, 3}};
+        arr = arr2;
+        if (arr[1, 1] != 3) return false;
 
-//             ++it;
-//         }
+        if (arr.shape()[-1] != 2) return false;
 
-//         return true;
-//     }());
+        auto x = arr.data();
+        if (*x != 1) return false;
+        ++x;
 
-//     static_assert([] {
-//         Array<int, 2, 3> arr {
-//             Array{1, 2, 3},
-//             Array{4, 5, 6}
-//         };
-//         const auto view = arr[0];
-//         auto& x = view[1];
-//         for (auto& y : view) {
-
-//         }
-//         auto z = view.data();
-
-//         auto f = view.back();
-
-//         return true;
-//     }());
+        return true;
+    }());
 
 
-//     inline void test() {
-//         int x = 1;
-//         int y = 2;
-//         int z = 3;
-//         int w = 4;
-//         Array<int, 2, 2> arr {
-//             Array{x, y},
-//             Array{z, w}
-//         };
-//         auto p = arr.data();
-//     }
+    static_assert([] {
+        Array<int, {3, 2}> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
+        auto x = arr[0];
+        if (x[0] != 1) return false;
+        if (x[1] != 2) return false;
+        for (auto&& i : arr) {
+            // if (i < 1 || i > 6) {
+            //     return false;
+            // }
+            for (auto& j : i) {
+                if (j < 1 || j > 6) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }());
 
-// }
+    static_assert([] {
+        Array<int, {3, 2}> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
+        auto it = arr.rbegin();
+        if ((*it) != Array{5, 6}) return false;
+        ++it;
+        if (*it != Array{3, 4}) return false;
+        ++it;
+        if (*it != Array{1, 2}) return false;
+        ++it;
+        if (it != arr.rend()) return false;
+
+        it = arr.rbegin();
+        auto end = arr.rend();
+        while (it != end) {
+
+            ++it;
+        }
+
+        return true;
+    }());
+
+    static_assert([] {
+        Array<int, {2, 3}> arr {
+            Array{1, 2, 3},
+            Array{4, 5, 6}
+        };
+        const auto view = arr[0];
+        auto& x = view[1];
+        for (auto& y : view) {
+
+        }
+        auto z = view.data();
+
+        auto f = view.back();
+
+        return true;
+    }());
+
+
+    inline void test() {
+        int x = 1;
+        int y = 2;
+        int z = 3;
+        int w = 4;
+        Array<int, {2, 2}> arr {
+            Array{x, y},
+            Array{z, w}
+        };
+        auto p = arr.data();
+    }
+
+}
 
 
 #endif  // BERTRAND_ARRAY_H
