@@ -51,9 +51,8 @@ namespace impl {
             requires (
                 !meta::convertible_to<T, size_t> &&
                 !meta::convertible_to<T, std::initializer_list<size_t>> &&
-                meta::iterable<T> &&
-                meta::has_size<T> &&
-                meta::convertible_to<meta::yield_type<T>, size_t>
+                meta::yields<size_t, T> &&
+                meta::size_returns<size_t, T>
             )
         :
             dim(heap{}.allocate(n.size())),
@@ -333,6 +332,8 @@ namespace impl {
                 ++it;
             }
         }
+        /// TODO: another constructor that takes tuples and uses an index sequence to
+        /// extract the values.
 
         constexpr void swap(extent& other) noexcept {
             for (size_t i = 0; i < ndim; ++i) {
@@ -592,6 +593,228 @@ namespace meta {
         ) &&
         (shape.empty() || shape == unqualify<C>::shape()) &&
         (shape.empty() || flags == unqualify<C>::flags());
+
+    namespace detail {
+
+        namespace adl {
+
+            template <typename T>
+            concept has_static_shape = requires{{impl::extent(shape<T>())};};
+
+            template <typename T>
+            concept has_shape = requires(T t) {{impl::extent(shape(::std::forward<T>(t)))};};
+
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_static_shape = requires{{impl::extent(unqualify<T>::shape())};};
+
+            template <typename T>
+            concept has_shape = requires(T t) {{impl::extent(::std::forward<T>(t).shape())};};
+
+        }
+
+        /* `shape_dim` returns a pair where the first index detects whether all values
+        of the tuple `T` are also tuple-like and have a consistent size, and the second
+        returns that size. */
+        template <
+            meta::tuple_like U,
+            typename = ::std::make_index_sequence<meta::tuple_size<U>>
+        >
+        static constexpr ::std::pair<bool, size_t> shape_dim {meta::tuple_size<U> == 0, 0};
+        template <meta::tuple_like U, size_t I, size_t... Is>
+            requires ((
+                meta::tuple_like<meta::get_type<U, I>> &&
+                ... &&
+                meta::tuple_like<meta::get_type<U, Is>>
+            ) && ((
+                meta::tuple_size<meta::get_type<U, I>> ==
+                meta::tuple_size<meta::get_type<U, Is>>
+            ) && ...))
+        static constexpr ::std::pair<bool, size_t> shape_dim<U, ::std::index_sequence<I, Is...>> {
+            true,
+            meta::tuple_size<meta::get_type<U, I>>
+        };
+
+        /* `deduce_shape` initially takes a pack containing a single tuple-like type,
+        which is either the top-level type directly or its yield type.  In the former
+        case, that type's tuple size is also required as an initializer, whereas in the
+        latter case, its runtime size must be provided as an argument to the call
+        operator.  If all of that type's elements are also tuple-like and have a
+        consistent size, then that size will be appended to `Is...`, and the type will
+        be replaced by all its elements, repeating the check.  This continues until
+        either a non-tuple-like element or a size mismatch is encountered, which marks
+        the end of the shape. */
+        template <typename, size_t... Is>
+        struct deduce_shape {
+            static constexpr auto operator()() noexcept { return impl::extent{Is...}; }
+            static constexpr auto operator()(size_t n) noexcept {
+                return impl::extent{n, Is...};
+            }
+        };
+        template <meta::tuple_like U, meta::tuple_like... Us, size_t... Is>
+            requires (
+                (shape_dim<U>.first && ... && shape_dim<Us>.first) &&
+                ((shape_dim<U>.second == shape_dim<Us>.second) && ...)
+            )
+        struct deduce_shape<meta::pack<U, Us...>, Is...> : deduce_shape<
+            meta::concat<meta::tuple_types<U>, meta::tuple_types<Us>...>,
+            Is...,
+            shape_dim<U>.second
+        > {};
+
+        /* `static_shape_fn<T>` backs `meta::static_shape<T>()` and attempts to deduce
+        a shape entirely at compile time. */
+        template <typename T>
+        struct static_shape_fn {
+            static constexpr auto operator()()
+                noexcept (requires{{impl::extent(unqualify<T>::shape())} noexcept;})
+                requires (member::has_static_shape<T>)
+            {
+                return impl::extent(unqualify<T>::shape());
+            }
+
+            static constexpr auto operator()()
+                noexcept (requires{{impl::extent(shape<T>())} noexcept;})
+                requires (!member::has_static_shape<T> && adl::has_static_shape<T>)
+            {
+                return impl::extent(shape<T>());
+            }
+
+            static constexpr auto operator()() noexcept
+                requires (
+                    !member::has_shape<T> &&
+                    !adl::has_shape<T> &&
+                    meta::tuple_like<T>
+                )
+            {
+                return deduce_shape<meta::pack<T>, meta::tuple_size<T>>{}();
+            }
+        };
+
+        /* `shape_fn` backs `meta::shape(t)`, which extends `meta::static_shape` to
+        take runtime information into account, allowing instance-level shape
+        introspection, iterables, etc. */
+        struct shape_fn {
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{static_shape_fn<T>{}()} noexcept;})
+                requires (requires{{static_shape_fn<T>{}()};})
+            {
+                return static_shape_fn<T>{}();
+            }
+
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{impl::extent(::std::forward<T>(t).shape())} noexcept;})
+                requires (
+                    !requires{{static_shape_fn<T>{}()};} &&
+                    member::has_shape<T>
+                )
+            {
+                return impl::extent(::std::forward<T>(t).shape());
+            }
+
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (requires{{impl::extent(shape(::std::forward<T>(t)))} noexcept;})
+                requires (
+                    !requires{{static_shape_fn<T>{}()};} &&
+                    !member::has_shape<T> &&
+                    adl::has_shape<T>
+                )
+            {
+                return impl::extent(shape(::std::forward<T>(t)));
+            }
+
+            template <typename T>
+            static constexpr auto operator()(T&& t)
+                noexcept (meta::nothrow::size_returns<size_t, T>)
+                requires (
+                    !requires{{static_shape_fn<T>{}()};} &&
+                    !member::has_shape<T> &&
+                    !adl::has_shape<T> &&
+                    meta::yields<size_t, T> &&
+                    meta::size_returns<size_t, T>
+                )
+            {
+                return deduce_shape<meta::pack<meta::yield_type<T>>>{}(::std::ranges::size(t));
+            }
+        };
+
+    }
+
+    /* Retrieve the `shape()` of a generic type `T` where such information is
+    independent of any particular instance of `T`.  This relies on a `T::shape()` or
+    ADL `shape<T>()` method, or `T` being a possibly-nested tuple type, for which a
+    shape can be deduced.
+
+    If the type is tuple-like, then the first element of the shape must be equal to its
+    `tuple_size`.  If all of its elements are also tuple-like and have the same size,
+    then that size will be appended to the shape as the next element, and so on until a
+    non-tuple-like element or a size mismatch is encountered, which marks the end of
+    the shape.
+
+    The result is always returned as an instance of `impl::extent<N>`. */
+    template <typename T>
+    inline constexpr detail::static_shape_fn<T> static_shape;
+
+    /* Retrieve the `shape()` of a generic object `t` of type `T` by first checking for
+    a `static_shape<T>()` method, falling back to a member `t.shape()` method and then
+    an ADL `shape(t)` method.  If none are present, and the type is a sized iterable
+    (possibly yielding tuple-like types), then a shape may be deduced similar to
+    `static_shape<T>()`, but using the iterable's size as the first element of the
+    resulting shape.
+
+    The result is always returned as an instance of `impl::extent<N>`. */
+    inline constexpr detail::shape_fn shape;
+
+    template <typename t>
+    concept has_static_shape = requires{{static_shape<t>()};};
+
+    template <typename T>
+    concept has_shape = requires(T t) {{shape(t)};};
+
+    template <has_static_shape T>
+    using static_shape_type = decltype(static_shape<T>());
+
+    template <has_shape T>
+    using shape_type = decltype(shape(::std::declval<T>()));
+
+    template <typename Ret, typename T>
+    concept static_shape_returns =
+        has_static_shape<T> && convertible_to<static_shape_type<T>, Ret>;
+
+    template <typename Ret, typename T>
+    concept shape_returns = has_shape<T> && convertible_to<shape_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_static_shape =
+            meta::has_static_shape<T> && requires{{static_shape<T>()} noexcept;};
+
+        template <typename T>
+        concept has_shape = meta::has_shape<T> && requires(T t) {{shape(t)} noexcept;};
+
+        template <nothrow::has_static_shape T>
+        using static_shape_type = meta::static_shape_type<T>;
+
+        template <nothrow::has_shape T>
+        using shape_type = meta::shape_type<T>;
+
+        template <typename Ret, typename T>
+        concept static_shape_returns =
+            nothrow::has_static_shape<T> &&
+            nothrow::convertible_to<nothrow::static_shape_type<T>, Ret>;
+
+        template <typename Ret, typename T>
+        concept shape_returns =
+            nothrow::has_shape<T> && nothrow::convertible_to<nothrow::shape_type<T>, Ret>;
+
+    }
 
 }
 
@@ -1150,6 +1373,18 @@ namespace impl {
         using type = array_transpose<T, Ns...>::template type<N, M...>;
     };
 
+
+
+
+
+    template <meta::has_data T>
+    using array_data = meta::remove_reference<
+        decltype(*std::ranges::data(std::declval<meta::as_lvalue<T>>()))
+    >;
+
+    template <typename... Ts>
+    using array_common = meta::remove_reference<meta::common_type<Ts...>>;
+
 }
 
 
@@ -1344,6 +1579,22 @@ public:
     }
 
     /// TODO: transpose()
+
+    [[nodiscard]] constexpr auto& operator*() noexcept {
+        return impl::array_access(ptr);
+    }
+
+    [[nodiscard]] constexpr const auto& operator*() const noexcept {
+        return impl::array_access(static_cast<meta::as_const<T>*>(ptr));
+    }
+
+    [[nodiscard]] constexpr auto* operator->() noexcept {
+        return std::addressof(impl::array_access(ptr));
+    }
+
+    [[nodiscard]] constexpr const auto* operator->() const noexcept {
+        return std::addressof(impl::array_access(static_cast<meta::as_const<T>*>(ptr)));
+    }
 
     [[nodiscard]] constexpr decltype(auto) front() noexcept {
         if constexpr (ndim() == 1) {
@@ -1644,25 +1895,29 @@ struct ArrayView<T, Shape, Flags> : impl::array_view_tag {
 };
 
 
-template <typename T, size_t N>
-ArrayView(T(&)[N]) -> ArrayView<T, N>;
-
-
-/// TODO: change this ctad guide to accept any type that exposes `.data()` and is
-/// tuple-like (in which case its shape can be deduced at compile time via the
-/// `meta::shape()` helper).
-
-
-template <typename T, size_t N>
-ArrayView(const std::array<T, N>&) -> ArrayView<const T, N>;
-
-
 template <typename T, impl::extent shape, impl::array_flags<shape> flags>
 ArrayView(Array<T, shape, flags>&) -> ArrayView<impl::array_storage<T>, shape, flags>;
 
 
 template <typename T, impl::extent shape, impl::array_flags<shape> flags>
 ArrayView(const Array<T, shape, flags>&) -> ArrayView<const impl::array_storage<T>, shape, flags>;
+
+
+template <typename T, size_t N>
+ArrayView(T(&)[N]) -> ArrayView<T, N>;
+
+
+template <meta::has_data T> requires (!meta::Array<T> && meta::has_static_shape<T>)
+ArrayView(T&) -> ArrayView<impl::array_data<T>, meta::static_shape<T>()>;
+
+
+template <meta::has_data T>
+    requires (
+        !meta::Array<T> &&
+        !meta::has_static_shape<T> &&
+        (meta::has_shape<T> || meta::has_size<T>)
+    )
+ArrayView(T&) -> ArrayView<impl::array_data<T>>;
 
 
 /* A generalized, multidimensional array type with fixed shape known at compile time.
@@ -1907,6 +2162,9 @@ public:
     /// TODO: another constructor that takes a begin()/end() iterator pair and
     /// basically applies the same logic as the from_range constructor.
 
+    /// TODO: maybe these constructors are required to be explicit?
+
+
     /* Swap the contents of two arrays. */
     constexpr void swap(Array& other)
         noexcept (meta::lvalue<T> || meta::nothrow::swappable<T>)
@@ -2028,13 +2286,13 @@ public:
 
     /* Get a view over the array.  This backs by a CTAD guide to allow inference of
     type and shape. */
-    [[nodiscard]] constexpr operator ArrayView<storage, Shape, Flags>() noexcept {
+    [[nodiscard]] constexpr operator ArrayView<storage, Shape, Flags>() & noexcept {
         return {ptr};
     }
 
     /* Get a view over the array.  This backs by a CTAD guide to allow inference of
     type and shape. */
-    [[nodiscard]] constexpr operator ArrayView<const storage, Shape, Flags>() const noexcept {
+    [[nodiscard]] constexpr operator ArrayView<const storage, Shape, Flags>() const & noexcept {
         return {ptr};
     }
 
@@ -2540,12 +2798,73 @@ public:
 };
 
 
-template <typename... Ts> requires (!meta::ArrayView<Ts> && ... && meta::has_common_type<Ts...>)
-Array(Ts...) -> Array<meta::common_type<Ts...>, sizeof...(Ts)>;
-
-
 template <typename T, impl::extent shape, impl::array_flags<shape> flags>
-Array(ArrayView<T, shape, flags>) -> Array<impl::array_type<T>, shape, flags>;
+Array(ArrayView<T, shape, flags>) -> Array<meta::unqualify<impl::array_type<T>>, shape, flags>;
+
+
+template <typename T, size_t N>
+Array(T(&)[N]) -> Array<T, N>;
+
+
+/// TODO: both of these CTAD guides may need to take more care in how they instantiate
+/// the underlying type.  This should probably always be the type corresponding to the
+/// yield type at a depth equal to the number of dimensions.  This would require a
+/// lot of thinking, most likely.
+
+
+template <meta::has_static_shape T>
+    requires (
+        !meta::ArrayView<T> &&
+        meta::iterable<T>
+    )
+Array(T&&) -> Array<meta::remove_reference<meta::yield_type<T>>, meta::static_shape<T>()>;
+
+
+template <meta::has_static_shape T>
+    requires (
+        !meta::ArrayView<T> &&
+        !meta::iterable<T> &&
+        meta::tuple_like<T> &&
+        meta::tuple_types<T>::has_common_type
+    )
+Array(T&&) -> Array<
+    meta::remove_reference<typename meta::tuple_types<T>::template eval<meta::common_type>>,
+    meta::static_shape<T>()
+>;
+
+
+
+
+/// TODO: add another version of the above CTAD guide that takes a tuple-like type that
+/// has a static shape.
+
+
+/// TODO: this last CTAD guide should be maximally constrained to avoid ambiguity with
+/// conversions from C-style arrays, C++ array types with static shapes, and direct
+/// initialization.  In fact, perhaps I can constrain this to a `std::initializer_list`,
+/// which is a good idea, most likely.  That would avoid all ambiguity issues.
+
+/// TODO: If you provide structured data, then this should be able to infer the
+/// dimensionality of the array from the nested structure.  This should be covered
+/// similarly to the init case.  Perhaps I can just check for convertibility to the
+/// `array_init` type, or something like that?  This also has echoes of the static
+/// shape deduction, and may even be able to be merged with those cases, which would
+/// be a huge win.
+
+
+template <typename... Ts>
+    requires (
+        (sizeof...(Ts) > 1 || ((
+            !meta::ArrayView<Ts> &&
+            !meta::has_static_shape<Ts>
+        ) && ...)) &&
+        meta::has_common_type<Ts...>
+    )
+Array(Ts&&...) -> Array<impl::array_common<Ts...>, sizeof...(Ts)>;
+
+
+
+
 
 
 /// TODO: it might be possible later in `Union` to provide a specialization of
@@ -2623,7 +2942,7 @@ namespace bertrand {
     // };
 
 
-    static constexpr Array test1 {1, 2};
+    static constexpr Array test1 {Array{1, 2}, Array{3, 4}};
 
     static constexpr Array test2 = Array<int, {2, 2}>::reserve();
 
@@ -2752,6 +3071,14 @@ namespace bertrand {
         };
         auto p = arr.data();
     }
+
+    static constexpr std::array test_arr {1, 2, 3};
+    static constexpr auto test_shape = meta::static_shape<decltype(test_arr)>();
+    static_assert(test_shape == impl::extent{3});
+    static constexpr ArrayView test_view {test_arr};
+    static_assert(test_view[-1] == 3);
+
+    // static constexpr Array test_arr2 = std::array{1, 2, 3};
 
 }
 

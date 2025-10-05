@@ -5138,6 +5138,10 @@ namespace iter {
             __value{C(std::forward<A>(args)...)}
         {}
 
+        /// TODO: explicit(cond) can be used to unify the two CTAD constructors, or
+        /// the extra nesting constructor for ranges could just be eliminated, which
+        /// is probably the better option.
+
         template <typename... A> requires (sizeof...(A) > 0)
         [[nodiscard]] constexpr explicit range(A&&... args)
             noexcept (requires{{impl::ref<C>{C(std::forward<A>(args)...)}} noexcept;})

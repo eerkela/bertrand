@@ -246,6 +246,15 @@ namespace meta {
 /// would also work, but none of these are currently available.
 
 
+/* A convenience function that produces a `std::in_place_index_t` instance specialized
+for a given alternative.  This is meant to be used as a disambiguation tag for union
+constructors, which manually selects an alternative to initialize.  It can be followed
+by any number of arguments, which will be forwarded to that alternative's
+constructor. */
+template <size_t I>
+constexpr std::in_place_index_t<I> alternative;
+
+
 template <typename... Ts> requires (impl::union_concept<Ts...>)
 struct Union;
 
@@ -1767,7 +1776,7 @@ namespace impl {
             requires (meta::not_void<type<from>>)
         {
             return impl::basic_union<meta::remove_rvalue<Ts>...>{
-                std::in_place_index<meta::index_of<type<from>, Ts...>>,
+                bertrand::alternative<meta::index_of<type<from>, Ts...>>,
                 std::forward<from>(arg)
             };
         }
@@ -1795,7 +1804,7 @@ namespace impl {
             requires (meta::not_void<type<A...>>)
         {
             return impl::basic_union<meta::remove_rvalue<Ts>...>{
-                std::in_place_index<meta::index_of<type<A...>, Ts...>>,
+                bertrand::alternative<meta::index_of<type<A...>, Ts...>>,
                 std::forward<A>(args)...
             };
         }
@@ -2036,23 +2045,23 @@ namespace impl {
         struct _add {
             static constexpr union_iterator operator()(const union_iterator& self, difference_type n)
                 noexcept (requires{{
-                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() + n}}
+                    union_iterator{{bertrand::alternative<I>, self.__value.template get<I>() + n}}
                 } noexcept -> meta::nothrow::convertible_to<union_iterator>;})
                 requires (requires{{
-                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() + n}}
+                    union_iterator{{bertrand::alternative<I>, self.__value.template get<I>() + n}}
                 };})
             {
-                return {{std::in_place_index<I>, self.__value.template get<I>() + n}};
+                return {{bertrand::alternative<I>, self.__value.template get<I>() + n}};
             }
             static constexpr union_iterator operator()(difference_type n, const union_iterator& self)
                 noexcept (requires{{
-                    union_iterator{{std::in_place_index<I>, n + self.__value.template get<I>()}}
+                    union_iterator{{bertrand::alternative<I>, n + self.__value.template get<I>()}}
                 } noexcept -> meta::nothrow::convertible_to<union_iterator>;})
                 requires (requires{{
-                    union_iterator{{std::in_place_index<I>, n + self.__value.template get<I>()}}
+                    union_iterator{{bertrand::alternative<I>, n + self.__value.template get<I>()}}
                 };})
             {
-                return {{std::in_place_index<I>, n + self.__value.template get<I>()}};
+                return {{bertrand::alternative<I>, n + self.__value.template get<I>()}};
             }
         };
         using add = impl::basic_vtable<_add, sizeof...(Ts)>;
@@ -2083,13 +2092,13 @@ namespace impl {
         struct _subtract {
             static constexpr union_iterator operator()(const union_iterator& self, difference_type n)
                 noexcept (requires{{
-                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() - n}}
+                    union_iterator{{bertrand::alternative<I>, self.__value.template get<I>() - n}}
                 } noexcept -> meta::nothrow::convertible_to<union_iterator>;})
                 requires (requires{{
-                    union_iterator{{std::in_place_index<I>, self.__value.template get<I>() - n}}
+                    union_iterator{{bertrand::alternative<I>, self.__value.template get<I>() - n}}
                 };})
             {
-                return {{std::in_place_index<I>, self.__value.template get<I>() - n}};
+                return {{bertrand::alternative<I>, self.__value.template get<I>() - n}};
             }
         };
         using subtract = impl::basic_vtable<_subtract, sizeof...(Ts)>;
@@ -2831,13 +2840,13 @@ namespace impl {
             }
             static constexpr begin_type operator()(U u)
                 noexcept (requires{{begin_type{
-                    {std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::begin(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{begin_type{
-                    {std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::begin(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::begin(u.__value.template get<I>())}};
+                return {{bertrand::alternative<I>, std::ranges::begin(u.__value.template get<I>())}};
             }
         };
         using _begin = impl::basic_vtable<begin_fn, N>;
@@ -2856,13 +2865,13 @@ namespace impl {
             }
             static constexpr end_type operator()(U u)
                 noexcept (requires{{end_type{
-                    {std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::end(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{end_type{
-                    {std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::end(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::end(u.__value.template get<I>())}};
+                return {{bertrand::alternative<I>, std::ranges::end(u.__value.template get<I>())}};
             }
         };
         using _end = impl::basic_vtable<end_fn, N>;
@@ -2881,13 +2890,16 @@ namespace impl {
             }
             static constexpr rbegin_type operator()(U u)
                 noexcept (requires{{rbegin_type{
-                    {std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::rbegin(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rbegin_type{
-                    {std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::rbegin(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::rbegin(u.__value.template get<I>())}};
+                return {{
+                    bertrand::alternative<I>,
+                    std::ranges::rbegin(u.__value.template get<I>())
+                }};
             }
         };
         using _rbegin = impl::basic_vtable<rbegin_fn, N>;
@@ -2906,13 +2918,16 @@ namespace impl {
             }
             static constexpr rend_type operator()(U u)
                 noexcept (requires{{rend_type{
-                    {std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::rend(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rend_type{
-                    {std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, std::ranges::rend(u.__value.template get<I>())}
                 }};})
             {
-                return {{std::in_place_index<I>, std::ranges::rend(u.__value.template get<I>())}};
+                return {{
+                    bertrand::alternative<I>,
+                    std::ranges::rend(u.__value.template get<I>())
+                }};
             }
         };
         using _rend = impl::basic_vtable<rend_fn, N>;
@@ -3167,9 +3182,9 @@ This is similar to `std::variant<Ts...>`, but with the following changes:
         implicit conversion is selected, then it will always be the leftmost match in
         the template signature.  The same is true for the default constructor, which
         always constructs the leftmost default-constructible alternative.  A specific
-        alternative can be constructed by providing a `std::in_place_index<I>` or
-        `std::in_place_type<T>` tag as the first argument, whereby all other arguments
-        will be forwarded to the constructor of the selected alternative.
+        alternative can be constructed by providing an `alternative<I>` or `type<T>`
+        tag as the first argument, whereby all other arguments will be forwarded to the
+        constructor of the selected alternative.
     4.  All operators and members will be forwarded to the alternatives in monadic
         fashion, assuming they all support them.  The only exception is `.__value`,
         which provides access to the (unsafe) union internals, and is prefixed by
@@ -3268,11 +3283,11 @@ struct Union : impl::union_tag {
     arguments.  This is more explicit than using the standard constructors, for cases
     where only a specific alternative should be considered. */
     template <typename T, typename... A> requires (meta::pack<Ts...>::template contains<T>())
-    [[nodiscard]] explicit constexpr Union(std::in_place_type_t<T> tag, A&&... args)
+    [[nodiscard]] explicit constexpr Union(std::type_identity<T> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<T, A...>)
         requires (meta::constructible_from<T, A...>)
     :
-        __value{std::in_place_index<meta::index_of<T, Ts...>>, std::forward<A>(args)...}
+        __value{bertrand::alternative<meta::index_of<T, Ts...>>, std::forward<A>(args)...}
     {}
 
     /* Swap the contents of two unions as efficiently as possible.  This will use
@@ -3609,7 +3624,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<alt, type>)
             requires (meta::convertible_to<alt, type>)
         {
-            return result{std::in_place_index<1>, std::forward<alt>(v)};
+            return result{bertrand::alternative<1>, std::forward<alt>(v)};
         }
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
@@ -3654,7 +3669,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<alt, NoneType>)
             requires (meta::convertible_to<alt, NoneType>)
         {
-            return result{std::in_place_index<0>, std::forward<alt>(v)};
+            return result{bertrand::alternative<0>, std::forward<alt>(v)};
         }
 
         // 2) otherwise, if the argument is in an empty state as defined by the input's
@@ -3683,7 +3698,7 @@ namespace impl {
             requires (meta::constructible_from<type, A...>)
         {
             return impl::basic_union<NoneType, type>{
-                std::in_place_index<1>,
+                bertrand::alternative<1>,
                 std::forward<A>(args)...
             };
         }
@@ -3696,7 +3711,7 @@ namespace impl {
             requires (meta::constructible_from<NoneType, A...>)
         {
             return impl::basic_union<NoneType>{
-                std::in_place_index<0>,
+                bertrand::alternative<0>,
                 std::forward<A>(args)...
             };
         }
@@ -5267,7 +5282,7 @@ namespace impl {
             noexcept (meta::nothrow::convertible_to<from, type>)
             requires (meta::convertible_to<from, type>)
         {
-            return result{std::in_place_index<0>, std::forward<from>(arg)};
+            return result{bertrand::alternative<0>, std::forward<from>(arg)};
         }
 
         template <typename from>
@@ -5281,7 +5296,7 @@ namespace impl {
             requires (!meta::convertible_to<from, type> && meta::not_void<err<from>>)
         {
             return result{
-                std::in_place_index<meta::index_of<err<from>, Es...> + 1>,
+                bertrand::alternative<meta::index_of<err<from>, Es...> + 1>,
                 std::forward<from>(arg)
             };
         }
@@ -5300,7 +5315,7 @@ namespace impl {
             noexcept (meta::nothrow::constructible_from<type, A...>)
             requires (meta::constructible_from<type, A...>)
         {
-            return result{std::in_place_index<0>, std::forward<A>(args)...};
+            return result{bertrand::alternative<0>, std::forward<A>(args)...};
         }
     };
 
@@ -5485,8 +5500,8 @@ This is identical to `Union<T, E, Es...>`, except in the following case:
         the initializer(s) would be invalid, in which case the same rules apply as for
         `Union<E, Es...>` (i.e. the most proximal cvref-qualified type or base class,
         with implicit conversions only as a last resort).  Like `Union`, it is possible
-        to unambiguously specify an error by providing a `std::in_place_index<I>` or
-        `std::in_place_type<T>` tag as the first argument.
+        to unambiguously specify an error by providing an `alternative<I>` or `type<T>`
+        tag as the first argument.
     2.  Pointer indirection assumes that the active member is not an error state.  If
         it is, then attempting to dereference it will throw that state as an exception,
         which can then be caught and analyzed using traditional try/catch semantics.
@@ -5594,11 +5609,11 @@ struct Expected : impl::expected_tag {
     where only a specific alternative should be considered. */
     template <typename U, typename... A>
         requires (meta::pack<T, E, Es...>::template contains<U>())
-    [[nodiscard]] explicit constexpr Expected(std::in_place_type_t<U> tag, A&&... args)
+    [[nodiscard]] explicit constexpr Expected(std::type_identity<U> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<U, A...>)
         requires (meta::constructible_from<U, A...>)
     :
-        __value{std::in_place_index<meta::index_of<U, T, E, Es...>>, std::forward<A>(args)...}
+        __value{bertrand::alternative<meta::index_of<U, T, E, Es...>>, std::forward<A>(args)...}
     {}
 
     /* Swap the contents of two expecteds as efficiently as possible. */
@@ -6007,12 +6022,12 @@ struct Expected<T, E, Es...> {
     where only a specific alternative should be considered. */
     template <typename U, typename... A>
         requires (meta::pack<NoneType, E, Es...>::template contains<U>())
-    [[nodiscard]] explicit constexpr Expected(std::in_place_type_t<U> tag, A&&... args)
+    [[nodiscard]] explicit constexpr Expected(std::type_identity<U> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<U, A...>)
         requires (meta::constructible_from<U, A...>)
     :
         __value{
-            std::in_place_index<meta::index_of<U, NoneType, E, Es...>>,
+            bertrand::alternative<meta::index_of<U, NoneType, E, Es...>>,
             std::forward<A>(args)...
         }
     {}

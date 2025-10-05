@@ -496,6 +496,477 @@ namespace meta {
         decltype(::std::forward<T>(::std::declval<T>()))
     >;
 
+    ////////////////////////////
+    ////    CONSTRUCTION    ////
+    ////////////////////////////
+
+    namespace detail {
+
+        template <typename T, typename... Args>
+        constexpr bool constructible_from = ::std::constructible_from<T, Args...>;
+
+        template <typename T, typename... Args>
+        constexpr bool nothrow_constructible_from =
+            ::std::is_nothrow_constructible_v<T, Args...>;
+
+        template <typename T>
+        constexpr bool default_constructible = ::std::default_initializable<T>;
+
+        template <typename T>
+        constexpr bool nothrow_default_constructible =
+            ::std::is_nothrow_default_constructible_v<T>;
+
+        template <typename T, typename... Args>
+        constexpr bool trivially_constructible =
+            ::std::is_trivially_constructible_v<T, Args...>;
+
+    }
+
+    template <typename T, typename... Args>
+    concept constructible_from = detail::constructible_from<T, Args...>;
+
+    template <typename T, typename... Args>
+    concept trivially_constructible = detail::trivially_constructible<T, Args...>;
+
+    template <typename T>
+    concept default_constructible = detail::default_constructible<T>;
+
+    namespace nothrow {
+
+        template <typename T, typename... Args>
+        concept constructible_from =
+            meta::constructible_from<T, Args...> &&
+            detail::nothrow_constructible_from<T, Args...>;
+
+        template <typename T, typename... Args>
+        concept trivially_constructible =
+            meta::trivially_constructible<T, Args...> &&
+            detail::nothrow_constructible_from<T, Args...>;
+
+        template <typename T>
+        concept default_constructible =
+            meta::default_constructible<T> &&
+            detail::nothrow_default_constructible<T>;
+
+    }
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
+        template <typename T, auto Extent>
+        constexpr bool prefer_constructor<::std::span<T, Extent>> = true;
+        template <typename... Ts>
+        constexpr bool prefer_constructor<::std::mdspan<Ts...>> = true;
+
+        template <typename L, typename R>
+        constexpr bool convertible_to = ::std::convertible_to<L, R>;
+
+        template <typename L, typename R>
+        constexpr bool nothrow_convertible_to =
+            ::std::is_nothrow_convertible_v<L, R>;
+
+    }
+
+    template <typename T>
+    concept prefer_constructor = detail::prefer_constructor<unqualify<T>>;
+
+    template <typename L, typename R>
+    concept convertible_to = detail::convertible_to<L, R>;
+
+    template <typename L, typename R>
+    concept explicitly_convertible_to = requires(L from) {
+        {static_cast<R>(from)} -> ::std::same_as<R>;
+    };
+
+    template <typename T>
+    concept truthy = explicitly_convertible_to<T, bool>;
+
+    template <typename L, typename R>
+    concept bit_castable_to = requires(L from) {
+        {::std::bit_cast<R>(from)} -> ::std::same_as<R>;
+    };
+
+    namespace nothrow {
+
+        template <typename L, typename R>
+        concept convertible_to =
+            meta::convertible_to<L, R> &&
+            detail::nothrow_convertible_to<L, R>;
+
+        template <typename L, typename R>
+        concept explicitly_convertible_to =
+            meta::explicitly_convertible_to<L, R> &&
+            requires(L from) {
+                {static_cast<R>(from)} noexcept -> ::std::same_as<R>;
+            };
+
+        template <typename T>
+        concept truthy = meta::truthy<T> && nothrow::explicitly_convertible_to<T, bool>;
+
+        template <typename L, typename R>
+        concept bit_castable_to =
+            meta::bit_castable_to<L, R> &&
+            requires(L from) {
+                {::std::bit_cast<R>(from)} noexcept -> ::std::same_as<R>;
+            };
+
+    }
+
+    /* Trigger implicit conversion operators and/or implicit constructors, but not
+    explicit ones.  In contrast, static_cast<>() will trigger explicit constructors on
+    the target type, which can give unexpected results and violate type safety. */
+    template <not_void To, typename From>
+    [[nodiscard]] constexpr To implicit_cast(From&& v)
+        noexcept(nothrow::convertible_to<From, To>)
+        requires(convertible_to<From, To>)
+    {
+        return ::std::forward<From>(v);
+    }
+
+    /* Extend the lifetime of an rvalue input by converting rvalues into prvalues and
+    leaving lvalues unchanged. */
+    template <typename T>
+    [[nodiscard]] constexpr meta::remove_rvalue<T> decay(T&& v)
+        noexcept (nothrow::convertible_to<T, meta::remove_rvalue<T>>)
+        requires (convertible_to<T, meta::remove_rvalue<T>>)
+    {
+        return ::std::forward<T>(v);
+    }
+
+    namespace detail {
+
+        template <typename L, typename R>
+        constexpr bool assignable = ::std::assignable_from<L, R>;
+
+        template <typename L, typename R>
+        constexpr bool nothrow_assignable = ::std::is_nothrow_assignable_v<L, R>;
+
+        template <typename L, typename R>
+        constexpr bool trivially_assignable = ::std::is_trivially_assignable_v<L, R>;
+
+    }
+
+    template <typename L, typename R>
+    concept assignable = detail::assignable<L, R>;
+
+    template <typename L, typename R>
+    concept trivially_assignable = detail::trivially_assignable<L, R>;
+
+    template <typename L, typename R> requires (assignable<L, R>)
+    using assign_type = decltype(::std::declval<L>() = ::std::declval<R>());
+
+    template <typename Ret, typename L, typename R>
+    concept assign_returns =
+        assignable<L, R> && convertible_to<assign_type<L, R>, Ret>;
+
+    namespace nothrow {
+
+        template <typename L, typename R>
+        concept assignable =
+            meta::assignable<L, R> && detail::nothrow_assignable<L, R>;
+
+        template <typename L, typename R>
+        concept trivially_assignable =
+            meta::trivially_assignable<L, R> && detail::nothrow_assignable<L, R>;
+
+        template <typename L, typename R> requires (nothrow::assignable<L, R>)
+        using assign_type = meta::assign_type<L, R>;
+
+        template <typename Ret, typename L, typename R>
+        concept assign_returns =
+            meta::assign_returns<L, R, Ret> &&
+            nothrow::assignable<L, R> &&
+            nothrow::convertible_to<nothrow::assign_type<L, R>, Ret>;
+
+    }
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool copyable = ::std::copy_constructible<T>;
+
+        template <typename T>
+        constexpr bool nothrow_copyable = ::std::is_nothrow_copy_constructible_v<T>;
+
+        template <typename T>
+        constexpr bool trivially_copyable = ::std::is_trivially_copyable_v<T>;
+
+        template <typename T>
+        constexpr bool copy_assignable = ::std::is_copy_assignable_v<T>;
+
+        template <typename T>
+        constexpr bool nothrow_copy_assignable = ::std::is_nothrow_copy_assignable_v<T>;
+
+        template <typename T>
+        constexpr bool trivially_copy_assignable = ::std::is_trivially_copy_assignable_v<T>;
+
+    }
+
+    template <typename T>
+    concept copyable = detail::copyable<T>;
+
+    template <typename T>
+    concept trivially_copyable = detail::trivially_copyable<T>;
+
+    template <typename T>
+    concept copy_assignable = detail::copy_assignable<T>;
+
+    template <typename T>
+    concept trivially_copy_assignable = detail::trivially_copy_assignable<T>;
+
+    template <copy_assignable T>
+    using copy_assign_type = decltype(::std::declval<T>() = ::std::declval<T>());
+
+    template <typename Ret, typename T>
+    concept copy_assign_returns =
+        copy_assignable<T> && convertible_to<copy_assign_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept copyable =
+            meta::copyable<T> && detail::nothrow_copyable<T>;
+
+        template <typename T>
+        concept trivially_copyable =
+            meta::trivially_copyable<T> && detail::nothrow_copyable<T>;
+
+        template <typename T>
+        concept copy_assignable =
+            meta::copy_assignable<T> && detail::nothrow_copy_assignable<T>;
+
+        template <typename T>
+        concept trivially_copy_assignable =
+            meta::trivially_copy_assignable<T> && detail::nothrow_copy_assignable<T>;
+
+        template <nothrow::copy_assignable T>
+        using copy_assign_type = meta::copy_assign_type<T>;
+
+        template <typename Ret, typename T>
+        concept copy_assign_returns =
+            meta::copy_assign_returns<T, Ret> &&
+            nothrow::copy_assignable<T> &&
+            nothrow::convertible_to<nothrow::copy_assign_type<T>, Ret>;
+
+    }
+
+    /* Explicitly invoke a `.copy()` member method for the given type. */
+    template <typename T>
+    [[nodiscard]] constexpr T copy(const T& v)
+        noexcept (requires{{v.copy()} noexcept -> nothrow::convertible_to<T>;})
+        requires (requires{{v.copy()} -> convertible_to<T>;})
+    {
+        return v.copy();
+    }
+
+    /* Explicitly invoke a copy constructor for the given type. */
+    template <typename T>
+    [[nodiscard]] constexpr T copy(const T& v)
+        noexcept (nothrow::copyable<T>)
+        requires (!requires{{v.copy()} -> convertible_to<T>;} && copyable<T>)
+    {
+        return v;
+    }
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool movable = ::std::move_constructible<T>;
+
+        template <typename T>
+        constexpr bool nothrow_movable = ::std::is_nothrow_move_constructible_v<T>;
+
+        template <typename T>
+        constexpr bool trivially_movable = ::std::is_trivially_move_constructible_v<T>;
+
+        template <typename T>
+        constexpr bool move_assignable = ::std::is_move_assignable_v<T>;
+
+        template <typename T>
+        constexpr bool nothrow_move_assignable = ::std::is_nothrow_move_assignable_v<T>;
+
+        template <typename T>
+        constexpr bool trivially_move_assignable = ::std::is_trivially_move_assignable_v<T>;
+
+    }
+
+    template <typename T>
+    concept movable = detail::movable<T>;
+
+    template <typename T>
+    concept trivially_movable = detail::trivially_movable<T>;
+
+    template <typename T>
+    concept move_assignable = detail::move_assignable<T>;
+
+    template <typename T>
+    concept trivially_move_assignable = detail::trivially_move_assignable<T>;
+
+    template <move_assignable T>
+    using move_assign_type = decltype(::std::declval<T>() = ::std::declval<T>());
+
+    template <typename Ret, typename T>
+    concept move_assign_returns =
+        move_assignable<T> && convertible_to<move_assign_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept movable =
+            meta::movable<T> && detail::nothrow_movable<T>;
+
+        template <typename T>
+        concept trivially_movable =
+            meta::trivially_movable<T> && detail::nothrow_movable<T>;
+
+        template <typename T>
+        concept move_assignable =
+            meta::move_assignable<T> &&
+            detail::nothrow_move_assignable<T>;
+
+        template <typename T>
+        concept trivially_move_assignable =
+            meta::trivially_move_assignable<T> &&
+            detail::nothrow_move_assignable<T>;
+
+        template <nothrow::move_assignable T>
+        using move_assign_type = meta::move_assign_type<T>;
+
+        template <typename Ret, typename T>
+        concept move_assign_returns =
+            meta::move_assign_returns<T, Ret> &&
+            nothrow::move_assignable<T> &&
+            nothrow::convertible_to<nothrow::move_assign_type<T>, Ret>;
+
+    }
+
+    /* Explicitly invoke a copy or move constructor for the given type. */
+    template <movable T>
+    [[nodiscard]] constexpr unqualify<T> move(T&& v) noexcept (nothrow::movable<T>) {
+        return ::std::forward<T>(v);
+    }
+
+    template <typename T>
+    concept swappable = ::std::swappable<T>;
+
+    template <typename T, typename U>
+    concept swappable_with = ::std::swappable_with<T, U>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept swappable = meta::swappable<T> &&
+            noexcept(::std::ranges::swap(
+                ::std::declval<meta::as_lvalue<T>>(),
+                ::std::declval<meta::as_lvalue<T>>()
+            ));
+
+        template <typename T, typename U>
+        concept swappable_with =
+            meta::swappable_with<T, U> &&
+            noexcept(::std::ranges::swap(
+                ::std::declval<meta::as_lvalue<T>>(),
+                ::std::declval<meta::as_lvalue<T>>()
+            )) &&
+            noexcept(::std::ranges::swap(
+                ::std::declval<meta::as_lvalue<T>>(),
+                ::std::declval<meta::as_lvalue<U>>()
+            )) &&
+            noexcept(::std::ranges::swap(
+                ::std::declval<meta::as_lvalue<U>>(),
+                ::std::declval<meta::as_lvalue<T>>()
+            )) &&
+            noexcept(::std::ranges::swap(
+                ::std::declval<meta::as_lvalue<U>>(),
+                ::std::declval<meta::as_lvalue<U>>()
+            ));
+
+    }
+
+    /* Explicitly invoke a member `l.swap(r)` method, if available. */
+    template <typename L, typename R>
+    constexpr void swap(L& l, R& r)
+        noexcept (requires{{l.swap(r)} noexcept;})
+        requires (requires{{l.swap(r)};})
+    {
+        l.swap(r);
+    };
+
+    /* Explicitly invoke an ADL `swap()` method using `std::ranges::swap()`. */
+    template <typename L, typename R>
+    constexpr void swap(L& l, R& r)
+        noexcept (requires{{::std::ranges::swap(l, r)} noexcept;})
+        requires (!requires{{l.swap(r)};} && requires{{::std::ranges::swap(l, r)};})
+    {
+        ::std::ranges::swap(l, r);
+    };
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool destructible = ::std::destructible<T>;
+
+        template <typename T>
+        constexpr bool nothrow_destructible = ::std::is_nothrow_destructible_v<T>;
+
+        template <typename T>
+        constexpr bool trivially_destructible = ::std::is_trivially_destructible_v<T>;
+
+        template <typename T>
+        constexpr bool virtually_destructible = ::std::has_virtual_destructor_v<T>;
+
+    }
+
+    template <typename T>
+    concept destructible = detail::destructible<T>;
+
+    template <typename T>
+    concept trivially_destructible =
+        destructible<T> && detail::trivially_destructible<T>;
+
+    template <typename T>
+    concept virtually_destructible =
+        destructible<T> && detail::virtually_destructible<T>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept destructible =
+            meta::destructible<T> && detail::nothrow_destructible<T>;
+
+        template <typename T>
+        concept trivially_destructible =
+            meta::trivially_destructible<T> && nothrow::destructible<T>;
+
+        template <typename T>
+        concept virtually_destructible =
+            meta::virtually_destructible<T> && nothrow::destructible<T>;
+
+    }
+
+    template <typename... Ts>
+    concept has_common_type = (sizeof...(Ts) > 0) && requires {
+        typename ::std::common_reference<Ts...>::type;
+    };
+
+    template <typename... Ts> requires (has_common_type<Ts...>)
+    using common_type = ::std::common_reference<Ts...>::type;
+
+    namespace nothrow {
+
+        template <typename... Ts>
+        concept has_common_type = (
+            meta::has_common_type<Ts...> &&
+            ... &&
+            nothrow::convertible_to<Ts, meta::common_type<Ts...>>
+        );
+
+        template <typename... Ts> requires (nothrow::has_common_type<Ts...>)
+        using common_type = meta::common_type<Ts...>;
+
+    }
+
     /////////////////////
     ////    PACKS    ////
     /////////////////////
@@ -826,6 +1297,15 @@ namespace meta {
         static constexpr size_t index() noexcept {
             return meta::index_of<T, Ts...>;
         }
+
+        /* True if all of the pack's types are implicitly convertible to the given
+        type. */
+        template <typename T>
+        static constexpr bool convertible_to = (meta::convertible_to<Ts, T> && ...);
+
+        /* True if the pack's types share a common type to which they can all be
+        converted. */
+        static constexpr bool has_common_type = meta::has_common_type<Ts...>;
 
         /* Member equivalent for `meta::unpack_type<I, Ts...>` (pack indexing). */
         template <index_type I> requires (impl::valid_index<ssize(), I>)
@@ -1318,477 +1798,6 @@ namespace meta {
 
     template <typename T>
     concept not_aggregate = !detail::is_aggregate<T>;
-
-    ////////////////////////////
-    ////    CONSTRUCTION    ////
-    ////////////////////////////
-
-    namespace detail {
-
-        template <typename T, typename... Args>
-        constexpr bool constructible_from = ::std::constructible_from<T, Args...>;
-
-        template <typename T, typename... Args>
-        constexpr bool nothrow_constructible_from =
-            ::std::is_nothrow_constructible_v<T, Args...>;
-
-        template <typename T>
-        constexpr bool default_constructible = ::std::default_initializable<T>;
-
-        template <typename T>
-        constexpr bool nothrow_default_constructible =
-            ::std::is_nothrow_default_constructible_v<T>;
-
-        template <typename T, typename... Args>
-        constexpr bool trivially_constructible =
-            ::std::is_trivially_constructible_v<T, Args...>;
-
-    }
-
-    template <typename T, typename... Args>
-    concept constructible_from = detail::constructible_from<T, Args...>;
-
-    template <typename T, typename... Args>
-    concept trivially_constructible = detail::trivially_constructible<T, Args...>;
-
-    template <typename T>
-    concept default_constructible = detail::default_constructible<T>;
-
-    namespace nothrow {
-
-        template <typename T, typename... Args>
-        concept constructible_from =
-            meta::constructible_from<T, Args...> &&
-            detail::nothrow_constructible_from<T, Args...>;
-
-        template <typename T, typename... Args>
-        concept trivially_constructible =
-            meta::trivially_constructible<T, Args...> &&
-            detail::nothrow_constructible_from<T, Args...>;
-
-        template <typename T>
-        concept default_constructible =
-            meta::default_constructible<T> &&
-            detail::nothrow_default_constructible<T>;
-
-    }
-
-    namespace detail {
-
-        template <typename T>
-        constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
-        template <typename T, auto Extent>
-        constexpr bool prefer_constructor<::std::span<T, Extent>> = true;
-        template <typename... Ts>
-        constexpr bool prefer_constructor<::std::mdspan<Ts...>> = true;
-
-        template <typename L, typename R>
-        constexpr bool convertible_to = ::std::convertible_to<L, R>;
-
-        template <typename L, typename R>
-        constexpr bool nothrow_convertible_to =
-            ::std::is_nothrow_convertible_v<L, R>;
-
-    }
-
-    template <typename T>
-    concept prefer_constructor = detail::prefer_constructor<unqualify<T>>;
-
-    template <typename L, typename R>
-    concept convertible_to = detail::convertible_to<L, R>;
-
-    template <typename L, typename R>
-    concept explicitly_convertible_to = requires(L from) {
-        {static_cast<R>(from)} -> ::std::same_as<R>;
-    };
-
-    template <typename T>
-    concept truthy = explicitly_convertible_to<T, bool>;
-
-    template <typename L, typename R>
-    concept bit_castable_to = requires(L from) {
-        {::std::bit_cast<R>(from)} -> ::std::same_as<R>;
-    };
-
-    namespace nothrow {
-
-        template <typename L, typename R>
-        concept convertible_to =
-            meta::convertible_to<L, R> &&
-            detail::nothrow_convertible_to<L, R>;
-
-        template <typename L, typename R>
-        concept explicitly_convertible_to =
-            meta::explicitly_convertible_to<L, R> &&
-            requires(L from) {
-                {static_cast<R>(from)} noexcept -> ::std::same_as<R>;
-            };
-
-        template <typename T>
-        concept truthy = meta::truthy<T> && nothrow::explicitly_convertible_to<T, bool>;
-
-        template <typename L, typename R>
-        concept bit_castable_to =
-            meta::bit_castable_to<L, R> &&
-            requires(L from) {
-                {::std::bit_cast<R>(from)} noexcept -> ::std::same_as<R>;
-            };
-
-    }
-
-    /* Trigger implicit conversion operators and/or implicit constructors, but not
-    explicit ones.  In contrast, static_cast<>() will trigger explicit constructors on
-    the target type, which can give unexpected results and violate type safety. */
-    template <not_void To, typename From>
-    [[nodiscard]] constexpr To implicit_cast(From&& v)
-        noexcept(nothrow::convertible_to<From, To>)
-        requires(convertible_to<From, To>)
-    {
-        return ::std::forward<From>(v);
-    }
-
-    /* Extend the lifetime of an rvalue input by converting rvalues into prvalues and
-    leaving lvalues unchanged. */
-    template <typename T>
-    [[nodiscard]] constexpr meta::remove_rvalue<T> decay(T&& v)
-        noexcept (nothrow::convertible_to<T, meta::remove_rvalue<T>>)
-        requires (convertible_to<T, meta::remove_rvalue<T>>)
-    {
-        return ::std::forward<T>(v);
-    }
-
-    namespace detail {
-
-        template <typename L, typename R>
-        constexpr bool assignable = ::std::assignable_from<L, R>;
-
-        template <typename L, typename R>
-        constexpr bool nothrow_assignable = ::std::is_nothrow_assignable_v<L, R>;
-
-        template <typename L, typename R>
-        constexpr bool trivially_assignable = ::std::is_trivially_assignable_v<L, R>;
-
-    }
-
-    template <typename L, typename R>
-    concept assignable = detail::assignable<L, R>;
-
-    template <typename L, typename R>
-    concept trivially_assignable = detail::trivially_assignable<L, R>;
-
-    template <typename L, typename R> requires (assignable<L, R>)
-    using assign_type = decltype(::std::declval<L>() = ::std::declval<R>());
-
-    template <typename Ret, typename L, typename R>
-    concept assign_returns =
-        assignable<L, R> && convertible_to<assign_type<L, R>, Ret>;
-
-    namespace nothrow {
-
-        template <typename L, typename R>
-        concept assignable =
-            meta::assignable<L, R> && detail::nothrow_assignable<L, R>;
-
-        template <typename L, typename R>
-        concept trivially_assignable =
-            meta::trivially_assignable<L, R> && detail::nothrow_assignable<L, R>;
-
-        template <typename L, typename R> requires (nothrow::assignable<L, R>)
-        using assign_type = meta::assign_type<L, R>;
-
-        template <typename Ret, typename L, typename R>
-        concept assign_returns =
-            meta::assign_returns<L, R, Ret> &&
-            nothrow::assignable<L, R> &&
-            nothrow::convertible_to<nothrow::assign_type<L, R>, Ret>;
-
-    }
-
-    namespace detail {
-
-        template <typename T>
-        constexpr bool copyable = ::std::copy_constructible<T>;
-
-        template <typename T>
-        constexpr bool nothrow_copyable = ::std::is_nothrow_copy_constructible_v<T>;
-
-        template <typename T>
-        constexpr bool trivially_copyable = ::std::is_trivially_copyable_v<T>;
-
-        template <typename T>
-        constexpr bool copy_assignable = ::std::is_copy_assignable_v<T>;
-
-        template <typename T>
-        constexpr bool nothrow_copy_assignable = ::std::is_nothrow_copy_assignable_v<T>;
-
-        template <typename T>
-        constexpr bool trivially_copy_assignable = ::std::is_trivially_copy_assignable_v<T>;
-
-    }
-
-    template <typename T>
-    concept copyable = detail::copyable<T>;
-
-    template <typename T>
-    concept trivially_copyable = detail::trivially_copyable<T>;
-
-    template <typename T>
-    concept copy_assignable = detail::copy_assignable<T>;
-
-    template <typename T>
-    concept trivially_copy_assignable = detail::trivially_copy_assignable<T>;
-
-    template <copy_assignable T>
-    using copy_assign_type = decltype(::std::declval<T>() = ::std::declval<T>());
-
-    template <typename Ret, typename T>
-    concept copy_assign_returns =
-        copy_assignable<T> && convertible_to<copy_assign_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept copyable =
-            meta::copyable<T> && detail::nothrow_copyable<T>;
-
-        template <typename T>
-        concept trivially_copyable =
-            meta::trivially_copyable<T> && detail::nothrow_copyable<T>;
-
-        template <typename T>
-        concept copy_assignable =
-            meta::copy_assignable<T> && detail::nothrow_copy_assignable<T>;
-
-        template <typename T>
-        concept trivially_copy_assignable =
-            meta::trivially_copy_assignable<T> && detail::nothrow_copy_assignable<T>;
-
-        template <nothrow::copy_assignable T>
-        using copy_assign_type = meta::copy_assign_type<T>;
-
-        template <typename Ret, typename T>
-        concept copy_assign_returns =
-            meta::copy_assign_returns<T, Ret> &&
-            nothrow::copy_assignable<T> &&
-            nothrow::convertible_to<nothrow::copy_assign_type<T>, Ret>;
-
-    }
-
-    /* Explicitly invoke a `.copy()` member method for the given type. */
-    template <typename T>
-    [[nodiscard]] constexpr T copy(const T& v)
-        noexcept (requires{{v.copy()} noexcept -> nothrow::convertible_to<T>;})
-        requires (requires{{v.copy()} -> convertible_to<T>;})
-    {
-        return v.copy();
-    }
-
-    /* Explicitly invoke a copy constructor for the given type. */
-    template <typename T>
-    [[nodiscard]] constexpr T copy(const T& v)
-        noexcept (nothrow::copyable<T>)
-        requires (!requires{{v.copy()} -> convertible_to<T>;} && copyable<T>)
-    {
-        return v;
-    }
-
-    namespace detail {
-
-        template <typename T>
-        constexpr bool movable = ::std::move_constructible<T>;
-
-        template <typename T>
-        constexpr bool nothrow_movable = ::std::is_nothrow_move_constructible_v<T>;
-
-        template <typename T>
-        constexpr bool trivially_movable = ::std::is_trivially_move_constructible_v<T>;
-
-        template <typename T>
-        constexpr bool move_assignable = ::std::is_move_assignable_v<T>;
-
-        template <typename T>
-        constexpr bool nothrow_move_assignable = ::std::is_nothrow_move_assignable_v<T>;
-
-        template <typename T>
-        constexpr bool trivially_move_assignable = ::std::is_trivially_move_assignable_v<T>;
-
-    }
-
-    template <typename T>
-    concept movable = detail::movable<T>;
-
-    template <typename T>
-    concept trivially_movable = detail::trivially_movable<T>;
-
-    template <typename T>
-    concept move_assignable = detail::move_assignable<T>;
-
-    template <typename T>
-    concept trivially_move_assignable = detail::trivially_move_assignable<T>;
-
-    template <move_assignable T>
-    using move_assign_type = decltype(::std::declval<T>() = ::std::declval<T>());
-
-    template <typename Ret, typename T>
-    concept move_assign_returns =
-        move_assignable<T> && convertible_to<move_assign_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept movable =
-            meta::movable<T> && detail::nothrow_movable<T>;
-
-        template <typename T>
-        concept trivially_movable =
-            meta::trivially_movable<T> && detail::nothrow_movable<T>;
-
-        template <typename T>
-        concept move_assignable =
-            meta::move_assignable<T> &&
-            detail::nothrow_move_assignable<T>;
-
-        template <typename T>
-        concept trivially_move_assignable =
-            meta::trivially_move_assignable<T> &&
-            detail::nothrow_move_assignable<T>;
-
-        template <nothrow::move_assignable T>
-        using move_assign_type = meta::move_assign_type<T>;
-
-        template <typename Ret, typename T>
-        concept move_assign_returns =
-            meta::move_assign_returns<T, Ret> &&
-            nothrow::move_assignable<T> &&
-            nothrow::convertible_to<nothrow::move_assign_type<T>, Ret>;
-
-    }
-
-    /* Explicitly invoke a copy or move constructor for the given type. */
-    template <movable T>
-    [[nodiscard]] constexpr unqualify<T> move(T&& v) noexcept (nothrow::movable<T>) {
-        return ::std::forward<T>(v);
-    }
-
-    template <typename T>
-    concept swappable = ::std::swappable<T>;
-
-    template <typename T, typename U>
-    concept swappable_with = ::std::swappable_with<T, U>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept swappable = meta::swappable<T> &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<T>>(),
-                ::std::declval<meta::as_lvalue<T>>()
-            ));
-
-        template <typename T, typename U>
-        concept swappable_with =
-            meta::swappable_with<T, U> &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<T>>(),
-                ::std::declval<meta::as_lvalue<T>>()
-            )) &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<T>>(),
-                ::std::declval<meta::as_lvalue<U>>()
-            )) &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<U>>(),
-                ::std::declval<meta::as_lvalue<T>>()
-            )) &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<U>>(),
-                ::std::declval<meta::as_lvalue<U>>()
-            ));
-
-    }
-
-    /* Explicitly invoke a member `l.swap(r)` method, if available. */
-    template <typename L, typename R>
-    constexpr void swap(L& l, R& r)
-        noexcept (requires{{l.swap(r)} noexcept;})
-        requires (requires{{l.swap(r)};})
-    {
-        l.swap(r);
-    };
-
-    /* Explicitly invoke an ADL `swap()` method using `std::ranges::swap()`. */
-    template <typename L, typename R>
-    constexpr void swap(L& l, R& r)
-        noexcept (requires{{::std::ranges::swap(l, r)} noexcept;})
-        requires (!requires{{l.swap(r)};} && requires{{::std::ranges::swap(l, r)};})
-    {
-        ::std::ranges::swap(l, r);
-    };
-
-    namespace detail {
-
-        template <typename T>
-        constexpr bool destructible = ::std::destructible<T>;
-
-        template <typename T>
-        constexpr bool nothrow_destructible = ::std::is_nothrow_destructible_v<T>;
-
-        template <typename T>
-        constexpr bool trivially_destructible = ::std::is_trivially_destructible_v<T>;
-
-        template <typename T>
-        constexpr bool virtually_destructible = ::std::has_virtual_destructor_v<T>;
-
-    }
-
-    template <typename T>
-    concept destructible = detail::destructible<T>;
-
-    template <typename T>
-    concept trivially_destructible =
-        destructible<T> && detail::trivially_destructible<T>;
-
-    template <typename T>
-    concept virtually_destructible =
-        destructible<T> && detail::virtually_destructible<T>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept destructible =
-            meta::destructible<T> && detail::nothrow_destructible<T>;
-
-        template <typename T>
-        concept trivially_destructible =
-            meta::trivially_destructible<T> && nothrow::destructible<T>;
-
-        template <typename T>
-        concept virtually_destructible =
-            meta::virtually_destructible<T> && nothrow::destructible<T>;
-
-    }
-
-    template <typename... Ts>
-    concept has_common_type = (sizeof...(Ts) > 0) && requires {
-        typename ::std::common_reference<Ts...>::type;
-    };
-
-    template <typename... Ts> requires (has_common_type<Ts...>)
-    using common_type = ::std::common_reference<Ts...>::type;
-
-    namespace nothrow {
-
-        template <typename... Ts>
-        concept has_common_type = (
-            meta::has_common_type<Ts...> &&
-            ... &&
-            nothrow::convertible_to<Ts, meta::common_type<Ts...>>
-        );
-
-        template <typename... Ts> requires (nothrow::has_common_type<Ts...>)
-        using common_type = meta::common_type<Ts...>;
-
-    }
 
     //////////////////////////
     ////    INVOCATION    ////
@@ -4274,204 +4283,6 @@ namespace meta {
         concept has_empty =
             meta::has_empty<T> &&
             noexcept(::std::ranges::empty(::std::declval<T>()));
-
-    }
-
-    namespace detail {
-
-        namespace adl {
-
-            template <typename T>
-            concept has_shape = requires(T t) {
-                {shape(::std::forward<T>(t))} -> meta::tuple_like;
-            };
-
-        }
-
-        namespace member {
-
-            template <typename T>
-            concept has_shape = requires(T t) {
-                {::std::forward<T>(t).shape()} -> meta::tuple_like;
-            };
-
-        }
-
-        struct shape_fn {
-        private:
-            template <meta::tuple_like T, size_t... Is>
-            static constexpr ::std::array<size_t, meta::tuple_size<T>> _normalize(
-                T&& t,
-                ::std::index_sequence<Is...>
-            )
-                noexcept (requires{{::std::array<size_t, meta::tuple_size<T>>{
-                    size_t(meta::get<Is>(::std::forward<T>(t)))...
-                }} noexcept;})
-                requires (requires{{::std::array<size_t, meta::tuple_size<T>>{
-                    size_t(meta::get<Is>(::std::forward<T>(t)))...
-                }};})
-            {
-                return {size_t(meta::get<Is>(::std::forward<T>(t)))...};
-            }
-
-            template <meta::tuple_like T>
-            static constexpr auto normalize(T&& t)
-                noexcept (requires{{_normalize(
-                    ::std::forward<T>(t),
-                    ::std::make_index_sequence<meta::tuple_size<T>>{}
-                )} noexcept;})
-                requires (requires{{_normalize(
-                    ::std::forward<T>(t),
-                    ::std::make_index_sequence<meta::tuple_size<T>>{}
-                )};})
-            {
-                return _normalize(
-                    ::std::forward<T>(t),
-                    ::std::make_index_sequence<meta::tuple_size<T>>{}
-                );
-            }
-
-        public:
-            template <typename T>
-            static constexpr auto operator()(T&& t)
-                noexcept (requires{{normalize(::std::forward<T>(t).shape())} noexcept;})
-                requires (
-                    member::has_shape<T> &&
-                    requires{{normalize(::std::forward<T>(t).shape())};}
-                )
-            {
-                return normalize(::std::forward<T>(t).shape());
-            }
-
-            template <typename T>
-            static constexpr auto operator()(T&& t)
-                noexcept (requires{{normalize(shape(::std::forward<T>(t)))} noexcept;})
-                requires (
-                    !member::has_shape<T> &&
-                    adl::has_shape<T> &&
-                    requires{{normalize(shape(::std::forward<T>(t)))};}
-                )
-            {
-                return normalize(shape(::std::forward<T>(t)));
-            }
-
-        private:
-            template <
-                meta::tuple_like T,
-                typename = ::std::make_index_sequence<meta::tuple_size<T>>
-            >
-            static constexpr ::std::pair<bool, size_t> dimension {
-                meta::tuple_size<T> == 0,
-                0
-            };
-            template <meta::tuple_like T, size_t I, size_t... Is>
-                requires ((
-                    meta::tuple_like<meta::get_type<T, I>> &&
-                    ... &&
-                    meta::tuple_like<meta::get_type<T, Is>>
-                ) && ((
-                    meta::tuple_size<meta::get_type<T, I>> ==
-                    meta::tuple_size<meta::get_type<T, Is>>
-                ) && ...))
-            static constexpr ::std::pair<bool, size_t> dimension<
-                T,
-                ::std::index_sequence<I, Is...>
-            > {
-                true,
-                meta::tuple_size<meta::get_type<T, I>>
-            };
-
-            template <typename, size_t... Is>
-            struct eval {
-                static constexpr auto operator()() noexcept {
-                    return std::array<size_t, sizeof...(Is)>{Is...};
-                }
-                static constexpr auto operator()(size_t n) noexcept {
-                    return std::array<size_t, sizeof...(Is) + 1>{n, Is...};
-                }
-            };
-            template <meta::tuple_like T, meta::tuple_like... Ts, size_t... Is>
-                requires (
-                    (dimension<T>.first && ... && dimension<Ts>.first) &&
-                    ((dimension<T>.second == dimension<Ts>.second) && ...)
-                )
-            struct eval<meta::pack<T, Ts...>, Is...> : eval<
-                meta::concat<meta::tuple_types<T>, meta::tuple_types<Ts>...>,
-                Is...,
-                dimension<T>.second
-            > {};
-
-        public:
-            template <typename T>
-            static constexpr auto operator()(T&& t) noexcept
-                requires (
-                    !member::has_shape<T> &&
-                    !adl::has_shape<T> &&
-                    meta::tuple_like<T>
-                )
-            {
-                return eval<meta::pack<T>, meta::tuple_size<T>>{}();
-            }
-
-            template <typename T>
-            static constexpr auto operator()(T&& t)
-                noexcept (meta::nothrow::size_returns<size_t, T>)
-                requires (
-                    !member::has_shape<T> &&
-                    !adl::has_shape<T> &&
-                    !meta::tuple_like<T> &&
-                    meta::iterable<T> &&
-                    meta::size_returns<size_t, T>
-                )
-            {
-                return eval<meta::pack<meta::yield_type<T>>>{}(::std::ranges::size(t));
-            }
-        };
-
-    }
-
-    /// TODO: add a separate, static_shape<T> helper that determines whether the shape
-    /// can be determined entirely at compile time.
-
-
-    /* Retrieve the `shape()` of a generic type by first checking for a `t.shape()`
-    member method and then falling back to an ADL-enabled `shape(t)` method.  If
-    neither is present, then a shape may be synthesized according to the following
-    rules:
-
-        1.  If the type is tuple-like, then the first element of the shape is equal
-            to its `tuple_size`.  If all of its elements are also tuple-like and have
-            the same size, then that size will be appended to the shape as the next
-            element, and so on until a non-tuple-like element or a size mismatch is
-            encountered, which marks the end of the shape.
-        2.  If the type is not tuple-like, but is both sized and iterable, then its
-            size will form the first element of the shape, and its yield type will be
-            examined as in (1) to form the rest of the shape.
-
-    Note that the result will always be returned as a `std::array<size_t, N>`, where
-    `N` is the number of dimensions that could be found. */
-    inline constexpr detail::shape_fn shape;
-
-    template <typename T>
-    concept has_shape = requires(T t) {{shape(t)};};
-
-    template <has_shape T>
-    using shape_type = decltype(shape(::std::declval<T>()));
-
-    template <typename Ret, typename T>
-    concept shape_returns = has_shape<T> && convertible_to<shape_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept has_shape = meta::has_shape<T> && requires(T t) {{shape(t)} noexcept;};
-
-        template <nothrow::has_shape T>
-        using shape_type = meta::shape_type<T>;
-
-        template <typename Ret, typename T>
-        concept shape_returns =
-            nothrow::has_shape<T> && nothrow::convertible_to<nothrow::shape_type<T>, Ret>;
 
     }
 
