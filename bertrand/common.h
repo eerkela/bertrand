@@ -1303,6 +1303,11 @@ namespace meta {
         template <typename T>
         static constexpr bool convertible_to = (meta::convertible_to<Ts, T> && ...);
 
+        /* True if all of the pack's types are implicitly convertible to the given
+        type without throwing exceptions. */
+        template <typename T>
+        static constexpr bool nothrow_convertible_to = (nothrow::convertible_to<Ts, T> && ...);
+
         /* True if the pack's types share a common type to which they can all be
         converted. */
         static constexpr bool has_common_type = meta::has_common_type<Ts...>;

@@ -71,6 +71,8 @@ types can still be used in a pure C++ context, but the `from_python()` and
 struct Exception INHERIT_STD_EXCEPTION {
 private:
 
+    /// TODO: use a `std::allocator` rather than `new`/`delete` directly
+
     /* At runtime, we also store a full traceback to the error location, as well
     as a mutable cache for the `what()` message.  This information is stored in a
     reference-counted pointer so as not to contribute to the `Exception`'s overall
@@ -100,13 +102,14 @@ private:
 
         /* Custom reference counting is used to ensure efficient copy semantics. */
         const info* incref() const noexcept {
-            ++refcount;
+            refcount.fetch_add(1, std::memory_order_relaxed);
             return this;
         }
 
         /* Custom reference counting is used to ensure efficient copy semantics. */
         void decref() noexcept {
-            if (--refcount == 0) {
+            if (refcount.fetch_sub(1, std::memory_order_release) == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
                 delete[] reinterpret_cast<std::byte*>(this);
             }
         }

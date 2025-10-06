@@ -6365,7 +6365,7 @@ namespace impl {
         sequence_control<T>* control = nullptr;
 
         constexpr void decref() {
-            if (control && control->count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (control && control->count.fetch_sub(1, std::memory_order_release) == 1) {
                 std::atomic_thread_fence(std::memory_order_acquire);
                 control->dtor(data);
                 delete control;
@@ -6521,7 +6521,7 @@ namespace impl {
         sequence_control<T>* control = nullptr;
 
         constexpr void decref() {
-            if (control && control->count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (control && control->count.fetch_sub(1, std::memory_order_release) == 1) {
                 std::atomic_thread_fence(std::memory_order_acquire);
                 control->dtor(data);
                 delete control;
