@@ -42,7 +42,7 @@ namespace impl {
     template <>
     struct extent<0> {
     private:
-        using heap = std::allocator<size_t>;
+        using heap = std::allocator<const size_t>;
 
         constexpr void _tuple_shape(size_t& i, size_t n) noexcept {
             std::construct_at(dim + i, n);
@@ -67,18 +67,23 @@ namespace impl {
         };
 
         size_t ndim = 0;
-        size_t* dim = nullptr;
+        const size_t* dim = nullptr;
         extent_kind kind = TRIVIAL;
 
         [[nodiscard]] constexpr extent() noexcept = default;
-        [[nodiscard]] constexpr extent(size_t n) noexcept : ndim(n), dim(&ndim) {}
+        [[nodiscard]] constexpr extent(size_t n) noexcept : ndim(n) {}
         [[nodiscard]] constexpr extent(size_t* dim, size_t ndim) noexcept :
+            ndim(ndim),
+            dim(static_cast<const size_t*>(dim)),
+            kind(BORROWED)
+        {}
+        [[nodiscard]] constexpr extent(const size_t* dim, size_t ndim) noexcept :
             ndim(ndim),
             dim(dim),
             kind(BORROWED)
         {}
 
-        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) : dim(&ndim) {
+        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) {
             if (n.size() > 1) {
                 kind = UNIQUE;
                 dim = heap{}.allocate(n.size());
@@ -104,7 +109,7 @@ namespace impl {
                 meta::yields<size_t, T> &&
                 (meta::tuple_like<T> || meta::size_returns<size_t, T>)
             )
-        [[nodiscard]] constexpr extent(T&& n) : dim(&ndim) {
+        [[nodiscard]] constexpr extent(T&& n) {
             size_t len;
             if constexpr (meta::tuple_like<T>) {
                 len = meta::tuple_size<T>;
@@ -137,7 +142,7 @@ namespace impl {
                 meta::tuple_like<T> &&
                 meta::tuple_types<T>::template convertible_to<size_t>
             )
-        [[nodiscard]] constexpr extent(T&& n) : dim(&ndim) {
+        [[nodiscard]] constexpr extent(T&& n) {
             constexpr size_t len = meta::tuple_size<T>;
             if constexpr (len > 1) {
                 kind = UNIQUE;
@@ -153,7 +158,6 @@ namespace impl {
 
         [[nodiscard]] constexpr extent(const extent& other) :
             ndim(other.ndim),
-            dim(&ndim),
             kind(other.kind)
         {
             switch (other.kind) {
@@ -176,11 +180,11 @@ namespace impl {
 
         [[nodiscard]] constexpr extent(extent&& other) noexcept :
             ndim(other.ndim),
-            dim(other.kind == TRIVIAL ? &ndim : other.dim),
+            dim(other.dim),
             kind(other.kind)
         {
             other.ndim = 0;
-            other.dim = &other.ndim;
+            other.dim = nullptr;
             other.kind = TRIVIAL;
         }
 
@@ -192,9 +196,6 @@ namespace impl {
                 ndim = other.ndim;
                 kind = other.kind;
                 switch (other.kind) {
-                    case TRIVIAL:
-                        dim = &ndim;
-                        break;
                     case BORROWED:
                         dim = other.dim;
                         break;
@@ -207,6 +208,8 @@ namespace impl {
                             std::construct_at(&dim[i], other.dim[i]);
                         }
                         break;
+                    default:
+                        break;
                 }
             }
             return *this;
@@ -218,10 +221,10 @@ namespace impl {
                     heap{}.deallocate(dim, ndim);
                 }
                 ndim = other.ndim;
-                dim = other.kind == TRIVIAL ? &ndim : other.dim;
+                dim = other.dim;
                 kind = other.kind;
                 other.ndim = 0;
-                other.dim = &other.ndim;
+                other.dim = nullptr;
                 other.kind = TRIVIAL;
             }
             return *this;
@@ -236,6 +239,7 @@ namespace impl {
         constexpr void swap(extent& other) noexcept {
             std::swap(ndim, other.ndim);
             std::swap(dim, other.dim);
+            std::swap(kind, other.kind);
         }
 
         [[nodiscard]] constexpr size_t size() const noexcept {
@@ -244,16 +248,13 @@ namespace impl {
 
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
         [[nodiscard]] constexpr bool empty() const noexcept { return ndim == 0; }
-        [[nodiscard]] constexpr size_t* data() noexcept { return dim; }
-        [[nodiscard]] constexpr const size_t* data() const noexcept { return dim; }
-        [[nodiscard]] constexpr size_t* begin() noexcept { return dim; }
-        [[nodiscard]] constexpr const size_t* begin() const noexcept {
-            return static_cast<const size_t*>(dim);
+        [[nodiscard]] constexpr const size_t* data() const noexcept {
+            return kind == TRIVIAL ? &ndim : dim;
         }
+        [[nodiscard]] constexpr const size_t* begin() const noexcept { return data(); }
         [[nodiscard]] constexpr const size_t* cbegin() const noexcept { return begin(); }
-        [[nodiscard]] constexpr size_t* end() noexcept { return dim + size(); }
         [[nodiscard]] constexpr const size_t* end() const noexcept {
-            return static_cast<const size_t*>(dim) + size();
+            return kind == TRIVIAL ? &ndim + 1 : dim + ndim;
         }
         [[nodiscard]] constexpr const size_t* cend() const noexcept { return end(); }
         [[nodiscard]] constexpr auto rbegin() noexcept {
@@ -272,7 +273,7 @@ namespace impl {
         [[nodiscard]] constexpr auto crend() const noexcept { return rend(); }
 
         [[nodiscard]] constexpr size_t operator[](ssize_t i) const {
-            return dim[impl::normalize_index(ssize(), i)];
+            return data()[impl::normalize_index(ssize(), i)];
         }
 
         template <size_t R>
@@ -311,37 +312,6 @@ namespace impl {
             return r;
         }
 
-        /// TODO: pick up the dynamic extent refactor here.
-
-
-        [[nodiscard]] constexpr extent strip(size_t n, bool fortran) const {
-            if (n == 0) {
-                return *this;
-            }
-            extent s;
-            if (dim && n < ndim) {
-                if (ndim == n + 1) {
-                    s.ndim = fortran ? dim[0] : dim[n];
-                } else {
-                    s.dim = heap{}.allocate(ndim - n);
-                    if (s.dim == nullptr) {
-                        throw MemoryError();
-                    }
-                    s.ndim = ndim - n;
-                    if (fortran) {
-                        for (size_t j = 0; j < s.ndim; ++j) {
-                            std::construct_at(&s.dim[j], dim[j]);
-                        }
-                    } else {
-                        for (size_t j = n; j < ndim; ++j) {
-                            std::construct_at(&s.dim[j - n], dim[j]);
-                        }
-                    }
-                }
-            }
-            return s;
-        }
-
         [[nodiscard]] constexpr size_t product() const noexcept {
             if (kind == TRIVIAL) {
                 return ndim;
@@ -353,52 +323,80 @@ namespace impl {
             return p;
         }
 
-        [[nodiscard]] constexpr size_t product(size_t n, bool fortran) const noexcept {
-            size_t len = size();
-            if (n >= len) {
+        [[nodiscard]] constexpr size_t product(size_t n, bool column_major) const noexcept {
+            if (kind == TRIVIAL) {
+                return ndim * (n == 0);
+            }
+            if (n >= ndim) {
                 return 0;
             }
             size_t p = 1;
-            if (dim == nullptr) {
-                p = ndim;
-            } else if (fortran) {
-                for (size_t j = 0; j < len - n; ++j) {
+            if (column_major) {
+                for (size_t j = 0; j < ndim - n; ++j) {
                     p *= dim[j];
                 }
             } else {
-                for (size_t j = n; j < len; ++j) {
+                for (size_t j = n; j < ndim; ++j) {
                     p *= dim[j];
                 }
             }
             return p;
         }
 
-        /// TODO: note that `strides` will be called at compile time within the
-        /// `array_flags` class.
+        [[nodiscard]] constexpr extent strip(size_t n, bool column_major) const {
+            if (n == 0) {
+                return *this;
+            }
+            extent result;
+            if (kind != TRIVIAL && n < ndim) {
+                if (n + 1 == ndim) {  // result is 1D
+                    result.ndim = dim[column_major ? 0 : n];
+                    result.dim = &result.ndim;
+                } else {  // result is > 1D
+                    result.dim = dim;
+                    result.ndim = ndim - n;  // always reduce size
+                    result.kind = BORROWED;
+                    if (!column_major) {
+                        result.dim += n;  // strip from front (column major strips from back)
+                    }
+                }
+            } else {  // result is empty
+                result.dim = &result.ndim;
+            }
+            return result;
+        }
 
-        [[nodiscard]] constexpr extent strides(bool fortran) const {
-            if (dim == nullptr) {
-                return 1;
-            }
-            extent s;
-            s.dim = heap{}.allocate(ndim);
-            if (s.dim == nullptr) {
-                throw MemoryError();
-            }
-            s.ndim = ndim;
-            if (fortran) {
-                std::construct_at(&s.dim[0], 1);
-                for (size_t j = 1; j < ndim; ++j) {
-                    std::construct_at(&s.dim[j], s.dim[j - 1] * dim[j - 1]);
-                }
+        [[nodiscard]] constexpr extent strides(bool column_major) const {
+            extent result;
+            if (kind == TRIVIAL) {
+                result.ndim = ndim > 0;
             } else {
-                size_t j = size() - 1;
-                std::construct_at(&s.dim[j], 1);
-                while (j-- > 0) {
-                    std::construct_at(&s.dim[j], s.dim[j + 1] * dim[j + 1]);
+                result.dim = heap{}.allocate(ndim);
+                if (result.dim == nullptr) {
+                    throw MemoryError();
+                }
+                result.ndim = ndim;
+                result.kind = UNIQUE;
+                if (column_major) {
+                    std::construct_at(&result.dim[0], 1);
+                    for (size_t j = 1; j < ndim; ++j) {
+                        std::construct_at(
+                            &result.dim[j],
+                            result.dim[j - 1] * dim[j - 1]
+                        );
+                    }
+                } else {
+                    size_t j = size() - 1;
+                    std::construct_at(&result.dim[j], 1);
+                    while (j-- > 0) {
+                        std::construct_at(
+                            &result.dim[j],
+                            result.dim[j + 1] * dim[j + 1]
+                        );
+                    }
                 }
             }
-            return s;
+            return result;
         }
     };
 
@@ -544,12 +542,12 @@ namespace impl {
         }
 
         template <size_t N>
-        [[nodiscard]] constexpr auto strip(bool fortran) const noexcept {
+        [[nodiscard]] constexpr auto strip(bool column_major) const noexcept {
             if constexpr (N >= size()) {
                 return extent<0>{};
             } else {
                 extent<size() - N> s;
-                if (fortran) {
+                if (column_major) {
                     for (size_t j = 0; j < size() - N; ++j) {
                         std::construct_at(&s.dim[j], dim[j]);
                     }
@@ -570,13 +568,13 @@ namespace impl {
             return p;
         }
 
-        [[nodiscard]] constexpr size_t product(size_t n, bool fortran) const noexcept {
+        [[nodiscard]] constexpr size_t product(size_t n, bool column_major) const noexcept {
             size_t len = size();
             if (n >= len) {
                 return 0;
             }
             size_t p = 1;
-            if (fortran) {
+            if (column_major) {
                 for (size_t j = 0; j < len - n; ++j) {
                     p *= dim[j];
                 }
@@ -588,9 +586,9 @@ namespace impl {
             return p;
         }
 
-        [[nodiscard]] constexpr extent strides(bool fortran) const noexcept {
+        [[nodiscard]] constexpr extent strides(bool column_major) const noexcept {
             extent s;
-            if (fortran) {
+            if (column_major) {
                 std::construct_at(&s.dim[0], 1);
                 for (size_t j = 1; j < size(); ++j) {
                     std::construct_at(&s.dim[j], s.dim[j - 1] * dim[j - 1]);
@@ -605,22 +603,6 @@ namespace impl {
             return s;
         }
     };
-
-    /// TODO: remove this operator?
-    template <size_t N, size_t M>
-    [[nodiscard]] constexpr extent<N + M> operator|(
-        const extent<N>& lhs,
-        const extent<M>& rhs
-    ) noexcept {
-        extent<N + M> s;
-        for (size_t j = 0; j < N; ++j) {
-            std::construct_at(&s.dim[j], lhs.dim[j]);
-        }
-        for (size_t j = 0; j < M; ++j) {
-            std::construct_at(&s.dim[N + j], rhs.dim[j]);
-        }
-        return s;
-    }
 
     template <size_t N>
     [[nodiscard]] constexpr extent<N + 1> operator|(const extent<N>& self, size_t other) noexcept {
@@ -642,8 +624,9 @@ namespace impl {
         return s;
     }
 
-    /* A configuration struct that holds miscellaneous flags for an array or array
-    view type. */
+    /* A compile-time configuration struct that holds miscellaneous flags for an array
+    or array view type.  An instance of this type can be constructed using designated
+    initialization to specialize the `Array` or `ArrayView` types. */
     template <extent shape>
     struct array_flags {
         /* If false (the default), then the strides will be computed in C (row-major)
@@ -651,14 +634,14 @@ namespace impl {
         that indices should be interpreted in Fortran (column-major) order instead,
         where the first index varies the fastest.  Toggling this flag for a view
         effectively transposes the array. */
-        bool fortran = false;
+        bool column_major = false;
 
         /* A set of custom strides to use for each dimension.  If given, the strides
         will always match their corresponding shape dimension. */
-        extent<shape.size()> strides = shape.strides(fortran);
+        extent<shape.size()> strides = shape.strides(column_major);
 
         [[nodiscard]] constexpr bool operator==(const array_flags& other) const noexcept {
-            return fortran == other.fortran && strides == other.strides;
+            return column_major == other.column_major && strides == other.strides;
         }
     };
 
@@ -671,7 +654,7 @@ namespace impl {
     views of `extent<0>`, which can be initialized symmetrically to the compile-time
     version. */
     struct dynamic_array_flags {
-        bool fortran = false;
+        bool column_major = false;
         extent<0> strides;
     };
 
@@ -688,298 +671,98 @@ namespace impl {
         meta::not_reference<T> &&
         (shape.product() > 0 || shape.size() <= 1);
 
-    /// TODO: dynamic_extent should probably be inlined into the dynamic array view
-    /// class.  There's not really any reason to reuse it anywhere else, and it will
-    /// simplify the overall design.
-
     /* Dynamic extents may not strictly know the total number of dimensions at compile
-    time, and may therefore require a dynamic allocation in order to produce an
-    appropriate shape and stride buffer.  In order to optimize this as much as
-    possible, both the shape and stride buffers will be allocated together in a single
-    block along with a header that contains an atomic reference count and precomputed
-    size.  `extent<0>` may also be able to avoid the allocation entirely in the 1D
-    case, and inline both directly into the `extent` struct itself. */
+    time, and therefore require a dynamic allocation in order to produce an appropriate
+    shape and stride buffer.  In order to optimize this as much as possible, both the
+    shape and stride buffers will be allocated together in a single region along with a
+    header that contains an atomic reference count and precomputed size.  In the 1D
+    case, `extent<0>` may be able to avoid the allocation entirely and inline both
+    buffers directly into the `extent` struct itself.  Note that such extents are
+    trivially both row-major and column-major at the same time. */
     struct dynamic_extent {
-    private:
-        struct capsule {
-            size_t ndim;
-            std::atomic<size_t> refcount = 1;
-            bool fortran = false;
-            size_t* buffer = nullptr;
+        size_t ndim;
+        std::atomic<size_t> refcount = 1;
+        bool column_major = false;
+        size_t* buffer = nullptr;
 
-            /* Heap-allocate a `capsule` with enough extra space to store the dynamic
-            shape and stride buffers.  If the extent is created at runtime, the buffers
-            will be stored inline immediately after this header struct and accessed via
-            a `reinterpret_cast`.  At compile time, the buffers will be stored
-            out-of-line using a second allocation to avoid the cast. */
-            [[nodiscard]] static constexpr capsule* create(size_t ndim) {
-                if consteval {
-                    capsule* self = std::allocator<capsule>{}.allocate(1);
-                    if (self == nullptr) {
-                        throw MemoryError();
-                    }
-                    std::construct_at(self);
-                    self->ndim = ndim;
-                    self->buffer = std::allocator<size_t>{}.allocate(ndim * 2);
-                    if (self->buffer == nullptr) {
-                        std::allocator<capsule>{}.deallocate(self, 1);
-                        throw MemoryError();
-                    }
-                    return self;
-                } else {
-                    capsule* self = reinterpret_cast<capsule*>(
-                        std::allocator<std::byte>{}.allocate(
-                            sizeof(capsule) + ndim * sizeof(size_t) * 2
-                        )
+        /* Heap-allocate a `dynamic_extent` with enough extra space to store the
+        shape and stride buffers.  If the extent is created at runtime, the buffers
+        will be stored inline immediately after this header struct and accessed via
+        a `reinterpret_cast`.  At compile time, the buffers will be stored
+        out-of-line using a second allocation to avoid the cast. */
+        [[nodiscard]] static constexpr dynamic_extent* create(size_t ndim) {
+            if consteval {
+                dynamic_extent* self = std::allocator<dynamic_extent>{}.allocate(1);
+                if (self == nullptr) {
+                    throw MemoryError();
+                }
+                std::construct_at(self);
+                self->ndim = ndim;
+                self->buffer = std::allocator<size_t>{}.allocate(ndim * 2);
+                if (self->buffer == nullptr) {
+                    std::allocator<dynamic_extent>{}.deallocate(self, 1);
+                    throw MemoryError();
+                }
+                return self;
+            } else {
+                dynamic_extent* self = reinterpret_cast<dynamic_extent*>(
+                    std::allocator<std::byte>{}.allocate(
+                        sizeof(dynamic_extent) + ndim * sizeof(size_t) * 2
+                    )
+                );
+                if (self == nullptr) {
+                    throw MemoryError();
+                }
+                std::construct_at(self);
+                self->ndim = ndim;
+                self->buffer = reinterpret_cast<size_t*>(self + 1);
+                return self;
+            }
+        }
+
+        /* Copy the `dynamic_extent` by incrementing its reference count at run time,
+        or doing a deep copy at compile time, since atomics are not fully constexpr
+        as of C++23.  Note that due to the deep copy, the return value must not be
+        discarded. */
+        [[nodiscard]] constexpr dynamic_extent* incref() {
+            if consteval {
+                dynamic_extent* copy = std::allocator<dynamic_extent>{}.allocate(1);
+                if (copy == nullptr) {
+                    throw MemoryError();
+                }
+                std::construct_at(copy);
+                copy->ndim = ndim;
+                copy->column_major = column_major;
+                copy->buffer = std::allocator<size_t>{}.allocate(ndim * 2);
+                if (copy->buffer == nullptr) {
+                    std::allocator<dynamic_extent>{}.deallocate(copy, 1);
+                    throw MemoryError();
+                }
+                std::copy_n(buffer, ndim * 2, copy->buffer);
+                return copy;
+            } else {
+                refcount.fetch_add(1, std::memory_order_relaxed);
+                return this;
+            }
+        }
+
+        /* Destroy the `dynamic_extent` by decrementing its reference count at run
+        time, or unconditionally deallocating at compile time, in order to mirror
+        `incref()`. */
+        constexpr void decref() {
+            if consteval {
+                std::allocator<size_t>{}.deallocate(buffer, ndim * 2);
+                std::allocator<dynamic_extent>{}.deallocate(this, 1);
+            } else {
+                if (refcount.fetch_sub(1, std::memory_order_release) == 1) {
+                    std::atomic_thread_fence(std::memory_order_acquire);
+                    std::allocator<std::byte>{}.deallocate(
+                        reinterpret_cast<std::byte*>(this),
+                        sizeof(dynamic_extent) + ndim * sizeof(size_t) * 2
                     );
-                    if (self == nullptr) {
-                        throw MemoryError();
-                    }
-                    std::construct_at(self);
-                    self->ndim = ndim;
-                    self->buffer = reinterpret_cast<size_t*>(self + 1);
-                    return self;
-                }
-            }
-
-            /* Copy the capsule by incrementing its reference count at run time, or
-            doing a deep copy at compile time, since atomics are not fully constexpr
-            as of C++23.  Note that due to the deep copy, the return value must not be
-            discarded. */
-            [[nodiscard]] constexpr capsule* incref() {
-                if consteval {
-                    capsule* copy = std::allocator<capsule>{}.allocate(1);
-                    if (copy == nullptr) {
-                        throw MemoryError();
-                    }
-                    std::construct_at(copy);
-                    copy->ndim = ndim;
-                    copy->fortran = fortran;
-                    copy->buffer = std::allocator<size_t>{}.allocate(ndim * 2);
-                    if (copy->buffer == nullptr) {
-                        std::allocator<capsule>{}.deallocate(copy, 1);
-                        throw MemoryError();
-                    }
-                    std::copy_n(buffer, ndim * 2, copy->buffer);
-                    return copy;
-                } else {
-                    refcount.fetch_add(1, std::memory_order_relaxed);
-                    return this;
-                }
-            }
-
-            /* Destroy the capsule by decrementing its reference count at run time, or
-            unconditionally deallocating at compile time, in order to mirror
-            `incref()`. */
-            constexpr void decref() {
-                if consteval {
-                    std::allocator<size_t>{}.deallocate(buffer, ndim * 2);
-                    std::allocator<capsule>{}.deallocate(this, 1);
-                } else {
-                    if (refcount.fetch_sub(1, std::memory_order_release) == 1) {
-                        std::atomic_thread_fence(std::memory_order_acquire);
-                        std::allocator<std::byte>{}.deallocate(
-                            reinterpret_cast<std::byte*>(this),
-                            sizeof(capsule) + ndim * sizeof(size_t) * 2
-                        );
-                    }
                 }
             }
         };
-
-        constexpr void _tuple_shape(size_t& i, size_t n) noexcept {
-            std::construct_at(data->buffer + i, n);
-            total *= data->buffer[i];
-            ++i;
-        }
-
-        template <meta::tuple_like T, size_t... Is> requires (sizeof...(Is) == meta::tuple_size<T>)
-        constexpr void tuple_shape(T&& shape, std::index_sequence<Is...>)
-            noexcept (requires(size_t i) {
-                {(_tuple_shape(i,meta::get<Is>(std::forward<T>(shape))), ...)} noexcept;
-            })
-        {
-            size_t i = 0;
-            (_tuple_shape(i, meta::get<Is>(std::forward<T>(shape))), ...);
-        }
-
-    public:
-        capsule* data = nullptr;  // nullptr if 1D-optimized
-        size_t scope = 0;  // if 1D: stride, else: current nesting level for iteration/indexing
-        size_t total = 0;  // if 1D: shape, else: total number of elements (product of shape)
-
-        [[nodiscard]] constexpr dynamic_extent() noexcept = default;
-
-        [[nodiscard]] constexpr dynamic_extent(size_t shape) noexcept :
-            data(nullptr), total(shape)
-        {}
-
-        template <typename T>
-        [[nodiscard]] constexpr dynamic_extent(T&& shape)
-            requires (
-                !meta::convertible_to<T, size_t> &&
-                meta::yields<size_t, T> &&
-                (meta::tuple_like<T> || meta::size_returns<size_t, T>)
-            )
-        {
-            size_t ndim;
-            if constexpr (meta::tuple_like<T>) {
-                ndim = meta::tuple_size<T>;
-            } else {
-                ndim = shape.size();
-            }
-            if (ndim == 0) {
-                throw ValueError("shape must not be empty");
-            } else if (ndim == 1) {
-                total = *shape.begin();
-                scope = 1;
-            } else {
-                data = capsule::create(ndim);
-                total = 1;
-                size_t i = 0;
-                for (auto&& x : shape) {
-                    std::construct_at(
-                        data->buffer + i,
-                        std::forward<decltype(x)>(x)
-                    );
-                    total *= data->buffer[i];
-                    ++i;
-                }
-            }
-        }
-
-        template <typename T>
-        [[nodiscard]] constexpr dynamic_extent(T&& shape)
-            noexcept (meta::tuple_types<T>::template nothrow_convertible_to<size_t>)
-            requires (
-                !meta::convertible_to<T, size_t> &&
-                !meta::yields<size_t, T> &&
-                meta::tuple_like<T> &&
-                meta::tuple_size<T> > 0 &&
-                meta::tuple_types<T>::template convertible_to<size_t>
-            )
-        {
-            constexpr size_t ndim = meta::tuple_size<T>;
-            if constexpr (ndim == 1) {
-                total = *shape.begin();
-                scope = 1;
-            } else {
-                data = capsule::create(ndim);
-                total = 1;
-                tuple_shape(std::forward<T>(shape), std::make_index_sequence<ndim>{});
-            }
-        }
-
-        [[nodiscard]] constexpr dynamic_extent(const dynamic_extent& other) :
-            data(other.data == nullptr ? nullptr : other.data->incref()),
-            scope(other.scope),
-            total(other.total)
-        {}
-
-        [[nodiscard]] constexpr dynamic_extent(dynamic_extent&& other) noexcept :
-            data(other.data),
-            scope(other.scope),
-            total(other.total)
-        {
-            other.data = nullptr;
-            other.scope = 0;
-            other.total = 0;
-        }
-
-        constexpr dynamic_extent& operator=(const dynamic_extent& other) {
-            if (this != &other) {
-                if (data) {
-                    data->decref();
-                }
-                data = other.data == nullptr ? nullptr : other.data->incref();
-                scope = other.scope;
-                total = other.total;
-            }
-            return *this;
-        }
-
-        constexpr dynamic_extent& operator=(dynamic_extent&& other) noexcept {
-            if (this != &other) {
-                if (data) {
-                    data->decref();
-                }
-                data = other.data;
-                scope = other.scope;
-                total = other.total;
-                other.data = nullptr;
-                other.scope = 0;
-                other.total = 0;
-            }
-            return *this;
-        }
-
-        constexpr ~dynamic_extent() {
-            if (data) {
-                data->decref();
-            }
-        }
-
-        constexpr void swap(dynamic_extent& other) noexcept {
-            std::swap(data, other.data);
-            std::swap(scope, other.scope);
-            std::swap(total, other.total);
-        }
-
-        constexpr void set_strides() noexcept {
-            if (data == nullptr) {
-                scope = 1;
-            } else if (data->fortran) {
-                size_t* step = data->buffer + data->ndim;
-                std::construct_at(&step[0], 1);
-                for (size_t i = 1; i < data->ndim; ++i) {
-                    std::construct_at(&step[i], step[i - 1] * data->buffer[i - 1]);
-                }
-            } else {
-                size_t* step = data->buffer + data->ndim;
-                size_t i = data->ndim - 1;
-                std::construct_at(&step[i], 1);
-                while (i-- > 0) {
-                    std::construct_at(&step[i], step[i + 1] * data->buffer[i + 1]);
-                }
-            }
-        }
-
-        constexpr void set_strides(const extent<0>& strides) {
-            if (data == nullptr) {
-                if (strides.size() != 1) {
-                    throw ValueError("strides must be the same length as the shape");
-                }
-                scope = strides.dim[0];
-            } else {
-                if (strides.size() != data->ndim) {
-                    throw ValueError("strides must be the same length as the shape");
-                }
-                size_t* step = data->buffer + data->ndim;
-                for (size_t i = 0; i < data->ndim; ++i) {
-                    std::construct_at(&step[i], strides.dim[i]);
-                }
-            }
-        }
-
-        [[nodiscard]] constexpr extent<0> shape() const noexcept {
-            if (data == nullptr) {
-                return extent<0>(total);
-            }
-            return extent<0>(data->buffer, data->ndim);
-        }
-
-        [[nodiscard]] constexpr extent<0> strides() const noexcept {
-            if (data == nullptr) {
-                return extent<0>(scope);
-            }
-            return extent<0>(data->buffer + data->ndim, data->ndim);
-        }
-
-        [[nodiscard]] constexpr bool fortran() const noexcept {
-            return data == nullptr || data->fortran;
-        }
-
-        /// TODO: size(), empty(), etc.
     };
 
 }
@@ -1032,20 +815,32 @@ namespace meta {
         namespace adl {
 
             template <typename T>
-            concept has_static_shape = requires{{impl::extent(shape<T>())};};
+            concept has_static_shape = requires{
+                {shape<T>()};
+                {impl::extent(shape<T>())};
+            };
 
             template <typename T>
-            concept has_shape = requires(T t) {{impl::extent(shape(::std::forward<T>(t)))};};
+            concept has_shape = requires(T t) {
+                {shape(::std::forward<T>(t))};
+                {impl::extent(shape(::std::forward<T>(t)))};
+            };
 
         }
 
         namespace member {
 
             template <typename T>
-            concept has_static_shape = requires{{impl::extent(unqualify<T>::shape())};};
+            concept has_static_shape = requires{
+                {unqualify<T>::shape()};
+                {impl::extent(unqualify<T>::shape())};
+            };
 
             template <typename T>
-            concept has_shape = requires(T t) {{impl::extent(::std::forward<T>(t).shape())};};
+            concept has_shape = requires(T t) {
+                {::std::forward<T>(t).shape()};
+                {impl::extent(::std::forward<T>(t).shape())};
+            };
 
         }
 
@@ -1102,18 +897,18 @@ namespace meta {
         a shape entirely at compile time. */
         template <typename T>
         struct static_shape_fn {
-            static constexpr auto operator()()
-                noexcept (requires{{impl::extent(unqualify<T>::shape())} noexcept;})
+            static constexpr decltype(auto) operator()()
+                noexcept (requires{{unqualify<T>::shape()} noexcept;})
                 requires (member::has_static_shape<T>)
             {
-                return impl::extent(unqualify<T>::shape());
+                return (unqualify<T>::shape());
             }
 
-            static constexpr auto operator()()
+            static constexpr decltype(auto) operator()()
                 noexcept (requires{{impl::extent(shape<T>())} noexcept;})
                 requires (!member::has_static_shape<T> && adl::has_static_shape<T>)
             {
-                return impl::extent(shape<T>());
+                return (shape<T>());
             }
 
             static constexpr auto operator()() noexcept
@@ -1132,34 +927,34 @@ namespace meta {
         introspection, iterables, etc. */
         struct shape_fn {
             template <typename T>
-            static constexpr auto operator()(T&& t)
+            static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{static_shape_fn<T>{}()} noexcept;})
                 requires (requires{{static_shape_fn<T>{}()};})
             {
-                return static_shape_fn<T>{}();
+                return (static_shape_fn<T>{}());
             }
 
             template <typename T>
-            static constexpr auto operator()(T&& t)
-                noexcept (requires{{impl::extent(::std::forward<T>(t).shape())} noexcept;})
+            static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{::std::forward<T>(t).shape()} noexcept;})
                 requires (
                     !requires{{static_shape_fn<T>{}()};} &&
                     member::has_shape<T>
                 )
             {
-                return impl::extent(::std::forward<T>(t).shape());
+                return (::std::forward<T>(t).shape());
             }
 
             template <typename T>
-            static constexpr auto operator()(T&& t)
-                noexcept (requires{{impl::extent(shape(::std::forward<T>(t)))} noexcept;})
+            static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{shape(::std::forward<T>(t))} noexcept;})
                 requires (
                     !requires{{static_shape_fn<T>{}()};} &&
                     !member::has_shape<T> &&
                     adl::has_shape<T>
                 )
             {
-                return impl::extent(shape(::std::forward<T>(t)));
+                return (shape(::std::forward<T>(t)));
             }
 
             template <typename T>
@@ -1259,13 +1054,13 @@ namespace impl {
     template <extent Shape, array_flags<Shape> Flags, size_t N = 1> requires (N > 0)
     struct array_reduce {
         static constexpr auto shape() noexcept {
-            return Shape.template strip<N>(Flags.fortran);
+            return Shape.template strip<N>(Flags.column_major);
         }
 
         static constexpr array_flags<shape()> flags() noexcept {
             return {
-                .fortran = Flags.fortran,
-                .strides = Flags.strides.template strip<N>(Flags.fortran)
+                .column_major = Flags.column_major,
+                .strides = Flags.strides.template strip<N>(Flags.column_major)
             };
         };
 
@@ -1742,7 +1537,7 @@ namespace impl {
             array_reduce<shape, flags>::shape(),
             array_reduce<shape, flags>::flags()
         >::template array<S | shape.dim[0], {
-            .fortran = flags.fortran,
+            .column_major = flags.column_major,
             .strides = F.strides | flags.strides.dim[0]
         }>;
 
@@ -1752,7 +1547,7 @@ namespace impl {
             array_reduce<shape, flags>::shape(),
             array_reduce<shape, flags>::flags()
         >::template view<S | shape.dim[0], {
-            .fortran = flags.fortran,
+            .column_major = flags.column_major,
             .strides = F.strides | flags.strides.dim[0]
         }>;
     };
@@ -1774,8 +1569,8 @@ namespace impl {
         };
         template <extent S, array_flags<S> F> requires (shape.size() == 1 && S.empty())
         struct type<S, F> {
-            using array = Array<T, 1, {.fortran = flags.fortran, .strides = 1}>;
-            using view = ArrayView<T, 1, {.fortran = flags.fortran, .strides = 1}>;
+            using array = Array<T, 1, {.column_major = flags.column_major, .strides = 1}>;
+            using view = ArrayView<T, 1, {.column_major = flags.column_major, .strides = 1}>;
         };
         template <extent S, array_flags<S> F>
         using array = type<S, F>::array;
@@ -1998,7 +1793,7 @@ public:
     [[nodiscard]] constexpr auto squeeze() noexcept {
         using view = impl::array_squeeze<T, Shape, Flags>::template view<
             {},
-            {.fortran = Flags.fortran}
+            {.column_major = Flags.column_major}
         >;
         return view{ptr};
     }
@@ -2006,7 +1801,7 @@ public:
     [[nodiscard]] constexpr auto squeeze() const noexcept {
         using view = impl::array_squeeze<meta::as_const<T>, Shape, Flags>::template view<
             {},
-            {.fortran = Flags.fortran}
+            {.column_major = Flags.column_major}
         >;
         return view{static_cast<meta::as_const<T>*>(ptr)};
     }
@@ -2316,53 +2111,238 @@ public:
 template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
     requires (impl::array_view_concept<T, Shape, Flags> && Shape.empty())
 struct ArrayView<T, Shape, Flags> : impl::array_view_tag {
-    [[nodiscard]] static constexpr bool dynamic() noexcept { return true; }
-
-    /// TODO: constructor takes a pointer, a span<size_t> describing the shape (or a
-    /// scalar for 1-D), and a span<size_t> describing the strides (or a scalar if 1-D).
-    /// Maybe array_flags can provide a specialization for this case, which allows the
-    /// same syntax as the template signature.
-
-    T* ptr = nullptr;
-    impl::dynamic_extent __shape;
-
-    [[nodiscard]] constexpr ArrayView() noexcept = default;
+private:
 
     template <typename S>
-    [[nodiscard]] constexpr ArrayView(
-        T* p,
-        S&& shape,
-        impl::dynamic_array_flags flags = {}
-    )
-        noexcept (requires{{impl::dynamic_extent(std::forward<S>(shape))} noexcept;})
-        requires (requires{{impl::dynamic_extent(std::forward<S>(shape))};})
-    :
-        ptr(p),
-        __shape(std::forward<S>(shape))
-    {
-        __shape.data->fortran = flags.fortran;
-        if (flags.strides.empty()) {
-            __shape.set_strides();
+    constexpr void from_iterable(S& shape) {
+        size_t ndim;
+        if constexpr (meta::tuple_like<T>) {
+            ndim = meta::tuple_size<T>;
         } else {
-            __shape.set_strides(flags.strides);
+            ndim = shape.size();
+        }
+        if (ndim == 0) {
+            throw ValueError("shape must not be empty");
+        } else if (ndim == 1) {
+            product = *shape.begin();
+        } else {
+            capsule = impl::dynamic_extent::create(ndim);
+            product = 1;
+            size_t i = 0;
+            for (auto&& x : shape) {
+                std::construct_at(
+                    capsule->buffer + i,
+                    std::forward<decltype(x)>(x)
+                );
+                product *= capsule->buffer[i];
+                ++i;
+            }
         }
     }
 
-    template <typename S>
+    constexpr void _from_tuple(size_t& i, size_t n) noexcept {
+        std::construct_at(capsule->buffer + i, n);
+        product *= capsule->buffer[i];
+        ++i;
+    }
+
+    template <meta::tuple_like S, size_t... Is> requires (sizeof...(Is) == meta::tuple_size<S>)
+    constexpr void from_tuple(S&& shape, std::index_sequence<Is...>)
+        noexcept (requires(size_t i) {
+            {(_from_tuple(i,meta::get<Is>(std::forward<S>(shape))), ...)} noexcept;
+        })
+    {
+        constexpr size_t ndim = meta::tuple_size<S>;
+        if constexpr (ndim == 1) {
+            product = *shape.begin();
+        } else {
+            capsule = impl::dynamic_extent::create(ndim);
+            product = 1;
+            size_t i = 0;
+            (_from_tuple(i, meta::get<Is>(std::forward<T>(shape))), ...);
+        }
+    }
+
+    constexpr void set_strides(impl::dynamic_array_flags& flags) {
+        if (capsule == nullptr) {
+            if (flags.strides.ndim == 0) {
+                scope = 1;
+            } else if (flags.strides.kind == flags.strides.TRIVIAL) {
+                scope = *flags.strides.data();
+            } else {
+                throw ValueError("strides must be the same length as the shape");
+            }
+        } else if (flags.strides.ndim == 0) {
+            if (capsule->column_major) {
+                size_t* stride = capsule->buffer + capsule->ndim;
+                std::construct_at(stride, 1);
+                for (size_t i = 1; i < capsule->ndim; ++i) {
+                    std::construct_at(
+                        stride + i,
+                        stride[i - 1] * capsule->buffer[i - 1]
+                    );
+                }
+            } else {
+                size_t* stride = capsule->buffer + capsule->ndim;
+                size_t i = capsule->ndim - 1;
+                std::construct_at(stride + i, 1);
+                while (i-- > 0) {
+                    std::construct_at(
+                        stride + i,
+                        stride[i + 1] * capsule->buffer[i + 1]
+                    );
+                }
+            }
+        } else {
+            if (flags.strides.size() != capsule->ndim) {
+                throw ValueError("strides must be the same length as the shape");
+            }
+            auto data = flags.strides.data();
+            size_t* stride = capsule->buffer + capsule->ndim;
+            for (size_t i = 0; i < capsule->ndim; ++i) {
+                std::construct_at(stride + i, data[i]);
+            }
+        }
+    }
+
+public:
+    [[nodiscard]] static constexpr bool dynamic() noexcept { return true; }
+
+    /// TODO: all the other static methods for other array views exposed here as well.
+
+
+    T* ptr = nullptr;
+    impl::dynamic_extent* capsule = nullptr;
+    size_t scope = 0;  // if 1D: stride, else: current nesting level for iteration/indexing
+    size_t product = 0;  // if 1D: shape, else: total number of elements (product of shape)
+
+    [[nodiscard]] constexpr ArrayView() noexcept = default;
     [[nodiscard]] constexpr ArrayView(
         T* p,
-        std::initializer_list<S> shape,
+        size_t shape,
+        impl::dynamic_array_flags flags = {}
+    ) :
+        ptr(p), product(shape)
+    {
+        if (flags.strides.ndim == 0) {
+            scope = 1;
+        } else if (flags.strides.kind == flags.strides.TRIVIAL) {
+            scope = *flags.strides.data();
+        } else {
+            throw ValueError("strides must be the same length as the shape");
+        }
+    }
+
+    [[nodiscard]] constexpr ArrayView(
+        T* p,
+        std::initializer_list<size_t> shape,
         impl::dynamic_array_flags flags = {}
     )
-        noexcept (requires{{impl::dynamic_extent(fortran, shape)} noexcept;})
-        requires (requires{{impl::dynamic_extent(fortran, shape)};})
-    :
-        ptr(p),
-        __shape(flags.fortran, shape)
+        requires (!meta::convertible_to<T, size_t>)
+    : ptr(p) {
+        from_iterable(shape);
+        set_strides(flags);
+    }
+
+    template <typename S>
+    [[nodiscard]] constexpr ArrayView(T* p, S&& shape, impl::dynamic_array_flags flags = {})
+        requires (
+            !meta::convertible_to<T, size_t> &&
+            meta::yields<size_t, T> &&
+            (meta::tuple_like<T> || meta::size_returns<size_t, T>)
+        )
+    : ptr(p) {
+        from_iterable(shape);
+        set_strides(flags);
+    }
+
+    template <typename S>
+    [[nodiscard]] constexpr ArrayView(T* p, S&& shape, impl::dynamic_array_flags flags = {})
+        noexcept (meta::tuple_types<T>::template nothrow_convertible_to<size_t>)
+        requires (
+            !meta::convertible_to<T, size_t> &&
+            !meta::yields<size_t, T> &&
+            meta::tuple_like<T> &&
+            meta::tuple_size<T> > 0 &&
+            meta::tuple_types<T>::template convertible_to<size_t>
+        )
+    : ptr(p) {
+        from_tuple(std::forward<S>(shape), std::make_index_sequence<meta::tuple_size<S>>{});
+        set_strides(flags);
+    }
+
+    [[nodiscard]] constexpr ArrayView(const ArrayView& other) :
+        capsule(other.capsule == nullptr ? nullptr : other.capsule->incref()),
+        scope(other.scope),
+        product(other.product)
     {}
 
+    [[nodiscard]] constexpr ArrayView(ArrayView&& other) noexcept :
+        capsule(other.capsule),
+        scope(other.scope),
+        product(other.product)
+    {
+        other.capsule = nullptr;
+        other.scope = 0;
+        other.product = 0;
+    }
 
+    constexpr ArrayView& operator=(const ArrayView& other) {
+        if (this != &other) {
+            if (capsule) {
+                capsule->decref();
+            }
+            capsule = other.capsule == nullptr ? nullptr : other.capsule->incref();
+            scope = other.scope;
+            product = other.total;
+        }
+        return *this;
+    }
 
+    constexpr ArrayView& operator=(ArrayView&& other) noexcept {
+        if (this != &other) {
+            if (capsule) {
+                capsule->decref();
+            }
+            capsule = other.capsule;
+            scope = other.scope;
+            product = other.product;
+            other.capsule = nullptr;
+            other.scope = 0;
+            other.product = 0;
+        }
+        return *this;
+    }
+
+    constexpr ~ArrayView() {
+        if (capsule) {
+            capsule->decref();
+        }
+    }
+
+    constexpr void swap(ArrayView& other) noexcept {
+        std::swap(capsule, other.capsule);
+        std::swap(scope, other.scope);
+        std::swap(product, other.product);
+    }
+
+    [[nodiscard]] constexpr auto shape() const noexcept {
+        if (capsule == nullptr) {
+            return impl::extent<0>(&product, 1);
+        }
+        return impl::extent<0>(capsule->buffer, capsule->ndim);
+    }
+
+    [[nodiscard]] constexpr auto strides() const noexcept {
+        if (capsule == nullptr) {
+            return impl::extent<0>(&scope, 1);
+        }
+        return impl::extent<0>(capsule->buffer + capsule->ndim, capsule->ndim);
+    }
+
+    [[nodiscard]] constexpr bool column_major() const noexcept {
+        return capsule == nullptr || capsule->column_major;
+    }
 };
 
 
@@ -2492,15 +2472,15 @@ public:
     /* The step size of the array along each dimension in units of `T`, which is
     equivalent to the strides given in the flags portion of the template signature.  If
     no strides are given, then they will be computed from the array's shape according
-    to row-major order (if `flags.fortran == false`) or column-major order (if
-    `flags.fortran == true`).  The return type is an `impl::extent` object that
+    to row-major order (if `flags.column_major == false`) or column-major order (if
+    `flags.column_major == true`).  The return type is an `impl::extent` object that
     can be indexed, iterated over, and destructured like a `std::array`, but with
     Python-style wraparound. */
     [[nodiscard]] static constexpr const auto& strides() noexcept {
         return Flags.strides;
     }
 
-    /* Return the flags associated with the array, which include the `fortran` flag
+    /* Return the flags associated with the array, which include the `column_major` flag
     and strides, and can be used to rebind the `Array` or `ArrayView` classes. */
     [[nodiscard]] static constexpr const auto& flags() noexcept {
         return Flags;
@@ -2875,7 +2855,7 @@ public:
     [[nodiscard]] constexpr auto squeeze() & noexcept {
         using view = impl::array_squeeze<storage, Shape, Flags>::template view<
             {},
-            {.fortran = Flags.fortran}
+            {.column_major = Flags.column_major}
         >;
         return view{ptr};
     }
@@ -2885,7 +2865,7 @@ public:
     [[nodiscard]] constexpr auto squeeze() const & noexcept {
         using view = impl::array_squeeze<const storage, Shape, Flags>::template view<
             {},
-            {.fortran = Flags.fortran}
+            {.column_major = Flags.column_major}
         >;
         return view{static_cast<const storage*>(ptr)};
     }
@@ -2899,7 +2879,7 @@ public:
     {
         using array = impl::array_squeeze<T, Shape, Flags>::template array<
             {},
-            {.fortran = Flags.fortran}
+            {.column_major = Flags.column_major}
         >;
         array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
@@ -2920,7 +2900,7 @@ public:
     {
         using array = impl::array_squeeze<meta::as_const<T>, Shape, Flags>::template array<
             {},
-            {.fortran = Flags.fortran}
+            {.column_major = Flags.column_major}
         >;
         array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
