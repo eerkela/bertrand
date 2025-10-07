@@ -295,6 +295,17 @@ namespace impl {
             }
         }
 
+        [[nodiscard]] constexpr size_t product() const noexcept {
+            if (kind == TRIVIAL) {
+                return ndim;
+            }
+            size_t p = 1;
+            for (size_t j = 0; j < ndim; ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
         [[nodiscard]] constexpr extent reverse() const {
             if (kind == TRIVIAL || ndim == 1) {
                 return *this;
@@ -312,56 +323,19 @@ namespace impl {
             return r;
         }
 
-        [[nodiscard]] constexpr size_t product() const noexcept {
-            if (kind == TRIVIAL) {
-                return ndim;
-            }
-            size_t p = 1;
-            for (size_t j = 0; j < ndim; ++j) {
-                p *= dim[j];
-            }
-            return p;
-        }
-
-        [[nodiscard]] constexpr size_t product(size_t n, bool column_major) const noexcept {
-            if (kind == TRIVIAL) {
-                return ndim * (n == 0);
-            }
-            if (n >= ndim) {
-                return 0;
-            }
-            size_t p = 1;
-            if (column_major) {
-                for (size_t j = 0; j < ndim - n; ++j) {
-                    p *= dim[j];
-                }
-            } else {
-                for (size_t j = n; j < ndim; ++j) {
-                    p *= dim[j];
-                }
-            }
-            return p;
-        }
-
-        [[nodiscard]] constexpr extent strip(size_t n, bool column_major) const {
+        [[nodiscard]] constexpr extent strip(size_t n) const {
             if (n == 0) {
                 return *this;
             }
             extent result;
             if (kind != TRIVIAL && n < ndim) {
                 if (n + 1 == ndim) {  // result is 1D
-                    result.ndim = dim[column_major ? 0 : n];
-                    result.dim = &result.ndim;
+                    result.ndim = dim[n];
                 } else {  // result is > 1D
-                    result.dim = dim;
-                    result.ndim = ndim - n;  // always reduce size
+                    result.dim = dim + n;
+                    result.ndim = ndim - n;
                     result.kind = BORROWED;
-                    if (!column_major) {
-                        result.dim += n;  // strip from front (column major strips from back)
-                    }
                 }
-            } else {  // result is empty
-                result.dim = &result.ndim;
             }
             return result;
         }
@@ -400,6 +374,21 @@ namespace impl {
         }
     };
 
+    /// TODO: maybe, similar to `extent<0>` (i.e. `Span<T, {}>`), which represents a
+    /// `Span` of fully dynamic shape, which can have any number of dimensions, an
+    /// extent of `0` would indicate a dynamic shape in a single dimension?
+    /// `Span<T, {0}>` would therefore be a 1D span of dynamic length.  Ideally, I
+    /// would be able to use `Span<T, {{}}>` for this purpose, but that would break
+    /// CTAD, so an explicit initializer is necessary.  The only alternative to `0`
+    /// is a `bertrand::dynamic` constant of some sort, but that's likely less
+    /// transferable to other languages, and I don't need to introduce any new concepts
+    /// here.  The other major concern would involve what this would mean for shape
+    /// deduction as it relates to tuple-like types.  Perhaps `meta::static_shape`
+    /// simply rejects any tuples of length 0, and reserves that for sized iterables
+    /// without a member shape?
+
+
+
     /* Compile-time shape and stride specifiers use CTAD to allow simple braced
     initializer syntax, which permits custom strides. */
     template <size_t ndim>
@@ -420,19 +409,32 @@ namespace impl {
             (_tuple_shape(i, meta::get<Is>(std::forward<T>(shape))), ...);
         }
 
+        struct initializer {
+            size_t value = std::numeric_limits<size_t>::max();
+            [[nodiscard]] constexpr initializer() noexcept = default;
+            [[nodiscard]] constexpr initializer(size_t n) noexcept : value(n) {}
+            [[nodiscard]] constexpr operator size_t() const noexcept { return value; }
+        };
+
     public:
         size_t dim[ndim];
 
         [[nodiscard]] constexpr extent() noexcept = default;
         [[nodiscard]] constexpr extent(size_t n) noexcept requires (ndim == 1) : dim{n} {}
-        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) noexcept {
+        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) {
             size_t i = 0;
             auto it = n.begin();
             auto end = n.end();
             while (i < ndim && it != end) {
+                if (i == ndim) {
+                    throw ValueError("too many dimensions in shape");
+                }
                 std::construct_at(dim + i, *it);
                 ++i;
                 ++it;
+            }
+            if (i != ndim) {
+                throw ValueError("too few dimensions in shape");
             }
         }
 
@@ -490,9 +492,9 @@ namespace impl {
             return static_cast<const size_t*>(dim);
         }
         [[nodiscard]] constexpr const size_t* cbegin() const noexcept { return begin(); }
-        [[nodiscard]] constexpr size_t* end() noexcept { return dim + size(); }
+        [[nodiscard]] constexpr size_t* end() noexcept { return dim + ndim; }
         [[nodiscard]] constexpr const size_t* end() const noexcept {
-            return static_cast<const size_t*>(dim) + size();
+            return static_cast<const size_t*>(dim) + ndim;
         }
         [[nodiscard]] constexpr const size_t* cend() const noexcept { return end(); }
         [[nodiscard]] constexpr auto rbegin() noexcept {
@@ -521,8 +523,8 @@ namespace impl {
 
         template <size_t R>
         [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
-            if constexpr (R == size()) {
-                for (size_t i = 0; i < size(); ++i) {
+            if constexpr (R == ndim) {
+                for (size_t i = 0; i < ndim; ++i) {
                     if (dim[i] != other.dim[i]) {
                         return false;
                     }
@@ -535,55 +537,31 @@ namespace impl {
 
         [[nodiscard]] constexpr extent reverse() const noexcept {
             extent r;
-            for (size_t j = 0; j < size(); ++j) {
-                std::construct_at(&r.dim[j], dim[size() - 1 - j]);
+            for (size_t j = 0; j < ndim; ++j) {
+                std::construct_at(&r.dim[j], dim[ndim - 1 - j]);
             }
             return r;
         }
 
-        template <size_t N>
-        [[nodiscard]] constexpr auto strip(bool column_major) const noexcept {
-            if constexpr (N >= size()) {
-                return extent<0>{};
-            } else {
-                extent<size() - N> s;
-                if (column_major) {
-                    for (size_t j = 0; j < size() - N; ++j) {
-                        std::construct_at(&s.dim[j], dim[j]);
-                    }
-                } else {
-                    for (size_t j = N; j < size(); ++j) {
-                        std::construct_at(&s.dim[j - N], dim[j]);
-                    }
-                }
-                return s;
-            }
-        }
-
         [[nodiscard]] constexpr size_t product() const noexcept {
             size_t p = 1;
-            for (size_t j = 0; j < size(); ++j) {
+            for (size_t j = 0; j < ndim; ++j) {
                 p *= dim[j];
             }
             return p;
         }
 
-        [[nodiscard]] constexpr size_t product(size_t n, bool column_major) const noexcept {
-            size_t len = size();
-            if (n >= len) {
-                return 0;
-            }
-            size_t p = 1;
-            if (column_major) {
-                for (size_t j = 0; j < len - n; ++j) {
-                    p *= dim[j];
-                }
+        template <size_t N>
+        [[nodiscard]] constexpr auto strip() const noexcept {
+            if constexpr (N >= ndim) {
+                return extent<0>{};
             } else {
-                for (size_t j = n; j < len; ++j) {
-                    p *= dim[j];
+                extent<ndim - N> s;
+                for (size_t j = N; j < ndim; ++j) {
+                    std::construct_at(&s.dim[j - N], dim[j]);
                 }
+                return s;
             }
-            return p;
         }
 
         [[nodiscard]] constexpr extent strides(bool column_major) const noexcept {
@@ -624,10 +602,10 @@ namespace impl {
         return s;
     }
 
-    /* A compile-time configuration struct that holds miscellaneous flags for an array
-    or array view type.  An instance of this type can be constructed using designated
-    initialization to specialize the `Array` or `ArrayView` types. */
-    template <extent shape>
+    /* A configuration struct that holds miscellaneous flags for an array or array
+    view.  An instance of this type can be constructed using designated initialization
+    for clarity. */
+    template <extent shape = {}>
     struct array_flags {
         /* If false (the default), then the strides will be computed in C (row-major)
         order, with the last index varying the fastest.  Setting this to true specifies
@@ -639,23 +617,6 @@ namespace impl {
         /* A set of custom strides to use for each dimension.  If given, the strides
         will always match their corresponding shape dimension. */
         extent<shape.size()> strides = shape.strides(column_major);
-
-        [[nodiscard]] constexpr bool operator==(const array_flags& other) const noexcept {
-            return column_major == other.column_major && strides == other.strides;
-        }
-    };
-
-    /* Due to a compiler bug, `array_flags<{}>` with an empty shape will not compile
-    as a non-type template parameter unless an instance of that type has been
-    previously constructed.  This value is not actually used anywhere. */
-    static constexpr array_flags<{}> _dynamic_array_flags;
-
-    /* A runtime equivalent of `array_flags` used as a constructor argument for array
-    views of `extent<0>`, which can be initialized symmetrically to the compile-time
-    version. */
-    struct dynamic_array_flags {
-        bool column_major = false;
-        extent<0> strides;
     };
 
     template <typename T, extent shape, array_flags<shape> flags>
@@ -663,13 +624,10 @@ namespace impl {
         meta::not_void<T> &&
         meta::not_reference<T> &&
         !shape.empty() &&
-        (shape.product() > 0 || shape.size() == 1);
+        shape.product() > 0;
 
     template <typename T, extent shape, array_flags<shape> flags>
-    concept array_view_concept =
-        meta::not_void<T> &&
-        meta::not_reference<T> &&
-        (shape.product() > 0 || shape.size() <= 1);
+    concept array_view_concept = meta::not_void<T> && meta::not_reference<T>;
 
     /* Dynamic extents may not strictly know the total number of dimensions at compile
     time, and therefore require a dynamic allocation in order to produce an appropriate
@@ -679,20 +637,19 @@ namespace impl {
     case, `extent<0>` may be able to avoid the allocation entirely and inline both
     buffers directly into the `extent` struct itself.  Note that such extents are
     trivially both row-major and column-major at the same time. */
-    struct dynamic_extent {
+    struct heap_extent {
         size_t ndim;
-        std::atomic<size_t> refcount = 1;
-        bool column_major = false;
         size_t* buffer = nullptr;
+        std::atomic<size_t> refcount = 1;
 
-        /* Heap-allocate a `dynamic_extent` with enough extra space to store the
-        shape and stride buffers.  If the extent is created at runtime, the buffers
-        will be stored inline immediately after this header struct and accessed via
-        a `reinterpret_cast`.  At compile time, the buffers will be stored
-        out-of-line using a second allocation to avoid the cast. */
-        [[nodiscard]] static constexpr dynamic_extent* create(size_t ndim) {
+        /* Allocate a `heap_extent` with enough extra space to store the shape and
+        stride buffers.  If the extent is created at runtime, the buffers will be
+        stored inline immediately after this header struct and accessed via a
+        `reinterpret_cast`.  At compile time, the buffers will be stored out-of-line
+        using a second allocation to avoid the cast. */
+        [[nodiscard]] static constexpr heap_extent* create(size_t ndim) {
             if consteval {
-                dynamic_extent* self = std::allocator<dynamic_extent>{}.allocate(1);
+                heap_extent* self = std::allocator<heap_extent>{}.allocate(1);
                 if (self == nullptr) {
                     throw MemoryError();
                 }
@@ -700,14 +657,14 @@ namespace impl {
                 self->ndim = ndim;
                 self->buffer = std::allocator<size_t>{}.allocate(ndim * 2);
                 if (self->buffer == nullptr) {
-                    std::allocator<dynamic_extent>{}.deallocate(self, 1);
+                    std::allocator<heap_extent>{}.deallocate(self, 1);
                     throw MemoryError();
                 }
                 return self;
             } else {
-                dynamic_extent* self = reinterpret_cast<dynamic_extent*>(
+                heap_extent* self = reinterpret_cast<heap_extent*>(
                     std::allocator<std::byte>{}.allocate(
-                        sizeof(dynamic_extent) + ndim * sizeof(size_t) * 2
+                        sizeof(heap_extent) + ndim * sizeof(size_t) * 2
                     )
                 );
                 if (self == nullptr) {
@@ -720,22 +677,21 @@ namespace impl {
             }
         }
 
-        /* Copy the `dynamic_extent` by incrementing its reference count at run time,
-        or doing a deep copy at compile time, since atomics are not fully constexpr
-        as of C++23.  Note that due to the deep copy, the return value must not be
+        /* Copy the `heap_extent` by incrementing its reference count at run time or
+        doing a deep copy at compile time, since atomics are not fully constexpr as of
+        C++23.  Note that due to the deep copy, the return value must not be
         discarded. */
-        [[nodiscard]] constexpr dynamic_extent* incref() {
+        [[nodiscard]] constexpr heap_extent* incref() {
             if consteval {
-                dynamic_extent* copy = std::allocator<dynamic_extent>{}.allocate(1);
+                heap_extent* copy = std::allocator<heap_extent>{}.allocate(1);
                 if (copy == nullptr) {
                     throw MemoryError();
                 }
                 std::construct_at(copy);
                 copy->ndim = ndim;
-                copy->column_major = column_major;
                 copy->buffer = std::allocator<size_t>{}.allocate(ndim * 2);
                 if (copy->buffer == nullptr) {
-                    std::allocator<dynamic_extent>{}.deallocate(copy, 1);
+                    std::allocator<heap_extent>{}.deallocate(copy, 1);
                     throw MemoryError();
                 }
                 std::copy_n(buffer, ndim * 2, copy->buffer);
@@ -746,19 +702,19 @@ namespace impl {
             }
         }
 
-        /* Destroy the `dynamic_extent` by decrementing its reference count at run
-        time, or unconditionally deallocating at compile time, in order to mirror
+        /* Destroy the `heap_extent` by decrementing its reference count at run time
+        or unconditionally deallocating at compile time, in order to mirror
         `incref()`. */
         constexpr void decref() {
             if consteval {
                 std::allocator<size_t>{}.deallocate(buffer, ndim * 2);
-                std::allocator<dynamic_extent>{}.deallocate(this, 1);
+                std::allocator<heap_extent>{}.deallocate(this, 1);
             } else {
                 if (refcount.fetch_sub(1, std::memory_order_release) == 1) {
                     std::atomic_thread_fence(std::memory_order_acquire);
                     std::allocator<std::byte>{}.deallocate(
                         reinterpret_cast<std::byte*>(this),
-                        sizeof(dynamic_extent) + ndim * sizeof(size_t) * 2
+                        sizeof(heap_extent) + ndim * sizeof(size_t) * 2
                     );
                 }
             }
@@ -766,6 +722,15 @@ namespace impl {
     };
 
 }
+
+
+/* An explicit alias to `0`, which indicates an array dimension with an extent that is
+only known at run time, similar to the syntax used for `std::mdspan`.  Note that this
+cannot be used to specialize the `Array` type, since they are expected to store data
+locally on the stack, and therefore need to know their exact bounds at compile time.
+Dynamic extents are allowed for `ArrayView`s and `Arena`s however, since they either do
+not own their underlying data, or dynamically allocate it, respectively. */
+static constexpr size_t dynamic_extent = 0;
 
 
 template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags = {}>
@@ -1051,24 +1016,21 @@ namespace impl {
 
     /* Reduce the rank of an array by stripping off `N` dimensions according to the
     flags' ordering. */
-    template <extent Shape, array_flags<Shape> Flags, size_t N = 1> requires (N > 0)
+    template <extent Shape, extent Strides, size_t N = 1> requires (N > 0)
     struct array_reduce {
         static constexpr auto shape() noexcept {
-            return Shape.template strip<N>(Flags.column_major);
+            return Shape.template strip<N>();
         }
 
-        static constexpr array_flags<shape()> flags() noexcept {
-            return {
-                .column_major = Flags.column_major,
-                .strides = Flags.strides.template strip<N>(Flags.column_major)
-            };
+        static constexpr auto strides() noexcept {
+            return Strides.template strip<N>();
         };
 
         template <typename T>
-        using array = Array<T, shape(), flags()>;
+        using array = Array<T, shape(), {.strides = strides()}>;
 
         template <typename T>
-        using view = ArrayView<T, shape(), flags()>;
+        using view = ArrayView<T, shape(), {.strides = strides()}>;
     };
 
     /// TODO: array_storage can be trivial after this paper is implemented, which also
@@ -1165,44 +1127,46 @@ namespace impl {
     consists of a series of nested arrays of 1 fewer dimension representing the major
     axis of the parent array.  The nested arrays will then be flattened into the outer
     buffer, completing the constructor. */
-    template <typename T, extent shape, array_flags<shape> flags>
+    template <typename T, extent shape, extent strides>
     struct _array_init { using type = T; };
-    template <typename T, extent shape, array_flags<shape> flags> requires (!shape.empty())
-    struct _array_init<T, shape, flags> { using type = Array<T, shape, flags>; };
-    template <typename T, extent shape, array_flags<shape> flags> requires (!shape.empty())
+    template <typename T, extent shape, extent strides> requires (!shape.empty())
+    struct _array_init<T, shape, strides> { using type = Array<T, shape, {.strides = strides}>; };
+    template <typename T, extent shape, extent strides> requires (!shape.empty())
     using array_init = _array_init<
         T,
-        array_reduce<shape, flags>::shape(),
-        array_reduce<shape, flags>::flags()
+        array_reduce<shape, strides>::shape(),
+        array_reduce<shape, strides>::strides()
     >::type;
 
     /* The outermost array value type also needs to be promoted to an array view if
     it is multidimensional, and needs to correct for the `array_storage` normalization
     as well. */
-    template <typename T, extent shape, array_flags<shape> flags>
+    template <typename T, extent shape, extent strides>
     struct _array_value { using type = array_type<T>; };
-    template <typename T, extent shape, array_flags<shape> flags> requires (!shape.empty())
-    struct _array_value<T, shape, flags> { using type = ArrayView<T, shape, flags>; };
-    template <typename T, extent shape, array_flags<shape> flags> requires (!shape.empty())
+    template <typename T, extent shape, extent strides> requires (!shape.empty())
+    struct _array_value<T, shape, strides> {
+        using type = ArrayView<T, shape, {.strides = strides}>;
+    };
+    template <typename T, extent shape, extent strides> requires (!shape.empty())
     using array_value = _array_value<
         T,
-        array_reduce<shape, flags>::shape(),
-        array_reduce<shape, flags>::flags()
+        array_reduce<shape, strides>::shape(),
+        array_reduce<shape, strides>::strides()
     >::type;
 
     /* Array iterators are implemented as raw pointers into the array buffer.  Due to
     aggressive UB sanitization during constant evaluation, an extra count is required
     to avoid overstepping the end of the array.  This index is ignored at run time,
     ensuring zero-cost iteration, without interfering with compile-time uses. */
-    template <meta::not_reference T, extent Shape, array_flags<Shape> Flags>
+    template <meta::not_reference T, extent Shape, extent Strides>
     struct array_iterator {
         using iterator_category = std::conditional_t<
-            Flags.strides.dim[0] == 1,
+            Strides[0] == 1,
             std::contiguous_iterator_tag,
             std::random_access_iterator_tag
         >;
         using difference_type = std::ptrdiff_t;
-        using value_type = array_value<T, Shape, Flags>;
+        using value_type = array_value<T, Shape, Strides>;
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::as_pointer<value_type>;
 
@@ -1212,8 +1176,8 @@ namespace impl {
     public:
         T* ptr = nullptr;
         difference_type count = 0;
-        static constexpr const size_t* shape = Shape.dim;
-        static constexpr const size_t* strides = Flags.strides.dim;
+        static constexpr const size_t* shape = Shape.data();
+        static constexpr const size_t* strides = Strides.data();
         static constexpr const size_t ndim = Shape.size();
 
         [[nodiscard]] constexpr decltype(auto) operator*() const noexcept {
@@ -1408,12 +1372,12 @@ namespace impl {
     /// TODO: revisit dynamic array iterators after refactoring the static ArrayView and
     /// Array types.
 
-    template <meta::not_reference T, extent Shape, array_flags<Shape> Flags>
-        requires (Shape.empty())
-    struct array_iterator<T, Shape, Flags> {
+    template <meta::not_reference T, extent Shape, extent Strides>
+        requires (Shape.empty() && Strides.empty())
+    struct array_iterator<T, Shape, Strides> {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using value_type = ArrayView<T, Shape, Flags>;
+        using value_type = ArrayView<T, Shape, {.strides = Strides}>;
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::as_pointer<value_type>;
 
@@ -1442,50 +1406,50 @@ namespace impl {
     compatibility with C++.  If an index is signed, then Python-style wraparound will
     be applied to handle negative values.  A bounds check is then applied as a debug
     assertion, which throws an `IndexError` if the index is out of bounds. */
-    template <extent shape, array_flags<shape> flags, meta::unsigned_integer I, typename... Is>
+    template <extent shape, extent strides, meta::unsigned_integer I, typename... Is>
     constexpr size_t array_index(const I& i, const Is&... is)
         noexcept (!DEBUG && meta::nothrow::explicitly_convertible_to<I, size_t>)
         requires (
             !shape.empty() &&
-            !flags.strides.empty() &&
+            !strides.empty() &&
             meta::explicitly_convertible_to<I, size_t>
         )
     {
         if constexpr (DEBUG) {
-            if (i >= shape.dim[0]) {
+            if (i >= shape.data()[0]) {
                 throw array_index_error(i);
             }
         }
         if constexpr (sizeof...(Is) == 0) {
-            return size_t(i) * flags.strides.dim[0];
+            return size_t(i) * strides.data()[0];
         } else {
-            return size_t(i) * flags.strides.dim[0] + array_index<
-                array_reduce<shape, flags>::shape(),
-                array_reduce<shape, flags>::flags()
+            return size_t(i) * strides.data()[0] + array_index<
+                array_reduce<shape, strides>::shape(),
+                array_reduce<shape, strides>::strides()
             >(is...);
         }
     }
-    template <extent shape, array_flags<shape> flags, meta::signed_integer I, typename... Is>
+    template <extent shape, extent strides, meta::signed_integer I, typename... Is>
     constexpr size_t array_index(const I& i, const Is&... is)
         noexcept (!DEBUG && meta::nothrow::explicitly_convertible_to<I, ssize_t>)
         requires (
             !shape.empty() &&
-            !flags.strides.empty() &&
+            !strides.empty() &&
             meta::explicitly_convertible_to<I, ssize_t>
         )
     {
-        ssize_t j = ssize_t(i) + ssize_t(shape.dim[0]) * (i < 0);
+        ssize_t j = ssize_t(i) + ssize_t(shape.data()[0]) * (i < 0);
         if constexpr (DEBUG) {
-            if (j < 0 || j > ssize_t(shape.dim[0])) {
+            if (j < 0 || j > ssize_t(shape.data()[0])) {
                 throw array_index_error(i);
             }
         }
         if constexpr (sizeof...(Is) == 0) {
-            return size_t(j) * flags.strides.dim[0];
+            return size_t(j) * strides.data()[0];
         } else {
-            return size_t(j) * flags.strides.dim[0] + array_index<
-                array_reduce<shape, flags>::shape(),
-                array_reduce<shape, flags>::flags()
+            return size_t(j) * strides.data()[0] + array_index<
+                array_reduce<shape, strides>::shape(),
+                array_reduce<shape, strides>::strides()
             >(is...);
         }
     }
@@ -1494,91 +1458,86 @@ namespace impl {
     wraparound and bounds-checking at compile time. */
     template <ssize_t... I>
     struct valid_array_index {
-        template <extent shape, array_flags<shape> flags>
+        template <extent shape, extent strides>
         static constexpr bool value = true;
-        template <extent shape, array_flags<shape> flags>
+        template <extent shape, extent strides>
         static constexpr size_t index = 0;
     };
     template <ssize_t I, ssize_t... Is>
     struct valid_array_index<I, Is...> {
-        template <extent shape, array_flags<shape> flags>
+        template <extent shape, extent strides>
         static constexpr bool value = false;
-        template <extent shape, array_flags<shape> flags>
-            requires (!shape.empty() && impl::valid_index<shape.dim[0], I>)
-        static constexpr bool value<shape, flags> = valid_array_index<Is...>::template value<
-            array_reduce<shape, flags>::shape(),
-            array_reduce<shape, flags>::flags()
+        template <extent shape, extent strides>
+            requires (!shape.empty() && impl::valid_index<shape[0], I>)
+        static constexpr bool value<shape, strides> = valid_array_index<Is...>::template value<
+            array_reduce<shape, strides>::shape(),
+            array_reduce<shape, strides>::strides()
         >;
 
-        template <extent shape, array_flags<shape> flags>
+        template <extent shape, extent strides>
         static constexpr size_t index =
-            array_index<shape, flags>(I) +
+            array_index<shape, strides>(I) +
             valid_array_index<Is...>::template index<
-                array_reduce<shape, flags>::shape(),
-                array_reduce<shape, flags>::flags()
+                array_reduce<shape, strides>::shape(),
+                array_reduce<shape, strides>::strides()
             >;
     };
 
     /* Squeezing an array removes all singleton dimensions unless that is the only
     remaining dimension. */
-    template <typename T, extent shape, array_flags<shape> flags>
+    template <typename T, extent shape, extent strides>
     struct _array_squeeze {
-        template <extent S, array_flags<S> F>
-        using array = Array<T, S, F>;
-        template <extent S, array_flags<S> F>
-        using view = ArrayView<T, S, F>;
+        template <extent new_shape, extent new_strides>
+        using array = Array<T, new_shape, {.strides = new_strides}>;
+        template <extent new_shape, extent new_strides>
+        using view = ArrayView<T, new_shape, {.strides = new_strides}>;
     };
-    template <typename T, extent shape, array_flags<shape> flags>
-        requires (!shape.empty() && shape.dim[0] > 1)
-    struct _array_squeeze<T, shape, flags> {
-        template <extent S, array_flags<S> F>
+    template <typename T, extent shape, extent strides>
+        requires (!shape.empty() && shape[0] > 1)
+    struct _array_squeeze<T, shape, strides> {
+        template <extent new_shape, extent new_strides>
         using array = _array_squeeze<
             T,
-            array_reduce<shape, flags>::shape(),
-            array_reduce<shape, flags>::flags()
-        >::template array<S | shape.dim[0], {
-            .column_major = flags.column_major,
-            .strides = F.strides | flags.strides.dim[0]
-        }>;
+            array_reduce<shape, strides>::shape(),
+            array_reduce<shape, strides>::strides()
+        >::template array<new_shape | shape[0], new_strides | strides[0]>;
 
-        template <extent S, array_flags<S> F>
+        template <extent new_shape, extent new_strides>
         using view = _array_squeeze<
             T,
-            array_reduce<shape, flags>::shape(),
-            array_reduce<shape, flags>::flags()
-        >::template view<S | shape.dim[0], {
-            .column_major = flags.column_major,
-            .strides = F.strides | flags.strides.dim[0]
-        }>;
+            array_reduce<shape, strides>::shape(),
+            array_reduce<shape, strides>::strides()
+        >::template view<new_shape | shape[0], new_strides | strides[0]>;
     };
-    template <typename T, extent shape, array_flags<shape> flags>
-        requires (!shape.empty() && shape.dim[0] == 1)
-    struct _array_squeeze<T, shape, flags> {
-        template <extent S, array_flags<S> F>
+    template <typename T, extent shape, extent strides>
+        requires (!shape.empty() && shape[0] == 1)
+    struct _array_squeeze<T, shape, strides> {
+        template <extent new_shape, extent new_strides>
         struct type {
             using array = _array_squeeze<
                 T,
-                array_reduce<shape, flags>::shape(),
-                array_reduce<shape, flags>::flags()
-            >::template array<S, F>;
+                array_reduce<shape, strides>::shape(),
+                array_reduce<shape, strides>::strides()
+            >::template array<new_shape, new_strides>;
             using view = _array_squeeze<
                 T,
-                array_reduce<shape, flags>::shape(),
-                array_reduce<shape, flags>::flags()
-            >::template view<S, F>;
+                array_reduce<shape, strides>::shape(),
+                array_reduce<shape, strides>::strides()
+            >::template view<new_shape, new_strides>;
         };
-        template <extent S, array_flags<S> F> requires (shape.size() == 1 && S.empty())
-        struct type<S, F> {
-            using array = Array<T, 1, {.column_major = flags.column_major, .strides = 1}>;
-            using view = ArrayView<T, 1, {.column_major = flags.column_major, .strides = 1}>;
+        template <extent new_shape, extent new_strides>
+            requires (shape.size() == 1 && new_strides.empty())
+        struct type<new_shape, new_strides> {
+            using array = Array<T, 1>;
+            using view = ArrayView<T, 1>;
         };
-        template <extent S, array_flags<S> F>
-        using array = type<S, F>::array;
-        template <extent S, array_flags<S> F>
-        using view = type<S, F>::view;
+        template <extent new_shape, extent new_strides>
+        using array = type<new_shape, new_strides>::array;
+        template <extent new_shape, extent new_strides>
+        using view = type<new_shape, new_strides>::view;
     };
-    template <typename T, extent shape, array_flags<shape> flags>
-    using array_squeeze = _array_squeeze<T, shape, flags>;
+    template <typename T, extent shape, extent strides>
+    using array_squeeze = _array_squeeze<T, shape, strides>;
 
     /// TODO: transposing the array can be done by returning a special kind of view
     /// + iterator that effectively reverses the ordering of the shape dimensions,
@@ -1616,49 +1575,93 @@ namespace impl {
 }
 
 
+/// TODO: column-major arrays use the same indexing as row-major arrays, but different
+/// strides.  In fact, the column-major flag may only be relevant when generating those
+/// strides, with all other behavior remaining the same, generally-speaking.
+
+
+
 /* A non-owning view into a contiguous memory buffer that interprets it as a
 multidimensional array with a fixed shape.
 
-Array views consist of a simple pointer to the start of the underlying data buffer,
-which can come from any source, similar to `std::span`.  Their shape is held entirely
-at compile time, meaning that they are essentially free to construct and copy, and
-can be passed around by value without any overhead.
+Array views consist of a raw pointer to the start of the data buffer, along with a
+shape and strides describing its length and step size in each dimension, both of which
+may be specified at compile time.  If the shape is not empty and all of its dimensions
+are greater than zero, then the resulting view will be statically-sized, and will only
+store the data pointer at run time.  Indexing into or iterating over such a view will
+yield either scalars or another statically-sized view of reduced dimension, giving
+optimal performance and parity with `Array`.  Reshaping a statically-sized view is
+also trivial, consisting of a pointer copy with the new shape and/or strides being
+computed entirely at compile time, with strong safety guarantees.  This type of view
+should be used as often as possible where performance and memory efficiency matter.
 
-Views can be used just like normal arrays in most respects, and behave identically
-under iteration, indexing, reshaping, etc.  The only difference is that they do not
-own their data, and do not extend their lifetimes in any way.  It is therefore user's
-responsibility to ensure that a view never outlives its buffer, lest it dangle.  In
-order to facilitate this, all views are implicitly convertible into full arrays,
-possibly via a CTAD guide that infers the proper shape and type, which equates to a
-copy of the underlying data into a new buffer. */
+If the shape of a view is not empty, but contains one or more zeros, then it indicates
+a view where the number of dimensions is known statically at compile time, but not
+their precise lengths.  This is particularly relevant for 1D sequences of unknown
+length (which describes most iterables), but may be generalized to higher-dimensional
+sequences as well, including those where some dimensions are static and others are
+dynamic.  In this case, the shape and stride buffers must be stored within the view at
+run time, and must be initialized using constructor arguments.  Because the number of
+dimensions is encoded at compile time, these buffers can be statically sized and
+inlined into the view itself, avoiding any allocations or indirections.  Indexing into
+or iterating over such a view can also yield either scalars or another view of
+reduced dimension, just with slightly higher overhead due to the need to copy the
+shape and stride buffers and reduced optimization opportunities due to a lack of
+compiler knowledge.  Reshaping a view of this type is still relatively efficient, but
+sacrifices some of the type safety guarantees of the statically-sized case, since a
+`TypeError` may be raised if the new shape is incompatible with the old shape.
+
+Finally, empty shapes are also supported, which represent fully dynamic array views of
+unknown rank and shape.  This is similar to the second case, except that the shape
+and stride buffers must be dynamically allocated, and the number of dimensions cannot
+be known at compile time.  This effectively represents a form of type erasure, where
+the shape information is only exposed at run time, meaning that arbitrary sequences of
+such views may have different ranks and shapes without violating the type system.  The
+extra allocation means that such views are more expensive to create, although still
+reasonable due to atomic reference counting of the buffer object, dynamic scoping
+during iteration and indexing (instead of nested allocations), and small-buffer
+optimizations for 1D views, which never need to allocate.  The downside is that
+indexing into or iterating over such a view must always yield another dynamic view
+(possibly of length 1), which is a direct consequence of erasing the dimensionality of
+the underlying data.  Reshaping such a view is also more expensive, possibly requiring
+a new shape to be allocated, and a `TypeError` may be raised if the new shape is
+incompatible with the old shape.
+
+Note that in all cases, the data buffer is not owned by the view, and it is the user's
+responsibility to ensure that it remains valid for the full lifetime of the view.
+Copying and moving the view is always efficient, therefore, and it is common practice
+to pass them by value.  Additionally, this class makes no assumptions about the origin
+of the buffer, meaning that it can be used as a building block for higher-level data
+structures that wish to expose an efficient, array-like interface, such as `Arena`,
+`List`, and arbitrary user-defined types. */
 template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
     requires (impl::array_view_concept<T, Shape, Flags>)
 struct ArrayView : impl::array_view_tag {
 private:
     static constexpr size_t _total = Shape.product();
-    static constexpr size_t step = Flags.strides.dim[0];
+    static constexpr size_t step = Flags.strides[0];
 
 public:
     using size_type = size_t;
     using index_type = ssize_t;
-    using value_type = impl::array_value<T, Shape, Flags>;
+    using value_type = impl::array_value<T, Shape, Flags.strides>;
     using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
     using pointer = meta::as_pointer<reference>;
     using const_pointer = meta::as_pointer<const_reference>;
-    using iterator = impl::array_iterator<T, Shape, Flags>;
-    using const_iterator = impl::array_iterator<meta::as_const<T>, Shape, Flags>;
+    using iterator = impl::array_iterator<T, Shape, Flags.strides>;
+    using const_iterator = impl::array_iterator<meta::as_const<T>, Shape, Flags.strides>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
     [[nodiscard]] static constexpr bool dynamic() noexcept { return false; }
+    [[nodiscard]] static constexpr bool opaque() noexcept { return false; }
     [[nodiscard]] static constexpr size_t itemsize() noexcept { return sizeof(T); }
+    [[nodiscard]] static constexpr size_type ndim() noexcept { return Shape.size(); }
     [[nodiscard]] static constexpr const auto& shape() noexcept { return Shape; }
     [[nodiscard]] static constexpr const auto& strides() noexcept { return Flags.strides; }
-    [[nodiscard]] static constexpr const auto& flags() noexcept { return Flags; }
-    [[nodiscard]] static constexpr size_type ndim() noexcept { return Shape.size(); }
     [[nodiscard]] static constexpr size_type total() noexcept { return _total; }
-    [[nodiscard]] static constexpr size_type size() noexcept { return Shape.dim[0]; }
+    [[nodiscard]] static constexpr size_type size() noexcept { return Shape.data()[0]; }
     [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(size()); }
     [[nodiscard]] static constexpr bool empty() noexcept { return size() == 0; }
 
@@ -1685,7 +1688,7 @@ public:
                 return ptr;
             }
         } else {
-            size_type j = impl::array_index<Shape, Flags>(i...);
+            size_type j = impl::array_index<shape(), strides()>(i...);
             if constexpr (impl::is_array_storage<T>) {
                 return std::addressof(ptr[j].value);
             } else {
@@ -1703,7 +1706,7 @@ public:
                 return static_cast<meta::as_const<T>*>(ptr);
             }
         } else {
-            size_type j = impl::array_index<Shape, Flags>(i...);
+            size_type j = impl::array_index<shape(), strides()>(i...);
             if constexpr (impl::is_array_storage<T>) {
                 return std::addressof(static_cast<meta::as_const<T>*>(ptr)[j].value);
             } else {
@@ -1791,18 +1794,12 @@ public:
     }
 
     [[nodiscard]] constexpr auto squeeze() noexcept {
-        using view = impl::array_squeeze<T, Shape, Flags>::template view<
-            {},
-            {.column_major = Flags.column_major}
-        >;
+        using view = impl::array_squeeze<T, shape(), strides()>::template view<{}, {}>;
         return view{ptr};
     }
 
     [[nodiscard]] constexpr auto squeeze() const noexcept {
-        using view = impl::array_squeeze<meta::as_const<T>, Shape, Flags>::template view<
-            {},
-            {.column_major = Flags.column_major}
-        >;
+        using view = impl::array_squeeze<meta::as_const<T>, shape(), strides()>::template view<{}, {}>;
         return view{static_cast<meta::as_const<T>*>(ptr)};
     }
 
@@ -1828,7 +1825,7 @@ public:
         if constexpr (ndim() == 1) {
             return (impl::array_access(ptr));
         } else {
-            using view = impl::array_reduce<Shape, Flags>::template view<T>;
+            using view = impl::array_reduce<shape(), strides()>::template view<T>;
             return view{ptr};
         }
     }
@@ -1837,7 +1834,7 @@ public:
         if constexpr (ndim() == 1) {
             return (impl::array_access(static_cast<meta::as_const<T>*>(ptr)));
         } else {
-            using view = impl::array_reduce<Shape, Flags>::template view<meta::as_const<T>>;
+            using view = impl::array_reduce<shape(), strides()>::template view<meta::as_const<T>>;
             return view{static_cast<meta::as_const<T>*>(ptr)};
         }
     }
@@ -1855,7 +1852,7 @@ public:
         if constexpr (ndim() == 1) {
             return (impl::array_access(static_cast<meta::as_const<T>*>(ptr), (size() - 1) * step));
         } else {
-            using view = impl::array_reduce<Shape, Flags>::template view<meta::as_const<T>>;
+            using view = impl::array_reduce<shape(), strides()>::template view<meta::as_const<T>>;
             return view{static_cast<meta::as_const<T>*>(ptr) + (size() - 1) * step};
         }
     }
@@ -1863,14 +1860,14 @@ public:
     template <index_type... I>
         requires (
             sizeof...(I) <= ndim() &&
-            impl::valid_array_index<I...>::template value<Shape, Flags>
+            impl::valid_array_index<I...>::template value<shape(), strides()>
         )
     [[nodiscard]] constexpr decltype(auto) get() noexcept {
-        constexpr size_type j = impl::valid_array_index<I...>::template index<Shape, Flags>;
+        constexpr size_type j = impl::valid_array_index<I...>::template index<shape(), strides()>;
         if constexpr (sizeof...(I) == ndim()) {
             return (impl::array_access(ptr, j));
         } else {
-            using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<T>;
+            using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<T>;
             return view{ptr + j};
         }
     }
@@ -1878,14 +1875,14 @@ public:
     template <index_type... I>
         requires (
             sizeof...(I) <= ndim() &&
-            impl::valid_array_index<I...>::template value<Shape, Flags>
+            impl::valid_array_index<I...>::template value<shape(), strides()>
         )
     [[nodiscard]] constexpr decltype(auto) get() const noexcept {
-        constexpr size_type j = impl::valid_array_index<I...>::template index<Shape, Flags>;
+        constexpr size_type j = impl::valid_array_index<I...>::template index<shape(), strides()>;
         if constexpr (sizeof...(I) == ndim()) {
             return (impl::array_access(static_cast<meta::as_const<T>*>(ptr), j));
         } else {
-            using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<
+            using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<
                 meta::as_const<T>
             >;
             return view{static_cast<meta::as_const<T>*>(ptr) + j};
@@ -1903,11 +1900,11 @@ public:
             meta::explicitly_convertible_to<I, ssize_t>
         ) && ...)
     {
-        size_type j = impl::array_index<Shape, Flags>(i...);
+        size_type j = impl::array_index<shape(), strides()>(i...);
         if constexpr (sizeof...(I) == ndim()) {
             return (impl::array_access(ptr, j));
         } else {
-            using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<T>;
+            using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<T>;
             return view{ptr + j};
         }
     }
@@ -1923,11 +1920,11 @@ public:
             meta::explicitly_convertible_to<I, ssize_t>
         ) && ...)
     {
-        size_type j = impl::array_index<Shape, Flags>(i...);
+        size_type j = impl::array_index<shape(), strides()>(i...);
         if constexpr (sizeof...(I) == ndim()) {
             return (impl::array_access(static_cast<meta::as_const<T>*>(ptr), j));
         } else {
-            using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<
+            using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<
                 meta::as_const<T>
             >;
             return view{static_cast<meta::as_const<T>*>(ptr) + j};
@@ -1935,11 +1932,11 @@ public:
     }
 
     template <typename U>
-    [[nodiscard]] constexpr operator Array<U, Shape, Flags>() const
+    [[nodiscard]] constexpr operator Array<U, shape(), {.strides = strides()}>() const
         noexcept (meta::nothrow::convertible_to<const_reference, U>)
         requires (meta::convertible_to<const_reference, U>)
     {
-        auto result = Array<U, Shape, Flags>::reserve();
+        auto result = Array<U, shape(), {.strides = strides()}>::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
                 &result.ptr[i].value,
@@ -2108,6 +2105,59 @@ public:
 };
 
 
+/* A specialization of `ArrayView` that represents a dynamically-sized view with a
+fixed number of dimensions.  This specialization is chosen when the shape is not empty,
+but one or more of its dimensions are zero, indicating a dynamic length.
+
+See the primary `ArrayView` documentation for more details on the behavior of this
+type of view. */
+template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
+    requires (impl::array_view_concept<T, Shape, Flags> && !Shape.empty() && Shape.product() == 0)
+struct ArrayView<T, Shape, Flags> : impl::array_view_tag {
+private:
+
+
+public:
+    using size_type = size_t;
+    using index_type = ssize_t;
+    using value_type = impl::array_value<T, Shape, Flags.strides>;
+    using reference = meta::as_lvalue<value_type>;
+    using const_reference = meta::as_const<reference>;
+    using pointer = meta::as_pointer<reference>;
+    using const_pointer = meta::as_pointer<const_reference>;
+    using iterator = impl::array_iterator<T, Shape, Flags.strides>;
+    using const_iterator = impl::array_iterator<meta::as_const<T>, Shape, Flags.strides>;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
+    [[nodiscard]] static constexpr bool dynamic() noexcept { return true; }
+    [[nodiscard]] static constexpr bool opaque() noexcept { return false; }
+    [[nodiscard]] static constexpr size_t itemsize() noexcept { return sizeof(T); }
+    [[nodiscard]] static constexpr size_type ndim() noexcept { return Shape.size(); }
+
+    T* ptr = nullptr;
+    impl::extent<ndim()> __shape;
+    impl::extent<ndim()> __strides;
+    size_t __total = 0;
+
+    [[nodiscard]] constexpr const auto& shape() const noexcept { return __shape; }
+    [[nodiscard]] constexpr const auto& strides() const noexcept { return __strides; }
+    [[nodiscard]] constexpr size_type total() const noexcept { return __total; }
+    [[nodiscard]] constexpr size_type size() const noexcept { return __shape.data()[0]; }
+    [[nodiscard]] constexpr index_type ssize() const noexcept { return index_type(size()); }
+    [[nodiscard]] constexpr bool empty() const noexcept { return __total == 0; }
+
+    [[nodiscard]] constexpr ArrayView() noexcept = default;
+
+};
+
+
+/* A specialization of `ArrayView` that represents a fully dynamic view of unknown
+shape.  This specialization is chosen when the templated shape is empty, meaning that
+it must be provided at run time.
+
+See the primary `ArrayView` documentation for more details on the behavior of this
+type of view. */
 template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
     requires (impl::array_view_concept<T, Shape, Flags> && Shape.empty())
 struct ArrayView<T, Shape, Flags> : impl::array_view_tag {
@@ -2126,7 +2176,7 @@ private:
         } else if (ndim == 1) {
             product = *shape.begin();
         } else {
-            capsule = impl::dynamic_extent::create(ndim);
+            capsule = impl::heap_extent::create(ndim);
             product = 1;
             size_t i = 0;
             for (auto&& x : shape) {
@@ -2156,14 +2206,14 @@ private:
         if constexpr (ndim == 1) {
             product = *shape.begin();
         } else {
-            capsule = impl::dynamic_extent::create(ndim);
+            capsule = impl::heap_extent::create(ndim);
             product = 1;
             size_t i = 0;
             (_from_tuple(i, meta::get<Is>(std::forward<T>(shape))), ...);
         }
     }
 
-    constexpr void set_strides(impl::dynamic_array_flags& flags) {
+    constexpr void set_strides(impl::array_flags<>& flags) {
         if (capsule == nullptr) {
             if (flags.strides.ndim == 0) {
                 scope = 1;
@@ -2173,7 +2223,7 @@ private:
                 throw ValueError("strides must be the same length as the shape");
             }
         } else if (flags.strides.ndim == 0) {
-            if (capsule->column_major) {
+            if (flags.column_major) {
                 size_t* stride = capsule->buffer + capsule->ndim;
                 std::construct_at(stride, 1);
                 for (size_t i = 1; i < capsule->ndim; ++i) {
@@ -2206,21 +2256,66 @@ private:
     }
 
 public:
+    using size_type = size_t;
+    using index_type = ssize_t;
+    using value_type = impl::array_value<T, Shape, Flags.strides>;
+    using reference = meta::as_lvalue<value_type>;
+    using const_reference = meta::as_const<reference>;
+    using pointer = meta::as_pointer<reference>;
+    using const_pointer = meta::as_pointer<const_reference>;
+    using iterator = impl::array_iterator<T, Shape, Flags.strides>;
+    using const_iterator = impl::array_iterator<meta::as_const<T>, Shape, Flags.strides>;
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+
     [[nodiscard]] static constexpr bool dynamic() noexcept { return true; }
-
-    /// TODO: all the other static methods for other array views exposed here as well.
-
+    [[nodiscard]] static constexpr bool opaque() noexcept { return true; }
+    [[nodiscard]] static constexpr size_type itemsize() noexcept { return sizeof(T); }
 
     T* ptr = nullptr;
-    impl::dynamic_extent* capsule = nullptr;
+    impl::heap_extent* capsule = nullptr;
     size_t scope = 0;  // if 1D: stride, else: current nesting level for iteration/indexing
     size_t product = 0;  // if 1D: shape, else: total number of elements (product of shape)
+
+    [[nodiscard]] constexpr size_type ndim() const noexcept {
+        return capsule == nullptr ? product > 0 : capsule->ndim;
+    }
+
+    [[nodiscard]] constexpr auto shape() const noexcept {
+        if (capsule == nullptr) {
+            return impl::extent<0>(&product, 1);
+        }
+        return impl::extent<0>(capsule->buffer, capsule->ndim);
+    }
+
+    [[nodiscard]] constexpr auto strides() const noexcept {
+        if (capsule == nullptr) {
+            return impl::extent<0>(&scope, 1);
+        }
+        return impl::extent<0>(capsule->buffer + capsule->ndim, capsule->ndim);
+    }
+
+    [[nodiscard]] constexpr size_type total() const noexcept {
+        return product;
+    }
+
+    [[nodiscard]] constexpr size_type size() const noexcept {
+        return capsule == nullptr ? product : capsule->buffer[0];
+    }
+
+    [[nodiscard]] constexpr index_type ssize() const noexcept {
+        return index_type(size());
+    }
+
+    [[nodiscard]] constexpr bool empty() const noexcept {
+        return product == 0;
+    }
 
     [[nodiscard]] constexpr ArrayView() noexcept = default;
     [[nodiscard]] constexpr ArrayView(
         T* p,
         size_t shape,
-        impl::dynamic_array_flags flags = {}
+        impl::array_flags<> flags = {}
     ) :
         ptr(p), product(shape)
     {
@@ -2236,7 +2331,7 @@ public:
     [[nodiscard]] constexpr ArrayView(
         T* p,
         std::initializer_list<size_t> shape,
-        impl::dynamic_array_flags flags = {}
+        impl::array_flags<> flags = {}
     )
         requires (!meta::convertible_to<T, size_t>)
     : ptr(p) {
@@ -2245,7 +2340,7 @@ public:
     }
 
     template <typename S>
-    [[nodiscard]] constexpr ArrayView(T* p, S&& shape, impl::dynamic_array_flags flags = {})
+    [[nodiscard]] constexpr ArrayView(T* p, S&& shape, impl::array_flags<> flags = {})
         requires (
             !meta::convertible_to<T, size_t> &&
             meta::yields<size_t, T> &&
@@ -2257,7 +2352,7 @@ public:
     }
 
     template <typename S>
-    [[nodiscard]] constexpr ArrayView(T* p, S&& shape, impl::dynamic_array_flags flags = {})
+    [[nodiscard]] constexpr ArrayView(T* p, S&& shape, impl::array_flags<> flags = {})
         noexcept (meta::tuple_types<T>::template nothrow_convertible_to<size_t>)
         requires (
             !meta::convertible_to<T, size_t> &&
@@ -2326,23 +2421,78 @@ public:
         std::swap(product, other.product);
     }
 
-    [[nodiscard]] constexpr auto shape() const noexcept {
-        if (capsule == nullptr) {
-            return impl::extent<0>(&product, 1);
-        }
-        return impl::extent<0>(capsule->buffer, capsule->ndim);
+    // template <meta::integer... I> requires 
+    // [[nodiscard]] constexpr auto data(const I&... i) noexcept {
+    //     if constexpr (sizeof...(I) == 0) {
+    //         if constexpr (impl::is_array_storage<T>) {
+    //             return std::addressof(ptr->value);
+    //         } else {
+    //             return ptr;
+    //         }
+    //     } else {
+    //         /// TODO: array_index() would need to be updated to take a runtime shape
+    //         /// instead of a compile-time one, and possibly throw an error if too
+    //         /// many indices are given.  It should also only require the strides, not
+    //         /// the full `flags`.
+    //         size_type j = impl::array_index<Shape, Flags.strides>(i...);
+    //         if constexpr (impl::is_array_storage<T>) {
+    //             return std::addressof(ptr[j].value);
+    //         } else {
+    //             return ptr + j;
+    //         }
+    //     }
+    // }
+
+    /// TODO: same concerns as above
+
+    // template <meta::integer... I> requires (sizeof...(I) <= ndim())
+    // [[nodiscard]] constexpr auto data(const I&... i) const noexcept {
+    //     if constexpr (sizeof...(I) == 0) {
+    //         if constexpr (impl::is_array_storage<T>) {
+    //             return std::addressof(static_cast<meta::as_const<T>*>(ptr)->value);
+    //         } else {
+    //             return static_cast<meta::as_const<T>*>(ptr);
+    //         }
+    //     } else {
+    //         size_type j = impl::array_index<Shape, Flags.strides>(i...);
+    //         if constexpr (impl::is_array_storage<T>) {
+    //             return std::addressof(static_cast<meta::as_const<T>*>(ptr)[j].value);
+    //         } else {
+    //             return static_cast<meta::as_const<T>*>(ptr) + j;
+    //         }
+    //     }
+    // }
+
+    /// TODO: the iterators probably require custom types to cover this case, and
+    /// possibly another special case for dimensional views
+
+    /// TODO: views like flatten(), reshape(), squeeze(), and transpose() are
+    /// intimately tied to the constructors and scoping logic, so they will need a
+    /// fair amount of thought as well.
+
+
+    [[nodiscard]] constexpr auto& operator*() noexcept {
+        return impl::array_access(ptr);
     }
 
-    [[nodiscard]] constexpr auto strides() const noexcept {
-        if (capsule == nullptr) {
-            return impl::extent<0>(&scope, 1);
-        }
-        return impl::extent<0>(capsule->buffer + capsule->ndim, capsule->ndim);
+    [[nodiscard]] constexpr const auto& operator*() const noexcept {
+        return impl::array_access(static_cast<meta::as_const<T>*>(ptr));
     }
 
-    [[nodiscard]] constexpr bool column_major() const noexcept {
-        return capsule == nullptr || capsule->column_major;
+    [[nodiscard]] constexpr auto* operator->() noexcept {
+        return std::addressof(impl::array_access(ptr));
     }
+
+    [[nodiscard]] constexpr const auto* operator->() const noexcept {
+        return std::addressof(impl::array_access(static_cast<meta::as_const<T>*>(ptr)));
+    }
+
+    /// TODO: front(), back(), operator[] require scoping rules for dynamic shapes
+
+    /// TODO: lexicographic comparison operators require flatten() and iterators,
+    /// plus some extra logic to access the underlying items via the dereference
+    /// operator, since dynamic views yield further dynamic views when iterated.
+
 };
 
 
@@ -2371,41 +2521,60 @@ template <meta::has_data T>
 ArrayView(T&) -> ArrayView<impl::array_data<T>>;
 
 
-/* A generalized, multidimensional array type with fixed shape known at compile time.
+/// TODO: providing more than one argument will probably create a view with dynamic
+/// shape
 
-Arrays can be of any shape and dimension as long as none are zero or negative.  The
-only exception is the one-dimensional case, where a size of zero is allowed to
-represent a trivial, empty array.  Arrays may not store references, but permit cv
-qualifications if specified.
 
-The array elements are always stored in a contiguous block of memory in C (row-major)
-order, with an overall size equal to the cartesian product of the shape.  Iterating
-over an array will yield a series of trivial views over sub-arrays of reduced dimension
-(stripping axes from left to right), until a 1-D view is reached, which yields the
-underlying elements.  Each view reduces to a simple pointer into the flattened data
-buffer - See the `ArrayView` class for more details.
 
-Arrays support multidimensional indexing, both at compile time via a tuple-like
-`get<I, J, K, ...>()` method, and at run time via `[i, j, k, ...]`.  The indices are
-always interpreted in row-major order, meaning that the last index varies the fastest,
-and therefore has the smallest stride.  Signed indices will be interpreted using
-Python-style wraparound, meaning negative indices will count backwards from the end of
-the corresponding dimension.  In debug builds, all indices will be bounds-checked,
-throwing an `IndexError` if any are out of range after normalization.  For unsigned
-indices in release builds, indexing is always zero-cost.
+
+/* A generalized, multidimensional array of a given shape.
+
+The shape of an array is defined at compile time via the `impl::extent` template
+parameter, which can be brace-initialized directly within the template signature or
+implicitly converted from a non-negative integer or any iterable or tuple-like sequence
+that yields them.  Custom strides and flags may also be specified via the
+`impl::array_flags` template parameter, which can also be brace-initialized using
+C-style designated initializers for clarity.  If no strides are given, then they will
+be computed from the array's shape according to row-major order (if
+`flags.column_major == false` - the default) or column-major order (if
+`flags.column_major == true`).  Arrays cannot store references, but will preserve cv
+qualifications if given.
+
+The array elements are always stored in a contiguous block of memory with length equal
+to the cartesian product of the shape dimensions, which must be non-zero.  This buffer
+will be inlined into the surrounding context, placing it on the stack unless otherwise
+specified.  The elements themselves will be stored as trivial unions, allowing them
+to represent uninitialized memory via the `::reserve()` method, and allowing efficient
+construction from iterables and tuple-like types, without invoking default
+constructors.
+
+Iterating over an array will yield a series of trivial views over sub-arrays of reduced
+dimension (stripping axes from left to right), until a 1-D view is reached, which
+yields the underlying elements.  Each view reduces to a simple pointer into the
+flattened data buffer.  See the `ArrayView` class for more details.
+
+Arrays also support multidimensional indexing, both at compile time via a tuple-like
+`get<I, J, K, ...>()` method, and at run time via `array[i, j, k, ...]`.  Note that
+neither operator depends on the `flags.column_major` setting, which only controls the
+strides used for mapping the indices to the underlying data buffer.  Signed indices
+will be interpreted using Python-style wraparound, meaning negative values will count
+backwards from the end of the corresponding dimension.  In debug builds, all indices
+will also be bounds-checked, throwing an `IndexError` if any are out of range after
+normalization.  For unsigned indices in release builds, the index operator is always
+zero-cost, just like built-in arrays.
 
 If fewer indices are provided than the number of dimensions, then a view over the
-corresponding sub-array will be returned instead, subject to the same rules as
-iteration.  Additionally, arrays can be trivially flattened or reshaped by returning a
-view of a different shape (of equal size), which is implemented via the `flatten()`,
-`reshape<M...>()`, and `transpose()` methods, respectively, all of which are zero-cost.
-Note that transposing an array effectively reverses its shape, switching it from
-row-major to column-major order.
+corresponding sub-array will be returned instead of a scalar value, subject to the same
+rules as iteration.  Additionally, arrays can be trivially flattened or reshaped by
+returning a view of a different shape (of equal size), which is implemented via the
+`flatten()`, `reshape<M...>()`, and `transpose()` methods, respectively, all of which
+are zero-cost.  Note that transposing an array effectively reverses its shape and
+strides, switching it from row-major to column-major order.
 
-Lastly, both arrays and views are mutually interconvertible, with conversion to a view
-being zero-cost, and conversion back to an array incurring a copy of the referenced
-data.  Both directions are also covered by CTAD guides, which allow the shape and type
-to be inferred at compile time, like so:
+Lastly, both arrays and array views are mutually interconvertible, with conversion to a
+view being zero-cost, and conversion back to an array incurring a copy of the
+referenced data.  Both directions are also covered by CTAD guides, which allow the
+shape and type to be inferred at compile time, like so:
 
     ```
     Array<int, 3, 2> arr {
@@ -2416,34 +2585,31 @@ to be inferred at compile time, like so:
 
     ArrayView view = arr;  // array -> view
     Array copy = view;  // view -> array (copy)
-
-    Array flat = arr.flatten();  // array -> view -> array (1x6)
-    assert(flat == Array{1, 2, 3, 4, 5, 6});
-
-    arr.flatten()[3] = 7;
-    assert(arr[1] == Array{3, 7});
-    assert(arr != copy);
+    arr.flatten()[4] = 7;  // `flatten()` returns a 1D view
+    assert(arr[2] == {7, 6});  // modification is reflected in original array
+    assert(arr == view);  // view references mutated data
+    assert(arr != copy);  // copy is unchanged
     ```
 */
 template <typename T, impl::extent Shape, impl::array_flags<Shape> Flags>
     requires (impl::array_concept<T, Shape, Flags>)
 struct Array : impl::array_tag {
 private:
-    using init = impl::array_init<T, Shape, Flags>;
+    using init = impl::array_init<T, Shape, Flags.strides>;
     using storage = impl::array_storage<T>;
-    static constexpr size_t step = Flags.strides.dim[0];
+    static constexpr size_t step = Flags.strides[0];
 
 public:
     using type = T;
     using size_type = size_t;
     using index_type = ssize_t;
-    using value_type = impl::array_value<T, Shape, Flags>;
+    using value_type = impl::array_value<T, Shape, Flags.strides>;
     using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
     using pointer = meta::as_pointer<reference>;
     using const_pointer = meta::as_pointer<const_reference>;
-    using iterator = impl::array_iterator<storage, Shape, Flags>;
-    using const_iterator = impl::array_iterator<const storage, Shape, Flags>;
+    using iterator = impl::array_iterator<storage, Shape, Flags.strides>;
+    using const_iterator = impl::array_iterator<const storage, Shape, Flags.strides>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
@@ -2459,6 +2625,12 @@ public:
     to obtain the raw byte offsets for each dimension. */
     [[nodiscard]] static constexpr size_t itemsize() noexcept {
         return sizeof(T);
+    }
+
+    /* The number of dimensions for a multidimensional array.  This is always equal
+    to the number of indices in its shape, and is never zero. */
+    [[nodiscard]] static constexpr size_type ndim() noexcept {
+        return Shape.size();
     }
 
     /* The size of the array along each dimension, which is equivalent to the shape
@@ -2480,18 +2652,6 @@ public:
         return Flags.strides;
     }
 
-    /* Return the flags associated with the array, which include the `column_major` flag
-    and strides, and can be used to rebind the `Array` or `ArrayView` classes. */
-    [[nodiscard]] static constexpr const auto& flags() noexcept {
-        return Flags;
-    }
-
-    /* The number of dimensions for a multidimensional array.  This is always equal
-    to the number of indices in its shape, and is never zero. */
-    [[nodiscard]] static constexpr size_type ndim() noexcept {
-        return Shape.size();
-    }
-
     /* The total number of elements in the array across all dimensions.  This is
     always equivalent to the cartesian product of `shape()`. */
     [[nodiscard]] static constexpr size_type total() noexcept {
@@ -2502,7 +2662,7 @@ public:
     This is always equal to the first index of `shape()`, and indicates the number
     of subarrays that will be yielded when the array is iterated over. */
     [[nodiscard]] static constexpr size_type size() noexcept {
-        return Shape.dim[0];
+        return Shape.data()[0];
     }
 
     /* Equivalent to `size()`, but as a signed rather than unsigned integer. */
@@ -2510,14 +2670,14 @@ public:
         return index_type(size());
     }
 
-    /* True if the array has precisely zero elements.  False otherwise.  This can only
-    occur for one-dimensional arrays. */
+    /* True if the array has precisely zero elements.  This is always false for arrays
+    due to restrictions in the template signature. */
     [[nodiscard]] static constexpr bool empty() noexcept {
-        return size() == 0;
+        return false;
     }
 
     /* The raw data buffer backing the array.  Note that this is stored as a normalized
-    `impl::array_storage` class that allows for trivial default construction, which is
+    `impl::array_storage` union that allows for trivial default construction, which is
     crucial for conversion from iterable types, etc. */
     storage ptr[total()];
 
@@ -2737,13 +2897,17 @@ public:
 
     /* Get a view over the array.  This backs by a CTAD guide to allow inference of
     type and shape. */
-    [[nodiscard]] constexpr operator ArrayView<storage, Shape, Flags>() & noexcept {
+    [[nodiscard]] constexpr operator ArrayView<storage, shape(), {.strides = strides()}>()
+        & noexcept
+    {
         return {ptr};
     }
 
     /* Get a view over the array.  This backs by a CTAD guide to allow inference of
     type and shape. */
-    [[nodiscard]] constexpr operator ArrayView<const storage, Shape, Flags>() const & noexcept {
+    [[nodiscard]] constexpr operator ArrayView<const storage, shape(), {.strides = strides()}>()
+        const & noexcept
+    {
         return {ptr};
     }
 
@@ -2853,20 +3017,14 @@ public:
     /* Return a view over the array with all singleton dimensions removed, unless that
     is the only remaining dimension. */
     [[nodiscard]] constexpr auto squeeze() & noexcept {
-        using view = impl::array_squeeze<storage, Shape, Flags>::template view<
-            {},
-            {.column_major = Flags.column_major}
-        >;
+        using view = impl::array_squeeze<storage, shape(), strides()>::template view<{}, {}>;
         return view{ptr};
     }
 
     /* Return a view over the array with all singleton dimensions removed, unless that
     is the only remaining dimension. */
     [[nodiscard]] constexpr auto squeeze() const & noexcept {
-        using view = impl::array_squeeze<const storage, Shape, Flags>::template view<
-            {},
-            {.column_major = Flags.column_major}
-        >;
+        using view = impl::array_squeeze<const storage, shape(), strides()>::template view<{}, {}>;
         return view{static_cast<const storage*>(ptr)};
     }
 
@@ -2877,10 +3035,7 @@ public:
         noexcept (meta::nothrow::movable<T>)
         requires (meta::movable<T>)
     {
-        using array = impl::array_squeeze<T, Shape, Flags>::template array<
-            {},
-            {.column_major = Flags.column_major}
-        >;
+        using array = impl::array_squeeze<T, shape(), strides()>::template array<{}, {}>;
         array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
@@ -2898,10 +3053,7 @@ public:
         noexcept (meta::nothrow::copyable<T>)
         requires (meta::copyable<T>)
     {
-        using array = impl::array_squeeze<meta::as_const<T>, Shape, Flags>::template array<
-            {},
-            {.column_major = Flags.column_major}
-        >;
+        using array = impl::array_squeeze<meta::as_const<T>, shape(), strides()>::template array<{}, {}>;
         array result = array::reserve();
         for (size_type i = 0; i < total(); ++i) {
             std::construct_at(
@@ -2914,7 +3066,7 @@ public:
 
 
 
-
+    /// TODO: transpose
 
     // using transpose_type = impl::array_transpose<T, N...>::template type<>;
 
@@ -2936,9 +3088,6 @@ public:
     // }
 
 
-    /// TODO: squeeze
-
-
 
 
     /* Access the first item in the array, assuming it isn't empty.  If the array is
@@ -2953,14 +3102,14 @@ public:
             return ((*std::forward<Self>(self).ptr).value);
         } else if constexpr (meta::lvalue<Self>) {
             if constexpr (meta::is_const<Self>) {
-                using view = impl::array_reduce<Shape, Flags>::template view<const storage>;
+                using view = impl::array_reduce<shape(), strides()>::template view<const storage>;
                 return view{static_cast<const storage*>(self.ptr)};
             } else {
-                using view = impl::array_reduce<Shape, Flags>::template view<storage>;
+                using view = impl::array_reduce<shape(), strides()>::template view<storage>;
                 return view{self.ptr};
             }
         } else {
-            using array = impl::array_reduce<Shape, Flags>::template array<T>;
+            using array = impl::array_reduce<shape(), strides()>::template array<T>;
             array result = array::reserve();
             for (size_type i = 0; i < step; ++i) {
                 std::construct_at(
@@ -2985,14 +3134,14 @@ public:
             return (std::forward<Self>(self).ptr[j].value);
         } else if constexpr (meta::lvalue<Self>) {
             if constexpr (meta::is_const<Self>) {
-                using view = impl::array_reduce<Shape, Flags>::template view<const storage>;
+                using view = impl::array_reduce<shape(), strides()>::template view<const storage>;
                 return view{static_cast<const storage*>(self.ptr) + j};
             } else {
-                using view = impl::array_reduce<Shape, Flags>::template view<storage>;
+                using view = impl::array_reduce<shape(), strides()>::template view<storage>;
                 return view{self.ptr + j};
             }
         } else {
-            using array = impl::array_reduce<Shape, Flags>::template array<T>;
+            using array = impl::array_reduce<shape(), strides()>::template array<T>;
             array result = array::reserve();
             for (size_type i = 0; i < step; ++i) {
                 std::construct_at(
@@ -3015,24 +3164,26 @@ public:
     template <index_type... I, typename Self>
         requires (
             sizeof...(I) <= ndim() &&
-            impl::valid_array_index<I...>::template value<Shape, Flags>
+            impl::valid_array_index<I...>::template value<shape(), strides()>
         )
     [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-        constexpr size_type j = impl::valid_array_index<I...>::template index<Shape, Flags>;
+        constexpr size_type j = impl::valid_array_index<I...>::template index<shape(), strides()>;
         if constexpr (sizeof...(I) == ndim()) {
             return (std::forward<Self>(self).ptr[j].value);
         } else if constexpr (meta::lvalue<Self>) {
             if constexpr (meta::is_const<Self>) {
-                using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<
+                using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<
                     const storage
                 >;
                 return view{static_cast<meta::as_const<T>*>(self.ptr) + j};
             } else {
-                using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<storage>;
+                using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<
+                    storage
+                >;
                 return view{self.ptr + j};
             }
         } else {
-            using array = impl::array_reduce<Shape, Flags, sizeof...(I)>::template array<T>;
+            using array = impl::array_reduce<shape(), strides(), sizeof...(I)>::template array<T>;
             array result = array::reserve();
             for (size_type k = 0; k < array::total(); ++k) {
                 std::construct_at(
@@ -3064,21 +3215,23 @@ public:
             meta::explicitly_convertible_to<I, ssize_t>
         ) && ...)
     {
-        size_type j = impl::array_index<Shape, Flags>(i...);
+        size_type j = impl::array_index<shape(), strides()>(i...);
         if constexpr (sizeof...(I) == ndim()) {
             return (std::forward<Self>(self).ptr[j].value);
         } else if constexpr (meta::lvalue<Self>) {
             if constexpr (meta::is_const<Self>) {
-                using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<
+                using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<
                     const storage
                 >;
                 return view{static_cast<const storage*>(self.ptr) + j};
             } else {
-                using view = impl::array_reduce<Shape, Flags, sizeof...(I)>::template view<storage>;
+                using view = impl::array_reduce<shape(), strides(), sizeof...(I)>::template view<
+                    storage
+                >;
                 return view{self.ptr + j};
             }
         } else {
-            using array = impl::array_reduce<Shape, Flags, sizeof...(I)>::template array<T>;
+            using array = impl::array_reduce<shape(), strides(), sizeof...(I)>::template array<T>;
             array result = array::reserve();
             for (size_type k = 0; k < array::total(); ++k) {
                 std::construct_at(
@@ -3384,154 +3537,154 @@ constexpr decltype(auto) get(T&& self, index_sequence<Is...>)
 _LIBCPP_END_NAMESPACE_STD
 
 
-// namespace bertrand {
+namespace bertrand {
 
 
-//     // static constexpr std::array<std::array<int, 2>, 2> test {
-//     //     {1, 2},
-//     //     {3, 4}
-//     // };
+    // static constexpr std::array<std::array<int, 2>, 2> test {
+    //     {1, 2},
+    //     {3, 4}
+    // };
 
 
-//     static constexpr Array test1 {Array{1, 2}, Array{3, 4}};
+    static constexpr Array test1 {Array{1, 2}, Array{3, 4}};
 
-//     static constexpr Array test2 = Array<int, {2, 2}>::reserve();
+    static constexpr Array test2 = Array<int, {2, 2}>::reserve();
 
-//     static constexpr auto test3 = Array<int, {2, 3}>{
-//         Array{0, 1, 2},
-//         Array{3, 4, 5}
-//     }.reshape<{3, 2}>();
-//     static_assert(test3[0, 0] == 0);
-//     static_assert(test3[0, 1] == 1);
-//     static_assert(test3[1, 0] == 2);
-//     static_assert(test3[1, 1] == 3);
-//     static_assert(test3[2, 0] == 4);
-//     static_assert(test3[2, 1] == 5);
+    static constexpr auto test3 = Array<int, {2, 3}>{
+        Array{0, 1, 2},
+        Array{3, 4, 5}
+    }.reshape<{3, 2}>();
+    static_assert(test3[0, 0] == 0);
+    static_assert(test3[0, 1] == 1);
+    static_assert(test3[1, 0] == 2);
+    static_assert(test3[1, 1] == 3);
+    static_assert(test3[2, 0] == 4);
+    static_assert(test3[2, 1] == 5);
 
-//     static constexpr auto test4 = Array<int, {2, 3}>{
-//         Array{0, 1, 2},
-//         Array{3, 4, 5}
-//     }[-1];
-//     static_assert(test4[0] == 3);
-//     static_assert(test4[1] == 4);
-//     static_assert(test4[2] == 5);
+    static constexpr auto test4 = Array<int, {2, 3}>{
+        Array{0, 1, 2},
+        Array{3, 4, 5}
+    }[-1];
+    static_assert(test4[0] == 3);
+    static_assert(test4[1] == 4);
+    static_assert(test4[2] == 5);
 
-//     static constexpr auto test5 = meta::to_const(Array<int, {2, 3}>{
-//         Array{0, 1, 2},
-//         Array{3, 4, 5}
-//     }).flatten();
-
-
-//     static constexpr Array test6 = test3.flatten();
-//     static constexpr ArrayView test7 = test3;
+    static constexpr auto test5 = meta::to_const(Array<int, {2, 3}>{
+        Array{0, 1, 2},
+        Array{3, 4, 5}
+    }).flatten();
 
 
-//     static constexpr auto test8 = Array<int, {1, 3}>{Array{1, 2, 3}};
-//     static constexpr auto test9 = test8.squeeze();
-//     static constexpr auto test10 = Array<int, {1, 3}>{Array{1, 2, 3}}.squeeze();
-
-//     static_assert([] {
-//         Array<int, {2, 2}> arr {
-//             Array{1, 2},
-//             Array{3, 4}
-//         };
-//         if (arr[0, 0] != 1) return false;
-//         if (arr[0, 1] != 2) return false;
-//         if (arr[1, 0] != 3) return false;
-//         if (arr[1, -1] != 4) return false;
-
-//         auto arr2 = Array<int, {2, 2}>{Array{1, 2}, Array{3, 3}};
-//         arr = arr2;
-//         if (arr[1, 1] != 3) return false;
-
-//         if (arr.shape()[-1] != 2) return false;
-
-//         auto x = arr.data();
-//         if (*x != 1) return false;
-//         ++x;
-
-//         return true;
-//     }());
+    static constexpr Array test6 = test3.flatten();
+    static constexpr ArrayView test7 = test3;
 
 
-//     static_assert([] {
-//         Array<int, {3, 2}> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
-//         auto x = arr[0];
-//         if (x[0] != 1) return false;
-//         if (x[1] != 2) return false;
-//         for (auto&& i : arr) {
-//             // if (i < 1 || i > 6) {
-//             //     return false;
-//             // }
-//             for (auto& j : i) {
-//                 if (j < 1 || j > 6) {
-//                     return false;
-//                 }
-//             }
-//         }
-//         return true;
-//     }());
+    static constexpr auto test8 = Array<int, {1, 3}>{Array{1, 2, 3}};
+    static constexpr auto test9 = test8.squeeze();
+    static constexpr auto test10 = Array<int, {1, 3}>{Array{1, 2, 3}}.squeeze();
 
-//     static_assert([] {
-//         Array<int, {3, 2}> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
-//         auto it = arr.rbegin();
-//         if ((*it) != Array{5, 6}) return false;
-//         ++it;
-//         if (*it != Array{3, 4}) return false;
-//         ++it;
-//         if (*it != Array{1, 2}) return false;
-//         ++it;
-//         if (it != arr.rend()) return false;
+    static_assert([] {
+        Array<int, {2, 2}> arr {
+            Array{1, 2},
+            Array{3, 4}
+        };
+        if (arr[0, 0] != 1) return false;
+        if (arr[0, 1] != 2) return false;
+        if (arr[1, 0] != 3) return false;
+        if (arr[1, -1] != 4) return false;
 
-//         it = arr.rbegin();
-//         auto end = arr.rend();
-//         while (it != end) {
+        auto arr2 = Array<int, {2, 2}>{Array{1, 2}, Array{3, 3}};
+        arr = arr2;
+        if (arr[1, 1] != 3) return false;
 
-//             ++it;
-//         }
+        if (arr.shape()[-1] != 2) return false;
 
-//         return true;
-//     }());
+        auto x = arr.data();
+        if (*x != 1) return false;
+        ++x;
 
-//     static_assert([] {
-//         Array<int, {2, 3}> arr {
-//             Array{1, 2, 3},
-//             Array{4, 5, 6}
-//         };
-//         const auto view = arr[0];
-//         auto& x = view[1];
-//         for (auto& y : view) {
-
-//         }
-//         auto z = view.data();
-
-//         auto f = view.back();
-
-//         return true;
-//     }());
+        return true;
+    }());
 
 
-//     inline void test() {
-//         int x = 1;
-//         int y = 2;
-//         int z = 3;
-//         int w = 4;
-//         Array<int, {2, 2}> arr {
-//             Array{x, y},
-//             Array{z, w}
-//         };
-//         auto p = arr.data();
-//     }
+    static_assert([] {
+        Array<int, {3, 2}> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
+        auto x = arr[0];
+        if (x[0] != 1) return false;
+        if (x[1] != 2) return false;
+        for (auto&& i : arr) {
+            // if (i < 1 || i > 6) {
+            //     return false;
+            // }
+            for (auto& j : i) {
+                if (j < 1 || j > 6) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }());
 
-//     static constexpr std::array test_arr {1, 2, 3};
-//     static constexpr auto test_shape = meta::static_shape<decltype(test_arr)>();
-//     static_assert(test_shape == impl::extent{3});
-//     static constexpr ArrayView test_view {test_arr};
-//     static_assert(test_view[-1] == 3);
+    static_assert([] {
+        Array<int, {3, 2}> arr {Array{1, 2}, Array{3, 4}, Array{5, 6}};
+        auto it = arr.rbegin();
+        if ((*it) != Array{5, 6}) return false;
+        ++it;
+        if (*it != Array{3, 4}) return false;
+        ++it;
+        if (*it != Array{1, 2}) return false;
+        ++it;
+        if (it != arr.rend()) return false;
 
-//     // static constexpr Array test_arr2 = std::array{1, 2, 3};
+        it = arr.rbegin();
+        auto end = arr.rend();
+        while (it != end) {
 
-// }
+            ++it;
+        }
+
+        return true;
+    }());
+
+    static_assert([] {
+        Array<int, {2, 3}> arr {
+            Array{1, 2, 3},
+            Array{4, 5, 6}
+        };
+        const auto view = arr[0];
+        auto& x = view[1];
+        for (auto& y : view) {
+
+        }
+        auto z = view.data();
+
+        auto f = view.back();
+
+        return true;
+    }());
+
+
+    inline void test() {
+        int x = 1;
+        int y = 2;
+        int z = 3;
+        int w = 4;
+        Array<int, {2, 2}> arr {
+            Array{x, y},
+            Array{z, w}
+        };
+        auto p = arr.data();
+    }
+
+    static constexpr std::array test_arr {1, 2, 3};
+    static constexpr auto test_shape = meta::static_shape<decltype(test_arr)>();
+    static_assert(test_shape == impl::extent{3});
+    static constexpr ArrayView test_view {test_arr};
+    static_assert(test_view[-1] == 3);
+
+    // static constexpr Array test_arr2 = std::array{1, 2, 3};
+
+}
 
 
 #endif  // BERTRAND_ARRAY_H
