@@ -3,7 +3,6 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include "bertrand/union.h"
 
 
 namespace bertrand {
@@ -323,7 +322,7 @@ namespace impl {
             return r;
         }
 
-        [[nodiscard]] constexpr extent strip(size_t n) const {
+        [[nodiscard]] constexpr extent reduce(size_t n) const {
             if (n == 0) {
                 return *this;
             }
@@ -535,14 +534,6 @@ namespace impl {
             }
         }
 
-        [[nodiscard]] constexpr extent reverse() const noexcept {
-            extent r;
-            for (size_t j = 0; j < ndim; ++j) {
-                std::construct_at(&r.dim[j], dim[ndim - 1 - j]);
-            }
-            return r;
-        }
-
         [[nodiscard]] constexpr size_t product() const noexcept {
             size_t p = 1;
             for (size_t j = 0; j < ndim; ++j) {
@@ -551,8 +542,16 @@ namespace impl {
             return p;
         }
 
+        [[nodiscard]] constexpr extent reverse() const noexcept {
+            extent r;
+            for (size_t j = 0; j < ndim; ++j) {
+                std::construct_at(&r.dim[j], dim[ndim - 1 - j]);
+            }
+            return r;
+        }
+
         template <size_t N>
-        [[nodiscard]] constexpr auto strip() const noexcept {
+        [[nodiscard]] constexpr auto reduce() const noexcept {
             if constexpr (N >= ndim) {
                 return extent<0>{};
             } else {
@@ -618,6 +617,12 @@ namespace impl {
         will always match their corresponding shape dimension. */
         extent<shape.size()> strides = shape.strides(column_major);
     };
+
+    /* For some reason (likely a compiler bug), the default specialization of
+    `array_flags` cannot be default-constructed unless we explicitly instanitate a
+    version of it here.  Note that this value is never used anywhere, but deleting it
+    surfaces a pretty cryptic set of template instantiation errors. */
+    inline constexpr array_flags<> __default_array_flags {};
 
     template <typename T, extent shape, array_flags<shape> flags>
     concept array_concept =
@@ -1019,11 +1024,19 @@ namespace impl {
     template <extent Shape, extent Strides, size_t N = 1> requires (N > 0)
     struct array_reduce {
         static constexpr auto shape() noexcept {
-            return Shape.template strip<N>();
+            if constexpr (Shape.empty()) {
+                return extent<0>{};
+            } else {
+                return Shape.template reduce<N>();
+            }
         }
 
         static constexpr auto strides() noexcept {
-            return Strides.template strip<N>();
+            if constexpr (Shape.empty()) {
+                return extent<0>{};
+            } else {
+                return Strides.template reduce<N>();
+            }
         };
 
         template <typename T>
@@ -1170,26 +1183,22 @@ namespace impl {
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::as_pointer<value_type>;
 
-    private:
-        using view = value_type;
-
-    public:
         T* ptr = nullptr;
         difference_type count = 0;
-        static constexpr const size_t* shape = Shape.data();
-        static constexpr const size_t* strides = Strides.data();
-        static constexpr const size_t ndim = Shape.size();
+        static constexpr const size_t step = *Strides.data();
+        static constexpr const size_t size = *Shape.data();
 
         [[nodiscard]] constexpr decltype(auto) operator*() const noexcept {
-            if constexpr (ndim == 1) {
+            if constexpr (Shape.size() == 1) {
                 return array_access(ptr);
             } else {
+                using view = value_type;
                 return view{ptr};
             }
         }
 
         [[nodiscard]] constexpr auto operator->() const noexcept {
-            if constexpr (ndim == 1) {
+            if constexpr (Shape.size() == 1) {
                 return std::addressof(**this);
             } else {
                 return impl::arrow{**this};
@@ -1197,21 +1206,22 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const noexcept {
-            if constexpr (ndim == 1) {
+            if constexpr (Shape.size() == 1) {
                 return array_access(ptr, n);
             } else {
-                return view{ptr + n * strides[0]};
+                using view = value_type;
+                return view{ptr + n * step};
             }
         }
 
         constexpr array_iterator& operator++() noexcept {
             if consteval {
                 ++count;
-                if (count > 0 && count < shape[0]) {
-                    ptr += strides[0];
+                if (count > 0 && count < size) {
+                    ptr += step;
                 }
             } else {
-                ptr += strides[0];
+                ptr += step;
             }
             return *this;
         }
@@ -1229,17 +1239,17 @@ namespace impl {
             if consteval {
                 difference_type new_count = self.count + n;
                 if (new_count < 0) {
-                    return {self.ptr - self.count * (self.count > 0) * strides[0], new_count};
-                } else if (new_count >= shape[0]) {
+                    return {self.ptr - self.count * (self.count > 0) * step, new_count};
+                } else if (new_count >= size) {
                     return {
-                        self.ptr + (shape[0] - self.count - 1) * (self.count < shape[0]) * strides[0],
+                        self.ptr + (size - self.count - 1) * (self.count < size) * step,
                         new_count
                     };
                 } else {
-                    return {self.ptr + n * strides[0], new_count};
+                    return {self.ptr + n * step, new_count};
                 }
             } else {
-                return {self.ptr + n * strides[0]};
+                return {self.ptr + n * step};
             }
         }
 
@@ -1250,17 +1260,17 @@ namespace impl {
             if consteval {
                 difference_type new_count = self.count + n;
                 if (new_count < 0) {
-                    return {self.ptr - self.count * (self.count > 0) * strides[0], new_count};
-                } else if (new_count >= shape[0]) {
+                    return {self.ptr - self.count * (self.count > 0) * step, new_count};
+                } else if (new_count >= size) {
                     return {
-                        self.ptr + (shape[0] - self.count - 1) * (self.count < shape[0]) * strides[0],
+                        self.ptr + (size - self.count - 1) * (self.count < size) * step,
                         new_count
                     };
                 } else {
-                    return {self.ptr + n * strides[0], new_count};
+                    return {self.ptr + n * step, new_count};
                 }
             } else {
-                return {self.ptr + n * strides[0]};
+                return {self.ptr + n * step};
             }
         }
 
@@ -1268,27 +1278,27 @@ namespace impl {
             if consteval {
                 difference_type new_count = count + n;
                 if (new_count < 0) {
-                    ptr -= count * (count > 0) * strides[0];
-                } else if (new_count >= shape[0]) {
-                    ptr += (shape[0] - count - 1) * (count < shape[0]) * strides[0];
+                    ptr -= count * (count > 0) * step;
+                } else if (new_count >= size) {
+                    ptr += (size - count - 1) * (count < size) * step;
                 } else {
-                    ptr += n * strides[0];
+                    ptr += n * step;
                 }
                 count = new_count;
             } else {
-                ptr += n * strides[0];
+                ptr += n * step;
             }
             return *this;
         }
 
         constexpr array_iterator& operator--() noexcept {
             if consteval {
-                if (count > 0 && count < shape[0]) {
-                    ptr -= strides[0];
+                if (count > 0 && count < size) {
+                    ptr -= step;
                 }
                 --count;
             } else {
-                ptr -= strides[0];
+                ptr -= step;
             }
             return *this;
         }
@@ -1303,17 +1313,14 @@ namespace impl {
             if consteval {
                 difference_type new_count = count - n;
                 if (new_count < 0) {
-                    return {ptr - count * (count > 0) * strides[0], new_count};
-                } else if (new_count >= shape[0]) {
-                    return {
-                        ptr + (shape[0] - count - 1) * (count < shape[0]) * strides[0],
-                        new_count
-                    };
+                    return {ptr - count * (count > 0) * step, new_count};
+                } else if (new_count >= size) {
+                    return {ptr + (size - count - 1) * (count < size) * step, new_count};
                 } else {
-                    return {ptr - n * strides[0], new_count};
+                    return {ptr - n * step, new_count};
                 }
             } else {
-                return {ptr - n * strides[0]};
+                return {ptr - n * step};
             }
         }
 
@@ -1323,7 +1330,7 @@ namespace impl {
             if consteval {
                 return count - other.count;
             } else {
-                return (ptr - other.ptr) / strides[0];
+                return (ptr - other.ptr) / step;
             }
         }
 
@@ -1331,15 +1338,15 @@ namespace impl {
             if consteval {
                 difference_type new_count = count - n;
                 if (new_count < 0) {
-                    ptr -= count * (count > 0) * strides[0];
-                } else if (new_count >= shape[0]) {
-                    ptr += (shape[0] - count - 1) * (count < shape[0]) * strides[0];
+                    ptr -= count * (count > 0) * step;
+                } else if (new_count >= size) {
+                    ptr += (size - count - 1) * (count < size) * step;
                 } else {
-                    ptr -= n * strides[0];
+                    ptr -= n * step;
                 }
                 count = new_count;
             } else {
-                ptr -= n * strides[0];
+                ptr -= n * step;
             }
             return *this;
         }
@@ -1361,41 +1368,213 @@ namespace impl {
         }
     };
 
-
-    /// TODO: array iterators for empty shapes would have to yield views of shape {},
-    /// which at the bottom of the recursion will be a view of rank 1 and size 1.
-    /// Maybe these yielded views could reuse the same shape and strides buffers, and
-    /// just advance the pointer and/or reduce ndim accordingly.  That would be
-    /// relatively efficient, and avoid an allocation when traversing multidimensional
-    /// arrays, which may yield views with ndim > 1.
-
-    /// TODO: revisit dynamic array iterators after refactoring the static ArrayView and
-    /// Array types.
-
-    template <meta::not_reference T, extent Shape, extent Strides>
-        requires (Shape.empty() && Strides.empty())
-    struct array_iterator<T, Shape, Strides> {
+    /* Iterators over dynamically-shaped arrays need to extend the liftetime of the
+    shape and stride buffers, and produce further dynamic views of reduced dimension,
+    bottoming out at a trivial view over a single element. */
+    template <meta::not_reference T>
+    struct array_iterator<T, {}, {}> {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using value_type = ArrayView<T, Shape, {.strides = Strides}>;
+        using value_type = ArrayView<T>;
         using reference = meta::as_lvalue<value_type>;
         using pointer = meta::as_pointer<value_type>;
 
-    private:
-        using view = value_type;
+        T* ptr = nullptr;  // data buffer
+        size_t step = 0;  // in current dimension
+        size_t size = 0;  // in current dimension
+        size_t scope = 0;  // current dimension index
+        size_t product = size;  // of all remaining dimensions
+        impl::heap_extent* capsule = nullptr;  // shape/stride buffer (if not 1D)
+        difference_type count = 0;  // only used at compile time (to avoid UB)
+        size_t reduced_product = product / size;  // avoid integer division in operator*()
 
-    public:
-        T* ptr = nullptr;
-        difference_type count = 0;
-        size_t* shape = nullptr;
-        size_t* strides = nullptr;
-        size_t ndim = 0;
+        [[nodiscard]] constexpr array_iterator() = default;
+        [[nodiscard]] constexpr array_iterator(
+            T* ptr,
+            size_t step,
+            size_t size,
+            size_t scope = 0,
+            size_t product = 0,
+            impl::heap_extent* capsule = nullptr,
+            difference_type count = 0
+        ) :
+            ptr(ptr),
+            step(step),
+            size(size),
+            scope(scope),
+            product(product),
+            capsule(capsule),
+            count(count)
+        {}
 
-        [[nodiscard]] constexpr value_type operator*() const noexcept {
-            return {ptr};
+        [[nodiscard]] constexpr array_iterator(const array_iterator& other) :
+            ptr(other.ptr),
+            step(other.step),
+            size(other.size),
+            scope(other.scope),
+            product(other.product),
+            capsule(other.capsule == nullptr ? nullptr : other.capsule->incref()),
+            count(other.count),
+            reduced_product(other.reduced_product)
+        {}
+
+        [[nodiscard]] constexpr array_iterator(array_iterator&& other) noexcept :
+            ptr(other.ptr),
+            step(other.step),
+            size(other.size),
+            scope(other.scope),
+            product(other.product),
+            capsule(other.capsule),
+            count(other.count),
+            reduced_product(other.reduced_product)
+        {
+            other.ptr = nullptr;
+            other.step = 0;
+            other.size = 0;
+            other.scope = 0;
+            other.product = 0;
+            other.capsule = nullptr;
+            other.count = 0;
+            other.reduced_product = 0;
         }
 
+        constexpr array_iterator& operator=(const array_iterator& other) {
+            if (this != &other) {
+                ptr = other.ptr;
+                step = other.step;
+                size = other.size;
+                scope = other.scope;
+                product = other.product;
+                if (capsule != nullptr) {
+                    capsule->decref();
+                }
+                capsule = other.capsule == nullptr ? nullptr : other.capsule->incref();
+                count = other.count;
+                reduced_product = other.reduced_product;
+            }
+            return *this;
+        }
 
+        constexpr array_iterator& operator=(array_iterator&& other) noexcept {
+            if (this != &other) {
+                ptr = other.ptr;
+                step = other.step;
+                size = other.size;
+                scope = other.scope;
+                product = other.product;
+                if (capsule != nullptr) {
+                    capsule->decref();
+                }
+                capsule = other.capsule;
+                count = other.count;
+                reduced_product = other.reduced_product;
+                other.ptr = nullptr;
+                other.step = 0;
+                other.size = 0;
+                other.scope = 0;
+                other.product = 0;
+                other.capsule = nullptr;
+                other.count = 0;
+                other.reduced_product = 0;
+            }
+            return *this;
+        }
+
+        constexpr ~array_iterator() {
+            if (capsule != nullptr) {
+                capsule->decref();
+            }
+        }
+
+        [[nodiscard]] constexpr auto operator*() const {
+            using view = value_type;
+            view result;
+            result.ptr = ptr;
+            if (capsule == nullptr) {  // parent is 1D
+                result.scope = 1;  // child is trivially contiguous
+            } else if (scope + 1 == capsule->ndim) {  // child is 1D
+                result.scope = step;  // maybe non-contiguous
+            } else {  // child is multidimensional
+                result.capsule = capsule->incref();
+                result.scope = scope + 1;
+            }
+            result.product = reduced_product;
+            return result;
+        }
+
+        [[nodiscard]] constexpr auto operator->() const {
+            return impl::arrow{**this};
+        }
+
+        /// TODO: subscripting requires me to figure out dynamic indexing.
+
+        constexpr array_iterator& operator++() noexcept {
+            if consteval {
+                ++count;
+                if (count > 0 && count < size) {
+                    ptr += step;
+                }
+            } else {
+                ptr += step;
+            }
+        }
+
+        [[nodiscard]] constexpr array_iterator operator++(int) {
+            array_iterator temp = *this;
+            ++*this;
+            return temp;
+        }
+
+        /// TODO: random-access addition, including in-place
+
+        constexpr array_iterator& operator--() noexcept {
+            if consteval {
+                if (count > 0 && count < size) {
+                    ptr -= step;
+                }
+                --count;
+            } else {
+                ptr -= step;
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr array_iterator operator--(int) {
+            array_iterator temp = *this;
+            --*this;
+            return temp;
+        }
+
+        /// TODO: random-access subtraction arithmetic requires the same work on indexing
+        /// as the subscript operator.
+
+        [[nodiscard]] constexpr difference_type operator-(
+            const array_iterator& other
+        ) const noexcept {
+            if consteval {
+                return count - other.count;
+            } else {
+                return (ptr - other.ptr) / step;
+            }
+        }
+
+        /// TODO: random-access in-place subtraction
+
+        [[nodiscard]] constexpr bool operator==(const array_iterator& other) const noexcept {
+            if consteval {
+                return count == other.count;
+            } else {
+                return ptr == other.ptr;
+            }
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const array_iterator& other) const noexcept {
+            if consteval {
+                return count <=> other.count;
+            } else {
+                return ptr <=> other.ptr;
+            }
+        }
     };
 
     /// TODO: index errors are defined after filling in int <-> str conversions.
@@ -1573,12 +1752,6 @@ namespace impl {
     using array_common = meta::remove_reference<meta::common_type<Ts...>>;
 
 }
-
-
-/// TODO: column-major arrays use the same indexing as row-major arrays, but different
-/// strides.  In fact, the column-major flag may only be relevant when generating those
-/// strides, with all other behavior remaining the same, generally-speaking.
-
 
 
 /* A non-owning view into a contiguous memory buffer that interprets it as a
@@ -2149,6 +2322,23 @@ public:
 
     [[nodiscard]] constexpr ArrayView() noexcept = default;
 
+
+    [[nodiscard]] constexpr auto& operator*() noexcept {
+        return impl::array_access(ptr);
+    }
+
+    [[nodiscard]] constexpr const auto& operator*() const noexcept {
+        return impl::array_access(static_cast<meta::as_const<T>*>(ptr));
+    }
+
+    [[nodiscard]] constexpr auto* operator->() noexcept {
+        return std::addressof(impl::array_access(ptr));
+    }
+
+    [[nodiscard]] constexpr const auto* operator->() const noexcept {
+        return std::addressof(impl::array_access(static_cast<meta::as_const<T>*>(ptr)));
+    }
+
 };
 
 
@@ -2258,13 +2448,13 @@ private:
 public:
     using size_type = size_t;
     using index_type = ssize_t;
-    using value_type = impl::array_value<T, Shape, Flags.strides>;
+    using value_type = impl::array_value<T, {}, {}>;
     using reference = meta::as_lvalue<value_type>;
     using const_reference = meta::as_const<reference>;
     using pointer = meta::as_pointer<reference>;
     using const_pointer = meta::as_pointer<const_reference>;
-    using iterator = impl::array_iterator<T, Shape, Flags.strides>;
-    using const_iterator = impl::array_iterator<meta::as_const<T>, Shape, Flags.strides>;
+    using iterator = impl::array_iterator<T, {}, {}>;
+    using const_iterator = impl::array_iterator<meta::as_const<T>, {}, {}>;
     using reverse_iterator = std::reverse_iterator<iterator>;
     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
@@ -2334,7 +2524,9 @@ public:
         impl::array_flags<> flags = {}
     )
         requires (!meta::convertible_to<T, size_t>)
-    : ptr(p) {
+    :
+        ptr(p)
+    {
         from_iterable(shape);
         set_strides(flags);
     }
@@ -2346,7 +2538,9 @@ public:
             meta::yields<size_t, T> &&
             (meta::tuple_like<T> || meta::size_returns<size_t, T>)
         )
-    : ptr(p) {
+    :
+        ptr(p)
+    {
         from_iterable(shape);
         set_strides(flags);
     }
@@ -2361,7 +2555,9 @@ public:
             meta::tuple_size<T> > 0 &&
             meta::tuple_types<T>::template convertible_to<size_t>
         )
-    : ptr(p) {
+    :
+        ptr(p)
+    {
         from_tuple(std::forward<S>(shape), std::make_index_sequence<meta::tuple_size<S>>{});
         set_strides(flags);
     }
@@ -2463,8 +2659,151 @@ public:
     //     }
     // }
 
-    /// TODO: the iterators probably require custom types to cover this case, and
-    /// possibly another special case for dimensional views
+    [[nodiscard]] constexpr iterator begin() noexcept {
+        if (capsule == nullptr) {
+            return {ptr, scope, product};
+        } else {
+            return {
+                ptr,
+                capsule->buffer[capsule->ndim + scope],
+                capsule->buffer[scope],
+                scope,
+                product,
+                capsule->incref()
+            };
+        }
+    }
+
+    [[nodiscard]] constexpr const_iterator begin() const noexcept {
+        if (capsule == nullptr) {
+            return {static_cast<meta::as_const<T>*>(ptr), scope, product};
+        } else {
+            return {
+                static_cast<meta::as_const<T>*>(ptr),
+                capsule->buffer[capsule->ndim + scope],
+                capsule->buffer[scope],
+                scope,
+                product,
+                capsule->incref()
+            };
+        }
+    }
+
+    [[nodiscard]] constexpr const_iterator cbegin() const noexcept {
+        return begin();
+    }
+
+    [[nodiscard]] constexpr iterator end() noexcept {
+        if consteval {
+            if (capsule == nullptr) {
+                return {
+                    ptr + (product - 1) * scope,
+                    scope,
+                    product,
+                    scope,
+                    product,
+                    nullptr,
+                    product
+                };
+            } else {
+                return {
+                    ptr + (capsule->buffer[scope] - 1) * capsule->buffer[capsule->ndim + scope],
+                    capsule->buffer[capsule->ndim + scope],
+                    capsule->buffer[scope],
+                    scope,
+                    product,
+                    capsule->incref(),
+                    capsule->buffer[scope]
+                };
+            }
+        } else {
+            if (capsule == nullptr) {
+                return {ptr + product * scope, scope, product};
+            } else {
+                return {
+                    ptr + capsule->buffer[scope] * capsule->buffer[capsule->ndim + scope],
+                    capsule->buffer[capsule->ndim + scope],
+                    capsule->buffer[scope],
+                    scope,
+                    product,
+                    capsule->incref()
+                };
+            }
+        }
+    }
+
+    [[nodiscard]] constexpr const_iterator end() const noexcept {
+        if consteval {
+            if (capsule == nullptr) {
+                return {
+                    static_cast<meta::as_const<T>>(ptr) + (product - 1) * scope,
+                    scope,
+                    product,
+                    scope,
+                    product,
+                    nullptr,
+                    product,
+                };
+            } else {
+                return {
+                    (
+                        static_cast<meta::as_const<T>>(ptr) +
+                        (capsule->buffer[scope] - 1) * capsule->buffer[capsule->ndim + scope]
+                    ),
+                    capsule->buffer[capsule->ndim + scope],
+                    capsule->buffer[scope],
+                    scope,
+                    product,
+                    capsule->incref(),
+                    capsule->buffer[scope],
+                };
+            }
+        } else {
+            if (capsule == nullptr) {
+                return {static_cast<meta::as_const<T>>(ptr) + product * scope, scope, product};
+            } else {
+                return {
+                    (
+                        static_cast<meta::as_const<T>>(ptr) +
+                        capsule->buffer[scope] * capsule->buffer[capsule->ndim + scope]
+                    ),
+                    capsule->buffer[capsule->ndim + scope],
+                    capsule->buffer[scope],
+                    scope,
+                    product,
+                    capsule->incref(),
+                };
+            }
+        }
+    }
+
+    [[nodiscard]] constexpr const_iterator cend() const noexcept {
+        return end();
+    }
+
+    [[nodiscard]] constexpr reverse_iterator rbegin() noexcept {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator rbegin() const noexcept {
+        return std::make_reverse_iterator(end());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator crbegin() const noexcept {
+        return rbegin();
+    }
+
+    [[nodiscard]] constexpr reverse_iterator rend() noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator rend() const noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+
+    [[nodiscard]] constexpr const_reverse_iterator crend() const noexcept {
+        return rend();
+    }
 
     /// TODO: views like flatten(), reshape(), squeeze(), and transpose() are
     /// intimately tied to the constructors and scoping logic, so they will need a
@@ -3437,8 +3776,6 @@ Array(T&&) -> Array<
 >;
 
 
-
-
 /// TODO: add another version of the above CTAD guide that takes a tuple-like type that
 /// has a static shape.
 
@@ -3491,7 +3828,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 namespace ranges {
 
     template <bertrand::meta::ArrayView T>
-    constexpr bool enable_borrowed_range<T> = !bertrand::meta::unqualify<T>::dynamic();
+    constexpr bool enable_borrowed_range<T> = true;
 
 }
 
