@@ -1167,12 +1167,154 @@ namespace impl {
         array_reduce<shape, strides>::strides()
     >::type;
 
+    template <typename CRTP>
+    struct array_iterator_base {
+        using difference_type = std::ptrdiff_t;
+
+        constexpr CRTP& operator++(this CRTP& self) noexcept {
+            if consteval {
+                ++self.count;
+                if (self.count > 0 && self.count < self.size) {
+                    self.ptr += self.step;
+                }
+            } else {
+                self.ptr += self.step;
+            }
+            return self;
+        }
+
+        [[nodiscard]] constexpr CRTP operator++(this CRTP& self, int)
+            noexcept (meta::nothrow::copyable<CRTP>)
+        {
+            CRTP tmp = self;
+            ++self;
+            return tmp;
+        }
+
+        constexpr CRTP& operator+=(this CRTP& self, difference_type n) noexcept {
+            if consteval {
+                difference_type new_count = self.count + n;
+                if (new_count < 0) {
+                    self.ptr -= self.count * (self.count > 0) * self.step;
+                } else if (new_count >= self.size) {
+                    self.ptr +=
+                        (self.size - self.count - 1) *
+                        (self.count < self.size) *
+                        self.step;
+                } else {
+                    self.ptr += n * self.step;
+                }
+                self.count = new_count;
+            } else {
+                self.ptr += n * self.step;
+            }
+            return self;
+        }
+
+        [[nodiscard]] friend constexpr CRTP operator+(const CRTP& self, difference_type n)
+            noexcept (meta::nothrow::copyable<CRTP>)
+        {
+            CRTP tmp = self;
+            tmp += n;
+            return tmp;
+        }
+
+        [[nodiscard]] friend constexpr CRTP operator+(difference_type n, const CRTP& self)
+            noexcept (meta::nothrow::copyable<CRTP>)
+        {
+            CRTP tmp = self;
+            tmp += n;
+            return tmp;
+        }
+
+        constexpr CRTP& operator--(this CRTP& self) noexcept {
+            if consteval {
+                if (self.count > 0 && self.count < self.size) {
+                    self.ptr -= self.step;
+                }
+                --self.count;
+            } else {
+                self.ptr -= self.step;
+            }
+            return self;
+        }
+
+        [[nodiscard]] constexpr CRTP operator--(this CRTP& self, int)
+            noexcept (meta::nothrow::copyable<CRTP>)
+        {
+            CRTP tmp = self;
+            --self;
+            return tmp;
+        }
+
+        constexpr CRTP& operator-=(this CRTP& self, difference_type n) noexcept {
+            if consteval {
+                difference_type new_count = self.count - n;
+                if (new_count < 0) {
+                    self.ptr -= self.count * (self.count > 0) * self.step;
+                } else if (new_count >= self.size) {
+                    self.ptr +=
+                        (self.size - self.count - 1) *
+                        (self.count < self.size) *
+                        self.step;
+                } else {
+                    self.ptr -= n * self.step;
+                }
+                self.count = new_count;
+            } else {
+                self.ptr -= n * self.step;
+            }
+            return self;
+        }
+
+        [[nodiscard]] constexpr CRTP operator-(this const CRTP& self, difference_type n)
+            noexcept (meta::nothrow::copyable<CRTP>)
+        {
+            CRTP tmp = self;
+            tmp -= n;
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr difference_type operator-(
+            this const CRTP& self,
+            const CRTP& other
+        ) noexcept {
+            if consteval {
+                return self.count - other.count;
+            } else {
+                return (self.ptr - other.ptr) / self.step;
+            }
+        }
+
+        [[nodiscard]] constexpr bool operator==(
+            this const CRTP& self,
+            const CRTP& other
+        ) noexcept {
+            if consteval {
+                return self.count == other.count;
+            } else {
+                return self.ptr == other.ptr;
+            }
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(
+            this const CRTP& self,
+            const CRTP& other
+        ) noexcept {
+            if consteval {
+                return self.count <=> other.count;
+            } else {
+                return self.ptr <=> other.ptr;
+            }
+        }
+    };
+
     /* Array iterators are implemented as raw pointers into the array buffer.  Due to
     aggressive UB sanitization during constant evaluation, an extra count is required
     to avoid overstepping the end of the array.  This index is ignored at run time,
     ensuring zero-cost iteration, without interfering with compile-time uses. */
     template <meta::not_reference T, extent Shape, extent Strides>
-    struct array_iterator {
+    struct array_iterator : array_iterator_base<array_iterator<T, Shape, Strides>> {
         using iterator_category = std::conditional_t<
             Strides[0] == 1,
             std::contiguous_iterator_tag,
@@ -1187,6 +1329,12 @@ namespace impl {
         difference_type count = 0;
         static constexpr const size_t step = *Strides.data();
         static constexpr const size_t size = *Shape.data();
+
+        [[nodiscard]] constexpr array_iterator() = default;
+        [[nodiscard]] constexpr array_iterator(T* ptr, difference_type count = 0) :
+            ptr(ptr),
+            count(count)
+        {}
 
         [[nodiscard]] constexpr decltype(auto) operator*() const noexcept {
             if constexpr (Shape.size() == 1) {
@@ -1213,166 +1361,17 @@ namespace impl {
                 return view{ptr + n * step};
             }
         }
-
-        constexpr array_iterator& operator++() noexcept {
-            if consteval {
-                ++count;
-                if (count > 0 && count < size) {
-                    ptr += step;
-                }
-            } else {
-                ptr += step;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr array_iterator operator++(int) noexcept {
-            array_iterator temp = *this;
-            ++*this;
-            return temp;
-        }
-
-        [[nodiscard]] friend constexpr array_iterator operator+(
-            const array_iterator& self,
-            difference_type n
-        ) noexcept {
-            if consteval {
-                difference_type new_count = self.count + n;
-                if (new_count < 0) {
-                    return {self.ptr - self.count * (self.count > 0) * step, new_count};
-                } else if (new_count >= size) {
-                    return {
-                        self.ptr + (size - self.count - 1) * (self.count < size) * step,
-                        new_count
-                    };
-                } else {
-                    return {self.ptr + n * step, new_count};
-                }
-            } else {
-                return {self.ptr + n * step};
-            }
-        }
-
-        [[nodiscard]] friend constexpr array_iterator operator+(
-            difference_type n,
-            const array_iterator& self
-        ) noexcept {
-            if consteval {
-                difference_type new_count = self.count + n;
-                if (new_count < 0) {
-                    return {self.ptr - self.count * (self.count > 0) * step, new_count};
-                } else if (new_count >= size) {
-                    return {
-                        self.ptr + (size - self.count - 1) * (self.count < size) * step,
-                        new_count
-                    };
-                } else {
-                    return {self.ptr + n * step, new_count};
-                }
-            } else {
-                return {self.ptr + n * step};
-            }
-        }
-
-        constexpr array_iterator& operator+=(difference_type n) noexcept {
-            if consteval {
-                difference_type new_count = count + n;
-                if (new_count < 0) {
-                    ptr -= count * (count > 0) * step;
-                } else if (new_count >= size) {
-                    ptr += (size - count - 1) * (count < size) * step;
-                } else {
-                    ptr += n * step;
-                }
-                count = new_count;
-            } else {
-                ptr += n * step;
-            }
-            return *this;
-        }
-
-        constexpr array_iterator& operator--() noexcept {
-            if consteval {
-                if (count > 0 && count < size) {
-                    ptr -= step;
-                }
-                --count;
-            } else {
-                ptr -= step;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr array_iterator operator--(int) noexcept {
-            array_iterator temp = *this;
-            --*this;
-            return temp;
-        }
-
-        [[nodiscard]] constexpr array_iterator operator-(difference_type n) const noexcept {
-            if consteval {
-                difference_type new_count = count - n;
-                if (new_count < 0) {
-                    return {ptr - count * (count > 0) * step, new_count};
-                } else if (new_count >= size) {
-                    return {ptr + (size - count - 1) * (count < size) * step, new_count};
-                } else {
-                    return {ptr - n * step, new_count};
-                }
-            } else {
-                return {ptr - n * step};
-            }
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const array_iterator& other
-        ) const noexcept {
-            if consteval {
-                return count - other.count;
-            } else {
-                return (ptr - other.ptr) / step;
-            }
-        }
-
-        constexpr array_iterator& operator-=(difference_type n) noexcept {
-            if consteval {
-                difference_type new_count = count - n;
-                if (new_count < 0) {
-                    ptr -= count * (count > 0) * step;
-                } else if (new_count >= size) {
-                    ptr += (size - count - 1) * (count < size) * step;
-                } else {
-                    ptr -= n * step;
-                }
-                count = new_count;
-            } else {
-                ptr -= n * step;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const array_iterator& other) const noexcept {
-            if consteval {
-                return count == other.count;
-            } else {
-                return ptr == other.ptr;
-            }
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const array_iterator& other) const noexcept {
-            if consteval {
-                return count <=> other.count;
-            } else {
-                return ptr <=> other.ptr;
-            }
-        }
     };
+
+    /// TODO: another iterator type that inlines the dynamic buffers, assuming we
+    /// know how many dimensions we need at compile time (e.g. 2 or 3)  The CRTP base
+    /// makes this relatively easy.
 
     /* Iterators over dynamically-shaped arrays need to extend the liftetime of the
     shape and stride buffers, and produce further dynamic views of reduced dimension,
     bottoming out at a trivial view over a single element. */
     template <meta::not_reference T>
-    struct array_iterator<T, {}, {}> {
+    struct array_iterator<T, {}, {}> : array_iterator_base<array_iterator<T, {}, {}>> {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
         using value_type = ArrayView<T>;
@@ -1506,74 +1505,20 @@ namespace impl {
             return impl::arrow{**this};
         }
 
-        /// TODO: subscripting requires me to figure out dynamic indexing.
-
-        constexpr array_iterator& operator++() noexcept {
-            if consteval {
-                ++count;
-                if (count > 0 && count < size) {
-                    ptr += step;
-                }
-            } else {
-                ptr += step;
+        [[nodiscard]] constexpr auto operator[](difference_type n) const {
+            using view = value_type;
+            view result;
+            result.ptr = ptr + n * step;
+            if (capsule == nullptr) {  // parent is 1D
+                result.scope = 1;  // child is trivially contiguous
+            } else if (scope + 1 == capsule->ndim) {  // child is 1D
+                result.scope = step;  // maybe non-contiguous
+            } else {  // child is multidimensional
+                result.capsule = capsule->incref();
+                result.scope = scope + 1;
             }
-        }
-
-        [[nodiscard]] constexpr array_iterator operator++(int) {
-            array_iterator temp = *this;
-            ++*this;
-            return temp;
-        }
-
-        /// TODO: random-access addition, including in-place
-
-        constexpr array_iterator& operator--() noexcept {
-            if consteval {
-                if (count > 0 && count < size) {
-                    ptr -= step;
-                }
-                --count;
-            } else {
-                ptr -= step;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr array_iterator operator--(int) {
-            array_iterator temp = *this;
-            --*this;
-            return temp;
-        }
-
-        /// TODO: random-access subtraction arithmetic requires the same work on indexing
-        /// as the subscript operator.
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const array_iterator& other
-        ) const noexcept {
-            if consteval {
-                return count - other.count;
-            } else {
-                return (ptr - other.ptr) / step;
-            }
-        }
-
-        /// TODO: random-access in-place subtraction
-
-        [[nodiscard]] constexpr bool operator==(const array_iterator& other) const noexcept {
-            if consteval {
-                return count == other.count;
-            } else {
-                return ptr == other.ptr;
-            }
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const array_iterator& other) const noexcept {
-            if consteval {
-                return count <=> other.count;
-            } else {
-                return ptr <=> other.ptr;
-            }
+            result.product = reduced_product;
+            return result;
         }
     };
 
