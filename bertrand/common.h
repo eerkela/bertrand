@@ -4841,6 +4841,9 @@ struct NoneType : impl::prefer_constructor_tag {
 inline constexpr NoneType None;
 
 
+/// TODO: hash() should go into op.h as a `def` function to allow for chaining.
+
+
 /* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
 needing to explicitly specialize `std::hash`. */
 template <meta::hashable T>
