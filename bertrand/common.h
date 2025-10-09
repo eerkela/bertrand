@@ -4877,17 +4877,16 @@ namespace impl {
         lhs.swap(rhs);
     }
 
-    /* A simple wrapper for an arbitrarily-qualified type that strips rvalue references
-    (taking ownership over the referenced object) and preserves lvalues (converting
-    them into copyable, assignable, default-constructible proxies).  Dereferencing the
-    `ref` object will perfectly forward the value according to both its original cvref
-    qualifications as well as those of the `ref` object itself.  Containers can use
-    this as an elementwise storage type to allow storage of arbitrarily-qualified
-    types. */
-    template <meta::not_void T>
+    /* A trivial wrapper for an arbitrarily-qualified type that strips rvalue
+    references (taking ownership over the referenced object) and preserves lvalues
+    (converting them into pointers that rebind on assignment, without affecting the
+    referenced object).  Dereferencing the `ref` object will perfectly forward the
+    value according to both its original cvref qualifications as well as those of the
+    `ref` object itself.  Containers can use this as an elementwise storage type to
+    allow storage of arbitrarily-qualified types with perfect forwarding. */
+    template <meta::not_void T> requires (meta::not_rvalue<T>)
     struct ref {
         using type = meta::remove_rvalue<T>;
-
         [[no_unique_address]] type data;
 
         constexpr void swap(ref& other)
@@ -4902,71 +4901,56 @@ namespace impl {
             return (std::forward<Self>(self).data);
         }
 
-        constexpr auto operator->()
-            noexcept (requires{{std::addressof(data)} noexcept;})
-            requires (requires{{std::addressof(data)};})
+        template <typename Self>
+        constexpr auto operator->(this Self&& self)
+            noexcept (requires{{std::addressof(self.data)} noexcept;})
+            requires (requires{{std::addressof(self.data)};})
         {
-            return std::addressof(data);
-        }
-
-        constexpr auto operator->() const
-            noexcept (requires{{std::addressof(data)} noexcept;})
-            requires (requires{{std::addressof(data)};})
-        {
-            return std::addressof(data);
+            return std::addressof(self.data);
         }
     };
-
-    /* Specialization of `ref<T>` for lvalue references.  Assigning to an lvalue
-    reference will rebind the reference itself, without affecting the referenced
-    object.  The reference can also be default-constructed, placing it in a null state
-    that can be assigned to later.  Dereferencing a null reference triggers undefined
-    behavior. */
-    template <meta::not_void T> requires (meta::lvalue<T>)
+    template <meta::not_void T> requires (meta::not_rvalue<T> && meta::lvalue<T>)
     struct ref<T> {
         using type = T;
+        meta::as_pointer<T> data = nullptr;
 
-    private:
-        union maybe_null {
-            struct storage : impl::prefer_constructor_tag { type value; } wrapper;
-            constexpr maybe_null() noexcept {}
-            constexpr maybe_null(type v) noexcept : wrapper{{}, v} {}
-            constexpr maybe_null(const maybe_null& other) noexcept :
-                wrapper(other.wrapper)
-            {}
-            constexpr maybe_null& operator=(const maybe_null& other) noexcept {
-                std::construct_at(this, other);
-                return *this;
-            }
-            constexpr ~maybe_null() noexcept {}
-        };
-
-    public:
-        maybe_null data;
+        [[nodiscard]] constexpr ref() noexcept = default;
+        [[nodiscard]] constexpr ref(T data) noexcept : data(std::addressof(data)) {}
 
         constexpr void swap(ref& other) noexcept {
-            ref tmp{*this};
-            data = other.data;
-            other.data = tmp.data;
+            std::swap(data, other.data);
         }
 
-        template <typename Self>
-        constexpr decltype(auto) operator*(this Self&& self) noexcept {
-            return (std::forward<Self>(self).data.wrapper.value);
+        constexpr T operator*() noexcept {
+            return *data;
         }
 
-        constexpr auto operator->()
-            noexcept (requires{{std::addressof(data.wrapper.value)} noexcept;})
-            requires (requires{{std::addressof(data.wrapper.value)};})
-        {
-            return std::addressof(data.wrapper.value);
+        constexpr T operator*() volatile noexcept {
+            return *static_cast<meta::as_pointer<meta::as_volatile<T>>>(data);
         }
 
-        constexpr auto operator->() const
-            noexcept (requires{{std::addressof(data.wrapper.value)} noexcept;})
-            requires (requires{{std::addressof(data.wrapper.value)};})
-        {
-            return std::addressof(data.wrapper.value);
+        constexpr meta::as_const<T> operator*() const noexcept {
+            return *static_cast<meta::as_pointer<meta::as_const<T>>>(data);
+        }
+
+        constexpr meta::as_const<T> operator*() const volatile noexcept {
+            return *static_cast<meta::as_pointer<meta::as_const<meta::as_volatile<T>>>>(data);
+        }
+
+        constexpr auto operator->() noexcept {
+            return data;
+        }
+
+        constexpr auto operator->() volatile noexcept {
+            return static_cast<meta::as_pointer<meta::as_volatile<T>>>(data);
+        }
+
+        constexpr auto operator->() const noexcept {
+            return static_cast<meta::as_pointer<meta::as_const<T>>>(data);
+        }
+
+        constexpr auto operator->() const volatile noexcept {
+            return static_cast<meta::as_pointer<meta::as_const<meta::as_volatile<T>>>>(data);
         }
     };
 
