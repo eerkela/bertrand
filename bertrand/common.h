@@ -4195,39 +4195,15 @@ namespace meta {
     ////    STRUCTURAL CONCEPTS    ////
     ///////////////////////////////////
 
-    template <typename T>
-    concept has_data = requires(as_lvalue<T> t) { ::std::ranges::data(t); };
-
-    template <has_data T>
-    using data_type = decltype(::std::ranges::data(::std::declval<as_lvalue<T>>()));
-
-    template <typename Ret, typename T>
-    concept data_returns = has_data<T> && convertible_to<data_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept has_data =
-            meta::has_data<T> &&
-            noexcept(::std::ranges::data(::std::declval<T>()));
-
-        template <nothrow::has_data T>
-        using data_type = meta::data_type<T>;
-
-        template <typename Ret, typename T>
-        concept data_returns =
-            nothrow::has_data<T> &&
-            nothrow::convertible_to<nothrow::data_type<T>, Ret>;
-
-    }
+    /* Retrieve the size of a generic type `T` as an unsigned integer.  This is
+    expression-equivalent to `std::ranges::size()`. */
+    inline constexpr auto size = std::ranges::size;
 
     template <typename T>
-    concept has_size = requires(T t) {
-        { ::std::ranges::size(t) } -> unsigned_integer;
-    };
+    concept has_size = requires(T t) {{size(t)} -> unsigned_integer;};
 
     template <has_size T>
-    using size_type = decltype(::std::ranges::size(::std::declval<T>()));
+    using size_type = decltype(size(::std::declval<T>()));
 
     template <typename Ret, typename T>
     concept size_returns = has_size<T> && convertible_to<size_type<T>, Ret>;
@@ -4235,9 +4211,9 @@ namespace meta {
     namespace nothrow {
 
         template <typename T>
-        concept has_size =
-            meta::has_size<T> &&
-            noexcept(::std::ranges::size(::std::declval<T>()));
+        concept has_size = meta::has_size<T> && requires(T t) {
+            {meta::size(t)} noexcept -> meta::unsigned_integer;
+        };
 
         template <nothrow::has_size T>
         using size_type = meta::size_type<T>;
@@ -4249,13 +4225,83 @@ namespace meta {
 
     }
 
+    namespace detail {
+
+        namespace adl {
+            using ::std::ssize;
+
+            template <typename T>
+            concept has_ssize = requires(T t) {
+                {ssize(::std::forward<T>(t))} -> meta::signed_integer;
+            };
+
+            template <typename T>
+            concept nothrow_ssize = requires(T t) {
+                {ssize(::std::forward<T>(t))} noexcept -> meta::signed_integer;
+            };
+
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_ssize = requires(T t) {
+                {::std::forward<T>(t).ssize()} -> meta::signed_integer;
+            };
+
+            template <typename T>
+            concept nothrow_ssize = requires(T t) {
+                {::std::forward<T>(t).ssize()} noexcept -> meta::signed_integer;
+            };
+
+        }
+
+        struct ssize_fn {
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (member::nothrow_ssize<T>)
+                requires (member::has_ssize<T>)
+            {
+                return (::std::forward<T>(t).ssize());
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (adl::nothrow_ssize<T>)
+                requires (!member::has_ssize<T> && adl::has_ssize<T>)
+            {
+                return (ssize(::std::forward<T>(t)));
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{
+                    {::std::ranges::ssize(::std::forward<T>(t))} noexcept -> meta::signed_integer;
+                })
+                requires (
+                    !member::has_ssize<T> &&
+                    !adl::has_ssize<T> &&
+                    requires{{::std::ranges::ssize(::std::forward<T>(t))} -> meta::signed_integer;}
+                )
+            {
+                return (::std::ranges::ssize(::std::forward<T>(t)));
+            }
+        };
+
+    }
+
+    /* Retrieve the size of a generic type `T` as a signed integer.  This is
+    expression-equivalent to `std::ranges::ssize()`, except that it first checks
+    for a `obj.ssize()` member method or `ssize(obj)` ADL method before invoking
+    `std::ranges::ssize()`, which converts the result of `meta::size()` to a signed
+    integer. */
+    inline constexpr detail::ssize_fn ssize;
+
     template <typename T>
-    concept has_ssize = requires(T t) {
-        { ::std::ranges::ssize(t) } -> signed_integer;
-    };
+    concept has_ssize = requires(T t) {{ssize(t)} -> signed_integer;};
 
     template <has_ssize T>
-    using ssize_type = decltype(::std::ranges::ssize(::std::declval<T>()));
+    using ssize_type = decltype(ssize(::std::declval<T>()));
 
     template <typename Ret, typename T>
     concept ssize_returns = has_ssize<T> && convertible_to<ssize_type<T>, Ret>;
@@ -4263,9 +4309,9 @@ namespace meta {
     namespace nothrow {
 
         template <typename T>
-        concept has_ssize =
-            meta::has_ssize<T> &&
-            noexcept(::std::ranges::ssize(::std::declval<T>()));
+        concept has_ssize = meta::has_ssize<T> && requires(T t) {
+            {meta::ssize(t)} noexcept -> meta::signed_integer;
+        };
 
         template <nothrow::has_ssize T>
         using ssize_type = meta::ssize_type<T>;
@@ -4277,19 +4323,28 @@ namespace meta {
 
     }
 
+    /* Check whether a generic type `T` contains zero elements.  This is
+    expression-equivalent to `std::ranges::empty()`. */
+    inline constexpr auto empty = ::std::ranges::empty;
+
     template <typename T>
-    concept has_empty = requires(T t) {
-        { ::std::ranges::empty(t) } -> convertible_to<bool>;
-    };
+    concept has_empty = requires(T t) {{empty(t)} -> convertible_to<bool>;};
 
     namespace nothrow {
 
         template <typename T>
         concept has_empty =
-            meta::has_empty<T> &&
-            noexcept(::std::ranges::empty(::std::declval<T>()));
+            meta::has_empty<T> && requires(T t) {
+                {meta::empty(t)} noexcept -> nothrow::convertible_to<bool>;
+            };
 
     }
+
+
+
+    /// TODO: add a meta::capacity(x) customization point object that checks for
+    /// x.capacity() or capacity(x) via ADL.
+
 
     template <typename T>
     concept has_capacity = requires(T t) { t.capacity(); };
@@ -4317,6 +4372,9 @@ namespace meta {
 
     }
 
+    /// TODO: add a meta::reserve(x, n) customization point object that checks for
+    /// x.reserve(n) or reserve(x, n) via ADL?
+
     template <typename T>
     concept has_reserve = requires(T t, size_t n) { t.reserve(n); };
 
@@ -4343,30 +4401,297 @@ namespace meta {
 
     }
 
-    template <typename T, typename Key>
-    concept has_contains = requires(T t, Key key) { t.contains(key); };
 
-    template <typename T, typename Key> requires (has_contains<T, Key>)
-    using contains_type = decltype(::std::declval<T>().contains(::std::declval<Key>()));
+    namespace detail {
 
-    template <typename Ret, typename T, typename Key>
-    concept contains_returns =
-        has_contains<T, Key> && convertible_to<contains_type<T, Key>, Ret>;
+        namespace adl {
+
+            template <typename T>
+            concept has_front = requires(T t) {
+                {front(::std::forward<T>(t))};
+            };
+
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_front = requires(T t) {
+                {::std::forward<T>(t).front()};
+            };
+
+        }
+
+        struct front_fn {
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{::std::forward<T>(t).front()} noexcept;})
+                requires (member::has_front<T>)
+            {
+                return (::std::forward<T>(t).front());
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{front(::std::forward<T>(t))} noexcept;})
+                requires (!member::has_front<T> && adl::has_front<T>)
+            {
+                return (front(::std::forward<T>(t)));
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{*::std::ranges::begin(t)} noexcept;})
+                requires (!member::has_front<T> && !adl::has_front<T> && meta::iterable<T>)
+            {
+                return (*::std::ranges::begin(t));
+            }
+        };
+
+    }
+
+    /* Retrieve the first element in a generic type `T`, preferring the following:
+
+        1.  an `obj.front()` member method.
+        2.  a `front(obj)` ADL function.
+        3.  dereferencing the result of `std::ranges::begin(obj)`.
+
+    In all cases, the result will be perfectly-forwarded.  Note that no extra bounds
+    checking is performed, meaning that the behavior is undefined if `obj` is empty.
+    Cases (1) and (2) are free to implement whatever bounds checking they need on a
+    container-specific basis. */
+    inline constexpr detail::front_fn front;
+
+    template <typename T>
+    concept has_front = requires(T t) {{front(t)};};
+
+    template <has_front T>
+    using front_type = remove_rvalue<decltype((front(::std::declval<T>())))>;
+
+    template <typename Ret, typename T>
+    concept front_returns = has_front<T> && convertible_to<front_type<T>, Ret>;
 
     namespace nothrow {
 
-        template <typename T, typename Key>
-        concept has_contains =
-            meta::has_contains<T, Key> &&
-            noexcept(::std::declval<T>().contains(::std::declval<Key>()));
+        template <typename T>
+        concept has_front = meta::has_front<T> && requires(T t) {{meta::front(t)} noexcept;};
 
-        template <typename T, typename Key> requires (nothrow::has_contains<T, Key>)
-        using contains_type = meta::contains_type<T, Key>;
+        template <nothrow::has_front T>
+        using front_type = meta::front_type<T>;
 
-        template <typename Ret, typename T, typename Key>
-        concept contains_returns =
-            nothrow::has_contains<T, Key> &&
-            nothrow::convertible_to<nothrow::contains_type<T, Key>, Ret>;
+        template <typename Ret, typename T>
+        concept front_returns =
+            nothrow::has_front<T> && nothrow::convertible_to<nothrow::front_type<T>, Ret>;
+
+    }
+
+    namespace detail {
+
+        namespace adl {
+
+            template <typename T>
+            concept has_back = requires(T t) {
+                {back(::std::forward<T>(t))};
+            };
+
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_back = requires(T t) {
+                {::std::forward<T>(t).back()};
+            };
+
+        }
+
+        struct back_fn {
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{::std::forward<T>(t).back()} noexcept;})
+                requires (member::has_back<T>)
+            {
+                return (::std::forward<T>(t).back());
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{back(::std::forward<T>(t))} noexcept;})
+                requires (!member::has_back<T> && adl::has_back<T>)
+            {
+                return (back(::std::forward<T>(t)));
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{*::std::ranges::rbegin(t)} noexcept;})
+                requires (
+                    !member::has_back<T> &&
+                    !adl::has_back<T> &&
+                    meta::reverse_iterable<T>
+                )
+            {
+                return (*::std::ranges::rbegin(t));
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires(meta::begin_type<T> it) {
+                    {std::ranges::begin(t)} noexcept;
+                    {it += meta::ssize(t) - 1} noexcept;
+                    {*it} noexcept;
+                })
+                requires (
+                    !member::has_back<T> &&
+                    !adl::has_back<T> &&
+                    !meta::reverse_iterable<T> &&
+                    requires(meta::begin_type<T> it) { {it += meta::ssize(t) - 1};}
+                )
+            {
+                auto it = ::std::ranges::begin(t);
+                it += meta::ssize(t) - 1;
+                return (*it);
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires(meta::end_type<T> it) {
+                    {std::ranges::end(t)} noexcept;
+                    {--it} noexcept;
+                    {*it} noexcept;
+                })
+                requires (
+                    !member::has_back<T> &&
+                    !adl::has_back<T> &&
+                    !meta::reverse_iterable<T> &&
+                    !requires(meta::begin_type<T> it) {{it += meta::ssize(t) - 1};} &&
+                    requires(meta::end_type<T> it) {{--it};}
+                )
+            {
+                auto it = ::std::ranges::end(t);
+                --it;
+                return (*it);
+            }
+        };
+
+    }
+
+    /* Retrieve the last element in a generic type `T`, preferring the following:
+    
+        1.  an `obj.back()` member method.
+        2.  a `back(obj)` ADL function.
+        3.  dereferencing the result of `std::ranges::rbegin(obj)`.
+        4.  advancing the iterator returned by `std::ranges::begin(obj)` by
+            `meta::ssize(obj) - 1` using `operator+=` (random-access).
+        5.  decrementing the iterator returned by `std::ranges::end(obj)` and
+            dereferencing it.
+
+    In all cases, the result will be perfectly-forwarded.  Note that no extra bounds
+    checking is performed, meaning that the behavior is undefined if `obj` is empty.
+    Cases (1) and (2) are free to implement whatever bounds checking they need on a
+    container-specific basis. */
+    inline constexpr detail::back_fn back;
+
+    template <typename T>
+    concept has_back = requires(T t) {{back(t)};};
+
+    template <has_back T>
+    using back_type = remove_rvalue<decltype((back(::std::declval<T>())))>;
+
+    template <typename Ret, typename T>
+    concept back_returns = has_back<T> && convertible_to<back_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_back = meta::has_back<T> && requires(T t) {{meta::back(t)} noexcept;};
+
+        template <nothrow::has_back T>
+        using back_type = meta::back_type<T>;
+
+        template <typename Ret, typename T>
+        concept back_returns =
+            nothrow::has_back<T> && nothrow::convertible_to<nothrow::back_type<T>, Ret>;
+
+    }
+
+    /* Retrieve a pointer to the underlying data buffer for a contiguous range.  This
+    is expression-equivalent to `std::ranges::data()`. */
+    inline constexpr auto data = ::std::ranges::data;
+
+    /* Retrieve a const pointer to the underlying data buffer for a contiguous range.
+    This is expression-equivalent to `std::ranges::cdata()`. */
+    inline constexpr auto cdata = ::std::ranges::cdata;
+
+    template <typename T>
+    concept has_data = requires(as_lvalue<T> t) {{data(t)} -> pointer;};
+
+    template <has_data T>
+    using data_type = decltype(data(::std::declval<as_lvalue<T>>()));
+
+    template <typename Ret, typename T>
+    concept data_returns = has_data<T> && convertible_to<data_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept has_data = meta::has_data<T> && requires(T t) {
+            {meta::data(t)} noexcept -> meta::pointer;
+        };
+
+        template <nothrow::has_data T>
+        using data_type = meta::data_type<T>;
+
+        template <typename Ret, typename T>
+        concept data_returns =
+            nothrow::has_data<T> &&
+            nothrow::convertible_to<nothrow::data_type<T>, Ret>;
+
+    }
+
+
+
+
+    /// TODO: meta::hash(), which is separate from `bertrand::hash`, which ought to be
+    /// a `def` object in `op.h`
+
+    template <typename T>
+    concept hashable = requires(T t) { ::std::hash<::std::decay_t<T>>{}(t); };
+
+    template <hashable T>
+    using hash_type = decltype(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
+
+    template <typename Ret, typename T>
+    concept hash_returns = hashable<T> && convertible_to<hash_type<T>, Ret>;
+
+    namespace nothrow {
+
+        template <typename T>
+        concept hashable =
+            meta::hashable<T> &&
+            noexcept(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
+
+        template <nothrow::hashable T>
+        using hash_type = meta::hash_type<T>;
+
+        template <typename Ret, typename T>
+        concept hash_returns =
+            nothrow::hashable<T> &&
+            nothrow::convertible_to<nothrow::hash_type<T>, Ret>;
+
+    }
+
+    template <typename T, typename Char = char>
+    concept has_stream_insertion = requires(::std::basic_ostream<Char>& os, T t) {
+        { os << t } -> convertible_to<::std::basic_ostream<Char>&>;
+    };
+
+    namespace nothrow {
+
+        template <typename T, typename Char = char>
+        concept has_stream_insertion =
+            meta::has_stream_insertion<T, Char> &&
+            noexcept(::std::declval<::std::basic_ostream<Char>&>() << ::std::declval<T>());
 
     }
 
@@ -4444,46 +4769,6 @@ namespace meta {
 
         template <nothrow::has_items T>
         using items_type = meta::items_type<T>;
-
-    }
-
-    template <typename T>
-    concept hashable = requires(T t) { ::std::hash<::std::decay_t<T>>{}(t); };
-
-    template <hashable T>
-    using hash_type = decltype(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
-
-    template <typename Ret, typename T>
-    concept hash_returns = hashable<T> && convertible_to<hash_type<T>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T>
-        concept hashable =
-            meta::hashable<T> &&
-            noexcept(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
-
-        template <nothrow::hashable T>
-        using hash_type = meta::hash_type<T>;
-
-        template <typename Ret, typename T>
-        concept hash_returns =
-            nothrow::hashable<T> &&
-            nothrow::convertible_to<nothrow::hash_type<T>, Ret>;
-
-    }
-
-    template <typename T, typename Char = char>
-    concept has_stream_insertion = requires(::std::basic_ostream<Char>& os, T t) {
-        { os << t } -> convertible_to<::std::basic_ostream<Char>&>;
-    };
-
-    namespace nothrow {
-
-        template <typename T, typename Char = char>
-        concept has_stream_insertion =
-            meta::has_stream_insertion<T, Char> &&
-            noexcept(::std::declval<::std::basic_ostream<Char>&>() << ::std::declval<T>());
 
     }
 

@@ -649,10 +649,10 @@ namespace meta {
     /* Returns `true` if `T` is a trivial range of just a single element, or `false`
     if it wraps an iterable or tuple-like container.  Iterating over a scalar always
     yields another scalar referencing the same value. */
-    template <typename T>
+    template <typename T, typename R = void>
     concept scalar = range<T> && requires(T r) {
         {*r.__value} -> inherits<impl::scalar_tag>;
-    };
+    } && (is_void<R> || convertible_to<T, R>);
 
     /* A refinement of `meta::range<T, Rs...>` that only matches iota ranges (i.e.
     those of the form `[start, stop[, step]]`, where `start` is not an iterator).
@@ -882,7 +882,7 @@ namespace meta {
                     meta::size_returns<size_t, T>
                 )
             {
-                return deduce_shape<meta::pack<meta::yield_type<T>>>{}(::std::ranges::size(t));
+                return deduce_shape<meta::pack<meta::yield_type<T>>>{}(meta::size(t));
             }
         };
 
@@ -975,6 +975,54 @@ namespace meta {
         template <typename Ret, typename T>
         concept shape_returns =
             nothrow::has_shape<T> && nothrow::convertible_to<nothrow::shape_type<T>, Ret>;
+
+    }
+
+    namespace detail {
+
+        namespace member {
+
+            template <typename K, typename A>
+            concept has_contains = requires(const K& key, const A& a) {
+                {a.contains(key)} -> meta::convertible_to<bool>;
+            };
+
+            template <typename K, typename A>
+            concept nothrow_contains = requires(const K& key, const A& a) {
+                {a.contains(key)} noexcept -> nothrow::convertible_to<bool>;
+            };
+
+        }
+
+        namespace adl {
+
+            template <typename K, typename A>
+            concept has_contains = requires(const K& key, const A& a) {
+                {contains(a, key)} -> meta::convertible_to<bool>;
+            };
+
+            template <typename K, typename A>
+            concept nothrow_contains = requires(const K& key, const A& a) {
+                {contains(a, key)} noexcept -> nothrow::convertible_to<bool>;
+            };
+
+        }
+
+        template <typename K, typename A>
+        constexpr bool contains_impl(const K& key, const A& a)
+            noexcept (member::nothrow_contains<K, A>)
+            requires (member::has_contains<K, A>)
+        {
+            return a.contains(key);
+        }
+
+        template <typename K, typename A>
+        constexpr bool contains_impl(const K& key, const A& a)
+            noexcept (adl::nothrow_contains<K, A>)
+            requires (!member::has_contains<K, A> && adl::has_contains<K, A>)
+        {
+            return contains(a, key);
+        }
 
     }
 
@@ -4835,71 +4883,52 @@ namespace iter {
     callable or a scalar value is reached. */
     template <meta::not_rvalue F = impl::ExplicitConvertTo<bool>>
     struct any {
-    private:
-        template <typename T>
-        struct call {
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{{func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
-                requires (requires{{func(std::forward<T>(v))} -> meta::truthy;})
-            {
-                return bool(func(std::forward<T>(v)));
-            }
-        };
+        [[no_unique_address]] F func;
 
-        template <meta::range T>
-        struct call<T> {
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{{func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
-                requires (requires{{func(std::forward<T>(v))} -> meta::truthy;})
-            {
-                return bool(func(std::forward<T>(v)));
-            }
+        template <typename A>
+        constexpr bool operator()(A&& a) const
+            noexcept (requires{{func(std::forward<A>(a))} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{func(std::forward<A>(a))} -> meta::truthy;})
+        {
+            return bool(func(std::forward<A>(a)));
+        }
 
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{{func(*std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
-                requires (
-                    !requires{{func(std::forward<T>(v))} -> meta::truthy;} &&
-                    requires{{func(*std::forward<T>(v))} -> meta::truthy;}
-                )
-            {
-                return bool(func(*std::forward<T>(v)));
-            }
-
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (
-                    meta::nothrow::iterable<T> &&
-                    requires(meta::yield_type<T> x) {{
-                        call<decltype(x)>{}(func, std::forward<decltype(x)>(x))
-                    } noexcept -> meta::nothrow::truthy;}
-                )
-                requires (
-                    !requires{{func(std::forward<T>(v))} -> meta::truthy;} &&
-                    !requires{{func(*std::forward<T>(v))} -> meta::truthy;} &&
-                    !meta::scalar<T> &&
-                    meta::iterable<T> &&
-                    requires(meta::yield_type<T> x) {
-                        {call<decltype(x)>{}(func, std::forward<decltype(x)>(x))} -> meta::truthy;
-                    }
-                )
-            {
-                for (auto&& x : v) {
-                    if (call<decltype(x)>{}(std::forward<decltype(x)>(x))) {
+        template <meta::range A>
+        constexpr bool operator()(A&& a) const
+            noexcept (requires{{func(*std::forward<A>(a))} noexcept -> meta::nothrow::truthy;} || (
+                !requires{{func(*std::forward<A>(a))} -> meta::truthy;} &&
+                meta::nothrow::iterable<A> &&
+                requires(meta::yield_type<A> x) {
+                    {operator()(std::forward<decltype(x)>(x))} noexcept -> meta::nothrow::truthy;
+                }
+            ))
+            requires (!requires{{func(std::forward<A>(a))} -> meta::truthy;} && (
+                requires{{func(*std::forward<A>(a))} -> meta::truthy;} ||
+                !meta::scalar<A> &&
+                meta::iterable<A> &&
+                requires(meta::yield_type<A> x) {
+                    {operator()(std::forward<decltype(x)>(x))} -> meta::truthy;
+                }
+            ))
+        {
+            if constexpr (requires{{func(*std::forward<A>(a))} -> meta::truthy;}) {
+                return bool(func(*std::forward<A>(a)));
+            } else {
+                for (auto&& x : a) {
+                    if (operator()(std::forward<decltype(x)>(x))) {
                         return true;
                     }
                 }
                 return false;
             }
-        };
+        }
 
-    public:
-        [[no_unique_address]] F func;
-
-        template <typename... A>
+        template <typename... A> requires (sizeof...(A) > 1)
         [[nodiscard]] constexpr bool operator()(A&&... a) const
-            noexcept (requires{{(call<A>{}(func, std::forward<A>(a)) || ...)} noexcept;})
-            requires (requires{{(call<A>{}(func, std::forward<A>(a)) || ...)};})
+            noexcept (requires{{(operator()(std::forward<A>(a)) || ...)} noexcept;})
+            requires (requires{{(operator()(std::forward<A>(a)) || ...)};})
         {
-            return (call<A>{}(func, std::forward<A>(a)) || ...);
+            return (operator()(std::forward<A>(a)) || ...);
         }
     };
 
@@ -4916,81 +4945,68 @@ namespace iter {
     callable or a scalar value is reached. */
     template <meta::not_rvalue F = impl::ExplicitConvertTo<bool>>
     struct all {
-    private:
+        [[no_unique_address]] F func;
+
         template <typename T>
-        struct call {
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{{func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
-                requires (requires{{func(std::forward<T>(v))} -> meta::truthy;})
-            {
-                return bool(func(std::forward<T>(v)));
-            }
-        };
+        constexpr bool operator()(T&& v) const
+            noexcept (requires{{func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{func(std::forward<T>(v))} -> meta::truthy;})
+        {
+            return bool(func(std::forward<T>(v)));
+        }
 
         template <meta::range T>
-        struct call<T> {
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{{func(std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
-                requires (requires{{func(std::forward<T>(v))} -> meta::truthy;})
-            {
-                return bool(func(std::forward<T>(v)));
-            }
-
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (requires{{func(*std::forward<T>(v))} noexcept -> meta::nothrow::truthy;})
-                requires (
-                    !requires{{func(std::forward<T>(v))} -> meta::truthy;} &&
-                    requires{{func(*std::forward<T>(v))} -> meta::truthy;}
-                )
-            {
+        constexpr bool operator()(T&& v) const
+            noexcept (requires{{func(*std::forward<T>(v))} noexcept -> meta::nothrow::truthy;} || (
+                !requires{{func(*std::forward<T>(v))} -> meta::truthy;} &&
+                meta::nothrow::iterable<T> &&
+                requires(meta::yield_type<T> x) {
+                    {operator()(std::forward<decltype(x)>(x))} noexcept -> meta::nothrow::truthy;
+                }
+            ))
+            requires (!requires{{func(std::forward<T>(v))} -> meta::truthy;} && (
+                requires{{func(*std::forward<T>(v))} -> meta::truthy;} ||
+                !meta::scalar<T> &&
+                meta::iterable<T> &&
+                requires(meta::yield_type<T> x) {
+                    {operator()(std::forward<decltype(x)>(x))} -> meta::truthy;
+                }
+            ))
+        {
+            if constexpr (requires{{func(*std::forward<T>(v))} -> meta::truthy;}) {
                 return bool(func(*std::forward<T>(v)));
-            }
-
-            static constexpr bool operator()(meta::as_const_ref<F> func, meta::forward<T> v)
-                noexcept (
-                    meta::nothrow::iterable<T> &&
-                    requires(meta::yield_type<T> x) {{
-                        !call<decltype(x)>{}(func, std::forward<decltype(x)>(x))
-                    } noexcept -> meta::nothrow::truthy;
-                })
-                requires (
-                    !requires{{func(std::forward<T>(v))} -> meta::truthy;} &&
-                    !requires{{func(*std::forward<T>(v))} -> meta::truthy;} &&
-                    !meta::scalar<T> &&
-                    meta::iterable<T> &&
-                    requires(meta::yield_type<T> x) {
-                        {!call<decltype(x)>{}(func, std::forward<decltype(x)>(x))} -> meta::truthy;
-                    }
-                )
-            {
+            } else {
                 for (auto&& x : v) {
-                    if (!call<decltype(x)>{}(std::forward<decltype(x)>(x))) {
+                    if (!operator()(std::forward<decltype(x)>(x))) {
                         return false;
                     }
                 }
                 return true;
             }
-        };
+        }
 
-    public:
-        [[no_unique_address]] F func;
-
-        template <typename... A>
+        template <typename... A> requires (sizeof...(A) > 1)
         [[nodiscard]] constexpr bool operator()(A&&... a) const
-            noexcept (requires{{(call<A>{}(func, std::forward<A>(a)) && ...)} noexcept;})
-            requires (requires{{(call<A>{}(func, std::forward<A>(a)) && ...)};})
+            noexcept (requires{{(operator()(std::forward<A>(a)) && ...)} noexcept;})
+            requires (requires{{(operator()(std::forward<A>(a)) && ...)};})
         {
-            return (call<A>{}(func, std::forward<A>(a)) && ...);
+            return (operator()(std::forward<A>(a)) && ...);
         }
     };
 
     template <typename F>
     all(F&&) -> all<meta::remove_rvalue<F>>;
 
-    /// TODO: all of these predicates might need to absorb the complexity of ranges
-    /// unconditionally yielding other ranges.  Particularly `at{}`, which
-    /// implements `range[i, j, k, ...]`.
-    /// -> In many cases, these may end up being simplications, which is kind of nice.
+    /// TODO: Maybe I should just provide two specialization of `contains`, one for
+    /// scalar `k` and the other for ranges.  That might simplify template errors
+    /// as well.  It might also be a good idea to remove the variadic arguments as well
+    /// for the same reason, and then just embed the constraints directly into the
+    /// call operator.  Both of those together would mean that I split `contains`
+    /// into two classes, and then inline the `call()` method into both.
+    /// -> Maybe I can implement a single argument version that does the same thing
+    /// as `any{}` and `all{}`, where it splits the template constraints into the base
+    /// overload, which yields the mot informative error messages, and the variadic
+    /// overload, which just forwards to the single argument version.
 
     /* Check to see whether a particular value or consecutive subsequence is present
     in the arguments.  Multiple arguments may be supplied, in which case the search
@@ -4998,14 +5014,16 @@ namespace iter {
 
     The initializer may be any of the following (in order of precedence):
 
-        1.  A single value for which `value == arg` is well-formed.
-        2.  A function object for which `value(arg)` is well-formed and returns a type
-            explicitly convertible to `bool`, where `true` terminates the search.
-        3.  A valid input to an `arg.contains()` method, if one exists.
-        4.  A linear search through the top-level elements of a tuple or iterable type,
-            applying (1) and (2) to each result.  If the comparison value is a range,
-            then it will be interpreted as a subsequence, and will only return true if
-            all of its elements are found in the proper order.
+        1.  A single value for which `value == arg` or `value(arg)` is well-formed and
+            returns a type that is implicitly convertible to `bool`, where `true`
+            terminates the search.
+        2.  A valid input to an `arg.contains(value)` member method or ADL-enabled
+            `contains(arg, value)`, if one exists, and returns a type that is
+            implicitly convertible to `bool`.
+        3.  A linear search through the top-level elements of a tuple or iterable type,
+            applying (1) to each result.  If the comparison value is a range, then it
+            will be interpreted as a subsequence, and will only return true if all of
+            its elements are found in the proper order.
     */
     template <meta::not_rvalue T>
     struct contains {
@@ -5015,30 +5033,30 @@ namespace iter {
         template <typename K, typename A>
         static constexpr bool equality =
             !meta::range<K> && !meta::range<A> && requires(const K& k, const A& a) {
-                {k == a} -> meta::truthy;
-            };
-
-        template <typename K, typename A>
-        static constexpr bool predicate =
-            !meta::range<K> && requires(const K& k, const A& a) {
-                {k(a)} -> meta::truthy;
+                {k == a} -> meta::convertible_to<bool>;
             };
 
         // 1a) prefer `arg == value` if it is well-formed, and neither argument is a
         //     range
         template <typename K, typename A>
         static constexpr bool scalar(const K& k, const A& a)
-            noexcept (requires{{k == a} noexcept -> meta::nothrow::truthy;})
+            noexcept (requires{{k == a} noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (equality<K, A>)
         {
             return bool(k == a);
         }
 
+        template <typename K, typename A>
+        static constexpr bool predicate =
+            !meta::range<K> && requires(const K& k, const A& a) {
+                {k(a)} -> meta::convertible_to<bool>;
+            };
+
         // 1b) allow `value(arg)` if it is well-formed, returns a boolean, and `value`
         //     is not a range
         template <typename K, typename A>
         static constexpr bool scalar(const K& k, const A& a)
-            noexcept (requires{{k(a)} noexcept -> meta::nothrow::truthy;})
+            noexcept (requires{{k(a)} noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (!equality<K, A> && predicate<K, A>)
         {
             return bool(k(a));
@@ -5053,29 +5071,34 @@ namespace iter {
             return scalar(k, a);
         }
 
-        template <typename K, typename A>
-        static constexpr bool member = false;
-        template <typename K, typename A> requires (!meta::range<A>)
-        static constexpr bool member<K, A> = requires(const K& k, const A& a) {
-            {a.contains(k)} -> meta::truthy;
-        };
-
-        // 2) prefer `arg.contains(value)` if it exists and `arg` is not a range
+        // 2) prefer either `arg.contains(value)` or (ADL) `contains(arg, value)` if it
+        // exists and `arg` is not a range
         template <typename K, typename A>
         static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{{a.contains(k)} noexcept -> meta::nothrow::truthy;})
+            noexcept (requires{{meta::detail::contains_impl(a, k)} noexcept;})
             requires (
                 !equality<K, A> &&
                 !predicate<K, A> &&
-                member<K, A>
+                (meta::detail::member::has_contains<K, A> || meta::detail::adl::has_contains<K, A>)
             )
         {
-            return bool(a.contains(k));
+            return meta::detail::contains_impl(a, k);
         }
+
+        /// NOTE: ranges always yield other ranges during iteration and tuple indexing,
+        /// which requires an extra dereference in the following logic.
 
         template <typename K, typename A>
         static constexpr bool search = false;
-        template <typename K, typename A> requires (!meta::range<K> && meta::iterable<const A&>)
+        template <typename K, meta::range A> requires (!meta::range<K> && meta::iterable<const A&>)
+        static constexpr bool search<K, A> = requires(
+            const K& k,
+            meta::as_const_ref<meta::yield_type<const A&>> x
+        ) {
+            {scalar(k, *x)};
+        };
+        template <typename K, typename A>
+            requires (!meta::range<K> && !meta::range<A> && meta::iterable<const A&>)
         static constexpr bool search<K, A> = requires(
             const K& k,
             meta::as_const_ref<meta::yield_type<const A&>> x
@@ -5083,12 +5106,43 @@ namespace iter {
             {scalar(k, x)};
         };
 
+        // 3a) Do a linear search for a scalar value within an iterable argument
+        template <typename K, typename A>
+        static constexpr bool call(const K& k, const A& arg)
+            noexcept (meta::nothrow::iterable<const A&> && requires(
+                meta::as_const_ref<meta::yield_type<const A&>> x
+            ) {
+                {scalar(k, x)} noexcept;
+            })
+            requires (
+                !equality<K, A> &&
+                !predicate<K, A> &&
+                !meta::detail::member::has_contains<K, A> &&
+                !meta::detail::adl::has_contains<K, A> &&
+                search<K, A>
+            )
+        {
+            for (const auto& x : arg) {
+                if constexpr (meta::range<A>) {
+                    if (scalar(k, *x)) {
+                        return true;
+                    }
+                } else {
+                    if (scalar(k, x)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         template <typename K, typename A>
         static constexpr bool subsequence = false;
-        template <typename K, typename A> requires (meta::range<K> && meta::iterable<const A&>)
+        template <typename K, typename A>
+            requires (meta::range<K> && meta::range<A> && meta::iterable<const A&>)
         static constexpr bool subsequence<K, A> = requires(
             const K& k,
-            const A& arg,
+            const A& a,
             meta::begin_type<const K&> k_begin,
             meta::begin_type<const K&> k_it,
             meta::end_type<const K&> k_end,
@@ -5098,10 +5152,32 @@ namespace iter {
             {k.begin()} -> meta::copyable;
             {k.end()};
             {k_it == k_end} -> meta::truthy;
-            {std::ranges::begin(arg)};
-            {std::ranges::end(arg)};
+            {std::ranges::begin(a)};
+            {std::ranges::end(a)};
             {a_it != a_end} -> meta::truthy;
-            {scalar(*k_it, *a_it)};
+            {scalar(**k_it, **a_it)};
+            {++k_it};
+            {k_it = k_begin};
+            {++a_it};
+        };
+        template <typename K, typename A>
+            requires (meta::range<K> && !meta::range<A> && meta::iterable<const A&>)
+        static constexpr bool subsequence<K, A> = requires(
+            const K& k,
+            const A& a,
+            meta::begin_type<const K&> k_begin,
+            meta::begin_type<const K&> k_it,
+            meta::end_type<const K&> k_end,
+            meta::begin_type<const A&> a_it,
+            meta::end_type<const A&> a_end
+        ) {
+            {k.begin()} -> meta::copyable;
+            {k.end()};
+            {k_it == k_end} -> meta::truthy;
+            {std::ranges::begin(a)};
+            {std::ranges::end(a)};
+            {a_it != a_end} -> meta::truthy;
+            {scalar(**k_it, *a_it)};
             {++k_it};
             {k_it = k_begin};
             {++a_it};
@@ -5122,12 +5198,12 @@ namespace iter {
                 {std::ranges::begin(a)} noexcept;
                 {std::ranges::end(a)} noexcept;
                 {a_it != a_end} noexcept -> meta::nothrow::truthy;
-                {scalar(*k_it, *a_it)} noexcept;
+                {scalar(**k_it, **a_it)} noexcept;
                 {++k_it} noexcept;
                 {k_it = k_begin} noexcept;
                 {++a_it} noexcept;
             })
-            requires (subsequence<K, A>)
+            requires (meta::range<A> && subsequence<K, A>)
         {
             auto k_begin = k.begin();
             auto k_it = k_begin;
@@ -5138,7 +5214,7 @@ namespace iter {
             auto a_it = std::ranges::begin(a);
             auto a_end = std::ranges::end(a);
             while (a_it != a_end) {
-                if (scalar(*k_it, *a_it)) {
+                if (scalar(**k_it, **a_it)) {
                     ++k_it;
                     if (k_it == k_end) {
                         return true;
@@ -5151,25 +5227,46 @@ namespace iter {
             return false;
         }
 
-        // 3a) Do a linear search for a scalar value within an iterable argument
         template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& arg)
-            noexcept (meta::nothrow::iterable<const A&> && requires(
-                meta::as_const_ref<meta::yield_type<const A&>> x
+        static constexpr bool vector(const K& k, const A& a)
+            noexcept (requires(
+                meta::begin_type<const K&> k_begin,
+                meta::begin_type<const K&> k_it,
+                meta::end_type<const K&> k_end,
+                meta::begin_type<const A&> a_it,
+                meta::end_type<const A&> a_end
             ) {
-                {scalar(k, x)} noexcept;
+                {k.begin()} noexcept -> meta::nothrow::copyable;
+                {k.end()} noexcept;
+                {k_it == k_end} noexcept -> meta::nothrow::truthy;
+                {std::ranges::begin(a)} noexcept;
+                {std::ranges::end(a)} noexcept;
+                {a_it != a_end} noexcept -> meta::nothrow::truthy;
+                {scalar(**k_it, *a_it)} noexcept;
+                {++k_it} noexcept;
+                {k_it = k_begin} noexcept;
+                {++a_it} noexcept;
             })
-            requires (
-                !equality<K, A> &&
-                !predicate<K, A> &&
-                !member<K, A> &&
-                search<K, A>
-            )
+            requires (!meta::range<A> && subsequence<K, A>)
         {
-            for (const auto& x : arg) {
-                if (scalar(k, x)) {
-                    return true;
+            auto k_begin = k.begin();
+            auto k_it = k_begin;
+            auto k_end = k.end();
+            if (k_it == k_end) {
+                return true;  // empty range
+            }
+            auto a_it = std::ranges::begin(a);
+            auto a_end = std::ranges::end(a);
+            while (a_it != a_end) {
+                if (scalar(**k_it, *a_it)) {
+                    ++k_it;
+                    if (k_it == k_end) {
+                        return true;
+                    }
+                } else {
+                    k_it = k_begin;
                 }
+                ++a_it;
             }
             return false;
         }
@@ -5181,7 +5278,8 @@ namespace iter {
             requires (
                 !equality<K, A> &&
                 !predicate<K, A> &&
-                !member<K, A> &&
+                !meta::detail::member::has_contains<K, A> &&
+                !meta::detail::adl::has_contains<K, A> &&
                 !search<K, A> &&
                 subsequence<K, A>
             )
@@ -5191,8 +5289,16 @@ namespace iter {
 
         template <typename K, typename A, size_t... Is>
         static constexpr bool destructure(const K& k, const A& a, std::index_sequence<Is...>)
+            noexcept (requires{{(scalar(k, *meta::get<Is>(a)) || ...)} noexcept;})
+            requires (meta::range<A> && requires{{(scalar(k, *meta::get<Is>(a)) || ...)};})
+        {
+            return (scalar(k, *meta::get<Is>(a)) || ...);
+        }
+
+        template <typename K, typename A, size_t... Is>
+        static constexpr bool destructure(const K& k, const A& a, std::index_sequence<Is...>)
             noexcept (requires{{(scalar(k, meta::get<Is>(a)) || ...)} noexcept;})
-            requires (requires{{(scalar(k, meta::get<Is>(a)) || ...)};})
+            requires (!meta::range<A> && requires{{(scalar(k, meta::get<Is>(a)) || ...)};})
         {
             return (scalar(k, meta::get<Is>(a)) || ...);
         }
@@ -5218,7 +5324,8 @@ namespace iter {
             requires (
                 !equality<K, A> &&
                 !predicate<K, A> &&
-                !member<K, A> &&
+                !meta::detail::member::has_contains<K, A> &&
+                !meta::detail::adl::has_contains<K, A> &&
                 !search<K, A> &&
                 !subsequence<K, A> &&
                 !tuple_subsequence<K, A> &&
@@ -5236,7 +5343,8 @@ namespace iter {
             requires (
                 !equality<K, A> &&
                 !predicate<K, A> &&
-                !member<K, A> &&
+                !meta::detail::member::has_contains<K, A> &&
+                !meta::detail::adl::has_contains<K, A> &&
                 !search<K, A> &&
                 !subsequence<K, A> &&
                 tuple_subsequence<K, A>
@@ -5258,11 +5366,17 @@ namespace iter {
     template <typename T>
     contains(T&&) -> contains<meta::remove_rvalue<T>>;
 
+
+    /// TODO: all of these predicates might need to absorb the complexity of ranges
+    /// unconditionally yielding other ranges.  Particularly `at{}`, which
+    /// implements `range[i, j, k, ...]`.
+    /// -> In many cases, these may end up being simplications, which is kind of nice.
+
     /// TODO: `at{}` also needs refactors to forward multidimensional indexing to the
     /// underlying container if it is well-formed, and to progressively reduce the
     /// number of indices if not all of them can be applied.  That will automatically
     /// normalize typical, multidimensional containers along with "list of list"
-    /// approaches at the same time, in arbitrary combination.
+    /// approaches at the same time, in arbitrary combinations.
 
     /* Range-based multidimensional indexing operator.  Accepts any number of values,
     which will be used to index into a container when called.  If more than one index
@@ -5272,15 +5386,15 @@ namespace iter {
     The precise behavior for each index is as follows (in order of preference):
 
         1.  Direct indexing via `container[index]` or `get<index>(container)` (or an
-            equivalent `container.get<index>()` member method).  The former is
-            preferred for runtime indices, while the latter is preferred at compile
-            time.
+            equivalent `container.get<index>()` member method).  The subscript operator
+            is preferred for runtime indices, while the tuple unpacking operator is
+            preferred at compile time.
         2.  Integer values that do not satisfy (1).  These will be interpreted as
             offsets from the `begin()` iterator of the container, and will be applied
-            using iterator arithmetic, including a linear search if necessary.
+            using iterator arithmetic, including a linear traversal if necessary.
         3.  Predicate functions that take the container as an argument and return an
-            arbitrary value.  This includes range adaptors such as `iter::slice{}`,
-            `iter::find{}`, etc.
+            arbitrary value.  This includes both user-defined functions as well as
+            range adaptors such as `iter::slice{}`, `iter::find{}`, etc.
 
     The result of each indexing operation will be passed as the container to the next
     index, with the final result being returned to the caller.
@@ -5838,10 +5952,10 @@ namespace iter {
         that expression is well-formed.  For scalars, this returns a pointer to the
         underlying value. */
         [[nodiscard]] constexpr auto data()
-            noexcept (requires{{std::ranges::data(*__value)} noexcept;})
-            requires (requires{{std::ranges::data(*__value)};})
+            noexcept (requires{{meta::data(*__value)} noexcept;})
+            requires (requires{{meta::data(*__value)};})
         {
-            return std::ranges::data(*__value);
+            return meta::data(*__value);
         }
 
         /* Get a pointer to the underlying data array, if one exists.  This is
@@ -5849,10 +5963,10 @@ namespace iter {
         that expression is well-formed.  For scalars, this returns a pointer to the
         underlying value. */
         [[nodiscard]] constexpr auto data() const
-            noexcept (requires{{std::ranges::data(*__value)} noexcept;})
-            requires (requires{{std::ranges::data(*__value)};})
+            noexcept (requires{{meta::data(*__value)} noexcept;})
+            requires (requires{{meta::data(*__value)};})
         {
-            return std::ranges::data(*__value);
+            return meta::data(*__value);
         }
 
         /* Get a pointer to the underlying data array, if one exists.  This is
@@ -5860,10 +5974,10 @@ namespace iter {
         that expression is well-formed.  For scalars, this returns a pointer to the
         underlying value. */
         [[nodiscard]] constexpr auto cdata() const
-            noexcept (requires{{std::ranges::cdata(*__value)} noexcept;})
-            requires (requires{{std::ranges::cdata(*__value)};})
+            noexcept (requires{{meta::cdata(*__value)} noexcept;})
+            requires (requires{{meta::cdata(*__value)};})
         {
-            return std::ranges::cdata(*__value);
+            return meta::cdata(*__value);
         }
 
         /* Forwarding `shape()` operator for the underlying container, provided one can
@@ -5886,24 +6000,10 @@ namespace iter {
         container supports it.  This is identical to a `std::ranges::size()` call on
         the underlying value.  Scalars always have a size of 1. */
         [[nodiscard]] constexpr decltype(auto) size() const
-            noexcept (requires{{std::ranges::size(*__value)} noexcept;})
-            requires (requires{{std::ranges::size(*__value)};})
+            noexcept (requires{{meta::size(*__value)} noexcept;})
+            requires (requires{{meta::size(*__value)};})
         {
-            return (std::ranges::size(*__value));
-        }
-
-        /// TODO: `meta::ssize()`, which works like `std::ranges::ssize()`, but permits
-        /// member and ADL overloads, which the STL algorithm does not for some reason.
-
-        /* Forwarding `ssize()` operator for the underlying container, provided the
-        container supports it.  This is identical to a `std::ranges::ssize()` call
-        unless the underlying container exposes a `val.ssize()` member method or
-        `ssize(val)` ADL method.  Scalars always have a size of 1. */
-        [[nodiscard]] constexpr decltype(auto) ssize() const
-            noexcept (requires{{__value->ssize()} noexcept;})
-            requires (requires{{__value->ssize()} -> meta::signed_integer;})
-        {
-            return __value->ssize();
+            return (meta::size(*__value));
         }
 
         /* Forwarding `ssize()` operator for the underlying container, provided the
@@ -5911,13 +6011,13 @@ namespace iter {
         unless the underlying container exposes a `val.ssize()` member method or
         `ssize(val)` ADL method.  Scalars always have a size of 1. */
         [[nodiscard]] constexpr decltype(auto) ssize() const
-            noexcept (requires{{std::ranges::ssize(*__value)} noexcept;})
+            noexcept (requires{{meta::ssize(*__value)} noexcept;})
             requires (
                 !requires{{__value->ssize()} -> meta::signed_integer;} &&
-                requires{{std::ranges::ssize(*__value)};}
+                requires{{meta::ssize(*__value)};}
             )
         {
-            return (std::ranges::ssize(*__value));
+            return (meta::ssize(*__value));
         }
 
         /* Forwarding `empty()` operator for the underlying container, provided the
@@ -5930,165 +6030,51 @@ namespace iter {
             return std::ranges::empty(*__value);
         }
 
-        /// TODO: the docs for these methods will need to make a note about how they
-        /// always promote the return type to a range.
+        /* Access the first element in the underlying container by searching for an
+        appropriate `front()` member or ADL method, or dereferencing the `begin()`
+        iterator.  The result will always be returned as a (possibly scalar) range,
+        just like the indexing and tuple access operators.
 
-        /* Access the first element in the underlying container, assuming it
-        exposes a `.front()` member method.  A debug `AssertionError` may be thrown if
-        the container is empty when this method is called.  For scalars, this is
-        equivalent to the dereference operator, and will never throw. */
+        Note that no extra bounds checking is performed to guard against empty ranges,
+        maintaining the zero-cost guarantee for the underlying container.  Individual
+        containers may implement bounds checking in their `front()` method if desired,
+        which is the case for all of Bertrand's core container types (via a debug
+        assertion). */
         template <typename Self>
         [[nodiscard]] constexpr auto front(this Self&& self)
-            noexcept (meta::inherits<C, impl::scalar_tag> || (
-                !DEBUG &&
-                requires{{iter::range((*std::forward<Self>(self).__value).front())} noexcept;}
-            ))
-            requires (requires{{iter::range((*std::forward<Self>(self).__value).front())};})
+            noexcept (requires{
+                {iter::range(meta::front(*std::forward<Self>(self).__value))} noexcept;
+            })
+            requires (requires{{iter::range(meta::front(*std::forward<Self>(self).__value))};})
         {
-            if constexpr (!meta::inherits<C, impl::scalar_tag> && DEBUG) {
-                if (self.empty()) {
-                    throw impl::range_front_error;
-                }
-            }
-            return iter::range((*std::forward<Self>(self).__value).front());
+            return iter::range(meta::front(*std::forward<Self>(self).__value));
         }
 
-        /* Access the first element in the underlying container by manually
-        dereferencing the `begin()` iterator.  This overload is only chosen if a
-        `.front()` member method is unavailable for the underlying container.  A debug
-        `AssertionError` may be thrown if the container is empty when this method is
-        called.  For scalars, this is equivalent to the dereference operator, and will
-        never throw. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
-            noexcept (meta::inherits<C, impl::scalar_tag> || (
-                !DEBUG &&
-                requires{{*self.begin()} noexcept;}
-            ))
-            requires (
-                !requires{{(*std::forward<Self>(self).__value).front()};} &&
-                requires{{*self.begin()};}
-            )
-        {
-            if constexpr (!meta::inherits<C, impl::scalar_tag> && DEBUG) {
-                if (self.empty()) {
-                    throw impl::range_front_error;
-                }
-            }
-            return (*self.begin());
-        }
+        /* Access the last element in the underlying container by searching for an
+        appropriate `back()` member or ADL method, dereferencing the `rbegin()`
+        iterator, advancing `begin()` to the last element via `it += ssize() - 1`, or
+        decrementing the `end()` iterator, as appropriate.  The result will always be
+        returned as a (possibly scalar) range, just like the indexing and tuple access
+        operators.
 
-        /* Access the last element in the underlying container, assuming the container
-        exposes a `.back()` member method.  A debug `AssertionError` may be thrown if
-        the container is empty when this method is called. */
+        Note that no extra bounds checking is performed to guard against empty ranges,
+        maintaining the zero-cost guarantee for the underlying container.  Individual
+        containers may implement bounds checking in their `back()` method if desired,
+        which is the case for all of Bertrand's core container types (via a debug
+        assertion). */
         template <typename Self>
         [[nodiscard]] constexpr auto back(this Self&& self)
-            noexcept (
-                !DEBUG &&
-                requires{{iter::range((*std::forward<Self>(self).__value).back())} noexcept;}
-            )
-            requires (requires{{iter::range((*std::forward<Self>(self).__value).back())};})
-        {
-            if constexpr (DEBUG) {
-                if (self.empty()) {
-                    throw impl::range_back_error;
-                }
-            }
-            return iter::range((*std::forward<Self>(self).__value).back());
-        }
-
-        /* Access the last element in the underlying container by manually
-        dereferencing the `rbegin()` iterator, assuming one exists.  This overload is
-        only chosen if a `.back()` member method does not exist for the underlying
-        container.  A debug `AssertionError` may be thrown if the container is empty
-        when this method is called. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
-            noexcept (!DEBUG && requires{{*self.rbegin()} noexcept;})
-            requires (
-                !requires{{(*std::forward<Self>(self).__value).back()};} &&
-                requires{{*self.rbegin()};}
-            )
-        {
-            if constexpr (DEBUG) {
-                if (self.empty()) {
-                    throw impl::range_back_error;
-                }
-            }
-            return (*self.rbegin());
-        }
-
-        /* Access the last element in the underlying container by offsetting the
-        `begin()` iterator, assuming it supports random access and the underlying
-        container is sized.  This overload is only chosen if a `.back()` member method
-        does not exist for the underlying container, and the container is not
-        reverse-iterable.  A debug `AssertionError` may be thrown if the container is
-        empty when this method is called. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
-            noexcept (!DEBUG && requires(decltype(self.begin()) it) {
-                {self.begin()} noexcept;
-                {it += self.ssize() - 1} noexcept;
-                {*it} noexcept;
+            noexcept (requires{
+                {iter::range(meta::back(*std::forward<Self>(self).__value))} noexcept;
             })
-            requires (
-                !requires{{(*std::forward<Self>(self)).back()};} &&
-                !requires{{*self.rbegin()};} &&
-                requires(decltype(self.begin()) it) {
-                    {self.begin()};
-                    {it += self.ssize() - 1};
-                    {*it};
-                }
-            )
+            requires (requires{{iter::range(meta::back(*std::forward<Self>(self).__value))};})
         {
-            if constexpr (DEBUG) {
-                if (self.empty()) {
-                    throw impl::range_back_error;
-                }
-            }
-            auto it = self.begin();
-            it += self.ssize() - 1;
-            return (*it);
-        }
-
-        /* Access the last element in the underlying container by decrementing the
-        `end()` iterator, assuming no other method is available, and the end iterator
-        supports bidirectional iteration.  A debug `AssertionError` may be thrown if
-        the container is empty when this method is called. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
-            noexcept (!DEBUG && requires(decltype(self.end()) it) {
-                {self.end()} noexcept;
-                {--it} noexcept;
-                {*it} noexcept;
-            })
-            requires (
-                !requires{{(*std::forward<Self>(self)).back()};} &&
-                !requires{{*self.rbegin()};} &&
-                !requires(decltype(self.begin()) it) {
-                    {self.begin()};
-                    {it += self.ssize() - 1};
-                    {*it};
-                } &&
-                requires(decltype(self.end()) it) {
-                    {self.end()};
-                    {--it};
-                    {*it};
-                }
-            )
-        {
-            if constexpr (DEBUG) {
-                if (self.empty()) {
-                    throw impl::range_back_error;
-                }
-            }
-            auto it = self.end();
-            --it;
-            return (*it);
+            return iter::range(meta::back(*std::forward<Self>(self).__value));
         }
 
         /// TODO: get<...>() and operator[] should be updated to unconditionally return
         /// nested ranges.
+        /// -> done via the `at{}` refactor
 
         /* Range-based multidimensional tuple accessor.  This is expression-equivalent
         to `iter::at<K...>{}(self)`.  See that algorithm for more information. */
@@ -6508,6 +6494,19 @@ namespace iter {
 /// indexed or iterated over, and then use some optimization to represent the scalar
 /// case?  Maybe `sequence<T>` can store a union of `T` and `void*; sequence_control*;`
 
+/// TODO: the real answer involves encoding the number of dimensions into the type
+/// system where possible, so that `sequence<T, ...>` can narrow itelf on every access
+/// and iteration, until just `T` remains.  This would have to be accompanied by
+/// truly dynamic sequences, which have no other choice than to unconditionally return
+/// `sequence<T>` at every step.  I think I kind of like the idea of just always
+/// doing that, and using a union optimization within `sequence<T>` in order to
+/// allow it to store an instance of `T` directly, and to access it using the
+/// pointer interface just like ordinary ranges.  That would be slightly more
+/// symmetrical in the end, and kind of be ideal from a design perspective.  If the
+/// sequence has a fixed, zero number of dimensions, then I can always safely assume
+/// that the union stores an instance of `T`, and only compile a `TypeError` if the
+/// sequence has positive dimension.  Otherwise, I have to check every time.
+
 
 
 
@@ -6649,7 +6648,7 @@ namespace impl {
 
         template <meta::const_ref C> requires (meta::has_size<C>)
         constexpr size_t _fn(void* ptr) {
-            return std::ranges::size(*reinterpret_cast<meta::as_pointer<C>>(ptr));
+            return meta::size(*reinterpret_cast<meta::as_pointer<C>>(ptr));
         }
 
         template <meta::const_ref C> requires (DEBUG && !meta::has_size<C>)
@@ -7664,6 +7663,10 @@ _LIBCPP_END_NAMESPACE_STD
 
 
 namespace bertrand::iter {
+
+
+    static_assert(any{}(range(std::array{false, false, true})));
+
 
     static_assert(range(std::array{std::tuple{1, 2, 3}}).shape()[0] == 1);
     static_assert(std::same_as<meta::range_type<const range<std::vector<int>&>>, const std::vector<int>&>);

@@ -2936,13 +2936,13 @@ namespace impl {
         struct size_fn {
             static constexpr size_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::size(u.__value.template get<I>())
+                    meta::size(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<size_type>;})
                 requires (requires{{
-                    std::ranges::size(u.__value.template get<I>())
+                    meta::size(u.__value.template get<I>())
                 } -> meta::convertible_to<size_type>;})
             {
-                return std::ranges::size(u.__value.template get<I>());
+                return meta::size(u.__value.template get<I>());
             }
         };
         using _size = impl::basic_vtable<size_fn, N>;
@@ -2951,13 +2951,13 @@ namespace impl {
         struct ssize_fn {
             static constexpr ssize_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::ssize(u.__value.template get<I>())
+                    meta::ssize(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<ssize_type>;})
                 requires (requires{{
-                    std::ranges::ssize(u.__value.template get<I>())
+                    meta::ssize(u.__value.template get<I>())
                 } -> meta::convertible_to<ssize_type>;})
             {
-                return std::ranges::ssize(u.__value.template get<I>());
+                return meta::ssize(u.__value.template get<I>());
             }
         };
         using _ssize = impl::basic_vtable<ssize_fn, N>;
@@ -3370,7 +3370,7 @@ struct Union : impl::union_tag {
         return (impl::union_get<Self, I>{}(std::forward<Self>(self)));
     }
 
-    /* Returns the result of `std::ranges::size()` on the current alternative if it is
+    /* Returns the result of `meta::size()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) size(this Self&& self)
@@ -3380,7 +3380,7 @@ struct Union : impl::union_tag {
         return (impl::make_union_iterator<Self&>::size(self));
     }
 
-    /* Returns the result of `std::ranges::ssize()` on the current alternative if it is
+    /* Returns the result of `meta::ssize()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) ssize(this Self&& self)
@@ -4793,11 +4793,11 @@ struct Optional : impl::optional_tag {
         return impl::optional_get<Self, I>{}(std::forward<Self>(self));
     }
 
-    /* Return 0 if the optional is empty or `std::ranges::size(*opt)` otherwise.
-    If `std::ranges::size(*opt)` would be malformed and the value is not iterable
-    (meaning that iterating over the optional would return just a single element), then
-    the result will be identical to `opt != None`.  If neither option is available,
-    then this method will fail to compile. */
+    /* Return 0 if the optional is empty or `meta::size(*opt)` otherwise.  If
+    `meta::size(*opt)` would be malformed and the value is not iterable (meaning that
+    iterating over the optional would return just a single element), then the result
+    will be identical to `opt != None`.  If neither option is available, then this
+    method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
         noexcept (
             meta::nothrow::has_size<meta::as_const_ref<T>> ||
@@ -4810,7 +4810,7 @@ struct Optional : impl::optional_tag {
     {
         if constexpr (meta::has_size<meta::as_const_ref<T>>) {
             if (__value.index()) {
-                return std::ranges::size(__value.template get<1>());
+                return meta::size(__value.template get<1>());
             } else {
                 return meta::size_type<T>(0);
             }
@@ -4819,11 +4819,11 @@ struct Optional : impl::optional_tag {
         }
     }
 
-    /* Return 0 if the optional is empty or `std::ranges::ssize(*opt)` otherwise.
-    If `std::ranges::ssize(*opt)` would be malformed and the value is not iterable
-    (meaning that iterating over the optional would return just a single element), then
-    the result will be identical to `opt != None`.  If neither option is available,
-    then this method will fail to compile. */
+    /* Return 0 if the optional is empty or `meta::ssize(*opt)` otherwise.  If
+    `meta::ssize(*opt)` would be malformed and the value is not iterable (meaning that
+    iterating over the optional would return just a single element), then the result
+    will be identical to `opt != None`.  If neither option is available, then this
+    method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
         noexcept (
             meta::nothrow::has_ssize<meta::as_const_ref<T>> ||
@@ -4836,7 +4836,7 @@ struct Optional : impl::optional_tag {
     {
         if constexpr (meta::has_ssize<meta::as_const_ref<T>>) {
             if (__value.index()) {
-                return std::ranges::ssize(__value.template get<1>());
+                return meta::ssize(__value.template get<1>());
             } else {
                 return meta::ssize_type<T>(0);
             }
@@ -5723,11 +5723,11 @@ struct Expected : impl::expected_tag {
         return impl::expected_get<Self, I>{}(std::forward<Self>(self));
     }
 
-    /* Return 0 if the expected is empty or `std::ranges::size(*exp)` otherwise.
-    If `std::ranges::size(*exp)` would be malformed and the value is not iterable
-    (meaning that iterating over the expected would return just a single element), then
-    the result will be identical to `exp != None`.  If neither option is available,
-    then this method will fail to compile. */
+    /* Return 0 if the expected is empty or `meta::size(*exp)` otherwise.  If
+    `meta::size(*exp)` would be malformed and the value is not iterable (meaning that
+    iterating over the expected would return just a single element), then the result
+    will be identical to `exp != None`.  If neither option is available, then this
+    method will fail to compile. */
     [[nodiscard]] constexpr auto size() const
         noexcept (
             meta::nothrow::has_size<meta::as_const_ref<T>> ||
@@ -5740,7 +5740,7 @@ struct Expected : impl::expected_tag {
     {
         if constexpr (meta::has_size<meta::as_const_ref<T>> ) {
             if (__value.index() == 0) {
-                return std::ranges::size(__value.template get<0>());
+                return meta::size(__value.template get<0>());
             } else {
                 return meta::size_type<T>(0);
             }
@@ -5749,11 +5749,11 @@ struct Expected : impl::expected_tag {
         }
     }
 
-    /* Return 0 if the expected is empty or `std::ranges::ssize(*exp)` otherwise.
-    If `std::ranges::ssize(*exp)` would be malformed and the value is not iterable
-    (meaning that iterating over the expected would return just a single element), then
-    the result will be identical to `exp != None`.  If neither option is available,
-    then this method will fail to compile. */
+    /* Return 0 if the expected is empty or `meta::ssize(*exp)` otherwise.  If
+    `meta::ssize(*exp)` would be malformed and the value is not iterable (meaning that
+    iterating over the expected would return just a single element), then the result
+    will be identical to `exp != None`.  If neither option is available, then this
+    method will fail to compile. */
     [[nodiscard]] constexpr auto ssize() const
         noexcept (
             meta::nothrow::has_ssize<meta::as_const_ref<T>> ||
@@ -5766,7 +5766,7 @@ struct Expected : impl::expected_tag {
     {
         if constexpr (meta::has_ssize<meta::as_const_ref<T>>) {
             if (__value.index() == 0) {
-                return std::ranges::ssize(__value.template get<0>());
+                return meta::ssize(__value.template get<0>());
             } else {
                 return meta::ssize_type<T>(0);
             }

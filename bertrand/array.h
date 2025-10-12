@@ -1103,7 +1103,7 @@ namespace impl {
 
     template <meta::has_data T>
     using array_data = meta::remove_reference<
-        decltype(*std::ranges::data(std::declval<meta::as_lvalue<T>>()))
+        decltype(*meta::data(std::declval<meta::as_lvalue<T>>()))
     >;
 
     template <typename... Ts>
@@ -1203,7 +1203,7 @@ public:
 
     template <typename A> requires (meta::data_returns<T*, A>)
     [[nodiscard]] constexpr ArrayView(A& arr) noexcept:
-        ptr(std::ranges::data(arr))
+        ptr(meta::data(arr))
     {}
 
     constexpr void swap(ArrayView& other) noexcept {
