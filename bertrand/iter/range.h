@@ -630,21 +630,30 @@ namespace meta {
         structured_with<yield_type<T>, Rs...>
     );
 
-    namespace detail {
-
-        template <typename T>
-        struct range_type { using type = remove_rvalue<T>; };
-        template <typename T> requires (impl::range_transparent<T>)
-        struct range_type<T> { using type = range_type<decltype((*::std::declval<T>()))>::type; };
-
+    /* Perfectly forward the argument or retrieve its underlying value if it is a
+    range.  This is equivalent to conditionally compiling an extra dereference based on
+    the state of the `meta::range<T>` concept, and always returns the same type as
+    `meta::remove_range<T>`.  It can be useful in generic algorithms that may accept
+    ranges or other containers, but always want to operate on the underlying value.  It
+    is used internally to implement various range adaptors. */
+    template <typename T>
+    [[nodiscard]] constexpr decltype(auto) strip_range(T&& t)
+        noexcept (!meta::range<T> || requires{{*::std::forward<T>(t)} noexcept;})
+    {
+        if constexpr (meta::range<T>) {
+            return (*::std::forward<T>(t));
+        } else {
+            return (::std::forward<T>(t));
+        }
     }
 
-    /* Get the type backing a range monad.  This is equivalent to the type returned by
-    dereferencing a perfectly-forwarded instance of `T`, and can never be another
-    range.  The result may be used to re-specialize the `iter::range<T>` template if
-    needed. */
-    template <meta::range T>
-    using range_type = detail::range_type<decltype((*::std::declval<T>().__value))>::type;
+    /* Get the type backing a range monad, assuming `T` satisfies `meta::range`.
+    Otherwise, forward the original type unchanged.  This can never be another range,
+    and is equivalent to the type returned by dereferencing a perfectly-forwarded
+    instance of `T`.  The result may be used to specialize the `iter::range<T>`
+    template if needed. */
+    template <typename T>
+    using remove_range = remove_rvalue<decltype((strip_range(::std::declval<T>())))>;
 
     /* Returns `true` if `T` is a trivial range of just a single element, or `false`
     if it wraps an iterable or tuple-like container.  Iterating over a scalar always
@@ -983,13 +992,13 @@ namespace meta {
         namespace member {
 
             template <typename K, typename A>
-            concept has_contains = requires(const K& key, const A& a) {
-                {a.contains(key)} -> meta::convertible_to<bool>;
+            concept has_contains = requires(const K& key, const A& arg) {
+                {arg.contains(key)} -> meta::convertible_to<bool>;
             };
 
             template <typename K, typename A>
-            concept nothrow_contains = requires(const K& key, const A& a) {
-                {a.contains(key)} noexcept -> nothrow::convertible_to<bool>;
+            concept nothrow_contains = requires(const K& key, const A& arg) {
+                {arg.contains(key)} noexcept -> nothrow::convertible_to<bool>;
             };
 
         }
@@ -997,13 +1006,13 @@ namespace meta {
         namespace adl {
 
             template <typename K, typename A>
-            concept has_contains = requires(const K& key, const A& a) {
-                {contains(a, key)} -> meta::convertible_to<bool>;
+            concept has_contains = requires(const K& key, const A& arg) {
+                {contains(arg, key)} -> meta::convertible_to<bool>;
             };
 
             template <typename K, typename A>
-            concept nothrow_contains = requires(const K& key, const A& a) {
-                {contains(a, key)} noexcept -> nothrow::convertible_to<bool>;
+            concept nothrow_contains = requires(const K& key, const A& arg) {
+                {contains(arg, key)} noexcept -> nothrow::convertible_to<bool>;
             };
 
         }
@@ -4076,21 +4085,6 @@ namespace iter {
 
 namespace impl {
 
-    template <typename T>
-    constexpr decltype(auto) range_strip(T&& t) noexcept {
-        if constexpr (meta::range<T>) {
-            return (*std::forward<T>(t));
-        } else {
-            return (std::forward<T>(t));
-        }
-    }
-
-    inline constexpr AssertionError range_front_error =
-        AssertionError("Attempted to access the front of an empty range");
-
-    inline constexpr AssertionError range_back_error =
-        AssertionError("Attempted to access the back of an empty range");
-
     /* A wrapper for an iterator over an `iter::range()` object.  This acts as a
     transparent adaptor for the underlying iterator type, and does not change its
     behavior in any way, except to promote the dereference type to another range. */
@@ -4591,7 +4585,9 @@ namespace impl {
         }
 
         template <typename Self, typename T>
-        concept direct = requires(Self self, T c) {{*self = range_strip(std::forward<T>(c))};};
+        concept direct = requires(Self self, T c) {
+            {*self = meta::strip_range(std::forward<T>(c))};
+        };
 
         template <typename Self, typename T>
         concept scalar =
@@ -4997,374 +4993,289 @@ namespace iter {
     template <typename F>
     all(F&&) -> all<meta::remove_rvalue<F>>;
 
-    /// TODO: Maybe I should just provide two specialization of `contains`, one for
-    /// scalar `k` and the other for ranges.  That might simplify template errors
-    /// as well.  It might also be a good idea to remove the variadic arguments as well
-    /// for the same reason, and then just embed the constraints directly into the
-    /// call operator.  Both of those together would mean that I split `contains`
-    /// into two classes, and then inline the `call()` method into both.
-    /// -> Maybe I can implement a single argument version that does the same thing
-    /// as `any{}` and `all{}`, where it splits the template constraints into the base
-    /// overload, which yields the mot informative error messages, and the variadic
-    /// overload, which just forwards to the single argument version.
-
     /* Check to see whether a particular value or consecutive subsequence is present
     in the arguments.  Multiple arguments may be supplied, in which case the search
     will proceed from left to right, stopping as soon as a match is found.
 
     The initializer may be any of the following (in order of precedence):
 
-        1.  A single value for which `value == arg` or `value(arg)` is well-formed and
+        1.  A scalar value for which `value == arg` or `value(arg)` is well-formed and
             returns a type that is implicitly convertible to `bool`, where `true`
             terminates the search.
-        2.  A valid input to an `arg.contains(value)` member method or ADL-enabled
+        2.  A scalar input to an `arg.contains(value)` member method or ADL-enabled
             `contains(arg, value)`, if one exists, and returns a type that is
-            implicitly convertible to `bool`.
+            implicitly convertible to `bool`.`
         3.  A linear search through the top-level elements of a tuple or iterable type,
-            applying (1) to each result.  If the comparison value is a range, then it
-            will be interpreted as a subsequence, and will only return true if all of
-            its elements are found in the proper order.
+            applying (1) to each result.  If the comparison value is a non-scalar
+            range, then it will be interpreted as a subsequence, and will only return
+            true if all of its elements are found in the proper order within at least
+            one argument.
     */
     template <meta::not_rvalue T>
     struct contains {
         [[no_unique_address]] T k;
 
     private:
-        template <typename K, typename A>
-        static constexpr bool equality =
-            !meta::range<K> && !meta::range<A> && requires(const K& k, const A& a) {
-                {k == a} -> meta::convertible_to<bool>;
-            };
+        using K = meta::remove_range<meta::as_const_ref<T>>;
 
-        // 1a) prefer `arg == value` if it is well-formed, and neither argument is a
-        //     range
-        template <typename K, typename A>
-        static constexpr bool scalar(const K& k, const A& a)
-            noexcept (requires{{k == a} noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (equality<K, A>)
+        template <typename A>
+        constexpr bool scalar(const A& a) const
+            noexcept (requires{{
+                meta::strip_range(k) == meta::strip_range(a)
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                meta::strip_range(k) == meta::strip_range(a)
+            } -> meta::convertible_to<bool>;})
         {
-            return bool(k == a);
+            return bool(meta::strip_range(k) == meta::strip_range(a));
         }
 
-        template <typename K, typename A>
-        static constexpr bool predicate =
-            !meta::range<K> && requires(const K& k, const A& a) {
-                {k(a)} -> meta::convertible_to<bool>;
-            };
-
-        // 1b) allow `value(arg)` if it is well-formed, returns a boolean, and `value`
-        //     is not a range
-        template <typename K, typename A>
-        static constexpr bool scalar(const K& k, const A& a)
-            noexcept (requires{{k(a)} noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (!equality<K, A> && predicate<K, A>)
+        template <typename A>
+        constexpr bool scalar(const A& a) const
+            noexcept (requires{{
+                meta::strip_range(k)(meta::strip_range(a))
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                meta::strip_range(k)(meta::strip_range(a))
+            } -> meta::convertible_to<bool>;})
         {
-            return bool(k(a));
+            return bool(meta::strip_range(k)(meta::strip_range(a)));
         }
 
-        // 1) dispatch to the appropriate scalar comparison
-        template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{{scalar(k, a)} noexcept;})
-            requires (equality<K, A> || predicate<K, A>)
+        template <typename A, size_t... Is>
+        constexpr bool tuple(const A& a, std::index_sequence<Is...>) const
+            noexcept (requires{{(scalar(meta::get<Is>(a)) || ...)} noexcept;})
+            requires (requires{{(scalar(meta::get<Is>(a)) || ...)};})
         {
-            return scalar(k, a);
-        }
-
-        // 2) prefer either `arg.contains(value)` or (ADL) `contains(arg, value)` if it
-        // exists and `arg` is not a range
-        template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{{meta::detail::contains_impl(a, k)} noexcept;})
-            requires (
-                !equality<K, A> &&
-                !predicate<K, A> &&
-                (meta::detail::member::has_contains<K, A> || meta::detail::adl::has_contains<K, A>)
-            )
-        {
-            return meta::detail::contains_impl(a, k);
-        }
-
-        /// NOTE: ranges always yield other ranges during iteration and tuple indexing,
-        /// which requires an extra dereference in the following logic.
-
-        template <typename K, typename A>
-        static constexpr bool search = false;
-        template <typename K, meta::range A> requires (!meta::range<K> && meta::iterable<const A&>)
-        static constexpr bool search<K, A> = requires(
-            const K& k,
-            meta::as_const_ref<meta::yield_type<const A&>> x
-        ) {
-            {scalar(k, *x)};
-        };
-        template <typename K, typename A>
-            requires (!meta::range<K> && !meta::range<A> && meta::iterable<const A&>)
-        static constexpr bool search<K, A> = requires(
-            const K& k,
-            meta::as_const_ref<meta::yield_type<const A&>> x
-        ) {
-            {scalar(k, x)};
-        };
-
-        // 3a) Do a linear search for a scalar value within an iterable argument
-        template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& arg)
-            noexcept (meta::nothrow::iterable<const A&> && requires(
-                meta::as_const_ref<meta::yield_type<const A&>> x
-            ) {
-                {scalar(k, x)} noexcept;
-            })
-            requires (
-                !equality<K, A> &&
-                !predicate<K, A> &&
-                !meta::detail::member::has_contains<K, A> &&
-                !meta::detail::adl::has_contains<K, A> &&
-                search<K, A>
-            )
-        {
-            for (const auto& x : arg) {
-                if constexpr (meta::range<A>) {
-                    if (scalar(k, *x)) {
-                        return true;
-                    }
-                } else {
-                    if (scalar(k, x)) {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        template <typename K, typename A>
-        static constexpr bool subsequence = false;
-        template <typename K, typename A>
-            requires (meta::range<K> && meta::range<A> && meta::iterable<const A&>)
-        static constexpr bool subsequence<K, A> = requires(
-            const K& k,
-            const A& a,
-            meta::begin_type<const K&> k_begin,
-            meta::begin_type<const K&> k_it,
-            meta::end_type<const K&> k_end,
-            meta::begin_type<const A&> a_it,
-            meta::end_type<const A&> a_end
-        ) {
-            {k.begin()} -> meta::copyable;
-            {k.end()};
-            {k_it == k_end} -> meta::truthy;
-            {std::ranges::begin(a)};
-            {std::ranges::end(a)};
-            {a_it != a_end} -> meta::truthy;
-            {scalar(**k_it, **a_it)};
-            {++k_it};
-            {k_it = k_begin};
-            {++a_it};
-        };
-        template <typename K, typename A>
-            requires (meta::range<K> && !meta::range<A> && meta::iterable<const A&>)
-        static constexpr bool subsequence<K, A> = requires(
-            const K& k,
-            const A& a,
-            meta::begin_type<const K&> k_begin,
-            meta::begin_type<const K&> k_it,
-            meta::end_type<const K&> k_end,
-            meta::begin_type<const A&> a_it,
-            meta::end_type<const A&> a_end
-        ) {
-            {k.begin()} -> meta::copyable;
-            {k.end()};
-            {k_it == k_end} -> meta::truthy;
-            {std::ranges::begin(a)};
-            {std::ranges::end(a)};
-            {a_it != a_end} -> meta::truthy;
-            {scalar(**k_it, *a_it)};
-            {++k_it};
-            {k_it = k_begin};
-            {++a_it};
-        };
-
-        template <typename K, typename A>
-        static constexpr bool vector(const K& k, const A& a)
-            noexcept (requires(
-                meta::begin_type<const K&> k_begin,
-                meta::begin_type<const K&> k_it,
-                meta::end_type<const K&> k_end,
-                meta::begin_type<const A&> a_it,
-                meta::end_type<const A&> a_end
-            ) {
-                {k.begin()} noexcept -> meta::nothrow::copyable;
-                {k.end()} noexcept;
-                {k_it == k_end} noexcept -> meta::nothrow::truthy;
-                {std::ranges::begin(a)} noexcept;
-                {std::ranges::end(a)} noexcept;
-                {a_it != a_end} noexcept -> meta::nothrow::truthy;
-                {scalar(**k_it, **a_it)} noexcept;
-                {++k_it} noexcept;
-                {k_it = k_begin} noexcept;
-                {++a_it} noexcept;
-            })
-            requires (meta::range<A> && subsequence<K, A>)
-        {
-            auto k_begin = k.begin();
-            auto k_it = k_begin;
-            auto k_end = k.end();
-            if (k_it == k_end) {
-                return true;  // empty range
-            }
-            auto a_it = std::ranges::begin(a);
-            auto a_end = std::ranges::end(a);
-            while (a_it != a_end) {
-                if (scalar(**k_it, **a_it)) {
-                    ++k_it;
-                    if (k_it == k_end) {
-                        return true;
-                    }
-                } else {
-                    k_it = k_begin;
-                }
-                ++a_it;
-            }
-            return false;
-        }
-
-        template <typename K, typename A>
-        static constexpr bool vector(const K& k, const A& a)
-            noexcept (requires(
-                meta::begin_type<const K&> k_begin,
-                meta::begin_type<const K&> k_it,
-                meta::end_type<const K&> k_end,
-                meta::begin_type<const A&> a_it,
-                meta::end_type<const A&> a_end
-            ) {
-                {k.begin()} noexcept -> meta::nothrow::copyable;
-                {k.end()} noexcept;
-                {k_it == k_end} noexcept -> meta::nothrow::truthy;
-                {std::ranges::begin(a)} noexcept;
-                {std::ranges::end(a)} noexcept;
-                {a_it != a_end} noexcept -> meta::nothrow::truthy;
-                {scalar(**k_it, *a_it)} noexcept;
-                {++k_it} noexcept;
-                {k_it = k_begin} noexcept;
-                {++a_it} noexcept;
-            })
-            requires (!meta::range<A> && subsequence<K, A>)
-        {
-            auto k_begin = k.begin();
-            auto k_it = k_begin;
-            auto k_end = k.end();
-            if (k_it == k_end) {
-                return true;  // empty range
-            }
-            auto a_it = std::ranges::begin(a);
-            auto a_end = std::ranges::end(a);
-            while (a_it != a_end) {
-                if (scalar(**k_it, *a_it)) {
-                    ++k_it;
-                    if (k_it == k_end) {
-                        return true;
-                    }
-                } else {
-                    k_it = k_begin;
-                }
-                ++a_it;
-            }
-            return false;
-        }
-
-        // 3b) Do a linear search for a range subsequence within an iterable argument
-        template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{{vector(k, a)} noexcept;})
-            requires (
-                !equality<K, A> &&
-                !predicate<K, A> &&
-                !meta::detail::member::has_contains<K, A> &&
-                !meta::detail::adl::has_contains<K, A> &&
-                !search<K, A> &&
-                subsequence<K, A>
-            )
-        {
-            return vector(k, a);
-        }
-
-        template <typename K, typename A, size_t... Is>
-        static constexpr bool destructure(const K& k, const A& a, std::index_sequence<Is...>)
-            noexcept (requires{{(scalar(k, *meta::get<Is>(a)) || ...)} noexcept;})
-            requires (meta::range<A> && requires{{(scalar(k, *meta::get<Is>(a)) || ...)};})
-        {
-            return (scalar(k, *meta::get<Is>(a)) || ...);
-        }
-
-        template <typename K, typename A, size_t... Is>
-        static constexpr bool destructure(const K& k, const A& a, std::index_sequence<Is...>)
-            noexcept (requires{{(scalar(k, meta::get<Is>(a)) || ...)} noexcept;})
-            requires (!meta::range<A> && requires{{(scalar(k, meta::get<Is>(a)) || ...)};})
-        {
-            return (scalar(k, meta::get<Is>(a)) || ...);
-        }
-
-        template <typename K, typename A>
-        static constexpr bool tuple =
-            !meta::range<K> && meta::tuple_like<A> && requires(const K& k, const A& a) {
-                {destructure(k, a, std::make_index_sequence<meta::tuple_size<A>>{})};
-            };
-
-        template <typename K, typename A>
-        static constexpr bool tuple_subsequence = false;
-        template <typename K, typename A> requires (meta::range<K> && meta::tuple_like<A>)
-        static constexpr bool tuple_subsequence<K, A> = subsequence<K, impl::tuple_range<const A&>>;
-
-        // 4a) destructure tuple-like arguments and do a scalar comparison against each
-        //    element
-        template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{
-                {destructure(k, a, std::make_index_sequence<meta::tuple_size<A>>{})} noexcept;
-            })
-            requires (
-                !equality<K, A> &&
-                !predicate<K, A> &&
-                !meta::detail::member::has_contains<K, A> &&
-                !meta::detail::adl::has_contains<K, A> &&
-                !search<K, A> &&
-                !subsequence<K, A> &&
-                !tuple_subsequence<K, A> &&
-                tuple<K, A>
-            )
-        {
-            return destructure(k, a, std::make_index_sequence<meta::tuple_size<A>>{});
-        }
-
-        // 4b) Do a linear search for a range subsequence within a tuple-like argument
-        //     that is not otherwise iterable
-        template <typename K, typename A>
-        static constexpr bool call(const K& k, const A& a)
-            noexcept (requires{{vector(k, impl::tuple_range{a})} noexcept;})
-            requires (
-                !equality<K, A> &&
-                !predicate<K, A> &&
-                !meta::detail::member::has_contains<K, A> &&
-                !meta::detail::adl::has_contains<K, A> &&
-                !search<K, A> &&
-                !subsequence<K, A> &&
-                tuple_subsequence<K, A>
-            )
-        {
-            return vector(k, impl::tuple_range{a});
+            return (scalar(meta::get<Is>(a)) || ...);
         }
 
     public:
-        template <typename... A>
-        [[nodiscard]] constexpr bool operator()(const A&... a) const
-            noexcept (requires{{(call(k, a) || ...)} noexcept;})
-            requires (requires{{(call(k, a) || ...)};})
+        template <typename A>
+        [[nodiscard]] constexpr bool operator()(const A& a) const
+            noexcept (requires{{scalar(a)};} ? requires{{scalar(a)} noexcept;} : (
+                requires{{meta::detail::contains_impl(
+                    meta::strip_range(k),
+                    meta::strip_range(a)
+                )};} ?
+                requires{{meta::detail::contains_impl(
+                    meta::strip_range(k),
+                    meta::strip_range(a))
+                } noexcept;} : ((
+                    meta::iterable<const A&> &&
+                    requires(meta::as_const_ref<meta::yield_type<const A&>> element) {
+                        {scalar(element)};
+                    }
+                ) ? (
+                    meta::nothrow::iterable<const A&> &&
+                    requires(meta::as_const_ref<meta::yield_type<const A&>> element) {
+                        {scalar(element)} noexcept;
+                    }
+                ) : (
+                    meta::tuple_like<A> && requires{
+                        {tuple(a, std::make_index_sequence<meta::tuple_size<A>>{})} noexcept;
+                    }
+                )))
+            )
+            requires (
+                requires{{
+                    meta::strip_range(k) == meta::strip_range(a)
+                } -> meta::convertible_to<bool>;} ||
+                requires{{
+                    meta::strip_range(k)(meta::strip_range(a))
+                } -> meta::convertible_to<bool>;} ||
+                meta::detail::member::has_contains<K, meta::remove_range<const A&>> ||
+                meta::detail::adl::has_contains<K, meta::remove_range<const A&>> || (
+                    meta::iterable<const A&> && (
+                        requires(meta::as_const_ref<meta::yield_type<const A&>> element) {{
+                            meta::strip_range(k) == meta::strip_range(element)
+                        } -> meta::convertible_to<bool>;} ||
+                        requires(meta::as_const_ref<meta::yield_type<const A&>> element) {{
+                            meta::strip_range(k)(meta::strip_range(element))
+                        } -> meta::convertible_to<bool>;}
+                    )
+                ) || (
+                    meta::tuple_like<A> && requires{
+                        {tuple(a, std::make_index_sequence<meta::tuple_size<A>>{})};
+                    }
+                )
+            )
         {
-            return (call(k, a) || ...);
+            if constexpr (requires{{scalar(a)};}) {
+                return scalar(a);
+            } else if constexpr (
+                meta::detail::member::has_contains<K, meta::remove_range<const A&>> ||
+                meta::detail::adl::has_contains<K, meta::remove_range<const A&>>
+            ) {
+                return meta::detail::contains_impl(
+                    meta::strip_range(k),
+                    meta::strip_range(a)
+                );
+            } else if constexpr (meta::iterable<const A&> && (
+                requires(meta::as_const_ref<meta::yield_type<const A&>> element) {{
+                    meta::strip_range(k) == meta::strip_range(element)
+                } -> meta::convertible_to<bool>;} ||
+                requires(meta::as_const_ref<meta::yield_type<const A&>> element) {{
+                    meta::strip_range(k)(meta::strip_range(element))
+                } -> meta::convertible_to<bool>;}
+            )) {
+                for (const auto& x : a) {
+                    if (scalar(x)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else {
+                return tuple(a, std::make_index_sequence<meta::tuple_size<A>>{});
+            }
+        }
+
+        template <typename... A> requires (sizeof...(A) > 1)
+        [[nodiscard]] constexpr bool operator()(const A&... a) const
+            noexcept (requires{{(operator()(a) || ...)} noexcept;})
+            requires (requires{{(operator()(a) || ...)};})
+        {
+            return (operator()(a) || ...);
+        }
+    };
+    template <meta::not_rvalue T> requires (meta::range<T> && !meta::scalar<T>)
+    struct contains<T> {
+        [[no_unique_address]] T k;
+
+    private:
+        template <typename K, typename A>
+        static constexpr bool scalar(const K& k, const A& a)
+            noexcept (requires{{
+                meta::strip_range(k) == meta::strip_range(a)
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                meta::strip_range(k) == meta::strip_range(a)
+            } -> meta::convertible_to<bool>;})
+        {
+            return bool(meta::strip_range(k) == meta::strip_range(a));
+        }
+
+        template <typename K, typename A>
+        static constexpr bool scalar(const K& k, const A& a)
+            noexcept (requires{{
+                meta::strip_range(k)(meta::strip_range(a))
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                meta::strip_range(k)(meta::strip_range(a))
+            } -> meta::convertible_to<bool>;})
+        {
+            return bool(meta::strip_range(k)(meta::strip_range(a)));
+        }
+
+        template <typename A>
+        constexpr bool subsequence(const A& a) const
+            noexcept (requires(
+                meta::begin_type<meta::as_const_ref<T>> k_begin,
+                meta::begin_type<meta::as_const_ref<T>> k_it,
+                meta::end_type<meta::as_const_ref<T>> k_end,
+                meta::begin_type<const A&> a_it,
+                meta::end_type<const A&> a_end
+            ) {
+                {std::ranges::begin(k)} noexcept -> meta::nothrow::copyable;
+                {std::ranges::end(k)} noexcept;
+                {k_it == k_end} noexcept -> meta::nothrow::truthy;
+                {std::ranges::begin(a)} noexcept;
+                {std::ranges::end(a)} noexcept;
+                {a_it != a_end} noexcept -> meta::nothrow::truthy;
+                {scalar(*k_it, *a_it)} noexcept;
+                {++k_it} noexcept;
+                {k_it = k_begin} noexcept;
+                {++a_it} noexcept;
+            })
+        {
+            auto k_begin = std::ranges::begin(k);
+            auto k_it = k_begin;
+            auto k_end = std::ranges::end(k);
+            if (k_it == k_end) {
+                return true;  // empty range
+            }
+            auto a_it = std::ranges::begin(a);
+            auto a_end = std::ranges::end(a);
+            while (a_it != a_end) {
+                if (scalar(*k_it, *a_it)) {
+                    ++k_it;
+                    if (k_it == k_end) {
+                        return true;
+                    }
+                } else {
+                    k_it = k_begin;
+                }
+                ++a_it;
+            }
+            return false;
+        }
+
+    public:
+        template <typename A>
+        [[nodiscard]] constexpr bool operator()(const A& a) const
+            noexcept (requires{{subsequence(a)} noexcept;})
+            requires (requires(
+                meta::begin_type<meta::as_const_ref<T>> k_begin,
+                meta::begin_type<meta::as_const_ref<T>> k_it,
+                meta::end_type<meta::as_const_ref<T>> k_end,
+                meta::begin_type<const A&> a_it,
+                meta::end_type<const A&> a_end
+            ) {
+                {std::ranges::begin(k)} -> meta::copyable;
+                {std::ranges::end(k)};
+                {k_it == k_end} -> meta::truthy;
+                {std::ranges::begin(a)};
+                {std::ranges::end(a)};
+                {a_it != a_end} -> meta::truthy;
+                {scalar(*k_it, *a_it)};
+                {++k_it};
+                {k_it = k_begin};
+                {++a_it};
+            })
+        {
+            return subsequence(a);
+        }
+
+        template <typename A>
+        [[nodiscard]] constexpr bool operator()(const A& a) const
+            noexcept (requires{{subsequence(impl::tuple_range(a))} noexcept;})
+            requires (meta::tuple_like<A> && requires(
+                meta::begin_type<meta::as_const_ref<T>> k_begin,
+                meta::begin_type<meta::as_const_ref<T>> k_it,
+                meta::end_type<meta::as_const_ref<T>> k_end,
+                impl::tuple_range<const A&> norm,
+                meta::begin_type<decltype(norm)> a_it,
+                meta::end_type<decltype(norm)> a_end
+            ) {
+                {std::ranges::begin(k)} -> meta::copyable;
+                {std::ranges::end(k)};
+                {k_it == k_end} -> meta::truthy;
+                {impl::tuple_range(a)};
+                {std::ranges::begin(norm)};
+                {std::ranges::end(norm)};
+                {a_it != a_end} -> meta::truthy;
+                {scalar(*k_it, *a_it)};
+                {++k_it};
+                {k_it = k_begin};
+                {++a_it};
+            })
+        {
+            return subsequence(impl::tuple_range(a));
+        }
+
+        template <typename... A> requires (sizeof...(A) > 1)
+        [[nodiscard]] constexpr bool operator()(const A&... a) const
+            noexcept (requires{{(operator()(a) || ...)} noexcept;})
+            requires (requires{{(operator()(a) || ...)};})
+        {
+            return (operator()(a) || ...);
         }
     };
 
     template <typename T>
     contains(T&&) -> contains<meta::remove_rvalue<T>>;
+
+
 
 
     /// TODO: all of these predicates might need to absorb the complexity of ranges
@@ -6234,10 +6145,10 @@ namespace iter {
         this skips over any intermediate ranges if the type is nested. */
         template <typename Self, typename T>
         constexpr Self operator=(this Self&& self, T&& c)
-            noexcept (requires{{*self = impl::range_strip(std::forward<T>(c))} noexcept;})
+            noexcept (requires{{*self = meta::strip_range(std::forward<T>(c))} noexcept;})
             requires (impl::range_assign::direct<Self, T>)
         {
-            *self = impl::range_strip(std::forward<T>(c));
+            *self = meta::strip_range(std::forward<T>(c));
             if constexpr (meta::rvalue<Self>) {
                 return std::move(self);
             } else {
@@ -7669,7 +7580,7 @@ namespace bertrand::iter {
 
 
     static_assert(range(std::array{std::tuple{1, 2, 3}}).shape()[0] == 1);
-    static_assert(std::same_as<meta::range_type<const range<std::vector<int>&>>, const std::vector<int>&>);
+    static_assert(std::same_as<meta::remove_range<const range<std::vector<int>&>>, const std::vector<int>&>);
     static_assert(meta::scalar<range<int>>);
 
     // static_assert([] {

@@ -1025,7 +1025,7 @@ namespace std {
         static constexpr size_t operator()(bertrand::meta::as_const_ref<T> exc) noexcept {
             return bertrand::impl::hash_combine(
                 exc.type().hash_code(),
-                bertrand::hash(exc.message())
+                bertrand::meta::hash(exc.message())
             );
         }
     };

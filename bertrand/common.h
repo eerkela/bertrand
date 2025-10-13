@@ -4203,7 +4203,7 @@ namespace meta {
     concept has_size = requires(T t) {{size(t)} -> unsigned_integer;};
 
     template <has_size T>
-    using size_type = decltype(size(::std::declval<T>()));
+    using size_type = remove_rvalue<decltype(size(::std::declval<T>()))>;
 
     template <typename Ret, typename T>
     concept size_returns = has_size<T> && convertible_to<size_type<T>, Ret>;
@@ -4301,7 +4301,7 @@ namespace meta {
     concept has_ssize = requires(T t) {{ssize(t)} -> signed_integer;};
 
     template <has_ssize T>
-    using ssize_type = decltype(ssize(::std::declval<T>()));
+    using ssize_type = remove_rvalue<decltype((ssize(::std::declval<T>())))>;
 
     template <typename Ret, typename T>
     concept ssize_returns = has_ssize<T> && convertible_to<ssize_type<T>, Ret>;
@@ -4328,7 +4328,7 @@ namespace meta {
     inline constexpr auto empty = ::std::ranges::empty;
 
     template <typename T>
-    concept has_empty = requires(T t) {{empty(t)} -> convertible_to<bool>;};
+    concept has_empty = requires(T t) {{empty(t)};};
 
     namespace nothrow {
 
@@ -4340,17 +4340,59 @@ namespace meta {
 
     }
 
+    namespace detail {
 
+        namespace adl {
 
-    /// TODO: add a meta::capacity(x) customization point object that checks for
-    /// x.capacity() or capacity(x) via ADL.
+            template <typename T>
+            concept has_capacity = requires(T t) {
+                {capacity(::std::forward<T>(t))};
+            };
 
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_capacity = requires(T t) {
+                {::std::forward<T>(t).capacity()};
+            };
+
+        }
+
+        struct capacity_fn {
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{::std::forward<T>(t).capacity()} noexcept;})
+                requires (member::has_capacity<T>)
+            {
+                return (::std::forward<T>(t).capacity());
+            }
+
+            template <typename T>
+            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
+                noexcept (requires{{capacity(::std::forward<T>(t))} noexcept;})
+                requires (!member::has_capacity<T> && adl::has_capacity<T>)
+            {
+                return (capacity(::std::forward<T>(t)));
+            }
+        };
+
+    }
+
+    /* Retrieve the capacity of a generic container type `T`, preferring the following:
+    
+        1.  an `obj.capacity()` member method.
+        2.  a `capacity(obj)` ADL function.
+
+    In both cases, the result will be perfectly-forwarded. */
+    inline constexpr detail::capacity_fn capacity;
 
     template <typename T>
-    concept has_capacity = requires(T t) { t.capacity(); };
+    concept has_capacity = requires(T t) {{capacity(t)};};
 
     template <has_capacity T>
-    using capacity_type = decltype(::std::declval<T>().capacity());
+    using capacity_type = remove_rvalue<decltype((capacity(::std::declval<T>())))>;
 
     template <typename Ret, typename T>
     concept capacity_returns = has_capacity<T> && convertible_to<capacity_type<T>, Ret>;
@@ -4359,8 +4401,7 @@ namespace meta {
 
         template <typename T>
         concept has_capacity =
-            meta::has_capacity<T> &&
-            noexcept(::std::declval<T>().capacity());
+            meta::has_capacity<T> && requires(T t) {{meta::capacity(t)} noexcept;};
 
         template <nothrow::has_capacity T>
         using capacity_type = meta::capacity_type<T>;
@@ -4372,14 +4413,60 @@ namespace meta {
 
     }
 
-    /// TODO: add a meta::reserve(x, n) customization point object that checks for
-    /// x.reserve(n) or reserve(x, n) via ADL?
+    namespace detail {
+
+        namespace adl {
+
+            template <typename T>
+            concept has_reserve = requires(T t, size_t n) {
+                {reserve(::std::forward<T>(t), n)};
+            };
+
+        }
+
+        namespace member {
+
+            template <typename T>
+            concept has_reserve = requires(T t, size_t n) {
+                {::std::forward<T>(t).reserve(n)};
+            };
+
+        }
+
+        struct reserve_fn {
+            template <typename T>
+            static constexpr void operator()(T&& t, size_t n)
+                noexcept (requires{{::std::forward<T>(t).reserve(n)} noexcept;})
+                requires (member::has_reserve<T>)
+            {
+                ::std::forward<T>(t).reserve(n);
+            }
+
+            template <typename T>
+            static constexpr void operator()(T&& t, size_t n)
+                noexcept (requires{{reserve(::std::forward<T>(t), n)} noexcept;})
+                requires (!member::has_reserve<T> && adl::has_reserve<T>)
+            {
+                reserve(::std::forward<T>(t), n);
+            }
+        };
+
+    }
+
+    /* Reserve space for at least `n` elements in a generic container type `T`, preferring
+    the following:
+
+        1.  an `obj.reserve(n)` member method.
+        2.  a `reserve(obj, n)` ADL function.
+    */
+    inline constexpr detail::reserve_fn reserve;
 
     template <typename T>
-    concept has_reserve = requires(T t, size_t n) { t.reserve(n); };
+    concept has_reserve = requires(T t, size_t n) {{reserve(t, n)};};
 
     template <has_reserve T>
-    using reserve_type = decltype(::std::declval<T>().reserve(::std::declval<size_t>()));
+    using reserve_type =
+        remove_rvalue<decltype((reserve(::std::declval<T>(), ::std::declval<size_t>())))>;
 
     template <typename Ret, typename T>
     concept reserve_returns = has_reserve<T> && convertible_to<reserve_type<T>, Ret>;
@@ -4388,8 +4475,7 @@ namespace meta {
 
         template <typename T>
         concept has_reserve =
-            meta::has_reserve<T> &&
-            noexcept(::std::declval<T>().reserve(::std::declval<size_t>()));
+            meta::has_reserve<T> && requires(T t, size_t n) {{meta::reserve(t, n)} noexcept;};
 
         template <nothrow::has_reserve T>
         using reserve_type = meta::reserve_type<T>;
@@ -4649,17 +4735,30 @@ namespace meta {
 
     }
 
+    namespace detail {
 
+        struct hash_fn {
+            template <typename T>
+            [[nodiscard]] static constexpr size_t operator()(const T& t)
+                noexcept (requires{{::std::hash<::std::decay_t<T>>{}(t)} noexcept;})
+                requires (requires{{::std::hash<::std::decay_t<T>>{}(t)};})
+            {
+                return (::std::hash<::std::decay_t<T>>{}(t));
+            }
+        };
 
+    }
 
-    /// TODO: meta::hash(), which is separate from `bertrand::hash`, which ought to be
-    /// a `def` object in `op.h`
+    /* Hash a generic object of type `T`.  This is expression-equivalent to a
+    `std::hash<std::decay_t<T>>{}()` call, but without requiring the user to manually
+    specialize `std::hash`.  The return type is always `size_t`. */
+    inline constexpr detail::hash_fn hash;
 
     template <typename T>
-    concept hashable = requires(T t) { ::std::hash<::std::decay_t<T>>{}(t); };
+    concept hashable = requires(T t) {{hash(t)} -> unsigned_integer;};
 
     template <hashable T>
-    using hash_type = decltype(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
+    using hash_type = remove_rvalue<decltype((hash(::std::declval<T>())))>;
 
     template <typename Ret, typename T>
     concept hash_returns = hashable<T> && convertible_to<hash_type<T>, Ret>;
@@ -4667,17 +4766,14 @@ namespace meta {
     namespace nothrow {
 
         template <typename T>
-        concept hashable =
-            meta::hashable<T> &&
-            noexcept(::std::hash<::std::decay_t<T>>{}(::std::declval<T>()));
+        concept hashable = meta::hashable<T> && requires(T t) {{meta::hash(t)} noexcept;};
 
         template <nothrow::hashable T>
         using hash_type = meta::hash_type<T>;
 
         template <typename Ret, typename T>
         concept hash_returns =
-            nothrow::hashable<T> &&
-            nothrow::convertible_to<nothrow::hash_type<T>, Ret>;
+            nothrow::hashable<T> && nothrow::convertible_to<nothrow::hash_type<T>, Ret>;
 
     }
 
@@ -5124,17 +5220,6 @@ struct NoneType : impl::prefer_constructor_tag {
 
 /* The global `None` singleton, representing the absence of a value. */
 inline constexpr NoneType None;
-
-
-/// TODO: hash() should go into op.h as a `def` function to allow for chaining.
-
-
-/* Hash an arbitrary value.  Equivalent to calling `std::hash<T>{}(...)`, but without
-needing to explicitly specialize `std::hash`. */
-template <meta::hashable T>
-[[nodiscard]] constexpr auto hash(T&& obj) noexcept(meta::nothrow::hashable<T>) {
-    return std::hash<std::decay_t<T>>{}(std::forward<T>(obj));
-}
 
 
 /* A generalized `swap()` operator that allows any type in the `bertrand::` namespace
@@ -5654,7 +5739,7 @@ namespace impl {
         static constexpr decltype(auto) operator()(T&& value)
             noexcept (meta::nothrow::hashable<T>)
         {
-            return (bertrand::hash(std::forward<T>(value)));
+            return (meta::hash(std::forward<T>(value)));
         }
     };
 
