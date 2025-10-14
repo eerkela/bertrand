@@ -552,13 +552,6 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T>
-        constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
-        template <typename T, auto Extent>
-        constexpr bool prefer_constructor<::std::span<T, Extent>> = true;
-        template <typename... Ts>
-        constexpr bool prefer_constructor<::std::mdspan<Ts...>> = true;
-
         template <typename L, typename R>
         constexpr bool convertible_to = ::std::convertible_to<L, R>;
 
@@ -567,9 +560,6 @@ namespace meta {
             ::std::is_nothrow_convertible_v<L, R>;
 
     }
-
-    template <typename T>
-    concept prefer_constructor = detail::prefer_constructor<unqualify<T>>;
 
     template <typename L, typename R>
     concept convertible_to = detail::convertible_to<L, R>;
@@ -883,6 +873,9 @@ namespace meta {
             ));
 
     }
+
+    /// TODO: maybe `swap()` should be a function object in the same vein as
+    /// `meta::begin()`, `meta::size()`, `meta::shape()`, etc.
 
     /* Explicitly invoke a member `l.swap(r)` method, if available. */
     template <typename L, typename R>
@@ -2770,128 +2763,144 @@ namespace meta {
 
     }
 
+    /* Get a `begin()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::begin`. */
+    inline constexpr auto begin = ::std::ranges::begin;
+
     template <typename T>
-    concept has_begin = requires(as_lvalue<T> t) { ::std::ranges::begin(t); };
+    concept has_begin = requires(T t) {{begin(t)};};
 
     template <has_begin T>
-    using begin_type = decltype(::std::ranges::begin(::std::declval<as_lvalue<T>>()));
+    using begin_type = decltype(begin(::std::declval<as_lvalue<T>>()));
+
+    /* Get a `cbegin()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::cbegin`. */
+    inline constexpr auto cbegin = ::std::ranges::cbegin;
 
     template <typename T>
-    concept has_cbegin = requires(as_lvalue<T> t) { ::std::ranges::cbegin(t); };
+    concept has_cbegin = requires(as_lvalue<T> t) {{cbegin(t)};};
 
     template <has_cbegin T>
-    using cbegin_type = decltype(::std::ranges::cbegin(::std::declval<as_lvalue<T>>()));
+    using cbegin_type = decltype(cbegin(::std::declval<as_lvalue<T>>()));
 
     namespace nothrow {
 
         template <typename T>
-        concept has_begin =
-            meta::has_begin<T> &&
-            noexcept(::std::ranges::begin(::std::declval<as_lvalue<T>>()));
+        concept has_begin = meta::has_begin<T> && requires(T t) {{meta::begin(t)} noexcept;};
 
         template <nothrow::has_begin T>
         using begin_type = meta::begin_type<T>;
 
         template <typename T>
-        concept has_cbegin =
-            meta::has_cbegin<T> &&
-            noexcept(::std::ranges::cbegin(::std::declval<as_lvalue<T>>()));
+        concept has_cbegin = meta::has_cbegin<T> && requires(T t) {{meta::cbegin(t)} noexcept;};
 
         template <nothrow::has_cbegin T>
         using cbegin_type = meta::cbegin_type<T>;
 
     }
 
+    /* Get an `end()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::end`. */
+    inline constexpr auto end = ::std::ranges::end;
+
     template <typename T>
-    concept has_end = requires(as_lvalue<T> t) { ::std::ranges::end(t); };
+    concept has_end = requires(T t) {{end(t)};};
 
     template <has_end T>
-    using end_type = decltype(::std::ranges::end(::std::declval<as_lvalue<T>>()));
+    using end_type = decltype(end(::std::declval<as_lvalue<T>>()));
+
+    /* Get a `cend()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::cend`. */
+    inline constexpr auto cend = ::std::ranges::cend;
 
     template <typename T>
-    concept has_cend = requires(as_lvalue<T> t) { ::std::ranges::cend(t); };
+    concept has_cend = requires(T t) {{cend(t)};};
 
     template <has_cend T>
-    using cend_type = decltype(::std::ranges::cend(::std::declval<as_lvalue<T>>()));
+    using cend_type = decltype(cend(::std::declval<as_lvalue<T>>()));
 
     namespace nothrow {
 
         template <typename T>
-        concept has_end =
-            meta::has_end<T> &&
-            noexcept(::std::ranges::end(::std::declval<as_lvalue<T>>()));
+        concept has_end = meta::has_end<T> && requires(T t) {{meta::end(t)} noexcept;};
 
         template <nothrow::has_end T>
         using end_type = meta::end_type<T>;
 
         template <typename T>
-        concept has_cend =
-            meta::has_cend<T> &&
-            noexcept(::std::ranges::cend(::std::declval<as_lvalue<T>>()));
+        concept has_cend = meta::has_cend<T> && requires(T t) {{meta::cend(t)} noexcept;};
 
         template <nothrow::has_cend T>
         using cend_type = meta::cend_type<T>;
 
     }
 
+    /* Get an `rbegin()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::rbegin`. */
+    inline constexpr auto rbegin = ::std::ranges::rbegin;
+
     template <typename T>
-    concept has_rbegin = requires(as_lvalue<T> t) { ::std::ranges::rbegin(t); };
+    concept has_rbegin = requires(T t) {{rbegin(t)};};
 
     template <has_rbegin T>
-    using rbegin_type = decltype(::std::ranges::rbegin(::std::declval<as_lvalue<T>>()));
+    using rbegin_type = decltype(rbegin(::std::declval<as_lvalue<T>>()));
+
+    /* Get a `crbegin()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::crbegin`. */
+    inline constexpr auto crbegin = ::std::ranges::crbegin;
 
     template <typename T>
-    concept has_crbegin = requires(as_lvalue<T> t) { ::std::ranges::crbegin(t); };
+    concept has_crbegin = requires(T t) {{crbegin(t)};};
 
     template <has_crbegin T>
-    using crbegin_type = decltype(::std::ranges::crbegin(::std::declval<as_lvalue<T>>()));
+    using crbegin_type = decltype(crbegin(::std::declval<as_lvalue<T>>()));
 
     namespace nothrow {
 
         template <typename T>
-        concept has_rbegin =
-            meta::has_rbegin<T> &&
-            noexcept(::std::ranges::rbegin(::std::declval<as_lvalue<T>>()));
+        concept has_rbegin = meta::has_rbegin<T> && requires(T t) {{meta::rbegin(t)} noexcept;};
 
         template <nothrow::has_rbegin T>
         using rbegin_type = meta::rbegin_type<T>;
 
         template <typename T>
-        concept has_crbegin =
-            meta::has_crbegin<T> &&
-            noexcept(::std::ranges::crbegin(::std::declval<as_lvalue<T>>()));
+        concept has_crbegin = meta::has_crbegin<T> && requires(T t) {{meta::crbegin(t)} noexcept;};
 
         template <nothrow::has_crbegin T>
         using crbegin_type = meta::crbegin_type<T>;
 
     }
 
+    /* Get an `rend()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::rend`. */
+    inline constexpr auto rend = ::std::ranges::rend;
+
     template <typename T>
-    concept has_rend = requires(as_lvalue<T> t) { ::std::ranges::rend(t); };
+    concept has_rend = requires(T t) {{rend(t)};};
 
     template <has_rend T>
-    using rend_type = decltype(::std::ranges::rend(::std::declval<as_lvalue<T>>()));
+    using rend_type = decltype(rend(::std::declval<as_lvalue<T>>()));
+
+    /* Get a `crend()` iterator for a generic type `T`.  This is identical to
+    `std::ranges::crend`. */
+    inline constexpr auto crend = ::std::ranges::crend;
 
     template <typename T>
-    concept has_crend = requires(as_lvalue<T> t) { ::std::ranges::crend(t); };
+    concept has_crend = requires(T t) {{crend(t)};};
 
     template <has_crend T>
-    using crend_type = decltype(::std::ranges::crend(::std::declval<as_lvalue<T>>()));
+    using crend_type = decltype(crend(::std::declval<as_lvalue<T>>()));
 
     namespace nothrow {
 
         template <typename T>
-        concept has_rend =
-            meta::has_rend<T> &&
-            noexcept(::std::ranges::rend(::std::declval<as_lvalue<T>>()));
+        concept has_rend = meta::has_rend<T> && requires(T t) {{meta::rend(t)} noexcept;};
 
         template <nothrow::has_rend T>
         using rend_type = meta::rend_type<T>;
 
         template <typename T>
-        concept has_crend =
-            meta::has_crend<T> &&
-            noexcept(::std::ranges::crend(::std::declval<as_lvalue<T>>()));
+        concept has_crend = meta::has_crend<T> && requires(T t) {{meta::crend(t)} noexcept;};
 
         template <nothrow::has_crend T>
         using crend_type = meta::crend_type<T>;
@@ -2900,12 +2909,12 @@ namespace meta {
 
     template <typename T>
     concept iterable = requires(as_lvalue<T> t) {
-        { ::std::ranges::begin(t) } -> iterator;
-        { ::std::ranges::end(t) } -> sentinel_for<decltype(::std::ranges::begin(t))>;
+        {begin(t)} -> iterator;
+        {end(t)} -> sentinel_for<begin_type<T>>;
     };
 
     template <iterable T>
-    using yield_type = decltype(*::std::ranges::begin(::std::declval<meta::as_lvalue<T>>()));
+    using yield_type = decltype(*begin(::std::declval<meta::as_lvalue<T>>()));
 
     template <typename T, typename Ret>
     concept yields = iterable<T> && convertible_to<yield_type<T>, Ret>;
@@ -2932,13 +2941,12 @@ namespace meta {
 
     template <typename T>
     concept const_iterable = requires(as_lvalue<T> t) {
-        { ::std::ranges::cbegin(t) } -> iterator;
-        { ::std::ranges::cend(t) } -> sentinel_for<decltype(::std::ranges::cbegin(t))>;
+        {cbegin(t)} -> iterator;
+        {cend(t)} -> sentinel_for<cbegin_type<T>>;
     };
 
     template <const_iterable T>
-    using const_yield_type =
-        decltype(*::std::ranges::cbegin(::std::declval<meta::as_lvalue<T>>()));
+    using const_yield_type = decltype(*cbegin(::std::declval<meta::as_lvalue<T>>()));
 
     template <typename T, typename Ret>
     concept const_yields =
@@ -2966,13 +2974,12 @@ namespace meta {
 
     template <typename T>
     concept reverse_iterable = requires(as_lvalue<T> t) {
-        { ::std::ranges::rbegin(t) } -> iterator;
-        { ::std::ranges::rend(t) } -> sentinel_for<decltype(::std::ranges::rbegin(t))>;
+        {rbegin(t)} -> iterator;
+        {rend(t)} -> sentinel_for<rbegin_type<T>>;
     };
 
     template <reverse_iterable T>
-    using reverse_yield_type =
-        decltype(*::std::ranges::rbegin(::std::declval<meta::as_lvalue<T>>()));
+    using reverse_yield_type = decltype(*rbegin(::std::declval<meta::as_lvalue<T>>()));
 
     template <typename T, typename Ret>
     concept reverse_yields =
@@ -3000,13 +3007,12 @@ namespace meta {
 
     template <typename T>
     concept const_reverse_iterable = requires(as_lvalue<T> t) {
-        { ::std::ranges::crbegin(t) } -> iterator;
-        { ::std::ranges::crend(t) } -> sentinel_for<decltype(::std::ranges::crbegin(t))>;
+        {crbegin(t)} -> iterator;
+        {crend(t)} -> sentinel_for<crbegin_type<T>>;
     };
 
     template <const_reverse_iterable T>
-    using const_reverse_yield_type =
-        decltype(*::std::ranges::crbegin(::std::declval<meta::as_lvalue<T>>()));
+    using const_reverse_yield_type = decltype(*crbegin(::std::declval<meta::as_lvalue<T>>()));
 
     template <typename T, typename Ret>
     concept const_reverse_yields =
@@ -4527,10 +4533,10 @@ namespace meta {
 
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
-                noexcept (requires{{*::std::ranges::begin(t)} noexcept;})
+                noexcept (requires{{*meta::begin(t)} noexcept;})
                 requires (!member::has_front<T> && !adl::has_front<T> && meta::iterable<T>)
             {
-                return (*::std::ranges::begin(t));
+                return (*meta::begin(t));
             }
         };
 
@@ -4540,7 +4546,7 @@ namespace meta {
 
         1.  an `obj.front()` member method.
         2.  a `front(obj)` ADL function.
-        3.  dereferencing the result of `std::ranges::begin(obj)`.
+        3.  dereferencing the result of `meta::begin(obj)`.
 
     In all cases, the result will be perfectly-forwarded.  Note that no extra bounds
     checking is performed, meaning that the behavior is undefined if `obj` is empty.
@@ -4610,20 +4616,20 @@ namespace meta {
 
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
-                noexcept (requires{{*::std::ranges::rbegin(t)} noexcept;})
+                noexcept (requires{{*meta::rbegin(t)} noexcept;})
                 requires (
                     !member::has_back<T> &&
                     !adl::has_back<T> &&
                     meta::reverse_iterable<T>
                 )
             {
-                return (*::std::ranges::rbegin(t));
+                return (*meta::rbegin(t));
             }
 
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires(meta::begin_type<T> it) {
-                    {std::ranges::begin(t)} noexcept;
+                    {meta::begin(t)} noexcept;
                     {it += meta::ssize(t) - 1} noexcept;
                     {*it} noexcept;
                 })
@@ -4634,7 +4640,7 @@ namespace meta {
                     requires(meta::begin_type<T> it) { {it += meta::ssize(t) - 1};}
                 )
             {
-                auto it = ::std::ranges::begin(t);
+                auto it = meta::begin(t);
                 it += meta::ssize(t) - 1;
                 return (*it);
             }
@@ -4642,7 +4648,7 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires(meta::end_type<T> it) {
-                    {std::ranges::end(t)} noexcept;
+                    {meta::end(t)} noexcept;
                     {--it} noexcept;
                     {*it} noexcept;
                 })
@@ -4654,7 +4660,7 @@ namespace meta {
                     requires(meta::end_type<T> it) {{--it};}
                 )
             {
-                auto it = ::std::ranges::end(t);
+                auto it = meta::end(t);
                 --it;
                 return (*it);
             }
@@ -4666,10 +4672,10 @@ namespace meta {
     
         1.  an `obj.back()` member method.
         2.  a `back(obj)` ADL function.
-        3.  dereferencing the result of `std::ranges::rbegin(obj)`.
-        4.  advancing the iterator returned by `std::ranges::begin(obj)` by
+        3.  dereferencing the result of `meta::rbegin(obj)`.
+        4.  advancing the iterator returned by `meta::begin(obj)` by
             `meta::ssize(obj) - 1` using `operator+=` (random-access).
-        5.  decrementing the iterator returned by `std::ranges::end(obj)` and
+        5.  decrementing the iterator returned by `meta::end(obj)` and
             dereferencing it.
 
     In all cases, the result will be perfectly-forwarded.  Note that no extra bounds
@@ -4790,6 +4796,10 @@ namespace meta {
             noexcept(::std::declval<::std::basic_ostream<Char>&>() << ::std::declval<T>());
 
     }
+
+
+    /// TODO: not really sure if any of these concepts are useful over and above
+    /// simple `requires` clauses where applicable.
 
     template <typename T>
     concept sequence_like = iterable<T> && has_size<T> && requires(T t) {
@@ -5137,31 +5147,38 @@ namespace meta {
         /// NOTE: in all cases, cvref qualifiers will be stripped from the input
         /// types before checking against these customization points.
 
-        /* Enables the `sorted()` helper function for sortable container types.  The
-        `::type` alias should map the templated `Less` function into the template
-        definition for `T`.  */
-        template <meta::unqualified Less, meta::unqualified T>
-            requires (
-                meta::iterable<T> &&
-                meta::default_constructible<Less> &&
-                meta::call_returns<
-                    bool,
-                    meta::as_lvalue<Less>,
-                    meta::as_const<meta::yield_type<T>>,
-                    meta::as_const<meta::yield_type<T>>
-                >
-            )
-        struct sorted { using type = void; };
+        /* Disables certain implicit conversion operators to the indicated type,
+        reducing the candidate overloads to just the type's normal constructors.  This
+        can prevent ambiguities in overload resolution if the type has multiple
+        conversion paths.  The conversion operator must check this concept in its
+        constraints. */
+        template <typename T>
+        constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
+        template <typename T, auto Extent>
+        constexpr bool prefer_constructor<::std::span<T, Extent>> = true;
+        template <typename... Ts>
+        constexpr bool prefer_constructor<::std::mdspan<Ts...>> = true;
 
         /* Enables the `*` unpacking operator for iterable container types. */
         template <meta::iterable T>
-        constexpr bool enable_unpack_operator = false;
+        constexpr bool enable_unpack = false;
 
         /* Enables the `->*` comprehension operator for iterable container types. */
         template <meta::iterable T>
-        constexpr bool enable_comprehension_operator = false;
+        constexpr bool enable_comprehension = false;
+
+        /// TODO: `meta::detail::enable_wraparound`?
 
     }
+
+    template <typename T>
+    concept prefer_constructor = detail::prefer_constructor<unqualify<T>>;
+
+    template <typename T>
+    concept enable_unpack = detail::enable_unpack<unqualify<T>>;
+
+    template <typename T>
+    concept enable_comprehension = detail::enable_comprehension<unqualify<T>>;
 
 }
 
@@ -6147,7 +6164,10 @@ static_str(const char(&)[N]) -> static_str<N - 1>;
 namespace impl {
 
     /// TODO: float_to_string and int_to_string may need to account for the new,
-    /// arbitrary-precision numeric types in bits.h
+    /// arbitrary-precision numeric types in bits.h, which makes the circular
+    /// dependencies a bit tricky.  Also, all this stuff should ideally be delayed
+    /// as long as possible, but that will really have to wait until I get to strings
+    /// and formatting in general.
 
     template <typename T>
     struct bit_view;

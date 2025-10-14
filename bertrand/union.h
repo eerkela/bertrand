@@ -930,7 +930,7 @@ namespace meta {
             requires (
                 detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::nothrow
             )
-        using union_type =
+        using make_union =
             detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
 
     }
@@ -938,11 +938,11 @@ namespace meta {
     /* Form a canonical union type from the given input types, filtering for uniqueness
     and flattening any nested monads. */
     template <typename... Ts>
-    using union_type =
+    using make_union =
         detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
 
     /* Detect whether the canonical union type for the given inputs does not trigger
-    promotion to a `Union`, `Optional`, or `Expected` monad, meaning that `union_type`
+    promotion to a `Union`, `Optional`, or `Expected` monad, meaning that `make_union`
     reduces to a single scalar type after filtering for uniqueness and flattening any
     nested monads. */
     template <typename... Ts>
@@ -1909,7 +1909,7 @@ namespace impl {
         static constexpr size_t wrap = size_t(impl::normalize_index<size, J>());
 
         template <ssize_t J>
-        using type = meta::union_type<
+        using type = meta::make_union<
             decltype((meta::get<wrap<J>>(std::declval<Self>().__value.template get<I>()))),
             decltype((meta::get<wrap<J>>(std::declval<Self>().__value.template get<Is>())))...
         >;
@@ -2830,23 +2830,23 @@ namespace impl {
         struct begin_fn {
             static constexpr begin_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::begin(u.__value.template get<I>())
+                    meta::begin(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<begin_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::begin(u.__value.template get<I>())
+                    meta::begin(u.__value.template get<I>())
                 } -> meta::convertible_to<begin_type>;})
             {
-                return std::ranges::begin(u.__value.template get<I>());
+                return meta::begin(u.__value.template get<I>());
             }
             static constexpr begin_type operator()(U u)
                 noexcept (requires{{begin_type{
-                    {bertrand::alternative<I>, std::ranges::begin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::begin(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{begin_type{
-                    {bertrand::alternative<I>, std::ranges::begin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::begin(u.__value.template get<I>())}
                 }};})
             {
-                return {{bertrand::alternative<I>, std::ranges::begin(u.__value.template get<I>())}};
+                return {{bertrand::alternative<I>, meta::begin(u.__value.template get<I>())}};
             }
         };
         using _begin = impl::basic_vtable<begin_fn, N>;
@@ -2855,23 +2855,23 @@ namespace impl {
         struct end_fn {
             static constexpr end_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::end(u.__value.template get<I>())
+                    meta::end(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<end_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::end(u.__value.template get<I>())
+                    meta::end(u.__value.template get<I>())
                 } -> meta::convertible_to<end_type>;})
             {
-                return std::ranges::end(u.__value.template get<I>());
+                return meta::end(u.__value.template get<I>());
             }
             static constexpr end_type operator()(U u)
                 noexcept (requires{{end_type{
-                    {bertrand::alternative<I>, std::ranges::end(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::end(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{end_type{
-                    {bertrand::alternative<I>, std::ranges::end(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::end(u.__value.template get<I>())}
                 }};})
             {
-                return {{bertrand::alternative<I>, std::ranges::end(u.__value.template get<I>())}};
+                return {{bertrand::alternative<I>, meta::end(u.__value.template get<I>())}};
             }
         };
         using _end = impl::basic_vtable<end_fn, N>;
@@ -2880,25 +2880,25 @@ namespace impl {
         struct rbegin_fn {
             static constexpr rbegin_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::rbegin(u.__value.template get<I>())
+                    meta::rbegin(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<rbegin_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::rbegin(u.__value.template get<I>())
+                    meta::rbegin(u.__value.template get<I>())
                 } -> meta::convertible_to<rbegin_type>;})
             {
-                return std::ranges::rbegin(u.__value.template get<I>());
+                return meta::rbegin(u.__value.template get<I>());
             }
             static constexpr rbegin_type operator()(U u)
                 noexcept (requires{{rbegin_type{
-                    {bertrand::alternative<I>, std::ranges::rbegin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::rbegin(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rbegin_type{
-                    {bertrand::alternative<I>, std::ranges::rbegin(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::rbegin(u.__value.template get<I>())}
                 }};})
             {
                 return {{
                     bertrand::alternative<I>,
-                    std::ranges::rbegin(u.__value.template get<I>())
+                    meta::rbegin(u.__value.template get<I>())
                 }};
             }
         };
@@ -2908,25 +2908,25 @@ namespace impl {
         struct rend_fn {
             static constexpr rend_type operator()(U u)
                 noexcept (requires{{
-                    std::ranges::rend(u.__value.template get<I>())
+                    meta::rend(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<rend_type>;})
                 requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    std::ranges::rend(u.__value.template get<I>())
+                    meta::rend(u.__value.template get<I>())
                 } -> meta::convertible_to<rend_type>;})
             {
-                return std::ranges::rend(u.__value.template get<I>());
+                return meta::rend(u.__value.template get<I>());
             }
             static constexpr rend_type operator()(U u)
                 noexcept (requires{{rend_type{
-                    {bertrand::alternative<I>, std::ranges::rend(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::rend(u.__value.template get<I>())}
                 }} noexcept;})
                 requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rend_type{
-                    {bertrand::alternative<I>, std::ranges::rend(u.__value.template get<I>())}
+                    {bertrand::alternative<I>, meta::rend(u.__value.template get<I>())}
                 }};})
             {
                 return {{
                     bertrand::alternative<I>,
-                    std::ranges::rend(u.__value.template get<I>())
+                    meta::rend(u.__value.template get<I>())
                 }};
             }
         };
@@ -4411,18 +4411,18 @@ namespace impl {
             noexcept (requires{
                 {opt == None} noexcept;
                 {begin_type{}} noexcept;
-                {begin_type{std::ranges::begin(opt.__value.template get<1>())}} noexcept;
+                {begin_type{meta::begin(opt.__value.template get<1>())}} noexcept;
             })
             requires (requires{
                 {opt == None};
                 {begin_type{}};
-                {begin_type{std::ranges::begin(opt.__value.template get<1>())}};
+                {begin_type{meta::begin(opt.__value.template get<1>())}};
             })
         {
             if (opt == None) {
                 return begin_type{};
             } else {
-                return begin_type{std::ranges::begin(opt.__value.template get<1>())};
+                return begin_type{meta::begin(opt.__value.template get<1>())};
             }
         }
 
@@ -4430,18 +4430,18 @@ namespace impl {
             noexcept (requires{
                 {opt == None} noexcept;
                 {end_type{}} noexcept;
-                {end_type{std::ranges::end(opt.__value.template get<1>())}} noexcept;
+                {end_type{meta::end(opt.__value.template get<1>())}} noexcept;
             })
             requires (requires{
                 {opt == None};
                 {end_type{}};
-                {end_type{std::ranges::end(opt.__value.template get<1>())}};
+                {end_type{meta::end(opt.__value.template get<1>())}};
             })
         {
             if (opt == None) {
                 return end_type{};
             } else {
-                return end_type{std::ranges::end(opt.__value.template get<1>())};
+                return end_type{meta::end(opt.__value.template get<1>())};
             }
         }
 
@@ -4449,18 +4449,18 @@ namespace impl {
             noexcept (requires{
                 {opt == None} noexcept;
                 {rbegin_type{}} noexcept;
-                {rbegin_type{std::ranges::rbegin(opt.__value.template get<1>())}} noexcept;
+                {rbegin_type{meta::rbegin(opt.__value.template get<1>())}} noexcept;
             })
             requires (requires{
                 {opt == None};
                 {rbegin_type{}};
-                {rbegin_type{std::ranges::rbegin(opt.__value.template get<1>())}};
+                {rbegin_type{meta::rbegin(opt.__value.template get<1>())}};
             })
         {
             if (opt == None) {
                 return rbegin_type{};
             } else {
-                return rbegin_type{std::ranges::rbegin(opt.__value.template get<1>())};
+                return rbegin_type{meta::rbegin(opt.__value.template get<1>())};
             }
         }
 
@@ -4468,18 +4468,18 @@ namespace impl {
             noexcept (requires{
                 {opt == None} noexcept;
                 {rend_type{}} noexcept;
-                {rend_type{std::ranges::rend(opt.__value.template get<1>())}} noexcept;
+                {rend_type{meta::rend(opt.__value.template get<1>())}} noexcept;
             })
             requires (requires{
                 {opt == None};
                 {rend_type{}};
-                {rend_type{std::ranges::rend(opt.__value.template get<1>())}};
+                {rend_type{meta::rend(opt.__value.template get<1>())}};
             })
         {
             if (opt == None) {
                 return rend_type{};
             } else {
-                return rend_type{std::ranges::rend(opt.__value.template get<1>())};
+                return rend_type{meta::rend(opt.__value.template get<1>())};
             }
         }
     };
@@ -7005,7 +7005,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     template <bertrand::meta::Expected T>
     expected(T&&) -> expected<
         bertrand::meta::remove_reference<typename bertrand::impl::visitable<T>::value>,
-        typename bertrand::impl::visitable<T>::errors::template eval<bertrand::meta::union_type>
+        typename bertrand::impl::visitable<T>::errors::template eval<bertrand::meta::make_union>
     >;
 
 _LIBCPP_END_NAMESPACE_STD
