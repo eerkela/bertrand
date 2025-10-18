@@ -4111,155 +4111,8 @@ namespace impl {
 
     template <typename T, extent Shape, typename Category>
         requires (sequence_concept<T, Shape, Category>)
-    struct sequence_control;
-
-    template <typename T, extent Shape, typename Category>
-        requires (sequence_concept<T, Shape, Category>)
     struct sequence_iterator;
 
-    /// TODO: there would need to be 2 different destructors depending on the
-    /// input vs forward-or-better iterators, since input iterators can allocate both
-    /// the begin and end iterators at the same time, while forward-or-better iterators
-    /// have to do 2 separate allocations in order to remain a multi-pass iterator.
-
-    namespace sequence_dtor {
-        using ptr = void(*)(const void*);
-
-        template <typename C>
-        constexpr void _fn(const void* ptr) {
-            if constexpr (!meta::lvalue<C>) {
-                delete reinterpret_cast<meta::as_pointer<meta::as_const<C>>>(ptr);
-            }
-        }
-
-        template <typename C>
-        constexpr ptr fn = &_fn<C>;
-    }
-
-    /// TODO: the begin and end constructors need to account for the input iterator
-    /// case storing both the begin and end iterators at the same time.
-
-    namespace sequence_begin {
-        template <typename T, extent Shape, typename Category>
-        using ptr = sequence_iterator<T, Shape, Category>(*)(
-            const void*,
-            sequence_control<T, Shape, Category>*
-        );
-
-        template <typename C, typename T, extent Shape, typename Category>
-            requires (meta::const_yields<C, T>)
-        constexpr auto _fn(const void* ptr, sequence_control<T, Shape, Category>* control) {
-            using Iter = meta::unqualify<meta::cbegin_type<C>>;
-            sequence_iterator<T, Shape, Category> result;
-            result.iter = ::operator new(sizeof(Iter));
-            if (result.iter == nullptr) {
-                throw MemoryError();
-            }
-            try {
-                new (result.iter) Iter(std::ranges::cbegin(
-                    *reinterpret_cast<meta::as_pointer<meta::as_const<C>>>(ptr)
-                ));
-            } catch (...) {
-                ::operator delete(result.iter);
-                throw;
-            }
-            result.control = control;
-            sequence_incref(control);
-            return result;
-        }
-
-        template <typename C, typename T, extent Shape, typename Category>
-            requires (meta::const_yields<C, T>)
-        constexpr ptr<T, Shape, Category> fn = &_fn<C, T, Shape, Category>;
-    }
-
-    namespace sequence_end {
-
-    }
-
-    namespace sequence_iter_copy {
-        template <typename T, extent Shape, typename Category>
-        using ptr = void(*)(
-            sequence_iterator<T, Shape, Category>&,
-            const sequence_iterator<T, Shape, Category>&
-        );
-
-        template <typename C, typename T, extent Shape, typename Category>
-        constexpr void _fn(
-            sequence_iterator<T, Shape, Category>& self,
-            const sequence_iterator<T, Shape, Category>& other
-        ) {
-            using Iter = meta::unqualify<meta::cbegin_type<C>>;
-            if (other.iter != nullptr) {
-                self.iter = ::operator new(sizeof(Iter));
-                if (self.iter == nullptr) {
-                    throw MemoryError();
-                }
-                try {
-                    new (self.iter) Iter(
-                        *reinterpret_cast<meta::as_pointer<Iter>>(other.iter)
-                    );
-                } catch (...) {
-                    ::operator delete(self.iter);
-                    throw;
-                }
-                self.control = other.control;
-                sequence_incref(self.control);
-            }
-        }
-
-        template <typename C, typename T, extent Shape, typename Category>
-        constexpr auto fn = &_fn<C, T, Shape, Category>;
-    }
-
-    namespace sequence_iter_assign {
-        template <typename T, extent Shape, typename Category>
-        using ptr = void(*)(
-            sequence_iterator<T, Shape, Category>&,
-            const sequence_iterator<T, Shape, Category>&
-        );
-
-        template <typename C, typename T, extent Shape, typename Category>
-        constexpr void _fn(
-            sequence_iterator<T, Shape, Category>& self,
-            const sequence_iterator<T, Shape, Category>& other
-        ) {
-            using Iter = meta::unqualify<meta::cbegin_type<C>>;
-            if (self.control != nullptr) {
-                sequence_decref(self.control);
-                self.control = nullptr;
-            }
-            if (other.iter == nullptr) {
-                if (self.iter != nullptr) {
-                    ::operator delete(self.iter);
-                    self.iter = nullptr;
-                }
-            } else {
-                if (self.iter == nullptr) {
-                    self.iter = ::operator new(sizeof(Iter));
-                    if (self.iter == nullptr) {
-                        throw MemoryError();
-                    }
-                    try {
-                        new (self.iter) Iter(
-                            *reinterpret_cast<meta::as_pointer<Iter>>(other.iter)
-                        );
-                    } catch (...) {
-                        ::operator delete(self.iter);
-                        throw;
-                    }
-                } else {
-                    *reinterpret_cast<meta::as_pointer<Iter>>(self.iter) =
-                        *reinterpret_cast<meta::as_pointer<Iter>>(other.iter);
-                }
-                self.control = other.control;
-                sequence_incref(self.control);
-            }
-        }
-
-        template <typename C, typename T, extent Shape, typename Category>
-        constexpr auto fn = &_fn<C, T, Shape, Category>;
-    }
 
 
     /// TODO: `sequence_shape`, of which `sequence_size` is a special case
@@ -4313,66 +4166,6 @@ namespace impl {
         constexpr ptr<T> fn<C, T> = &_fn<C, T>;
     }
 
-    /// TODO: the iterator function pointers can be stored within the same control
-    /// block to cut down on memory.
-
-    namespace sequence_deref {
-        template <meta::not_void T> requires (meta::not_rvalue<T>)
-        using ptr = T(*)(void*);
-
-        template <meta::const_ref Begin, meta::not_void T>
-            requires (meta::not_rvalue<T> && meta::dereference_returns<T, Begin>)
-        constexpr T _fn(void* ptr) {
-            return **reinterpret_cast<meta::as_pointer<Begin>>(ptr);
-        }
-
-        template <meta::const_ref Begin, meta::not_void T>
-            requires (meta::not_rvalue<T> && meta::dereference_returns<T, Begin>)
-        constexpr ptr<T> fn = &_fn<Begin, T>;
-    }
-
-    namespace sequence_increment {
-        using ptr = void(*)(void*);
-
-        template <meta::lvalue Begin>
-            requires (meta::not_const<Begin> && meta::has_preincrement<Begin>)
-        constexpr void _fn(void* ptr) {
-            ++*reinterpret_cast<meta::as_pointer<Begin>>(ptr);
-        }
-
-        template <meta::lvalue Begin>
-            requires (meta::not_const<Begin> && meta::has_preincrement<Begin>)
-        constexpr ptr fn = &_fn<Begin>;
-    }
-
-    /// TODO: always returns a strong ordering?
-    namespace sequence_compare {
-        using ptr = bool(*)(void*, void*);
-
-        template <meta::const_ref Begin, meta::const_ref End>
-            requires (meta::eq_returns<bool, Begin, End>)
-        constexpr bool _fn(void* lhs, void* rhs) {
-            return
-                *reinterpret_cast<meta::as_pointer<Begin>>(lhs) ==
-                *reinterpret_cast<meta::as_pointer<End>>(rhs);
-        }
-
-        template <meta::const_ref Begin, meta::const_ref End>
-            requires (meta::eq_returns<bool, Begin, End>)
-        constexpr ptr fn = &_fn<Begin, End>;
-    }
-
-
-
-    /// TODO: maybe the container is always stored directly after the
-    /// `sequence_control` header, so that it is all one unit?
-
-
-    /// TODO: I should really make an effort to make sequences model `common_range`,
-    /// since that's very helpful for generic programming, especially with legacy
-    /// systems.
-
-
     /* Sequences are reference counted in order to allow for efficient copy/move
     semantics.  The only difference from a typical `shared_ptr` is that lvalue
     initializers will not be copied onto the heap, and will instead simply reference
@@ -4388,113 +4181,421 @@ namespace impl {
     template <typename T, extent Shape, typename Category>
         requires (sequence_concept<T, Shape, Category>)
     struct sequence_control {
-        std::atomic<size_t> refcount = 0;
-        const void* const value = nullptr;
-        const sequence_dtor::ptr dtor = nullptr;
-        const sequence_begin::ptr<T, Shape, Category> begin_fn = nullptr;
-        const sequence_iter_copy::ptr<T, Shape, Category> iter_copy_fn = nullptr;
-        const sequence_iter_assign::ptr<T, Shape, Category> iter_assign_fn = nullptr;
-        const sequence_deref::ptr<T> deref_fn = nullptr;
-        const sequence_increment::ptr increment_fn = nullptr;
-        const sequence_compare::ptr compare_fn = nullptr;
-        const sequence_size::ptr size_fn = nullptr;
-        const sequence_empty::ptr empty_fn = nullptr;
-        const sequence_subscript::ptr<T> subscript_fn = nullptr;
-    };
-    template <typename T, extent Shape, typename Category>
-        requires (
-            sequence_concept<T, Shape, Category> &&
-            meta::inherits<Category, std::forward_iterator_tag> &&
-            !meta::inherits<Category, std::bidirectional_iterator_tag>
-        )
-    struct sequence_control<T, Shape, Category> {
-        std::atomic<size_t> refcount = 0;
-        const void* const value = nullptr;
-        const sequence_dtor::ptr dtor = nullptr;
-        const sequence_begin::ptr<T, Shape, Category> begin_fn = nullptr;
-        const sequence_iter_copy::ptr<T, Shape, Category> iter_copy_fn = nullptr;
-        const sequence_iter_assign::ptr<T, Shape, Category> iter_assign_fn = nullptr;
-        const sequence_deref::ptr<T> deref_fn = nullptr;
-        const sequence_increment::ptr increment_fn = nullptr;
-        const sequence_compare::ptr compare_fn = nullptr;
-        const sequence_size::ptr size_fn = nullptr;
-        const sequence_empty::ptr empty_fn = nullptr;
-        const sequence_subscript::ptr<T> subscript_fn = nullptr;
-    };
-    template <typename T, extent Shape, typename Category>
-        requires (
-            sequence_concept<T, Shape, Category> &&
-            meta::inherits<Category, std::bidirectional_iterator_tag> &&
-            !meta::inherits<Category, std::random_access_iterator_tag>
-        )
-    struct sequence_control<T, Shape, Category> {
-        std::atomic<size_t> refcount = 0;
-        const void* const value = nullptr;
-        const sequence_dtor::ptr dtor = nullptr;
-        const sequence_begin::ptr<T, Category> begin_fn = nullptr;
-        const sequence_deref::ptr<T> deref_fn = nullptr;
-        const sequence_increment::ptr increment_fn = nullptr;
-        const sequence_decrement::ptr decrement_fn = nullptr;
-        const sequence_compare::ptr compare_fn = nullptr;
-        const sequence_size::ptr size_fn = nullptr;
-        const sequence_empty::ptr empty_fn = nullptr;
-        const sequence_subscript::ptr<T> subscript_fn = nullptr;
-    };
-    template <typename T, extent Shape, typename Category>
-        requires (
-            sequence_concept<T, Shape, Category> &&
-            meta::inherits<Category, std::random_access_iterator_tag> &&
-            !meta::inherits<Category, std::contiguous_iterator_tag>
-        )
-    struct sequence_control<T, Shape, Category> {
-        std::atomic<size_t> refcount = 0;
-        const void* const value = nullptr;
-        const sequence_dtor::ptr dtor = nullptr;
-        const sequence_begin::ptr<T, Category> begin_fn = nullptr;
-        const sequence_deref::ptr<T> deref_fn = nullptr;
-        const sequence_increment::ptr increment_fn = nullptr;
-        const sequence_decrement::ptr decrement_fn = nullptr;
-        const sequence_advance::ptr advance_fn = nullptr;
-        const sequence_retreat::ptr retreat_fn = nullptr;
-        const sequence_compare::ptr compare_fn = nullptr;
-        const sequence_size::ptr size_fn = nullptr;
-        const sequence_empty::ptr empty_fn = nullptr;
-        const sequence_subscript::ptr<T> subscript_fn = nullptr;
-    };
-    template <typename T, extent Shape, typename Category>
-        requires (
-            sequence_concept<T, Shape, Category> &&
-            meta::inherits<Category, std::contiguous_iterator_tag>
-        )
-    struct sequence_control<T, Shape, Category> {
-        std::atomic<size_t> refcount = 0;
-        const void* const value = nullptr;
-        const sequence_dtor::ptr dtor = nullptr;
-        const sequence_begin::ptr<T, Category> begin_fn = nullptr;
-        const sequence_deref::ptr<T> deref_fn = nullptr;
-        const sequence_increment::ptr increment_fn = nullptr;
-        const sequence_decrement::ptr decrement_fn = nullptr;
-        const sequence_advance::ptr advance_fn = nullptr;
-        const sequence_retreat::ptr retreat_fn = nullptr;
-        const sequence_compare::ptr compare_fn = nullptr;
-        const sequence_size::ptr size_fn = nullptr;
-        const sequence_empty::ptr empty_fn = nullptr;
-        const sequence_subscript::ptr<T> subscript_fn = nullptr;
-    };
+        using dtor_t = void(*)(sequence_control*);
+        using data_t = std::conditional_t<
+            meta::inherits<Category, std::contiguous_iterator_tag>,
+            meta::as_pointer<T>(*)(sequence_control*),
+            NoneType
+        >;
+        /// TODO: shape, size, subscripting, etc.
 
-    template <typename T, extent Shape, typename Category>
-    constexpr void sequence_incref(sequence_control<T, Shape, Category>* control) noexcept {
-        control->refcount.fetch_add(1, std::memory_order_relaxed);
-    }
+        using begin_t = sequence_iterator<T, Shape, Category>(*)(sequence_control*);
+        using end_t = sequence_iterator<T, Shape, Category>(*)(sequence_control*);
+        using iter_copy_t = void(*)(
+            sequence_iterator<T, Shape, Category>&,
+            const sequence_iterator<T, Shape, Category>&
+        );
+        using iter_assign_t = void(*)(
+            sequence_iterator<T, Shape, Category>&,
+            const sequence_iterator<T, Shape, Category>&
+        );
+        using iter_dtor_t = void(*)(sequence_iterator<T, Shape, Category>&);
+        using iter_deref_t = T(*)(sequence_iterator<T, Shape, Category>&);
+        using iter_increment_t = void(*)(sequence_iterator<T, Shape, Category>&);
+        using iter_decrement_t = std::conditional_t<
+            meta::inherits<Category, std::bidirectional_iterator_tag>,
+            void(*)(sequence_iterator<T, Shape, Category>&),
+            NoneType
+        >;
+        using iter_compare_t = std::strong_ordering(*)(
+            const sequence_iterator<T, Shape, Category>&,
+            const sequence_iterator<T, Shape, Category>&
+        );
+        /// TODO: all the other random-access operations as well
 
-    template <typename T, extent Shape, typename Category>
-    constexpr void sequence_decref(sequence_control<T, Shape, Category>* control) noexcept {
-        if (control->refcount.fetch_sub(1, std::memory_order_release) == 1) {
-            std::atomic_thread_fence(std::memory_order_acquire);
-            control->dtor(control->value);
-            delete control;
+        std::atomic<size_t> refcount = 1;
+        const void* const container;
+        const dtor_t dtor;
+        [[no_unique_address]] const data_t data;
+        const begin_t begin;
+        const end_t end;
+        const iter_copy_t iter_copy;
+        const iter_assign_t iter_assign;
+        const iter_dtor_t iter_dtor;
+        const iter_deref_t iter_deref;
+        const iter_increment_t iter_increment;
+        [[no_unique_address]] const iter_decrement_t iter_decrement;
+        const iter_compare_t iter_compare;
+
+        const sequence_size::ptr size_fn;
+        const sequence_empty::ptr empty_fn;
+        const sequence_subscript::ptr<T> subscript_fn;
+
+        template <typename C> requires (meta::lvalue<C> && meta::yields<meta::as_const<C>, T>)
+        [[nodiscard]] static constexpr sequence_control* create(C&& c) {
+            // if the container is an lvalue, then just store a pointer to it within
+            // the control block
+            if constexpr (meta::lvalue<C>) {
+                return new sequence_control{
+                    .container = std::addressof(c),
+                    .dtor = &dtor_fn<C>,
+                    .data = get_data_fn<C>(),
+                    .begin = &begin_fn<C>,
+                    .end = &end_fn<C>,
+                    .iter_copy = &iter_copy_fn<C>,
+                    .iter_assign = &iter_assign_fn<C>,
+                    .iter_dtor = &iter_dtor_fn<C>,
+                    .iter_deref = &iter_deref_fn<C>,
+                    .iter_increment = &iter_increment_fn<C>,
+                    .iter_decrement = get_iter_decrement_fn<C>(),
+                    .iter_compare = &iter_compare_fn<C>,
+                };
+
+            // otherwise, it is possible to consolidate allocations such that the
+            // container is stored immediately after the control block
+            } else {
+                void* control = ::operator new(
+                    sizeof(sequence_control) + sizeof(meta::unqualify<C>)
+                );
+                if (control == nullptr) {
+                    throw MemoryError();
+                }
+                void* container = static_cast<sequence_control*>(control) + 1;
+                try {
+                    new (container) meta::unqualify<C>(std::forward<C>(c));
+                } catch (...) {
+                    ::operator delete(control);
+                    throw;
+                }
+                new (control) sequence_control {
+                    .container = static_cast<const void*>(container),
+                    .dtor = &dtor_fn<C>,
+                    .data = get_data_fn<C>(),
+                    .begin = &begin_fn<C>,
+                    .end = &end_fn<C>,
+                    .iter_copy = &iter_copy_fn<C>,
+                    .iter_assign = &iter_assign_fn<C>,
+                    .iter_dtor = &iter_dtor_fn<C>,
+                    .iter_deref = &iter_deref_fn<C>,
+                    .iter_increment = &iter_increment_fn<C>,
+                    .iter_decrement = get_iter_decrement_fn<C>(),
+                    .iter_compare = &iter_compare_fn<C>,
+                };
+                return static_cast<sequence_control*>(control);
+            }
         }
-    }
+
+        constexpr void incref() noexcept {
+            refcount.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        constexpr void decref() noexcept {
+            if (refcount.fetch_sub(1, std::memory_order_release) == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
+                dtor(this);
+            }
+        }
+
+        template <typename C>
+        using Container = meta::as_const<C>;
+
+        template <typename C>
+        static constexpr void dtor_fn(sequence_control* control) {
+            // if the container is an lvalue, then only the control block needs to be
+            // deallocated
+            if constexpr (meta::lvalue<C>) {
+                delete control;
+
+            // otherwise, the container buffer immediately follows the control block,
+            // and must also be destroyed before deallocating
+            } else {
+                std::destroy_at(static_cast<const meta::unqualify<C>*>(control->container));
+                ::operator delete(control);
+            }
+        }
+
+        template <typename C> requires (meta::inherits<Category, std::contiguous_iterator_tag>)
+        static constexpr meta::as_pointer<T> data_fn(sequence_control* control) {
+            return meta::data(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+        }
+
+        template <typename C>
+        static constexpr data_t get_data_fn() noexcept {
+            if constexpr (meta::inherits<Category, std::contiguous_iterator_tag>) {
+                return &data_fn<C>;
+            } else {
+                return {};
+            }
+        }
+
+        /// TODO: shape(control*)
+        /// TODO: size(control*)
+        /// TODO: ssize(control*)
+        /// TODO: empty(control*)
+        /// TODO: subscript(control*, n)
+
+
+
+
+        template <typename C>
+        using Begin = meta::unqualify<meta::begin_type<Container<C>>>;
+        template <typename C>
+        using End = meta::unqualify<meta::end_type<Container<C>>>;
+
+        template <typename C>
+        static constexpr sequence_iterator<T, Shape, Category> begin_fn(sequence_control* control) {
+            // if the category is at least forward, then the begin and end iterators
+            // are guaranteed to be the same type, and are stored separately to
+            // maintain multi-pass requirements
+            if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
+                sequence_iterator<T, Shape, Category> result {
+                    .control = control,
+                    .iter = new Begin(std::ranges::begin(
+                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
+                    ))
+                };
+                if (result.iter == nullptr) {
+                    throw MemoryError();
+                }
+                control->incref();
+                return result;
+
+            // otherwise, the begin and end iterators may be different types that are
+            // stored together, and can be allocated at the same time
+            } else {
+                sequence_iterator<T, Shape, Category> result {
+                    .control = control,
+                    .iter = ::operator new(sizeof(Begin<C>) + sizeof(End<C>)),
+                    .sentinel = static_cast<Begin<C>*>(result.iter) + 1
+                };
+                if (result.iter == nullptr) {
+                    throw MemoryError();
+                }
+                try {
+                    new (result.iter) Begin(std::ranges::begin(
+                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
+                    ));
+                    new (result.sentinel) End(std::ranges::end(
+                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
+                    ));
+                } catch (...) {
+                    ::operator delete(result.iter);
+                    throw;
+                }
+                control->incref();
+                return result;
+            }
+        }
+
+        template <typename C>
+        static constexpr sequence_iterator<T, Shape, Category> end_fn(sequence_control* control) {
+            // if the category is at least forward, then the end iterator uses the
+            // same layout as the begin iterator
+            if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
+                sequence_iterator<T, Shape, Category> result {
+                    .control = control,
+                    .iter = new End<C>(std::ranges::end(
+                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
+                    ))
+                };
+                if (result.iter == nullptr) {
+                    throw MemoryError();
+                }
+                control->incref();
+                return result;
+
+            // otherwise, the end iterator is trivially represented by a
+            // default-constructed sequence iterator, which maintains the
+            // `common_range` requirement
+            } else {
+                return {};
+            }
+        }
+
+        /// NOTE: assumes `other` is not trivial
+        template <typename C>
+        static constexpr void iter_copy_fn(
+            sequence_iterator<T, Shape, Category>& self,
+            const sequence_iterator<T, Shape, Category>& other
+        ) {
+            // if the category is at least forward, then the begin and end iterators
+            // are guaranteed to be the same type, and both invoke the same copy logic
+            if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
+                self.control = other.control;
+                self.iter = new Begin<C>(
+                    *reinterpret_cast<meta::as_pointer<Begin<C>>>(other.iter)
+                );
+                if (self.iter == nullptr) {
+                    throw MemoryError();
+                }
+                self.control->incref();
+
+            // otherwise, we need to only copy if the other iterator is not a trivial
+            // sentinel, and apply the same allocation strategy as the constructor
+            } else {
+                if (other.iter != nullptr) {
+                    self.control = other.control;
+                    self.iter = ::operator new(sizeof(Begin<C>) + sizeof(End<C>));
+                    self.sentinel = static_cast<Begin<C>*>(self.iter) + 1;
+                    if (self.iter == nullptr) {
+                        throw MemoryError();
+                    }
+                    try {
+                        new (self.iter) Begin<C>(
+                            *reinterpret_cast<meta::as_pointer<Begin<C>>>(other.iter)
+                        );
+                        new (self.sentinel) End<C>(
+                            *reinterpret_cast<meta::as_pointer<End<C>>>(other.sentinel)
+                        );
+                    } catch (...) {
+                        ::operator delete(self.iter);
+                        throw;
+                    }
+                    self.control->incref();
+                }
+            }
+        }
+
+        /// NOTE: assumes `self` and `other` are not the same
+        template <typename C>
+        static constexpr void iter_assign_fn(
+            sequence_iterator<T, Shape, Category>& self,
+            const sequence_iterator<T, Shape, Category>& other
+        ) {
+            // either iterator may be in a trivial state, giving 4 cases:
+            //      1.  `self` and `other` are both trivial => do nothing
+            //      3.  `self` is not trivial, `other` is => deallocate
+            //      2.  `self` is trivial, `other` is not => allocate and copy
+            //      4.  `self` and `other` are both not trivial => direct assign
+            if (other.iter == nullptr) {
+                if (self.iter != nullptr) {
+                    iter_dtor_fn<C>(self);
+                }
+            } else if (self.iter == nullptr) {
+                iter_copy_fn<C>(self, other);
+            } else {
+                *static_cast<meta::as_pointer<Begin<C>>>(self.iter) =
+                    *static_cast<meta::as_pointer<Begin<C>>>(other.iter);
+                if constexpr (!meta::inherits<Category, std::forward_iterator_tag>) {
+                    *static_cast<meta::as_pointer<End<C>>>(self.sentinel) =
+                        *static_cast<meta::as_pointer<End<C>>>(other.sentinel);
+                }
+                self.control->decref();
+                self.control = other.control;
+                self.control->incref();
+            }
+        }
+
+        /// NOTE: assumes `self` is not trivial
+        template <typename C>
+        static constexpr void iter_dtor_fn(sequence_iterator<T, Shape, Category>& self) {
+            if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
+                delete static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+                self.iter = nullptr;
+                self.control->decref();
+                self.control = nullptr;
+            } else {
+                std::destroy_at(static_cast<Begin<C>*>(self.iter));
+                std::destroy_at(static_cast<End<C>*>(self.sentinel));
+                ::operator delete(self.iter);
+                self.iter = nullptr;
+                self.control->decref();
+                self.control = nullptr;
+            }
+        }
+
+        /// NOTE: assumes `self` is not trivial
+        template <typename C>
+        static constexpr T iter_deref_fn(sequence_iterator<T, Shape, Category>& self) {
+            return **static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+        }
+
+        template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
+        static constexpr T iter_subscript_fn(
+            sequence_iterator<T, Shape, Category>& self,
+            std::ptrdiff_t n
+        ) {
+            return (*static_cast<meta::as_pointer<Begin<C>>>(self.iter))[n];
+        }
+
+        /// NOTE: assumes `self` is not trivial
+        template <typename C>
+        static constexpr void iter_increment_fn(sequence_iterator<T, Shape, Category>& self) {
+            ++*static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+        }
+
+        /// NOTE: assumes `self` is not trivial
+        template <typename C> requires (meta::inherits<Category, std::bidirectional_iterator_tag>)
+        static constexpr void iter_decrement_fn(sequence_iterator<T, Shape, Category>& self) {
+            --*static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+        }
+
+        template <typename C>
+        static constexpr iter_decrement_t get_iter_decrement_fn() noexcept {
+            if constexpr (meta::inherits<Category, std::bidirectional_iterator_tag>) {
+                return &iter_decrement_fn<C>;
+            } else {
+                return {};
+            }
+        }
+
+        /// NOTE: for forward iterators and higher, assumes `self` and `other` are not
+        /// trivial
+        template <typename C>
+        static constexpr std::strong_ordering iter_compare_fn(
+            const sequence_iterator<T, Shape, Category>& lhs,
+            const sequence_iterator<T, Shape, Category>& rhs
+        ) {
+            if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
+                return iter_compare_impl(
+                    *static_cast<meta::as_pointer<Begin<C>>>(lhs.iter),
+                    *static_cast<meta::as_pointer<Begin<C>>>(rhs.iter)
+                );
+            } else {
+                if (lhs.iter == rhs.iter) {
+                    return std::strong_ordering::equal;
+                }
+                if (lhs.iter == nullptr) {
+                    return iter_compare_impl(
+                        *static_cast<meta::as_pointer<Begin<C>>>(rhs.sentinel),
+                        *static_cast<meta::as_pointer<End<C>>>(rhs.iter)
+                    );
+                }
+                if (rhs.iter == nullptr) {
+                    return iter_compare_impl(
+                        *static_cast<meta::as_pointer<Begin<C>>>(lhs.iter),
+                        *static_cast<meta::as_pointer<End<C>>>(lhs.sentinel)
+                    );
+                }
+                return std::strong_ordering::less;  // converted into `false` in sequence_iterator
+            }
+        }
+
+        template <typename LHS, typename RHS>
+        static constexpr std::strong_ordering iter_compare_impl(const LHS& lhs, const RHS& rhs) {
+            if constexpr (requires{{lhs <=> rhs};}) {
+                return *lhs <=> *rhs;
+            } else if constexpr (requires{{lhs < rhs}; {lhs > rhs};}) {
+                if (*lhs < *rhs) {
+                    return std::strong_ordering::less;
+                }
+                if (*lhs > *rhs) {
+                    return std::strong_ordering::greater;
+                }
+                return std::strong_ordering::equal;
+            } else {
+                if (*lhs == *rhs) {
+                    return std::strong_ordering::equal;
+                }
+                return std::strong_ordering::less;  // converted into `false` in sequence_iterator
+            }
+        }
+
+        /// TODO: iter_subscript(const iter&, n)
+        /// TODO: iter_advance(iter&, n)
+        /// TODO: iter_retreat(iter&, n)
+        /// TODO: iter_distance(const iter&, const iter&)
+    };
 
     /* A type-erased wrapper for an iterator that dereferences to type `T` and its
     corresponding sentinel.  This is the type of iterator returned by a `sequence<T>`
@@ -4509,34 +4610,33 @@ namespace impl {
         using reference = meta::as_lvalue<T>;
         using pointer = meta::as_pointer<T>;
 
-        /// TODO: in this case, I can make the optimization where I allocate the
-        /// begin and end iterators in one go.
-
         sequence_control<T, Shape, Category>* control = nullptr;
-        void* begin = nullptr;
-        void* end = nullptr;
+        void* iter = nullptr;
+        void* sentinel = nullptr;
 
         [[nodiscard]] constexpr sequence_iterator() noexcept = default;
 
         [[nodiscard]] constexpr sequence_iterator(const sequence_iterator& other) :
             control(other.control)
         {
-            control->iter_copy_fn(other);
+            if (control != nullptr) {
+                control->iter_copy(other);
+            }
         }
 
         [[nodiscard]] constexpr sequence_iterator(sequence_iterator&& other) noexcept :
             control(other.control),
-            begin(other.begin),
-            end(other.end)
+            iter(other.iter),
+            sentinel(other.sentinel)
         {
             other.control = nullptr;
-            other.begin = nullptr;
-            other.end = nullptr;
+            other.iter = nullptr;
+            other.sentinel = nullptr;
         }
 
         constexpr sequence_iterator& operator=(const sequence_iterator& other) {
             if (this != &other) {
-                control->iter_assign_fn(*this, other);
+                control->iter_assign(*this, other);
             }
             return *this;
         }
@@ -4544,63 +4644,61 @@ namespace impl {
         constexpr sequence_iterator& operator=(sequence_iterator&& other) noexcept {
             if (this != &other) {
                 if (control) {
-                    sequence_decref(control);
-                }
-                if (begin) {
-                    ::operator delete(iter);
+                    control->iter_dtor(*this);
                 }
                 control = other.control;
                 iter = other.iter;
+                sentinel = other.sentinel;
                 other.control = nullptr;
                 other.iter = nullptr;
+                other.sentinel = nullptr;
             }
             return *this;
         }
 
         constexpr ~sequence_iterator() {
             if (control) {
-                sequence_decref(control);
-                control = nullptr;
+                control->iter_dtor(*this);
             }
-            if (iter) {
-                ::operator delete(iter);
-                iter = nullptr;
-            }
+        }
+
+        constexpr void swap(sequence_iterator& other) noexcept {
+            std::swap(control, other.control);
+            std::swap(iter, other.iter);
+            std::swap(sentinel, other.sentinel);
         }
 
         [[nodiscard]] constexpr T operator*() const {
-            return control->deref_fn(storage.begin);
+            return control->iter_deref(*this);
         }
 
         [[nodiscard]] constexpr auto operator->() const {
-            return impl::arrow(control->deref_fn(storage.begin));
+            return impl::arrow(control->iter_deref(*this));
         }
 
         constexpr sequence_iterator& operator++() {
-            control->increment_fn(storage.begin);
+            control->iter_increment(*this);
             return *this;
         }
 
         [[nodiscard]] constexpr sequence_iterator operator++(int) {
             sequence_iterator tmp = *this;
-            control->increment_fn(storage.begin);
+            control->iter_increment(tmp);
             return tmp;
         }
 
-        [[nodiscard]] friend constexpr bool operator==(const sequence_iterator& lhs, NoneType) {
-            return lhs.compare_fn(lhs.storage.begin, lhs.storage.end);
+        [[nodiscard]] constexpr bool operator==(const sequence_iterator& other) const {
+            return control->iter_compare(*this, other) == 0;
         }
 
-        [[nodiscard]] friend constexpr bool operator==(NoneType, const sequence_iterator& rhs) {
-            return rhs.compare_fn(rhs.storage.begin, rhs.storage.end);
+        [[nodiscard]] constexpr bool operator!=(const sequence_iterator& other) const {
+            return control->iter_compare(*this, other) != 0;
         }
 
-        [[nodiscard]] friend constexpr bool operator!=(const sequence_iterator& lhs, NoneType) {
-            return !lhs.compare_fn(lhs.storage.begin, lhs.storage.end);
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(NoneType, const sequence_iterator& rhs) {
-            return !rhs.compare_fn(rhs.storage.begin, rhs.storage.end);
+        [[nodiscard]] constexpr auto operator<=>(const sequence_iterator& other) const
+            requires (meta::inherits<Category, std::random_access_iterator_tag>)
+        {
+            return control->iter_compare(*this, other);
         }
     };
     template <typename T, extent Shape, typename Category>
@@ -4609,7 +4707,15 @@ namespace impl {
             meta::inherits<Category, std::forward_iterator_tag>
         )
     struct sequence_iterator<T, Shape, Category> {
-        using iterator_category = std::input_iterator_tag;
+        using iterator_category = std::conditional_t<
+            meta::inherits<Category, std::contiguous_iterator_tag>,
+            std::conditional_t<
+                Shape.size() <= 1,
+                std::contiguous_iterator_tag,
+                std::random_access_iterator_tag
+            >,
+            Category
+        >;
         using difference_type = std::ptrdiff_t;
         using value_type = meta::remove_reference<T>;
         using reference = meta::as_lvalue<T>;
@@ -4623,7 +4729,9 @@ namespace impl {
         [[nodiscard]] constexpr sequence_iterator(const sequence_iterator& other) :
             control(other.control)
         {
-            control->iter_copy_fn(other);
+            if (control != nullptr) {
+                control->iter_copy(*this, other);
+            }
         }
 
         [[nodiscard]] constexpr sequence_iterator(sequence_iterator&& other) noexcept :
@@ -4636,7 +4744,7 @@ namespace impl {
 
         constexpr sequence_iterator& operator=(const sequence_iterator& other) {
             if (this != &other) {
-                control->iter_assign_fn(*this, other);
+                control->iter_assign(*this, other);
             }
             return *this;
         }
@@ -4644,10 +4752,7 @@ namespace impl {
         constexpr sequence_iterator& operator=(sequence_iterator&& other) noexcept {
             if (this != &other) {
                 if (control) {
-                    sequence_decref(control);
-                }
-                if (iter) {
-                    ::operator delete(iter);
+                    control->iter_dtor(*this);
                 }
                 control = other.control;
                 iter = other.iter;
@@ -4659,13 +4764,46 @@ namespace impl {
 
         constexpr ~sequence_iterator() {
             if (control) {
-                sequence_decref(control);
-                control = nullptr;
+                control->iter_dtor(*this);
             }
-            if (iter) {
-                ::operator delete(iter);
-                iter = nullptr;
-            }
+        }
+
+        constexpr void swap(sequence_iterator& other) noexcept {
+            std::swap(control, other.control);
+            std::swap(iter, other.iter);
+        }
+
+        [[nodiscard]] constexpr T operator*() const {
+            return control->iter_deref(*this);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const {
+            return impl::arrow(control->iter_deref(*this));
+        }
+
+        constexpr sequence_iterator& operator++() {
+            control->iter_increment(*this);
+            return *this;
+        }
+
+        [[nodiscard]] constexpr sequence_iterator operator++(int) {
+            sequence_iterator tmp = *this;
+            control->iter_increment(tmp);
+            return tmp;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const sequence_iterator& other) const {
+            return control->iter_compare(*this, other) == 0;
+        }
+
+        [[nodiscard]] constexpr bool operator!=(const sequence_iterator& other) const {
+            return control->iter_compare(*this, other) != 0;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const sequence_iterator& other) const
+            requires (meta::inherits<Category, std::random_access_iterator_tag>)
+        {
+            return control->iter_compare(*this, other);
         }
     };
 
@@ -4678,81 +4816,33 @@ namespace impl {
     template <typename T, extent Shape = None, typename Category = std::input_iterator_tag>
         requires (sequence_concept<T, Shape, Category>)
     struct sequence {
-    private:
-        using kind = std::conditional_t<
-            meta::inherits<Category, std::contiguous_iterator_tag>,
-            std::conditional_t<
-                Shape.size() == 1,
-                std::contiguous_iterator_tag,
-                std::random_access_iterator_tag
-            >,
-            Category
-        >;
+        sequence_control<T, Shape, Category>* control = nullptr;
 
-        const void* data = nullptr;
-        sequence_control<T>* control = nullptr;
+        [[nodiscard]] constexpr sequence() noexcept = default;
 
-        constexpr void decref() {
-            if (control && control->refcount.fetch_sub(1, std::memory_order_release) == 1) {
-                std::atomic_thread_fence(std::memory_order_acquire);
-                control->dtor(data);
-                delete control;
-            }
-        }
-
-    public:
-        [[nodiscard]] constexpr sequence() = default;
-
-        template <meta::yields<T> C> requires (meta::lvalue<C> && meta::has_address<C>)
-        [[nodiscard]] constexpr sequence(C&& c) noexcept (meta::nothrow::has_address<C>) :
-            data(const_cast<meta::as_pointer<meta::remove_const<C>>>(std::addressof(c))),
-            control(new sequence_control<T>{
-                .refcount = 1,
-                .dtor = sequence_dtor::fn<C>,  // no-op for lvalue references
-                .size_fn = sequence_size::fn<meta::as_const_ref<C>>,
-                .empty_fn = sequence_empty::fn<meta::as_const_ref<C>>,
-                .subscript_fn = sequence_subscript::fn<meta::as_lvalue<C>, T>,
-                .begin_fn = sequence_begin::fn<meta::as_lvalue<C>, T>
-            })
-        {}
-
-        template <meta::yields<T> C> requires (!meta::lvalue<C> || !meta::has_address<C>)
+        template <typename C> requires (meta::yields<meta::as_const<C>, T>)
         [[nodiscard]] constexpr sequence(C&& c) :
-            data(new meta::unqualify<C>(std::forward<C>(c))),
-            control(new sequence_control<T>{
-                .refcount = 1,
-                .dtor = sequence_dtor::fn<C>,  // calls `delete` on `data`
-                .size_fn = sequence_size::fn<meta::as_const_ref<C>>,
-                .empty_fn = sequence_empty::fn<meta::as_const_ref<C>>,
-                .subscript_fn = sequence_subscript::fn<meta::as_lvalue<C>, T>,
-                .begin_fn = sequence_begin::fn<meta::as_lvalue<C>, T>
-            })
+            control(sequence_control<T, Shape, Category>::create(std::forward<C>(c)))
         {}
 
-        [[nodiscard]] constexpr sequence(const sequence& other) noexcept :
-            data(other.data),
-            control(other.control)
-        {
+        [[nodiscard]] constexpr sequence(const sequence& other) noexcept : control(other.control) {
             if (control) {
-                control->refcount.fetch_add(1, std::memory_order_relaxed);
+                control->incref();
             }
         }
 
-        [[nodiscard]] constexpr sequence(sequence&& other) noexcept :
-            data(other.data),
-            control(other.control)
-        {
-            other.data = nullptr;
+        [[nodiscard]] constexpr sequence(sequence&& other) noexcept : control(other.control) {
             other.control = nullptr;
         }
 
         constexpr sequence& operator=(const sequence& other) {
             if (this != &other) {
-                decref();
-                data = other.data;
+                if (control) {
+                    control->decref();
+                }
                 control = other.control;
                 if (control) {
-                    control->refcount.fetch_add(1, std::memory_order_relaxed);
+                    control->incref();
                 }
             }
             return *this;
@@ -4760,29 +4850,35 @@ namespace impl {
 
         constexpr sequence& operator=(sequence&& other) {
             if (this != &other) {
-                decref();
-                data = other.data;
+                if (control) {
+                    control->decref();
+                }
                 control = other.control;
-                other.data = nullptr;
                 other.control = nullptr;
             }
             return *this;
         }
 
         constexpr ~sequence() {
-            decref();
-            data = nullptr;
-            control = nullptr;
+            if (control) {
+                control->decref();
+            }
         }
 
         constexpr void swap(sequence& other) noexcept {
-            std::swap(data, other.data);
             std::swap(control, other.control);
         }
 
-        [[nodiscard]] constexpr bool has_size() const noexcept {
-            return control->size_fn != nullptr;
+        [[nodiscard]] constexpr auto begin() const {
+            return control->begin(control);
         }
+
+        [[nodiscard]] constexpr auto end() const {
+            return control->end(control);
+        }
+
+
+
 
         [[nodiscard]] constexpr size_t size() const {
             return control->size_fn(data);
@@ -4792,16 +4888,8 @@ namespace impl {
             return index_type(control->size_fn(data));
         }
 
-        [[nodiscard]] constexpr bool has_empty() const noexcept {
-            return control->empty_fn != nullptr;
-        }
-
         [[nodiscard]] constexpr bool empty() const {
             return control->empty_fn(data);
-        }
-
-        [[nodiscard]] constexpr bool has_subscript() const noexcept {
-            return control->subscript_fn != nullptr;
         }
 
         [[nodiscard]] constexpr T operator[](ssize_t i) const {
@@ -4810,127 +4898,7 @@ namespace impl {
             }
             return control->subscript_fn(data, size_t(i));
         }
-
-        [[nodiscard]] constexpr sequence_iterator<T, Category> begin() const {
-            return control->begin_fn(data);
-        }
-
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
     };
-
-    /* Iterators also have to be type-erased and stored as void pointers.  Reference
-    counting is not allowed in this case, however, and copying the iterator means
-    allocating a new iterator to store the copy.  The only reason we don't use
-    `std::unique_ptr` here is that it doesn't generally play well with void pointers,
-    so it's just easier to implement our own. */
-    struct sequence_iter_storage {
-        using copy = void*(*)(void*);
-        using destroy = void(*)(void*);
-
-        template <typename T>
-        static constexpr void* ctor(T&& obj) {
-            return new meta::unqualify<T>(std::forward<T>(obj));
-        }
-
-        template <meta::not_reference T>
-        static constexpr void* _copy(void* ptr) {
-            return new meta::unqualify<T>(*reinterpret_cast<meta::as_pointer<T>>(ptr));
-        }
-
-        template <meta::not_reference T>
-        static constexpr void dtor(void* ptr) {
-            delete reinterpret_cast<meta::as_pointer<T>>(ptr);
-        }
-
-        void* begin = nullptr;
-        copy begin_copy = nullptr;
-        destroy begin_dtor = nullptr;
-
-        void* end = nullptr;
-        copy end_copy = nullptr;
-        destroy end_dtor = nullptr;
-
-        [[nodiscard]] constexpr sequence_iter_storage() noexcept = default;
-
-        template <typename Begin, typename End>
-        [[nodiscard]] constexpr sequence_iter_storage(Begin&& b, End&& e) :
-            begin(ctor(std::forward<Begin>(b))),
-            begin_copy(&_copy<meta::remove_reference<Begin>>),
-            begin_dtor(&dtor<meta::remove_reference<Begin>>),
-            end(ctor(std::forward<End>(e))),
-            end_copy(&_copy<meta::remove_reference<End>>),
-            end_dtor(&dtor<meta::remove_reference<End>>)
-        {}
-
-        [[nodiscard]] constexpr sequence_iter_storage(const sequence_iter_storage& other) :
-            begin(other.begin ? other.begin_copy(other.begin) : nullptr),
-            begin_copy(other.begin_copy),
-            begin_dtor(other.begin_dtor),
-            end(other.end ? other.end_copy(other.end) : nullptr),
-            end_copy(other.end_copy),
-            end_dtor(other.end_dtor)
-        {}
-
-        [[nodiscard]] constexpr sequence_iter_storage(sequence_iter_storage&& other) noexcept :
-            begin(other.begin),
-            begin_copy(other.begin_copy),
-            begin_dtor(other.begin_dtor),
-            end(other.end),
-            end_copy(other.end_copy),
-            end_dtor(other.end_dtor)
-        {
-            other.begin = nullptr;
-            other.end = nullptr;
-        }
-
-        constexpr sequence_iter_storage& operator=(const sequence_iter_storage& other) {
-            if (this != &other) {
-                if (begin) begin_dtor(begin);
-                if (end) end_dtor(end);
-                begin = other.begin ? other.begin_copy(other.begin) : nullptr;
-                begin_copy = other.begin_copy;
-                begin_dtor = other.begin_dtor;
-                end = other.end ? other.end_copy(other.end) : nullptr;
-                end_copy = other.end_copy;
-                end_dtor = other.end_dtor;
-            }
-            return *this;
-        }
-
-        constexpr sequence_iter_storage& operator=(sequence_iter_storage& other) {
-            if (this != &other) {
-                if (begin) begin_dtor(begin);
-                if (end) end_dtor(end);
-                begin = other.begin;
-                begin_copy = other.begin_copy;
-                begin_dtor = other.begin_dtor;
-                end = other.end;
-                end_copy = other.end_copy;
-                end_dtor = other.end_dtor;
-                other.begin = nullptr;
-                other.end = nullptr;
-            }
-            return *this;
-        }
-
-        constexpr ~sequence_iter_storage() {
-            if (begin) begin_dtor(begin);
-            if (end) end_dtor(end);
-        }
-
-        constexpr void swap(sequence_iter_storage& other) noexcept {
-            std::swap(begin, other.begin);
-            std::swap(begin_copy, other.begin_copy);
-            std::swap(begin_dtor, other.begin_dtor);
-            std::swap(end, other.end);
-            std::swap(end_copy, other.end_copy);
-            std::swap(end_dtor, other.end_dtor);
-        }
-    };
-
-
-
-
 
     template <typename C>
     concept range_concept = meta::not_rvalue<C> && !meta::range<C>;
