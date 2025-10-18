@@ -4298,7 +4298,7 @@ namespace meta {
 
     /* Retrieve the size of a generic type `T` as a signed integer.  This is
     expression-equivalent to `std::ranges::ssize()`, except that it first checks
-    for a `obj.ssize()` member method or `ssize(obj)` ADL method before invoking
+    for an `obj.ssize()` member method or `ssize(obj)` ADL method before invoking
     `std::ranges::ssize()`, which converts the result of `meta::size()` to a signed
     integer. */
     inline constexpr detail::ssize_fn ssize;
@@ -4326,6 +4326,64 @@ namespace meta {
         concept ssize_returns =
             nothrow::has_ssize<T> &&
             nothrow::convertible_to<nothrow::ssize_type<T>, Ret>;
+
+    }
+
+    namespace detail {
+
+        struct distance_fn {
+            template <typename... A>
+            [[nodiscard]] static constexpr decltype(auto) operator()(A&&... a)
+                noexcept (requires{{meta::ssize(::std::forward<A>(a)...)} noexcept;})
+                requires (requires{{meta::ssize(::std::forward<A>(a)...)};})
+            {
+                return (meta::ssize(::std::forward<A>(a)...));
+            }
+            template <typename... A>
+            [[nodiscard]] static constexpr decltype(auto) operator()(A&&... a)
+                noexcept (requires{{std::ranges::distance(::std::forward<A>(a)...)} noexcept;})
+                requires (
+                    !requires{{meta::ssize(::std::forward<A>(a)...)};} &&
+                    requires{{std::ranges::distance(::std::forward<A>(a)...)};}
+                )
+            {
+                return (std::ranges::distance(::std::forward<A>(a)...));
+            }
+        };
+
+    }
+
+    /* Retrieve the distance between two iterators or the overall size of an iterable
+    container, possibly in linear time.  This is expression-equivalent to
+    `std::ranges::distance()`, except that it first checks for an `obj.ssize()` member
+    method or `ssize(obj)` ADL method before invoking `std::ranges::distance()`, which
+    may use `std::ranges::size()` if the container supports it.  If not, then the
+    distance calculation may require a loop over the container. */
+    inline constexpr detail::distance_fn distance;
+
+    template <typename... A>
+    concept has_distance = requires(A... a) {{distance(::std::forward<A>(a)...)};};
+
+    template <has_distance... A>
+    using distance_type = remove_rvalue<decltype((distance(::std::declval<A>()...)))>;
+
+    template <typename Ret, typename... A>
+    concept distance_returns = has_distance<A...> && convertible_to<distance_type<A...>, Ret>;
+
+    namespace nothrow {
+
+        template <typename... A>
+        concept has_distance = meta::has_distance<A...> && requires(A... a) {
+            {meta::distance(::std::forward<A>(a)...)} noexcept;
+        };
+
+        template <nothrow::has_distance... A>
+        using distance_type = meta::distance_type<A...>;
+
+        template <typename Ret, typename... A>
+        concept distance_returns =
+            nothrow::has_distance<A...> &&
+            nothrow::convertible_to<nothrow::distance_type<A...>, Ret>;
 
     }
 
