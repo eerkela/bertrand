@@ -26,231 +26,44 @@ namespace impl {
     constexpr bool range_transparent<T> = true;
     template <meta::inherits<tuple_range_tag> T>
     constexpr bool range_transparent<T> = true;
+    template <meta::inherits<sequence_tag> T>
+    constexpr bool range_transparent<T> = true;
 
-    /* Compile-time shape and stride specifiers use CTAD to allow simple braced
-    initializer syntax, which permits custom strides. */
-    template <Optional<size_t> Rank>
-    struct extent : extent_tag {
-    private:
-        constexpr void _tuple_shape(size_t& i, size_t n) noexcept {
-            std::construct_at(dim + i, n);
-            ++i;
-        }
-
-        template <meta::tuple_like T, size_t... Is> requires (sizeof...(Is) == meta::tuple_size<T>)
-        constexpr void tuple_shape(T&& shape, std::index_sequence<Is...>)
-            noexcept (requires(size_t i) {
-                {(_tuple_shape(i,meta::get<Is>(std::forward<T>(shape))), ...)} noexcept;
-            })
-        {
-            size_t i = 0;
-            (_tuple_shape(i, meta::get<Is>(std::forward<T>(shape))), ...);
-        }
-
-        struct initializer {
-            size_t value = std::numeric_limits<size_t>::max();
-            [[nodiscard]] constexpr initializer() noexcept = default;
-            [[nodiscard]] constexpr initializer(size_t n) noexcept : value(n) {}
-            [[nodiscard]] constexpr operator size_t() const noexcept { return value; }
-        };
-
-    public:
-        static constexpr Optional<size_t> rank = Rank;
-        static constexpr size_t ndim = *rank;
-        size_t dim[ndim];
-
-        [[nodiscard]] constexpr extent() noexcept : dim{} {}
-        [[nodiscard]] constexpr extent(size_t n) noexcept requires (ndim == 1) : dim{n} {}
-        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) {
-            size_t i = 0;
-            auto it = n.begin();
-            auto end = n.end();
-            while (i < ndim && it != end) {
-                if (i == ndim) {
-                    throw ValueError("too many dimensions in shape");
-                }
-                std::construct_at(dim + i, *it);
-                ++i;
-                ++it;
-            }
-            if (i != ndim) {
-                throw ValueError("too few dimensions in shape");
-            }
-        }
-
-        template <typename T>
-        [[nodiscard]] constexpr extent(T&& n)
-            noexcept (meta::nothrow::yields<T, size_t>)
-            requires (
-                !meta::convertible_to<T, size_t> &&
-                !meta::convertible_to<T, std::initializer_list<size_t>> &&
-                meta::tuple_like<T> &&
-                meta::tuple_size<T> == ndim &&
-                meta::yields<size_t, T>
-            )
-        {
-            size_t i = 0;
-            auto it = meta::begin(n);
-            auto end = meta::end(n);
-            while (i < ndim && it != end) {
-                std::construct_at(dim + i, *it);
-                ++i;
-                ++it;
-            }
-        }
-
-        template <typename T>
-        [[nodiscard]] constexpr extent(T&& n)
-            noexcept (requires{
-                {tuple_shape(std::forward<T>(n), std::make_index_sequence<ndim>{})} noexcept;
-            })
-            requires (
-                !meta::convertible_to<T, size_t> &&
-                !meta::convertible_to<T, std::initializer_list<size_t>> &&
-                meta::tuple_like<T> &&
-                meta::tuple_size<T> == ndim &&
-                !meta::yields<size_t, T> &&
-                meta::tuple_types<T>::template convertible_to<size_t>
-            )
-        {
-            tuple_shape(std::forward<T>(n), std::make_index_sequence<ndim>{});
-        }
-
-        constexpr void swap(extent& other) noexcept {
-            for (size_t i = 0; i < ndim; ++i) {
-                std::swap(dim[i], other.dim[i]);
-            }
-        }
-
-        [[nodiscard]] static constexpr size_t size() noexcept { return ndim; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(ndim); }
-        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-        [[nodiscard]] constexpr size_t* data() noexcept { return dim; }
-        [[nodiscard]] constexpr const size_t* data() const noexcept { return dim; }
-        [[nodiscard]] constexpr size_t* begin() noexcept { return dim; }
-        [[nodiscard]] constexpr const size_t* begin() const noexcept {
-            return static_cast<const size_t*>(dim);
-        }
-        [[nodiscard]] constexpr const size_t* cbegin() const noexcept { return begin(); }
-        [[nodiscard]] constexpr size_t* end() noexcept { return dim + ndim; }
-        [[nodiscard]] constexpr const size_t* end() const noexcept {
-            return static_cast<const size_t*>(dim) + ndim;
-        }
-        [[nodiscard]] constexpr const size_t* cend() const noexcept { return end(); }
-        [[nodiscard]] constexpr auto rbegin() noexcept {
-            return std::make_reverse_iterator(end());
-        }
-        [[nodiscard]] constexpr auto rbegin() const noexcept {
-            return std::make_reverse_iterator(end());
-        }
-        [[nodiscard]] constexpr auto crbegin() const noexcept { return rbegin(); }
-        [[nodiscard]] constexpr auto rend() noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-        [[nodiscard]] constexpr auto rend() const noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-        [[nodiscard]] constexpr auto crend() const noexcept { return rend(); }
-
-        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
-        [[nodiscard]] constexpr size_t get() const noexcept {
-            return dim[impl::normalize_index<ssize(), I>()];
-        }
-
-        [[nodiscard]] constexpr size_t operator[](ssize_t i) const {
-            return dim[impl::normalize_index(ssize(), i)];
-        }
-
-        template <size_t R>
-        [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
-            if constexpr (R == ndim) {
-                for (size_t i = 0; i < ndim; ++i) {
-                    if (dim[i] != other.dim[i]) {
-                        return false;
-                    }
-                }
-                return true;
-            } else {
-                return false;
-            }
-        }
-
-        [[nodiscard]] constexpr size_t product() const noexcept {
-            size_t p = 1;
-            for (size_t j = 0; j < ndim; ++j) {
-                p *= dim[j];
-            }
-            return p;
-        }
-
-        [[nodiscard]] constexpr extent reverse() const noexcept {
-            extent r;
-            for (size_t j = 0; j < ndim; ++j) {
-                std::construct_at(&r.dim[j], dim[ndim - 1 - j]);
-            }
-            return r;
-        }
-
-        template <size_t N>
-        [[nodiscard]] constexpr auto reduce() const noexcept {
-            if constexpr (N >= ndim) {
-                return extent<0>{};
-            } else {
-                extent<ndim - N> s;
-                for (size_t j = N; j < ndim; ++j) {
-                    std::construct_at(&s.dim[j - N], dim[j]);
-                }
-                return s;
-            }
-        }
-
-        [[nodiscard]] constexpr extent strides(bool column_major) const noexcept {
-            if constexpr (ndim == 0) {
-                return {};
-            } else {
-                extent s;
-                if (column_major) {
-                    std::construct_at(&s.dim[0], 1);
-                    for (size_t j = 1; j < size(); ++j) {
-                        std::construct_at(&s.dim[j], s.dim[j - 1] * dim[j - 1]);
-                    }
-                } else {
-                    size_t j = size() - 1;
-                    std::construct_at(&s.dim[j], 1);
-                    while (j-- > 0) {
-                        std::construct_at(&s.dim[j], s.dim[j + 1] * dim[j + 1]);
-                    }
-                }
-                return s;
-            }
-        }
+    template <typename... Ts>
+    struct tuple_extent {
+        static constexpr bool value =
+            ((meta::convertible_to<Ts, size_t> || meta::convertible_to<Ts, NoneType>) && ...);
     };
+
+    /// TODO: Note that 0 now indicates a dynamic extent in compile-time extents.
+    /// Since arrays cannot be empty, and a zero in any dimension results in a zero
+    /// product, this should be workable.  If the cases need to be distinguished, then
+    /// I can check for both a zero rank and product, which indicates the dynamic case.
+    /// The static case with a dynamic extent would never have a rank of zero.
 
     /* Run-time shape and stride specifiers can represent dynamic data, and may require
     a heap allocation if they are more than 1-dimensional.  They otherwise mirror
     their compile-time equivalents exactly. */
-    template <>
-    struct extent<None> : extent_tag {
+    template <size_t Rank>
+    struct extent : extent_tag {
     private:
-        using alloc = std::allocator<const size_t>;
-
-        constexpr void _tuple_shape(size_t& i, size_t n) noexcept {
-            std::construct_at(dim + i, n);
+        constexpr void from_int(size_t& i, size_t n) noexcept {
+            dim[i] = n;
             ++i;
         }
 
         template <meta::tuple_like T, size_t... Is> requires (sizeof...(Is) == meta::tuple_size<T>)
-        constexpr void tuple_shape(T&& shape, std::index_sequence<Is...>)
+        constexpr void from_tuple(T&& shape, std::index_sequence<Is...>)
             noexcept (requires(size_t i) {
-                {(_tuple_shape(i,meta::get<Is>(std::forward<T>(shape))), ...)} noexcept;
+                {(from_int(i,meta::get<Is>(std::forward<T>(shape))), ...)} noexcept;
             })
         {
             size_t i = 0;
-            (_tuple_shape(i, meta::get<Is>(std::forward<T>(shape))), ...);
+            (from_int(i, meta::get<Is>(std::forward<T>(shape))), ...);
         }
 
     public:
-        static constexpr Optional<size_t> rank = None;
+        [[nodiscard]] static constexpr size_t rank() noexcept { return 0; }
         enum extent_kind : uint8_t {
             TRIVIAL,
             BORROWED,
@@ -258,39 +71,31 @@ namespace impl {
         };
 
         size_t ndim = 0;
-        const size_t* dim = nullptr;
+        size_t* dim = nullptr;
         extent_kind kind = TRIVIAL;
 
         [[nodiscard]] constexpr extent() noexcept = default;
-        [[nodiscard]] constexpr extent(NoneType) noexcept {}
-        [[nodiscard]] constexpr extent(size_t n) noexcept : ndim(n) {}
-        [[nodiscard]] constexpr extent(size_t* dim, size_t ndim) noexcept :
-            ndim(ndim),
-            dim(static_cast<const size_t*>(dim)),
-            kind(BORROWED)
-        {}
-        [[nodiscard]] constexpr extent(const size_t* dim, size_t ndim) noexcept :
-            ndim(ndim),
-            dim(dim),
-            kind(BORROWED)
-        {}
 
-        [[nodiscard]] constexpr extent(std::initializer_list<size_t> n) {
-            if (n.size() > 1) {
-                kind = UNIQUE;
-                dim = alloc{}.allocate(n.size());
+        template <meta::convertible_to<size_t>... T> requires (sizeof...(T) > 0)
+        [[nodiscard]] constexpr extent(T&&... n)
+            noexcept ((
+                (sizeof...(T) == 1) &&
+                ... &&
+                meta::nothrow::convertible_to<T, size_t>
+            ))
+        :
+            ndim(sizeof...(T))
+        {
+            if constexpr (sizeof...(T) == 1) {
+                ndim = meta::unpack_arg<0>(std::forward<T>(n)...);
+            } else {
+                dim = new size_t[ndim];
                 if (dim == nullptr) {
                     throw MemoryError();
                 }
-                auto it = n.begin();
-                auto end = n.end();
-                while (it != end) {
-                    std::construct_at(dim + ndim, *it);
-                    ++ndim;
-                    ++it;
-                }
-            } else if (n.size() == 1) {
-                ndim = *n.begin();
+                kind = UNIQUE;
+                size_t i = 0;
+                (from_int(i, std::forward<T>(n)), ...);
             }
         }
 
@@ -302,26 +107,23 @@ namespace impl {
                 (meta::tuple_like<T> || meta::size_returns<size_t, T>)
             )
         [[nodiscard]] constexpr extent(T&& n) {
-            size_t len;
             if constexpr (meta::tuple_like<T>) {
-                len = meta::tuple_size<T>;
+                ndim = meta::tuple_size<T>;
             } else {
-                len = n.size();
+                ndim = n.size();
             }
-            if (len > 1) {
-                kind = UNIQUE;
-                dim = alloc{}.allocate(len);
+            if (ndim > 1) {
+                dim = new size_t[ndim];
                 if (dim == nullptr) {
                     throw MemoryError();
                 }
+                kind = UNIQUE;
                 auto it = meta::begin(n);
                 auto end = meta::end(n);
-                while (it != end) {
-                    std::construct_at(dim + ndim, *it);
-                    ++ndim;
-                    ++it;
+                for (size_t i = 0; it != end; ++i, ++it) {
+                    dim[i] = *it;
                 }
-            } else if (len == 1) {
+            } else if (ndim == 1) {
                 ndim = *meta::begin(n);
             }
         }
@@ -334,38 +136,37 @@ namespace impl {
                 meta::tuple_like<T> &&
                 meta::tuple_types<T>::template convertible_to<size_t>
             )
-        [[nodiscard]] constexpr extent(T&& n) {
-            constexpr size_t len = meta::tuple_size<T>;
-            if constexpr (len > 1) {
-                kind = UNIQUE;
-                dim = alloc{}.allocate(len);
+        [[nodiscard]] constexpr extent(T&& n) : ndim(meta::tuple_size<T>) {
+            if constexpr (meta::tuple_size<T> == 1) {
+                ndim = meta::get<0>(n);
+            } else if constexpr (meta::tuple_size<T> > 1) {
+                dim = new size_t[ndim];
                 if (dim == nullptr) {
                     throw MemoryError();
                 }
-                tuple_shape(std::forward<T>(n), std::make_index_sequence<len>{});
-            } else if constexpr (len == 1) {
-                ndim = meta::get<0>(n);
+                kind = UNIQUE;
+                from_tuple(
+                    std::forward<T>(n),
+                    std::make_index_sequence<meta::tuple_size<T>>{}
+                );
             }
         }
 
-        [[nodiscard]] constexpr extent(const extent& other) :
-            ndim(other.ndim),
-            kind(other.kind)
-        {
+        [[nodiscard]] constexpr extent(const extent& other) : ndim(other.ndim), kind(other.kind) {
             switch (other.kind) {
+                case TRIVIAL:
+                    break;
                 case BORROWED:
                     dim = other.dim;
                     break;
                 case UNIQUE:
-                    dim = alloc{}.allocate(ndim);
+                    dim = new size_t[ndim];
                     if (dim == nullptr) {
                         throw MemoryError();
                     }
                     for (size_t i = 0; i < ndim; ++i) {
-                        std::construct_at(&dim[i], other.dim[i]);
+                        dim[i] = other.dim[i];
                     }
-                    break;
-                default:
                     break;
             }
         }
@@ -383,24 +184,24 @@ namespace impl {
         constexpr extent& operator=(const extent& other) {
             if (this != &other) {
                 if (kind == UNIQUE) {
-                    alloc{}.deallocate(dim, ndim);
+                    delete[] dim;
                 }
                 ndim = other.ndim;
                 kind = other.kind;
                 switch (other.kind) {
+                    case TRIVIAL:
+                        break;
                     case BORROWED:
                         dim = other.dim;
                         break;
                     case UNIQUE:
-                        dim = alloc{}.allocate(ndim);
+                        dim = new size_t[ndim];
                         if (dim == nullptr) {
                             throw MemoryError();
                         }
                         for (size_t i = 0; i < ndim; ++i) {
-                            std::construct_at(&dim[i], other.dim[i]);
+                            dim[i] = other.dim[i];
                         }
-                        break;
-                    default:
                         break;
                 }
             }
@@ -410,7 +211,7 @@ namespace impl {
         constexpr extent& operator=(extent&& other) noexcept {
             if (this != &other) {
                 if (kind == UNIQUE) {
-                    alloc{}.deallocate(dim, ndim);
+                    delete[] dim;
                 }
                 ndim = other.ndim;
                 dim = other.dim;
@@ -424,7 +225,7 @@ namespace impl {
 
         constexpr ~extent() {
             if (kind == UNIQUE) {
-                alloc{}.deallocate(dim, ndim);
+                delete[] dim;
             }
         }
 
@@ -504,13 +305,13 @@ namespace impl {
             }
             extent r;
             r.ndim = ndim;
-            r.dim = alloc{}.allocate(ndim);
+            r.dim = new size_t[ndim];
             if (r.dim == nullptr) {
                 throw MemoryError();
             }
             r.kind = UNIQUE;
             for (size_t j = 0; j < ndim; ++j) {
-                std::construct_at(&r.dim[j], dim[ndim - 1 - j]);
+                r.dim[j] = dim[ndim - 1 - j];
             }
             return r;
         }
@@ -524,8 +325,8 @@ namespace impl {
                 if (n + 1 == ndim) {  // result is 1D
                     result.ndim = dim[n];
                 } else {  // result is > 1D
-                    result.dim = dim + n;
                     result.ndim = ndim - n;
+                    result.dim = dim + n;
                     result.kind = BORROWED;
                 }
             }
@@ -537,28 +338,22 @@ namespace impl {
             if (kind == TRIVIAL) {
                 result.ndim = ndim > 0;
             } else {
-                result.dim = alloc{}.allocate(ndim);
+                result.ndim = ndim;
+                result.dim = new size_t[ndim];
                 if (result.dim == nullptr) {
                     throw MemoryError();
                 }
-                result.ndim = ndim;
                 result.kind = UNIQUE;
                 if (column_major) {
-                    std::construct_at(&result.dim[0], 1);
+                    result.dim[0] = 1;
                     for (size_t j = 1; j < ndim; ++j) {
-                        std::construct_at(
-                            &result.dim[j],
-                            result.dim[j - 1] * dim[j - 1]
-                        );
+                        result.dim[j] = result.dim[j - 1] * dim[j - 1];
                     }
                 } else {
                     size_t j = size() - 1;
-                    std::construct_at(&result.dim[j], 1);
+                    result.dim[j] = 1;
                     while (j-- > 0) {
-                        std::construct_at(
-                            &result.dim[j],
-                            result.dim[j + 1] * dim[j + 1]
-                        );
+                        result.dim[j] = result.dim[j + 1] * dim[j + 1];
                     }
                 }
             }
@@ -566,45 +361,248 @@ namespace impl {
         }
     };
 
-    template <meta::convertible_to<NoneType> T>
-    extent(T) -> extent<None>;
+    /* Compile-time shape and stride specifiers use CTAD to allow simple braced
+    initializer syntax, which permits custom strides. */
+    template <size_t Rank> requires (Rank > 0)
+    struct extent<Rank> : extent_tag {
+    private:
+        template <meta::convertible_to<size_t> T>
+        constexpr void from_int(size_t& i, T&& n) noexcept {
+            dim[i] = std::forward<T>(n);
+            ++i;
+        }
 
-    template <meta::integer... N>
+        template <meta::convertible_to<NoneType> T> requires (!meta::convertible_to<T, size_t>)
+        constexpr void from_int(size_t& i, T&& n) noexcept {
+            dim[i] = 0;
+            ++i;
+        }
+
+        template <meta::tuple_like T, size_t... Is> requires (sizeof...(Is) == meta::tuple_size<T>)
+        constexpr void from_tuple(T&& shape, std::index_sequence<Is...>)
+            noexcept (requires(size_t i) {
+                {(from_int(i,meta::get<Is>(std::forward<T>(shape))), ...)} noexcept;
+            })
+        {
+            size_t i = 0;
+            (from_int(i, meta::get<Is>(std::forward<T>(shape))), ...);
+        }
+
+    public:
+        [[nodiscard]] static constexpr size_t rank() noexcept { return Rank; }
+        static constexpr size_t ndim = Rank;
+        size_t dim[ndim] {};
+
+        [[nodiscard]] constexpr extent() noexcept = default;
+
+        template <typename... T>
+            requires (
+                (sizeof...(T) == ndim) &&
+                ... &&
+                (meta::convertible_to<T, size_t> || meta::convertible_to<T, NoneType>)
+            )
+        [[nodiscard]] constexpr extent(T&&... n)
+            noexcept (((meta::convertible_to<T, size_t> ?
+                meta::nothrow::convertible_to<T, size_t> :
+                meta::nothrow::convertible_to<T, NoneType>
+            ) && ...))
+        {
+            size_t i = 0;
+            (from_int(i, std::forward<T>(n)), ...);
+        }
+
+        template <typename T>
+        [[nodiscard]] constexpr extent(T&& n)
+            noexcept (meta::nothrow::yields<T, Optional<size_t>>)
+            requires (
+                !meta::convertible_to<T, size_t> &&
+                !meta::convertible_to<T, NoneType> &&
+                meta::tuple_like<T> &&
+                meta::tuple_size<T> == ndim &&
+                meta::yields<T, Optional<size_t>>
+            )
+        {
+            size_t i = 0;
+            auto it = meta::begin(n);
+            auto end = meta::end(n);
+            while (i < ndim && it != end) {
+                Optional<size_t> val = *it;
+                if (val == None) {
+                    dim[i] = 0;
+                } else {
+                    dim[i] = *val;
+                }
+                ++i;
+                ++it;
+            }
+        }
+
+        template <typename T>
+        [[nodiscard]] constexpr extent(T&& n)
+            noexcept (requires{
+                {from_tuple(std::forward<T>(n), std::make_index_sequence<ndim>{})} noexcept;
+            })
+            requires (
+                !meta::convertible_to<T, size_t> &&
+                !meta::convertible_to<T, NoneType> &&
+                meta::tuple_like<T> &&
+                meta::tuple_size<T> == ndim &&
+                !meta::yields<T, Optional<size_t>> &&
+                meta::tuple_types<T>::template eval<tuple_extent>::value
+            )
+        {
+            from_tuple(std::forward<T>(n), std::make_index_sequence<ndim>{});
+        }
+
+        constexpr void swap(extent& other) noexcept {
+            for (size_t i = 0; i < ndim; ++i) {
+                std::swap(dim[i], other.dim[i]);
+            }
+        }
+
+        [[nodiscard]] static constexpr size_t size() noexcept { return ndim; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(ndim); }
+        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
+        [[nodiscard]] constexpr size_t* data() noexcept { return dim; }
+        [[nodiscard]] constexpr const size_t* data() const noexcept {
+            return static_cast<const size_t*>(dim);
+        }
+        [[nodiscard]] constexpr size_t* begin() noexcept { return data(); }
+        [[nodiscard]] constexpr const size_t* begin() const noexcept { return data(); }
+        [[nodiscard]] constexpr const size_t* cbegin() const noexcept { return begin(); }
+        [[nodiscard]] constexpr size_t* end() noexcept { return data() + ndim; }
+        [[nodiscard]] constexpr const size_t* end() const noexcept { return data() + ndim; }
+        [[nodiscard]] constexpr const size_t* cend() const noexcept { return end(); }
+        [[nodiscard]] constexpr auto rbegin() noexcept {
+            return std::make_reverse_iterator(end());
+        }
+        [[nodiscard]] constexpr auto rbegin() const noexcept {
+            return std::make_reverse_iterator(end());
+        }
+        [[nodiscard]] constexpr auto crbegin() const noexcept { return rbegin(); }
+        [[nodiscard]] constexpr auto rend() noexcept {
+            return std::make_reverse_iterator(begin());
+        }
+        [[nodiscard]] constexpr auto rend() const noexcept {
+            return std::make_reverse_iterator(begin());
+        }
+        [[nodiscard]] constexpr auto crend() const noexcept { return rend(); }
+
+        template <ssize_t I> requires (impl::valid_index<ssize(), I>)
+        [[nodiscard]] constexpr size_t get() const noexcept {
+            return dim[impl::normalize_index<ssize(), I>()];
+        }
+
+        [[nodiscard]] constexpr size_t operator[](ssize_t i) const {
+            return dim[impl::normalize_index(ssize(), i)];
+        }
+
+        template <size_t R>
+        [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
+            if constexpr (R == ndim) {
+                for (size_t i = 0; i < ndim; ++i) {
+                    if (dim[i] != other.dim[i]) {
+                        return false;
+                    }
+                }
+                return true;
+            } else {
+                return false;
+            }
+        }
+
+        [[nodiscard]] constexpr size_t product() const noexcept {
+            size_t p = 1;
+            for (size_t j = 0; j < ndim; ++j) {
+                p *= dim[j];
+            }
+            return p;
+        }
+
+        [[nodiscard]] constexpr extent reverse() const noexcept {
+            extent r;
+            for (size_t j = 0; j < ndim; ++j) {
+                r.dim[j] = dim[ndim - 1 - j];
+            }
+            return r;
+        }
+
+        template <size_t N>
+        [[nodiscard]] constexpr auto reduce() const noexcept {
+            if constexpr (N >= ndim) {
+                return extent<0>{};
+            } else {
+                extent<ndim - N> s;
+                for (size_t j = N; j < ndim; ++j) {
+                    s.dim[j - N] = dim[j];
+                }
+                return s;
+            }
+        }
+
+        [[nodiscard]] constexpr extent strides(bool column_major) const noexcept {
+            if constexpr (ndim == 0) {
+                return {};
+            } else {
+                extent s;
+                if (column_major) {
+                    s.dim[0] = 1;
+                    for (size_t j = 1; j < size(); ++j) {
+                        s.dim[j] = s.dim[j - 1] * dim[j - 1];
+                    }
+                } else {
+                    size_t j = size() - 1;
+                    s.dim[j] = 1;
+                    while (j-- > 0) {
+                        s.dim[j] = s.dim[j + 1] * dim[j + 1];
+                    }
+                }
+                return s;
+            }
+        }
+    };
+
+    template <typename... N>
+        requires ((meta::convertible_to<N, size_t> || meta::convertible_to<N, NoneType>) && ...)
     extent(N...) -> extent<sizeof...(N)>;
 
     template <typename T>
         requires (
-            !meta::integer<T> &&
-            meta::tuple_like<T> &&
-            (meta::yields<size_t, T> || meta::tuple_types<T>::template convertible_to<size_t>)
+            !meta::convertible_to<T, size_t> &&
+            !meta::convertible_to<T, NoneType> &&
+            meta::tuple_like<T> && (
+                meta::yields<T, Optional<size_t>> ||
+                meta::tuple_types<T>::template eval<tuple_extent>::value
+            )
         )
     extent(T&&) -> extent<meta::tuple_size<T>>;
 
     template <typename T>
         requires (
-            !meta::integer<T> &&
+            !meta::convertible_to<T, size_t> &&
+            !meta::convertible_to<T, NoneType> &&
             !meta::tuple_like<T> &&
-            meta::yields<size_t, T> &&
+            meta::yields<T, Optional<size_t>> &&
             meta::has_size<T>
         )
-    extent(T&&) -> extent<{}>;
+    extent(T&&) -> extent<0>;
 
     template <size_t N>
     [[nodiscard]] constexpr extent<N + 1> operator|(const extent<N>& self, size_t other) noexcept {
         extent<N + 1> s;
         for (size_t j = 0; j < N; ++j) {
-            std::construct_at(&s.dim[j], self.dim[j]);
+            s.dim[j] = self.dim[j];
         }
-        std::construct_at(&s.dim[N], other);
+        s.dim[N] = other;
         return s;
     }
 
     template <size_t N>
     [[nodiscard]] constexpr extent<N + 1> operator|(size_t other, const extent<N>& self) noexcept {
         extent<N + 1> s;
-        std::construct_at(&s.dim[0], other);
+        s.dim[0] = other;
         for (size_t j = 1; j <= N; ++j) {
-            std::construct_at(&s.dim[j], self.dim[j - 1]);
+            s.dim[j] = self.dim[j - 1];
         }
         return s;
     }
@@ -620,7 +618,7 @@ namespace meta {
     of dimensions in the extent (assuming that value is known statically). */
     template <typename T, bertrand::Optional<size_t> rank = bertrand::None>
     concept extent = inherits<T, impl::extent_tag> && (
-        rank == bertrand::None || unqualify<T>::ndim == *rank
+        rank == bertrand::None || unqualify<T>::rank() == *rank
     );
 
     /* Detect whether a type is a `range`.  If additional types are provided, then they
@@ -4092,6 +4090,9 @@ namespace impl {
     /// `shape()` method.  That way, no matter what the container is, the sequence
     /// should be able to provide a shape, and thereby maintain symmetry with ranges.
     /// It's also crucial for supporting the buffer protocol in Python.
+    /// -> Actually, what I'll do is just cache the shape in the control block, which
+    /// will always store the `size()` as the first element so that it's always
+    /// constant time on access.  That also means the shape will never be truly empty.
 
     /* Sequences use the classic type erasure mechanism internally, consisting of a
     heap-allocated control block and an immutable void pointer to the underlying
@@ -4179,7 +4180,8 @@ namespace impl {
             const sequence_iterator<T, Shape, Category>&,
             const sequence_iterator<T, Shape, Category>&
         );
-        /// TODO: all the other random-access operations as well
+
+        /// TODO: the control block also needs to store the shape.
 
         std::atomic<size_t> refcount = 1;
         const void* const container;
@@ -4360,6 +4362,12 @@ namespace impl {
         static constexpr meta::as_pointer<T> data_fn(sequence_control* control) {
             return meta::data(*static_cast<meta::as_pointer<Container<C>>>(control->container));
         }
+
+        /// TODO: the shape should not be stored as a function pointer.  It should just
+        /// be inlined into the control block.  If all of the dimensions of the
+        /// `Shape` template parameter are known at compile time, then it can be
+        /// omitted entirely.
+
 
         template <typename C>
         static constexpr meta::unqualify<decltype(Shape)> shape_fn(sequence_control* control) {
@@ -4966,11 +4974,20 @@ namespace impl {
         }
     };
 
-    /* The public-facing sequence type serves as a lightweight interface to the
-    type-erased container and its associated range operations, as defined by the
-    `sequence_control` block.  It equates to a simple constructor for and pointer to
-    the backend control block, which implements all the operations for the sequence and
-    its iterator. */
+    /* The public-facing sequence type comes in two flavors depending on whether the
+    dimensionality of its shape is known at compile time.  If so, that information will
+    be carried over (in reduced form) to the index and yield types, allowing the
+    compiler to optimize accordingly.  If not, then the scalar case cannot be
+    statically differentiated from higher-dimensional shapes, meaning the index and
+    yield types must be generalized to handle both cases.
+
+    In particular, this means that the dereference operator in the dynamic case (which
+    always yields a value of type `T`) is only valid when the shape has zero dimensions
+    (i.e. the sequence is a scalar).  If a sequence with 1 or more dimensions is
+    dereferenced, it will result in a `TypeError` at runtime, which must be avoided by
+    checking the number of dimensions in its shape (e.g. `seq.shape().empty()`).  For
+    sequences of static shape, the `TypeError` will be promoted to a compilation error
+    instead, enforcing correctness at compile time. */
     template <typename T, extent Shape = None, typename Category = std::input_iterator_tag>
         requires (sequence_concept<T, Shape, Category>)
     struct sequence {
@@ -5033,8 +5050,16 @@ namespace impl {
             return control->data(control);
         }
 
-        [[nodiscard]] constexpr meta::unqualify<decltype(Shape)> shape() const {
-            return control->shape(control);
+        /// TODO: the shape should just be stored as an ordinary member variable of
+        /// the control block, and returned by const reference, rather than requiring a
+        /// copy each time.
+        [[nodiscard]] constexpr meta::as_const_ref<decltype(Shape)> shape() const noexcept {
+            // if constexpr () {
+
+            // } else {
+
+            // }
+            return control->shape;
         }
 
         [[nodiscard]] constexpr size_t size() const {
@@ -5055,8 +5080,8 @@ namespace impl {
         /// -> How would `back()` be standardized in this context?  Is it even
         /// possible?  It might require a full traversal of the range to get there.
 
-        [[nodiscard]] constexpr T operator[](ssize_t i) const {
-            return control->subscript(control, i);
+        [[nodiscard]] constexpr decltype(auto) operator[](ssize_t i) const {
+            return (control->subscript(control, i));
         }
 
         [[nodiscard]] constexpr auto begin() const {
@@ -5067,6 +5092,24 @@ namespace impl {
             return control->end(control);
         }
     };
+    template <typename T, typename Category>
+        requires (sequence_concept<T, None, Category>)
+    struct sequence<T, None, Category> {
+    private:
+        union storage {
+            sequence_control<T, None, Category>* control;
+            impl::ref<T> scalar;
+        };
+        bool is_scalar = false;
+
+    public:
+        [[nodiscard]] constexpr sequence() noexcept :
+            is_scalar(false),
+            storage{.control = nullptr}
+        {}
+
+    };
+
 
 }
 
@@ -7265,7 +7308,16 @@ namespace iter {
 
         /* Perfectly forward the underlying container or scalar value. */
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (
+                !impl::range_transparent<C> ||
+                requires{{**std::forward<Self>(self).__value} noexcept;}
+            )
+            requires (
+                !impl::range_transparent<C> ||
+                requires{{**std::forward<Self>(self).__value};}
+            )
+        {
             if constexpr (impl::range_transparent<C>) {
                 return (**std::forward<Self>(self).__value);
             } else {
@@ -7274,12 +7326,18 @@ namespace iter {
         }
 
         /* Indirectly access a member of the underlying container or scalar value. */
-        [[nodiscard]] constexpr auto operator->() noexcept {
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (!impl::range_transparent<C> || requires{{**__value} noexcept;})
+            requires (!impl::range_transparent<C> || requires{{**__value};})
+        {
             return std::addressof(**this);
         }
 
         /* Indirectly access a member of the underlying container or scalar value. */
-        [[nodiscard]] constexpr auto operator->() const noexcept {
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (!impl::range_transparent<C> || requires{{**__value} noexcept;})
+            requires (!impl::range_transparent<C> || requires{{**__value};})
+        {
             return std::addressof(**this);
         }
 
