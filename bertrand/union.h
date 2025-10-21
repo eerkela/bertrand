@@ -1325,30 +1325,21 @@ namespace impl {
         static constexpr bool empty() noexcept { return (sizeof...(Ts) == 0); }
 
     private:
-        template <size_t I, typename T>
-        static constexpr decltype(auto) get_at(T&& u) noexcept {
-            if constexpr (I == 0) {
-                return (std::forward<T>(u));
-            } else {
-                return (get_at<I - 1>(std::forward<T>(u).rest));
-            }
-        }
-
         template <typename... Us>
-        union _type {
-            constexpr _type() noexcept {};
-            constexpr ~_type() noexcept {};
+        union store {
+            constexpr store() noexcept {};
+            constexpr ~store() noexcept {};
         };
         template <typename U, typename... Us>
-        union _type<U, Us...> {
+        union store<U, Us...> {
             [[no_unique_address]] impl::ref<U> curr;
-            [[no_unique_address]] _type<Us...> rest;
+            [[no_unique_address]] store<Us...> rest;
 
-            constexpr _type() noexcept {}
-            constexpr ~_type() noexcept {}
+            constexpr store() noexcept {}
+            constexpr ~store() noexcept {}
 
             template <typename... A>
-            constexpr _type(tag<0>, A&&... args)
+            constexpr store(tag<0>, A&&... args)
                 noexcept (requires{{U(std::forward<A>(args)...)} noexcept;})
                 requires (requires{{U(std::forward<A>(args)...)};})
             :
@@ -1356,27 +1347,38 @@ namespace impl {
             {}
 
             template <size_t I, typename... A> requires (I > 0)
-            constexpr _type(tag<I>, A&&... args)
-                noexcept (meta::nothrow::constructible_from<_type<Us...>, tag<I - 1>, A...>)
-                requires (meta::constructible_from<_type<Us...>, tag<I - 1>, A...>)
+            constexpr store(tag<I>, A&&... args)
+                noexcept (requires{
+                    {store<Us...>(tag<I - 1>{}, std::forward<A>(args)...)} noexcept;
+                })
+                requires (requires{{store<Us...>(tag<I - 1>{}, std::forward<A>(args)...)};})
             :
-                rest(tag<I - 1>{}, std::forward<A>(args)...)  // recur
+                rest(tag<I - 1>{}, std::forward<A>(args)...)
             {}
 
-            constexpr _type(_type&& other)
-                noexcept (meta::nothrow::movable<impl::ref<U>>)
-                requires (meta::movable<impl::ref<U>>)
+            constexpr store(store&& other)
+                noexcept (requires{{impl::ref<U>(std::move(other).curr)} noexcept;})
+                requires (requires{{impl::ref<U>(std::move(other).curr)};})
             :
                 curr(std::move(other).curr)
             {}
 
             template <typename... Vs> requires (sizeof...(Vs) <= sizeof...(Us))
-            constexpr _type(_type<Vs...>&& other)
-                noexcept (meta::nothrow::movable<_type<Us...>>)
-                requires (meta::movable<_type<Us...>>)
+            constexpr store(store<Vs...>&& other)
+                noexcept (requires{{store<Us...>(std::move(other))} noexcept;})
+                requires (requires{{store<Us...>(std::move(other))};})
             :
-                rest(std::move(other).rest)
+                rest(std::move(other))
             {}
+
+            template <size_t I, typename T> requires (I <= sizeof...(Us))
+            constexpr decltype(auto) get(this T&& self) noexcept {
+                if constexpr (I == 0) {
+                    return (std::forward<T>(self));
+                } else {
+                    return (std::forward<T>(self).rest.template get<I - 1>());
+                }
+            }
 
             /// TODO: maybe copy/move constructors can bypass the issue with
             /// the swap operator?  I would just take a top-level move/assign
@@ -1402,7 +1404,7 @@ namespace impl {
         };
 
     public:
-        using type = _type<Ts...>;
+        using type = store<Ts...>;
         [[no_unique_address]] type m_data;
         [[no_unique_address]] meta::smallest_unsigned_int<sizeof...(Ts)> m_index;
 
@@ -1436,13 +1438,13 @@ namespace impl {
         time. */
         template <size_t I, typename Self> requires (I < sizeof...(Ts))
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (*get_at<I>(std::forward<Self>(self).m_data).curr);
+            return (*std::forward<Self>(self).m_data.template get<I>().curr);
         }
 
         /* Access a specific type, assuming it is present in the union. */
         template <typename T, typename Self> requires (types::template contains<T>())
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (*get_at<meta::index_of<T, Ts...>>(std::forward<Self>(self).m_data).curr);
+            return (*std::forward<Self>(self).m_data.template get<meta::index_of<T, Ts...>>().curr);
         }
 
         /* Get a pointer to a specific value by index if it is the active alternative.
@@ -1551,10 +1553,10 @@ namespace impl {
         struct destroy {
             static constexpr void operator()(type& u)
                 noexcept (nothrow_destructible)
-                requires (requires{{std::destroy_at(std::addressof(get_at<I>(u).curr))};})
+                requires (requires{{std::destroy_at(std::addressof(u.template get<I>().curr))};})
             {
-                if constexpr (!meta::trivially_destructible<decltype(get_at<I>(u).curr)>) {
-                    std::destroy_at(std::addressof(get_at<I>(u).curr));
+                if constexpr (!meta::trivially_destructible<decltype(u.template get<I>().curr)>) {
+                    std::destroy_at(std::addressof(u.template get<I>().curr));
                 }
             }
         };
@@ -1572,31 +1574,31 @@ namespace impl {
                 // is available
                 if constexpr (J == K) {
                     std::ranges::swap(
-                        get_at<J>(self.m_data).curr,
-                        get_at<K>(other.m_data).curr
+                        self.m_data.template get<J>().curr,
+                        other.m_data.template get<K>().curr
                     );
 
                 // If the indices differ or the types are lvalues, then we need to move
                 // construct and destroy the original value behind us.
                 } else {
-                    type temp(get_at<J>(std::move(self).m_data));
+                    type temp(std::move(self).m_data.template get<J>());
                     destroy<J>{}(self.m_data);
                     try {
                         std::construct_at(
                             &self.m_data,
-                            get_at<K>(std::move(other).m_data)
+                            std::move(other).m_data.template get<K>()
                         );
                         destroy<K>{}(other.m_data);
                         try {
                             std::construct_at(
                                 &other.m_data,
-                                get_at<J>(std::move(temp))
+                                std::move(temp).template get<J>()
                             );
                             destroy<J>{}(temp);
                         } catch (...) {
                             std::construct_at(
                                 &other.m_data,
-                                get_at<K>(std::move(self).m_data)
+                                std::move(self).m_data.template get<K>()
                             );
                             destroy<K>{}(self.m_data);
                             throw;
@@ -1604,7 +1606,7 @@ namespace impl {
                     } catch (...) {
                         std::construct_at(
                             &self.m_data,
-                            get_at<J>(std::move(temp))
+                            std::move(temp).template get<J>()
                         );
                         destroy<J>{}(temp);
                         throw;
