@@ -29,452 +29,44 @@ namespace impl {
     template <meta::inherits<sequence_tag> T>
     constexpr bool range_transparent<T> = true;
 
-    /// TODO: Note that 0 now indicates a dynamic extent in compile-time extents.
-    /// Since arrays cannot be empty, and a zero in any dimension results in a zero
-    /// product, this should be workable.  If the cases need to be distinguished, then
-    /// I can check for both a zero rank and product, which indicates the dynamic case.
-    /// The static case with a dynamic extent would never have a rank of zero.
+    /* An array of integers describing the length of each dimension in a regular,
+    possibly multi-dimensional container.
 
-    template <meta::unqualified T>
-    struct extent_iterator {
-        using iterator_category = std::random_access_iterator_tag;
-        using difference_type = ssize_t;
-        using value_type = Optional<size_t>;
-        using pointer = value_type*;
-        using reference = value_type&;
+    For most purposes, this class behaves just like a `std::array<const size_t, N>`,
+    except that it is CTAD-convertible from scalar integers, braced initializer lists,
+    or any tuple-like type that yields integers, as well as providing Python-style
+    wraparound for negative indices, and additional utility methods that can be used to
+    implement a strided iteration protocol.
 
-        const T* self = nullptr;
-        difference_type index = 0;
+    Notably, the product of all dimensions must be equal to the total number of
+    (flattened) elements in the tensor.  This generally precludes zero-length
+    dimensions, which can cause information loss in the product.  As a result, setting
+    a dimension to zero has special meaning depending on context.  If the `extent` is
+    provided as a template parameter used to specialize a supported container type,
+    then setting a dimension to zero indicates that it is dynamic, allowing the zero to
+    be replaced with its actual length at runtime.
 
-        [[nodiscard]] constexpr Optional<size_t> operator*() const noexcept {
-            if (self->missing[index / 8] & (1 << (index % 8))) {
-                return None;
-            } else {
-                return self->dim[index];
-            }
-        }
-
-        [[nodiscard]] constexpr auto operator->() const noexcept {
-            return impl::arrow{**this};
-        }
-
-        [[nodiscard]] constexpr Optional<size_t> operator[](difference_type n) const noexcept {
-            n += index;
-            if (self->missing[n / 8] & (1 << (n % 8))) {
-                return None;
-            } else {
-                return self->dim[n];
-            }
-        }
-
-        constexpr extent_iterator& operator++() noexcept {
-            ++index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr extent_iterator operator++(int) noexcept {
-            extent_iterator temp = *this;
-            ++index;
-            return temp;
-        }
-
-        constexpr extent_iterator& operator--() noexcept {
-            --index;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr extent_iterator operator--(int) noexcept {
-            extent_iterator temp = *this;
-            --index;
-            return temp;
-        }
-
-        constexpr extent_iterator& operator+=(difference_type n) noexcept {
-            index += n;
-            return *this;
-        }
-
-        [[nodiscard]] friend constexpr extent_iterator operator+(
-            const extent_iterator& it,
-            difference_type n
-        ) noexcept {
-            return {it.self, it.index + n};
-        }
-
-        [[nodiscard]] friend constexpr extent_iterator operator+(
-            difference_type n,
-            const extent_iterator& it
-        ) noexcept {
-            return {it.self, it.index + n};
-        }
-
-        constexpr extent_iterator& operator-=(difference_type n) noexcept {
-            index -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr extent_iterator operator-(difference_type n) const noexcept {
-            return {self, index - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const extent_iterator& other
-        ) const noexcept {
-            return index - other.index;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const extent_iterator& other) const noexcept {
-            return index == other.index;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const extent_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-    };
-
-    /// TODO: bring the dynamic extents up to the same level as the compile-time ones,
-    /// allowing for optional sizes in each dimension, which would indicate either
-    /// dynamic sizes (as a template parameter), or unknown/inconsistent sizes (at
-    /// runtime).
-
-    /* Run-time shape and stride specifiers can represent dynamic data, and may require
-    a heap allocation if they are more than 1-dimensional.  They otherwise mirror
-    their compile-time equivalents exactly. */
-    template <size_t Rank>
+    In all other cases, zero-length dimensions will be represented normally, and it is
+    up to the user to handle them appropriately.  Additionally, the number of
+    dimensions may itself be `0`, which indicates a zero-dimensional tensor (i.e. a
+    scalar). */
+    template <size_t N>
     struct extent : extent_tag {
         using size_type = size_t;
         using index_type = ssize_t;
-        using value_type = Optional<size_type>;
-        using iterator = extent_iterator<extent>;
+        using value_type = size_type;
+        using reference = const size_type&;
+        using pointer = const size_type*;
+        using iterator = const size_t*;
         using reverse_iterator = std::reverse_iterator<iterator>;
+
+        [[nodiscard]] static constexpr size_type size() noexcept { return N; }
+        [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(N); }
+        [[nodiscard]] static constexpr bool empty() noexcept { return N == 0; }
 
     private:
         constexpr void from_int(size_type& i, size_type n) noexcept {
             dim[i] = n;
-            ++i;
-        }
-
-        template <meta::tuple_like T, size_type... Is>
-            requires (sizeof...(Is) == meta::tuple_size<T>)
-        constexpr void from_tuple(T&& shape, std::index_sequence<Is...>)
-            noexcept (requires(size_type i) {
-                {(from_int(i,meta::get<Is>(std::forward<T>(shape))), ...)} noexcept;
-            })
-        {
-            size_type i = 0;
-            (from_int(i, meta::get<Is>(std::forward<T>(shape))), ...);
-        }
-
-    public:
-        enum extent_kind : uint8_t {
-            TRIVIAL,
-            BORROWED,
-            UNIQUE
-        };
-
-        size_type ndim = 0;
-        size_type* dim = nullptr;
-        uint8_t* missing = nullptr;
-        extent_kind kind = TRIVIAL;
-
-        template <meta::convertible_to<size_type>... T>
-        [[nodiscard]] constexpr extent(T&&... n)
-            noexcept (((sizeof...(T) <= 1) && ... && meta::nothrow::convertible_to<T, size_type>))
-        :
-            ndim(sizeof...(T))
-        {
-            if constexpr (sizeof...(T) == 1) {
-                ndim = meta::unpack_arg<0>(std::forward<T>(n)...);
-            } else if constexpr (sizeof...(T) > 1) {
-                dim = new size_type[ndim];
-                if (dim == nullptr) {
-                    throw MemoryError();
-                }
-                kind = UNIQUE;
-                size_type i = 0;
-                (from_int(i, std::forward<T>(n)), ...);
-            }
-        }
-
-        template <typename T>
-            requires (
-                !meta::convertible_to<T, size_type> &&
-                !meta::convertible_to<T, std::initializer_list<size_type>> &&
-                meta::yields<size_type, T> &&
-                (meta::tuple_like<T> || meta::size_returns<size_type, T>)
-            )
-        [[nodiscard]] constexpr extent(T&& n) {
-            if constexpr (meta::tuple_like<T>) {
-                ndim = meta::tuple_size<T>;
-            } else {
-                ndim = n.size();
-            }
-            if (ndim > 1) {
-                dim = new size_type[ndim];
-                if (dim == nullptr) {
-                    throw MemoryError();
-                }
-                kind = UNIQUE;
-                auto it = meta::begin(n);
-                auto end = meta::end(n);
-                for (size_type i = 0; it != end; ++i, ++it) {
-                    dim[i] = *it;
-                }
-            } else if (ndim == 1) {
-                ndim = *meta::begin(n);
-            }
-        }
-
-        template <typename T>
-            requires (
-                !meta::convertible_to<T, size_type> &&
-                !meta::convertible_to<T, std::initializer_list<size_type>> &&
-                !meta::yields<size_type, T> &&
-                meta::tuple_like<T> &&
-                meta::tuple_types<T>::template convertible_to<size_type>
-            )
-        [[nodiscard]] constexpr extent(T&& n) : ndim(meta::tuple_size<T>) {
-            if constexpr (meta::tuple_size<T> == 1) {
-                ndim = meta::get<0>(n);
-            } else if constexpr (meta::tuple_size<T> > 1) {
-                dim = new size_type[ndim];
-                if (dim == nullptr) {
-                    throw MemoryError();
-                }
-                kind = UNIQUE;
-                from_tuple(
-                    std::forward<T>(n),
-                    std::make_index_sequence<meta::tuple_size<T>>{}
-                );
-            }
-        }
-
-        [[nodiscard]] constexpr extent(const extent& other) : ndim(other.ndim), kind(other.kind) {
-            switch (other.kind) {
-                case TRIVIAL:
-                    break;
-                case BORROWED:
-                    dim = other.dim;
-                    break;
-                case UNIQUE:
-                    dim = new size_type[ndim];
-                    if (dim == nullptr) {
-                        throw MemoryError();
-                    }
-                    for (size_type i = 0; i < ndim; ++i) {
-                        dim[i] = other.dim[i];
-                    }
-                    break;
-            }
-        }
-
-        [[nodiscard]] constexpr extent(extent&& other) noexcept :
-            ndim(other.ndim),
-            dim(other.dim),
-            kind(other.kind)
-        {
-            other.ndim = 0;
-            other.dim = nullptr;
-            other.kind = TRIVIAL;
-        }
-
-        constexpr extent& operator=(const extent& other) {
-            if (this != &other) {
-                if (kind == UNIQUE) {
-                    delete[] dim;
-                }
-                ndim = other.ndim;
-                kind = other.kind;
-                switch (other.kind) {
-                    case TRIVIAL:
-                        break;
-                    case BORROWED:
-                        dim = other.dim;
-                        break;
-                    case UNIQUE:
-                        dim = new size_type[ndim];
-                        if (dim == nullptr) {
-                            throw MemoryError();
-                        }
-                        for (size_type i = 0; i < ndim; ++i) {
-                            dim[i] = other.dim[i];
-                        }
-                        break;
-                }
-            }
-            return *this;
-        }
-
-        constexpr extent& operator=(extent&& other) noexcept {
-            if (this != &other) {
-                if (kind == UNIQUE) {
-                    delete[] dim;
-                }
-                ndim = other.ndim;
-                dim = other.dim;
-                kind = other.kind;
-                other.ndim = 0;
-                other.dim = nullptr;
-                other.kind = TRIVIAL;
-            }
-            return *this;
-        }
-
-        constexpr ~extent() {
-            if (kind == UNIQUE) {
-                delete[] dim;
-            }
-        }
-
-        constexpr void swap(extent& other) noexcept {
-            std::swap(ndim, other.ndim);
-            std::swap(dim, other.dim);
-            std::swap(kind, other.kind);
-        }
-
-        [[nodiscard]] static constexpr size_type rank() noexcept { return 0; }
-        [[nodiscard]] constexpr size_type size() const noexcept {
-            return kind == TRIVIAL ? ndim > 0 : ndim;
-        }
-        [[nodiscard]] constexpr index_type ssize() const noexcept { return index_type(size()); }
-        [[nodiscard]] constexpr bool empty() const noexcept { return ndim == 0; }
-        [[nodiscard]] constexpr const size_type* data() const noexcept {
-            return kind == TRIVIAL ? &ndim : dim;
-        }
-        [[nodiscard]] constexpr const size_type* begin() const noexcept { return data(); }
-        [[nodiscard]] constexpr const size_type* cbegin() const noexcept { return begin(); }
-        [[nodiscard]] constexpr const size_type* end() const noexcept {
-            return kind == TRIVIAL ? &ndim + 1 : dim + ndim;
-        }
-        [[nodiscard]] constexpr const size_type* cend() const noexcept { return end(); }
-        [[nodiscard]] constexpr auto rbegin() noexcept {
-            return std::make_reverse_iterator(end());
-        }
-        [[nodiscard]] constexpr auto rbegin() const noexcept {
-            return std::make_reverse_iterator(end());
-        }
-        [[nodiscard]] constexpr auto crbegin() const noexcept { return rbegin(); }
-        [[nodiscard]] constexpr auto rend() noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-        [[nodiscard]] constexpr auto rend() const noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-        [[nodiscard]] constexpr auto crend() const noexcept { return rend(); }
-
-        [[nodiscard]] constexpr size_type operator[](index_type i) const {
-            return data()[impl::normalize_index(ssize(), i)];
-        }
-
-        template <size_type R>
-        [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
-            if constexpr (R == 0) {
-                if (ndim != other.ndim) {
-                    return false;
-                }
-                if (kind != TRIVIAL) {
-                    for (size_type i = 0; i < ndim; ++i) {
-                        if (dim[i] != other.dim[i]) {
-                            return false;
-                        }
-                    }
-                }
-                return true;
-            } else {
-                return false;
-            }
-        }
-
-        [[nodiscard]] constexpr size_type product() const noexcept {
-            if (kind == TRIVIAL) {
-                return ndim;
-            }
-            size_type p = 1;
-            for (size_type j = 0; j < ndim; ++j) {
-                p *= dim[j];
-            }
-            return p;
-        }
-
-        [[nodiscard]] constexpr extent reverse() const {
-            if (kind == TRIVIAL || ndim == 1) {
-                return *this;
-            }
-            extent r;
-            r.ndim = ndim;
-            r.dim = new size_type[ndim];
-            if (r.dim == nullptr) {
-                throw MemoryError();
-            }
-            r.kind = UNIQUE;
-            for (size_type j = 0; j < ndim; ++j) {
-                r.dim[j] = dim[ndim - 1 - j];
-            }
-            return r;
-        }
-
-        [[nodiscard]] constexpr extent reduce(size_type n) const {
-            if (n == 0) {
-                return *this;
-            }
-            extent result;
-            if (kind != TRIVIAL && n < ndim) {
-                if (n + 1 == ndim) {  // result is 1D
-                    result.ndim = dim[n];
-                } else {  // result is > 1D
-                    result.ndim = ndim - n;
-                    result.dim = dim + n;
-                    result.kind = BORROWED;
-                }
-            }
-            return result;
-        }
-
-        [[nodiscard]] constexpr extent strides(bool column_major) const {
-            extent result;
-            if (kind == TRIVIAL) {
-                result.ndim = ndim > 0;
-            } else {
-                result.ndim = ndim;
-                result.dim = new size_type[ndim];
-                if (result.dim == nullptr) {
-                    throw MemoryError();
-                }
-                result.kind = UNIQUE;
-                if (column_major) {
-                    result.dim[0] = 1;
-                    for (size_type j = 1; j < ndim; ++j) {
-                        result.dim[j] = result.dim[j - 1] * dim[j - 1];
-                    }
-                } else {
-                    size_type j = size() - 1;
-                    result.dim[j] = 1;
-                    while (j-- > 0) {
-                        result.dim[j] = result.dim[j + 1] * dim[j + 1];
-                    }
-                }
-            }
-            return result;
-        }
-    };
-
-    /* Compile-time shape and stride specifiers use CTAD to allow simple braced
-    initializer syntax, which permits custom strides. */
-    template <size_t Rank> requires (Rank > 0)
-    struct extent<Rank> : extent_tag {
-        using size_type = size_t;
-        using index_type = ssize_t;
-        using value_type = Optional<size_type>;
-        using iterator = extent_iterator<extent>;
-        using reverse_iterator = std::reverse_iterator<iterator>;
-
-    private:
-        constexpr void from_int(size_type& i, Optional<size_type> n) noexcept {
-            if (n == None) {
-                missing[i / 8] |= 1 << (i % 8);
-            } else {
-                dim[i] = *n;
-            }
             ++i;
         }
 
@@ -490,15 +82,14 @@ namespace impl {
         }
 
     public:
-        static constexpr size_type ndim = Rank;
-        size_type dim[ndim] {};
-        uint8_t missing[(ndim + 7) / 8] {};
+        size_type dim[size()] {};
 
         [[nodiscard]] constexpr extent() noexcept = default;
 
-        template <meta::convertible_to<Optional<size_type>>... T> requires (sizeof...(T) == ndim)
+        template <typename... T> requires (sizeof...(T) > 0 && sizeof...(T) == size())
         [[nodiscard]] constexpr extent(T&&... n)
-            noexcept ((meta::nothrow::convertible_to<T, Optional<size_type>> && ...))
+            noexcept ((meta::nothrow::convertible_to<T, size_type> && ...))
+            requires ((meta::convertible_to<T, size_type> && ...))
         {
             size_type i = 0;
             (from_int(i, std::forward<T>(n)), ...);
@@ -506,25 +97,20 @@ namespace impl {
 
         template <typename T>
         [[nodiscard]] constexpr extent(T&& n)
-            noexcept (meta::nothrow::yields<T, Optional<size_type>>)
+            noexcept (meta::nothrow::yields<T, size_type>)
             requires (
                 !meta::convertible_to<T, size_type> &&
                 !meta::convertible_to<T, NoneType> &&
                 meta::tuple_like<T> &&
-                meta::tuple_size<T> == ndim &&
-                meta::yields<T, Optional<size_type>>
+                meta::tuple_size<T> == size() &&
+                meta::yields<T, size_type>
             )
         {
             size_type i = 0;
             auto it = meta::begin(n);
             auto end = meta::end(n);
-            while (i < ndim && it != end) {
-                Optional<size_type> value = *it;
-                if (value == None) {
-                    missing[i / 8] |= 1 << (i % 8);
-                } else {
-                    dim[i] = *value;
-                }
+            while (i < size() && it != end) {
+                dim[i] = *it;
                 ++i;
                 ++it;
             }
@@ -533,39 +119,30 @@ namespace impl {
         template <typename T>
         [[nodiscard]] constexpr extent(T&& n)
             noexcept (requires{
-                {from_tuple(std::forward<T>(n), std::make_index_sequence<ndim>{})} noexcept;
+                {from_tuple(std::forward<T>(n), std::make_index_sequence<size()>{})} noexcept;
             })
             requires (
                 !meta::convertible_to<T, size_type> &&
                 !meta::convertible_to<T, NoneType> &&
                 meta::tuple_like<T> &&
-                meta::tuple_size<T> == ndim &&
-                !meta::yields<T, Optional<size_type>> &&
-                meta::tuple_types<T>::template convertible_to<Optional<size_type>>
+                meta::tuple_size<T> == size() &&
+                !meta::yields<T, size_type> &&
+                meta::tuple_types<T>::template convertible_to<size_type>
             )
         {
-            from_tuple(std::forward<T>(n), std::make_index_sequence<ndim>{});
+            from_tuple(std::forward<T>(n), std::make_index_sequence<size()>{});
         }
 
         constexpr void swap(extent& other) noexcept {
-            for (size_type i = 0; i < ndim; ++i) {
+            for (size_type i = 0; i < size(); ++i) {
                 std::swap(dim[i], other.dim[i]);
-            }
-            for (size_type i = 0; i < sizeof(missing); ++i) {
-                std::swap(missing[i], other.missing[i]);
             }
         }
 
-        [[nodiscard]] static constexpr size_type rank() noexcept { return Rank; }
-        [[nodiscard]] static constexpr size_type size() noexcept { return ndim; }
-        [[nodiscard]] static constexpr index_type ssize() noexcept { return index_type(ndim); }
-        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-        [[nodiscard]] constexpr const size_type* data() const noexcept {
-            return static_cast<const size_type*>(dim);
-        }
-        [[nodiscard]] constexpr iterator begin() const noexcept { return {this, 0}; }
+        [[nodiscard]] constexpr pointer data() const noexcept { return static_cast<pointer>(dim); }
+        [[nodiscard]] constexpr iterator begin() const noexcept { return data(); }
         [[nodiscard]] constexpr iterator cbegin() const noexcept { return begin(); }
-        [[nodiscard]] constexpr iterator end() const noexcept { return {this, ssize()}; }
+        [[nodiscard]] constexpr iterator end() const noexcept { return data() + size(); }
         [[nodiscard]] constexpr iterator cend() const noexcept { return end(); }
         [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
             return std::make_reverse_iterator(end());
@@ -577,34 +154,19 @@ namespace impl {
         [[nodiscard]] constexpr reverse_iterator crend() const noexcept { return rend(); }
 
         template <index_type I> requires (impl::valid_index<ssize(), I>)
-        [[nodiscard]] constexpr Optional<size_type> get() const noexcept {
-            constexpr index_type J = impl::normalize_index<ssize(), I>();
-            if (missing[J / 8] & (1 << (J % 8))) {
-                return None;
-            } else {
-                return dim[J];
-            }
+        [[nodiscard]] constexpr reference get() const noexcept {
+            return dim[impl::normalize_index<ssize(), I>()];
         }
 
-        [[nodiscard]] constexpr Optional<size_type> operator[](index_type i) const {
-            i = impl::normalize_index(ssize(), i);
-            if (missing[i / 8] & (1 << (i % 8))) {
-                return None;
-            } else {
-                return dim[i];
-            }
+        [[nodiscard]] constexpr reference operator[](index_type i) const {
+            return dim[impl::normalize_index(ssize(), i)];
         }
 
         template <size_type R>
         [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
-            if constexpr (R == ndim) {
-                for (size_type i = 0; i < ndim; ++i) {
+            if constexpr (R == size()) {
+                for (size_type i = 0; i < size(); ++i) {
                     if (dim[i] != other.dim[i]) {
-                        return false;
-                    }
-                }
-                for (size_type i = 0; i < sizeof(missing); ++i) {
-                    if (missing[i] != other.missing[i]) {
                         return false;
                     }
                 }
@@ -614,18 +176,27 @@ namespace impl {
             }
         }
 
-        [[nodiscard]] constexpr bool normalized() const noexcept {
-            for (size_type i = 0; i < sizeof(missing); ++i) {
-                if (missing[i] != 0) {
-                    return false;
+        template <size_type R>
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(
+            const extent<R>& other
+        ) const noexcept {
+            size_type min = size() < R ? size() : R;
+            for (size_type i = 0; i < min; ++i) {
+                if (auto cmp = dim[i] <=> other.dim[i]; cmp != 0) {
+                    return cmp;
                 }
             }
-            return true;
+            if (size() < R) {
+                return std::strong_ordering::less;
+            } else if (size() > R) {
+                return std::strong_ordering::greater;
+            }
+            return std::strong_ordering::equal;
         }
 
         [[nodiscard]] constexpr size_type product() const noexcept {
             size_type p = 1;
-            for (size_type j = 0; j < ndim; ++j) {
+            for (size_type j = 0; j < size(); ++j) {
                 p *= dim[j];
             }
             return p;
@@ -633,74 +204,40 @@ namespace impl {
 
         [[nodiscard]] constexpr extent reverse() const noexcept {
             extent r;
-            for (size_type j = 0; j < ndim; ++j) {
-                r.dim[j] = dim[ndim - 1 - j];
-            }
-            uint8_t shift = ndim % 8;
-            if (shift) {
-                r.missing[0] = impl::bit_reverse(missing[sizeof(missing) - 1]) >> (8 - shift);
-                for (size_type j = 1; j < sizeof(missing); ++j) {
-                    uint8_t curr = impl::bit_reverse(missing[sizeof(missing) - j - 1]);
-                    r.missing[j - 1] |= curr << shift;
-                    r.missing[j] = curr >> (8 - shift);
-                }
-            } else {
-                for (size_type j = 0; j < sizeof(missing); ++j) {
-                    r.missing[j] = impl::bit_reverse(missing[sizeof(missing) - j - 1]);
-                }
+            for (size_type j = 0; j < size(); ++j) {
+                r.dim[j] = dim[size() - 1 - j];
             }
             return r;
         }
 
-        template <size_type N>
+        template <size_type M>
         [[nodiscard]] constexpr auto reduce() const noexcept {
-            if constexpr (N >= ndim) {
+            if constexpr (M >= size()) {
                 return extent<0>{};
             } else {
-                extent<ndim - N> s;
-                for (size_type j = N; j < ndim; ++j) {
-                    s.dim[j - N] = dim[j];
-                }
-                constexpr size_type shift = N % 8;
-                if constexpr (shift) {
-                    s.missing[0] = missing[N / 8] >> (8 - shift);
-                    for (size_type j = N / 8 + 1; j < sizeof(missing); ++j) {
-                        uint8_t curr = missing[j];
-                        s.missing[j - N / 8 - 1] |= curr << shift;
-                        s.missing[j - N / 8] = curr >> (8 - shift);
-                    }
-                } else {
-                    for (size_type j = N / 8; j < sizeof(missing); ++j) {
-                        s.missing[j - N / 8] = missing[j];
-                    }
+                extent<size() - M> s;
+                for (size_type j = M; j < size(); ++j) {
+                    s.dim[j - M] = dim[j];
                 }
                 return s;
             }
         }
 
         [[nodiscard]] constexpr extent strides(bool column_major) const noexcept {
-            if constexpr (ndim == 0) {
+            if constexpr (size() == 0) {
                 return {};
             } else {
                 extent s;
                 if (column_major) {
                     s.dim[0] = 1;
                     for (size_type j = 1; j < size(); ++j) {
-                        if (missing[(j - 1) / 8] & (1 << ((j - 1) % 8))) {
-                            s.missing[j / 8] |= 1 << (j % 8);
-                        } else {
-                            s.dim[j] = s.dim[j - 1] * dim[j - 1];
-                        }
+                        s.dim[j] = s.dim[j - 1] * dim[j - 1];
                     }
                 } else {
                     size_type j = size() - 1;
                     s.dim[j] = 1;
                     while (j-- > 0) {
-                        if (missing[(j + 1) / 8] & (1 << ((j + 1) % 8))) {
-                            s.missing[j / 8] |= 1 << (j % 8);
-                        } else {
-                            s.dim[j] = s.dim[j + 1] * dim[j + 1];
-                        }
+                        s.dim[j] = s.dim[j + 1] * dim[j + 1];
                     }
                 }
                 return s;
@@ -708,65 +245,35 @@ namespace impl {
         }
     };
 
-    template <meta::convertible_to<Optional<size_t>>... N>
+    template <meta::convertible_to<size_t>... N>
     extent(N...) -> extent<sizeof...(N)>;
 
     template <typename T>
         requires (
-            !meta::convertible_to<T, Optional<size_t>> &&
+            !meta::convertible_to<T, size_t> &&
             meta::tuple_like<T> && (
-                meta::yields<T, Optional<size_t>> ||
-                meta::tuple_types<T>::template convertible_to<Optional<size_t>>
+                meta::yields<T, size_t> ||
+                meta::tuple_types<T>::template convertible_to<size_t>
             )
         )
     extent(T&&) -> extent<meta::tuple_size<T>>;
 
-    template <typename T>
-        requires (
-            !meta::convertible_to<T, Optional<size_t>> &&
-            !meta::tuple_like<T> &&
-            meta::yields<T, Optional<size_t>> &&
-            meta::has_size<T>
-        )
-    extent(T&&) -> extent<0>;
-
     template <size_t N>
-    [[nodiscard]] constexpr extent<N + 1> operator|(
-        const extent<N>& lhs,
-        Optional<size_t> rhs
-    ) noexcept {
+    [[nodiscard]] constexpr extent<N + 1> operator|(const extent<N>& lhs, size_t rhs) noexcept {
         extent<N + 1> s;
         for (size_t j = 0; j < N; ++j) {
             s.dim[j] = lhs.dim[j];
         }
-        for (size_t j = 0; j < sizeof(lhs.missing); ++j) {
-            s.missing[j] = lhs.missing[j];
-        }
-        if (rhs == None) {
-            s.missing[N / 8] |= 1 << (N % 8);
-        } else {
-            s.dim[N] = *rhs;
-        }
+        s.dim[N] = rhs;
         return s;
     }
 
     template <size_t N>
-    [[nodiscard]] constexpr extent<N + 1> operator|(
-        Optional<size_t> lhs,
-        const extent<N>& rhs
-    ) noexcept {
+    [[nodiscard]] constexpr extent<N + 1> operator|(size_t lhs, const extent<N>& rhs) noexcept {
         extent<N + 1> s;
-        if (lhs == None) {
-            s.missing[0] = 1;
-        } else {
-            s.dim[0] = *lhs;
-        }
+        s.dim[0] = lhs;
         for (size_t j = 1; j <= N; ++j) {
             s.dim[j] = rhs.dim[j - 1];
-        }
-        for (size_t j = 0; j < sizeof(rhs.missing); ++j) {
-            s.missing[j] |= rhs.missing[j] << 1;
-            s.missing[j + 1] = rhs.missing[j] >> 7;
         }
         return s;
     }
@@ -778,11 +285,11 @@ namespace meta {
 
     /* Detect whether a type is an `impl::extent` object, which describes the number
     and length of each dimension of a regular, possibly multidimensional, iterable.  If
-    a `rank` is provided, then the concept will only match if it is equal to the number
-    of dimensions in the extent (assuming that value is known statically). */
-    template <typename T, bertrand::Optional<size_t> rank = bertrand::None>
+    `ndim` is provided, then the concept will only match if it is equal to the number
+    of dimensions in the extent. */
+    template <typename T, bertrand::Optional<size_t> ndim = bertrand::None>
     concept extent = inherits<T, impl::extent_tag> && (
-        rank == bertrand::None || unqualify<T>::rank() == *rank
+        ndim == bertrand::None || unqualify<T>::size() == *ndim
     );
 
     /* Detect whether a type is a `range`.  If additional types are provided, then they
@@ -890,11 +397,6 @@ namespace meta {
     concept contiguous_range =
         random_access_range<T, Rs...> && contiguous_iterator<begin_type<T>>;
 
-    /// TODO: static shape and normal shapes should always yield the same results, but
-    /// set any dimensions that are not known at compile time to None.  Then, the
-    /// static shape will be used during CTAD, while the normal shape will be used at
-    /// runtime.  
-
     namespace detail {
 
         template <meta::range T>
@@ -940,140 +442,141 @@ namespace meta {
 
         }
 
-        template <typename T, size_t... Is>
-        constexpr auto deduce_shape() noexcept {
-            if constexpr (meta::iterable<T>) {
-                if constexpr (meta::tuple_like<T>) {
-                    return deduce_shape<meta::yield_type<T>, Is..., meta::tuple_size<T>>();
-                } else {
-                    return deduce_shape<meta::yield_type<T>, Is..., 0>();
-                }
-            } else {
-                return impl::extent{Is...};
-            }
-        }
-
-        template <typename R, typename T, meta::convertible_to<size_t>... I>
-        constexpr R deduce_shape(T&& t, I&&... i) noexcept {
-            if constexpr (meta::iterable<T>) {
-                auto it = meta::begin(t);
-                auto end = meta::end(t);
-                if (it == end) {
-                    return {::std::forward<I>(i)...};
-                }
-                if constexpr (meta::tuple_like<T>) {
-                    return deduce_shape<R>(*it, ::std::forward<I>(i)..., meta::tuple_size<T>);
-                } else if constexpr (meta::has_size<T>) {
-                    return deduce_shape<R>(*it, ::std::forward<I>(i)..., meta::size(t));
-                } else {
-                    return deduce_shape<R>(
-                        *it,
-                        ::std::forward<I>(i)...,
-                        size_t(meta::distance(it, end))
-                    );
-                }
-            } else {
-                return {::std::forward<I>(i)...};
-            }
-        }
-
         template <typename T>
         struct static_shape_fn {
-            static constexpr decltype(auto) operator()()
-                noexcept (requires{{unqualify<T>::shape()} noexcept;})
+            static constexpr auto operator()()
+                noexcept (requires{{impl::extent(unqualify<T>::shape())} noexcept;})
                 requires (member::has_static_shape<T>)
             {
-                return (unqualify<T>::shape());
+                return impl::extent(unqualify<T>::shape());
             }
 
-            static constexpr decltype(auto) operator()()
+            static constexpr auto operator()()
                 noexcept (requires{{impl::extent(shape<T>())} noexcept;})
                 requires (!member::has_static_shape<T> && adl::has_static_shape<T>)
             {
-                return (shape<T>());
+                return impl::extent(shape<T>());
             }
 
-            static constexpr auto operator()() noexcept
+            static constexpr auto operator()()
+                noexcept (requires{{unqualify<T>::shape()} noexcept;})
                 requires (
-                    !member::has_shape<T> &&
-                    !adl::has_shape<T> &&
-                    meta::iterable<T> &&
-                    meta::has_size<T>
+                    !member::has_static_shape<T> &&
+                    !adl::has_static_shape<T> &&
+                    member::has_shape<T>
                 )
             {
-                return deduce_shape<T>();
+                return meta::unqualify<decltype(impl::extent{::std::declval<T>().shape()})>{};
+            }
+
+            static constexpr auto operator()()
+                noexcept (requires{{unqualify<T>::shape()} noexcept;})
+                requires (
+                    !member::has_static_shape<T> &&
+                    !adl::has_static_shape<T> &&
+                    !member::has_shape<T> &&
+                    adl::has_shape<T>
+                )
+            {
+                return meta::unqualify<decltype(impl::extent{shape(::std::declval<T>())})>{};
+            }
+
+            static constexpr impl::extent<1> operator()() noexcept
+                requires (
+                    !member::has_static_shape<T> &&
+                    !adl::has_static_shape<T> &&
+                    !member::has_shape<T> &&
+                    !adl::has_shape<T> &&
+                    (meta::tuple_like<T> || meta::iterable<T>)
+                )
+            {
+                if constexpr (meta::tuple_like<T>) {
+                    return {meta::tuple_size<T>};
+                } else {
+                    return {0};
+                }
             }
         };
 
-        /* `shape_fn` backs `meta::shape(t)`, which extends `meta::static_shape` to
-        take runtime information into account, allowing instance-level shape
-        introspection, iterables, etc. */
         struct shape_fn {
             template <typename T>
-            static constexpr decltype(auto) operator()(T&& t)
+            static constexpr auto operator()(T&& t)
                 noexcept (requires{{::std::forward<T>(t).shape()} noexcept;})
-                requires (member::has_shape<T>)
+                requires (member::has_shape<T> && (
+                    decltype(impl::extent(::std::forward<T>(t).shape()))::size() ==
+                    decltype(static_shape_fn<T>{}())::size()
+                ))
             {
-                return (::std::forward<T>(t).shape());
+                return impl::extent(::std::forward<T>(t).shape());
             }
 
             template <typename T>
-            static constexpr decltype(auto) operator()(T&& t)
+            static constexpr auto operator()(T&& t)
                 noexcept (adl::has_shape<T> ?
                     requires{{shape(::std::forward<T>(t))} noexcept;} :
                     requires{{shape<T>()} noexcept;}
                 )
                 requires (
                     !member::has_shape<T> &&
-                    (adl::has_shape<T> || adl::has_static_shape<T>)
+                    adl::has_shape<T> && (
+                        decltype(impl::extent(shape(::std::forward<T>(t))))::size() ==
+                        decltype(static_shape_fn<T>{}())::size()
+                    )
                 )
             {
-                if constexpr (adl::has_shape<T>) {
-                    return (shape(::std::forward<T>(t)));
-                } else {
-                    return (shape<T>());
-                }
+                return impl::extent(shape(::std::forward<T>(t)));
             }
 
             template <typename T>
-            static constexpr auto operator()(T&& t)
+            static constexpr impl::extent<1> operator()(T&& t)
                 noexcept (requires{{shape(::std::forward<T>(t))} noexcept;})
                 requires (
                     !member::has_shape<T> &&
                     !adl::has_shape<T> &&
-                    !adl::has_static_shape<T> &&
-                    (meta::iterable<T> || meta::tuple_like<T>)
+                    (meta::tuple_like<T> || meta::iterable<T>) &&
+                    decltype(static_shape_fn<T>{}())::size() == 1
                 )
             {
-                return deduce_shape<decltype(deduce_shape<T>())>(::std::forward<T>(t));
+                if constexpr (meta::tuple_like<T>) {
+                    return {meta::tuple_size<T>};
+                } else {
+                    return {size_t(meta::distance(t))};
+                }
             }
         };
 
     }
 
     /* Retrieve the `shape()` of a generic type `T` where such information is
-    independent of any particular instance of `T`.  This relies on a `T::shape()` or
-    ADL `shape<T>()` method, or `T` being a possibly-nested tuple type, for which a
-    shape can be deduced.
+    independent of any particular instance of `T`.
 
-    If the type is tuple-like, then the first element of the shape must be equal to its
-    `tuple_size`.  If all of its elements are also tuple-like and have the same size,
-    then that size will be appended to the shape as the next element, and so on until a
-    non-tuple-like element or a size mismatch is encountered, which marks the end of
-    the shape.
+    This will invoke a static `T::shape()` or `shape<T>()` method if available, or
+    produce a dynamic extent of the same rank as `t.shape()` or `shape(t)` filled with
+    `None` if either of those are present as instance methods.  If neither are present,
+    then it will attempt to deduce a 1D shape for tuple-like or iterable `T`, where the
+    single element is equal to the tuple size or `None`, respectively.
 
-    The result is always returned as an instance of `impl::extent<N>`. */
+    The result from this method can be used to specialize a corresponding class
+    template.  Note that shapes containing `None` for one or more dimensions indicate
+    dynamic shapes, where the actual size must be determined at runtime.
+    
+    The result is always returned as an `impl::extent<N>` object, where `N` is equal to
+    the number of dimensions in the shape. */
     template <typename T>
     inline constexpr detail::static_shape_fn<T> static_shape;
 
-    /* Retrieve the `shape()` of a generic object `t` of type `T` by first checking for
-    a `static_shape<T>()` method, falling back to a member `t.shape()` method and then
-    an ADL `shape(t)` method.  If none are present, and the type is a sized iterable
-    (possibly yielding tuple-like types), then a shape may be deduced similar to
-    `static_shape<T>()`, but using the iterable's size as the first element of the
-    resulting shape.
+    /* Retrieve the `shape()` of a generic object `t` of type `T`.
 
-    The result is always returned as an instance of `impl::extent<N>`. */
+    This will invoke a member `t.shape()` method or an ADL `shape(t)` method if
+    available.  Otherwise, it will deduce a 1D shape for tuple-like or iterable `t`,
+    where the single element is equal to the tuple size or size of the iterable,
+    respectively.  If an iterable does not supply a `size()` or `ssize()` method, then
+    the shape may require a full traversal to determine its length.
+
+    The result is always returned as an `impl::extent<N>` object, where `N` is
+    equal to the number of dimensions in the shape.  Note that `N` will always be the
+    same between the result of this function and `meta::static_shape<T>()`, although
+    any `None` values in that result will be replaced by their actual values. */
     inline constexpr detail::shape_fn shape;
 
     /* Detect whether `meta::static_shape<T>()` is well-formed.  See that method for
@@ -1087,17 +590,12 @@ namespace meta {
     concept has_shape = requires(T t) {{shape(t)};};
 
     /* Get the standardized `impl::extent` type that is returned by
-    `meta::static_shape<T>()`, assuming that expression is well-formed.  Note that this
-    may differ from the actual return type of that expression, but an implicit
-    conversion between the two will always be available, due to the constraints of
-    `meta::static_shape<T>()`. */
+    `meta::static_shape<T>()`, assuming that expression is well-formed. */
     template <has_static_shape T>
     using static_shape_type = decltype(impl::extent(static_shape<T>()));
 
     /* Get the standardized `impl::extent` type that is returned by `meta::shape(t)`,
-    assuming that expression is well-formed.  Note that this may differ from the actual
-    return type of that expression, but an implicit conversion between the two will
-    always be available, due to the constraints of `meta::static_shape<T>()`. */
+    assuming that expression is well-formed. */
     template <has_shape T>
     using shape_type = decltype(impl::extent(shape(::std::declval<T>())));
 
@@ -1200,20 +698,6 @@ namespace meta {
         }
 
     }
-
-    // static_assert(meta::static_shape<::std::array<::std::array<int, 2>, 3>>() == impl::extent{3, 2});
-    // static_assert(meta::static_shape<::std::vector<::std::array<int, 2>>>() == impl::extent{0, 2});
-
-    // static_assert(meta::shape(::std::vector<::std::array<int, 2>>{
-    //     {1, 2},
-    //     {2, 3},
-    //     {3, 4}
-    // }) == impl::extent{3, 2});
-    // static_assert(meta::shape(::std::array<::std::vector<int>, 3>{
-    //     ::std::vector<int>{},
-    //     ::std::vector{2, 3, 4},
-    //     ::std::vector{3, 4, 5, 6}
-    // }) == impl::extent{3, 0});
 
 }
 
@@ -4242,6 +3726,10 @@ namespace impl {
 
     template <typename T, extent Shape, typename Category>
         requires (sequence_concept<T, Shape, Category>)
+    struct sequence;
+
+    template <typename T, extent Shape, typename Category>
+        requires (sequence_concept<T, Shape, Category>)
     struct sequence_iterator;
 
     /// TODO: sequence iterator dereference and subscript operations (plus those on
@@ -4257,6 +3745,17 @@ namespace impl {
     /// -> Actually, what I'll do is just cache the shape in the control block, which
     /// will always store the `size()` as the first element so that it's always
     /// constant time on access.  That also means the shape will never be truly empty.
+
+
+    /// TODO: the control block should store the shape as an optional, which gets
+    /// lazily initialized the first time `shape()`, `size()`, or `empty()` is called
+    /// on the sequence.  If that never happens, then the shape is never computed,
+    /// which never risks an infinite loop if the container has no shape, and its
+    /// iterators never terminate, as long as those methods are never called (which
+    /// makes sense, and means the `sequence` is not limited to sized iterables or
+    /// ).
+
+
 
     /* Sequences use the classic type erasure mechanism internally, consisting of a
     heap-allocated control block and an immutable void pointer to the underlying
@@ -4293,14 +3792,19 @@ namespace impl {
     template <typename T, extent Shape, typename Category>
         requires (sequence_concept<T, Shape, Category>)
     struct sequence_control {
+        template <size_t N>
+        using reduce = std::conditional_t<
+            (Shape.size() <= N),
+            T,
+            sequence<T, Shape.template reduce<N>(), Category>
+        >;
+
         using dtor_ptr = void(*)(sequence_control*);
         using data_ptr = std::conditional_t<
             meta::inherits<Category, std::contiguous_iterator_tag>,
             meta::as_pointer<T>(*)(sequence_control*),
             NoneType
         >;
-        using size_ptr = ssize_t(*)(sequence_control*);
-        using empty_ptr = bool(*)(sequence_control*);
         using subscript_ptr = T(*)(sequence_control*, ssize_t);
         using begin_ptr = sequence_iterator<T, Shape, Category>(*)(sequence_control*);
         using end_ptr = sequence_iterator<T, Shape, Category>(*)(sequence_control*);
@@ -4313,10 +3817,10 @@ namespace impl {
             const sequence_iterator<T, Shape, Category>&
         );
         using iter_dtor_ptr = void(*)(sequence_iterator<T, Shape, Category>&);
-        using iter_deref_ptr = T(*)(sequence_iterator<T, Shape, Category>&);
+        using iter_deref_ptr = reduce<1>(*)(const sequence_iterator<T, Shape, Category>&);
         using iter_subscript_ptr = std::conditional_t<
             meta::inherits<Category, std::random_access_iterator_tag>,
-            T(*)(sequence_iterator<T, Shape, Category>&, ssize_t),
+            reduce<1>(*)(const sequence_iterator<T, Shape, Category>&, ssize_t),
             NoneType
         >;
         using iter_increment_ptr = void(*)(sequence_iterator<T, Shape, Category>&);
@@ -4344,16 +3848,11 @@ namespace impl {
             const sequence_iterator<T, Shape, Category>&
         );
 
-        /// TODO: the control block also needs to store the shape.
-
         std::atomic<size_t> refcount = 1;
         const void* const container;
-        const meta::unqualify<decltype(Shape)> shape;
+        Optional<meta::unqualify<decltype(Shape)>> shape;
         const dtor_ptr dtor;
         [[no_unique_address]] const data_ptr data;
-        /// TODO: no need for size or empty if shape is inlined into the control block?
-        const size_ptr size;
-        const empty_ptr empty;
         const subscript_ptr subscript;
         const begin_ptr begin;
         const end_ptr end;
@@ -4437,9 +3936,6 @@ namespace impl {
                     .container = std::addressof(c),
                     .dtor = &dtor_fn<C>,
                     .data = get_data<C>(),
-                    .shape = meta::shape(std::forward<C>(c)),
-                    .size = &size_fn<C>,
-                    .empty = &empty_fn<C>,
                     .subscript = &subscript_fn<C>,
                     .begin = &begin_fn<C>,
                     .end = &end_fn<C>,
@@ -4476,9 +3972,6 @@ namespace impl {
                     .container = static_cast<const void*>(container),
                     .dtor = &dtor_fn<C>,
                     .data = get_data<C>(),
-                    .shape = meta::shape(std::forward<C>(c)),
-                    .size = &size_fn<C>,
-                    .empty = &empty_fn<C>,
                     .subscript = &subscript_fn<C>,
                     .begin = &begin_fn<C>,
                     .end = &end_fn<C>,
@@ -4530,20 +4023,6 @@ namespace impl {
         template <typename C> requires (meta::inherits<Category, std::contiguous_iterator_tag>)
         static constexpr meta::as_pointer<T> data_fn(sequence_control* control) {
             return meta::data(*static_cast<meta::as_pointer<Container<C>>>(control->container));
-        }
-
-        /// TODO: size and empty may not be needed if shape is inlined into the control block
-
-        template <typename C>
-        static constexpr ssize_t size_fn(sequence_control* control) {
-            return ssize_t(
-                meta::distance(*static_cast<meta::as_pointer<Container<C>>>(control->container))
-            );
-        }
-
-        template <typename C>
-        static constexpr bool empty_fn(sequence_control* control) {
-            return meta::empty(*static_cast<meta::as_pointer<Container<C>>>(control->container));
         }
 
         template <typename C>
@@ -4718,13 +4197,13 @@ namespace impl {
 
         /// NOTE: assumes `self` is not trivial
         template <typename C>
-        static constexpr T iter_deref_fn(sequence_iterator<T, Shape, Category>& self) {
+        static constexpr reduce<1> iter_deref_fn(sequence_iterator<T, Shape, Category>& self) {
             return **static_cast<meta::as_pointer<Begin<C>>>(self.iter);
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
-        static constexpr T iter_subscript_fn(
+        static constexpr reduce<1> iter_subscript_fn(
             sequence_iterator<T, Shape, Category>& self,
             ssize_t n
         ) {
@@ -5134,6 +4613,20 @@ namespace impl {
         }
     };
 
+    /// TODO: sequences now only need to consider shapes where at least the number of
+    /// dimensions are known at compile time.  This will simplify a lot of the logic
+    /// here, and also avoids the need for size() and empty() function pointers, since
+    /// they'll just check the first dimension of the shape (or 1 if 0-dimensional).
+    /// Also, the iterator type can probably be moved into the sequence class itself,
+    /// since these types have been simplified so heavily.
+
+    /// TODO: then, I just need to write the logic to reduce the shape when indexing or
+    /// iterating, and I can maybe provide up to 4 indexing operators to optimize
+    /// multidimensional indexing, and reduce the overall number of allocations needed.
+    /// `iter::at{}` will fill in any details by concatenating the results.  I would
+    /// only compile all 4 pointers if the shape has 4 or more dimensions.
+
+
     /* The public-facing sequence type comes in two flavors depending on whether the
     dimensionality of its shape is known at compile time.  If so, that information will
     be carried over (in reduced form) to the index and yield types, allowing the
@@ -5148,7 +4641,7 @@ namespace impl {
     checking the number of dimensions in its shape (e.g. `seq.shape().empty()`).  For
     sequences of static shape, the `TypeError` will be promoted to a compilation error
     instead, enforcing correctness at compile time. */
-    template <typename T, extent Shape = {}, typename Category = std::input_iterator_tag>
+    template <typename T, extent Shape, typename Category>
         requires (sequence_concept<T, Shape, Category>)
     struct sequence {
         sequence_control<T, Shape, Category>* control = nullptr;
@@ -5210,7 +4703,12 @@ namespace impl {
             return control->data(control);
         }
 
+        /// TODO: I need to store a function pointer to retrieve the shape when needed.
+
         [[nodiscard]] constexpr meta::as_const_ref<decltype(Shape)> shape() const noexcept {
+            // if (control->shape == None) {
+            //     // control->shape = meta::shape()
+            // }
             return control->shape;
         }
 
@@ -5232,6 +4730,11 @@ namespace impl {
         /// -> How would `back()` be standardized in this context?  Is it even
         /// possible?  It might require a full traversal of the range to get there.
 
+
+        /// TODO: the subscript operator should have 4 overloads to optimize for
+        /// multidimensional indexing since the number of dimensions is known at
+        /// compile time.
+
         [[nodiscard]] constexpr decltype(auto) operator[](ssize_t i) const {
             return (control->subscript(control, i));
         }
@@ -5244,23 +4747,15 @@ namespace impl {
             return control->end(control);
         }
     };
-    template <typename T, typename Category>
-        requires (sequence_concept<T, {}, Category>)
-    struct sequence<T, {}, Category> {
-    private:
-        union storage {
-            sequence_control<T, {}, Category>* control;
-            impl::ref<T> scalar;
-        };
-        bool is_scalar = false;
 
-    public:
-        [[nodiscard]] constexpr sequence() noexcept :
-            is_scalar(false),
-            storage{.control = nullptr}
-        {}
-
-    };
+    template <typename T, extent Shape>
+    struct _sequence_type { using type = meta::remove_rvalue<T>; };
+    template <typename T, extent Shape> requires (!Shape.empty())
+    struct _sequence_type<T, Shape> :
+        _sequence_type<meta::yield_type<T>, Shape.template reduce<1>()>
+    {};
+    template <typename T, extent Shape>
+    using sequence_type = _sequence_type<T, Shape>::type;
 
     template <meta::iterable C>
     using sequence_category = std::conditional_t<
@@ -5362,7 +4857,7 @@ namespace iter {
     the binding can be generated anyway, albeit at a performance cost. */
     template <
         impl::range_concept C,
-        impl::extent Shape = None,
+        impl::extent Shape = 0,
         meta::inherits<std::input_iterator_tag> Category = std::input_iterator_tag
     >
     struct sequence : range<impl::sequence<meta::const_yield_type<C>, Shape, Category>> {
@@ -5370,16 +4865,12 @@ namespace iter {
         using range<impl::sequence<meta::const_yield_type<C>, Shape, Category>>::operator=;
     };
 
-    /// TODO: this CTAD guide needs to be juiced up to deduce the proper category.
-    /// If the container does not model common_range, then it should be downgraded to
-    /// input_iterator_tag.  If the iterator is at least random access and the
-    /// container provides a `data()` method, then it should be upgraded to
-    /// contiguous_iterator_tag.  Otherwise, it exactly matches the container's
-    /// const iterator category.
+    /// TODO: tuple and scalar deduction guides?
+
     template <meta::iterable C>
     sequence(C&& c) -> sequence<
-        meta::remove_rvalue<meta::yield_type<C>>,
-        {},
+        impl::sequence_type<C, meta::static_shape<C>()>,
+        meta::static_shape<C>(),
         impl::sequence_category<C>
     >;
 
@@ -8149,6 +7640,9 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     }
 
+    template <size_t N>
+    struct tuple_size<bertrand::impl::extent<N>> : std::integral_constant<size_t, N> {};
+
     template <>
     struct tuple_size<bertrand::impl::empty_range> : std::integral_constant<size_t, 0> {};
 
@@ -8166,6 +7660,11 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         size_t,
         bertrand::meta::tuple_size<T>
     > {};
+
+    template <size_t I, size_t N>
+    struct tuple_element<I, bertrand::impl::extent<N>> {
+        using type = size_t;
+    };
 
     template <size_t I>
     struct tuple_element<I, bertrand::impl::empty_range> {
@@ -8186,6 +7685,15 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     struct tuple_element<I, bertrand::iter::range<T>> {
         using type = decltype((bertrand::meta::get<I>(std::declval<T>())));
     };
+
+    template <ssize_t I, bertrand::meta::extent T>
+        requires (bertrand::impl::valid_index<bertrand::meta::tuple_size<T>, I>)
+    constexpr decltype(auto) get(T&& t)
+        noexcept (requires{{bertrand::meta::get<I>(std::forward<T>(t))} noexcept;})
+        requires (requires{{bertrand::meta::get<I>(std::forward<T>(t))};})
+    {
+        return (bertrand::meta::get<I>(std::forward<T>(t)));
+    }
 
     template <ssize_t I, bertrand::meta::range R>
         requires (
