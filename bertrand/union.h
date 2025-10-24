@@ -1573,7 +1573,7 @@ namespace impl {
                 // prefer a direct swap if the indices match and a corresponding operator
                 // is available
                 if constexpr (J == K) {
-                    std::ranges::swap(
+                    meta::swap(
                         self.m_data.template get<J>().curr,
                         other.m_data.template get<K>().curr
                     );
@@ -2968,13 +2968,13 @@ namespace impl {
         struct empty_fn {
             static constexpr bool operator()(U u)
                 noexcept (requires{{
-                    std::ranges::empty(u.__value.template get<I>())
+                    meta::empty(u.__value.template get<I>())
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    std::ranges::empty(u.__value.template get<I>())
+                    meta::empty(u.__value.template get<I>())
                 } -> meta::convertible_to<bool>;})
             {
-                return std::ranges::empty(u.__value.template get<I>());
+                return meta::empty(u.__value.template get<I>());
             }
         };
         using _empty = impl::basic_vtable<empty_fn, N>;
@@ -3392,7 +3392,7 @@ struct Union : impl::union_tag {
         return (impl::make_union_iterator<Self&>::ssize(self));
     }
 
-    /* Returns the result of `std::ranges::empty()` on the current alternative if it is
+    /* Returns the result of `meta::empty()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) empty(this Self&& self)
@@ -3592,7 +3592,7 @@ namespace impl {
 
         /* Swap the contents of two unions as efficiently as possible. */
         constexpr void swap(basic_union& other) noexcept {
-            std::swap(m_data, other.m_data);
+            meta::swap(m_data, other.m_data);
         }
 
         /* Return the index of the active alternative. */
@@ -4847,11 +4847,11 @@ struct Optional : impl::optional_tag {
         }
     }
 
-    /* Return true if the optional is empty or `std::ranges::empty(*opt)` otherwise.
-    If `std::ranges::empty(*opt)` would be malformed and the value is not iterable
-    (meaning that iterating over the optional would return just a single element), then
-    the result will be identical to `opt == None`.  If neither option is available,
-    then this method will fail to compile. */
+    /* Return true if the optional is empty or `meta::empty(*opt)` otherwise.  If
+    `meta::empty(*opt)` would be malformed and the value is not iterable (meaning that
+    iterating over the optional would return just a single element), then the result
+    will be identical to `opt == None`.  If neither option is available, then this
+    method will fail to compile. */
     [[nodiscard]] constexpr bool empty() const
         noexcept (
             meta::nothrow::has_empty<meta::as_const_ref<T>> ||
@@ -4863,7 +4863,7 @@ struct Optional : impl::optional_tag {
         )
     {
         if constexpr (meta::has_empty<meta::as_const_ref<T>>) {
-            return __value.index() ? std::ranges::empty(__value.template get<1>()) : true;
+            return __value.index() ? meta::empty(__value.template get<1>()) : true;
         } else {
             return !__value.index();
         }
@@ -5777,11 +5777,11 @@ struct Expected : impl::expected_tag {
         }
     }
 
-    /* Return true if the expected is in an error state or `std::ranges::empty(*exp)`
-    otherwise.  If `std::ranges::empty(*exp)` would be malformed and the value is not
-    iterable (meaning that iterating over the expected would return just a single
-    element), then the result will be identical to `exp == None`.  If neither option is
-    available, then this method will fail to compile. */
+    /* Return true if the expected is in an error state or `meta::empty(*exp)`
+    otherwise.  If `meta::empty(*exp)` would be malformed and the value is not iterable
+    (meaning that iterating over the expected would return just a single element), then
+    the result will be identical to `exp == None`.  If neither option is available,
+    then this method will fail to compile. */
     [[nodiscard]] constexpr bool empty() const
         noexcept (
             meta::nothrow::has_empty<meta::as_const_ref<T>> ||
@@ -5793,7 +5793,7 @@ struct Expected : impl::expected_tag {
         )
     {
         if constexpr (meta::has_empty<meta::as_const_ref<T>>) {
-            return __value.index() != 0 || std::ranges::empty(__value.template get<0>());
+            return __value.index() != 0 || meta::empty(__value.template get<0>());
         } else {
             return __value.index() != 0;
         }

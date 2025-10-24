@@ -837,63 +837,46 @@ namespace meta {
         return ::std::forward<T>(v);
     }
 
-    template <typename T>
-    concept swappable = ::std::swappable<T>;
+    namespace detail {
 
-    template <typename T, typename U>
-    concept swappable_with = ::std::swappable_with<T, U>;
+        struct swap_fn {
+            template <typename L, typename R>
+            constexpr void operator()(L& l, R& r) const
+                noexcept (requires{{l.swap(r)} noexcept;})
+                requires (requires{{l.swap(r)};})
+            {
+                l.swap(r);
+            };
 
-    namespace nothrow {
-
-        template <typename T>
-        concept swappable = meta::swappable<T> &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<T>>(),
-                ::std::declval<meta::as_lvalue<T>>()
-            ));
-
-        template <typename T, typename U>
-        concept swappable_with =
-            meta::swappable_with<T, U> &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<T>>(),
-                ::std::declval<meta::as_lvalue<T>>()
-            )) &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<T>>(),
-                ::std::declval<meta::as_lvalue<U>>()
-            )) &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<U>>(),
-                ::std::declval<meta::as_lvalue<T>>()
-            )) &&
-            noexcept(::std::ranges::swap(
-                ::std::declval<meta::as_lvalue<U>>(),
-                ::std::declval<meta::as_lvalue<U>>()
-            ));
+            template <typename L, typename R>
+            constexpr void operator()(L& l, R& r) const
+                noexcept (requires{{::std::ranges::swap(l, r)} noexcept;})
+                requires (!requires{{l.swap(r)};} && requires{{::std::ranges::swap(l, r)};})
+            {
+                ::std::ranges::swap(l, r);
+            };
+        };
 
     }
 
-    /// TODO: maybe `swap()` should be a function object in the same vein as
-    /// `meta::begin()`, `meta::size()`, `meta::shape()`, etc.
+    /* A generalized `swap()` operator between two types.  This is
+    expression-equivalent to `std::ranges::swap()`, except that it first checs for an
+    `lhs.swap(rhs)` member method before proceeding to a `swap(lhs, rhs)` ADL method. */
+    inline constexpr detail::swap_fn swap;
 
-    /* Explicitly invoke a member `l.swap(r)` method, if available. */
-    template <typename L, typename R>
-    constexpr void swap(L& l, R& r)
-        noexcept (requires{{l.swap(r)} noexcept;})
-        requires (requires{{l.swap(r)};})
-    {
-        l.swap(r);
+    template <typename L, typename R = L>
+    concept swappable = requires(as_lvalue<L> l, as_lvalue<R> r) {
+        {swap(l, r)};
     };
 
-    /* Explicitly invoke an ADL `swap()` method using `std::ranges::swap()`. */
-    template <typename L, typename R>
-    constexpr void swap(L& l, R& r)
-        noexcept (requires{{::std::ranges::swap(l, r)} noexcept;})
-        requires (!requires{{l.swap(r)};} && requires{{::std::ranges::swap(l, r)};})
-    {
-        ::std::ranges::swap(l, r);
-    };
+    namespace nothrow {
+
+        template <typename L, typename R = L>
+        concept swappable = meta::swappable<L, R> && requires(as_lvalue<L> l, as_lvalue<R> r) {
+            {swap(l, r)} noexcept;
+        };
+
+    }
 
     namespace detail {
 
@@ -5341,7 +5324,7 @@ namespace impl {
         [[nodiscard]] constexpr ref(T data) noexcept : data(std::addressof(data)) {}
 
         constexpr void swap(ref& other) noexcept {
-            std::swap(data, other.data);
+            meta::swap(data, other.data);
         }
 
         constexpr T operator*() noexcept {
