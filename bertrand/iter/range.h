@@ -3721,6 +3721,7 @@ namespace impl {
     template <typename T, extent Shape, typename Category>
     concept sequence_concept =
         range_concept<T> &&
+        !Shape.empty() &&
         meta::unqualified<Category> &&
         meta::inherits<Category, std::input_iterator_tag>;
 
@@ -3732,30 +3733,31 @@ namespace impl {
         requires (sequence_concept<T, Shape, Category>)
     struct sequence_iterator;
 
-    /// TODO: sequence iterator dereference and subscript operations (plus those on
-    /// the `sequence` container - including `front()` and `back()`) need to return
-    /// other sequences to maintain symmetry with ranges.
+    template <typename T, extent Shape>
+    struct _sequence_type { using type = meta::remove_rvalue<T>; };
+    template <typename T, extent Shape> requires (!Shape.empty())
+    struct _sequence_type<T, Shape> :
+        _sequence_type<meta::const_yield_type<T>, Shape.template reduce<1>()>
+    {};
+    template <typename T, extent Shape>
+    using sequence_type = _sequence_type<T, Shape>::type;
 
-    /// TODO: also, for `shape()` to be supported on all sequences, `meta::shape(c)`
-    /// would have to be amended to return an empty shape for containers for which
-    /// one cannot be deduced by either a `size()`, tuple destructuring, or a delegated
-    /// `shape()` method.  That way, no matter what the container is, the sequence
-    /// should be able to provide a shape, and thereby maintain symmetry with ranges.
-    /// It's also crucial for supporting the buffer protocol in Python.
-    /// -> Actually, what I'll do is just cache the shape in the control block, which
-    /// will always store the `size()` as the first element so that it's always
-    /// constant time on access.  That also means the shape will never be truly empty.
-
-
-    /// TODO: the control block should store the shape as an optional, which gets
-    /// lazily initialized the first time `shape()`, `size()`, or `empty()` is called
-    /// on the sequence.  If that never happens, then the shape is never computed,
-    /// which never risks an infinite loop if the container has no shape, and its
-    /// iterators never terminate, as long as those methods are never called (which
-    /// makes sense, and means the `sequence` is not limited to sized iterables or
-    /// ).
-
-
+    template <meta::iterable C>
+    using sequence_category = std::conditional_t<
+        std::same_as<
+            meta::begin_type<meta::as_const<C>>,
+            meta::end_type<meta::as_const<C>>
+        >,
+        std::conditional_t<
+            meta::has_data<meta::as_const<C>> && meta::inherits<
+                meta::iterator_category<meta::as_const<C>>,
+                std::random_access_iterator_tag
+            >,
+            std::contiguous_iterator_tag,
+            meta::iterator_category<meta::begin_type<meta::as_const<C>>>
+        >,
+        std::input_iterator_tag
+    >;
 
     /* Sequences use the classic type erasure mechanism internally, consisting of a
     heap-allocated control block and an immutable void pointer to the underlying
@@ -3805,7 +3807,25 @@ namespace impl {
             meta::as_pointer<T>(*)(sequence_control*),
             NoneType
         >;
-        using subscript_ptr = T(*)(sequence_control*, ssize_t);
+        using shape_ptr = meta::unqualify<decltype(Shape)>(*)(sequence_control*);
+        using subscript1_ptr = reduce<1>(*)(sequence_control*, ssize_t);
+        using subscript2_ptr = std::conditional_t<
+            (Shape.size() >= 2),
+            reduce<2>(*)(sequence_control*, ssize_t, ssize_t),
+            NoneType
+        >;
+        using subscript3_ptr = std::conditional_t<
+            (Shape.size() >= 3),
+            reduce<3>(*)(sequence_control*, ssize_t, ssize_t, ssize_t),
+            NoneType
+        >;
+        using subscript4_ptr = std::conditional_t<
+            (Shape.size() >= 4),
+            reduce<4>(*)(sequence_control*, ssize_t, ssize_t, ssize_t, ssize_t),
+            NoneType
+        >;
+        using front_ptr = reduce<1>(*)(sequence_control*);
+        using back_ptr = reduce<1>(*)(sequence_control*);
         using begin_ptr = sequence_iterator<T, Shape, Category>(*)(sequence_control*);
         using end_ptr = sequence_iterator<T, Shape, Category>(*)(sequence_control*);
         using iter_copy_ptr = void(*)(
@@ -3852,8 +3872,14 @@ namespace impl {
         const void* const container;
         Optional<meta::unqualify<decltype(Shape)>> shape;
         const dtor_ptr dtor;
+        const shape_ptr cache_shape;
         [[no_unique_address]] const data_ptr data;
-        const subscript_ptr subscript;
+        const subscript1_ptr subscript1;
+        [[no_unique_address]] const subscript2_ptr subscript2;
+        [[no_unique_address]] const subscript3_ptr subscript3;
+        [[no_unique_address]] const subscript4_ptr subscript4;
+        const front_ptr front;
+        const back_ptr back;
         const begin_ptr begin;
         const end_ptr end;
         const iter_copy_ptr iter_copy;
@@ -3872,6 +3898,33 @@ namespace impl {
         static constexpr data_ptr get_data() noexcept {
             if constexpr (meta::inherits<Category, std::contiguous_iterator_tag>) {
                 return &data_fn<C>;
+            } else {
+                return {};
+            }
+        }
+
+        template <typename C>
+        static constexpr subscript2_ptr get_subscript2() noexcept {
+            if constexpr (Shape.size() >= 2) {
+                return &subscript2_fn<C>;
+            } else {
+                return {};
+            }
+        }
+
+        template <typename C>
+        static constexpr subscript3_ptr get_subscript3() noexcept {
+            if constexpr (Shape.size() >= 3) {
+                return &subscript3_fn<C>;
+            } else {
+                return {};
+            }
+        }
+
+        template <typename C>
+        static constexpr subscript4_ptr get_subscript4() noexcept {
+            if constexpr (Shape.size() >= 4) {
+                return &subscript4_fn<C>;
             } else {
                 return {};
             }
@@ -3923,11 +3976,6 @@ namespace impl {
         }
 
         template <typename C>
-            requires (
-                meta::lvalue<C> &&
-                meta::yields<meta::as_const<C>, T> &&
-                meta::shape_returns<meta::unqualify<decltype(Shape)>, C>
-            )
         [[nodiscard]] static constexpr sequence_control* create(C&& c) {
             // if the container is an lvalue, then just store a pointer to it within
             // the control block
@@ -3935,8 +3983,14 @@ namespace impl {
                 return new sequence_control{
                     .container = std::addressof(c),
                     .dtor = &dtor_fn<C>,
+                    .cache_shape = &shape_fn<C>,
                     .data = get_data<C>(),
-                    .subscript = &subscript_fn<C>,
+                    .subscript1 = &subscript1_fn<C>,
+                    .subscript2 = get_subscript2<C>(),
+                    .subscript3 = get_subscript3<C>(),
+                    .subscript4 = get_subscript4<C>(),
+                    .front = &front_fn<C>,
+                    .back = &back_fn<C>,
                     .begin = &begin_fn<C>,
                     .end = &end_fn<C>,
                     .iter_copy = &iter_copy_fn<C>,
@@ -3971,8 +4025,14 @@ namespace impl {
                 new (control) sequence_control {
                     .container = static_cast<const void*>(container),
                     .dtor = &dtor_fn<C>,
+                    .cache_shape = &shape_fn<C>,
                     .data = get_data<C>(),
-                    .subscript = &subscript_fn<C>,
+                    .subscript1 = &subscript1_fn<C>,
+                    .subscript2 = get_subscript2<C>(),
+                    .subscript3 = get_subscript3<C>(),
+                    .subscript4 = get_subscript4<C>(),
+                    .front = &front_fn<C>,
+                    .back = &back_fn<C>,
                     .begin = &begin_fn<C>,
                     .end = &end_fn<C>,
                     .iter_copy = &iter_copy_fn<C>,
@@ -4020,13 +4080,67 @@ namespace impl {
             }
         }
 
+        template <typename C>
+        static constexpr meta::unqualify<decltype(Shape)> shape_fn(sequence_control* control) {
+            if (!control->shape.has_value()) {
+                control->shape = meta::shape(
+                    *static_cast<meta::as_pointer<Container<C>>>(control->container)
+                );
+            }
+            return *control->shape;
+        }
+
         template <typename C> requires (meta::inherits<Category, std::contiguous_iterator_tag>)
         static constexpr meta::as_pointer<T> data_fn(sequence_control* control) {
             return meta::data(*static_cast<meta::as_pointer<Container<C>>>(control->container));
         }
 
         template <typename C>
-        static constexpr T subscript_fn(sequence_control* control, ssize_t n);
+        static constexpr reduce<1> subscript1_fn(sequence_control* control, ssize_t n);
+        template <typename C> requires (Shape.size() >= 2)
+        static constexpr reduce<2> subscript2_fn(sequence_control* control, ssize_t n1, ssize_t n2);
+        template <typename C> requires (Shape.size() >= 3)
+        static constexpr reduce<3> subscript3_fn(
+            sequence_control* control,
+            ssize_t n1,
+            ssize_t n2,
+            ssize_t n3
+        );
+        template <typename C> requires (Shape.size() >= 4)
+        static constexpr reduce<4> subscript4_fn(
+            sequence_control* control,
+            ssize_t n1,
+            ssize_t n2,
+            ssize_t n3,
+            ssize_t n4
+        );
+
+        template <typename C>
+        static constexpr reduce<1> front_fn(sequence_control* control) {
+            return meta::front(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+        }
+
+        template <typename C> requires (meta::has_back<Container<C>>)
+        static constexpr reduce<1> back_fn(sequence_control* control) {
+            return meta::back(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+        }
+
+        template <typename C> requires (!meta::has_back<Container<C>>)
+        static constexpr reduce<1> back_fn(sequence_control* control) {
+            auto it = std::ranges::begin(
+                *static_cast<meta::as_pointer<Container<C>>>(control->container)
+            );
+            auto end = std::ranges::end(
+                *static_cast<meta::as_pointer<Container<C>>>(control->container)
+            );
+            auto lookahead = it;
+            ++lookahead;
+            while (lookahead != end) {
+                ++it;
+                ++lookahead;
+            }
+            return *it;
+        }
 
         template <typename C>
         using Begin = meta::unqualify<meta::begin_type<Container<C>>>;
@@ -4397,8 +4511,8 @@ namespace impl {
             std::swap(sentinel, other.sentinel);
         }
 
-        [[nodiscard]] constexpr T operator*() const {
-            return control->iter_deref(*this);
+        [[nodiscard]] constexpr decltype(auto) operator*() const {
+            return (control->iter_deref(*this));
         }
 
         [[nodiscard]] constexpr auto operator->() const {
@@ -4503,18 +4617,18 @@ namespace impl {
             std::swap(iter, other.iter);
         }
 
-        [[nodiscard]] constexpr T operator*() const {
-            return control->iter_deref(*this);
+        [[nodiscard]] constexpr decltype(auto) operator*() const {
+            return (control->iter_deref(*this));
         }
 
         [[nodiscard]] constexpr auto operator->() const {
             return impl::arrow(control->iter_deref(*this));
         }
 
-        [[nodiscard]] constexpr T operator[](difference_type n) const
+        [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const
             requires (meta::inherits<Category, std::random_access_iterator_tag>)
         {
-            return control->iter_subscript(*this, n);
+            return (control->iter_subscript(*this, n));
         }
 
         constexpr sequence_iterator& operator++() {
@@ -4613,20 +4727,6 @@ namespace impl {
         }
     };
 
-    /// TODO: sequences now only need to consider shapes where at least the number of
-    /// dimensions are known at compile time.  This will simplify a lot of the logic
-    /// here, and also avoids the need for size() and empty() function pointers, since
-    /// they'll just check the first dimension of the shape (or 1 if 0-dimensional).
-    /// Also, the iterator type can probably be moved into the sequence class itself,
-    /// since these types have been simplified so heavily.
-
-    /// TODO: then, I just need to write the logic to reduce the shape when indexing or
-    /// iterating, and I can maybe provide up to 4 indexing operators to optimize
-    /// multidimensional indexing, and reduce the overall number of allocations needed.
-    /// `iter::at{}` will fill in any details by concatenating the results.  I would
-    /// only compile all 4 pointers if the shape has 4 or more dimensions.
-
-
     /* The public-facing sequence type comes in two flavors depending on whether the
     dimensionality of its shape is known at compile time.  If so, that information will
     be carried over (in reduced form) to the index and yield types, allowing the
@@ -4648,7 +4748,11 @@ namespace impl {
 
         [[nodiscard]] constexpr sequence() noexcept = default;
 
-        template <typename C> requires (meta::yields<meta::as_const<C>, T>)
+        template <typename C>
+            requires (
+                meta::convertible_to<impl::sequence_type<C, Shape>, T> &&
+                meta::shape_returns<meta::unqualify<decltype(Shape)>, meta::as_const<C>>
+            )
         [[nodiscard]] constexpr sequence(C&& c) :
             control(sequence_control<T, Shape, Category>::create(std::forward<C>(c)))
         {}
@@ -4703,40 +4807,78 @@ namespace impl {
             return control->data(control);
         }
 
-        /// TODO: I need to store a function pointer to retrieve the shape when needed.
-
-        [[nodiscard]] constexpr meta::as_const_ref<decltype(Shape)> shape() const noexcept {
-            // if (control->shape == None) {
-            //     // control->shape = meta::shape()
-            // }
-            return control->shape;
+        [[nodiscard]] constexpr decltype(auto) shape() const noexcept {
+            struct {
+                using type = meta::as_const_ref<decltype(Shape)>;
+                sequence_control<T, Shape, Category>* control;
+                constexpr type operator()(NoneType) {
+                    control->shape = control->cache_shape(control);
+                    return *control->shape;
+                }
+                constexpr type operator()(type s) {
+                    return s;
+                }
+            } visitor {control};
+            return (impl::visit(control->shape, visitor));
         }
 
         [[nodiscard]] constexpr size_t size() const {
-            return size_t(control->size(control));
+            if constexpr (Shape.empty()) {
+                return 1;
+            } else {
+                return size_t(shape().dim[0]);
+            }
         }
 
         [[nodiscard]] constexpr ssize_t ssize() const {
-            return control->size(control);
+            if constexpr (Shape.empty()) {
+                return 1;
+            } else {
+                return ssize_t(shape().dim[0]);
+            }
         }
 
         [[nodiscard]] constexpr bool empty() const {
-            return control->empty(control);
+            if constexpr (Shape.empty()) {
+                return false;
+            } else {
+                return shape().dim[0] != 0;
+            }
         }
 
-        /// TODO: front() and back().  Also, the subscript operator should not return
-        /// `T` directly, but rather another `sequence<T>` with reduced shape, and
-        /// only `T` if the shape is fully indexed.
-        /// -> How would `back()` be standardized in this context?  Is it even
-        /// possible?  It might require a full traversal of the range to get there.
-
-
-        /// TODO: the subscript operator should have 4 overloads to optimize for
-        /// multidimensional indexing since the number of dimensions is known at
-        /// compile time.
-
         [[nodiscard]] constexpr decltype(auto) operator[](ssize_t i) const {
-            return (control->subscript(control, i));
+            return (control->subscript1(control, i));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](ssize_t i1, ssize_t i2) const
+            requires (Shape.size() >= 2)
+        {
+            return (control->subscript2(control, i1, i2));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](
+            ssize_t i1,
+            ssize_t i2,
+            ssize_t i3
+        ) const requires (Shape.size() >= 3) {
+            return (control->subscript3(control, i1, i2, i3));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator[](
+            ssize_t i1,
+            ssize_t i2,
+            ssize_t i3,
+            ssize_t i4
+        ) const requires (Shape.size() >= 4) {
+            return (control->subscript4(control, i1, i2, i3, i4));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) front() const {
+            return (control->front(control));
+        }
+
+        [[nodiscard]] constexpr decltype(auto) back() const {
+            return (control->back(control));
         }
 
         [[nodiscard]] constexpr auto begin() const {
@@ -4747,32 +4889,6 @@ namespace impl {
             return control->end(control);
         }
     };
-
-    template <typename T, extent Shape>
-    struct _sequence_type { using type = meta::remove_rvalue<T>; };
-    template <typename T, extent Shape> requires (!Shape.empty())
-    struct _sequence_type<T, Shape> :
-        _sequence_type<meta::yield_type<T>, Shape.template reduce<1>()>
-    {};
-    template <typename T, extent Shape>
-    using sequence_type = _sequence_type<T, Shape>::type;
-
-    template <meta::iterable C>
-    using sequence_category = std::conditional_t<
-        std::same_as<
-            meta::begin_type<meta::as_const<C>>,
-            meta::end_type<meta::as_const<C>>
-        >,
-        std::conditional_t<
-            meta::has_data<meta::as_const<C>> && meta::inherits<
-                meta::iterator_category<meta::as_const<C>>,
-                std::random_access_iterator_tag
-            >,
-            std::contiguous_iterator_tag,
-            meta::iterator_category<meta::begin_type<meta::as_const<C>>>
-        >,
-        std::input_iterator_tag
-    >;
 
 }
 
@@ -4855,14 +4971,11 @@ namespace iter {
     normally.  In that case, as long as the range's yield type is a valid expression in
     the other language, then the rest of the range interface can be abstracted away, and
     the binding can be generated anyway, albeit at a performance cost. */
-    template <
-        impl::range_concept C,
-        impl::extent Shape = 0,
-        meta::inherits<std::input_iterator_tag> Category = std::input_iterator_tag
-    >
-    struct sequence : range<impl::sequence<meta::const_yield_type<C>, Shape, Category>> {
-        using range<impl::sequence<meta::const_yield_type<C>, Shape, Category>>::range;
-        using range<impl::sequence<meta::const_yield_type<C>, Shape, Category>>::operator=;
+    template <typename T, impl::extent Shape = 0, typename Category = std::input_iterator_tag>
+        requires (impl::sequence_concept<T, Shape, Category>)
+    struct sequence : range<impl::sequence<meta::const_yield_type<T>, Shape, Category>> {
+        using range<impl::sequence<meta::const_yield_type<T>, Shape, Category>>::range;
+        using range<impl::sequence<meta::const_yield_type<T>, Shape, Category>>::operator=;
     };
 
     /// TODO: tuple and scalar deduction guides?
@@ -7609,11 +7722,55 @@ namespace impl {
     template <typename T, extent Shape, typename Category>
         requires (sequence_concept<T, Shape, Category>)
     template <typename C>
-    constexpr T sequence_control<T, Shape, Category>::subscript_fn(
+    constexpr auto sequence_control<T, Shape, Category>::subscript1_fn(
         sequence_control* control,
         ssize_t n
-    ) {
-        return iter::at{n}(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+    ) -> sequence_control<T, Shape, Category>::reduce<1> {
+        return reduce<1>(iter::at{n}(
+            *static_cast<meta::as_pointer<Container<C>>>(control->container)
+        ));
+    }
+
+    template <typename T, extent Shape, typename Category>
+        requires (sequence_concept<T, Shape, Category>)
+    template <typename C> requires (Shape.size() >= 2)
+    constexpr auto sequence_control<T, Shape, Category>::subscript2_fn(
+        sequence_control* control,
+        ssize_t n1,
+        ssize_t n2
+    ) -> sequence_control<T, Shape, Category>::reduce<2> {
+        return reduce<2>(iter::at{n1, n2}(
+            *static_cast<meta::as_pointer<Container<C>>>(control->container)
+        ));
+    }
+
+    template <typename T, extent Shape, typename Category>
+        requires (sequence_concept<T, Shape, Category>)
+    template <typename C> requires (Shape.size() >= 3)
+    constexpr auto sequence_control<T, Shape, Category>::subscript3_fn(
+        sequence_control* control,
+        ssize_t n1,
+        ssize_t n2,
+        ssize_t n3
+    ) -> sequence_control<T, Shape, Category>::reduce<3> {
+        return reduce<3>(iter::at{n1, n2, n3}(
+            *static_cast<meta::as_pointer<Container<C>>>(control->container)
+        ));
+    }
+
+    template <typename T, extent Shape, typename Category>
+        requires (sequence_concept<T, Shape, Category>)
+    template <typename C> requires (Shape.size() >= 4)
+    constexpr auto sequence_control<T, Shape, Category>::subscript4_fn(
+        sequence_control* control,
+        ssize_t n1,
+        ssize_t n2,
+        ssize_t n3,
+        ssize_t n4
+    ) -> sequence_control<T, Shape, Category>::reduce<4> {
+        return reduce<4>(iter::at{n1, n2, n3, n4}(
+            *static_cast<meta::as_pointer<Container<C>>>(control->container)
+        ));
     }
 
 }
@@ -7709,7 +7866,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     /// TODO: all these CTAD guide should account for ranges always yielding nested
     /// ranges, and unwrap them automatically.
-
 
     template <bertrand::meta::range R>
         requires (bertrand::meta::character<bertrand::meta::yield_type<R>>)

@@ -4702,26 +4702,6 @@ namespace meta {
                 it += meta::ssize(t) - 1;
                 return (*it);
             }
-
-            template <typename T>
-            [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
-                noexcept (requires(meta::end_type<T> it) {
-                    {meta::end(t)} noexcept;
-                    {--it} noexcept;
-                    {*it} noexcept;
-                })
-                requires (
-                    !member::has_back<T> &&
-                    !adl::has_back<T> &&
-                    !meta::reverse_iterable<T> &&
-                    !requires(meta::begin_type<T> it) {{it += meta::ssize(t) - 1};} &&
-                    requires(meta::end_type<T> it) {{--it};}
-                )
-            {
-                auto it = meta::end(t);
-                --it;
-                return (*it);
-            }
         };
 
     }
@@ -4731,10 +4711,8 @@ namespace meta {
         1.  an `obj.back()` member method.
         2.  a `back(obj)` ADL function.
         3.  dereferencing the result of `meta::rbegin(obj)`.
-        4.  advancing the iterator returned by `meta::begin(obj)` by
-            `meta::ssize(obj) - 1` using `operator+=` (random-access).
-        5.  decrementing the iterator returned by `meta::end(obj)` and
-            dereferencing it.
+        4.  advancing the `meta::begin(obj)` iterator by `meta::ssize(obj) - 1` using
+            `operator+=` (random access).
 
     In all cases, the result will be perfectly-forwarded.  Note that no extra bounds
     checking is performed, meaning that the behavior is undefined if `obj` is empty.
