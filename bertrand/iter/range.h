@@ -596,12 +596,12 @@ namespace meta {
     /* Get the standardized `impl::extent` type that is returned by
     `meta::static_shape<T>()`, assuming that expression is well-formed. */
     template <has_static_shape T>
-    using static_shape_type = decltype(impl::extent(static_shape<T>()));
+    using static_shape_type = decltype(static_shape<T>());
 
     /* Get the standardized `impl::extent` type that is returned by `meta::shape(t)`,
     assuming that expression is well-formed. */
     template <has_shape T>
-    using shape_type = decltype(impl::extent(shape(::std::declval<T>())));
+    using shape_type = decltype(shape(::std::declval<T>()));
 
     /* Detect whether `meta::static_shape<T>()` is well-formed and then check for an
     implicit conversion from the normalized `impl::extent` type to the given return
@@ -3722,25 +3722,53 @@ namespace impl {
         meta::remove_rvalue<Step>
     >;
 
-    template <typename T, size_t Rank, typename Category>
+    template <typename T, typename Category, size_t Rank>
     concept sequence_concept =
         range_concept<T> &&
-        Rank > 0 &&
         meta::unqualified<Category> &&
-        meta::inherits<Category, std::input_iterator_tag>;
+        meta::inherits<Category, std::input_iterator_tag> &&
+        Rank > 0;
 
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     struct sequence;
 
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     struct sequence_iterator;
+
+    template <typename C>
+    struct _sequence_container { using type = meta::as_const<C>; };
+    template <typename C> requires (!meta::iterable<meta::as_const<C>> && meta::tuple_like<C>)
+    struct _sequence_container<C> { using type = meta::as_const<impl::tuple_range<C>>; };
+    template <typename C> requires (!meta::iterable<meta::as_const<C>> && !meta::tuple_like<C>)
+    struct _sequence_container<C> { using type = meta::as_const<impl::scalar_range<C>>; };
+    template <typename C>
+    using sequence_container = _sequence_container<C>::type;
+
+    template <typename C>
+    [[nodiscard]] constexpr decltype(auto) sequence_erase(C&& c)
+        noexcept (meta::iterable<meta::as_const<C>> || (
+            requires{{impl::tuple_range(std::forward<C>(c))};} ?
+                requires{{impl::tuple_range(std::forward<C>(c))} noexcept;} :
+                requires{{impl::scalar_range(std::forward<C>(c))} noexcept;}
+        ))
+    {
+        if constexpr (meta::iterable<meta::as_const<C>>) {
+            return (std::forward<C>(c));
+        } else if constexpr (meta::tuple_like<C>) {
+            return impl::tuple_range(std::forward<C>(c));
+        } else {
+            return impl::scalar_range(std::forward<C>(c));
+        }
+    }
 
     template <typename T, size_t Rank>
     struct _sequence_type { using type = meta::remove_rvalue<T>; };
     template <typename T, size_t Rank> requires (Rank > 0)
-    struct _sequence_type<T, Rank> : _sequence_type<meta::const_yield_type<T>, Rank - 1> {};
+    struct _sequence_type<T, Rank> :
+        _sequence_type<meta::yield_type<sequence_container<T>>, Rank - 1>
+    {};
     template <typename T, size_t Rank>
     using sequence_type = _sequence_type<T, Rank>::type;
 
@@ -3760,6 +3788,19 @@ namespace impl {
         >,
         std::input_iterator_tag
     >;
+
+    template <typename C, typename T, typename Category, size_t Rank>
+    concept sequence_constructor =
+        meta::convertible_to<sequence_type<C, Rank>, T> &&
+        meta::inherits<
+            meta::iterator_category<meta::begin_type<sequence_container<C>>>,
+            typename std::conditional_t<
+                meta::inherits<Category, std::contiguous_iterator_tag>,
+                std::random_access_iterator_tag,
+                Category
+            >
+        > &&
+        meta::shape_type<sequence_container<T>>::size() == Rank;
 
     /* Sequences use the classic type erasure mechanism internally, consisting of a
     heap-allocated control block and an immutable void pointer to the underlying
@@ -3793,12 +3834,12 @@ namespace impl {
     deep copy is required, the user can implicitly convert the sequence to a container
     of the desired type using a range conversion operator, which triggers a loop over
     the sequence. */
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     struct sequence_control {
         template <size_t N>
-        using reduce = std::conditional_t<Rank <= N, T, sequence<T, Rank - N, Category>>;
-
+        using reduce = std::conditional_t<Rank <= N, T, sequence<T, Category, Rank - N>>;
+    
         using dtor_ptr = void(*)(sequence_control*);
         using data_ptr = std::conditional_t<
             meta::inherits<Category, std::contiguous_iterator_tag>,
@@ -3824,46 +3865,46 @@ namespace impl {
         >;
         using front_ptr = reduce<1>(*)(sequence_control*);
         using back_ptr = reduce<1>(*)(sequence_control*);
-        using begin_ptr = sequence_iterator<T, Rank, Category>(*)(sequence_control*);
-        using end_ptr = sequence_iterator<T, Rank, Category>(*)(sequence_control*);
+        using begin_ptr = sequence_iterator<T, Category, Rank>(*)(sequence_control*);
+        using end_ptr = sequence_iterator<T, Category, Rank>(*)(sequence_control*);
         using iter_copy_ptr = void(*)(
-            sequence_iterator<T, Rank, Category>&,
-            const sequence_iterator<T, Rank, Category>&
+            sequence_iterator<T, Category, Rank>&,
+            const sequence_iterator<T, Category, Rank>&
         );
         using iter_assign_ptr = void(*)(
-            sequence_iterator<T, Rank, Category>&,
-            const sequence_iterator<T, Rank, Category>&
+            sequence_iterator<T, Category, Rank>&,
+            const sequence_iterator<T, Category, Rank>&
         );
-        using iter_dtor_ptr = void(*)(sequence_iterator<T, Rank, Category>&);
-        using iter_deref_ptr = reduce<1>(*)(const sequence_iterator<T, Rank, Category>&);
+        using iter_dtor_ptr = void(*)(sequence_iterator<T, Category, Rank>&);
+        using iter_deref_ptr = reduce<1>(*)(const sequence_iterator<T, Category, Rank>&);
         using iter_subscript_ptr = std::conditional_t<
             meta::inherits<Category, std::random_access_iterator_tag>,
-            reduce<1>(*)(const sequence_iterator<T, Rank, Category>&, ssize_t),
+            reduce<1>(*)(const sequence_iterator<T, Category, Rank>&, ssize_t),
             NoneType
         >;
-        using iter_increment_ptr = void(*)(sequence_iterator<T, Rank, Category>&);
+        using iter_increment_ptr = void(*)(sequence_iterator<T, Category, Rank>&);
         using iter_decrement_ptr = std::conditional_t<
             meta::inherits<Category, std::bidirectional_iterator_tag>,
-            void(*)(sequence_iterator<T, Rank, Category>&),
+            void(*)(sequence_iterator<T, Category, Rank>&),
             NoneType
         >;
         using iter_advance_ptr = std::conditional_t<
             meta::inherits<Category, std::random_access_iterator_tag>,
-            void(*)(sequence_iterator<T, Rank, Category>&, ssize_t),
+            void(*)(sequence_iterator<T, Category, Rank>&, ssize_t),
             NoneType
         >;
         using iter_retreat_ptr = iter_advance_ptr;
         using iter_distance_ptr = std::conditional_t<
             meta::inherits<Category, std::random_access_iterator_tag>,
             ssize_t(*)(
-                const sequence_iterator<T, Rank, Category>&,
-                const sequence_iterator<T, Rank, Category>&
+                const sequence_iterator<T, Category, Rank>&,
+                const sequence_iterator<T, Category, Rank>&
             ),
             NoneType
         >;
         using iter_compare_ptr = std::strong_ordering(*)(
-            const sequence_iterator<T, Rank, Category>&,
-            const sequence_iterator<T, Rank, Category>&
+            const sequence_iterator<T, Category, Rank>&,
+            const sequence_iterator<T, Category, Rank>&
         );
 
         std::atomic<size_t> refcount = 1;
@@ -3975,33 +4016,35 @@ namespace impl {
 
         template <typename C>
         [[nodiscard]] static constexpr sequence_control* create(C&& c) {
+            using type = meta::unqualify<C>;
+
             // if the container is an lvalue, then just store a pointer to it within
             // the control block
             if constexpr (meta::lvalue<C>) {
                 return new sequence_control{
                     .container = std::addressof(c),
                     .dtor = &dtor_fn<C>,
-                    .cache_shape = &shape_fn<C>,
-                    .data = get_data<C>(),
-                    .subscript1 = &subscript1_fn<C>,
-                    .subscript2 = get_subscript2<C>(),
-                    .subscript3 = get_subscript3<C>(),
-                    .subscript4 = get_subscript4<C>(),
-                    .front = &front_fn<C>,
-                    .back = &back_fn<C>,
-                    .begin = &begin_fn<C>,
-                    .end = &end_fn<C>,
-                    .iter_copy = &iter_copy_fn<C>,
-                    .iter_assign = &iter_assign_fn<C>,
-                    .iter_dtor = &iter_dtor_fn<C>,
-                    .iter_deref = &iter_deref_fn<C>,
-                    .iter_subscript = get_iter_subscript<C>(),
-                    .iter_increment = &iter_increment_fn<C>,
-                    .iter_decrement = get_iter_decrement<C>(),
-                    .iter_advance = get_iter_advance<C>(),
-                    .iter_retreat = get_iter_retreat<C>(),
-                    .iter_distance = get_iter_distance<C>(),
-                    .iter_compare = &iter_compare_fn<C>,
+                    .cache_shape = &shape_fn<type>,
+                    .data = get_data<type>(),
+                    .subscript1 = &subscript1_fn<type>,
+                    .subscript2 = get_subscript2<type>(),
+                    .subscript3 = get_subscript3<type>(),
+                    .subscript4 = get_subscript4<type>(),
+                    .front = &front_fn<type>,
+                    .back = &back_fn<type>,
+                    .begin = &begin_fn<type>,
+                    .end = &end_fn<type>,
+                    .iter_copy = &iter_copy_fn<type>,
+                    .iter_assign = &iter_assign_fn<type>,
+                    .iter_dtor = &iter_dtor_fn<type>,
+                    .iter_deref = &iter_deref_fn<type>,
+                    .iter_subscript = get_iter_subscript<type>(),
+                    .iter_increment = &iter_increment_fn<type>,
+                    .iter_decrement = get_iter_decrement<type>(),
+                    .iter_advance = get_iter_advance<type>(),
+                    .iter_retreat = get_iter_retreat<type>(),
+                    .iter_distance = get_iter_distance<type>(),
+                    .iter_compare = &iter_compare_fn<type>,
                 };
 
             // otherwise, it is possible to consolidate allocations such that the
@@ -4013,37 +4056,37 @@ namespace impl {
                 if (control == nullptr) {
                     throw MemoryError();
                 }
-                void* container = static_cast<sequence_control*>(control) + 1;
+                void* value = static_cast<sequence_control*>(control) + 1;
                 try {
-                    new (container) meta::unqualify<C>(std::forward<C>(c));
+                    new (value) meta::unqualify<C>(std::forward<C>(c));
                 } catch (...) {
                     ::operator delete(control);
                     throw;
                 }
                 new (control) sequence_control {
-                    .container = static_cast<const void*>(container),
+                    .container = static_cast<const void*>(value),
                     .dtor = &dtor_fn<C>,
-                    .cache_shape = &shape_fn<C>,
-                    .data = get_data<C>(),
-                    .subscript1 = &subscript1_fn<C>,
-                    .subscript2 = get_subscript2<C>(),
-                    .subscript3 = get_subscript3<C>(),
-                    .subscript4 = get_subscript4<C>(),
-                    .front = &front_fn<C>,
-                    .back = &back_fn<C>,
-                    .begin = &begin_fn<C>,
-                    .end = &end_fn<C>,
-                    .iter_copy = &iter_copy_fn<C>,
-                    .iter_assign = &iter_assign_fn<C>,
-                    .iter_dtor = &iter_dtor_fn<C>,
-                    .iter_deref = &iter_deref_fn<C>,
-                    .iter_subscript = get_iter_subscript<C>(),
-                    .iter_increment = &iter_increment_fn<C>,
-                    .iter_decrement = get_iter_decrement<C>(),
-                    .iter_advance = get_iter_advance<C>(),
-                    .iter_retreat = get_iter_retreat<C>(),
-                    .iter_distance = get_iter_distance<C>(),
-                    .iter_compare = &iter_compare_fn<C>,
+                    .cache_shape = &shape_fn<type>,
+                    .data = get_data<type>(),
+                    .subscript1 = &subscript1_fn<type>,
+                    .subscript2 = get_subscript2<type>(),
+                    .subscript3 = get_subscript3<type>(),
+                    .subscript4 = get_subscript4<type>(),
+                    .front = &front_fn<type>,
+                    .back = &back_fn<type>,
+                    .begin = &begin_fn<type>,
+                    .end = &end_fn<type>,
+                    .iter_copy = &iter_copy_fn<type>,
+                    .iter_assign = &iter_assign_fn<type>,
+                    .iter_dtor = &iter_dtor_fn<type>,
+                    .iter_deref = &iter_deref_fn<type>,
+                    .iter_subscript = get_iter_subscript<type>(),
+                    .iter_increment = &iter_increment_fn<type>,
+                    .iter_decrement = get_iter_decrement<type>(),
+                    .iter_advance = get_iter_advance<type>(),
+                    .iter_retreat = get_iter_retreat<type>(),
+                    .iter_distance = get_iter_distance<type>(),
+                    .iter_compare = &iter_compare_fn<type>,
                 };
                 return static_cast<sequence_control*>(control);
             }
@@ -4059,9 +4102,6 @@ namespace impl {
                 dtor(this);
             }
         }
-
-        template <typename C>
-        using Container = meta::as_const<C>;
 
         template <typename C>
         static constexpr void dtor_fn(sequence_control* control) {
@@ -4081,16 +4121,14 @@ namespace impl {
         template <typename C>
         static constexpr impl::extent<Rank> shape_fn(sequence_control* control) {
             if (!control->shape.has_value()) {
-                control->shape = meta::shape(
-                    *static_cast<meta::as_pointer<Container<C>>>(control->container)
-                );
+                control->shape = meta::shape(*static_cast<const C*>(control->container));
             }
             return *control->shape;
         }
 
         template <typename C> requires (meta::inherits<Category, std::contiguous_iterator_tag>)
         static constexpr meta::as_pointer<T> data_fn(sequence_control* control) {
-            return meta::data(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+            return meta::data(*static_cast<const C*>(control->container));
         }
 
         template <typename C>
@@ -4115,18 +4153,18 @@ namespace impl {
 
         template <typename C>
         static constexpr reduce<1> front_fn(sequence_control* control) {
-            return meta::front(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+            return meta::front(*static_cast<const C*>(control->container));
         }
 
-        template <typename C> requires (meta::has_back<Container<C>>)
+        template <typename C> requires (meta::has_back<sequence_container<C>>)
         static constexpr reduce<1> back_fn(sequence_control* control) {
-            return meta::back(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+            return meta::back(*static_cast<const C*>(control->container));
         }
 
-        template <typename C> requires (!meta::has_back<Container<C>>)
+        template <typename C> requires (!meta::has_back<sequence_container<C>>)
         static constexpr reduce<1> back_fn(sequence_control* control) {
-            auto it = meta::begin(*static_cast<meta::as_pointer<Container<C>>>(control->container));
-            auto end = meta::end(*static_cast<meta::as_pointer<Container<C>>>(control->container));
+            auto it = meta::begin(*static_cast<const C*>(control->container));
+            auto end = meta::end(*static_cast<const C*>(control->container));
             auto lookahead = it;
             ++lookahead;
             while (lookahead != end) {
@@ -4137,21 +4175,19 @@ namespace impl {
         }
 
         template <typename C>
-        using Begin = meta::unqualify<meta::begin_type<Container<C>>>;
+        using Begin = meta::unqualify<meta::begin_type<const C&>>;
         template <typename C>
-        using End = meta::unqualify<meta::end_type<Container<C>>>;
+        using End = meta::unqualify<meta::end_type<const C&>>;
 
         template <typename C>
-        static constexpr sequence_iterator<T, Rank, Category> begin_fn(sequence_control* control) {
+        static constexpr sequence_iterator<T, Category, Rank> begin_fn(sequence_control* control) {
             // if the category is at least forward, then the begin and end iterators
             // are guaranteed to be the same type, and are stored separately to
             // maintain multi-pass requirements
             if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
-                sequence_iterator<T, Rank, Category> result {
+                sequence_iterator<T, Category, Rank> result {
                     .control = control,
-                    .iter = new Begin(meta::begin(
-                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
-                    ))
+                    .iter = new Begin<C>(meta::begin(*static_cast<const C*>(control->container)))
                 };
                 if (result.iter == nullptr) {
                     throw MemoryError();
@@ -4162,7 +4198,7 @@ namespace impl {
             // otherwise, the begin and end iterators may be different types that are
             // stored together, and can be allocated at the same time
             } else {
-                sequence_iterator<T, Rank, Category> result {
+                sequence_iterator<T, Category, Rank> result {
                     .control = control,
                     .iter = ::operator new(sizeof(Begin<C>) + sizeof(End<C>)),
                     .sentinel = static_cast<Begin<C>*>(result.iter) + 1
@@ -4171,12 +4207,12 @@ namespace impl {
                     throw MemoryError();
                 }
                 try {
-                    new (result.iter) Begin(meta::begin(
-                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
-                    ));
-                    new (result.sentinel) End(meta::end(
-                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
-                    ));
+                    new (result.iter) Begin<C>(
+                        meta::begin(*static_cast<const C*>(control->container))
+                    );
+                    new (result.sentinel) End<C>(
+                        meta::end(*static_cast<const C*>(control->container))
+                    );
                 } catch (...) {
                     ::operator delete(result.iter);
                     throw;
@@ -4187,15 +4223,13 @@ namespace impl {
         }
 
         template <typename C>
-        static constexpr sequence_iterator<T, Rank, Category> end_fn(sequence_control* control) {
+        static constexpr sequence_iterator<T, Category, Rank> end_fn(sequence_control* control) {
             // if the category is at least forward, then the end iterator uses the
             // same layout as the begin iterator
             if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
-                sequence_iterator<T, Rank, Category> result {
+                sequence_iterator<T, Category, Rank> result {
                     .control = control,
-                    .iter = new End<C>(meta::end(
-                        *static_cast<meta::as_pointer<Container<C>>>(control->container)
-                    ))
+                    .iter = new End<C>(meta::end(*static_cast<const C*>(control->container)))
                 };
                 if (result.iter == nullptr) {
                     throw MemoryError();
@@ -4214,16 +4248,14 @@ namespace impl {
         /// NOTE: assumes `other` is not trivial
         template <typename C>
         static constexpr void iter_copy_fn(
-            sequence_iterator<T, Rank, Category>& self,
-            const sequence_iterator<T, Rank, Category>& other
+            sequence_iterator<T, Category, Rank>& self,
+            const sequence_iterator<T, Category, Rank>& other
         ) {
             // if the category is at least forward, then the begin and end iterators
             // are guaranteed to be the same type, and both invoke the same copy logic
             if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
                 self.control = other.control;
-                self.iter = new Begin<C>(
-                    *static_cast<meta::as_pointer<Begin<C>>>(other.iter)
-                );
+                self.iter = new Begin<C>(*static_cast<meta::as_pointer<Begin<C>>>(other.iter));
                 if (self.iter == nullptr) {
                     throw MemoryError();
                 }
@@ -4240,12 +4272,8 @@ namespace impl {
                         throw MemoryError();
                     }
                     try {
-                        new (self.iter) Begin<C>(
-                            *static_cast<meta::as_pointer<Begin<C>>>(other.iter)
-                        );
-                        new (self.sentinel) End<C>(
-                            *static_cast<meta::as_pointer<End<C>>>(other.sentinel)
-                        );
+                        new (self.iter) Begin<C>(*static_cast<Begin<C>*>(other.iter));
+                        new (self.sentinel) End<C>(*static_cast<End<C>*>(other.sentinel));
                     } catch (...) {
                         ::operator delete(self.iter);
                         throw;
@@ -4258,8 +4286,8 @@ namespace impl {
         /// NOTE: assumes `self` and `other` are not the same
         template <typename C>
         static constexpr void iter_assign_fn(
-            sequence_iterator<T, Rank, Category>& self,
-            const sequence_iterator<T, Rank, Category>& other
+            sequence_iterator<T, Category, Rank>& self,
+            const sequence_iterator<T, Category, Rank>& other
         ) {
             // either iterator may be in a trivial state, giving 4 cases:
             //      1.  `self` and `other` are both trivial => do nothing
@@ -4273,11 +4301,9 @@ namespace impl {
             } else if (self.iter == nullptr) {
                 iter_copy_fn<C>(self, other);
             } else {
-                *static_cast<meta::as_pointer<Begin<C>>>(self.iter) =
-                    *static_cast<meta::as_pointer<Begin<C>>>(other.iter);
+                *static_cast<Begin<C>*>(self.iter) = *static_cast<Begin<C>*>(other.iter);
                 if constexpr (!meta::inherits<Category, std::forward_iterator_tag>) {
-                    *static_cast<meta::as_pointer<End<C>>>(self.sentinel) =
-                        *static_cast<meta::as_pointer<End<C>>>(other.sentinel);
+                    *static_cast<End<C>*>(self.sentinel) = *static_cast<End<C>*>(other.sentinel);
                 }
                 self.control->decref();
                 self.control = other.control;
@@ -4287,9 +4313,9 @@ namespace impl {
 
         /// NOTE: assumes `self` is not trivial
         template <typename C>
-        static constexpr void iter_dtor_fn(sequence_iterator<T, Rank, Category>& self) {
+        static constexpr void iter_dtor_fn(sequence_iterator<T, Category, Rank>& self) {
             if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
-                delete static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+                delete static_cast<Begin<C>*>(self.iter);
                 self.iter = nullptr;
                 self.control->decref();
                 self.control = nullptr;
@@ -4305,70 +4331,69 @@ namespace impl {
 
         /// NOTE: assumes `self` is not trivial
         template <typename C>
-        static constexpr reduce<1> iter_deref_fn(sequence_iterator<T, Rank, Category>& self) {
-            return **static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+        static constexpr reduce<1> iter_deref_fn(sequence_iterator<T, Category, Rank>& self) {
+            return **static_cast<Begin<C>*>(self.iter);
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
         static constexpr reduce<1> iter_subscript_fn(
-            sequence_iterator<T, Rank, Category>& self,
+            sequence_iterator<T, Category, Rank>& self,
             ssize_t n
         ) {
-            return (*static_cast<meta::as_pointer<Begin<C>>>(self.iter))[n];
+            return (*static_cast<Begin<C>*>(self.iter))[n];
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C>
-        static constexpr void iter_increment_fn(sequence_iterator<T, Rank, Category>& self) {
-            ++*static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+        static constexpr void iter_increment_fn(sequence_iterator<T, Category, Rank>& self) {
+            ++*static_cast<Begin<C>*>(self.iter);
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C> requires (meta::inherits<Category, std::bidirectional_iterator_tag>)
-        static constexpr void iter_decrement_fn(sequence_iterator<T, Rank, Category>& self) {
-            --*static_cast<meta::as_pointer<Begin<C>>>(self.iter);
+        static constexpr void iter_decrement_fn(sequence_iterator<T, Category, Rank>& self) {
+            --*static_cast<Begin<C>*>(self.iter);
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
         static constexpr void iter_advance_fn(
-            sequence_iterator<T, Rank, Category>& self,
+            sequence_iterator<T, Category, Rank>& self,
             ssize_t n
         ) {
-            *static_cast<meta::as_pointer<Begin<C>>>(self.iter) += n;
+            *static_cast<Begin<C>*>(self.iter) += n;
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
         static constexpr void iter_retreat_fn(
-            sequence_iterator<T, Rank, Category>& self,
+            sequence_iterator<T, Category, Rank>& self,
             ssize_t n
         ) {
-            *static_cast<meta::as_pointer<Begin<C>>>(self.iter) -= n;
+            *static_cast<Begin<C>*>(self.iter) -= n;
         }
 
         /// NOTE: assumes `self` and `other` are not trivial
         template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
         static constexpr ssize_t iter_distance_fn(
-            const sequence_iterator<T, Rank, Category>& lhs,
-            const sequence_iterator<T, Rank, Category>& rhs
+            const sequence_iterator<T, Category, Rank>& lhs,
+            const sequence_iterator<T, Category, Rank>& rhs
         ) {
-            return *static_cast<meta::as_pointer<Begin<C>>>(lhs.iter) -
-                *static_cast<meta::as_pointer<Begin<C>>>(rhs.iter);
+            return *static_cast<Begin<C>*>(lhs.iter) - *static_cast<Begin<C>*>(rhs.iter);
         }
 
         /// NOTE: for forward iterators and higher, assumes `self` and `other` are not
         /// trivial
         template <typename C>
         static constexpr std::strong_ordering iter_compare_fn(
-            const sequence_iterator<T, Rank, Category>& lhs,
-            const sequence_iterator<T, Rank, Category>& rhs
+            const sequence_iterator<T, Category, Rank>& lhs,
+            const sequence_iterator<T, Category, Rank>& rhs
         ) {
             if constexpr (meta::inherits<Category, std::forward_iterator_tag>) {
                 return iter_compare_impl(
-                    *static_cast<meta::as_pointer<Begin<C>>>(lhs.iter),
-                    *static_cast<meta::as_pointer<Begin<C>>>(rhs.iter)
+                    *static_cast<Begin<C>*>(lhs.iter),
+                    *static_cast<Begin<C>*>(rhs.iter)
                 );
             } else {
                 if (lhs.iter == rhs.iter) {
@@ -4376,14 +4401,14 @@ namespace impl {
                 }
                 if (lhs.iter == nullptr) {
                     return iter_compare_impl(
-                        *static_cast<meta::as_pointer<Begin<C>>>(rhs.sentinel),
-                        *static_cast<meta::as_pointer<End<C>>>(rhs.iter)
+                        *static_cast<End<C>*>(rhs.sentinel),
+                        *static_cast<Begin<C>*>(rhs.iter)
                     );
                 }
                 if (rhs.iter == nullptr) {
                     return iter_compare_impl(
-                        *static_cast<meta::as_pointer<Begin<C>>>(lhs.iter),
-                        *static_cast<meta::as_pointer<End<C>>>(lhs.sentinel)
+                        *static_cast<Begin<C>*>(lhs.iter),
+                        *static_cast<End<C>*>(lhs.sentinel)
                     );
                 }
                 return std::strong_ordering::less;  // converted into `false` in sequence_iterator
@@ -4438,8 +4463,8 @@ namespace impl {
     the category is specified as contiguous by the template signature, but its shape
     has more than 1 dimension, then the category will be downgraded to
     `std::random_access_tag` instead. */
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     struct sequence_iterator {
         using iterator_category = std::forward_iterator_tag;
         using difference_type = ssize_t;
@@ -4447,7 +4472,7 @@ namespace impl {
         using reference = meta::as_lvalue<T>;
         using pointer = meta::as_pointer<T>;
 
-        sequence_control<T, Rank, Category>* control = nullptr;
+        sequence_control<T, Category, Rank>* control = nullptr;
         void* iter = nullptr;
         void* sentinel = nullptr;
 
@@ -4539,12 +4564,12 @@ namespace impl {
             return control->iter_compare(*this, other);
         }
     };
-    template <typename T, size_t Rank, typename Category>
+    template <typename T, typename Category, size_t Rank>
         requires (
-            sequence_concept<T, Rank, Category> &&
+            sequence_concept<T, Category, Rank> &&
             meta::inherits<Category, std::forward_iterator_tag>
         )
-    struct sequence_iterator<T, Rank, Category> {
+    struct sequence_iterator<T, Category, Rank> {
         using iterator_category = std::conditional_t<
             meta::inherits<Category, std::contiguous_iterator_tag>,
             std::conditional_t<
@@ -4559,7 +4584,7 @@ namespace impl {
         using reference = meta::as_lvalue<T>;
         using pointer = meta::as_pointer<T>;
 
-        sequence_control<T, Rank, Category>* control = nullptr;
+        sequence_control<T, Category, Rank>* control = nullptr;
         void* iter = nullptr;
 
         [[nodiscard]] constexpr sequence_iterator() noexcept = default;
@@ -4735,38 +4760,18 @@ namespace impl {
     checking the number of dimensions in its shape (e.g. `seq.shape().empty()`).  For
     sequences of static shape, the `TypeError` will be promoted to a compilation error
     instead, enforcing correctness at compile time. */
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     struct sequence {
-        sequence_control<T, Rank, Category>* control = nullptr;
+        sequence_control<T, Category, Rank>* control = nullptr;
 
         [[nodiscard]] constexpr sequence() noexcept = default;
 
-        /// TODO: these constraints should be lifted to the public sequence wrapper,
-        /// since that way the error messages will be clearer, but it requires some
-        /// thought as to how best to express them such that sequences can accept all
-        /// the same types as ranges.
-
-        template <typename C>
-            requires (
-                meta::iterable<meta::as_const<C>> &&
-                meta::convertible_to<impl::sequence_type<C, Rank>, T> &&
-                meta::has_shape<meta::as_const<C>> &&
-                meta::shape_type<meta::as_const<C>>::size() == Rank &&
-                meta::inherits<
-                    meta::iterator_category<meta::begin_type<meta::as_const<C>>>,
-                    std::conditional_t<
-                        meta::inherits<
-                            meta::iterator_category<meta::begin_type<meta::as_const<C>>>,
-                            std::contiguous_iterator_tag
-                        >,
-                        std::random_access_iterator_tag,
-                        meta::iterator_category<meta::begin_type<meta::as_const<C>>>
-                    >
-                >
-            )
+        template <typename C> requires (impl::sequence_constructor<C, T, Category, Rank>)
         [[nodiscard]] constexpr sequence(C&& c) :
-            control(sequence_control<T, Rank, Category>::create(std::forward<C>(c)))
+            control(sequence_control<T, Category, Rank>::create(
+                sequence_erase(std::forward<C>(c))
+            ))
         {}
 
         [[nodiscard]] constexpr sequence(const sequence& other) noexcept : control(other.control) {
@@ -4822,7 +4827,7 @@ namespace impl {
         [[nodiscard]] constexpr decltype(auto) shape() const noexcept {
             struct {
                 using type = impl::extent<Rank>;
-                sequence_control<T, Rank, Category>* control;
+                sequence_control<T, Category, Rank>* control;
                 constexpr type operator()(NoneType) {
                     control->shape = control->cache_shape(control);
                     return *control->shape;
@@ -4971,20 +4976,24 @@ namespace iter {
     normally.  In that case, as long as the range's yield type is a valid expression in
     the other language, then the rest of the range interface can be abstracted away, and
     the binding can be generated anyway, albeit at a performance cost. */
-    template <typename T, size_t Rank = 1, typename Category = std::input_iterator_tag>
-        requires (impl::sequence_concept<T, Rank, Category>)
-    struct sequence : range<impl::sequence<meta::const_yield_type<T>, Rank, Category>> {
-        using range<impl::sequence<meta::const_yield_type<T>, Rank, Category>>::range;
-        using range<impl::sequence<meta::const_yield_type<T>, Rank, Category>>::operator=;
+    template <typename T, typename Category = std::input_iterator_tag, size_t Rank = 1>
+        requires (impl::sequence_concept<T, Category, Rank>)
+    struct sequence : range<impl::sequence<meta::const_yield_type<T>, Category, Rank>> {
+        [[nodiscard]] constexpr sequence() = default;
+        template <typename C> requires (impl::sequence_constructor<C, T, Category, Rank>)
+        [[nodiscard]] constexpr sequence(C&& c) :
+            range<impl::sequence<meta::const_yield_type<T>, Category, Rank>>(
+                impl::sequence_erase(std::forward<C>(c))
+            )
+        {}
+        using range<impl::sequence<meta::const_yield_type<T>, Category, Rank>>::operator=;
     };
 
-    /// TODO: tuple and scalar deduction guides?
-
-    template <meta::iterable C> requires (meta::has_shape<C>)
+    template <typename C>
     sequence(C&& c) -> sequence<
-        impl::sequence_type<C, meta::shape_type<meta::as_const<C>>::size()>,
-        meta::shape_type<meta::as_const<C>>::size(),
-        impl::sequence_category<C>
+        impl::sequence_type<C, meta::shape_type<impl::sequence_container<C>>::size()>,
+        impl::sequence_category<C>,
+        meta::shape_type<impl::sequence_container<C>>::size()
     >;
 
 }
@@ -7719,57 +7728,53 @@ namespace iter {
 
 namespace impl {
 
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     template <typename C>
-    constexpr auto sequence_control<T, Rank, Category>::subscript1_fn(
+    constexpr auto sequence_control<T, Category, Rank>::subscript1_fn(
         sequence_control* control,
         ssize_t n
-    ) -> sequence_control<T, Rank, Category>::reduce<1> {
-        return reduce<1>(iter::at{n}(
-            *static_cast<meta::as_pointer<Container<C>>>(control->container)
-        ));
+    ) -> sequence_control<T, Category, Rank>::reduce<1> {
+        return reduce<1>(iter::at{n}(*static_cast<const C*>(control->container)));
     }
 
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     template <typename C> requires (Rank >= 2)
-    constexpr auto sequence_control<T, Rank, Category>::subscript2_fn(
+    constexpr auto sequence_control<T, Category, Rank>::subscript2_fn(
         sequence_control* control,
         ssize_t n1,
         ssize_t n2
-    ) -> sequence_control<T, Rank, Category>::reduce<2> {
-        return reduce<2>(iter::at{n1, n2}(
-            *static_cast<meta::as_pointer<Container<C>>>(control->container)
-        ));
+    ) -> sequence_control<T, Category, Rank>::reduce<2> {
+        return reduce<2>(iter::at{n1, n2}(*static_cast<const C*>(control->container)));
     }
 
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     template <typename C> requires (Rank >= 3)
-    constexpr auto sequence_control<T, Rank, Category>::subscript3_fn(
+    constexpr auto sequence_control<T, Category, Rank>::subscript3_fn(
         sequence_control* control,
         ssize_t n1,
         ssize_t n2,
         ssize_t n3
-    ) -> sequence_control<T, Rank, Category>::reduce<3> {
+    ) -> sequence_control<T, Category, Rank>::reduce<3> {
         return reduce<3>(iter::at{n1, n2, n3}(
-            *static_cast<meta::as_pointer<Container<C>>>(control->container)
+            *static_cast<const C*>(control->container)
         ));
     }
 
-    template <typename T, size_t Rank, typename Category>
-        requires (sequence_concept<T, Rank, Category>)
+    template <typename T, typename Category, size_t Rank>
+        requires (sequence_concept<T, Category, Rank>)
     template <typename C> requires (Rank >= 4)
-    constexpr auto sequence_control<T, Rank, Category>::subscript4_fn(
+    constexpr auto sequence_control<T, Category, Rank>::subscript4_fn(
         sequence_control* control,
         ssize_t n1,
         ssize_t n2,
         ssize_t n3,
         ssize_t n4
-    ) -> sequence_control<T, Rank, Category>::reduce<4> {
+    ) -> sequence_control<T, Category, Rank>::reduce<4> {
         return reduce<4>(iter::at{n1, n2, n3, n4}(
-            *static_cast<meta::as_pointer<Container<C>>>(control->container)
+            *static_cast<const C*>(control->container)
         ));
     }
 
@@ -7792,8 +7797,8 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         /// TODO: borrowed range support for single ranges and optionals if the
         /// underlying type is an lvalue or models borrowed_range.
 
-        template <typename T, size_t Rank, typename Category>
-        constexpr bool enable_borrowed_range<bertrand::impl::sequence<T, Rank, Category>> = true;
+        template <typename T, typename Category, size_t Rank>
+        constexpr bool enable_borrowed_range<bertrand::impl::sequence<T, Category, Rank>> = true;
 
     }
 
