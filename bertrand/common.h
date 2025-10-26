@@ -5580,6 +5580,191 @@ namespace impl {
     template <template <size_t> typename F, size_t N>
     using basic_vtable = _basic_vtable<F, std::make_index_sequence<N>>::type;
 
+    /* A trivial iterator that applies a transformation function to the elements of
+    another iterator.  The increment/decrement and comparison operators are
+    unchanged. */
+    template <meta::iterator Iter, typename F> requires (requires(Iter it, F func) {{func(*it)};})
+    struct transform_iterator {
+        using iterator_category = std::conditional_t<
+            meta::inherits<meta::iterator_category<Iter>, std::contiguous_iterator_tag>,
+            std::random_access_iterator_tag,
+            meta::iterator_category<Iter>
+        >;
+        using difference_type = meta::iterator_difference<Iter>;
+        using value_type = meta::remove_reference<meta::call_type<
+            meta::as_lvalue<F>,
+            meta::dereference_type<Iter>
+        >>;
+        using reference = value_type&;
+        using pointer = value_type*;
+
+        Iter iter;
+        F func;
+
+        [[nodiscard]] constexpr value_type operator*() const
+            noexcept (requires{{func(*iter)} noexcept;})
+            requires (requires{{func(*iter)};})
+        {
+            return func(*iter);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow{func(*iter)}} noexcept;})
+            requires (requires{{impl::arrow{func(*iter)}};})
+        {
+            return impl::arrow{func(*iter)};
+        }
+
+        [[nodiscard]] constexpr auto operator[](difference_type n) const
+            noexcept (requires{{func(iter[n])} noexcept;})
+            requires (requires{{func(iter[n])};})
+        {
+            return func(iter[n]);
+        }
+
+        constexpr transform_iterator& operator++()
+            noexcept (requires{{++iter} noexcept;})
+            requires (requires{{++iter};})
+        {
+            ++iter;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr transform_iterator operator++(int)
+            noexcept (requires{{transform_iterator{iter++}} noexcept;})
+            requires (requires{{transform_iterator{iter++}};})
+        {
+            return {iter++};
+        }
+
+        constexpr transform_iterator& operator--()
+            noexcept (requires{{--iter} noexcept;})
+            requires (requires{{--iter};})
+        {
+            --iter;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr transform_iterator operator--(int)
+            noexcept (requires{{transform_iterator{iter--}} noexcept;})
+            requires (requires{{transform_iterator{iter--}};})
+        {
+            return {iter--};
+        }
+
+        constexpr transform_iterator& operator+=(difference_type n)
+            noexcept (requires{{iter += n} noexcept;})
+            requires (requires{{iter += n};})
+        {
+            iter += n;
+            return *this;
+        }
+
+        [[nodiscard]] friend constexpr transform_iterator operator+(
+            const transform_iterator& self,
+            difference_type n
+        ) noexcept (requires{{transform_iterator{self.iter + n}} noexcept;})
+            requires (requires{{transform_iterator{self.iter + n}};})
+        {
+            return {self.iter + n};
+        }
+
+        [[nodiscard]] friend constexpr transform_iterator operator+(
+            difference_type n,
+            const transform_iterator& self
+        ) noexcept (requires{{transform_iterator{self.iter + n}} noexcept;})
+            requires (requires{{transform_iterator{self.iter + n}};})
+        {
+            return {self.iter + n};
+        }
+
+        constexpr transform_iterator& operator-=(difference_type n)
+            noexcept (requires{{iter -= n} noexcept;})
+            requires (requires{{iter -= n};})
+        {
+            iter -= n;
+            return *this;
+        }
+
+        [[nodiscard]] constexpr transform_iterator operator-(difference_type n) const
+            noexcept (requires{{transform_iterator{iter - n}} noexcept;})
+            requires (requires{{transform_iterator{iter - n}};})
+        {
+            return {iter - n};
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr difference_type operator-(const transform_iterator<T, G>& other) const
+            noexcept (requires{
+                {iter - other.iter} noexcept -> meta::nothrow::convertible_to<difference_type>;
+            })
+            requires (requires{
+                {iter - other.iter} -> meta::convertible_to<difference_type>;
+            })
+        {
+            return iter - other.iter;
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr bool operator<(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter < other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter < other.iter} -> meta::truthy;})
+        {
+            return bool(iter < other.iter);
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr bool operator<=(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter <= other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter <= other.iter} -> meta::truthy;})
+        {
+            return bool(iter <= other.iter);
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr bool operator==(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter == other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter == other.iter} -> meta::truthy;})
+        {
+            return bool(iter == other.iter);
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr bool operator!=(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter != other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter != other.iter} -> meta::truthy;})
+        {
+            return bool(iter != other.iter);
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr bool operator>=(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter >= other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter >= other.iter} -> meta::truthy;})
+        {
+            return bool(iter >= other.iter);
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr bool operator>(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter > other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter > other.iter} -> meta::truthy;})
+        {
+            return bool(iter > other.iter);
+        }
+
+        template <typename T, typename G>
+        [[nodiscard]] constexpr auto operator<=>(const transform_iterator<T, G>& other) const
+            noexcept (requires{{iter <=> other.iter} noexcept;})
+            requires (requires{{iter <=> other.iter};})
+        {
+            return iter <=> other.iter;
+        }
+    };
+
+    /// TODO: probably just use pointers rather than a separate contiguous iterator
+    /// class.
+
     /* A trivial iterator that acts just like a raw pointer over contiguous storage.
     Using a wrapper rather than the pointer directly comes with some advantages
     regarding type safety, preventing accidental conversions to pointer arguments,

@@ -4826,7 +4826,7 @@ namespace impl {
 
         [[nodiscard]] constexpr decltype(auto) shape() const noexcept {
             struct {
-                using type = impl::extent<Rank>;
+                using type = const impl::extent<Rank>&;
                 sequence_control<T, Category, Rank>* control;
                 constexpr type operator()(NoneType) {
                     control->shape = control->cache_shape(control);
@@ -4836,7 +4836,7 @@ namespace impl {
                     return s;
                 }
             } visitor {control};
-            return (impl::visit(control->shape, visitor));
+            return control->shape ->* visitor;
         }
 
         [[nodiscard]] constexpr size_t size() const {
@@ -5309,22 +5309,76 @@ namespace impl {
 
     }
 
+    /// TODO: range conversion should include an extra recursive overload that
+    /// explicitly performs the nested conversion to the target's value type rather
+    /// than leaving it up to the target type's constructor.  This is necessary to
+    /// allow conversion to nested vectors, etc.
+
     namespace range_convert {
+
+        /// TODO: range_convert::convert() -> range_convert::to()
 
         template <typename Self, typename to>
         concept direct = requires(Self self) {
             {*std::forward<Self>(self)} -> meta::convertible_to<to>;
         };
 
+        template <typename to, typename Self>
+        [[nodiscard]] constexpr to convert(Self&& self)
+            noexcept (requires{
+                {*std::forward<Self>(self)} noexcept -> meta::nothrow::convertible_to<to>;
+            })
+            requires (direct<Self, to>)
+        {
+            return *std::forward<Self>(self);
+        }
+
         template <typename Self, typename to>
         concept construct =
             requires(Self self) {{to(std::from_range, std::forward<Self>(self))};} ||
             requires(Self self) {{to(std::from_range, *std::forward<Self>(self).__value)};};
 
+        template <typename to, typename Self>
+        [[nodiscard]] constexpr to convert(Self&& self)
+            noexcept (requires{{to(std::from_range, std::forward<Self>(self))};} ?
+                requires{{to(std::from_range, std::forward<Self>(self))} noexcept;} :
+                requires{{to(std::from_range, *std::forward<Self>(self).__value)} noexcept;}
+            )
+            requires (
+                !direct<Self, to> &&
+                construct<Self, to>
+            )
+        {
+            if constexpr (requires{{to(std::from_range, std::forward<Self>(self))};}) {
+                return to(std::from_range, std::forward<Self>(self));
+            } else {
+                return to(std::from_range, *std::forward<Self>(self).__value);
+            }
+        }
+
         template <typename Self, typename to>
         concept traverse =
             requires(Self self) {{to(self.begin(), self.end())};} ||
             requires(Self self) {{to(meta::begin(*self.__value), meta::end(*self.__value))};};
+
+        template <typename to, typename Self>
+        [[nodiscard]] constexpr to convert(Self&& self)
+            noexcept (requires{{to(self.begin(), self.end())};} ?
+                requires{{to(self.begin(), self.end())} noexcept;} :
+                requires{{to(meta::begin(*self.__value), meta::end(*self.__value))} noexcept;}
+            )
+            requires (
+                !direct<Self, to> &&
+                !construct<Self, to> &&
+                traverse<Self, to>
+            )
+        {
+            if constexpr (requires{{to(self.begin(), self.end())};}) {
+                return to(self.begin(), self.end());
+            } else {
+                return to(meta::begin(*self.__value), meta::end(*self.__value));
+            }
+        }
 
         template <meta::tuple_like to, meta::range R, size_t... Is>
             requires (
@@ -5332,11 +5386,11 @@ namespace impl {
                 meta::tuple_size<R> == meta::tuple_size<to> &&
                 sizeof...(Is) == meta::tuple_size<to>
             )
-        constexpr to tuple_to_tuple_fn(R&& r, std::index_sequence<Is...>)
-            noexcept (requires{{to{std::forward<R>(r).template get<Is>()...}} noexcept;} || (
-                !requires{{to{std::forward<R>(r).template get<Is>()...}};} &&
+        constexpr to tuple_to_tuple_impl(R&& r, std::index_sequence<Is...>)
+            noexcept (requires{{to{std::forward<R>(r).template get<Is>()...}};} ?
+                requires{{to{std::forward<R>(r).template get<Is>()...}} noexcept;} :
                 requires{{to{meta::get<Is>(*std::forward<R>(r).__value)...}} noexcept;}
-            ))
+            )
             requires (
                 requires{{to{std::forward<R>(r).template get<Is>()...}};} ||
                 requires{{to{meta::get<Is>(*std::forward<R>(r).__value)...}};}
@@ -5353,104 +5407,167 @@ namespace impl {
         concept tuple_to_tuple =
             meta::tuple_like<Self> &&
             meta::tuple_size<to> == meta::tuple_size<Self> &&
-            requires(Self self) {
-                {tuple_to_tuple_fn<to>(
-                    std::forward<Self>(self),
-                    std::make_index_sequence<meta::tuple_size<to>>{}
-                )};
-            };
+            requires(Self self) {{tuple_to_tuple_impl<to>(
+                std::forward<Self>(self),
+                std::make_index_sequence<meta::tuple_size<to>>{}
+            )};};
 
-        /// TODO: iter_to_tuple may also need updates to account for the iterator always
-        /// returning nested ranges.
+        template <typename to, typename Self>
+        [[nodiscard]] constexpr to convert(Self&& self)
+            noexcept (requires{{tuple_to_tuple_impl<to>(
+                std::forward<Self>(self),
+                std::make_index_sequence<meta::tuple_size<to>>{}
+            )} noexcept;})
+            requires (
+                !direct<Self, to> &&
+                !construct<Self, to> &&
+                !traverse<Self, to> &&
+                tuple_to_tuple<Self, to>
+            )
+        {
+            return tuple_to_tuple_impl<to>(
+                std::forward<Self>(self),
+                std::make_index_sequence<meta::tuple_size<to>>{}
+            );
+        }
 
-        /// TODO: forward-declare these errors and backfill them when I've defined `repr()`
-        /// and integer <-> string conversions.
+        /// TODO: backfill these errors when I've defined `repr()` and integer <->
+        /// string conversions.
 
         template <size_t Expected>
-        constexpr TypeError iter_to_tuple_size_error(size_t actual) noexcept {
-            return TypeError(
-                "Cannot convert range of size " + std::to_string(actual) +
-                " to tuple of size " + std::to_string(Expected)
-            );
-        }
+        constexpr TypeError wrong_size(size_t actual) noexcept;
 
         template <size_t I, size_t N>
-        constexpr TypeError iter_to_tuple_too_small() noexcept {
-            return TypeError(
-                "Cannot convert range of size " + std::to_string(I) +
-                " to tuple of size " + std::to_string(N)
-            );
-        }
+        constexpr TypeError too_small() noexcept;
 
         template <size_t N>
-        constexpr TypeError iter_to_tuple_too_big() noexcept {
-            return TypeError(
-                "Cannot convert range of more than " + std::to_string(N) +
-                " elements to tuple of size " + std::to_string(N)
-            );
-        }
+        constexpr TypeError too_big() noexcept;
 
         template <meta::iterator Iter>
-        constexpr decltype(auto) _iter_to_tuple_fn(Iter& it)
-            requires (requires{
-                {*it};
-                {++it};
-            })
+        constexpr decltype(auto) _iter_to_tuple_impl(Iter& it)
+            noexcept (meta::nothrow::iterator<Iter>)
         {
             decltype(auto) val = *it;
             ++it;
-            return val;
+            return (meta::decay(std::forward<decltype(val)>(val)));
         }
 
         template <size_t I, size_t N, meta::iterator Iter, meta::sentinel_for<Iter> End>
-        constexpr decltype(auto) _iter_to_tuple_fn(Iter& it, End& end)
-            requires (requires{
-                {it == end} -> meta::truthy;
-                {*it};
-                {++it};
-            })
+        constexpr decltype(auto) _iter_to_tuple_impl(Iter& it, End& end)
+            noexcept (!DEBUG && requires{{_iter_to_tuple_impl(it)} noexcept;})
         {
-            if (it == end) {
-                throw iter_to_tuple_too_small<I, N>();
+            if constexpr (DEBUG) {
+                if (it == end) {
+                    throw too_small<I, N>();
+                }
             }
-            decltype(auto) val = *it;
-            ++it;
-            return val;
+            return (_iter_to_tuple_impl(it));
         }
 
         template <meta::tuple_like to, meta::range Self, size_t... Is>
             requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
-        constexpr to iter_to_tuple_fn(Self& self, std::index_sequence<Is...>)
-            requires (requires(decltype(self.begin()) it, decltype(self.end()) end) {
+        constexpr to iter_to_tuple_impl(Self& self, std::index_sequence<Is...>)
+            noexcept (!DEBUG && requires(decltype(self.begin()) it) {
+                {self.size() != sizeof...(Is)} noexcept -> meta::nothrow::truthy;
+                {self.begin()} noexcept;
+                {to{(void(Is), _iter_to_tuple_impl(it))...}} noexcept;
+            })
+            requires (requires(decltype(self.begin()) it) {
                 {self.size() != sizeof...(Is)} -> meta::truthy;
                 {self.begin()};
-                {to{(void(Is), _iter_to_tuple_fn(it, end))...}};
+                {to{(void(Is), _iter_to_tuple_impl(it))...}};
             })
         {
-            if (size_t size = self.size(); size != sizeof...(Is)) {
-                throw iter_to_tuple_size_error<sizeof...(Is)>(size);
+            if constexpr (DEBUG) {
+                if (size_t size = self.size(); size != sizeof...(Is)) {
+                    throw wrong_size<sizeof...(Is)>(size);
+                }
             }
             auto it = self.begin();
-            return to{(void(Is), _iter_to_tuple_fn(it))...};
+            return to{(void(Is), _iter_to_tuple_impl(it))...};
         }
 
         template <meta::tuple_like to, meta::range Self, size_t... Is>
             requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
-        constexpr to iter_to_tuple_fn(Self& self, std::index_sequence<Is...>)
+        constexpr to iter_to_tuple_impl(Self& self, std::index_sequence<Is...>)
+            noexcept (!DEBUG && requires(decltype(meta::begin(*self.__value)) it) {
+                {self.size() != sizeof...(Is)} noexcept -> meta::nothrow::truthy;
+                {meta::begin(*self.__value)} noexcept;
+                {to{(void(Is), _iter_to_tuple_impl(it))...}} noexcept;
+            })
+            requires (requires(decltype(meta::begin(*self.__value)) it) {
+                {self.size() != sizeof...(Is)} -> meta::truthy;
+                {meta::begin(*self.__value)};
+                {to{(void(Is), _iter_to_tuple_impl(it))...}};
+            })
+        {
+            if constexpr (DEBUG) {
+                if (size_t size = self.size(); size != sizeof...(Is)) {
+                    throw wrong_size<sizeof...(Is)>(size);
+                }
+            }
+            auto it = meta::begin(*self.__value);
+            return to{(void(Is), _iter_to_tuple_impl(it))...};
+        }
+
+        template <meta::tuple_like to, meta::range Self, size_t... Is>
+            requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
+        constexpr to iter_to_tuple_impl(Self& self, std::index_sequence<Is...>)
+            noexcept (!DEBUG && requires(decltype(self.begin()) it, decltype(self.end()) end) {
+                {self.begin()} noexcept;
+                {self.end()} noexcept;
+                {to{_iter_to_tuple_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
+            })
             requires (
-                !requires{{self.size()};} &&
+                !requires{{self.size() != sizeof...(Is)} -> meta::truthy;} && 
                 requires(decltype(self.begin()) it, decltype(self.end()) end) {
                     {self.begin()};
                     {self.end()};
-                    {to{_iter_to_tuple_fn<Is, sizeof...(Is)>(it, end)...}};
+                    {to{_iter_to_tuple_impl<Is, sizeof...(Is)>(it, end)...}};
                 }
             )
         {
             auto it = self.begin();
             auto end = self.end();
-            to result {_iter_to_tuple_fn<Is, sizeof...(Is)>(it, end)...};
-            if (!bool(it == end)) {
-                throw iter_to_tuple_too_big<sizeof...(Is)>();
+            to result {_iter_to_tuple_impl<Is, sizeof...(Is)>(it, end)...};
+            if constexpr (DEBUG) {
+                if (!bool(it == end)) {
+                    throw too_big<sizeof...(Is)>();
+                }
+            }
+            return result;
+        }
+
+        template <meta::tuple_like to, meta::range Self, size_t... Is>
+            requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
+        constexpr to iter_to_tuple_impl(Self& self, std::index_sequence<Is...>)
+            noexcept (!DEBUG && requires(
+                decltype(meta::begin(*self.__value)) it,
+                decltype(meta::end(*self.__value)) end
+            ) {
+                {meta::begin(*self.__value)} noexcept;
+                {meta::end(*self.__value)} noexcept;
+                {to{_iter_to_tuple_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
+            })
+            requires (
+                !requires{{self.size() != sizeof...(Is)} -> meta::truthy;} &&
+                requires(
+                    decltype(meta::begin(*self.__value)) it,
+                    decltype(meta::end(*self.__value)) end
+                ) {
+                    {meta::begin(*self.__value)};
+                    {meta::end(*self.__value)};
+                    {to{_iter_to_tuple_impl<Is, sizeof...(Is)>(it, end)...}};
+                }
+            )
+        {
+            auto it = meta::begin(*self.__value);
+            auto end = meta::end(*self.__value);
+            to result {_iter_to_tuple_impl<Is, sizeof...(Is)>(it, end)...};
+            if constexpr (DEBUG) {
+                if (!bool(it == end)) {
+                    throw too_big<sizeof...(Is)>();
+                }
             }
             return result;
         }
@@ -5459,56 +5576,103 @@ namespace impl {
         concept iter_to_tuple =
             !meta::tuple_like<Self> &&
             meta::tuple_like<to> &&
-            requires(Self self) {
-                {iter_to_tuple_fn<to>(
-                    self,
-                    std::make_index_sequence<meta::tuple_size<to>>{}
-                )};
-            };
+            requires(Self self) {{iter_to_tuple_impl<to>(
+                self,
+                std::make_index_sequence<meta::tuple_size<to>>{}
+            )};};
+
+        template <typename to, typename Self>
+        [[nodiscard]] constexpr to convert(Self&& self)
+            noexcept (requires{{iter_to_tuple_impl<to>(
+                self,
+                std::make_index_sequence<meta::tuple_size<to>>{}
+            )} noexcept;})
+            requires (
+                !direct<Self, to> &&
+                !construct<Self, to> &&
+                !traverse<Self, to> &&
+                !tuple_to_tuple<Self, to> &&
+                iter_to_tuple<Self, to>
+            )
+        {
+            return iter_to_tuple_impl<to>(self, std::make_index_sequence<meta::tuple_size<to>>{});
+        }
+
+        template <meta::not_reference to> requires (meta::iterable<to>)
+        struct recur {
+            using type = meta::remove_reference<meta::yield_type<to>>;
+            template <typename T>
+            static constexpr type operator()(T&& t)
+                noexcept (requires{{convert<type>(std::forward<T>(t))} noexcept;})
+                requires (requires{{convert<type>(std::forward<T>(t))};})
+            {
+                return convert<type>(std::forward<T>(t));
+            }
+        };
+
+        template <typename Self, typename to>
+        concept recursive = meta::iterable<to> && requires(Self self) {
+            {convert<to>(iter::range(
+                transform_iterator{self.begin(), recur<to>{}},
+                transform_iterator{self.end(), recur<to>{}}
+            ))};
+        };
+
+        template <typename to, typename Self>
+        [[nodiscard]] constexpr to convert(Self&& self)
+            requires (
+                !direct<Self, to> &&
+                !construct<Self, to> &&
+                !traverse<Self, to> &&
+                !tuple_to_tuple<Self, to> &&
+                !iter_to_tuple<Self, to> &&
+                recursive<Self, to>
+            )
+        {
+            return convert<to>(iter::range(
+                transform_iterator{self.begin(), recur<to>{}},
+                transform_iterator{self.end(), recur<to>{}}
+            ));
+        }
 
     }
 
-    /// TODO: range assignment should be updated to account for the unconditional
-    /// nesting of ranges, and pointer-like dereferencing to the underlying container.
-    /// Ranges will never dereference to another range.
-
     namespace range_assign {
 
-        /// TODO: error messages can be improved after `repr()` and integer <-> string
-        /// conversions are defined.
+        /// TODO: backfill these errors when I've defined `repr()` and integer <->
+        /// string conversions.
 
-        inline constexpr TypeError size_error(size_t expected, size_t actual) noexcept {
-            return TypeError(
-                "Cannot assign range of size " + std::to_string(actual) +
-                " to a range with " + std::to_string(expected) + " elements"
-            );
-        }
+        inline constexpr TypeError wrong_size(size_t expected, size_t actual) noexcept;
 
-        inline constexpr TypeError iter_too_small(size_t n) noexcept {
-            return TypeError(
-                "Cannot assign range of size " + std::to_string(n) +
-                " to a range with >" + std::to_string(n) + " elements"
-            );
-        }
+        inline constexpr TypeError too_small(size_t n) noexcept;
 
-        inline constexpr TypeError iter_too_big(size_t n) noexcept {
-            return TypeError(
-                "Cannot assign range of >" + std::to_string(n) +
-                " elements to a range of size " + std::to_string(n)
-            );
-        }
+        inline constexpr TypeError too_big(size_t n) noexcept;
 
-        template <typename Self, typename T>
-        concept direct = requires(Self self, T c) {
-            {*self = meta::strip_range(std::forward<T>(c))};
+        template <typename LHS, typename RHS>
+        concept direct = requires(LHS lhs, RHS rhs) {
+            {*lhs = meta::strip_range(std::forward<RHS>(rhs))};
         };
 
-        template <typename Self, typename T>
-        concept scalar =
-            meta::iterable<Self> &&
-            requires(meta::yield_type<Self> x, const T& v) {
-                {std::forward<decltype(x)>(x) = v};
-            };
+        template <typename LHS, typename RHS>
+        concept scalar = requires(
+            LHS lhs,
+            meta::as_const_ref<RHS> rhs,
+            decltype(lhs.begin()) it
+        ) {
+            {*it = rhs};
+        } || requires(
+            LHS lhs,
+            meta::as_const_ref<RHS> rhs,
+            decltype(meta::begin(*lhs.__value)) it
+        ) {
+            {*it = rhs};
+        };
+
+
+
+
+
+        /// TODO: pick up range assignment refactor here.
 
         template <typename Self, typename T>
         concept iter_from_iter = requires(
@@ -5535,7 +5699,7 @@ namespace impl {
         );
 
         template <typename Self, typename T>
-        constexpr void iter_from_iter_fn(Self& self, T& r)
+        constexpr void iter_from_iter_impl(Self& self, T& r)
             noexcept (meta::tuple_like<Self> && meta::tuple_like<T> && requires(
                 decltype(self.begin()) s_it,
                 decltype(self.end()) s_end,
@@ -5557,7 +5721,7 @@ namespace impl {
             static constexpr bool sized = requires{{self.size()};} && requires{{r.size()};};
             if constexpr (sized && (!meta::tuple_like<Self> || !meta::tuple_like<T>)) {
                 if (self.size() != r.size()) {
-                    throw impl::range_assign::size_error(self.size(), r.size());
+                    throw wrong_size(self.size(), r.size());
                 }
             }
             auto s_it = self.begin();
@@ -5579,16 +5743,16 @@ namespace impl {
                     ++n;
                 }
                 if (s_it != s_end) {
-                    throw impl::range_assign::iter_too_small(n);
+                    throw impl::range_assign::too_small(n);
                 }
                 if (r_it != r_end) {
-                    throw impl::range_assign::iter_too_big(n);
+                    throw impl::range_assign::too_big(n);
                 }
             }
         }
 
         template <meta::range Self, meta::range R, size_t... Is>
-        constexpr void tuple_from_tuple_fn(Self& self, R&& r, std::index_sequence<Is...>)
+        constexpr void tuple_from_tuple_impl(Self& self, R&& r, std::index_sequence<Is...>)
             noexcept (requires{
                 {((self.template get<Is>() = std::forward<R>(r).template get<Is>()), ...)} noexcept;
             })
@@ -5608,16 +5772,20 @@ namespace impl {
             meta::tuple_like<Self> &&
             meta::tuple_like<T> &&
             meta::tuple_size<Self> == meta::tuple_size<T> &&
-            requires(Self self, T r) {
-                {tuple_from_tuple_fn(
-                    self,
-                    std::forward<T>(r),
-                    std::make_index_sequence<meta::tuple_size<Self>>{}
-                )};
-            };
+            requires(Self self, T r) {{tuple_from_tuple_impl(
+                self,
+                std::forward<T>(r),
+                std::make_index_sequence<meta::tuple_size<Self>>{}
+            )};};
+
+
+
+
+
+
 
         template <size_t I, meta::range R, meta::iterator Iter>
-        constexpr void _iter_from_tuple_fn(R&& r, Iter& it)
+        constexpr void _iter_from_tuple_impl(R&& r, Iter& it)
             requires (requires{
                 {*it = std::forward<R>(r).template get<I>()};
                 {++it};
@@ -5628,7 +5796,7 @@ namespace impl {
         }
 
         template <size_t I, meta::range R, meta::iterator Iter, meta::sentinel_for<Iter> End>
-        constexpr void _iter_from_tuple_fn(R&& r, Iter& it, End& end)
+        constexpr void _iter_from_tuple_impl(R&& r, Iter& it, End& end)
             requires (requires{
                 {it == end} -> meta::truthy;
                 {*it = std::forward<R>(r).template get<I>()};
@@ -5636,14 +5804,14 @@ namespace impl {
             })
         {
             if (it == end) {
-                throw iter_too_big(I);
+                throw too_big(I);
             }
             *it = std::forward<R>(r).template get<I>();
             ++it;
         }
 
         template <size_t I, meta::range Self, meta::iterator Iter>
-        constexpr void _tuple_from_iter_fn(Self& s, Iter& it)
+        constexpr void _tuple_from_iter_impl(Self& s, Iter& it)
             requires (requires{
                 {s.template get<I>() = *it};
                 {++it};
@@ -5654,7 +5822,7 @@ namespace impl {
         }
 
         template <size_t I, meta::range Self, meta::iterator Iter, meta::sentinel_for<Iter> End>
-        constexpr void _tuple_from_iter_fn(Self& s, Iter& it, End& end)
+        constexpr void _tuple_from_iter_impl(Self& s, Iter& it, End& end)
             requires (requires{
                 {it == end} -> meta::truthy;
                 {s.template get<I>() = *it};
@@ -5662,14 +5830,14 @@ namespace impl {
             })
         {
             if (it == end) {
-                throw iter_too_small(I);
+                throw too_small(I);
             }
             s.template get<I>() = *it;
             ++it;
         }
 
         template <meta::range Self, meta::range R, size_t... Is>
-        constexpr void iter_from_tuple_fn(Self& self, R&& r, std::index_sequence<Is...>)
+        constexpr void iter_from_tuple_impl(Self& self, R&& r, std::index_sequence<Is...>)
             requires (
                 !meta::tuple_like<Self> &&
                 meta::tuple_like<R> &&
@@ -5677,19 +5845,19 @@ namespace impl {
                 requires(decltype(self.begin()) it) {
                     {self.size() != sizeof...(Is)} -> meta::truthy;
                     {self.begin()};
-                    {(_iter_from_tuple_fn<Is>(std::forward<R>(r), it), ...)};
+                    {(_iter_from_tuple_impl<Is>(std::forward<R>(r), it), ...)};
                 }
             )
         {
             if (self.size() != sizeof...(Is)) {
-                throw size_error(self.size(), sizeof...(Is));
+                throw wrong_size(self.size(), sizeof...(Is));
             }
             auto it = self.begin();
-            (_iter_from_tuple_fn<Is>(std::forward<R>(r), it), ...);
+            (_iter_from_tuple_impl<Is>(std::forward<R>(r), it), ...);
         }
 
         template <meta::range Self, meta::range R, size_t... Is>
-        constexpr void iter_from_tuple_fn(Self& self, R&& r, std::index_sequence<Is...>)
+        constexpr void iter_from_tuple_impl(Self& self, R&& r, std::index_sequence<Is...>)
             requires (
                 !meta::tuple_like<Self> &&
                 meta::tuple_like<R> &&
@@ -5698,20 +5866,20 @@ namespace impl {
                 requires(decltype(self.begin()) it, decltype(self.end()) end) {
                     {self.begin()};
                     {self.end()};
-                    {(_iter_from_tuple_fn<Is>(std::forward<R>(r), it, end), ...)};
+                    {(_iter_from_tuple_impl<Is>(std::forward<R>(r), it, end), ...)};
                 }
             )
         {
             auto it = self.begin();
             auto end = self.end();
-            (_iter_from_tuple_fn<Is>(std::forward<R>(r), it, end), ...);
+            (_iter_from_tuple_impl<Is>(std::forward<R>(r), it, end), ...);
             if (!bool(it == end)) {
-                throw iter_too_small(sizeof...(Is));
+                throw too_small(sizeof...(Is));
             }
         }
 
         template <meta::range Self, typename R, size_t... Is>
-        constexpr void tuple_from_iter_fn(Self& self, R& r, std::index_sequence<Is...>)
+        constexpr void tuple_from_iter_impl(Self& self, R& r, std::index_sequence<Is...>)
             requires (
                 meta::tuple_like<Self> &&
                 !meta::tuple_like<R> &&
@@ -5719,19 +5887,19 @@ namespace impl {
                 requires(decltype(r.begin()) it) {
                     {sizeof...(Is) != r.size()} -> meta::truthy;
                     {r.begin()};
-                    {(_tuple_from_iter_fn<Is>(self, it), ...)};
+                    {(_tuple_from_iter_impl<Is>(self, it), ...)};
                 }
             )
         {
             if (sizeof...(Is) != r.size()) {
-                throw size_error(sizeof...(Is), r.size());
+                throw wrong_size(sizeof...(Is), r.size());
             }
             auto it = r.begin();
-            (_tuple_from_iter_fn<Is>(self, it), ...);
+            (_tuple_from_iter_impl<Is>(self, it), ...);
         }
 
         template <meta::range Self, typename R, size_t... Is>
-        constexpr void tuple_from_iter_fn(Self& self, R& r, std::index_sequence<Is...>)
+        constexpr void tuple_from_iter_impl(Self& self, R& r, std::index_sequence<Is...>)
             requires (
                 meta::tuple_like<Self> &&
                 !meta::tuple_like<R> &&
@@ -5740,15 +5908,15 @@ namespace impl {
                 requires(decltype(r.begin()) it, decltype(r.end()) end) {
                     {r.begin()};
                     {r.end()};
-                    {(_tuple_from_iter_fn<Is>(self, it, end), ...)};
+                    {(_tuple_from_iter_impl<Is>(self, it, end), ...)};
                 }
             )
         {
             auto it = r.begin();
             auto end = r.end();
-            (_tuple_from_iter_fn<Is>(self, it, end), ...);
+            (_tuple_from_iter_impl<Is>(self, it, end), ...);
             if (!bool(it == end)) {
-                throw iter_too_big(sizeof...(Is));
+                throw too_big(sizeof...(Is));
             }
         }
 
@@ -5756,25 +5924,21 @@ namespace impl {
         concept iter_from_tuple =
             !meta::tuple_like<Self> &&
             meta::tuple_like<T> &&
-            requires(Self self, T r) {
-                {iter_from_tuple_fn(
-                    self,
-                    std::forward<T>(r),
-                    std::make_index_sequence<meta::tuple_size<T>>{}
-                )};
-            };
+            requires(Self self, T r) {{iter_from_tuple_impl(
+                self,
+                std::forward<T>(r),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            )};};
 
         template <typename Self, typename T>
         concept tuple_from_iter =
             meta::tuple_like<Self> &&
             !meta::tuple_like<T> &&
-            requires(Self self, T r) {
-                {tuple_from_iter_fn(
-                    self,
-                    r,
-                    std::make_index_sequence<meta::tuple_size<Self>>{}
-                )};
-            };
+            requires(Self self, T r) {{tuple_from_iter_impl(
+                self,
+                r,
+                std::make_index_sequence<meta::tuple_size<Self>>{}
+            )};};
 
     }
 
@@ -7375,101 +7539,51 @@ namespace iter {
             return iter::contains{k}(*this);
         }
 
-        /* Prefer direct conversions for the underlying container if possible. */
+        /* Range-based implicit conversion operator.  This invokes the following (in
+        order of precedence):
+
+            1.  A direct conversion from the underlying container, if possible.
+            2.  A constructor of the form
+                `to(std::from_range, std::forward<Self>(self))` or
+                `to(std::from_range, *self.__value)`.
+            3.  A constructor of the form `to(self.begin(), self.end())` or
+                `to(meta::begin(*self.__value), meta::end(*self.__value))`.
+            4.  If both the range and target type are tuple-like and have the same
+                size, a fold expression that constructs (via braced initialization) the
+                target from the unpacked range elements.
+            5.  If the target type is tuple-like but the range is not, an
+                iterator-based fold expression that constructs (via braced
+                initialization) the target from dereferenced iterator elements.  If the
+                range size does not exactly match the target tuple size, then a
+                `TypeError` may be thrown as a debug assertion.
+            6.  If the target type is iterable, a recursive elementwise conversion that
+                converts each element in the range to the target's value type, and then
+                constructs the target using one of the previous methods.  This allows
+                nested ranges to be converted into nested containers of arbitrary depth.
+
+        This conversion replaces most uses of `std::ranges::to`, and allows ranges to
+        be seamlessly converted to compatible container types.  The only difference is
+        that this conversion does not allow 2-phase constructions that equate to
+        default initialization followed by elementwise assignment.  Instead, it
+        provides the additional conversion methods described by (4) and (5) in order to
+        replace these with braced initialization where possible.  2-phase conversions
+        can still be performed manually via the range assignment operator if needed. */
         template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
         [[nodiscard]] constexpr operator to(this Self&& self)
-            noexcept (requires{
-                {*std::forward<Self>(self)} noexcept -> meta::nothrow::convertible_to<to>;
-            })
-            requires (impl::range_convert::direct<Self, to>)
-        {
-            return *std::forward<Self>(self);
-        }
-
-        /* If no direct conversion exists, allow conversion to any type `T` that
-        implements a constructor of the form `T(std::from_range, self)`. */
-        template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
-        [[nodiscard]] constexpr operator to(this Self&& self)
-            noexcept (requires{{to(std::from_range, std::forward<Self>(self))} noexcept;} || (
-                !requires{{to(std::from_range, std::forward<Self>(self))};} &&
-                requires{{to(std::from_range, *std::forward<Self>(self).__value)} noexcept;}
-            ))
+            noexcept (requires{{impl::range_convert::convert<to>(std::forward<Self>(self))} noexcept;})
             requires (
-                !impl::range_convert::direct<Self, to> &&
-                impl::range_convert::construct<Self, to>
+                impl::range_convert::direct<Self, to> ||
+                impl::range_convert::construct<Self, to> ||
+                impl::range_convert::traverse<Self, to> ||
+                impl::range_convert::tuple_to_tuple<Self, to> ||
+                impl::range_convert::iter_to_tuple<Self, to> ||
+                impl::range_convert::recursive<Self, to>
             )
         {
-            if constexpr (requires{{to(std::from_range, std::forward<Self>(self))};}) {
-                return to(std::from_range, std::forward<Self>(self));
-            } else {
-                return to(std::from_range, *std::forward<Self>(self).__value);
-            }
+            return impl::range_convert::convert<to>(std::forward<Self>(self));
         }
 
-        /* If neither a direct conversion nor a `std::from_range` constructor exist,
-        check for a constructor of the form `T(begin(), end())`. */
-        template <typename Self, typename to> requires (!meta::prefer_constructor<to>)
-        [[nodiscard]] constexpr operator to(this Self&& self)
-            noexcept (requires{{to(self.begin(), self.end())} noexcept;} || (
-                !requires{{to(self.begin(), self.end())};} &&
-                requires{{to(self.__value->begin(), self.__value->end())} noexcept;}
-            ))
-            requires (
-                !impl::range_convert::direct<Self, to> &&
-                !impl::range_convert::construct<Self, to> &&
-                impl::range_convert::traverse<Self, to>
-            )
-        {
-            if constexpr (requires{{to(self.begin(), self.end())};}) {
-                return to(self.begin(), self.end());
-            } else {
-                return to(meta::begin(*self.__value), meta::end(*self.__value));
-            }
-        }
-
-        /* If no direct conversion or constructor exists, and both the range and the
-        target type are tuple-like, then a fold expression may be used to directly
-        construct the target (via braced initialization) from the elements of the
-        range. */
-        template <typename Self, meta::tuple_like to> requires (!meta::prefer_constructor<to>)
-        [[nodiscard]] constexpr operator to(this Self&& self)
-            noexcept (requires{{impl::range_convert::tuple_to_tuple_fn<to>(
-                std::forward<Self>(self),
-                std::make_index_sequence<meta::tuple_size<to>>{}
-            )} noexcept;})
-            requires (
-                !impl::range_convert::direct<Self, to> &&
-                !impl::range_convert::construct<Self, to> &&
-                !impl::range_convert::traverse<Self, to> &&
-                impl::range_convert::tuple_to_tuple<Self, to>
-            )
-        {
-            return impl::range_convert::tuple_to_tuple_fn<to>(
-                std::forward<Self>(self),
-                std::make_index_sequence<meta::tuple_size<to>>{}
-            );
-        }
-
-        /* If no direct conversion or constructor exists, and the target type is
-        tuple-like but the range is not, then an iterator-based fold expression may be
-        used to directly construct the target (via braced initialization), which
-        dereferences the iterator at each step.  If the range size does not exactly
-        match the target tuple size, then a `TypeError` will be thrown. */
-        template <typename Self, meta::tuple_like to> requires (!meta::prefer_constructor<to>)
-        [[nodiscard]] constexpr operator to(this Self&& self)
-            requires (
-                !impl::range_convert::direct<Self, to> &&
-                !impl::range_convert::construct<Self, to> &&
-                !impl::range_convert::traverse<Self, to> &&
-                !impl::range_convert::tuple_to_tuple<Self, to> &&
-                impl::range_convert::iter_to_tuple<Self, to>
-            )
-        {
-            return impl::range_convert::iter_to_tuple_fn<to>(
-                self,
-                std::make_index_sequence<meta::tuple_size<to>>{}
-            );
-        }
+        /// TODO: update docs for the explicit conversion operator
 
         /* If no implicit conversion would be valid, then explicit conversions are
         allowed if and only if they represent a direct conversion from the underlying
@@ -7494,60 +7608,87 @@ namespace iter {
         constexpr range& operator=(const range&) = default;
         constexpr range& operator=(range&&) = default;
 
-        /// TODO: assignment operators may need to account for ranges always being
-        /// nested.  I'm not sure exactly how that needs to be done at the moment, and
-        /// it's possible assignment doesn't even require it.
-
         /* Prefer direct assignment to the underlying container if possible.  Note that
         this skips over any intermediate ranges if the type is nested. */
-        template <typename Self, typename T>
-        constexpr Self operator=(this Self&& self, T&& c)
-            noexcept (requires{{*self = meta::strip_range(std::forward<T>(c))} noexcept;})
-            requires (impl::range_assign::direct<Self, T>)
+        template <typename LHS, typename RHS>
+        constexpr LHS operator=(this LHS&& lhs, RHS&& rhs)
+            noexcept (requires{
+                {*lhs = meta::strip_range(std::forward<RHS>(rhs))} noexcept;
+                {std::forward<LHS>(lhs)} noexcept -> meta::nothrow::convertible_to<LHS>;
+            })
+            requires (impl::range_assign::direct<LHS, RHS>)
         {
-            *self = meta::strip_range(std::forward<T>(c));
-            if constexpr (meta::rvalue<Self>) {
-                return std::move(self);
-            } else {
-                return self;
-            }
+            *lhs = meta::strip_range(std::forward<RHS>(rhs));
+            return std::forward<LHS>(lhs);
         }
 
         /* A special case of direct assignment from an initializer list, assuming the
         container supports it. */
-        template <typename Self, typename T>
-        constexpr Self operator=(this Self&& self, std::initializer_list<T> il)
-            noexcept (requires{{*self = std::move(il)} noexcept;})
-            requires (impl::range_assign::direct<Self, std::initializer_list<T>>)
+        template <typename LHS, typename RHS>
+        constexpr LHS operator=(this LHS&& lhs, std::initializer_list<RHS> il)
+            noexcept (requires{
+                {*lhs = std::move(il)} noexcept;
+                {std::forward<LHS>(lhs)} noexcept -> meta::nothrow::convertible_to<LHS>;
+            })
+            requires (impl::range_assign::direct<LHS, std::initializer_list<RHS>>)
         {
-            *self = std::move(il);
-            if constexpr (meta::rvalue<Self>) {
-                return std::move(self);
-            } else {
-                return self;
-            }
+            *lhs = std::move(il);
+            return std::forward<LHS>(lhs);
         }
 
         /* If no direct assignment exists, and the other operand is not a range, then
         it must be a scalar that can be assigned across the range using `begin()` as
         an output iterator. */
-        template <typename Self, typename T> requires (!meta::range<T>)
-        constexpr Self operator=(this Self&& self, const T& v)
-            noexcept (meta::nothrow::iterable<Self> && requires(meta::yield_type<Self> x) {
-                {std::forward<decltype(x)>(x) = v} noexcept;
-            })
+        template <typename LHS, typename RHS> requires (!meta::range<RHS>)
+        constexpr LHS operator=(this LHS&& lhs, const RHS& rhs)
+            noexcept (requires{
+                {std::forward<LHS>(lhs)} noexcept -> meta::nothrow::convertible_to<LHS>;
+            } && (requires(decltype(lhs.begin()) it) {{*it = rhs};} ?
+                requires(decltype(lhs.begin()) it, decltype(lhs.end()) end) {
+                    {lhs.begin()} noexcept;
+                    {lhs.end()} noexcept;
+                    {it != end} noexcept -> meta::nothrow::truthy;
+                    {*it = rhs} noexcept;
+                    {++it} noexcept;
+                } :
+                requires(
+                    decltype(meta::begin(*lhs.__value)) it,
+                    decltype(meta::end(*lhs.__value)) end
+                ) {
+                    {meta::begin(*lhs.__value)} noexcept;
+                    {meta::end(*lhs.__value)} noexcept;
+                    {it != end} noexcept -> meta::nothrow::truthy;
+                    {*it = rhs} noexcept;
+                    {++it} noexcept;
+                }
+            ))
             requires (
-                !impl::range_assign::direct<Self, T> &&
-                impl::range_assign::scalar<Self, T>
+                !impl::range_assign::direct<LHS, RHS> &&
+                impl::range_assign::scalar<LHS, RHS>
             )
         {
-            for (auto&& x : self) std::forward<decltype(x)>(x) = v;
-            if constexpr (meta::rvalue<Self>) {
-                return std::move(self);
+            if constexpr (requires(decltype(lhs.begin()) it) {{*it = rhs};}) {
+                auto it = lhs.begin();
+                auto end = lhs.end();
+                while (it != end) {
+                    *it = rhs;
+                    ++it;
+                }
             } else {
-                return self;
+                auto it = meta::begin(*lhs.__value);
+                auto end = meta::end(*lhs.__value);
+                while (it != end) {
+                    *it = rhs;
+                    ++it;
+                }
             }
+            return std::forward<LHS>(lhs);
         }
+
+
+
+
+        /// TODO: pick up range assignment refactor from here.
 
         /* If the other operand is a range and direct assignment is not available, then
         fall back to elementwise assignment by iterating over both ranges using
@@ -7557,14 +7698,14 @@ namespace iter {
         compilation. */
         template <typename Self, meta::range T>
         constexpr Self operator=(this Self&& self, T&& r)
-            noexcept (requires{{impl::range_assign::iter_from_iter_fn(self, r)} noexcept;})
+            noexcept (requires{{impl::range_assign::iter_from_iter_impl(self, r)} noexcept;})
             requires (
                 !impl::range_assign::direct<Self, T> &&
                 !impl::range_assign::scalar<Self, T> &&
                 impl::range_assign::iter_from_iter<Self, T>
             )
         {
-            impl::range_assign::iter_from_iter_fn(self, r);
+            impl::range_assign::iter_from_iter_impl(self, r);
             if constexpr (meta::rvalue<Self>) {
                 return std::move(self);
             } else {
@@ -7577,14 +7718,14 @@ namespace iter {
         be thrown. */
         template <typename Self, typename T>
         constexpr Self operator=(this Self&& self, std::initializer_list<T> il)
-            noexcept (requires{{impl::range_assign::iter_from_iter_fn(self, il)} noexcept;})
+            noexcept (requires{{impl::range_assign::iter_from_iter_impl(self, il)} noexcept;})
             requires (
                 !impl::range_assign::direct<Self, std::initializer_list<T>> &&
                 !impl::range_assign::scalar<Self, std::initializer_list<T>> &&
                 impl::range_assign::iter_from_iter<Self, std::initializer_list<T>>
             )
         {
-            impl::range_assign::iter_from_iter_fn(self, il);
+            impl::range_assign::iter_from_iter_impl(self, il);
             if constexpr (meta::rvalue<Self>) {
                 return std::move(self);
             } else {
@@ -7598,7 +7739,7 @@ namespace iter {
         be chosen if both ranges are tuple-like, and their sizes match exactly. */
         template <typename Self, meta::range T>
         constexpr Self operator=(this Self&& self, T&& r)
-            noexcept (requires{{impl::range_assign::tuple_from_tuple_fn(
+            noexcept (requires{{impl::range_assign::tuple_from_tuple_impl(
                 self,
                 std::forward<T>(r),
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -7610,7 +7751,7 @@ namespace iter {
                 impl::range_assign::tuple_from_tuple<Self, T>
             )
         {
-            impl::range_assign::tuple_from_tuple_fn(
+            impl::range_assign::tuple_from_tuple_impl(
                 self,
                 std::forward<T>(r),
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -7622,6 +7763,10 @@ namespace iter {
             }
         }
 
+
+
+
+
         /* If the other operand is a tuple-like range but this range is not, and
         elementwise assignment using their iterators is not possible, then check for an
         algorithm that uses this range's `begin()` iterator as an output iterator and
@@ -7629,7 +7774,7 @@ namespace iter {
         not the same size, then a `TypeError` will be thrown. */
         template <typename Self, meta::range T>
         constexpr Self operator=(this Self&& self, T&& r)
-            noexcept (requires{{impl::range_assign::iter_from_tuple_fn(
+            noexcept (requires{{impl::range_assign::iter_from_tuple_impl(
                 self,
                 std::forward<T>(r),
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -7642,7 +7787,7 @@ namespace iter {
                 impl::range_assign::iter_from_tuple<Self, T>
             )
         {
-            impl::range_assign::iter_from_tuple_fn(
+            impl::range_assign::iter_from_tuple_impl(
                 self,
                 std::forward<T>(r),
                 std::make_index_sequence<meta::tuple_size<T>>{}
@@ -7661,7 +7806,7 @@ namespace iter {
         same size, then a `TypeError` will be thrown. */
         template <typename Self, meta::range T>
         constexpr Self operator=(this Self&& self, T&& r)
-            noexcept (requires{{impl::range_assign::tuple_from_iter_fn(
+            noexcept (requires{{impl::range_assign::tuple_from_iter_impl(
                 self,
                 r,
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -7675,7 +7820,7 @@ namespace iter {
                 impl::range_assign::tuple_from_iter<Self, T>
             )
         {
-            impl::range_assign::tuple_from_iter_fn(
+            impl::range_assign::tuple_from_iter_impl(
                 self,
                 r,
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -7692,7 +7837,7 @@ namespace iter {
         be thrown. */
         template <typename Self, typename T>
         constexpr Self operator=(this Self&& self, std::initializer_list<T> il)
-            noexcept (requires{{impl::range_assign::tuple_from_iter_fn(
+            noexcept (requires{{impl::range_assign::tuple_from_iter_impl(
                 self,
                 il,
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -7706,7 +7851,7 @@ namespace iter {
                 impl::range_assign::tuple_from_iter<Self, std::initializer_list<T>>
             )
         {
-            impl::range_assign::tuple_from_iter_fn(
+            impl::range_assign::tuple_from_iter_impl(
                 self,
                 il,
                 std::make_index_sequence<meta::tuple_size<C>>{}
@@ -8026,23 +8171,35 @@ namespace bertrand::iter {
     // }());
 
 
+    static constexpr std::array arr {std::array{1, 2}, std::array{3, 4}};
+
+    static_assert(std::ranges::range<decltype(std::views::all(range(arr)))>);
 
 
     /// TODO: conversion to nested containers seems not to work, at least not for
-    /// vectors.  It does work for pairs, weirdly enough
+    /// vectors.  It does work for pairs, weirdly enough.  This seems to be a flaw in
+    /// the standard library.
 
-    // static_assert([] {
-    //     std::array arr {std::array{1, 2}, std::array{3, 4}};
+    static_assert([] {
+        std::array arr {std::array{1, 2}, std::array{3, 4}};
 
-    //     std::pair<std::pair<int, int>, std::pair<int, int>> p = range(range(arr));
-    //     if (p.first.first != 1) return false;
-    //     if (p.first.second != 2) return false;
-    //     if (p.second.first != 3) return false;
-    //     if (p.second.second != 4) return false;
+        std::pair<std::pair<int, int>, std::pair<int, int>> p = range(arr);
+        if (p.first.first != 1) return false;
+        if (p.first.second != 2) return false;
+        if (p.second.first != 3) return false;
+        if (p.second.second != 4) return false;
 
-    //     std::vector<std::vector<int>> vec = range(arr);
-    //     return true;
-    // }());
+
+        std::vector<std::vector<int>> vec = range(arr);
+        if (vec.size() != 2) return false;
+        if (vec[0].size() != 2) return false;
+        if (vec[0][0] != 1) return false;
+        if (vec[0][1] != 2) return false;
+        if (vec[1].size() != 2) return false;
+        if (vec[1][0] != 3) return false;
+        if (vec[1][1] != 4) return false;
+        return true;
+    }());
 
 
 
