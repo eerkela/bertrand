@@ -5598,8 +5598,8 @@ namespace impl {
         using reference = value_type&;
         using pointer = value_type*;
 
-        Iter iter;
-        F func;
+        [[no_unique_address]] Iter iter;
+        [[no_unique_address]] F func;
 
         [[nodiscard]] constexpr value_type operator*() const
             noexcept (requires{{func(*iter)} noexcept;})
