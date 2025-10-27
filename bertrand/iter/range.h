@@ -12,7 +12,7 @@ namespace bertrand {
 
 namespace impl {
     struct extent_tag {};
-    struct range_tag {};
+    struct range_tag : prefer_constructor_tag {};
     struct empty_range_tag {};
     struct scalar_tag {};
     struct tuple_range_tag {};
@@ -25,8 +25,6 @@ namespace impl {
     template <meta::inherits<scalar_tag> T>
     constexpr bool range_transparent<T> = true;
     template <meta::inherits<tuple_range_tag> T>
-    constexpr bool range_transparent<T> = true;
-    template <meta::inherits<sequence_tag> T>
     constexpr bool range_transparent<T> = true;
 
     /* An array of integers describing the length of each dimension in a regular,
@@ -358,7 +356,9 @@ namespace meta {
     where the underlying container type is hidden from the user.  Such ranges cannot be
     dereferenced. */
     template <typename T, typename... Rs>
-    concept sequence = range<T, Rs...> && inherits<T, impl::sequence_tag>;
+    concept sequence = range<T, Rs...> && requires(T r) {
+        {*r.__value} -> inherits<impl::sequence_tag>;
+    };
 
     /* A refinement of `meta::range<T, Rs...>` that specifies that the range's begin
     and end iterators are the same type.  Ranges of this form may be required for
@@ -398,9 +398,6 @@ namespace meta {
         random_access_range<T, Rs...> && contiguous_iterator<begin_type<T>>;
 
     namespace detail {
-
-        template <meta::range T>
-        constexpr bool prefer_constructor<T> = true;
 
         template <meta::range T>
         constexpr bool wraparound<T> = true;
@@ -546,10 +543,6 @@ namespace meta {
         };
 
     }
-
-    /// TODO: static_shape may not be necessary?  All sequences need to know is the
-    /// rank, which can be deduced just from `shape().size()`.
-
 
     /* Retrieve the `shape()` of a generic type `T` where such information is
     independent of any particular instance of `T`.
@@ -711,6 +704,10 @@ namespace impl {
     template <typename C>
     concept range_concept = meta::not_void<C> && meta::not_rvalue<C> && !meta::range<C>;
 
+    /////////////////////
+    ////    EMPTY    ////
+    /////////////////////
+
     /* A trivial range with zero elements.  This is the default type for the `range`
     class template, allowing it to be default-constructed. */
     struct empty_range : empty_range_tag {
@@ -723,10 +720,10 @@ namespace impl {
         [[nodiscard]] static constexpr impl::extent<0> shape() noexcept { return {}; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
         [[nodiscard]] static constexpr auto begin() noexcept {
-            return empty_iterator<const NoneType&>{};
+            return empty_iterator{};
         }
         [[nodiscard]] static constexpr auto end() noexcept {
-            return empty_iterator<const NoneType&>{};
+            return empty_iterator{};
         }
         [[nodiscard]] static constexpr auto rbegin() noexcept {
             return std::make_reverse_iterator(end());
@@ -735,6 +732,10 @@ namespace impl {
             return std::make_reverse_iterator(begin());
         }
     };
+
+    //////////////////////
+    ////    SCALAR    ////
+    //////////////////////
 
     /* A range over just a single scalar element.  Indexing the range perfectly
     forwards that element, and iterating over it is akin to taking its address.  A
@@ -885,6 +886,10 @@ namespace impl {
     };
     template <typename T>
     scalar_range(T&&) -> scalar_range<meta::remove_rvalue<T>>;
+
+    /////////////////////
+    ////    TUPLE    ////
+    /////////////////////
 
     enum class tuple_kind : uint8_t {
         EMPTY,
@@ -1067,11 +1072,11 @@ namespace impl {
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
 
         [[nodiscard]] static constexpr auto begin() noexcept {
-            return empty_iterator<const NoneType&>{};
+            return empty_iterator{};
         }
 
         [[nodiscard]] static constexpr auto end() noexcept {
-            return empty_iterator<const NoneType&>{};
+            return empty_iterator{};
         }
 
         [[nodiscard]] static constexpr auto rbegin() noexcept {
@@ -1388,6 +1393,10 @@ namespace impl {
 
     template <typename T>
     tuple_range(T&&) -> tuple_range<meta::remove_rvalue<T>>;
+
+    ////////////////////
+    ////    IOTA    ////
+    ////////////////////
 
     template <typename T>
     concept strictly_positive = meta::unsigned_integer<T> || !requires(meta::as_const_ref<T> t) {
@@ -2221,6 +2230,10 @@ namespace impl {
         meta::remove_rvalue<Step>
     >;
 
+    ////////////////////////
+    ////    SUBRANGE    ////
+    ////////////////////////
+
     template <typename Start, typename Stop>
     using subrange_difference = iota_difference<Start, Stop>;
 
@@ -2283,6 +2296,8 @@ namespace impl {
 
     /// TODO: subrange_linear can only be used if the stop condition supports distance
     /// checks?
+    /// -> Why would this be the case?  I'll have to read through the subrange logic
+    /// to find out.
 
     template <typename Start, typename Stop, typename Step>
     concept subrange_linear =
@@ -3722,6 +3737,10 @@ namespace impl {
         meta::remove_rvalue<Step>
     >;
 
+    ////////////////////////
+    ////    SEQUENCE    ////
+    ////////////////////////
+
     template <typename T, typename Category, size_t Rank>
     concept sequence_concept =
         range_concept<T> &&
@@ -4895,6 +4914,14 @@ namespace impl {
         }
     };
 
+    inline constexpr TypeError range_front_error() noexcept {
+        return TypeError("empty range has no front()");
+    }
+
+    inline constexpr TypeError range_back_error() noexcept {
+        return TypeError("empty range has no back()");
+    }
+
 }
 
 
@@ -4937,7 +4964,7 @@ namespace iter {
     not otherwise iterable.  This works by dispatching to a reference array that gets
     populated when the range is constructed as long as the tuple contains only a single
     type, or a static vtable filled with function pointers that extract the
-    corresponding value when called.  In the latter case, the return type will be
+    corresponding value when called.  In the latter case, the return type may be
     promoted to a `Union` in order to model heterogenous tuples. */
     template <impl::range_concept C> requires (!meta::iterable<C> && meta::tuple_like<C>)
     struct range<C> : range<impl::tuple_range<C>> {
@@ -4953,29 +4980,59 @@ namespace iter {
         using range<impl::scalar_range<C>>::operator=;
     };
 
-    /* A type-erased range that forgets the underlying container type, and presents only as
-    a sequence of some type.
+    /// TODO: If given a range as input, the sequence constructor should extract its
+    /// underlying container type?
 
-    Because of their use as monadic expression templates, ranges can quickly become deeply
-    nested and brittle, especially when used with conditionals which may return slightly
-    different types for each branch.  A similar problem exists with C++ function objects,
-    which can be mitigated by using `std::function`, which `sequence<T>` is perfectly
-    analogous to, but for iterable containers.
 
-    The sequence constructor works by taking an arbitrary container type `C` that meets
-    the criteria and moving it onto the heap as a reference-counted void pointer.  It then
-    generates a table of function pointers that emulate the standard range interface for
-    `C`, including `size()`, `empty()`, `operator[]`, and basic input/output iterators.
-    Users should note that erasing the container type in this way can substantially reduce
-    iteration performance, especially for large containers and/or hot loops.  Non-erased
-    ranges should therefore be preferred whenever possible, and erasure should be
-    considered only as a last resort to satisfy the type checker.
+    /* A special case of `range` that erases the underlying container type.
 
-    Bertrand instantiates this type internally when generating bindings for ranges that
-    have no direct equivalent in the target language, and therefore cannot be translated
-    normally.  In that case, as long as the range's yield type is a valid expression in
-    the other language, then the rest of the range interface can be abstracted away, and
-    the binding can be generated anyway, albeit at a performance cost. */
+    Because of their use as monadic expression templates, ranges can quickly become
+    deeply nested and brittle, especially when used in conditionals that may return
+    slightly different types for each branch.  A similar problem exists with C++
+    function objects, which can be mitigated by using `std::function`, which
+    `sequence<T>` is analogous to for iterable containers.
+
+    Sequences have most of the same behaviors as normal ranges, except for:
+
+        1.  The underlying container may be dynamically allocated (if it is not
+            provided as an lvalue) along with a collection of function pointers to
+            implement the type-erased interface.  The resulting control block is
+            (atomically) reference counted, allowing for fast copies of the public
+            `sequence` regardless of the underlying container.  However, modifying a
+            copy can lead to side effects in other sequences referencing the same data.
+            In order to mitigate this, sequences are designed to be read-only views,
+            and always const-qualify the internal container before reading from it.
+            Users should take care not to cast away these qualifiers or modify the
+            original container while it is the subject of one or more sequences.
+        2.  The sequence's iterators are also type-erased, and reference the same
+            control block as the parent sequence.  As a result, sequences always model
+            both `std::borrowed_range` and `std::common_range`, even if the underlying
+            container does not.  Furthermore, the iterator category is always at least
+            `std::forward_iterator`, even if the underlying container only models an
+            input iterator.  Unlike the parent sequence, however, copying an iterator
+            will always create a deep copy of the internal iterator state, so modifying
+            one iterator will not affect any others as long as it does not modify the
+            underlying container.
+        3.  The sequence's `shape()` is cached within the control block, and reused to
+            implement the `size()`, `ssize()`, and `empty()` methods.  These methods
+            are thus always supported regardless of the underlying container, but may
+            require a linear traversal to infer the proper shape, which will then be
+            stored for future use.
+        4.  The sequence type is never tuple-like, and only permits integer indexing
+            via `operator[]`.  Multi-dimensional indexing is still allowed as long as
+            the container's rank supports it, possibly requiring additional heap
+            allocations for nested sequences between the outermost sequence and the
+            final yield type.
+
+    Note that erasing the container type in this way can substantially reduce iteration
+    performance, especially for large containers and/or hot loops.  Non-erased ranges
+    should therefore be preferred whenever possible, and erasure should be considered
+    only as a last resort to satisfy the type checker, or when the convenience
+    outweighs the performance cost.  Bertrand uses this type internally to generate
+    bindings for ranges that have no direct equivalent in a target language - such as
+    anonymous generator expressions or naked iterators, which would otherwise require
+    unique bindings for each occurrence - as long as their yield type has been exported
+    to the target language. */
     template <typename T, typename Category = std::input_iterator_tag, size_t Rank = 1>
         requires (impl::sequence_concept<T, Category, Rank>)
     struct sequence : range<impl::sequence<meta::const_yield_type<T>, Category, Rank>> {
@@ -5374,31 +5431,17 @@ namespace impl {
         }
 
         template <meta::tuple_like to, meta::range R, size_t... Is>
-            requires (
-                meta::tuple_like<R> &&
-                meta::tuple_size<R> == meta::tuple_size<to> &&
-                sizeof...(Is) == meta::tuple_size<to>
-            )
         constexpr to unpack_tuple_impl(R&& r, std::index_sequence<Is...>)
-            noexcept (requires{{to{std::forward<R>(r).template get<Is>()...}};} ?
-                requires{{to{std::forward<R>(r).template get<Is>()...}} noexcept;} :
-                requires{{to{meta::get<Is>(*std::forward<R>(r).__value)...}} noexcept;}
-            )
-            requires (
-                requires{{to{std::forward<R>(r).template get<Is>()...}};} ||
-                requires{{to{meta::get<Is>(*std::forward<R>(r).__value)...}};}
-            )
+            noexcept (requires{{to{*std::forward<R>(r).template get<Is>()...}} noexcept;})
+            requires (requires{{to{*std::forward<R>(r).template get<Is>()...}};})
         {
-            if constexpr (requires{{to{std::forward<R>(r).template get<Is>()...}};}) {
-                return to{std::forward<R>(r).template get<Is>()...};
-            } else {
-                return to{meta::get<Is>(*std::forward<R>(r).__value)...};
-            }
+            return to{*std::forward<R>(r).template get<Is>()...};
         }
 
         template <typename Self, typename to>
         concept unpack_tuple =
             meta::tuple_like<Self> &&
+            meta::tuple_like<to> &&
             meta::tuple_size<to> == meta::tuple_size<Self> &&
             requires(Self self) {{unpack_tuple_impl<to>(
                 std::forward<Self>(self),
@@ -5440,9 +5483,11 @@ namespace impl {
         constexpr decltype(auto) _unpack_iter_impl(Iter& it)
             noexcept (meta::nothrow::iterator<Iter>)
         {
-            decltype(auto) val = *it;
-            ++it;
-            return (meta::decay(std::forward<decltype(val)>(val)));
+            struct G {
+                Iter& it;
+                constexpr ~G() noexcept (meta::nothrow::iterator<Iter>) { ++it; }
+            } guard {it};
+            return (*it);  // destructor runs after return
         }
 
         template <size_t I, size_t N, meta::iterator Iter, meta::sentinel_for<Iter> End>
@@ -5463,12 +5508,12 @@ namespace impl {
             noexcept (!DEBUG && requires(decltype(self.begin()) it) {
                 {self.size() != sizeof...(Is)} noexcept -> meta::nothrow::truthy;
                 {self.begin()} noexcept;
-                {to{(void(Is), _unpack_iter_impl(it))...}} noexcept;
+                {to{(void(Is), *_unpack_iter_impl(it))...}} noexcept;
             })
-            requires (requires(decltype(self.begin()) it) {
+            requires (requires(decltype(self.begin()) it){
                 {self.size() != sizeof...(Is)} -> meta::truthy;
                 {self.begin()};
-                {to{(void(Is), _unpack_iter_impl(it))...}};
+                {to{(void(Is), *_unpack_iter_impl(it))...}};
             })
         {
             if constexpr (DEBUG) {
@@ -5477,33 +5522,7 @@ namespace impl {
                 }
             }
             auto it = self.begin();
-            return to{(void(Is), _unpack_iter_impl(it))...};
-        }
-
-        template <meta::tuple_like to, meta::range Self, size_t... Is>
-            requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
-        constexpr to unpack_iter_impl(Self& self, std::index_sequence<Is...>)
-            noexcept (!DEBUG && requires(decltype(meta::begin(*self.__value)) it) {
-                {self.size() != sizeof...(Is)} noexcept -> meta::nothrow::truthy;
-                {meta::begin(*self.__value)} noexcept;
-                {to{(void(Is), _unpack_iter_impl(it))...}} noexcept;
-            })
-            requires (!requires(decltype(self.begin()) it) {
-                {self.begin()};
-                {to{(void(Is), _unpack_iter_impl(it))...}};
-            } && requires(decltype(meta::begin(*self.__value)) it) {
-                {self.size() != sizeof...(Is)} -> meta::truthy;
-                {meta::begin(*self.__value)};
-                {to{(void(Is), _unpack_iter_impl(it))...}};
-            })
-        {
-            if constexpr (DEBUG) {
-                if (size_t size = self.size(); size != sizeof...(Is)) {
-                    throw wrong_size<sizeof...(Is)>(size);
-                }
-            }
-            auto it = meta::begin(*self.__value);
-            return to{(void(Is), _unpack_iter_impl(it))...};
+            return to{(void(Is), *_unpack_iter_impl(it))...};
         }
 
         template <meta::tuple_like to, meta::range Self, size_t... Is>
@@ -5512,59 +5531,20 @@ namespace impl {
             noexcept (!DEBUG && requires(decltype(self.begin()) it, decltype(self.end()) end) {
                 {self.begin()} noexcept;
                 {self.end()} noexcept;
-                {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
+                {to{*_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
             })
             requires (
                 !requires{{self.size() != sizeof...(Is)} -> meta::truthy;} && 
                 requires(decltype(self.begin()) it, decltype(self.end()) end) {
                     {self.begin()};
                     {self.end()};
-                    {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}};
+                    {to{*_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}};
                 }
             )
         {
             auto it = self.begin();
             auto end = self.end();
-            to result {_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...};
-            if constexpr (DEBUG) {
-                if (!bool(it == end)) {
-                    throw too_big<sizeof...(Is)>();
-                }
-            }
-            return result;
-        }
-
-        template <meta::tuple_like to, meta::range Self, size_t... Is>
-            requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
-        constexpr to unpack_iter_impl(Self& self, std::index_sequence<Is...>)
-            noexcept (!DEBUG && requires(
-                decltype(meta::begin(*self.__value)) it,
-                decltype(meta::end(*self.__value)) end
-            ) {
-                {meta::begin(*self.__value)} noexcept;
-                {meta::end(*self.__value)} noexcept;
-                {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
-            })
-            requires (
-                !requires{{self.size() != sizeof...(Is)} -> meta::truthy;} &&
-                !requires(decltype(self.begin()) it, decltype(self.end()) end) {
-                    {self.begin()};
-                    {self.end()};
-                    {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}};
-                } &&
-                requires(
-                    decltype(meta::begin(*self.__value)) it,
-                    decltype(meta::end(*self.__value)) end
-                ) {
-                    {meta::begin(*self.__value)};
-                    {meta::end(*self.__value)};
-                    {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}};
-                }
-            )
-        {
-            auto it = meta::begin(*self.__value);
-            auto end = meta::end(*self.__value);
-            to result {_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...};
+            to result {*_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...};
             if constexpr (DEBUG) {
                 if (!bool(it == end)) {
                     throw too_big<sizeof...(Is)>();
@@ -7199,90 +7179,117 @@ namespace iter {
     template <typename... K>
     at(K&&...) -> at<type<meta::remove_rvalue<K>>...>;
 
-    /* A wrapper for an arbitrary container type that can be used to form iterable
+    /* A wrapper for an arbitrary container that can be used to form iterable
     expressions.
 
     Ranges can be constructed in a variety of ways, effectively replacing each of the
-    following with a unified CTAD constructor (in order of preference):
+    following with a simplified CTAD constructor (in order of preference):
 
-        1.  `std::views::all(container)` -> `range(container)`, where `container` is any
-            iterable or tuple-like type.
-        2.  `std::ranges::subrange(begin, end)` -> `range(begin, end)`, where `begin`
-            is an iterator and `end` is a matching sentinel.
-        3.  `std::views::iota(start, stop)` -> `range(start, stop)`, where `start` and
+        1.  `std::views::empty()` -> `range()`, producing an empty range with no
+            elements.  By default, the deduced yield type will be equal to `None`.
+        2.  `std::views::all(container)` -> `range(container)`, where `container` is
+            any iterable or tuple-like type.  If the type is tuple-like and not
+            iterable, then a vtable will be generated to provide random-access
+            iteration over the tuple's elements, possibly involving dynamic dispatch
+            and/or yielding `Union<Ts...>` if the elements are heterogeneous.
+        3.  `std::views::single(value)` -> `range(value)`, where `value` is not
+            iterable or tuple-like.  This produces a range of size 1 that yields
+            a reference to `value` as the only element, and whose iterators devolve to
+            simple pointers.
+        4.  `std::views::iota(start)` -> `range(start, {})`, which represents an
+            infinite range beginning at `start` and applying `++start` on each
+            iteration.
+        5.  `std::views::iota(start, stop)` -> `range(start, stop)`, where `start` and
             `stop` are arbitrary types for which `++start` and `start < stop` are
-            well-formed.  Also permits an optional third `step` argument, which represents
-            a step size that will be used between increments.  If the expression
-            `start += step` is well-formed, then it will be used to obtain each value in
-            constant time.  Otherwise, the step size must be default-constructible and
-            support `step < step`, causing an inner loop to call either `++start` or
-            `--start` to obtain each value in linear time, depending on the sign of `step`.
-        4.  `std::views::iota(Stop{}, stop)` -> `range(stop)`, which corresponds to a
-            Python-style `range` expression, where the start index is default-constructed
-            with the same type as `stop`.  All other rules from (3) still apply, except
-            that no step size is permitted (use the 2-argument form if a step size is
-            needed).
-        5.  `std::views::iota(start)` -> `range(start, None)`, representing an infinite
-            range beginning at `start` and applying `++start` at every iteration.  A step
-            size can be provided as an optional third argument, according to the rules laid
-            out in (3).
-        6.  `std::views::counted(begin, size)` -> `range(begin, size)`, where `begin` is
-            an iterator and `size` is an unsigned integer.
+            well-formed.  `stop` may alternatively be a function predicate that takes
+            the current value of `start` and returns a boolean indicating whether
+            iteration should continue (`true`) or terminate (`false`), just like a
+            traditional `for` or `while` loop condition.
+        6.  `std::views::iota(start, stop) | std::views::stride(step)` ->
+            `range(start, stop, step)`, which allows a nontrivial step size between
+            each element, assuming `start += step` is well-formed.  If `step < 0` is
+            well-formed, then `start > stop` must also be supported, in order to
+            properly bound iteration with negative step sizes.  Similar to (4), `step`
+            may alternatively be a function predicate that takes the current value of
+            `start` and modifies it in-place to produce the next value in the range
+            (which can be thought of as equivalent to the "update" step in a
+            traditional `for` loop).
+        7.  `std::ranges::subrange(start, stop)` -> `range(start, stop)`, where `start`
+            is an iterator and `stop` is a matching sentinel or integer, in which case
+            it behaves like `std::views::counted(start, stop)`.  The result has all the
+            same characteristics as (5), except that `start == stop` is also a valid
+            termination condition if the iterator and sentinel are not totally ordered.
+            Infinite subranges are permitted by default-constructing `stop`
+            (e.g. `range(start, {})`).
+        8.  `std::ranges::subrange(start, stop) | std::views::stride(step)` ->
+            `range(start, stop, step)`, which behaves similarly to (6), except that
+            `start == stop` is also a valid termination condition if the iterator and
+            sentinel are not totally ordered, and `start += step` may be replaced by a
+            loop of `++start` or `--start` calls (depending on the sign of `step`) if
+            the iterator does not support random-access addition.  Negative step sizes
+            are only allowed if the iterator supports bidirectional iteration.
 
-    If the underlying container is tuple-like, then the range will be as well, and will
-    forward to the container's `get<I>()` method when accessed or destructured.  If the
-    tuple is not directly iterable, then an iterator will be generated for it, which may
-    yield `Union<Ts...>`, where `Ts...` are the unique return types for each index.  All
-    tuples, regardless of implementation, should therefore produce iterable ranges just
-    like any other container.
+    Once constructed, ranges provide member equivalents for most of the Customization
+    Point Objects (CPOs) in the `std::ranges` namespace (plus a few others), including:
 
-    `range` has a number of subclasses, all of which extend the basic iteration interface
-    in some way:
+        a.  `begin()`, `end()`, `rbegin()`, `rend()`, and const equivalents, which
+            allow all ranges to be iterated over, regardless of the capabilities of the
+            underlying container.  Note that all values returned during iteration will
+            be converted into further ranges (including scalars), which helps to
+            facilitate nested (multidimensional) ranges.
+        b.  `data()`, which directly forwards to the underlying container assuming it
+            supports it.  Disabled otherwise.
+        c.  `size()` and `ssize()`, which return the size as an unsigned or signed
+            integer, respectively, assuming the container supports at least one or the
+            other.
+        d.  `empty()`, which is always supported.
+        e.  `shape()`, which equates to a `meta::shape()` call on the range itself.
+            This is always supported, and distinct from `size()` and `ssize()` in both
+            return type (returning an array-like object) and complexity, with this
+            method possibly equating to a `std::ranges::distance()` call in the first
+            dimension.  See `meta::shape()` for more details.
+        f.  `front()` and `back()`, which forward to the underlying container if
+            possible, and may involve dereferencing the `begin()` or `rbegin()`
+            iterators, respectively.  Both may throw `TypeError`s as a debug assertion
+            if invoked on an empty range, in order to avoid undefined behavior.  The
+            result will always be another (possibly scalar) range.
+        g.  `get<K...>()`, where `K...` can be any number of non-type template
+            parameters equating to an `iter::at<K...>{}(self)` call internally.  See
+            `iter::at<K...>{}` for more details.  The result will always be another
+            (possibly scalar) range.
+        h.  `operator[](k...)`, where `k...` can be any number of subscript indices,
+            equating to an `iter::at{k...}(self)` call internally.  See
+            `iter::at{k...}` for more details.  The result will always be another
+            (possibly scalar) range.
+        i.  `contains(k)`, which equates to an `iter::contains{k}(self)` call
+            internally.  See `iter::contains{k}` for more details.
 
-    /// TODO: `unpack` no longer exists
+    Additionally, ranges can be dereferenced via the `*` and/or `->` operators as if
+    they were pointers, which allows indirect access to the underlying container.  Note
+    that invoking any constructor other than (2) or (3) above will cause the internal
+    empty, iota, or subrange type to be exposed, since there is no singular container
+    to access.
 
-        1.  `unpack`: a trivial extension of `range` that behaves identically, and is
-            returned by the prefix `*` operator for iterable and tuple-like containers.
-            This is essentially equivalent to the standard `range` constructor; the only
-            difference is that when an `unpack` range is provided to a Bertrand function
-            (e.g. a `def` statement), it will be destructured into individual arguments,
-            emulating Python-style container unpacking.  Applying a second prefix `*`
-            promotes the `unpack` range into a keyword range, which destructures to
-            keyword arguments if the function supports them.  Otherwise, when used in any
-            context other than function calls, the prefix `*` operator simply provides a
-            convenient entry point for range-based expressions over supported container
-            types, separate from the `range` constructor.
-        2.  `slice`: an extension of `range` that includes only a subset of the elements in
-            a range, according to Python-style slicing semantics.  This can fully replace
-            `std::views::take`, `std::views::drop`, and `std::views::stride`, as well as
-            some uses of `std::views::reverse`, which can be implemented as a `slice` with
-            a negative step size.  Note that `slice` cannot be tuple-like, since the
-            included indices are only known at run time.
-        3.  `mask`: an extension of `range` that includes only the elements that correspond
-            to the `true` indices in a boolean mask.  This provides a finer level of
-            control than `slice`, and can replace many uses of `std::views::filter` when a
-            boolean mask is already available or can be easily generated.
-        4.  `comprehension`: an extension of `range` that stores a function that will be
-            applied elementwise over each value in the range.  This is similar to
-            `std::views::transform`, but allows for more complex transformations, including
-            destructuring and visitation for union and tuple elements consistent with the
-            rest of Bertrand's pattern matching interface.  `comprehension`s also serve as
-            the basic building blocks for arbitrary expression trees, and can replace
-            `std::views::repeat` and any uses of `std::views::filter` that do not fall
-            under the `mask` criteria simply by returning a nested `range`, which will be
-            flattened into the result.
-        5.  `zip`: an extension of `range` that fuses multiple ranges, and yields tuples of
-            the corresponding elements, terminating when the shortest range has been
-            exhausted.  This effectively replaces `std::views::zip` and
-            `std::views::enumerate`.
+    Ranges also provide implicit conversions toward any type that satisfies the
+    requirements of `std::ranges::to<T>(self)`, with small modifications to ensure
+    consistency.  Explicit conversions (including contextual boolean conversions) are
+    only allowed if the underlying container supports them, and no implicit conversion
+    could be found.
 
-        /// TODO: update these with the rest of the range interface when implemented
+    Similarly, ranges provide custom assignment operators from both scalars (which will
+    be broadcasted across the range) and other ranges (which lead to elementwise
+    assignment), as well as braced initializer lists (which act as anonymous ranges).
+    These effectively replace most uses of `std::ranges::fill()` and
+    `std::ranges::copy()`, respectively.
 
-    Each subclass of `range` is also exposed to Bertrand's monadic operator interface,
-    which returns lazily-evaluated `comprehension`s that encode each operation into an
-    expression tree.  The tree will only be evaluated when the range is indexed, iterated
-    over, or converted to a compatible type, which reduces it to a single loop that can be
-    aggressively optimized by the compiler. */
+    Lastly, all ranges are automatically exposed to Bertrand's monadic operator
+    interface, which returns further ranges representing fused expression templates,
+    which are lazily-evaluated upon indexing, iteration, conversion, or assignment, and
+    reduce to single loops that can be aggressively optimized by the compiler.
+    
+    A number of range adaptors are provided in the `iter::` namespace, allowing easy
+    composition of common range algorithms.  See each of those adaptors for more
+    details. */
     template <impl::range_concept C = impl::empty_range>
     struct range : impl::range_tag {
         [[no_unique_address]] impl::ref<C> __value;
@@ -7571,11 +7578,19 @@ namespace iter {
         assertion). */
         template <typename Self>
         [[nodiscard]] constexpr auto front(this Self&& self)
-            noexcept (requires{
+            noexcept (!DEBUG && requires{
                 {iter::range(meta::front(*std::forward<Self>(self).__value))} noexcept;
             })
-            requires (requires{{iter::range(meta::front(*std::forward<Self>(self).__value))};})
+            requires (
+                !meta::inherits<C, impl::empty_range_tag> &&
+                requires{{iter::range(meta::front(*std::forward<Self>(self).__value))};}
+            )
         {
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_front_error();
+                }
+            }
             return iter::range(meta::front(*std::forward<Self>(self).__value));
         }
 
@@ -7593,11 +7608,19 @@ namespace iter {
         assertion). */
         template <typename Self>
         [[nodiscard]] constexpr auto back(this Self&& self)
-            noexcept (requires{
+            noexcept (!DEBUG && requires{
                 {iter::range(meta::back(*std::forward<Self>(self).__value))} noexcept;
             })
-            requires (requires{{iter::range(meta::back(*std::forward<Self>(self).__value))};})
+            requires (
+                !meta::inherits<C, impl::empty_range_tag> &&
+                requires{{iter::range(meta::back(*std::forward<Self>(self).__value))};}
+            )
         {
+            if constexpr (DEBUG) {
+                if (self.empty()) {
+                    throw impl::range_back_error();
+                }
+            }
             return iter::range(meta::back(*std::forward<Self>(self).__value));
         }
 
@@ -7744,7 +7767,6 @@ namespace iter {
                 impl::range_assign::tuple_from_tuple<range, T> ||
                 impl::range_assign::iter_from_tuple<range, T> ||
                 impl::range_assign::tuple_from_iter<range, T>
-                /// TODO: explicit recursion?
             )
         {
             impl::range_assign::assign(*this, std::forward<T>(rhs));
@@ -7771,9 +7793,17 @@ namespace iter {
             return *this;
         }
 
-
         /// TODO: monadic call operator, which may be forward-declared and filled in
         /// later in zip.h, once `zip{}` has been defined.
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... a)
+            noexcept (meta::nothrow::iterable<Self> && requires(meta::yield_type<Self> x) {
+                {x(std::forward<A>(a)...)} noexcept;
+            })
+            requires (requires(meta::yield_type<Self> x) {
+                {x(std::forward<A>(a)...)};
+            });
 
     };
 
@@ -7832,6 +7862,13 @@ namespace impl {
         ));
     }
 
+    template <meta::range R>
+    using range_yield = meta::remove_range<meta::yield_type<R>>;
+
+    template <meta::range R, size_t I>
+    using range_get = meta::remove_range<meta::get_type<R, 2>>;
+
+
 }
 
 
@@ -7848,8 +7885,9 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         template <>
         inline constexpr bool enable_borrowed_range<bertrand::impl::empty_range> = true;
 
-        /// TODO: borrowed range support for single ranges and optionals if the
-        /// underlying type is an lvalue or models borrowed_range.
+        template <typename T>
+        constexpr bool enable_borrowed_range<bertrand::impl::scalar_range<T>> =
+            enable_borrowed_range<bertrand::Optional<T>>;
 
         template <typename T, typename Category, size_t Rank>
         constexpr bool enable_borrowed_range<bertrand::impl::sequence<T, Category, Rank>> = true;
@@ -7884,104 +7922,225 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     template <size_t I>
     struct tuple_element<I, bertrand::impl::empty_range> {
-        using type = const bertrand::NoneType&;
+        using type = bertrand::NoneType;
     };
 
     template <size_t I, typename T> requires (I == 0)
     struct tuple_element<I, bertrand::impl::scalar_range<T>> {
-        using type = T;
+        using type = bertrand::meta::remove_rvalue<
+            decltype((bertrand::meta::get<I>(std::declval<T>())))
+        >;
     };
 
     template <size_t I, typename T> requires (I < bertrand::meta::tuple_size<T>)
     struct tuple_element<I, bertrand::impl::tuple_range<T>> {
-        using type = decltype((bertrand::meta::get<I>(std::declval<T>())));
+        using type = bertrand::meta::remove_rvalue<
+            decltype((bertrand::meta::get<I>(std::declval<T>())))
+        >;
     };
 
     template <size_t I, bertrand::meta::tuple_like T> requires (I < bertrand::meta::tuple_size<T>)
     struct tuple_element<I, bertrand::iter::range<T>> {
-        using type = decltype((bertrand::meta::get<I>(std::declval<T>())));
+        using type = bertrand::meta::remove_rvalue<
+            decltype((bertrand::meta::get<I>(std::declval<T>())))
+        >;
     };
 
     template <ssize_t I, bertrand::meta::extent T>
         requires (bertrand::impl::valid_index<bertrand::meta::tuple_size<T>, I>)
     constexpr decltype(auto) get(T&& t)
-        noexcept (requires{{bertrand::meta::get<I>(std::forward<T>(t))} noexcept;})
-        requires (requires{{bertrand::meta::get<I>(std::forward<T>(t))};})
+        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
+        requires (requires{{std::forward<T>(t).template get<I>()};})
     {
-        return (bertrand::meta::get<I>(std::forward<T>(t)));
+        return (std::forward<T>(t).template get<I>());
     }
 
-    template <ssize_t I, bertrand::meta::range R>
-        requires (
-            bertrand::meta::tuple_like<R> &&
-            bertrand::impl::valid_index<bertrand::meta::tuple_size<R>, I>
-        )
+    template <auto... K, bertrand::meta::range R>
     constexpr decltype(auto) get(R&& r)
-        noexcept (requires{{bertrand::meta::get<I>(std::forward<R>(r))} noexcept;})
-        requires (requires{{bertrand::meta::get<I>(std::forward<R>(r))};})
+        noexcept (requires{{std::forward<R>(r).template get<K...>()} noexcept;})
+        requires (requires{{std::forward<R>(r).template get<K...>()};})
     {
-        return (bertrand::meta::get<I>(std::forward<R>(r)));
+        return (std::forward<R>(r).template get<K...>());
     }
-
-    /// TODO: all these CTAD guide should account for ranges always yielding nested
-    /// ranges, and unwrap them automatically.
-
-    template <bertrand::meta::range R>
-        requires (bertrand::meta::character<bertrand::meta::yield_type<R>>)
-    basic_string(R&& r) -> basic_string<
-        bertrand::meta::unqualify<bertrand::meta::yield_type<R>>
-    >;
-
-    template <bertrand::meta::contiguous_range R>
-        requires (bertrand::meta::character<bertrand::meta::yield_type<R>>)
-    basic_string_view(R&& r) -> basic_string_view<
-        bertrand::meta::unqualify<bertrand::meta::yield_type<R>>
-    >;
 
     template <bertrand::meta::range R> requires (bertrand::meta::tuple_like<R>)
     array(R&& r) -> array<
-        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>,
+        bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>,
         bertrand::meta::tuple_size<R>
     >;
 
     template <bertrand::meta::range R>
         requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 2)
-    pair(R&& r) -> pair<bertrand::meta::get_type<R, 0>, bertrand::meta::get_type<R, 1>>;
+    pair(R&& r) -> pair<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>
+    >;
 
-    /// TODO: tuple, but that will have to be bounded within a finite range or omitted
-    /// entirely, since C++ currently doesn't allow me to unpack types directly into
-    /// a CTAD guide.
-    /// -> Unions and variants have the same problem.
-
-    template <bertrand::meta::range R>
-    vector(R&& r) -> vector<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
-
-    template <bertrand::meta::range R>
-    deque(R&& r) -> deque<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+    /// TODO: eventually, C++ should support generating deduction guides for tuple-like
+    /// types automatically, but right now, we have to unroll them manually, up to a
+    /// reasonable limit.
 
     template <bertrand::meta::range R>
-    list(R&& r) -> list<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 0)
+    tuple(R&& r) -> tuple<>;
 
     template <bertrand::meta::range R>
-    forward_list(R&& r) -> forward_list<
-        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 1)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>
     >;
 
     template <bertrand::meta::range R>
-    set(R&& r) -> set<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 2)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>
+    >;
 
     template <bertrand::meta::range R>
-    multiset(R&& r) -> multiset<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 3)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 4)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 5)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 4>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 6)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 4>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 5>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 7)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 4>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 5>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 6>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 8)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 4>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 5>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 6>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 7>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 9)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 4>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 5>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 6>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 7>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 8>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::tuple_like<R> && bertrand::meta::tuple_size<R> == 10)
+    tuple(R&& r) -> tuple<
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 0>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 1>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 2>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 3>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 4>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 5>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 6>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 7>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 8>>,
+        bertrand::meta::remove_rvalue<bertrand::impl::range_get<R, 9>>
+    >;
+
+    template <bertrand::meta::range R>
+        requires (bertrand::meta::character<bertrand::impl::range_yield<R>>)
+    basic_string(R&& r) -> basic_string<bertrand::meta::unqualify<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::contiguous_range R>
+        requires (bertrand::meta::character<bertrand::impl::range_yield<R>>)
+    basic_string_view(R&& r) -> basic_string_view<
+        bertrand::meta::unqualify<bertrand::impl::range_yield<R>>
+    >;
+
+    template <bertrand::meta::range R>
+    vector(R&& r) -> vector<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::range R>
+    deque(R&& r) -> deque<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::range R>
+    stack(R&& r) -> stack<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::range R>
+    queue(R&& r) -> queue<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::range R>
+    priority_queue(R&& r) -> priority_queue<
+        bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>
+    >;
+
+    template <bertrand::meta::range R>
+    list(R&& r) -> list<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::range R>
+    forward_list(R&& r) -> forward_list<
+        bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>
+    >;
+
+    template <bertrand::meta::range R>
+    set(R&& r) -> set<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
+
+    template <bertrand::meta::range R>
+    multiset(R&& r) -> multiset<bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>>;
 
     template <bertrand::meta::range R>
     unordered_set(R&& r) -> unordered_set<
-        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+        bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>
     >;
 
     template <bertrand::meta::range R>
     unordered_multiset(R&& r) -> unordered_multiset<
-        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
+        bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>
     >;
+
+    /// TODO: think about CTAD for map types
 
     template <bertrand::meta::range R>
         requires (
@@ -8039,17 +8198,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         >
     >;
 
-    template <bertrand::meta::range R>
-    stack(R&& r) -> stack<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
-
-    template <bertrand::meta::range R>
-    queue(R&& r) -> queue<bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>>;
-
-    template <bertrand::meta::range R>
-    priority_queue(R&& r) -> priority_queue<
-        bertrand::meta::remove_reference<bertrand::meta::yield_type<R>>
-    >;
-
     /// TODO: a deduction guide for `std::mdspan` which gathers the correct extents
     /// based on the shape() of the range, where such a thing is possible, and where
     /// that information can be known at compile time.
@@ -8086,6 +8234,13 @@ namespace bertrand::iter {
 
 
 
+    static_assert([]{
+        std::array arr {1, 2, 3};
+        std::tuple tup = range(arr);
+        // std::tuple tup = range(std::array{1, 2, 3});
+
+        return true;
+    }());
 
 
 

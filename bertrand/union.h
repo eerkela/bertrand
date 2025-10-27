@@ -4490,7 +4490,7 @@ namespace impl {
     always compare equal.  The template parameter sets the return type of the
     dereference operators, which is useful for metaprogramming purposes.  No values
     will ever actually be yielded. */
-    template <meta::not_void T = NoneType>
+    template <meta::not_void T = const NoneType>
     struct empty_iterator {
         using iterator_category = std::contiguous_iterator_tag;
         using difference_type = std::ptrdiff_t;
@@ -5162,26 +5162,26 @@ struct Optional<T> : impl::optional_tag {
     trivial iterator that yields no values and always compares equal to `end()`. */
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a forward iterator over an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `end()`. */
     [[nodiscard]] constexpr auto cbegin() const noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a forward sentinel for an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `begin()`. */
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a forward sentinel for an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `begin()`. */
     [[nodiscard]] constexpr auto cend() const noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a reverse iterator over an empty optional.  This will always return a
@@ -6134,26 +6134,26 @@ struct Expected<T, E, Es...> {
     trivial iterator that yields no values and always compares equal to `end()`. */
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a forward iterator over an empty expected monad.  This will always return a
     trivial iterator that yields no values and always compares equal to `end()`. */
     [[nodiscard]] constexpr auto cbegin() const noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a forward sentinel for an empty expected monad.  This will always return a
     trivial iterator that yields no values and always compares equal to `begin()`. */
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a forward sentinel for an empty expected monad.  This will always return a
     trivial iterator that yields no values and always compares equal to `begin()`. */
     [[nodiscard]] constexpr auto cend() const noexcept {
-        return impl::empty_iterator<NoneType>{};
+        return impl::empty_iterator{};
     }
 
     /* Get a reverse iterator over an empty expected monad.  This will always return a
@@ -6786,6 +6786,27 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 
 
 _LIBCPP_BEGIN_NAMESPACE_STD
+
+    namespace ranges {
+
+        template <typename T>
+            requires (
+                bertrand::meta::lvalue<T> ||
+                bertrand::meta::is_void<T> ||
+                bertrand::meta::None<T>
+            )
+        constexpr bool enable_borrowed_range<bertrand::Optional<T>> = true;
+
+        template <typename T, typename... Es>
+            requires (
+                bertrand::meta::lvalue<T> ||
+                bertrand::meta::is_void<T> ||
+                bertrand::meta::None<T>
+            )
+        constexpr bool enable_borrowed_range<bertrand::Expected<T, Es...>> = true;
+
+    }
+
 
     template <bertrand::meta::visit_monad T>
         requires (bertrand::meta::force_visit<1, bertrand::impl::Hash, T>)
