@@ -71,7 +71,7 @@ types can still be used in a pure C++ context, but the `from_python()` and
 struct Exception INHERIT_STD_EXCEPTION {
 private:
 
-    /// TODO: use a `std::allocator` rather than `new`/`delete` directly
+    /// TODO: use a `std::allocator` rather than `new`/`delete` directly?
 
     /* At runtime, we also store a full traceback to the error location, as well
     as a mutable cache for the `what()` message.  This information is stored in a

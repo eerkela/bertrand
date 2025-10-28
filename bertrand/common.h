@@ -4131,7 +4131,7 @@ namespace meta {
     concept has_logical_or = requires(L l, R r) { l || r; };
 
     template <typename L, typename R> requires (has_logical_or<L, R>)
-    using logical_or_type = decltype((::std::declval<L>() && ::std::declval<R>()));
+    using logical_or_type = decltype((::std::declval<L>() || ::std::declval<R>()));
 
     template <typename Ret, typename L, typename R>
     concept logical_or_returns =
@@ -5595,8 +5595,8 @@ namespace impl {
             meta::as_lvalue<F>,
             meta::dereference_type<Iter>
         >>;
-        using reference = value_type&;
-        using pointer = value_type*;
+        using reference = value_type;
+        using pointer = void;
 
         [[no_unique_address]] Iter iter;
         [[no_unique_address]] F func;
@@ -5615,7 +5615,7 @@ namespace impl {
             return impl::arrow{func(*iter)};
         }
 
-        [[nodiscard]] constexpr auto operator[](difference_type n) const
+        [[nodiscard]] constexpr value_type operator[](difference_type n) const
             noexcept (requires{{func(iter[n])} noexcept;})
             requires (requires{{func(iter[n])};})
         {

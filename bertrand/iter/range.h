@@ -2665,7 +2665,7 @@ namespace impl {
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type n)
             noexcept (requires{
-                {std::forward<Self>(self).start()[n + std::forward<Self>(self).step()]} noexcept;
+                {std::forward<Self>(self).start()[n * std::forward<Self>(self).step()]} noexcept;
             })
             requires (!subrange_empty<Step> && requires{
                 {std::forward<Self>(self).start()[n * std::forward<Self>(self).step()]};
@@ -3819,7 +3819,7 @@ namespace impl {
                 Category
             >
         > &&
-        meta::shape_type<sequence_container<T>>::size() == Rank;
+        meta::shape_type<sequence_container<C>>::size() == Rank;
 
     /* Sequences use the classic type erasure mechanism internally, consisting of a
     heap-allocated control block and an immutable void pointer to the underlying
@@ -3929,6 +3929,7 @@ namespace impl {
         std::atomic<size_t> refcount = 1;
         const void* const container;
         Optional<impl::extent<Rank>> shape;
+        std::once_flag shape_sync;
         const dtor_ptr dtor;
         const shape_ptr cache_shape;
         [[no_unique_address]] const data_ptr data;
@@ -4138,9 +4139,14 @@ namespace impl {
         }
 
         template <typename C>
+        static constexpr void shape_impl(sequence_control* control) {
+            control->shape = meta::shape(*static_cast<const C*>(control->container));
+        }
+
+        template <typename C>
         static constexpr impl::extent<Rank> shape_fn(sequence_control* control) {
             if (!control->shape.has_value()) {
-                control->shape = meta::shape(*static_cast<const C*>(control->container));
+                std::call_once(control->shape_sync, &shape_impl<C>, control);
             }
             return *control->shape;
         }
@@ -4350,14 +4356,16 @@ namespace impl {
 
         /// NOTE: assumes `self` is not trivial
         template <typename C>
-        static constexpr reduce<1> iter_deref_fn(sequence_iterator<T, Category, Rank>& self) {
+        static constexpr reduce<1> iter_deref_fn(
+            const sequence_iterator<T, Category, Rank>& self
+        ) {
             return **static_cast<Begin<C>*>(self.iter);
         }
 
         /// NOTE: assumes `self` is not trivial
         template <typename C> requires (meta::inherits<Category, std::random_access_iterator_tag>)
         static constexpr reduce<1> iter_subscript_fn(
-            sequence_iterator<T, Category, Rank>& self,
+            const sequence_iterator<T, Category, Rank>& self,
             ssize_t n
         ) {
             return (*static_cast<Begin<C>*>(self.iter))[n];
@@ -4436,9 +4444,9 @@ namespace impl {
 
         template <typename LHS, typename RHS>
         static constexpr std::strong_ordering iter_compare_impl(const LHS& lhs, const RHS& rhs) {
-            if constexpr (requires{{lhs <=> rhs};}) {
+            if constexpr (requires{{*lhs <=> *rhs};}) {
                 return *lhs <=> *rhs;
-            } else if constexpr (requires{{lhs < rhs}; {lhs > rhs};}) {
+            } else if constexpr (requires{{*lhs < *rhs}; {*lhs > *rhs};}) {
                 if (*lhs < *rhs) {
                     return std::strong_ordering::less;
                 }
@@ -4501,7 +4509,7 @@ namespace impl {
             control(other.control)
         {
             if (control != nullptr) {
-                control->iter_copy(other);
+                control->iter_copy(*this, other);
             }
         }
 
@@ -4983,6 +4991,8 @@ namespace iter {
     /// TODO: If given a range as input, the sequence constructor should extract its
     /// underlying container type?
 
+    /// TODO: Should I also provide iota/subrange constructors for sequence?
+
 
     /* A special case of `range` that erases the underlying container type.
 
@@ -5384,26 +5394,21 @@ namespace impl {
         }
 
         template <typename Self, typename to>
-        concept construct =
-            requires(Self self) {{to(std::from_range, std::forward<Self>(self))};} ||
-            requires(Self self) {{to(std::from_range, *std::forward<Self>(self).__value)};};
+        concept construct = requires(Self self) {
+            {to(std::from_range, *std::forward<Self>(self).__value)};
+        };
 
         template <typename to, typename Self>
         [[nodiscard]] constexpr to convert(Self&& self)
-            noexcept (requires{{to(std::from_range, std::forward<Self>(self))};} ?
-                requires{{to(std::from_range, std::forward<Self>(self))} noexcept;} :
-                requires{{to(std::from_range, *std::forward<Self>(self).__value)} noexcept;}
-            )
+            noexcept (requires{
+                {to(std::from_range, *std::forward<Self>(self).__value)} noexcept;
+            })
             requires (
                 !direct<Self, to> &&
                 construct<Self, to>
             )
         {
-            if constexpr (requires{{to(std::from_range, std::forward<Self>(self))};}) {
-                return to(std::from_range, std::forward<Self>(self));
-            } else {
-                return to(std::from_range, *std::forward<Self>(self).__value);
-            }
+            return to(std::from_range, *std::forward<Self>(self).__value);
         }
 
         template <typename Self, typename to>
@@ -5413,29 +5418,24 @@ namespace impl {
 
         template <typename to, typename Self>
         [[nodiscard]] constexpr to convert(Self&& self)
-            noexcept (requires{{to(self.begin(), self.end())};} ?
-                requires{{to(self.begin(), self.end())} noexcept;} :
-                requires{{to(meta::begin(*self.__value), meta::end(*self.__value))} noexcept;}
-            )
+            noexcept (requires{
+                {to(meta::begin(*self.__value), meta::end(*self.__value))} noexcept;
+            })
             requires (
                 !direct<Self, to> &&
                 !construct<Self, to> &&
                 traverse<Self, to>
             )
         {
-            if constexpr (requires{{to(self.begin(), self.end())};}) {
-                return to(self.begin(), self.end());
-            } else {
-                return to(meta::begin(*self.__value), meta::end(*self.__value));
-            }
+            return to(meta::begin(*self.__value), meta::end(*self.__value));
         }
 
         template <meta::tuple_like to, meta::range R, size_t... Is>
         constexpr to unpack_tuple_impl(R&& r, std::index_sequence<Is...>)
-            noexcept (requires{{to{*std::forward<R>(r).template get<Is>()...}} noexcept;})
-            requires (requires{{to{*std::forward<R>(r).template get<Is>()...}};})
+            noexcept (requires{{to{meta::get<Is>(*std::forward<R>(r).__value)...}} noexcept;})
+            requires (requires{{to{meta::get<Is>(*std::forward<R>(r).__value)...}};})
         {
-            return to{*std::forward<R>(r).template get<Is>()...};
+            return to{meta::get<Is>(*std::forward<R>(r).__value)...};
         }
 
         template <typename Self, typename to>
@@ -5505,15 +5505,15 @@ namespace impl {
         template <meta::tuple_like to, meta::range Self, size_t... Is>
             requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
         constexpr to unpack_iter_impl(Self& self, std::index_sequence<Is...>)
-            noexcept (!DEBUG && requires(decltype(self.begin()) it) {
+            noexcept (!DEBUG && requires(decltype(meta::begin(*self.__value)) it) {
                 {self.size() != sizeof...(Is)} noexcept -> meta::nothrow::truthy;
-                {self.begin()} noexcept;
-                {to{(void(Is), *_unpack_iter_impl(it))...}} noexcept;
+                {meta::begin(*self.__value)} noexcept;
+                {to{(void(Is), _unpack_iter_impl(it))...}} noexcept;
             })
-            requires (requires(decltype(self.begin()) it){
+            requires (requires(decltype(meta::begin(*self.__value)) it){
                 {self.size() != sizeof...(Is)} -> meta::truthy;
-                {self.begin()};
-                {to{(void(Is), *_unpack_iter_impl(it))...}};
+                {meta::begin(*self.__value)};
+                {to{(void(Is), _unpack_iter_impl(it))...}};
             })
         {
             if constexpr (DEBUG) {
@@ -5521,30 +5521,36 @@ namespace impl {
                     throw wrong_size<sizeof...(Is)>(size);
                 }
             }
-            auto it = self.begin();
-            return to{(void(Is), *_unpack_iter_impl(it))...};
+            auto it = meta::begin(*self.__value);
+            return to{(void(Is), _unpack_iter_impl(it))...};
         }
 
         template <meta::tuple_like to, meta::range Self, size_t... Is>
             requires (!meta::tuple_like<Self> && sizeof...(Is) == meta::tuple_size<to>)
         constexpr to unpack_iter_impl(Self& self, std::index_sequence<Is...>)
-            noexcept (!DEBUG && requires(decltype(self.begin()) it, decltype(self.end()) end) {
-                {self.begin()} noexcept;
-                {self.end()} noexcept;
-                {to{*_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
+            noexcept (!DEBUG && requires(
+                decltype(meta::begin(*self.__value)) it,
+                decltype(meta::end(*self.__value)) end
+            ) {
+                {meta::begin(*self.__value)} noexcept;
+                {meta::end(*self.__value)} noexcept;
+                {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}} noexcept;
             })
             requires (
                 !requires{{self.size() != sizeof...(Is)} -> meta::truthy;} && 
-                requires(decltype(self.begin()) it, decltype(self.end()) end) {
-                    {self.begin()};
-                    {self.end()};
-                    {to{*_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}};
+                requires(
+                    decltype(meta::begin(*self.__value)) it,
+                    decltype(meta::end(*self.__value)) end
+                ) {
+                    {meta::begin(*self.__value)};
+                    {meta::end(*self.__value)};
+                    {to{_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...}};
                 }
             )
         {
-            auto it = self.begin();
-            auto end = self.end();
-            to result {*_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...};
+            auto it = meta::begin(*self.__value);
+            auto end = meta::end(*self.__value);
+            to result {_unpack_iter_impl<Is, sizeof...(Is)>(it, end)...};
             if constexpr (DEBUG) {
                 if (!bool(it == end)) {
                     throw too_big<sizeof...(Is)>();
@@ -7865,8 +7871,8 @@ namespace impl {
     template <meta::range R>
     using range_yield = meta::remove_range<meta::yield_type<R>>;
 
-    template <meta::range R, size_t I>
-    using range_get = meta::remove_range<meta::get_type<R, 2>>;
+    template <meta::range R, size_t I> requires (meta::tuple_like<R> && I < meta::tuple_size<R>)
+    using range_get = meta::remove_range<meta::get_type<R, I>>;
 
 
 }
@@ -7945,23 +7951,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
             decltype((bertrand::meta::get<I>(std::declval<T>())))
         >;
     };
-
-    template <ssize_t I, bertrand::meta::extent T>
-        requires (bertrand::impl::valid_index<bertrand::meta::tuple_size<T>, I>)
-    constexpr decltype(auto) get(T&& t)
-        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
-        requires (requires{{std::forward<T>(t).template get<I>()};})
-    {
-        return (std::forward<T>(t).template get<I>());
-    }
-
-    template <auto... K, bertrand::meta::range R>
-    constexpr decltype(auto) get(R&& r)
-        noexcept (requires{{std::forward<R>(r).template get<K...>()} noexcept;})
-        requires (requires{{std::forward<R>(r).template get<K...>()};})
-    {
-        return (std::forward<R>(r).template get<K...>());
-    }
 
     template <bertrand::meta::range R> requires (bertrand::meta::tuple_like<R>)
     array(R&& r) -> array<
@@ -8140,67 +8129,66 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         bertrand::meta::remove_reference<bertrand::impl::range_yield<R>>
     >;
 
-    /// TODO: think about CTAD for map types
-
     template <bertrand::meta::range R>
         requires (
-            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
-            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+            bertrand::meta::tuple_like<bertrand::impl::range_yield<R>> &&
+            bertrand::meta::tuple_size<bertrand::impl::range_yield<R>> == 2
         )
     map(R&& r) -> map<
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 0>
         >,
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 1>
         >
     >;
 
     template <bertrand::meta::range R>
         requires (
-            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
-            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+            bertrand::meta::tuple_like<bertrand::impl::range_yield<R>> &&
+            bertrand::meta::tuple_size<bertrand::impl::range_yield<R>> == 2
         )
     multimap(R&& r) -> multimap<
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 0>
         >,
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 1>
         >
     >;
 
     template <bertrand::meta::range R>
         requires (
-            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
-            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+            bertrand::meta::tuple_like<bertrand::impl::range_yield<R>> &&
+            bertrand::meta::tuple_size<bertrand::impl::range_yield<R>> == 2
         )
     unordered_map(R&& r) -> unordered_map<
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 0>
         >,
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 1>
         >
     >;
 
     template <bertrand::meta::range R>
         requires (
-            bertrand::meta::tuple_like<bertrand::meta::yield_type<R>> &&
-            bertrand::meta::tuple_size<bertrand::meta::yield_type<R>> == 2
+            bertrand::meta::tuple_like<bertrand::impl::range_yield<R>> &&
+            bertrand::meta::tuple_size<bertrand::impl::range_yield<R>> == 2
         )
     unordered_multimap(R&& r) -> unordered_multimap<
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 0>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 0>
         >,
         bertrand::meta::remove_reference<
-            bertrand::meta::get_type<bertrand::meta::yield_type<R>, 1>
+            bertrand::meta::get_type<bertrand::impl::range_yield<R>, 1>
         >
     >;
 
     /// TODO: a deduction guide for `std::mdspan` which gathers the correct extents
     /// based on the shape() of the range, where such a thing is possible, and where
     /// that information can be known at compile time.
+    /// -> It would also have to deduce a proper accessor type.
 
 _LIBCPP_END_NAMESPACE_STD
 

@@ -2320,10 +2320,10 @@ namespace impl {
                 const union_iterator<Us...>& rhs
             )
                 noexcept (requires{{
-                    lhs.__value.template get<I>() == rhs.__value.template get<I>()
+                    lhs.__value.template get<I>() != rhs.__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<bool>;})
                 requires (requires{{
-                    lhs.__value.template get<I>() == rhs.__value.template get<I>()
+                    lhs.__value.template get<I>() != rhs.__value.template get<I>()
                 } -> meta::convertible_to<bool>;})
             {
                 return lhs.__value.template get<I>() != rhs.__value.template get<I>();
@@ -3229,7 +3229,9 @@ struct Union : impl::union_tag {
         noexcept (meta::nothrow::default_constructible<
             impl::basic_union<meta::remove_rvalue<Ts>...>
         >)
-        requires (impl::basic_union<meta::remove_rvalue<Ts>...>::default_constructible)
+        requires (meta::not_void<
+            typename impl::basic_union<meta::remove_rvalue<Ts>...>::default_type
+        >)
     :
         __value()
     {}
@@ -3480,7 +3482,7 @@ struct Union : impl::union_tag {
         noexcept (requires{{impl::make_union_iterator<const Union&>::rbegin(*this)} noexcept;})
         requires (requires{{impl::make_union_iterator<const Union&>::rbegin(*this)};})
     {
-        return impl::make_union_iterator<const Union&>::begin(*this);
+        return impl::make_union_iterator<const Union&>::rbegin(*this);
     }
 
     /* Get a reverse sentinel for the union, assuming all alternatives are reverse
@@ -6991,30 +6993,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     struct tuple_element<I, T> {
         using type = decltype((std::declval<T>().template get<I>()));
     };
-
-    template <ssize_t I, bertrand::meta::Union T>
-    constexpr decltype(auto) get(T&& t)
-        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
-        requires (requires{{std::forward<T>(t).template get<I>()};})
-    {
-        return (std::forward<T>(t).template get<I>());
-    }
-
-    template <ssize_t I, bertrand::meta::Optional T>
-    constexpr decltype(auto) get(T&& t)
-        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
-        requires (requires{{std::forward<T>(t).template get<I>()};})
-    {
-        return (std::forward<T>(t).template get<I>());
-    }
-
-    template <ssize_t I, bertrand::meta::Expected T>
-    constexpr decltype(auto) get(T&& t)
-        noexcept (requires{{std::forward<T>(t).template get<I>()} noexcept;})
-        requires (requires{{std::forward<T>(t).template get<I>()};})
-    {
-        return (std::forward<T>(t).template get<I>());
-    }
 
     /// TODO: a CTAD guide from Union<Ts...> to variant<Ts...>.  This will require
     /// manual specialization for a given number of types, since CTAD doesn't allow

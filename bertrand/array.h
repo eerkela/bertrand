@@ -3211,24 +3211,6 @@ struct tuple_element<I, T> {
 };
 
 
-template <ssize_t... Is, bertrand::meta::Array T>
-constexpr decltype(auto) get(T&& self, index_sequence<Is...>)
-    noexcept (requires{{std::forward<T>(self).template get<Is...>()} noexcept;})
-    requires (requires{{std::forward<T>(self).template get<Is...>()};})
-{
-    return (std::forward<T>(self).template get<Is...>());
-}
-
-
-template <ssize_t... Is, bertrand::meta::ArrayView T>
-constexpr decltype(auto) get(T&& self, index_sequence<Is...>)
-    noexcept (requires{{std::forward<T>(self).template get<Is...>()} noexcept;})
-    requires (requires{{std::forward<T>(self).template get<Is...>()};})
-{
-    return (std::forward<T>(self).template get<Is...>());
-}
-
-
 _LIBCPP_END_NAMESPACE_STD
 
 
