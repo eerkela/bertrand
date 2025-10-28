@@ -399,14 +399,6 @@ namespace meta {
 
     namespace detail {
 
-        template <meta::range T>
-        constexpr bool wraparound<T> = true;
-
-        /// TODO: declare wraparound<T> for each of the underlying containers, so that
-        /// `range` never needs to do it more than once.
-        /// -> wraparound may not be needed if ranges just forward to the container's
-        /// indexing operator.
-
         namespace adl {
 
             template <typename T>
@@ -2294,11 +2286,6 @@ namespace impl {
             {++start};
         };
 
-    /// TODO: subrange_linear can only be used if the stop condition supports distance
-    /// checks?
-    /// -> Why would this be the case?  I'll have to read through the subrange logic
-    /// to find out.
-
     template <typename Start, typename Stop, typename Step>
     concept subrange_linear =
         !subrange_simple<Start, Step> &&
@@ -3783,7 +3770,7 @@ namespace impl {
     }
 
     template <typename T, size_t Rank>
-    struct _sequence_type { using type = meta::remove_rvalue<T>; };
+    struct _sequence_type { using type = meta::remove_rvalue<meta::remove_range<T>>; };
     template <typename T, size_t Rank> requires (Rank > 0)
     struct _sequence_type<T, Rank> :
         _sequence_type<meta::yield_type<sequence_container<T>>, Rank - 1>
@@ -4987,12 +4974,6 @@ namespace iter {
         using range<impl::scalar_range<C>>::range;
         using range<impl::scalar_range<C>>::operator=;
     };
-
-    /// TODO: If given a range as input, the sequence constructor should extract its
-    /// underlying container type?
-
-    /// TODO: Should I also provide iota/subrange constructors for sequence?
-
 
     /* A special case of `range` that erases the underlying container type.
 
@@ -8184,11 +8165,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
             bertrand::meta::get_type<bertrand::impl::range_yield<R>, 1>
         >
     >;
-
-    /// TODO: a deduction guide for `std::mdspan` which gathers the correct extents
-    /// based on the shape() of the range, where such a thing is possible, and where
-    /// that information can be known at compile time.
-    /// -> It would also have to deduce a proper accessor type.
 
 _LIBCPP_END_NAMESPACE_STD
 
