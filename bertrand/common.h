@@ -2360,7 +2360,7 @@ namespace meta {
             using std::get_if;
 
             template <typename T, auto... A>
-            concept has_get = requires(T t) { get<A...>(t); };
+            concept has_get = requires(T t) {{get<A...>(t)};};
 
             template <typename T, auto... A>
             concept nothrow_has_get =
@@ -2370,7 +2370,7 @@ namespace meta {
             using get_type = decltype(get<A...>(::std::declval<T>()));
 
             template <typename T, auto... A>
-            concept has_get_if = requires(T t) { get_if<A...>(t); };
+            concept has_get_if = requires(T t) {{get_if<A...>(t)};};
 
             template <typename T, auto... A>
             concept nothrow_has_get_if =
@@ -2406,18 +2406,6 @@ namespace meta {
             using get_if_type = decltype(::std::declval<T>().template get_if<A...>());
 
         }
-
-        template <typename T, auto... A>
-        struct get_type { using type = member::get_type<T, A...>; };
-        template <typename T, auto... A>
-            requires (!member::has_get<T, A...> && adl::has_get<T, A...>)
-        struct get_type<T, A...> { using type = adl::get_type<T, A...>; };
-
-        template <typename T, auto... A>
-        struct get_if_type { using type = member::get_if_type<T, A...>; };
-        template <typename T, auto... A>
-            requires (!member::has_get_if<T, A...> && adl::has_get_if<T, A...>)
-        struct get_if_type<T, A...> { using type = adl::get_if_type<T, A...>; };
 
         template <auto... K>
         struct get_fn {
@@ -2464,10 +2452,10 @@ namespace meta {
     constexpr detail::get_fn<K...> get;
 
     template <typename T, auto... A>
-    concept has_get = detail::member::has_get<T, A...> || detail::adl::has_get<T, A...>;
+    concept has_get = requires(T t) {{get<A...>(::std::forward<T>(t))};};
 
     template <typename T, auto... A> requires (has_get<T, A...>)
-    using get_type = detail::get_type<T, A...>::type;
+    using get_type = remove_rvalue<decltype((get<A...>(::std::declval<T>())))>;
 
     template <typename Ret, typename T, auto... A>
     concept get_returns = has_get<T, A...> && convertible_to<get_type<T, A...>, Ret>;
@@ -2479,10 +2467,10 @@ namespace meta {
     constexpr detail::get_if_fn<K...> get_if;
 
     template <typename T, auto... A>
-    concept has_get_if = detail::member::has_get_if<T, A...> || detail::adl::has_get_if<T, A...>;
+    concept has_get_if = requires(T t) {{get_if<A...>(::std::forward<T>(t))};};
 
     template <typename T, auto... A> requires (has_get_if<T, A...>)
-    using get_if_type = typename detail::get_if_type<T, A...>::type;
+    using get_if_type = remove_rvalue<decltype((get_if<A...>(::std::declval<T>())))>;
 
     template <typename Ret, typename T, auto... A>
     concept get_if_returns =
@@ -2491,12 +2479,9 @@ namespace meta {
     namespace nothrow {
 
         template <typename T, auto... A>
-        concept has_get = meta::has_get<T, A...> && (
-            detail::member::nothrow_has_get<T, A...> || (
-                !detail::member::nothrow_has_get<T, A...> &&
-                detail::adl::nothrow_has_get<T, A...>
-            )
-        );
+        concept has_get = meta::has_get<T, A...> && requires(T t) {
+            {get<A...>(::std::forward<T>(t))} noexcept;
+        };
 
         template <typename T, auto... A> requires (nothrow::has_get<T, A...>)
         using get_type = meta::get_type<T, A...>;
@@ -2507,12 +2492,9 @@ namespace meta {
             nothrow::convertible_to<nothrow::get_type<T, A...>, Ret>;
 
         template <typename T, auto... A>
-        concept has_get_if = meta::has_get_if<T, A...> && (
-            detail::member::nothrow_has_get_if<T, A...> || (
-                !detail::member::nothrow_has_get_if<T, A...> &&
-                detail::adl::nothrow_has_get_if<T, A...>
-            )
-        );
+        concept has_get_if = meta::has_get_if<T, A...> && requires(T t) {
+            {get_if<A...>(::std::forward<T>(t))} noexcept;
+        };
 
         template <typename T, auto... A> requires (nothrow::has_get_if<T, A...>)
         using get_if_type = meta::get_if_type<T, A...>;

@@ -1,9 +1,6 @@
 #ifndef BERTRAND_ITER_JOIN_H
 #define BERTRAND_ITER_JOIN_H
 
-#include "bertrand/common.h"
-#include "bertrand/except.h"
-#include "bertrand/union.h"
 #include "bertrand/iter/range.h"
 
 
@@ -48,7 +45,7 @@ namespace impl {
     template <size_t... Is, meta::not_rvalue... Iters>
     struct range_difference<std::index_sequence<Is...>, Iters...> {
         using type = meta::common_type<
-            meta::iterator_difference_type<meta::unpack_type<Is, Iters...>>...
+            meta::iterator_difference<meta::unpack_type<Is, Iters...>>...
         >;
     };
 
@@ -88,13 +85,13 @@ namespace impl {
     template <typename Sep, typename... Subranges>
         requires (join_union_concept<Sep, Subranges...>)
     struct _join_union {
-        using type = meta::union_type<Subranges...>;
+        using type = meta::make_union<Subranges...>;
         static constexpr bool trivial = meta::trivial_union<Subranges...>;
     };
     template <meta::not_void Sep, typename... Subranges>
         requires (join_union_concept<Sep, Subranges...>)
     struct _join_union<Sep, Subranges...> {
-        using type = meta::union_type<Sep, Subranges...>;
+        using type = meta::make_union<Sep, Subranges...>;
         static constexpr bool trivial = meta::trivial_union<Sep, Subranges...>;
     };
 
@@ -574,7 +571,7 @@ namespace impl {
     template <typename R, size_t... Is>
         requires (meta::is_void<typename meta::unqualify<R>::separator_type>)
     struct _join_yield_type<R, join_direction::FORWARD, std::index_sequence<Is...>> {
-        using type = meta::union_type<
+        using type = meta::make_union<
             typename join_forward<decltype((std::declval<R>().template arg<Is>()))>::type...
         >;
         static constexpr bool trivial = meta::trivial_union<
@@ -584,7 +581,7 @@ namespace impl {
     template <typename R, size_t... Is>
         requires (meta::not_void<typename meta::unqualify<R>::separator_type>)
     struct _join_yield_type<R, join_direction::FORWARD, std::index_sequence<Is...>> {
-        using type = meta::union_type<
+        using type = meta::make_union<
             typename join_forward<decltype((std::declval<R>().sep()))>::type,
             typename join_forward<decltype((std::declval<R>().template arg<Is>()))>::type...
         >;
@@ -596,7 +593,7 @@ namespace impl {
     template <typename R, size_t... Is>
         requires (meta::is_void<typename meta::unqualify<R>::separator_type>)
     struct _join_yield_type<R, join_direction::REVERSE, std::index_sequence<Is...>> {
-        using type = meta::union_type<
+        using type = meta::make_union<
             typename join_reverse<decltype((std::declval<R>().template arg<Is>()))>::type...
         >;
         static constexpr bool trivial = meta::trivial_union<
@@ -606,7 +603,7 @@ namespace impl {
     template <typename R, size_t... Is>
         requires (meta::not_void<typename meta::unqualify<R>::separator_type>)
     struct _join_yield_type<R, join_direction::REVERSE, std::index_sequence<Is...>> {
-        using type = meta::union_type<
+        using type = meta::make_union<
             typename join_reverse<decltype((std::declval<R>().sep()))>::type,
             typename join_reverse<decltype((std::declval<R>().template arg<Is>()))>::type...
         >;
@@ -2305,17 +2302,17 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{impl::arrow_proxy{**this}} noexcept;})
-            requires (requires{{impl::arrow_proxy{**this}};})
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
         {
-            return impl::arrow_proxy{**this};
+            return impl::arrow{**this};
         }
 
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow_proxy{**this}} noexcept;})
-            requires (requires{{impl::arrow_proxy{**this}};})
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
         {
-            return impl::arrow_proxy{**this};
+            return impl::arrow{**this};
         }
 
         [[nodiscard]] constexpr std::strong_ordering operator<=>(const join_iterator& other) const
@@ -2734,7 +2731,7 @@ namespace impl {
     template <typename R, size_t... Is>
         requires (meta::is_void<typename meta::unqualify<R>::separator_type>)
     struct _join_subscript_type<R, std::index_sequence<Is...>> {
-        using type = meta::union_type<
+        using type = meta::make_union<
             decltype((std::declval<R>().template arg<Is>()[
                 std::declval<typename meta::unqualify<R>::size_type>()
             ]))...
@@ -2748,7 +2745,7 @@ namespace impl {
     template <typename R, size_t... Is>
         requires (meta::not_void<typename meta::unqualify<R>::separator_type>)
     struct _join_subscript_type<R, std::index_sequence<Is...>> {
-        using type = meta::union_type<
+        using type = meta::make_union<
             decltype((std::declval<R>().sep()[
                 std::declval<typename meta::unqualify<R>::size_type>()
             ])),

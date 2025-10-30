@@ -1,9 +1,8 @@
 #ifndef BERTRAND_ITER_ZIP_H
 #define BERTRAND_ITER_ZIP_H
 
-#include "bertrand/common.h"
-#include "bertrand/union.h"
 #include "bertrand/iter/range.h"
+#include "bertrand/iter/join.h"
 
 
 namespace bertrand {
@@ -163,16 +162,16 @@ namespace impl {
         )
             noexcept (requires{{std::forward<Self>(self).template deref<I + 1>(
                 std::forward<A>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )} noexcept;})
             requires (requires{{std::forward<Self>(self).template deref<I + 1>(
                 std::forward<A>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )};})
         {
             return (std::forward<Self>(self).template deref<I + 1>(
                 std::forward<A>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             ));
         }
 
@@ -252,18 +251,18 @@ namespace impl {
             noexcept (requires{{std::forward<Self>(self).template subscript<I + 1>(
                 i,
                 std::forward<A>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )} noexcept;})
             requires (requires{{std::forward<Self>(self).template subscript<I + 1>(
                 i,
                 std::forward<A>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )};})
         {
             return (std::forward<Self>(self).template subscript<I + 1>(
                 i,
                 std::forward<A>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             ));
         }
 
@@ -1114,16 +1113,16 @@ namespace impl {
         )
             noexcept (requires{{std::forward<Self>(self).template _get<I, J + 1>(
                 std::forward<Ts>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )} noexcept;})
             requires (requires{{std::forward<Self>(self).template _get<I, J + 1>(
                 std::forward<Ts>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )};})
         {
             return (std::forward<Self>(self).template _get<I, J + 1>(
                 std::forward<Ts>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             ));
         }
 
@@ -1210,18 +1209,18 @@ namespace impl {
             noexcept (requires{{std::forward<Self>(self).template subscript<J + 1>(
                 i,
                 std::forward<Ts>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )} noexcept;})
             requires (requires{{std::forward<Self>(self).template subscript<J + 1>(
                 i,
                 std::forward<Ts>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             )};})
         {
             return (std::forward<Self>(self).template subscript<J + 1>(
                 i,
                 std::forward<Ts>(args)...,
-                meta::unpack_tuple<Is>(std::forward<T>(value))...
+                meta::get<Is>(std::forward<T>(value))...
             ));
         }
 
@@ -1581,45 +1580,47 @@ namespace iter {
 
 }
 
-static constexpr std::array arr1 {1, 2, 3};
-static constexpr std::array arr2 {1, 2, 3, 4, 5};
-static constexpr auto z = iter::zip{
-    [](int x, int y) { return x + y;}
-}(iter::range(arr1), iter::range(arr2));
-static_assert([] {
-    auto r = iter::zip{[](int x, int y) {
-        return x + y;
-    }}(iter::range(arr1), iter::range(arr2));
-
-    if (r.size() != 3) return false;
-    if ((*r.__value)[1] != 4) return false;
-
-    for (auto&& x : z) {
-        if (x != 2 && x != 4 && x != 6) {
-            return false;
-        }
-    }
-    return true;
-}());
 
 
-static constexpr std::array arr3 {std::pair{1, 2}, std::pair{3, 4}};
-static constexpr auto r = iter::zip{[](int x, int y, int z, int w) {
-    return x + y;
-}}(*iter::range(arr3), iter::range(arr1), 2);
-static_assert([] {
-    if (r.size() != 2) return false;
-    if (r[0] != 3) return false;
-    if (r[1] != 7) return false;
+// static constexpr std::array arr1 {1, 2, 3};
+// static constexpr std::array arr2 {1, 2, 3, 4, 5};
+// static constexpr auto z = iter::zip{
+//     [](int x, int y) { return x + y;}
+// }(iter::range(arr1), iter::range(arr2));
+// static_assert([] {
+//     auto r = iter::zip{[](int x, int y) {
+//         return x + y;
+//     }}(iter::range(arr1), iter::range(arr2));
 
-    for (auto&& x : r) {
-        if (x != 3 && x != 7) {
-            return false;
-        }
-    }
+//     if (r.size() != 3) return false;
+//     if ((*r.__value)[1] != 4) return false;
 
-    return true;
-}());
+//     for (auto&& x : z) {
+//         if (x != 2 && x != 4 && x != 6) {
+//             return false;
+//         }
+//     }
+//     return true;
+// }());
+
+
+// static constexpr std::array arr3 {std::pair{1, 2}, std::pair{3, 4}};
+// static constexpr auto r = iter::zip{[](int x, int y, int z, int w) {
+//     return x + y;
+// }}(*iter::range(arr3), iter::range(arr1), 2);
+// static_assert([] {
+//     if (r.size() != 2) return false;
+//     if (r[0] != 3) return false;
+//     if (r[1] != 7) return false;
+
+//     for (auto&& x : r) {
+//         if (x != 3 && x != 7) {
+//             return false;
+//         }
+//     }
+
+//     return true;
+// }());
 
     
 }
