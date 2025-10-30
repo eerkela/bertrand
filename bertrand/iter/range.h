@@ -2076,15 +2076,15 @@ namespace impl {
         [[nodiscard]] constexpr iota operator++(int)
             noexcept (requires(copy tmp) {
                 {begin()} noexcept;
-                {tmp.increment()} noexcept;
+                {increment()} noexcept;
             })
             requires (requires(copy tmp) {
                 {begin()};
-                {tmp.increment()};
+                {increment()};
             })
         {
             copy tmp = begin();
-            tmp.increment();
+            increment();
             return tmp;
         }
 
@@ -2165,15 +2165,15 @@ namespace impl {
         [[nodiscard]] constexpr iota operator--(int)
             noexcept (requires(copy tmp) {
                 {begin()} noexcept;
-                {tmp.decrement()} noexcept;
+                {decrement()} noexcept;
             })
             requires (requires(copy tmp) {
                 {begin()};
-                {tmp.decrement()};
+                {decrement()};
             })
         {
             copy tmp = begin();
-            tmp.decrement();
+            decrement();
             return tmp;
         }
 
@@ -3461,15 +3461,15 @@ namespace impl {
         [[nodiscard]] constexpr copy operator++(int)
             noexcept (requires(copy tmp) {
                 {begin()} noexcept;
-                {tmp.increment()} noexcept;
+                {increment()} noexcept;
             })
             requires (requires(copy tmp) {
                 {begin()};
-                {tmp.increment()};
+                {increment()};
             })
         {
             copy tmp = begin();
-            tmp.increment();
+            increment();
             return tmp;
         }
 
@@ -3631,15 +3631,15 @@ namespace impl {
         [[nodiscard]] constexpr copy operator--(int)
             noexcept (requires(copy tmp) {
                 {begin()} noexcept;
-                {tmp.decrement()} noexcept;
+                {decrement()} noexcept;
             })
             requires (requires(copy tmp) {
                 {begin()};
-                {tmp.decrement()};
+                {decrement()};
             })
         {
             copy tmp = begin();
-            tmp.decrement();
+            decrement();
             return tmp;
         }
 
@@ -4221,17 +4221,13 @@ namespace impl {
 
         inline constexpr TypeError too_big(size_t n) noexcept;
 
-        /// TODO: it might actually be appropriate to promote the result of the left-hand
-        /// iterator and tuple get methods to ranges in order to properly recur?  The
-        /// same likely needs to be done for the right-hand side as well.
-
         template <typename LHS, typename RHS>
         concept iter_from_iter = meta::range<RHS> && !meta::scalar<RHS> && (
             !meta::tuple_like<LHS> ||
             !meta::tuple_like<RHS> ||
             meta::tuple_size<LHS> == meta::tuple_size<RHS>
-        ) && requires(LHS lhs, RHS rhs, decltype(lhs.begin()) l_it, decltype(rhs.begin()) r_it) {
-            {*l_it = *r_it};
+        ) && requires(meta::begin_type<LHS> l_it, meta::begin_type<RHS> r_it) {
+            {iter::range{*l_it} = iter::range{*r_it}};
         };
 
         template <typename LHS, typename RHS>
@@ -4248,7 +4244,7 @@ namespace impl {
                 {rhs.end()} noexcept;
                 {l_it != l_end} noexcept -> meta::nothrow::truthy;
                 {r_it != r_end} noexcept -> meta::nothrow::truthy;
-                {*l_it = *r_it} noexcept;
+                {iter::range{*l_it} = iter::range{*r_it}} noexcept;
                 {++l_it} noexcept;
                 {++r_it} noexcept;
             })
@@ -4272,7 +4268,7 @@ namespace impl {
             if constexpr (DEBUG && !statically_sized && !sized) {
                 size_t n = 0;
                 while (l_it != l_end && r_it != r_end) {
-                    *l_it = *r_it;
+                    iter::range{*l_it} = iter::range{*r_it};
                     ++l_it;
                     ++r_it;
                     ++n;
@@ -4285,7 +4281,7 @@ namespace impl {
                 }
             } else {
                 while (l_it != l_end && r_it != r_end) {
-                    *l_it = *r_it;
+                    iter::range{*l_it} = iter::range{*r_it};
                     ++l_it;
                     ++r_it;
                 }
@@ -4295,13 +4291,19 @@ namespace impl {
         template <typename LHS, typename RHS, size_t... Is>
         constexpr void tuple_from_tuple_impl(LHS& lhs, RHS&& rhs, std::index_sequence<Is...>)
             noexcept (requires{{
-                ((lhs.template get<Is>() = std::forward<RHS>(rhs).template get<Is>()), ...)
+                ((iter::range{lhs.template get<Is>()} = iter::range{
+                    std::forward<RHS>(rhs).template get<Is>()
+                }), ...)
             } noexcept;})
             requires (requires{{
-                ((lhs.template get<Is>() = std::forward<RHS>(rhs).template get<Is>()), ...)
+                ((iter::range{lhs.template get<Is>()} = iter::range{
+                    std::forward<RHS>(rhs).template get<Is>()
+                }), ...)
             };})
         {
-            ((lhs.template get<Is>() = std::forward<RHS>(rhs).template get<Is>()), ...);
+            ((iter::range{lhs.template get<Is>()} = iter::range{
+                std::forward<RHS>(rhs).template get<Is>()
+            }), ...);
         }
 
         template <typename LHS, typename RHS>
@@ -4341,15 +4343,15 @@ namespace impl {
         template <size_t I, typename RHS, typename Iter>
         constexpr void _iter_from_tuple_impl(RHS&& rhs, Iter& it)
             noexcept (requires{
-                {*it = std::forward<RHS>(rhs).template get<I>()} noexcept;
+                {iter::range{*it} = iter::range{std::forward<RHS>(rhs).template get<I>()}} noexcept;
                 {++it} noexcept;
             })
             requires (requires{
-                {*it = std::forward<RHS>(rhs).template get<I>()};
+                {iter::range{*it} = iter::range{std::forward<RHS>(rhs).template get<I>()}};
                 {++it};
             })
         {
-            *it = std::forward<RHS>(rhs).template get<I>();
+            iter::range{*it} = iter::range{std::forward<RHS>(rhs).template get<I>()};
             ++it;
         }
 
@@ -4456,15 +4458,15 @@ namespace impl {
         template <size_t I, typename LHS, typename Iter>
         constexpr void _tuple_from_iter_impl(LHS& lhs, Iter& it)
             noexcept (requires{
-                {lhs.template get<I>() = *it} noexcept;
+                {iter::range{lhs.template get<I>()} = iter::range{*it}} noexcept;
                 {++it} noexcept;
             })
             requires (requires{
-                {lhs.template get<I>() = *it};
+                {iter::range{lhs.template get<I>()} = iter::range{*it}};
                 {++it};
             })
         {
-            lhs.template get<I>() = *it;
+            iter::range{lhs.template get<I>()} = iter::range{*it};
             ++it;
         }
 
@@ -4692,7 +4694,7 @@ namespace impl {
             meta::as_pointer<T>(*)(sequence_control*),
             NoneType
         >;
-        using shape_ptr = impl::extent<Rank>(*)(sequence_control*);
+        using shape_ptr = void(*)(sequence_control*);
         using subscript1_ptr = reduce<1>(*)(sequence_control*, ssize_t);
         using subscript2_ptr = std::conditional_t<
             (Rank >= 2),
@@ -4755,10 +4757,10 @@ namespace impl {
 
         std::atomic<size_t> refcount = 1;
         const void* const container;
-        Optional<impl::extent<Rank>> shape;
+        Optional<impl::extent<Rank>> shape_cache;
         std::once_flag shape_sync;
         const dtor_ptr dtor;
-        const shape_ptr cache_shape;
+        const shape_ptr get_shape;
         [[no_unique_address]] const data_ptr data;
         const subscript1_ptr subscript1;
         [[no_unique_address]] const subscript2_ptr subscript2;
@@ -4779,6 +4781,21 @@ namespace impl {
         [[no_unique_address]] const iter_retreat_ptr iter_retreat;
         [[no_unique_address]] const iter_distance_ptr iter_distance;
         const iter_compare_ptr iter_compare;
+
+        [[nodiscard]] constexpr const impl::extent<Rank>& shape() {
+            struct {
+                using type = const impl::extent<Rank>&;
+                sequence_control* self;
+                constexpr type operator()(NoneType) {
+                    self->get_shape(self);
+                    return *self->shape_cache;
+                }
+                constexpr type operator()(type s) {
+                    return s;
+                }
+            } visitor {this};
+            return shape_cache ->* visitor;
+        }
 
         template <typename C>
         static constexpr data_ptr get_data() noexcept {
@@ -4835,7 +4852,7 @@ namespace impl {
         }
 
         template <typename C>
-        static constexpr iter_subscript_ptr get_iter_advance() noexcept {
+        static constexpr iter_advance_ptr get_iter_advance() noexcept {
             if constexpr (meta::inherits<Category, std::random_access_iterator_tag>) {
                 return &iter_advance_fn<C>;
             } else {
@@ -4844,7 +4861,7 @@ namespace impl {
         }
 
         template <typename C>
-        static constexpr iter_subscript_ptr get_iter_retreat() noexcept {
+        static constexpr iter_retreat_ptr get_iter_retreat() noexcept {
             if constexpr (meta::inherits<Category, std::random_access_iterator_tag>) {
                 return &iter_retreat_fn<C>;
             } else {
@@ -4853,7 +4870,7 @@ namespace impl {
         }
 
         template <typename C>
-        static constexpr iter_subscript_ptr get_iter_distance() noexcept {
+        static constexpr iter_distance_ptr get_iter_distance() noexcept {
             if constexpr (meta::inherits<Category, std::random_access_iterator_tag>) {
                 return &iter_distance_fn<C>;
             } else {
@@ -4871,7 +4888,7 @@ namespace impl {
                 return new sequence_control{
                     .container = std::addressof(c),
                     .dtor = &dtor_fn<C>,
-                    .cache_shape = &shape_fn<type>,
+                    .get_shape = &shape_fn<type>,
                     .data = get_data<type>(),
                     .subscript1 = &subscript1_fn<type>,
                     .subscript2 = get_subscript2<type>(),
@@ -4906,35 +4923,40 @@ namespace impl {
                 void* value = static_cast<sequence_control*>(control) + 1;
                 try {
                     new (value) meta::unqualify<C>(std::forward<C>(c));
+                    try {
+                        new (control) sequence_control {
+                            .container = static_cast<const void*>(value),
+                            .dtor = &dtor_fn<C>,
+                            .get_shape = &shape_fn<type>,
+                            .data = get_data<type>(),
+                            .subscript1 = &subscript1_fn<type>,
+                            .subscript2 = get_subscript2<type>(),
+                            .subscript3 = get_subscript3<type>(),
+                            .subscript4 = get_subscript4<type>(),
+                            .front = &front_fn<type>,
+                            .back = &back_fn<type>,
+                            .begin = &begin_fn<type>,
+                            .end = &end_fn<type>,
+                            .iter_copy = &iter_copy_fn<type>,
+                            .iter_assign = &iter_assign_fn<type>,
+                            .iter_dtor = &iter_dtor_fn<type>,
+                            .iter_deref = &iter_deref_fn<type>,
+                            .iter_subscript = get_iter_subscript<type>(),
+                            .iter_increment = &iter_increment_fn<type>,
+                            .iter_decrement = get_iter_decrement<type>(),
+                            .iter_advance = get_iter_advance<type>(),
+                            .iter_retreat = get_iter_retreat<type>(),
+                            .iter_distance = get_iter_distance<type>(),
+                            .iter_compare = &iter_compare_fn<type>,
+                        };
+                    } catch (...) {
+                        std::destroy_at(static_cast<meta::unqualify<C>*>(value));
+                        throw;
+                    }
                 } catch (...) {
                     ::operator delete(control);
                     throw;
                 }
-                new (control) sequence_control {
-                    .container = static_cast<const void*>(value),
-                    .dtor = &dtor_fn<C>,
-                    .cache_shape = &shape_fn<type>,
-                    .data = get_data<type>(),
-                    .subscript1 = &subscript1_fn<type>,
-                    .subscript2 = get_subscript2<type>(),
-                    .subscript3 = get_subscript3<type>(),
-                    .subscript4 = get_subscript4<type>(),
-                    .front = &front_fn<type>,
-                    .back = &back_fn<type>,
-                    .begin = &begin_fn<type>,
-                    .end = &end_fn<type>,
-                    .iter_copy = &iter_copy_fn<type>,
-                    .iter_assign = &iter_assign_fn<type>,
-                    .iter_dtor = &iter_dtor_fn<type>,
-                    .iter_deref = &iter_deref_fn<type>,
-                    .iter_subscript = get_iter_subscript<type>(),
-                    .iter_increment = &iter_increment_fn<type>,
-                    .iter_decrement = get_iter_decrement<type>(),
-                    .iter_advance = get_iter_advance<type>(),
-                    .iter_retreat = get_iter_retreat<type>(),
-                    .iter_distance = get_iter_distance<type>(),
-                    .iter_compare = &iter_compare_fn<type>,
-                };
                 return static_cast<sequence_control*>(control);
             }
         }
@@ -4966,16 +4988,8 @@ namespace impl {
         }
 
         template <typename C>
-        static constexpr void shape_impl(sequence_control* control) {
-            control->shape = meta::shape(*static_cast<const C*>(control->container));
-        }
-
-        template <typename C>
-        static constexpr impl::extent<Rank> shape_fn(sequence_control* control) {
-            if (!control->shape.has_value()) {
-                std::call_once(control->shape_sync, &shape_impl<C>, control);
-            }
-            return *control->shape;
+        static constexpr void shape_fn(sequence_control* control) {
+            control->shape_cache = meta::shape(*static_cast<const C*>(control->container));
         }
 
         template <typename C> requires (meta::inherits<Category, std::contiguous_iterator_tag>)
@@ -5015,13 +5029,10 @@ namespace impl {
 
         template <typename C> requires (!meta::has_back<sequence_container<C>>)
         static constexpr reduce<1> back_fn(sequence_control* control) {
+            size_t size = control->shape().dim[0];
             auto it = meta::begin(*static_cast<const C*>(control->container));
-            auto end = meta::end(*static_cast<const C*>(control->container));
-            auto lookahead = it;
-            ++lookahead;
-            while (lookahead != end) {
+            for (size_t i = 1; i < size; ++i) {
                 ++it;
-                ++lookahead;
             }
             return *it;
         }
@@ -5052,8 +5063,7 @@ namespace impl {
             } else {
                 sequence_iterator<T, Category, Rank> result {
                     .control = control,
-                    .iter = ::operator new(sizeof(Begin<C>) + sizeof(End<C>)),
-                    .sentinel = static_cast<Begin<C>*>(result.iter) + 1
+                    .iter = ::operator new(sizeof(Begin<C>) + sizeof(End<C>))
                 };
                 if (result.iter == nullptr) {
                     throw MemoryError();
@@ -5062,6 +5072,7 @@ namespace impl {
                     new (result.iter) Begin<C>(
                         meta::begin(*static_cast<const C*>(control->container))
                     );
+                    result.sentinel = static_cast<Begin<C>*>(result.iter) + 1;
                     new (result.sentinel) End<C>(
                         meta::end(*static_cast<const C*>(control->container))
                     );
@@ -5400,7 +5411,7 @@ namespace impl {
         [[nodiscard]] constexpr sequence_iterator operator++(int) {
             sequence_iterator tmp;
             control->iter_copy(tmp, *this);
-            control->iter_increment(tmp);
+            control->iter_increment(*this);
             return tmp;
         }
 
@@ -5512,7 +5523,7 @@ namespace impl {
         [[nodiscard]] constexpr sequence_iterator operator++(int) {
             sequence_iterator tmp;
             control->iter_copy(tmp, *this);
-            control->iter_increment(tmp);
+            control->iter_increment(*this);
             return tmp;
         }
 
@@ -5528,7 +5539,7 @@ namespace impl {
         {
             sequence_iterator tmp;
             control->iter_copy(tmp, *this);
-            control->iter_decrement(tmp);
+            control->iter_decrement(*this);
             return tmp;
         }
 
@@ -5667,31 +5678,20 @@ namespace impl {
             return control->data(control);
         }
 
-        [[nodiscard]] constexpr decltype(auto) shape() const noexcept {
-            struct {
-                using type = const impl::extent<Rank>&;
-                sequence_control<T, Category, Rank>* control;
-                constexpr type operator()(NoneType) {
-                    control->shape = control->cache_shape(control);
-                    return *control->shape;
-                }
-                constexpr type operator()(type s) {
-                    return s;
-                }
-            } visitor {control};
-            return control->shape ->* visitor;
+        [[nodiscard]] constexpr decltype(auto) shape() const {
+            return control->shape();
         }
 
         [[nodiscard]] constexpr size_t size() const {
-            return size_t(shape().dim[0]);
+            return size_t(control->shape().dim[0]);
         }
 
         [[nodiscard]] constexpr ssize_t ssize() const {
-            return ssize_t(shape().dim[0]);
+            return ssize_t(control->shape().dim[0]);
         }
 
         [[nodiscard]] constexpr bool empty() const {
-            return shape().dim[0] == 0;
+            return control->shape().dim[0] == 0;
         }
 
         [[nodiscard]] constexpr decltype(auto) operator[](ssize_t i) const {
