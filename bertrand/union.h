@@ -5018,77 +5018,39 @@ static_assert(!Foo<2.5>::empty);
 */
 template <typename T> requires (meta::is_void<T> || meta::None<T>)
 struct Optional<T> : impl::optional_tag {
-    impl::basic_union<NoneType> __value;
-
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
 
     /* Converting constructor.  Implicitly converts the input to `NoneType`. */
-    template <typename from>
-    [[nodiscard]] constexpr Optional(from&& v)
-        noexcept (meta::nothrow::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
-        requires (meta::visit_exhaustive<impl::optional_convert_from<T, from>, from>)
-    : 
-        __value(impl::visit(
-            impl::optional_convert_from<T, from>{},
-            std::forward<from>(v)
-        ))
-    {}
-
-    /* Explicit constructor.  Explicitly converts the input to `NoneType`. */
-    template <typename... A>
-    [[nodiscard]] constexpr explicit Optional(A&&... args)
-        noexcept (meta::nothrow::visit_exhaustive<impl::optional_construct_from<T>, A...>)
-        requires (
-            sizeof...(A) > 0 &&
-            !meta::visit_exhaustive<impl::optional_convert_from<T, A...>, A...> &&
-            meta::visit_exhaustive<impl::optional_construct_from<T>, A...>
-        )
-    :
-        __value(impl::visit(
-            impl::optional_construct_from<T>{},
-            std::forward<A>(args)...
-        ))
-    {}
+    template <meta::convertible_to<NoneType> from>
+    [[nodiscard]] constexpr Optional(from&& v) noexcept {}
 
     /* Swap the contents of two optionals as efficiently as possible. */
-    constexpr void swap(Optional& other)
-        noexcept (requires{{__value.swap(other.__value)} noexcept;})
-        requires (requires{{__value.swap(other.__value)};})
-    {
-        __value.swap(other.__value);
-    }
+    static constexpr void swap(Optional& other) noexcept {}
 
     /* Implicit conversion from an empty `Optional` to any type that is convertible
-    from any of `None`, `std::nullopt`, or `nullptr`. */
-    template <typename Self, typename to>
-    [[nodiscard]] constexpr operator to(this Self&& self)
-        noexcept (requires{
-            {impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))} noexcept;
-        })
-        requires (
-            !meta::prefer_constructor<to> &&
-            requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};}
-        )
+    from `None`. */
+    template <typename to>
+    [[nodiscard]] constexpr operator to() const
+        noexcept (meta::nothrow::convertible_to<NoneType, to>)
+        requires (!meta::prefer_constructor<to> && meta::convertible_to<NoneType, to>)
     {
-        return impl::optional_convert_to<Self, to>{}(std::forward<Self>(self));
+        return NoneType{};
     }
 
     /* Explicit conversion from an empty `Optional` to any type that is explicitly
-    convertible from any of `None`, `std::nullopt`, or `nullptr`.  This operator only
-    applies if an implicit conversion could not be found. */
-    template <typename Self, typename to>
-    [[nodiscard]] explicit constexpr operator to(this Self&& self)
-        noexcept (requires{
-            {impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
-        })
+    convertible from `None`.  This operator only applies if an implicit conversion
+    could not be found. */
+    template <typename to>
+    [[nodiscard]] constexpr operator to() const
+        noexcept (meta::nothrow::explicitly_convertible_to<NoneType, to>)
         requires (
             !meta::prefer_constructor<to> &&
-            !requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
-            requires{{impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))};}
+            !meta::convertible_to<NoneType, to> &&
+            meta::explicitly_convertible_to<NoneType, to>
         )
     {
-        return impl::optional_cast_to<Self, to>{}(std::forward<Self>(self));
+        return static_cast<to>(NoneType{});
     }
 
     /* Contextually convert the optional to a boolean, where true indicates the
@@ -5162,78 +5124,50 @@ struct Optional<T> : impl::optional_tag {
 
     /* Get a forward iterator over an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `end()`. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
+    [[nodiscard]] static constexpr auto begin() noexcept {
         return impl::empty_iterator{};
     }
 
     /* Get a forward iterator over an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `end()`. */
-    [[nodiscard]] constexpr auto cbegin() const noexcept {
+    [[nodiscard]] static constexpr auto cbegin() noexcept {
         return impl::empty_iterator{};
     }
 
     /* Get a forward sentinel for an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `begin()`. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
+    [[nodiscard]] static constexpr auto end() noexcept {
         return impl::empty_iterator{};
     }
 
     /* Get a forward sentinel for an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `begin()`. */
-    [[nodiscard]] constexpr auto cend() const noexcept {
+    [[nodiscard]] static constexpr auto cend() noexcept {
         return impl::empty_iterator{};
     }
 
     /* Get a reverse iterator over an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `rend()`. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
-        return std::make_reverse_iterator(self.end());
+    [[nodiscard]] static constexpr auto rbegin() noexcept {
+        return std::make_reverse_iterator(end());
     }
 
     /* Get a reverse iterator over an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `rend()`. */
-    [[nodiscard]] constexpr auto crbegin() const noexcept {
+    [[nodiscard]] static constexpr auto crbegin() noexcept {
         return std::make_reverse_iterator(cend());
     }
 
     /* Get a reverse sentinel for an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `rbegin()`. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
-        return std::make_reverse_iterator(self.begin());
+    [[nodiscard]] static constexpr auto rend() noexcept {
+        return std::make_reverse_iterator(begin());
     }
 
     /* Get a reverse sentinel for an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `rbegin()`. */
-    [[nodiscard]] constexpr auto crend() const noexcept {
+    [[nodiscard]] static constexpr auto crend() noexcept {
         return std::make_reverse_iterator(cbegin());
-    }
-
-    template <typename Self, typename... A>
-    constexpr decltype(auto) operator()(this Self&& self, A&&... args)
-        noexcept (meta::nothrow::force_visit<1, impl::Call, Self, A...>)
-        requires (meta::force_visit<1, impl::Call, Self, A...>)
-    {
-        return (impl::visit<1>(
-            impl::Call{},
-            std::forward<Self>(self),
-            std::forward<A>(args)...
-        ));
-    }
-
-    template <typename Self, typename... K>
-    constexpr decltype(auto) operator[](this Self&& self, K&&... keys)
-        noexcept (meta::nothrow::force_visit<1, impl::Subscript, Self, K...>)
-        requires (meta::force_visit<1, impl::Subscript, Self, K...>)
-    {
-        return (impl::visit<1>(
-            impl::Subscript{},
-            std::forward<Self>(self),
-            std::forward<K>(keys)...
-        ));
     }
 };
 
