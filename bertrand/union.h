@@ -204,6 +204,15 @@ namespace impl {
         using value = void;  // no pointer-like dereference operators
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
+
+        [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T>) noexcept {
+            return 0;
+        }
+
+        template <size_t I> requires (I < alternatives::size())
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u) noexcept {
+            return (std::forward<T>(u));
+        }
     };
 
 }

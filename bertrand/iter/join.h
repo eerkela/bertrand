@@ -93,15 +93,54 @@ namespace impl {
 
 
 
+
+
     struct join_deref {
-        template <typename T> requires (!meta::Union<T>)
-        static constexpr decltype(auto) operator()(T& storage)
-            noexcept (requires{{*storage} noexcept;})
-            requires (requires{{*storage};})
+        template <typename T>
+        static constexpr decltype(auto) operator()(T& child)
+            noexcept (requires{{child.deref()} noexcept;})
+            requires (requires{{child.deref()};})
         {
-            return (*storage);
+            return (child.deref());
         }
     };
+
+    template <size_t I>
+    struct join_compare {
+        template <typename T>
+        static constexpr std::strong_ordering operator()(const T& lhs, const T& rhs)
+            noexcept (requires{{impl::visitable<const T&>::template get<I>(lhs).compare(
+                impl::visitable<const T&>::template get<I>(rhs)
+            )} noexcept;})
+            requires (requires{{impl::visitable<const T&>::template get<I>(lhs).compare(
+                impl::visitable<const T&>::template get<I>(rhs)
+            )};})
+        {
+            return impl::visitable<const T&>::template get<I>(lhs).compare(
+                impl::visitable<const T&>::template get<I>(rhs)
+            );
+        }
+    };
+    template <typename T>
+    static constexpr std::strong_ordering join_compare_impl(const T& lhs, const T& rhs)
+        noexcept (requires{{impl::basic_vtable<
+            join_compare,
+            impl::visitable<const T&>::alternatives::size()
+        >{impl::visitable<const T&>::index(lhs)}(lhs, rhs)} noexcept;})
+    {
+        return impl::basic_vtable<
+            join_compare,
+            impl::visitable<const T&>::alternatives::size()
+        >{impl::visitable<const T&>::index(lhs)}(lhs, rhs);
+    }
+
+    /// TODO: I may need to add a direction flag like before.
+
+    /// TODO: also, the outermost version will have to differentiate range inputs
+    /// from non-range inputs.
+
+
+
 
     /* All join iterators except the first store an optional struct containing the
     parent value for the current iteration (possibly a reference), a subrange over
@@ -113,134 +152,212 @@ namespace impl {
     struct join_control {
         using begin_type = meta::begin_type<Parent>;
         using end_type = meta::end_type<Parent>;
-        using subrange_type = impl::subrange<begin_type, end_type>;
-        using reference = meta::dereference_type<subrange_type&>;
-        using separator =
-            meta::remove_rvalue<decltype((meta::get<I>(std::declval<Outer&>().seps)))>;
-
+        using child_type = std::conditional_t<
+            meta::range<Parent>,
+            iter::range<meta::dereference_type<begin_type&>>,
+            impl::scalar_range<meta::dereference_type<begin_type&>>
+        >;
+        using separator = std::conditional_t<
+            meta::range<decltype((std::declval<Outer&>().seps.template get<I>()))>,
+            decltype((std::declval<Outer&>().seps.template get<I>())),
+            impl::scalar_range<decltype((std::declval<Outer&>().seps.template get<I>()))>
+        >;
         static constexpr bool trivial = meta::is<separator, impl::join_tag>;
         using union_type = std::conditional_t<
             trivial,
-            join_control<Outer, I + 1, iter::range<reference>>,
+            join_control<Outer, I + 1, child_type>,
             meta::make_union<
-                join_control<Outer, I + 1, iter::range<separator>>,
-                join_control<Outer, I + 1, iter::range<reference>>
+                join_control<Outer, I + 1, child_type>,
+                join_control<Outer, I + 1, separator>
             >
         >;
 
-        Outer* outer;
         [[no_unique_address]] Parent parent;
-        [[no_unique_address]] subrange_type subrange;
-        [[no_unique_address]] union_type child;
+        [[no_unique_address]] begin_type begin;
+        [[no_unique_address]] end_type end;
+        [[no_unique_address]] ssize_t index = 0;
+        [[no_unique_address]] Optional<union_type> child;
 
-        [[nodiscard]] constexpr decltype(auto) operator*()
-            noexcept (requires{{impl::visit(child, join_deref{})} noexcept;})
-            requires (requires{{impl::visit(child, join_deref{})};})
+    private:
+        constexpr Optional<union_type> init(Outer& outer)
+            noexcept (requires(join_control<Outer, I + 1, child_type> first) {
+                {begin == end} noexcept -> meta::nothrow::truthy;
+                {begin != end} noexcept -> meta::nothrow::truthy;
+                {
+                    join_control<Outer, I + 1, child_type>{outer, *begin}
+                } noexcept -> meta::nothrow::convertible_to<Optional<union_type>>;
+                {first.begin != first.end} noexcept -> meta::nothrow::truthy;
+                {++begin} noexcept;
+            } && (!trivial || requires(join_control<Outer, I + 1, child_type> sep) {
+                {join_control<Outer, I + 1, separator>{
+                    outer,
+                    outer.seps.template get<I>()
+                }} noexcept -> meta::nothrow::convertible_to<Optional<union_type>>;
+                {sep.begin != sep.end} noexcept -> meta::nothrow::truthy;
+            }))
+            requires (requires{{
+                join_control<Outer, I + 1, child_type>{outer, *begin}
+            } -> meta::convertible_to<Optional<union_type>>;} && (!trivial || requires{{
+                join_control<Outer, I + 1, separator>{outer, outer.seps.template get<I>()}
+            } -> meta::convertible_to<Optional<union_type>>;}))
         {
-            return (impl::visit(child, join_deref{}));
+            if (begin == end) {
+                return None;
+            }
+            if (
+                join_control<Outer, I + 1, child_type> first{outer, *begin};
+                first.begin != first.end
+            ) {
+                return std::move(first);
+            }
+            if constexpr (!trivial) {
+                ++index;
+                if (
+                    join_control<Outer, I + 1, separator> sep{outer, outer.seps.template get<I>()};
+                    sep.begin != sep.end
+                ) {
+                    return std::move(sep);
+                }
+            }
+            ++index;
+            ++begin;
+            while (begin != end) {
+                if (
+                    join_control<Outer, I + 1, child_type> next{outer, *begin};
+                    next.begin != next.end
+                ) {
+                    return std::move(next);
+                }
+                if constexpr (!trivial) {
+                    index += 2;
+                } else {
+                    ++index;
+                }
+                ++begin;
+            }
+            return None;
         }
 
-        [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept (requires{{impl::visit(child, join_deref{})} noexcept;})
-            requires (requires{{impl::visit(child, join_deref{})};})
+    public:
+        [[nodiscard]] constexpr join_control(Outer& outer, meta::forward<Parent> parent)
+            noexcept (requires{
+                {Parent(std::forward<Parent>(parent))} noexcept;
+                {meta::begin(this->parent)} noexcept;
+                {meta::end(this->parent)} noexcept;
+                {init(outer)} noexcept;
+            })
+            requires (requires{
+                {Parent(std::forward<Parent>(parent))};
+                {meta::begin(this->parent)};
+                {meta::end(this->parent)};
+                {init(outer)};
+            })
+        :
+            parent(std::forward<Parent>(parent)),
+            begin(meta::begin(this->parent)),
+            end(meta::end(this->parent)),
+            child(init(outer))
+        {}
+
+        [[nodiscard]] constexpr decltype(auto) deref() const
+            noexcept (requires{{impl::visit<1>(join_deref{}, *child)} noexcept;})
         {
-            return (impl::visit(child, join_deref{}));
+            return (impl::visit<1>(join_deref{}, *child));
         }
 
-        /// TODO: increment and comparison operators are bound together.  The final
-        /// iterator type will just store one of these objects as an optional, and then
-        /// finish the implementation there.
+        /// TODO: increment/decrement
+        /// TODO: advance/retreat
+        /// TODO: distance
+
+        [[nodiscard]] constexpr std::strong_ordering compare(const join_control& other) const
+            noexcept (requires{{join_compare_impl(*child, *other.child)} noexcept;})
+        {
+            if (auto cmp = index <=> other.index; cmp != 0) return cmp;
+            return join_compare_impl(*child, *other.child);
+        }
     };
     template <meta::not_reference Outer, size_t I, meta::not_rvalue Parent>
         requires (I > Outer::sep_type::size())
     struct join_control<Outer, I, Parent> {
         using begin_type = meta::begin_type<Parent>;
         using end_type = meta::end_type<Parent>;
-        using subrange_type = impl::subrange<begin_type, end_type>;
-        using reference = meta::dereference_type<subrange_type&>;
+        using child_type = meta::dereference_type<begin_type&>;
+        static constexpr bool trivial = true;
 
-        Outer* outer;
         [[no_unique_address]] Parent parent;
-        [[no_unique_address]] subrange_type subrange;
+        [[no_unique_address]] begin_type begin = meta::begin(parent);
+        [[no_unique_address]] end_type end = meta::end(parent);
+        [[no_unique_address]] ssize_t index = 0;
 
-        [[nodiscard]] constexpr decltype(auto) operator*()
-            noexcept (requires{{*subrange} noexcept;})
-            requires (requires{{*subrange};})
+        [[nodiscard]] constexpr decltype(auto) deref() const
+            noexcept (requires{{*begin} noexcept;})
         {
-            return (*subrange);
+            return (*begin);
         }
 
-        [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept (requires{{*subrange} noexcept;})
-            requires (requires{{*subrange};})
+        /// TODO: increment/decrement
+        /// TODO: advance/retreat
+        /// TODO: distance
+
+        [[nodiscard]] constexpr std::strong_ordering compare(const join_control& other) const
+            noexcept
         {
-            return (*subrange);
+            if (auto cmp = index <=> other.index; cmp != 0) return cmp;
+            return std::strong_ordering::equal;
         }
     };
     template <meta::not_reference Outer>
     struct join_control<Outer, 0, void> {
-        template <typename>
+        static constexpr bool trivial =
+            Outer::sep_type::empty() ||
+            meta::is<decltype((std::declval<Outer&>().seps.template get<0>())), impl::join_tag>;
+
+        template <typename = std::make_index_sequence<Outer::arg_type::size()>>
         struct _union_type;
-        template <size_t... I>
+        template <size_t... I> requires (trivial)
         struct _union_type<std::index_sequence<I...>> {
             using type = meta::make_union<
-                join_control<Outer, 1, iter::range<meta::remove_rvalue<
-                    decltype((meta::get<0>(std::declval<Outer&>().seps)))
-                >>>,
-                join_control<Outer, 1, iter::range<meta::remove_rvalue<
-                    decltype((meta::get<I>(std::declval<Outer&>().args)))>...
-                >>
+                join_control<Outer, 1, decltype((std::declval<Outer&>().args.template get<I>()))>...
             >;
         };
-        using union_type = _union_type<std::make_index_sequence<Outer::arg_type::size()>>::type;
-
-        Outer* outer;
-        [[no_unique_address]] union_type child;
-
-        [[nodiscard]] constexpr decltype(auto) operator*()
-            noexcept (requires{{impl::visit(child, join_deref{})} noexcept;})
-            requires (requires{{impl::visit(child, join_deref{})};})
-        {
-            return (impl::visit(child, join_deref{}));
-        }
-
-        [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept (requires{{impl::visit(child, join_deref{})} noexcept;})
-            requires (requires{{impl::visit(child, join_deref{})};})
-        {
-            return (impl::visit(child, join_deref{}));
-        }
-    };
-    template <meta::not_reference Outer>
-        requires (Outer::sep_type::empty())
-    struct join_control<Outer, 0, void> {
-        template <typename>
-        struct _union_type;
-        template <size_t... I>
+        template <size_t... I> requires (!trivial)
         struct _union_type<std::index_sequence<I...>> {
             using type = meta::make_union<
-                join_control<Outer, 1, iter::range<meta::remove_rvalue<
-                    decltype((meta::get<I>(std::declval<Outer&>().args)))>...
-                >>
+                join_control<Outer, 1, decltype((std::declval<Outer&>().seps.template get<0>()))>,
+                join_control<Outer, 1, decltype((std::declval<Outer&>().args.template get<I>()))>...
             >;
         };
-        using union_type = _union_type<std::make_index_sequence<Outer::arg_type::size()>>::type;
+        using union_type = _union_type<>::type;
 
-        Outer* outer;
-        [[no_unique_address]] union_type child;
+        ssize_t index = 0;
+        [[no_unique_address]] Optional<union_type> child;
 
-        [[nodiscard]] constexpr decltype(auto) operator*()
-            noexcept (requires{{impl::visit(child, join_deref{})} noexcept;})
-            requires (requires{{impl::visit(child, join_deref{})};})
+    private:
+
+        /// TODO: a special kind of helper for finding the first non-empty argument or
+        /// separator.
+
+    public:
+        /// TODO: take the outer container and search for the first argument or
+        /// separator that is non-empty, initializing `child` accordingly.
+        // [[nodiscard]] constexpr join_control(Outer& outer) {}
+
+        [[nodiscard]] constexpr decltype(auto) deref() const
+            noexcept (requires{{impl::visit(join_deref{}, *child)} noexcept;})
+            requires (requires{{impl::visit(join_deref{}, *child)};})
         {
-            return (impl::visit(child, join_deref{}));
+            return (impl::visit(join_deref{}, *child));
         }
 
-        [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept (requires{{impl::visit(child, join_deref{})} noexcept;})
-            requires (requires{{impl::visit(child, join_deref{})};})
+        /// TODO: increment/decrement
+        /// TODO: advance/retreat
+        /// TODO: distance
+
+        [[nodiscard]] constexpr std::strong_ordering compare(const join_control& other) const
+            noexcept (requires{{join_compare_impl(*child, *other.child)} noexcept;})
         {
-            return (impl::visit(child, join_deref{}));
+            if (auto cmp = index <=> other.index; cmp != 0) return cmp;
+            return join_compare_impl(*child, *other.child);
         }
     };
 
@@ -259,27 +376,14 @@ namespace impl {
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
+        Outer* outer;
         Optional<control> curr;
 
-        [[nodiscard]] constexpr decltype(auto) operator*()
-            noexcept (requires{{**curr} noexcept;})
-            requires (requires{{**curr};})
-        {
-            return (**curr);
-        }
-
         [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept (requires{{**curr} noexcept;})
-            requires (requires{{**curr};})
+            noexcept (requires{{curr->deref()} noexcept;})
+            requires (requires{{curr->deref()};})
         {
-            return (**curr);
-        }
-
-        [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{impl::arrow{**this}} noexcept;})
-            requires (requires{{impl::arrow{**this}};})
-        {
-            return impl::arrow{**this};
+            return (curr->deref());
         }
 
         [[nodiscard]] constexpr auto operator->() const
@@ -289,25 +393,28 @@ namespace impl {
             return impl::arrow{**this};
         }
 
-        [[nodiscard]] constexpr decltype(auto) operator[](difference_type n)
-            noexcept (requires{{(*curr)[n]} noexcept;})
-            requires (requires{{(*curr)[n]};})
-        {
-            return ((*curr)[n]);
-        }
-
         [[nodiscard]] constexpr decltype(auto) operator[](difference_type n) const
-            noexcept (requires{{(*curr)[n]} noexcept;})
-            requires (requires{{(*curr)[n]};})
+            noexcept (requires(join_iterator tmp) {
+                {join_iterator{*this}} noexcept;
+                {tmp += n} noexcept;
+                {*tmp} noexcept;
+            })
+            requires (requires(join_iterator tmp) {
+                {join_iterator{*this}};
+                {tmp += n};
+                {*tmp};
+            })
         {
-            return ((*curr)[n]);
+            join_iterator tmp {*this};
+            tmp += n;
+            return (*tmp);
         }
 
         constexpr join_iterator& operator++()
-            noexcept (requires{{++curr} noexcept;})
-            requires (requires{{++curr};})
+            noexcept (requires{{curr->increment()} noexcept;})
+            requires (requires{{curr->increment()};})
         {
-            ++curr;
+            curr->increment();
             return *this;
         }
 
@@ -327,10 +434,10 @@ namespace impl {
         }
 
         constexpr join_iterator& operator+=(difference_type n)
-            noexcept (requires{{curr += n} noexcept;})
-            requires (requires{{curr += n};})
+            noexcept (requires{{curr->increment(n)} noexcept;})
+            requires (requires{{curr->increment(n)};})
         {
-            curr += n;
+            curr->increment(n);
             return *this;
         }
 
@@ -371,10 +478,12 @@ namespace impl {
         }
 
         constexpr join_iterator& operator--()
-            noexcept (requires{{--curr} noexcept;})
-            requires (requires{{--curr};})
+            noexcept (requires{{curr->decrement()} noexcept;})
+            requires (requires{{curr->decrement()};})
         {
-            --curr;
+            /// TODO: what about decrementing an end iterator, where `curr` is none?
+            /// This should probably just initialize to the last valid position.
+            curr->decrement();
             return *this;
         }
 
@@ -394,10 +503,10 @@ namespace impl {
         }
 
         constexpr join_iterator& operator-=(difference_type n)
-            noexcept (requires{{curr -= n} noexcept;})
-            requires (requires{{curr -= n};})
+            noexcept (requires{{curr->decrement(n)} noexcept;})
+            requires (requires{{curr->decrement(n)};})
         {
-            curr -= n;
+            curr->decrement(n);
             return *this;
         }
 
@@ -417,6 +526,10 @@ namespace impl {
         }
 
     private:
+        /// TODO: both of these will have to recur down the control stack, so
+        /// maybe it's best to bake it into the control struct itself?  Will that
+        /// require linear time for nested separators?
+
         struct diff {
             using type = difference_type;
             static constexpr type operator()(NoneType, NoneType) noexcept { return 0; }
@@ -448,29 +561,6 @@ namespace impl {
             }
         };
 
-        struct comp {
-            using type = std::strong_ordering;
-            static constexpr type operator()(NoneType, NoneType) noexcept {
-                return type::equal;
-            }
-            static constexpr type operator()(const control& lhs, NoneType) noexcept {
-                return type::less;
-            }
-            static constexpr type operator()(NoneType, const control& rhs) noexcept {
-                return type::greater;
-            }
-            static constexpr type operator()(const control& lhs, const control& rhs)
-                noexcept (requires{
-                    {lhs.index() <=> rhs.index()} noexcept -> meta::nothrow::convertible_to<type>;
-                })
-                requires (requires{
-                    {lhs.index() <=> rhs.index()} -> meta::convertible_to<type>;
-                })
-            {
-                return lhs.index() <=> rhs.index();
-            }
-        };
-
     public:
         [[nodiscard]] constexpr difference_type operator-(const join_iterator& other) const
             noexcept (requires{{impl::visit<2>(diff{}, curr, other.curr)} noexcept;})
@@ -494,17 +584,16 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool operator==(const join_iterator& other) const
-            noexcept (requires{{impl::visit<2>(comp{}, curr, other.curr)} noexcept;})
-            requires (requires{{impl::visit<2>(comp{}, curr, other.curr)};})
+            noexcept (requires{{curr->compare(*other.curr)} noexcept;})
         {
-            return (*this <=> other) == 0;
+            /// TODO: check for none on both the current iterator and the other
+            return curr->compare(*other.curr) == std::strong_ordering::equal;
         }
 
-        [[nodiscard]] constexpr auto operator<=>(const join_iterator& other) const
-            noexcept (requires{{impl::visit<2>(comp{}, curr, other.curr)} noexcept;})
-            requires (requires{{impl::visit<2>(comp{}, curr, other.curr)};})
+        [[nodiscard]] constexpr std::strong_ordering operator<=>(const join_iterator& other) const
+            noexcept (requires{{curr->compare(*other.curr)} noexcept;})
         {
-            return impl::visit<2>(comp{}, curr, other.curr);
+            return curr->compare(*other.curr);
         }
 
         [[nodiscard]] friend constexpr bool operator==(const join_iterator& self, NoneType)
@@ -543,8 +632,6 @@ namespace impl {
             return self.curr == None ? std::strong_ordering::equal : std::strong_ordering::greater; 
         }
     };
-
-    /// TODO: indexing probably requires a few more helpers here
 
     /* The public join container stores a tuple for the separators and a tuple for the
     arguments, and serves as an entry point for `join_iterator`. */
