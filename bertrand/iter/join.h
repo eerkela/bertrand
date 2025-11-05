@@ -684,11 +684,12 @@ namespace impl {
             {outer.seps.template get<0>()} -> meta::is<impl::join_tag>;
         };
 
+    private:
         template <typename = std::make_index_sequence<Outer::arg_type::size()>>
         struct _unique;
         template <size_t... I> requires (trivial)
         struct _unique<std::index_sequence<I...>> {
-            using type = meta::make_union<
+            using unique = meta::make_union<
                 join_subrange<
                     Outer,
                     Dir,
@@ -699,7 +700,7 @@ namespace impl {
         };
         template <size_t... I> requires (!trivial)
         struct _unique<std::index_sequence<I...>> {
-            using type = meta::make_union<
+            using unique = meta::make_union<
                 join_subrange<
                     Outer,
                     Dir,
@@ -714,8 +715,9 @@ namespace impl {
                 >...
             >;
         };
-        using unique = _unique<>::type;
 
+    public:
+        using unique = _unique<>::unique;
         static constexpr size_t alternatives =
             Outer::arg_type::size() + (Outer::arg_type::size() - 1) * !trivial;
         static constexpr size_t unique_alternatives =
@@ -731,9 +733,6 @@ namespace impl {
                 decltype((std::declval<Outer&>().args.template get<I / (1 + !trivial)>()))
             >>();
 
-        template <template <size_t> class F, size_t N = alternatives>
-        using vtable = impl::basic_vtable<F, N>;
-
         // using iterator_category = control::iterator_category;
         using difference_type = ssize_t;
         using reference = int;
@@ -742,11 +741,134 @@ namespace impl {
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
-        Outer* outer = nullptr;
-        ssize_t index = alternatives;
+        Outer* outer;
+        ssize_t index;
         [[no_unique_address]] Optional<unique> child;
 
     private:
+        template <size_t I = 0>
+        constexpr Optional<unique> init(Outer& outer)
+            noexcept (requires(join_subrange<
+                Outer,
+                Dir,
+                0,
+                decltype((outer.args.template get<I>()))
+            > child) {
+                {
+                    join_subrange<
+                        Outer,
+                        Dir,
+                        0,
+                        decltype((outer.args.template get<I>()))
+                    >{outer, outer.args.template get<I>(), join_forward{}}
+                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                {child.begin != child.end} noexcept -> meta::nothrow::truthy;
+            } && (trivial || I != 0 || requires(join_subrange<
+                Outer,
+                Dir,
+                0,
+                decltype((outer.seps.template get<0>()))
+            > sep) {
+                {
+                    join_subrange<
+                        Outer,
+                        Dir,
+                        0,
+                        decltype((outer.seps.template get<0>()))
+                    >{outer, outer.seps.template get<0>(), join_forward{}}
+                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+            }) && (I + 1 == Outer::arg_type::size() || requires{{init<I + 1>(outer)} noexcept;}))
+            requires (std::same_as<Dir, join_forward>)
+        {
+            if (join_subrange<Outer, Dir, 0, decltype((outer.args.template get<I>()))> first{
+                outer,
+                outer.args.template get<I>(),
+                join_forward{}
+            }; first.begin != first.end) {
+                return std::move(first);
+            }
+            if constexpr (!trivial && I == 0) {
+                ++index;
+                if (outer.sep_size[0] != 0) {
+                    return join_subrange<
+                        Outer,
+                        Dir,
+                        0,
+                        decltype((outer.seps.template get<0>()))
+                    >{outer, outer.seps.template get<0>(), join_forward{}};
+                }
+                ++index;
+            } else {
+                index += 1 + !trivial;
+            }
+            if constexpr (I + 1 < Outer::arg_type::size()) {
+                return init<I + 1>(outer);
+            } else {
+                return None;
+            }
+        }
+
+        template <size_t I = Outer::arg_type::size() - 1>
+        constexpr Optional<unique> init(Outer& outer)
+            noexcept (requires(join_subrange<
+                Outer,
+                Dir,
+                0,
+                decltype((outer.args.template get<I>()))
+            > child) {
+                {
+                    join_subrange<
+                        Outer,
+                        Dir,
+                        0,
+                        decltype((outer.args.template get<I>()))
+                    >{outer, outer.args.template get<I>(), join_forward{}}
+                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                {child.begin != child.end} noexcept -> meta::nothrow::truthy;
+            } && (trivial || I != Outer::arg_type::size() - 1 || requires(join_subrange<
+                Outer,
+                Dir,
+                0,
+                decltype((outer.seps.template get<0>()))
+            > sep) {
+                {
+                    join_subrange<
+                        Outer,
+                        Dir,
+                        0,
+                        decltype((outer.seps.template get<0>()))
+                    >{outer, outer.seps.template get<0>(), join_forward{}}
+                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+            }) && (I == 0 || requires{{init<I - 1>(outer)} noexcept;}))
+            requires (std::same_as<Dir, join_reverse>)
+        {
+            if (join_subrange<Outer, Dir, 0, decltype((outer.args.template get<I>()))> first{
+                outer,
+                outer.args.template get<I>(),
+                join_reverse{}
+            }; first.begin != first.end) {
+                return std::move(first);
+            }
+            if constexpr (!trivial && I == Outer::arg_type::size() - 1) {
+                ++index;
+                if (outer.sep_size[0] != 0) {
+                    return join_subrange<
+                        Outer,
+                        Dir,
+                        0,
+                        decltype((outer.seps.template get<0>()))
+                    >{outer, outer.seps.template get<0>(), join_reverse{}};
+                }
+                ++index;
+            } else {
+                index += 1 + !trivial;
+            }
+            if constexpr (I > 0) {
+                return init<I - 1>(outer);
+            } else {
+                return None;
+            }
+        }
 
         static constexpr reference _deref(const unique& child)
             noexcept (requires{{
@@ -760,10 +882,7 @@ namespace impl {
             }(child);
         }
 
-        static constexpr std::strong_ordering _compare(
-            const unique& lhs,
-            const unique& rhs
-        )
+        static constexpr std::strong_ordering _compare(const unique& lhs, const unique& rhs)
             noexcept (requires{{impl::basic_vtable<join_compare, unique_alternatives>{
                 impl::visitable<const unique&>::index(lhs)
             }(lhs, rhs)} noexcept;})
@@ -774,6 +893,19 @@ namespace impl {
         }
 
     public:
+        [[nodiscard]] constexpr join_iterator(Outer* outer = nullptr) noexcept :
+            outer(outer),
+            index(alternatives)
+        {}
+
+        [[nodiscard]] constexpr join_iterator(Outer& outer)
+            noexcept (requires{{init(outer)} noexcept;})
+            requires (requires{{init(outer)};})
+        :
+            outer(&outer),
+            index(0),
+            child(init(outer))
+        {}
 
         /// TODO: the constructor would take a reference to outer + an index if not an
         /// end iterator, and would invoke a vtable function that searches for the first
@@ -980,8 +1112,6 @@ namespace impl {
         using sep_type = Sep::template eval<impl::basic_tuple>;
         using arg_type = impl::basic_tuple<A...>;
         using sep_size_type = std::array<ssize_t, Sep::size()>;
-        using iterator = join_iterator<join, join_forward>;
-        using const_iterator = join_iterator<const join, join_forward>;
 
         [[no_unique_address]] sep_type seps;
         [[no_unique_address]] arg_type args;
@@ -1031,26 +1161,48 @@ namespace impl {
             sep_size(get_sep_sizes(std::make_index_sequence<Sep::size()>{}))
         {}
 
-        [[nodiscard]] constexpr iterator begin()
-            noexcept (requires{{iterator{*this, join_forward{}}} noexcept;})
-            requires (requires{{iterator{*this, join_forward{}}};})
+        [[nodiscard]] constexpr join_iterator<join, join_forward> begin()
+            noexcept (requires{{join_iterator<join, join_forward>{*this}} noexcept;})
+            requires (requires{{join_iterator<join, join_forward>{*this}};})
         {
-            return {*this, join_forward{}};
-        }
-
-        [[nodiscard]] constexpr const_iterator begin() const
-            noexcept (requires{{const_iterator{*this, join_forward{}}} noexcept;})
-            requires (requires{{const_iterator{*this, join_forward{}}};})
-        {
-            return {*this, join_forward{}};
-        }
-
-        [[nodiscard]] constexpr iterator end() noexcept {
             return {*this};
         }
 
-        [[nodiscard]] constexpr const_iterator end() const noexcept {
+        [[nodiscard]] constexpr join_iterator<const join, join_forward> begin() const
+            noexcept (requires{{join_iterator<const join, join_forward>{*this}} noexcept;})
+            requires (requires{{join_iterator<const join, join_forward>{*this}};})
+        {
             return {*this};
+        }
+
+        [[nodiscard]] constexpr join_iterator<join, join_forward> end() noexcept {
+            return {this};
+        }
+
+        [[nodiscard]] constexpr join_iterator<const join, join_forward> end() const noexcept {
+            return {this};
+        }
+
+        [[nodiscard]] constexpr join_iterator<join, join_reverse> rbegin()
+            noexcept (requires{{join_iterator<join, join_reverse>{*this}} noexcept;})
+            requires (requires{{join_iterator<join, join_reverse>{*this}};})
+        {
+            return {*this};
+        }
+
+        [[nodiscard]] constexpr join_iterator<const join, join_reverse> rbegin() const
+            noexcept (requires{{join_iterator<const join, join_reverse>{*this}} noexcept;})
+            requires (requires{{join_iterator<const join, join_reverse>{*this}};})
+        {
+            return {*this};
+        }
+
+        [[nodiscard]] constexpr join_iterator<join, join_reverse> rend() noexcept {
+            return {this};
+        }
+
+        [[nodiscard]] constexpr join_iterator<const join, join_reverse> rend() const noexcept {
+            return {this};
         }
     };
     template <meta::unqualified Sep> requires (meta::is_pack<Sep>)
