@@ -5511,7 +5511,9 @@ namespace impl {
         template <typename, typename... A>
         static constexpr ptr<A...> table[size()];
         template <size_t... Is, typename... A>
-        static constexpr ptr<A...> table<std::index_sequence<Is...>, A...> {&fn<Is, A...>...};
+        static constexpr ptr<A...> table<std::index_sequence<Is...>, A...>[size()] {
+            &fn<Is, A...>...
+        };
 
     public:
         /* If the vtable size is less than `MIN_VTABLE_SIZE`, then we can optimize
@@ -5559,7 +5561,7 @@ namespace impl {
     struct _basic_vtable<F, std::index_sequence<Is...>> { using type = vtable<F, Is...>; };
 
     /* Produce a simple vtable with purely integer indices and a specified size. */
-    template <template <size_t> typename F, size_t N>
+    template <template <size_t> typename F, size_t N> requires (N > 0)
     using basic_vtable = _basic_vtable<F, std::make_index_sequence<N>>::type;
 
     /* A trivial iterator that applies a transformation function to the elements of

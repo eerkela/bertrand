@@ -79,9 +79,13 @@ namespace impl {
     template <typename T>
     concept join_direction = std::same_as<T, join_forward> || std::same_as<T, join_reverse>;
 
+    template <size_t I>
+    concept join_depth = I > 0;
+
     template <meta::not_reference Outer, join_direction Dir>
     struct join_iterator;
     template <meta::not_reference Outer, join_direction Dir, size_t Depth, meta::not_rvalue Value>
+        requires (join_depth<Depth>)
     struct join_subrange;
 
     template <typename T>
@@ -162,7 +166,7 @@ namespace impl {
     effectively promoting its index into a compile-time constant (modulo `N`).
     `join_get<I>(self)` can then be used to access the proper alternative, assuming `N`
     is equal to the total number of alternatives. */
-    template <template <size_t> class F, typename T, typename... A>
+    template <template <size_t> typename F, typename T, typename... A>
     constexpr decltype(auto) join_visit(T& self, A&&... args)
         noexcept (requires{{impl::basic_vtable<F, T::alternatives>{self.index % T::alternatives}(
             self,
@@ -223,29 +227,30 @@ namespace impl {
     template <size_t I>
     struct join_increment {
         template <typename T>
-        static constexpr size_t advance = T::trivial ? I + 1 : (I | 1) + 1;
+        static constexpr size_t round = T::trivial ? I + 1 : (I | 1) + 1;
+        template <typename T>
+        static constexpr size_t norm = round<T> / (1 + !T::trivial);
 
         template <is_join_iterator T, typename Outer>
         static constexpr void skip(T& self, Outer& outer)
-            noexcept (advance<T> < T::alternatives ?
-                requires(decltype(self.template get<advance<T>, join_forward>(outer)) next) {
+            noexcept (round<T> < T::alternatives ?
+                requires(decltype(self.template arg<norm<T>>(outer)) next) {
                     {next.begin != next.end} noexcept -> meta::nothrow::truthy;
-                    {self.child = self.template get<advance<T>, join_forward>(outer)} noexcept;
-                    {join_increment<advance<T>>::skip(self, outer)} noexcept;
+                    {self.child = self.template arg<norm<T>>(outer)} noexcept;
+                    {join_increment<round<T>>::skip(self, outer)} noexcept;
                 } :
                 requires{{self.child = None} noexcept;}
             )
         {
-            constexpr size_t J = advance<T>;
-            if constexpr (J < T::alternatives) {
-                self.index = J;
+            if constexpr (round<T> < T::alternatives) {
+                self.index = round<T>;
                 if (
-                    auto next = self.template get<J, join_forward>(outer);
+                    auto next = self.template arg<norm<T>>(outer);
                     next.begin != next.end
                 ) {
                     self.child = std::move(next);
                 } else {
-                    join_increment<J>::skip(self, outer);
+                    join_increment<round<T>>::skip(self, outer);
                 }
             } else {
                 self.index = T::alternatives;
@@ -255,16 +260,16 @@ namespace impl {
 
         template <is_join_subrange T, typename Outer>
         static constexpr void skip(T& self, Outer& outer)
-            noexcept (requires(decltype(self.template get<join_forward>(outer)) next) {
+            noexcept (requires(decltype(self.template arg(outer)) next) {
                 {next.begin != next.end} noexcept -> meta::nothrow::truthy;
-                {self.child = self.template get<join_forward>(outer)} noexcept;
+                {self.child = self.template arg(outer)} noexcept;
                 {++self.begin} noexcept;
                 {self.begin != self.end} noexcept -> meta::nothrow::truthy;
                 {self.child = None} noexcept;
             })
         {
             do {
-                if (auto next = self.template get<join_forward>(outer); next.begin != next.end) {
+                if (auto next = self.template arg(outer); next.begin != next.end) {
                     self.child = std::move(next);
                     return;
                 }
@@ -285,7 +290,7 @@ namespace impl {
                     {self.begin == self.end} noexcept -> meta::nothrow::truthy;
                     {self.child = None} noexcept;
                 }) && (T::trivial || I + 1 >= T::alternatives || requires{
-                    {self.child = self.template sep<join_forward>(outer)} noexcept;
+                    {self.child = self.sep(outer)} noexcept;
                 })
             )))
         {
@@ -303,7 +308,7 @@ namespace impl {
                 }
                 if constexpr (!T::trivial && I + 1 < T::alternatives) {
                     if (outer.sep_size[T::depth] != 0) {
-                        self.child = self.template sep<join_forward>(outer);
+                        self.child = self.sep(outer);
                         return true;
                     }
                     ++self.index;
@@ -398,9 +403,9 @@ namespace impl {
     union, where each alternative represents either an outer argument or a top-level
     separator. */
     template <meta::not_reference Outer, join_direction Dir, size_t Depth, meta::not_rvalue Value>
+        requires (join_depth<Depth>)
     struct join_subrange {
         static constexpr size_t depth = Depth;
-        static_assert(depth > 0);
         using begin_type = decltype(join_begin<Dir>(std::declval<meta::as_lvalue<Value>>()));
         using end_type = decltype(join_end<Dir>(std::declval<meta::as_lvalue<Value>>()));
         using child_type = meta::dereference_type<begin_type&>;
@@ -550,10 +555,9 @@ namespace impl {
         }
     };
     template <meta::not_reference Outer, join_direction Dir, size_t Depth, meta::not_rvalue Value>
-        requires (Depth < Outer::sep_type::size())
+        requires (join_depth<Depth> && Depth < Outer::sep_type::size())
     struct join_subrange<Outer, Dir, Depth, Value> {
         static constexpr size_t depth = Depth;
-        static_assert(depth > 0);
         using begin_type = decltype(join_begin<Dir>(std::declval<meta::as_lvalue<Value>>()));
         using end_type = decltype(join_end<Dir>(std::declval<meta::as_lvalue<Value>>()));
         using child_type = join_subrange<
@@ -566,9 +570,11 @@ namespace impl {
             Outer,
             Dir,
             Outer::sep_type::size(),
-            join_wrap<Value, decltype((std::declval<Outer&>().seps.template get<depth>()))>
+            decltype((std::declval<Outer&>().seps.template get<depth>()))
         >;
-        static constexpr bool trivial = meta::is<separator, impl::join_tag>;
+        static constexpr bool trivial = requires(Outer& outer) {
+            {outer.seps.template get<depth>()} -> meta::is<impl::scalar_range<impl::join_tag>>;
+        };
         using unique =
             std::conditional_t<trivial, child_type, meta::make_union<separator, child_type>>;
         static constexpr size_t alternatives = 1 + !trivial;
@@ -583,7 +589,7 @@ namespace impl {
         [[no_unique_address]] ssize_t index = 0;
         [[no_unique_address]] Optional<unique> child;
 
-        template <join_direction D> requires (!trivial)
+        template <join_direction D = join_forward> requires (!trivial)
         [[nodiscard]] constexpr auto sep(Outer& outer)
             noexcept (requires{
                 {separator{outer, outer.seps.template get<depth>(), D{}}} noexcept;
@@ -592,8 +598,8 @@ namespace impl {
             return separator{outer, outer.seps.template get<depth>(), D{}};
         }
 
-        template <join_direction D>
-        [[nodiscard]] constexpr auto get(Outer& outer)
+        template <size_t I = 0, join_direction D = join_forward> requires (I == 0)
+        [[nodiscard]] constexpr auto arg(Outer& outer)
             noexcept (requires{{child_type{outer, *begin, D{}}} noexcept;})
         {
             return child_type{outer, *begin, D{}};
@@ -604,33 +610,29 @@ namespace impl {
             noexcept (requires(child_type child) {
                 {begin == end} noexcept -> meta::nothrow::truthy;
                 {begin != end} noexcept -> meta::nothrow::truthy;
-                {
-                    child_type{outer, *begin, join_forward{}}
-                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                {arg(outer)} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
                 {child.begin != child.end} noexcept -> meta::nothrow::truthy;
                 {++begin} noexcept;
-            } && (!trivial || requires(separator sep) {
-                {
-                    separator{outer, outer.seps.template get<depth>(), join_forward{}}
-                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+            } && (!trivial || requires{
+                {sep(outer)} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
             }))
         {
             if (begin == end) {
                 return None;
             }
-            if (child_type first{outer, *begin, join_forward{}}; first.begin != first.end) {
+            if (auto first = arg(outer); first.begin != first.end) {
                 return std::move(first);
             }
             if constexpr (!trivial) {
                 ++index;
                 if (outer.sep_size[depth] != 0) {
-                    return separator{outer, outer.seps.template get<depth>(), join_forward{}};
+                    return sep(outer);
                 }
             }
             ++index;
             ++begin;
             while (begin != end) {
-                if (child_type next{outer, *begin, join_forward{}}; next.begin != next.end) {
+                if (auto next = arg(outer); next.begin != next.end) {
                     return std::move(next);
                 }
                 index += 1 + !trivial;
@@ -643,13 +645,13 @@ namespace impl {
             noexcept (requires(child_type child) {
                 {begin == end} noexcept -> meta::nothrow::truthy;
                 {
-                    child_type{outer, *begin, join_reverse{}}
+                    arg<join_reverse>(outer)
                 } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
                 {child.begin != child.end} noexcept -> meta::nothrow::truthy;
                 {--begin} noexcept;
-            } && (!trivial || requires(separator sep) {
+            } && (!trivial || requires{
                 {
-                    separator{outer, outer.seps.template get<depth>(), join_reverse{}}
+                    sep<join_reverse>(outer)
                 } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
             }) && (
                 (meta::has_ssize<Value> && requires(meta::ssize_type<Value> size) {
@@ -679,19 +681,19 @@ namespace impl {
                     index += 1 + !trivial;
                 }
             }
-            if (child_type last{outer, *begin, join_reverse{}}; last.begin != last.end) {
+            if (auto last = arg<join_reverse>(outer); last.begin != last.end) {
                 return std::move(last);
             }
             if constexpr (!trivial) {
                 --index;
                 if (outer.sep_size[depth] != 0) {
-                    return separator{outer, outer.seps.template get<depth>(), join_reverse{}};
+                    return sep<join_reverse>(outer);
                 }
             }
             --index;
             --begin;
             while (index >= 0) {
-                if (child_type next{outer, *begin, join_reverse{}}; next.begin != next.end) {
+                if (auto next = arg<join_reverse>(outer); next.begin != next.end) {
                     return std::move(next);
                 }
                 index -= 1 + !trivial;
@@ -821,11 +823,11 @@ namespace impl {
     template <meta::not_reference Outer, join_direction Dir>
     struct join_iterator {
         static constexpr size_t depth = 0;
-        static constexpr bool trivial = Outer::sep_type::empty() || requires(Outer& outer) {
-            {outer.seps.template get<0>()} -> meta::is<impl::join_tag>;
+        static constexpr bool trivial = requires(Outer& outer) {
+            {outer.seps.template get<0>()} -> meta::is<impl::scalar_range<impl::join_tag>>;
         };
 
-        template <size_t I>
+        template <size_t I> requires (I < Outer::arg_type::size())
         using child_type = join_subrange<
             Outer,
             Dir,
@@ -834,7 +836,6 @@ namespace impl {
         >;
 
     private:
-
         template <typename = std::make_index_sequence<Outer::arg_type::size()>>
         struct _unique;
         template <size_t... I> requires (trivial)
@@ -861,20 +862,16 @@ namespace impl {
         static constexpr size_t unique_alternatives =
             impl::visitable<unique>::alternatives::size();
 
-        template <size_t I> requires (I < alternatives)
-        static constexpr size_t alternative = !trivial && I % 2 == 1 ?
+        template <size_t I>
+            requires (I < alternatives)
+        static constexpr size_t alternative = (!trivial && I % 2 == 1) ?
             0 :
-            impl::visitable<unique>::alternatives::template index<join_subrange<
-                Outer,
-                Dir,
-                1,
-                decltype((std::declval<Outer&>().args.template get<I / (1 + !trivial)>()))
-            >>();
+            impl::visitable<unique>::alternatives::template index<child_type<I / (1 + !trivial)>>();
 
         /// TODO: ideally, these features would be deduced from the inner subranges,
         /// namely the category and reference types.
 
-        // using iterator_category = control::iterator_category;
+        using iterator_category = std::forward_iterator_tag;
         using difference_type = ssize_t;
         using reference = int;
             /// TODO: deduce this for each terminal control block, and then
@@ -886,159 +883,97 @@ namespace impl {
         ssize_t index;
         [[no_unique_address]] Optional<unique> child;
 
-        template <join_direction D> requires (!trivial)
+        template <join_direction D = join_forward> requires (!trivial)
         [[nodiscard]] constexpr auto sep(Outer& outer)
-            noexcept (requires{
-                {separator{outer, outer.seps.template get<depth>(), D{}}} noexcept;
-            })
+            noexcept (requires{{separator{outer, outer.seps.template get<depth>(), D{}}} noexcept;})
         {
             return separator{outer, outer.seps.template get<depth>(), D{}};
         }
 
-        template <size_t I, join_direction D> requires (I < alternatives)
-        [[nodiscard]] constexpr auto get(Outer& outer)
-            noexcept (requires{
-                {child_type<I>{outer, outer.args.template get<I / (1 + !trivial)>(), D{}}} noexcept;
-            })
+        template <size_t I, join_direction D = join_forward> requires (I < Outer::arg_type::size())
+        [[nodiscard]] constexpr auto arg(Outer& outer)
+            noexcept (requires{{child_type<I>{outer, outer.args.template get<I>(), D{}}} noexcept;})
         {
-            return child_type<I>{outer, outer.args.template get<I / (1 + !trivial)>(), D{}};
+            return child_type<I>{outer, outer.args.template get<I>(), D{}};
         }
 
     private:
-        template <size_t I = 0>
+        template <ssize_t I = 0> requires (I < Outer::arg_type::ssize())
         constexpr Optional<unique> init(Outer& outer)
-            noexcept (requires(join_subrange<
-                Outer,
-                Dir,
-                1,
-                decltype((outer.args.template get<I>()))
-            > child) {
-                {
-                    join_subrange<
-                        Outer,
-                        Dir,
-                        1,
-                        decltype((outer.args.template get<I>()))
-                    >{outer, outer.args.template get<I>(), join_forward{}}
-                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
-                {child.begin != child.end} noexcept -> meta::nothrow::truthy;
-            } && (trivial || I != 0 || requires(join_subrange<
-                Outer,
-                Dir,
-                Outer::sep_type::size(),
-                decltype((outer.seps.template get<0>()))
-            > sep) {
-                {
-                    join_subrange<
-                        Outer,
-                        Dir,
-                        Outer::sep_type::size(),
-                        decltype((outer.seps.template get<0>()))
-                    >{outer, outer.seps.template get<0>(), join_forward{}}
-                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
-            }) && (I + 1 == Outer::arg_type::size() || requires{{init<I + 1>(outer)} noexcept;}))
+            noexcept (requires(decltype(arg<I>(outer)) first) {
+                {arg<I>(outer)} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                {first.begin != first.end} noexcept -> meta::nothrow::truthy;
+            } && (I + 1 == Outer::arg_type::ssize() || (
+                requires{{init<I + 1>(outer)} noexcept;} &&
+                (trivial || I != 0 || requires{
+                    {sep(outer)} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                })
+            )))
             requires (std::same_as<Dir, join_forward>)
         {
-            if (join_subrange<Outer, Dir, 1, decltype((outer.args.template get<I>()))> first{
-                outer,
-                outer.args.template get<I>(),
-                join_forward{}
-            }; first.begin != first.end) {
+            if (auto first = arg<I>(outer); first.begin != first.end) {
                 return std::move(first);
             }
-            if constexpr (!trivial && I == 0) {
-                ++index;
-                if (outer.sep_size[0] != 0) {
-                    return join_subrange<
-                        Outer,
-                        Dir,
-                        Outer::sep_type::size(),
-                        decltype((outer.seps.template get<0>()))
-                    >{outer, outer.seps.template get<0>(), join_forward{}};
+            if constexpr (I + 1 < Outer::arg_type::ssize()) {
+                if constexpr (!trivial && I == 0) {
+                    ++index;
+                    if (outer.sep_size[0] != 0) {
+                        return sep(outer);
+                    }
+                    ++index;
+                } else {
+                    index += 1 + !trivial;
                 }
-                ++index;
-            } else {
-                index += 1 + !trivial;
-            }
-            if constexpr (I + 1 < Outer::arg_type::size()) {
                 return init<I + 1>(outer);
             } else {
+                ++index;
                 return None;
             }
         }
 
-        template <size_t I = Outer::arg_type::size() - 1>
+        template <ssize_t I = Outer::arg_type::ssize() - 1> requires (I >= 0)
         constexpr Optional<unique> init(Outer& outer)
-            noexcept (requires(join_subrange<
-                Outer,
-                Dir,
-                1,
-                decltype((outer.args.template get<I>()))
-            > child) {
-                {
-                    join_subrange<
-                        Outer,
-                        Dir,
-                        1,
-                        decltype((outer.args.template get<I>()))
-                    >{outer, outer.args.template get<I>(), join_forward{}}
-                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
-                {child.begin != child.end} noexcept -> meta::nothrow::truthy;
-            } && (trivial || I != Outer::arg_type::size() - 1 || requires(join_subrange<
-                Outer,
-                Dir,
-                Outer::sep_type::size(),
-                decltype((outer.seps.template get<0>()))
-            > sep) {
-                {
-                    join_subrange<
-                        Outer,
-                        Dir,
-                        Outer::sep_type::size(),
-                        decltype((outer.seps.template get<0>()))
-                    >{outer, outer.seps.template get<0>(), join_forward{}}
-                } noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
-            }) && (I == 0 || requires{{init<I - 1>(outer)} noexcept;}))
+            noexcept (requires(decltype(arg<I>(outer)) first) {
+                {arg<I>(outer)} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                {first.begin != first.end} noexcept -> meta::nothrow::truthy;
+            } && (I == 0 || (
+                requires{{init<I - 1>(outer)} noexcept;} &&
+                (trivial || I != Outer::arg_type::ssize() - 1 || requires{
+                    {sep(outer)} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                })
+            )))
             requires (std::same_as<Dir, join_reverse>)
         {
-            if (join_subrange<Outer, Dir, 1, decltype((outer.args.template get<I>()))> first{
-                outer,
-                outer.args.template get<I>(),
-                join_reverse{}
-            }; first.begin != first.end) {
+            if (auto first = arg<I>(outer); first.begin != first.end) {
                 return std::move(first);
             }
-            if constexpr (!trivial && I == Outer::arg_type::size() - 1) {
-                ++index;
-                if (outer.sep_size[0] != 0) {
-                    return join_subrange<
-                        Outer,
-                        Dir,
-                        Outer::sep_type::size(),
-                        decltype((outer.seps.template get<0>()))
-                    >{outer, outer.seps.template get<0>(), join_reverse{}};
-                }
-                ++index;
-            } else {
-                index += 1 + !trivial;
-            }
             if constexpr (I > 0) {
+                if constexpr (!trivial && I == Outer::arg_type::ssize() - 1) {
+                    ++index;
+                    if (outer.sep_size[0] != 0) {
+                        return sep(outer);
+                    }
+                    ++index;
+                } else {
+                    index += 1 + !trivial;
+                }
                 return init<I - 1>(outer);
             } else {
+                ++index;
                 return None;
             }
         }
 
-        static constexpr reference _deref(const unique& child)
+        static constexpr decltype(auto) _deref(const unique& child)
             noexcept (requires{{
                 impl::basic_vtable<join_deref<reference>::template fn, unique_alternatives>{
                     impl::visitable<const unique&>::index(child)
                 }(child)
             } noexcept;})
         {
-            return impl::basic_vtable<join_deref<reference>::template fn, unique_alternatives>{
+            return (impl::basic_vtable<join_deref<reference>::template fn, unique_alternatives>{
                 impl::visitable<const unique&>::index(child)
-            }(child);
+            }(child));
         }
 
         static constexpr std::strong_ordering _compare(const unique& lhs, const unique& rhs)
@@ -1066,10 +1001,10 @@ namespace impl {
             child(init(outer))
         {}
 
-        [[nodiscard]] constexpr reference operator*() const
+        [[nodiscard]] constexpr decltype(auto) operator*() const
             noexcept (requires{{_deref(*child)} noexcept;})
         {
-            return _deref(*child);
+            return (_deref(*child));
         }
 
         [[nodiscard]] constexpr auto operator->() const
@@ -1079,22 +1014,22 @@ namespace impl {
             return impl::arrow{*this};
         }
 
-        [[nodiscard]] constexpr reference operator[](difference_type n) const
-            noexcept (requires(join_iterator tmp) {
-                {join_iterator{*this}} noexcept;
-                {tmp += n} noexcept;
-                {*tmp} noexcept;
-            })
-            requires (requires(join_iterator tmp) {
-                {join_iterator{*this}};
-                {tmp += n};
-                {*tmp};
-            })
-        {
-            join_iterator tmp {*this};
-            tmp += n;
-            return (*tmp);
-        }
+        // [[nodiscard]] constexpr reference operator[](difference_type n) const
+        //     noexcept (requires(join_iterator tmp) {
+        //         {join_iterator{*this}} noexcept;
+        //         {tmp += n} noexcept;
+        //         {*tmp} noexcept;
+        //     })
+        //     requires (requires(join_iterator tmp) {
+        //         {join_iterator{*this}};
+        //         {tmp += n};
+        //         {*tmp};
+        //     })
+        // {
+        //     join_iterator tmp {*this};
+        //     tmp += n;
+        //     return (*tmp);
+        // }
 
         constexpr join_iterator& operator++()
             noexcept (requires{{join_visit<join_increment>(*this, *outer)} noexcept;})
@@ -1119,110 +1054,110 @@ namespace impl {
             return tmp;
         }
 
-        constexpr join_iterator& operator+=(difference_type n)
-            noexcept (requires{
-                {join_visit<join_increment>(*this, *outer, n)} noexcept;
-            })
-            requires (requires{{join_visit<join_increment>(*this, *outer, n)};})
-        {
-            join_visit<join_increment>(*this, *outer, n);
-            return *this;
-        }
+        // constexpr join_iterator& operator+=(difference_type n)
+        //     noexcept (requires{
+        //         {join_visit<join_increment>(*this, *outer, n)} noexcept;
+        //     })
+        //     requires (requires{{join_visit<join_increment>(*this, *outer, n)};})
+        // {
+        //     join_visit<join_increment>(*this, *outer, n);
+        //     return *this;
+        // }
 
-        [[nodiscard]] friend constexpr join_iterator operator+(
-            const join_iterator& self,
-            difference_type n
-        )
-            noexcept (requires(join_iterator tmp) {
-                {join_iterator{self}} noexcept;
-                {tmp += n} noexcept;
-            })
-            requires (requires(join_iterator tmp) {
-                {join_iterator{self}};
-                {tmp += n};
-            })
-        {
-            join_iterator tmp {self};
-            tmp += n;
-            return tmp;
-        }
+        // [[nodiscard]] friend constexpr join_iterator operator+(
+        //     const join_iterator& self,
+        //     difference_type n
+        // )
+        //     noexcept (requires(join_iterator tmp) {
+        //         {join_iterator{self}} noexcept;
+        //         {tmp += n} noexcept;
+        //     })
+        //     requires (requires(join_iterator tmp) {
+        //         {join_iterator{self}};
+        //         {tmp += n};
+        //     })
+        // {
+        //     join_iterator tmp {self};
+        //     tmp += n;
+        //     return tmp;
+        // }
 
-        [[nodiscard]] friend constexpr join_iterator operator+(
-            difference_type n,
-            const join_iterator& self
-        )
-            noexcept (requires(join_iterator tmp) {
-                {join_iterator{self}} noexcept;
-                {tmp += n} noexcept;
-            })
-            requires (requires(join_iterator tmp) {
-                {join_iterator{self}};
-                {tmp += n};
-            })
-        {
-            join_iterator tmp {self};
-            tmp += n;
-            return tmp;
-        }
+        // [[nodiscard]] friend constexpr join_iterator operator+(
+        //     difference_type n,
+        //     const join_iterator& self
+        // )
+        //     noexcept (requires(join_iterator tmp) {
+        //         {join_iterator{self}} noexcept;
+        //         {tmp += n} noexcept;
+        //     })
+        //     requires (requires(join_iterator tmp) {
+        //         {join_iterator{self}};
+        //         {tmp += n};
+        //     })
+        // {
+        //     join_iterator tmp {self};
+        //     tmp += n;
+        //     return tmp;
+        // }
 
-        constexpr join_iterator& operator--()
-            noexcept (requires{{join_visit<join_decrement>(*this, *outer)} noexcept;})
-            requires (requires{{join_visit<join_decrement>(*this, *outer)};})
-        {
-            /// TODO: what about decrementing an end iterator, where `curr` is none?
-            /// This should probably just initialize to the last valid position.
-            join_visit<join_decrement>(*this, *outer);
-            return *this;
-        }
+        // constexpr join_iterator& operator--()
+        //     noexcept (requires{{join_visit<join_decrement>(*this, *outer)} noexcept;})
+        //     requires (requires{{join_visit<join_decrement>(*this, *outer)};})
+        // {
+        //     /// TODO: what about decrementing an end iterator, where `curr` is none?
+        //     /// This should probably just initialize to the last valid position.
+        //     join_visit<join_decrement>(*this, *outer);
+        //     return *this;
+        // }
 
-        [[nodiscard]] constexpr join_iterator operator--(int)
-            noexcept (requires{
-                {join_iterator{*this}} noexcept;
-                {--*this} noexcept;
-            })
-            requires (requires{
-                {join_iterator{*this}};
-                {--*this};
-            })
-        {
-            join_iterator temp {*this};
-            --*this;
-            return temp;
-        }
+        // [[nodiscard]] constexpr join_iterator operator--(int)
+        //     noexcept (requires{
+        //         {join_iterator{*this}} noexcept;
+        //         {--*this} noexcept;
+        //     })
+        //     requires (requires{
+        //         {join_iterator{*this}};
+        //         {--*this};
+        //     })
+        // {
+        //     join_iterator temp {*this};
+        //     --*this;
+        //     return temp;
+        // }
 
-        constexpr join_iterator& operator-=(difference_type n)
-            noexcept (requires{
-                {join_visit<join_decrement>(*this, *outer, n)} noexcept;
-            })
-            requires (requires{{join_visit<join_decrement>(*this, *outer, n)};})
-        {
-            join_visit<join_decrement>(*this, *outer, n);
-            return *this;
-        }
+        // constexpr join_iterator& operator-=(difference_type n)
+        //     noexcept (requires{
+        //         {join_visit<join_decrement>(*this, *outer, n)} noexcept;
+        //     })
+        //     requires (requires{{join_visit<join_decrement>(*this, *outer, n)};})
+        // {
+        //     join_visit<join_decrement>(*this, *outer, n);
+        //     return *this;
+        // }
 
-        [[nodiscard]] constexpr join_iterator operator-(difference_type n) const
-            noexcept (requires(join_iterator tmp) {
-                {join_iterator{*this}} noexcept;
-                {tmp -= n} noexcept;
-            })
-            requires (requires(join_iterator tmp) {
-                {join_iterator{*this}};
-                {tmp -= n};
-            })
-        {
-            join_iterator tmp {*this};
-            tmp -= n;
-            return tmp;
-        }
+        // [[nodiscard]] constexpr join_iterator operator-(difference_type n) const
+        //     noexcept (requires(join_iterator tmp) {
+        //         {join_iterator{*this}} noexcept;
+        //         {tmp -= n} noexcept;
+        //     })
+        //     requires (requires(join_iterator tmp) {
+        //         {join_iterator{*this}};
+        //         {tmp -= n};
+        //     })
+        // {
+        //     join_iterator tmp {*this};
+        //     tmp -= n;
+        //     return tmp;
+        // }
 
-        [[nodiscard]] constexpr difference_type operator-(const join_iterator& other) const
-            noexcept (requires{
-                {join_visit<join_distance>(*this, other, *outer)} noexcept;
-            })
-            requires (requires{{join_visit<join_distance>(*this, other, *outer)};})
-        {
-            return join_visit<join_distance>(*this, other, *outer);
-        }
+        // [[nodiscard]] constexpr difference_type operator-(const join_iterator& other) const
+        //     noexcept (requires{
+        //         {join_visit<join_distance>(*this, other, *outer)} noexcept;
+        //     })
+        //     requires (requires{{join_visit<join_distance>(*this, other, *outer)};})
+        // {
+        //     return join_visit<join_distance>(*this, other, *outer);
+        // }
 
         [[nodiscard]] constexpr bool operator==(const join_iterator& other) const
             noexcept (requires{{*this <=> other} noexcept;})
@@ -1234,29 +1169,63 @@ namespace impl {
             noexcept (requires{{_compare(*child, *other.child)} noexcept;})
         {
             if (std::strong_ordering cmp = index <=> other.index; cmp != 0) return cmp;
-            if (index < 0 || index > ssize_t(alternatives)) return std::strong_ordering::equal;
+            if (index < 0 || index >= ssize_t(alternatives)) return std::strong_ordering::equal;
             return _compare(*child, *other.child);
         }
     };
 
-    template <typename T>
-    using join_arg = std::conditional_t<meta::range<T>, T, impl::scalar_range<T>>;
+    template <typename... T>
+    using join_tuple =
+        impl::basic_tuple<std::conditional_t<meta::range<T>, T, impl::scalar_range<T>>...>;
 
     /* The public join container stores a tuple for the separators and a tuple for the
     arguments, and serves as an entry point for `join_iterator`. */
-    template <meta::unqualified Sep, meta::not_rvalue... A> requires (meta::is_pack<Sep>)
-    struct join {
-        using sep_type = Sep::template eval<join_arg>::template eval<impl::basic_tuple>;
-        using arg_type = impl::basic_tuple<join_arg<A>...>;
-        using sep_size_type = std::array<ssize_t, Sep::size()>;
+    template <typename, meta::not_rvalue... A> requires (sizeof...(A) > 0)
+    struct join;
+    template <meta::unqualified Sep, meta::unqualified... Seps, meta::not_rvalue... A>
+        requires (sizeof...(A) > 0)
+    struct join<meta::pack<Sep, Seps...>, A...> {
+        using sep_type = join_tuple<Sep, Seps...>;
+        using arg_type = join_tuple<A...>;
+        using sep_size_type = std::array<ssize_t, sizeof...(Seps) + 1>;
 
         [[no_unique_address]] sep_type seps;
         [[no_unique_address]] arg_type args;
         [[no_unique_address]] sep_size_type sep_size;
 
     private:
+        template <size_t I>
+        static constexpr decltype(auto) get_sep(const join_tuple<Seps...>& seps) noexcept {
+            return (seps.template get<I>());
+        }
+        template <size_t I>
+        static constexpr decltype(auto) get_sep(join_tuple<Seps...>&& seps) noexcept {
+            return (std::move(seps).template get<I>());
+        }
+
+        template <size_t... I> requires (sizeof...(A) == 1)
+        static constexpr sep_type get_seps(
+            const join_tuple<Seps...>& seps,
+            std::index_sequence<I...>
+        )
+            noexcept (requires{{sep_type{impl::join_tag{}, get_sep<I>(seps)...}} noexcept;})
+            requires (requires{{sep_type{impl::join_tag{}, get_sep<I>(seps)...}};})
+        {
+            return {impl::join_tag{}, get_sep<I>(seps)...};
+        }
+        template <size_t... I> requires (sizeof...(A) == 1)
+        static constexpr sep_type get_seps(
+            join_tuple<Seps...>&& seps,
+            std::index_sequence<I...>
+        )
+            noexcept (requires{{sep_type{impl::join_tag{}, get_sep<I>(std::move(seps))...}} noexcept;})
+            requires (requires{{sep_type{impl::join_tag{}, get_sep<I>(std::move(seps))...}};})
+        {
+            return {impl::join_tag{}, get_sep<I>(std::move(seps))...};
+        }
+
         template <typename T>
-        static constexpr ssize_t get_sep_size(const T& sep)
+        static constexpr ssize_t get_sep_size(T& sep)
             noexcept (!meta::range<T> || requires{{ssize_t(meta::distance(sep))} noexcept;})
             requires (!meta::range<T> || requires{{ssize_t(meta::distance(sep))};})
         {
@@ -1267,35 +1236,81 @@ namespace impl {
             }
         }
 
-        template <typename T, size_t... I> requires (sizeof...(I) == Sep::size())
+        template <size_t... I>
         constexpr sep_size_type get_sep_sizes(std::index_sequence<I...>)
             noexcept (requires{
                 {sep_size_type{get_sep_size(seps.template get<I>())...}} noexcept;
             })
-            requires (requires{
-                {sep_size_type{get_sep_size(seps.template get<I>())...}};
-            })
+            requires (requires{{sep_size_type{get_sep_size(seps.template get<I>())...}};})
         {
             return {get_sep_size(seps.template get<I>())...};
         }
 
     public:
-        template <typename S, typename... T>
-        [[nodiscard]] constexpr join(S&& seps, T&&... args)
+        [[nodiscard]] constexpr join(const join_tuple<Seps...>& seps, meta::forward<A>... args)
             noexcept (requires{
-                {sep_type(std::forward<S>(seps))} noexcept;
-                {arg_type(std::forward<T>(args)...)} noexcept;
-                {get_sep_sizes(std::make_index_sequence<Sep::size()>{})} noexcept;
+                {get_seps(seps, std::index_sequence_for<Seps...>{})} noexcept;
+                {arg_type(std::forward<A>(args)...)} noexcept;
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
             })
-            requires (requires{
-                {sep_type(std::forward<S>(seps))};
-                {arg_type(std::forward<T>(args)...)};
-                {get_sep_sizes(std::make_index_sequence<Sep::size()>{})};
+            requires (sizeof...(A) == 1 && requires{
+                {get_seps(seps, std::index_sequence_for<Seps...>{})};
+                {arg_type(std::forward<A>(args)...)};
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
             })
         :
-            seps(std::forward<S>(seps)),
-            args(std::forward<T>(args)...),
-            sep_size(get_sep_sizes(std::make_index_sequence<Sep::size()>{}))
+            seps(get_seps(seps, std::index_sequence_for<Seps...>{})),
+            args(std::forward<A>(args)...),
+            sep_size(get_sep_sizes(std::index_sequence_for<Sep, Seps...>{}))
+        {}
+        [[nodiscard]] constexpr join(join_tuple<Seps...>&& seps, meta::forward<A>... args)
+            noexcept (requires{
+                {get_seps(std::move(seps), std::index_sequence_for<Seps...>{})} noexcept;
+                {arg_type(std::forward<A>(args)...)} noexcept;
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
+            })
+            requires (sizeof...(A) == 1 && requires{
+                {get_seps(std::move(seps), std::index_sequence_for<Seps...>{})};
+                {arg_type(std::forward<A>(args)...)};
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
+            })
+        :
+            seps(get_seps(std::move(seps), std::index_sequence_for<Seps...>{})),
+            args(std::forward<A>(args)...),
+            sep_size(get_sep_sizes(std::index_sequence_for<Sep, Seps...>{}))
+        {}
+
+        [[nodiscard]] constexpr join(const join_tuple<Sep, Seps...>& seps, meta::forward<A>... args)
+            noexcept (requires{
+                {sep_type(seps)} noexcept;
+                {arg_type(std::forward<A>(args)...)} noexcept;
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
+            })
+            requires (sizeof...(A) > 1 && requires{
+                {sep_type(seps)};
+                {arg_type(std::forward<A>(args)...)};
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
+            })
+        :
+            seps(seps),
+            args(std::forward<A>(args)...),
+            sep_size(get_sep_sizes(std::index_sequence_for<Sep, Seps...>{}))
+        {}
+        [[nodiscard]] constexpr join(join_tuple<Sep, Seps...>&& seps, meta::forward<A>... args)
+            noexcept (requires{
+                {sep_type(std::move(seps))} noexcept;
+                {arg_type(std::forward<A>(args)...)} noexcept;
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
+            })
+            requires (sizeof...(A) > 1 && requires{
+                {sep_type(std::move(seps))};
+                {arg_type(std::forward<A>(args)...)};
+                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
+            })
+        :
+            seps(std::move(seps)),
+            args(std::forward<A>(args)...),
+            sep_size(get_sep_sizes(std::index_sequence_for<Sep, Seps...>{}))
         {}
 
         [[nodiscard]] constexpr join_iterator<join, join_forward> begin()
@@ -1342,26 +1357,187 @@ namespace impl {
             return {this};
         }
     };
-    template <meta::unqualified Sep> requires (meta::is_pack<Sep>)
-    struct join<Sep> : empty_range {};
+
+}
 
 
+namespace iter {
+
+    template <meta::not_void... Sep> requires ((sizeof...(Sep) > 0) && ... && meta::not_rvalue<Sep>)
+    struct join {
+        [[no_unique_address]] impl::join_tuple<Sep...> sep;
+
+        [[nodiscard]] constexpr join() = default;
+        [[nodiscard]] constexpr join(meta::forward<Sep>... sep)
+            noexcept (requires{{impl::join_tuple<Sep...>{std::forward<Sep>(sep)...}} noexcept;})
+            requires (
+                sizeof...(Sep) > 0 &&
+                requires{{impl::join_tuple<Sep...>{std::forward<Sep>(sep)...}};}
+            )
+        :
+            sep{std::forward<Sep>(sep)...}
+        {}
+
+        [[nodiscard]] static constexpr range<> operator()() noexcept {
+            return {};
+        }
+
+        template <typename Self, typename A>
+        [[nodiscard]] constexpr auto operator()(this Self&& self, A&& a)
+            noexcept (requires{{range<impl::join<
+                meta::pack<impl::join_tag, Sep...>,
+                meta::remove_rvalue<A>
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)}} noexcept;})
+            requires (requires{{range<impl::join<
+                meta::pack<impl::join_tag, Sep...>,
+                meta::remove_rvalue<A>
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)}};})
+        {
+            return range<impl::join<
+                meta::pack<impl::join_tag, Sep...>,
+                meta::remove_rvalue<A>
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)};
+        }
+
+        template <typename Self, typename... A> requires (sizeof...(A) > 1)
+        [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
+            noexcept (requires{{range<impl::join<
+                meta::pack<Sep...>,
+                meta::remove_rvalue<A>...
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)...}} noexcept;})
+            requires (requires{{range<impl::join<
+                meta::pack<Sep...>,
+                meta::remove_rvalue<A>...
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)...}};})
+        {
+            return range<impl::join<
+                meta::pack<Sep...>,
+                meta::remove_rvalue<A>...
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)...};
+        }
+    };
+
+    // template <typename... T> requires (sizeof...(T) == 0)
+    // join(T&&...) -> join<>;
+
+    /// NOTE: current C++ does not allow for default types for parameter packs,
+    /// so we have to manually unroll the `join{}` constructor in order to allow for
+    /// anonymous closures (e.g. `iter::join{sep1, {}, sep3}`).
+
+    template <typename T1 = impl::join_tag>
+    join(T1&& = {}) -> join<meta::remove_rvalue<T1>>;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag
+    >
+    join(T1&&, T2&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>
+    >;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag,
+        typename T3 = impl::join_tag
+    >
+    join(T1&&, T2&&, T3&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>,
+        meta::remove_rvalue<T3>
+    >;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag,
+        typename T3 = impl::join_tag,
+        typename T4 = impl::join_tag
+    >
+    join(T1&&, T2&&, T3&&, T4&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>,
+        meta::remove_rvalue<T3>,
+        meta::remove_rvalue<T4>
+    >;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag,
+        typename T3 = impl::join_tag,
+        typename T4 = impl::join_tag,
+        typename T5 = impl::join_tag
+    >
+    join(T1&&, T2&&, T3&&, T4&&, T5&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>,
+        meta::remove_rvalue<T3>,
+        meta::remove_rvalue<T4>,
+        meta::remove_rvalue<T5>
+    >;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag,
+        typename T3 = impl::join_tag,
+        typename T4 = impl::join_tag,
+        typename T5 = impl::join_tag,
+        typename T6 = impl::join_tag
+    >
+    join(T1&&, T2&&, T3&&, T4&&, T5&&, T6&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>,
+        meta::remove_rvalue<T3>,
+        meta::remove_rvalue<T4>,
+        meta::remove_rvalue<T5>,
+        meta::remove_rvalue<T6>
+    >;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag,
+        typename T3 = impl::join_tag,
+        typename T4 = impl::join_tag,
+        typename T5 = impl::join_tag,
+        typename T6 = impl::join_tag,
+        typename T7 = impl::join_tag
+    >
+    join(T1&&, T2&&, T3&&, T4&&, T5&&, T6&&, T7&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>,
+        meta::remove_rvalue<T3>,
+        meta::remove_rvalue<T4>,
+        meta::remove_rvalue<T5>,
+        meta::remove_rvalue<T6>,
+        meta::remove_rvalue<T7>
+    >;
+    template <
+        typename T1 = impl::join_tag,
+        typename T2 = impl::join_tag,
+        typename T3 = impl::join_tag,
+        typename T4 = impl::join_tag,
+        typename T5 = impl::join_tag,
+        typename T6 = impl::join_tag,
+        typename T7 = impl::join_tag,
+        typename T8 = impl::join_tag
+    >
+    join(T1&&, T2&&, T3&&, T4&&, T5&&, T6&&, T7&&, T8&&) -> join<
+        meta::remove_rvalue<T1>,
+        meta::remove_rvalue<T2>,
+        meta::remove_rvalue<T3>,
+        meta::remove_rvalue<T4>,
+        meta::remove_rvalue<T5>,
+        meta::remove_rvalue<T6>,
+        meta::remove_rvalue<T7>,
+        meta::remove_rvalue<T8>
+    >;
+    
+
+    static constexpr auto j = join{{}, {}}(1);
+    static_assert([] {
+        for (auto&& x : j) {
+            if (x != 1 && x != 2 && x != 3) return false;
+        }
+        return true;
+    }());
+
+}
 
 
-
-
-
-
-    static constexpr std::array arr {1, 2, 3};
-    static_assert(arr.end() - arr.begin() == 3);
-
-
-
-
-
-
-
-
+namespace impl {
 
     template <typename T>
     concept join_flatten = meta::range<T> && meta::range<meta::yield_type<T>>;
@@ -4729,151 +4905,6 @@ namespace impl {
             return make_join_reversed{*this}.end();
         }
     };
-
-}
-
-
-namespace iter {
-
-    template <meta::not_void... Sep> requires (meta::not_rvalue<Sep> && ...)
-    struct join {
-        [[no_unique_address]] impl::basic_tuple<Sep...> sep;
-
-        [[nodiscard]] constexpr join(meta::forward<Sep>... sep)
-            noexcept (requires{{impl::basic_tuple<Sep...>{std::forward<Sep>(sep)...}} noexcept;})
-            requires (requires{{impl::basic_tuple<Sep...>{std::forward<Sep>(sep)...}};})
-        :
-            sep{std::forward<Sep>(sep)...}
-        {}
-
-        template <typename Self, typename... A> requires (sizeof...(A) > 0)
-        [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
-            noexcept (requires{{range<impl::join<meta::pack<Sep...>, meta::remove_rvalue<A>...>>{
-                std::forward<Self>(self).sep,
-                std::forward<A>(a)...
-            }} noexcept;})
-            requires (requires{{range<impl::join<meta::pack<Sep...>, meta::remove_rvalue<A>...>>{
-                std::forward<Self>(self).sep,
-                std::forward<A>(a)...
-            }};})
-        {
-            return range<impl::join<meta::pack<Sep...>, meta::remove_rvalue<A>...>>{
-                std::forward<Self>(self).sep,
-                std::forward<A>(a)...
-            };
-        }
-    };
-
-    template <typename... Sep> requires (sizeof...(Sep) == 0)
-    join(Sep&&...) -> join<meta::remove_rvalue<Sep>...>;
-
-    /// NOTE: current C++ does not allow for default types for parameter packs,
-    /// so we have to manually unroll the `join{}` constructor in order to allow for
-    /// anonymous closures (e.g. `iter::join{sep1, {}, sep3}`).
-
-    template <typename T1 = impl::join_tag>
-    join(T1&&) -> join<meta::remove_rvalue<T1>>;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag
-    >
-    join(T1&&, T2&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>
-    >;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag,
-        typename T3 = impl::join_tag
-    >
-    join(T1&&, T2&&, T3&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>,
-        meta::remove_rvalue<T3>
-    >;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag,
-        typename T3 = impl::join_tag,
-        typename T4 = impl::join_tag
-    >
-    join(T1&&, T2&&, T3&&, T4&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>,
-        meta::remove_rvalue<T3>,
-        meta::remove_rvalue<T4>
-    >;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag,
-        typename T3 = impl::join_tag,
-        typename T4 = impl::join_tag,
-        typename T5 = impl::join_tag
-    >
-    join(T1&&, T2&&, T3&&, T4&&, T5&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>,
-        meta::remove_rvalue<T3>,
-        meta::remove_rvalue<T4>,
-        meta::remove_rvalue<T5>
-    >;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag,
-        typename T3 = impl::join_tag,
-        typename T4 = impl::join_tag,
-        typename T5 = impl::join_tag,
-        typename T6 = impl::join_tag
-    >
-    join(T1&&, T2&&, T3&&, T4&&, T5&&, T6&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>,
-        meta::remove_rvalue<T3>,
-        meta::remove_rvalue<T4>,
-        meta::remove_rvalue<T5>,
-        meta::remove_rvalue<T6>
-    >;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag,
-        typename T3 = impl::join_tag,
-        typename T4 = impl::join_tag,
-        typename T5 = impl::join_tag,
-        typename T6 = impl::join_tag,
-        typename T7 = impl::join_tag
-    >
-    join(T1&&, T2&&, T3&&, T4&&, T5&&, T6&&, T7&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>,
-        meta::remove_rvalue<T3>,
-        meta::remove_rvalue<T4>,
-        meta::remove_rvalue<T5>,
-        meta::remove_rvalue<T6>,
-        meta::remove_rvalue<T7>
-    >;
-    template <
-        typename T1 = impl::join_tag,
-        typename T2 = impl::join_tag,
-        typename T3 = impl::join_tag,
-        typename T4 = impl::join_tag,
-        typename T5 = impl::join_tag,
-        typename T6 = impl::join_tag,
-        typename T7 = impl::join_tag,
-        typename T8 = impl::join_tag
-    >
-    join(T1&&, T2&&, T3&&, T4&&, T5&&, T6&&, T7&&, T8&&) -> join<
-        meta::remove_rvalue<T1>,
-        meta::remove_rvalue<T2>,
-        meta::remove_rvalue<T3>,
-        meta::remove_rvalue<T4>,
-        meta::remove_rvalue<T5>,
-        meta::remove_rvalue<T6>,
-        meta::remove_rvalue<T7>,
-        meta::remove_rvalue<T8>
-    >;
-    
-
-    static constexpr auto j = join{1, {}};
 
 }
 

@@ -1581,7 +1581,12 @@ namespace impl {
 
                 // prefer a direct swap if the indices match and a corresponding operator
                 // is available
-                if constexpr (J == K) {
+                if constexpr (J == K && requires{
+                    {meta::swap(
+                        self.m_data.template get<J>().curr,
+                        other.m_data.template get<K>().curr
+                    )};
+                }) {
                     meta::swap(
                         self.m_data.template get<J>().curr,
                         other.m_data.template get<K>().curr
