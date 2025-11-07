@@ -210,8 +210,8 @@ namespace impl {
         }
 
         template <size_t I> requires (I < alternatives::size())
-        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u) noexcept {
-            return (std::forward<T>(u));
+        [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> x) noexcept {
+            return (std::forward<T>(x));
         }
     };
 

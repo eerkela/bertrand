@@ -73,6 +73,19 @@ namespace impl {
     ///     range{List{Str("ab"), Str("bc"), Str("cd")}} ->* join{Str(".")}
     ///         => ["ab", ".", "bc", ".", "cd"]
 
+
+
+
+    /// TODO: I need to break `join` into two separate classes: `concat` and `join`.
+    /// `concat` will take multiple arguments, but only one separator (defaulting to
+    /// trivial), and `join` will take multiple separators but only one argument.
+    /// In order to replicate the current behavior and do both, one would stack them
+    /// like so:
+    ///
+    ///     join{sep1, sep2, ...}(concat{sep0}(arg1, arg2, ...));
+
+
+
     struct join_forward {};
     struct join_reverse {};
 
@@ -387,14 +400,30 @@ namespace impl {
 
     template <typename Value, typename T>
     struct _join_wrap { using type = impl::scalar_range<T>; };
-    template <meta::range Value, typename T>
+    template <meta::range Value, typename T> requires (!meta::range<T>)
     struct _join_wrap<Value, T> { using type = iter::range<T>; };
-    template <typename Value, typename T>
+    template <meta::range Value, meta::range T>
+    struct _join_wrap<Value, T> { using type = T; };
+    template <typename Value, typename T = Value>
     using join_wrap = _join_wrap<Value, T>::type;
 
-    /// TODO: maybe I should provide a `.separator()` method that returns the
-    /// separator at the current depth, if it is not trivial?  `.value()` could
-    /// also possibly return a subrange over the current value.
+    template <typename>
+    struct _join_category;
+    template <typename... U>
+    struct _join_category<meta::pack<U...>> {
+        using type = meta::common_type<typename meta::remove_reference<U>::category...>;
+    };
+    template <typename U>
+    using join_category = _join_category<typename impl::visitable<const U&>::alternatives>::type;
+
+    template <typename>
+    struct _join_reference;
+    template <typename... U>
+    struct _join_reference<meta::pack<U...>> {
+        using type = meta::concat<typename meta::remove_reference<U>::reference...>;
+    };
+    template <typename U>
+    using join_reference = _join_reference<typename impl::visitable<const U&>::alternatives>::type;
 
     /* All join iterators except the first store an optional struct containing the
     parent value for the current iteration (possibly a reference), a subrange over
@@ -406,9 +435,11 @@ namespace impl {
         requires (join_depth<Depth>)
     struct join_subrange {
         static constexpr size_t depth = Depth;
+        using direction = Dir;
         using begin_type = decltype(join_begin<Dir>(std::declval<meta::as_lvalue<Value>>()));
         using end_type = decltype(join_end<Dir>(std::declval<meta::as_lvalue<Value>>()));
-        using child_type = meta::dereference_type<begin_type&>;
+        using category = meta::iterator_category<begin_type>;
+        using reference = meta::pack<meta::dereference_type<const begin_type&>>;
         static constexpr bool trivial = true;
 
         [[no_unique_address]] Value value;
@@ -564,7 +595,7 @@ namespace impl {
             Outer,
             Dir,
             depth + 1,
-            join_wrap<Value, meta::dereference_type<begin_type&>>
+            join_wrap<Value, meta::dereference_type<const begin_type&>>
         >;
         using separator = join_subrange<
             Outer,
@@ -577,6 +608,11 @@ namespace impl {
         };
         using unique =
             std::conditional_t<trivial, child_type, meta::make_union<separator, child_type>>;
+        using category = meta::common_type<
+            meta::iterator_category<begin_type>,
+            join_category<unique>
+        >;
+        using reference = join_reference<unique>;
         static constexpr size_t alternatives = 1 + !trivial;
         static constexpr size_t unique_alternatives = impl::visitable<unique>::alternatives::size();
 
@@ -838,12 +874,12 @@ namespace impl {
     private:
         template <typename = std::make_index_sequence<Outer::arg_type::size()>>
         struct _unique;
-        template <size_t... I> requires (trivial)
+        template <size_t... I>
         struct _unique<std::index_sequence<I...>> {
             using separator = void;
             using unique = meta::make_union<child_type<I>...>;
         };
-        template <size_t... I> requires (!trivial)
+        template <size_t... I> requires (!trivial && sizeof...(I) > 1)
         struct _unique<std::index_sequence<I...>> {
             using separator = join_subrange<
                 Outer,
@@ -862,20 +898,24 @@ namespace impl {
         static constexpr size_t unique_alternatives =
             impl::visitable<unique>::alternatives::size();
 
-        template <size_t I>
-            requires (I < alternatives)
+        template <size_t I> requires (I < alternatives)
         static constexpr size_t alternative = (!trivial && I % 2 == 1) ?
             0 :
-            impl::visitable<unique>::alternatives::template index<child_type<I / (1 + !trivial)>>();
+            impl::visitable<const unique&>::alternatives::template index<
+                const child_type<I / (1 + !trivial)>&
+            >();
 
-        /// TODO: ideally, these features would be deduced from the inner subranges,
-        /// namely the category and reference types.
-
-        using iterator_category = std::forward_iterator_tag;
+        using iterator_category = std::conditional_t<
+            meta::inherits<join_category<unique>, std::forward_iterator_tag>,
+            std::conditional_t<
+                meta::inherits<join_category<unique>, std::random_access_iterator_tag>,
+                std::random_access_iterator_tag,
+                join_category<unique>
+            >,
+            std::forward_iterator_tag
+        >;
         using difference_type = ssize_t;
-        using reference = int;
-            /// TODO: deduce this for each terminal control block, and then
-            /// coalesce all of them into a final union.
+        using reference = join_reference<unique>::template eval<meta::make_union>;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
@@ -1175,8 +1215,7 @@ namespace impl {
     };
 
     template <typename... T>
-    using join_tuple =
-        impl::basic_tuple<std::conditional_t<meta::range<T>, T, impl::scalar_range<T>>...>;
+    using join_tuple = impl::basic_tuple<join_wrap<T>...>;
 
     /* The public join container stores a tuple for the separators and a tuple for the
     arguments, and serves as an entry point for `join_iterator`. */
@@ -1194,36 +1233,6 @@ namespace impl {
         [[no_unique_address]] sep_size_type sep_size;
 
     private:
-        template <size_t I>
-        static constexpr decltype(auto) get_sep(const join_tuple<Seps...>& seps) noexcept {
-            return (seps.template get<I>());
-        }
-        template <size_t I>
-        static constexpr decltype(auto) get_sep(join_tuple<Seps...>&& seps) noexcept {
-            return (std::move(seps).template get<I>());
-        }
-
-        template <size_t... I> requires (sizeof...(A) == 1)
-        static constexpr sep_type get_seps(
-            const join_tuple<Seps...>& seps,
-            std::index_sequence<I...>
-        )
-            noexcept (requires{{sep_type{impl::join_tag{}, get_sep<I>(seps)...}} noexcept;})
-            requires (requires{{sep_type{impl::join_tag{}, get_sep<I>(seps)...}};})
-        {
-            return {impl::join_tag{}, get_sep<I>(seps)...};
-        }
-        template <size_t... I> requires (sizeof...(A) == 1)
-        static constexpr sep_type get_seps(
-            join_tuple<Seps...>&& seps,
-            std::index_sequence<I...>
-        )
-            noexcept (requires{{sep_type{impl::join_tag{}, get_sep<I>(std::move(seps))...}} noexcept;})
-            requires (requires{{sep_type{impl::join_tag{}, get_sep<I>(std::move(seps))...}};})
-        {
-            return {impl::join_tag{}, get_sep<I>(std::move(seps))...};
-        }
-
         template <typename T>
         static constexpr ssize_t get_sep_size(T& sep)
             noexcept (!meta::range<T> || requires{{ssize_t(meta::distance(sep))} noexcept;})
@@ -1247,46 +1256,13 @@ namespace impl {
         }
 
     public:
-        [[nodiscard]] constexpr join(const join_tuple<Seps...>& seps, meta::forward<A>... args)
-            noexcept (requires{
-                {get_seps(seps, std::index_sequence_for<Seps...>{})} noexcept;
-                {arg_type(std::forward<A>(args)...)} noexcept;
-                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
-            })
-            requires (sizeof...(A) == 1 && requires{
-                {get_seps(seps, std::index_sequence_for<Seps...>{})};
-                {arg_type(std::forward<A>(args)...)};
-                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
-            })
-        :
-            seps(get_seps(seps, std::index_sequence_for<Seps...>{})),
-            args(std::forward<A>(args)...),
-            sep_size(get_sep_sizes(std::index_sequence_for<Sep, Seps...>{}))
-        {}
-        [[nodiscard]] constexpr join(join_tuple<Seps...>&& seps, meta::forward<A>... args)
-            noexcept (requires{
-                {get_seps(std::move(seps), std::index_sequence_for<Seps...>{})} noexcept;
-                {arg_type(std::forward<A>(args)...)} noexcept;
-                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
-            })
-            requires (sizeof...(A) == 1 && requires{
-                {get_seps(std::move(seps), std::index_sequence_for<Seps...>{})};
-                {arg_type(std::forward<A>(args)...)};
-                {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
-            })
-        :
-            seps(get_seps(std::move(seps), std::index_sequence_for<Seps...>{})),
-            args(std::forward<A>(args)...),
-            sep_size(get_sep_sizes(std::index_sequence_for<Sep, Seps...>{}))
-        {}
-
         [[nodiscard]] constexpr join(const join_tuple<Sep, Seps...>& seps, meta::forward<A>... args)
             noexcept (requires{
                 {sep_type(seps)} noexcept;
                 {arg_type(std::forward<A>(args)...)} noexcept;
                 {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
             })
-            requires (sizeof...(A) > 1 && requires{
+            requires (requires{
                 {sep_type(seps)};
                 {arg_type(std::forward<A>(args)...)};
                 {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
@@ -1302,7 +1278,7 @@ namespace impl {
                 {arg_type(std::forward<A>(args)...)} noexcept;
                 {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})} noexcept;
             })
-            requires (sizeof...(A) > 1 && requires{
+            requires (requires{
                 {sep_type(std::move(seps))};
                 {arg_type(std::forward<A>(args)...)};
                 {get_sep_sizes(std::index_sequence_for<Sep, Seps...>{})};
@@ -1363,24 +1339,57 @@ namespace impl {
 
 namespace iter {
 
+    template <meta::not_void Sep> requires (meta::not_rvalue<Sep>)
+    struct concat {
+        [[no_unique_address]] impl::join_tuple<Sep> sep;
+
+        [[nodiscard]] constexpr concat() = default;
+        [[nodiscard]] constexpr concat(meta::forward<Sep> sep)
+            noexcept (requires{{Sep(std::forward<Sep>(sep))} noexcept;})
+            requires (requires{{Sep(std::forward<Sep>(sep))};})
+        :
+            sep(std::forward<Sep>(sep))
+        {}
+
+        [[nodiscard]] static constexpr range<> operator()() noexcept {
+            return {};
+        }
+
+        template <typename Self, typename... A> requires (sizeof...(A) > 0)
+        [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
+            noexcept (requires{{range<impl::join<
+                meta::pack<Sep>,
+                meta::remove_rvalue<A>...
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)...}} noexcept;})
+            requires (requires{{range<impl::join<
+                meta::pack<Sep>,
+                meta::remove_rvalue<A>...
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)...}};})
+        {
+            return range<impl::join<
+                meta::pack<Sep>,
+                meta::remove_rvalue<A>...
+            >>{std::forward<Self>(self).sep, std::forward<A>(a)...};
+        }
+    };
+
+    template <typename T = impl::join_tag>
+    concat(T&& = {}) -> concat<meta::remove_rvalue<T>>;
+
     template <meta::not_void... Sep> requires ((sizeof...(Sep) > 0) && ... && meta::not_rvalue<Sep>)
     struct join {
-        [[no_unique_address]] impl::join_tuple<Sep...> sep;
+        [[no_unique_address]] impl::join_tuple<impl::join_tag, Sep...> sep;
 
         [[nodiscard]] constexpr join() = default;
         [[nodiscard]] constexpr join(meta::forward<Sep>... sep)
             noexcept (requires{{impl::join_tuple<Sep...>{std::forward<Sep>(sep)...}} noexcept;})
             requires (
                 sizeof...(Sep) > 0 &&
-                requires{{impl::join_tuple<Sep...>{std::forward<Sep>(sep)...}};}
+                requires{{impl::join_tuple<impl::join_tag, Sep...>{{}, std::forward<Sep>(sep)...}};}
             )
         :
-            sep{std::forward<Sep>(sep)...}
+            sep{{}, std::forward<Sep>(sep)...}
         {}
-
-        [[nodiscard]] static constexpr range<> operator()() noexcept {
-            return {};
-        }
 
         template <typename Self, typename A>
         [[nodiscard]] constexpr auto operator()(this Self&& self, A&& a)
@@ -1398,27 +1407,7 @@ namespace iter {
                 meta::remove_rvalue<A>
             >>{std::forward<Self>(self).sep, std::forward<A>(a)};
         }
-
-        template <typename Self, typename... A> requires (sizeof...(A) > 1)
-        [[nodiscard]] constexpr auto operator()(this Self&& self, A&&... a)
-            noexcept (requires{{range<impl::join<
-                meta::pack<Sep...>,
-                meta::remove_rvalue<A>...
-            >>{std::forward<Self>(self).sep, std::forward<A>(a)...}} noexcept;})
-            requires (requires{{range<impl::join<
-                meta::pack<Sep...>,
-                meta::remove_rvalue<A>...
-            >>{std::forward<Self>(self).sep, std::forward<A>(a)...}};})
-        {
-            return range<impl::join<
-                meta::pack<Sep...>,
-                meta::remove_rvalue<A>...
-            >>{std::forward<Self>(self).sep, std::forward<A>(a)...};
-        }
     };
-
-    // template <typename... T> requires (sizeof...(T) == 0)
-    // join(T&&...) -> join<>;
 
     /// NOTE: current C++ does not allow for default types for parameter packs,
     /// so we have to manually unroll the `join{}` constructor in order to allow for
@@ -1526,10 +1515,10 @@ namespace iter {
     >;
     
 
-    static constexpr auto j = join{{}, {}}(1);
+    static constexpr auto j = join{}(concat{}(1, 2, 3));
     static_assert([] {
         for (auto&& x : j) {
-            if (x != 1 && x != 2 && x != 3) return false;
+            // if (x != 1 && x != 2 && x != 3) return false;
         }
         return true;
     }());

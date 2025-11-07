@@ -1294,8 +1294,7 @@ namespace meta {
 
         /* Expand the pack, instantiating a template template parameter with its
         contents. */
-        template <template <typename...> class F>
-            requires (requires{typename F<Ts...>;})
+        template <template <typename...> class F> requires (requires{typename F<Ts...>;})
         using eval = F<Ts...>;
 
         /* Map a template template parameter over the given arguments, returning a new
@@ -2366,18 +2365,12 @@ namespace meta {
             concept nothrow_has_get =
                 has_get<T, A...> && requires(T t) {{get<A...>(t)} noexcept;};
 
-            template <typename T, auto... A> requires (has_get<T, A...>)
-            using get_type = decltype(get<A...>(::std::declval<T>()));
-
             template <typename T, auto... A>
             concept has_get_if = requires(T t) {{get_if<A...>(t)};};
 
             template <typename T, auto... A>
             concept nothrow_has_get_if =
                 has_get_if<T, A...> && requires(T t) {{get_if<A...>(t)} noexcept;};
-
-            template <typename T, auto... A> requires (has_get_if<T, A...>)
-            using get_if_type = decltype(get_if<A...>(::std::declval<T>()));
 
         }
 
@@ -2391,9 +2384,6 @@ namespace meta {
                 has_get<T, A...> &&
                 requires(T t) {{t.template get<A...>()} noexcept;};
 
-            template <typename T, auto... A> requires (has_get<T, A...>)
-            using get_type = decltype(::std::declval<T>().template get<A...>());
-
             template <typename T, auto... A>
             concept has_get_if = requires(T t) {{t.template get_if<A...>()};};
 
@@ -2401,9 +2391,6 @@ namespace meta {
             concept nothrow_has_get_if =
                 has_get_if<T, A...> &&
                 requires(T t) {{t.template get_if<A...>()} noexcept;};
-
-            template <typename T, auto... A> requires (has_get_if<T, A...>)
-            using get_if_type = decltype(::std::declval<T>().template get_if<A...>());
 
         }
 
@@ -4241,6 +4228,7 @@ namespace meta {
                 noexcept (adl::nothrow_ssize<T>)
                 requires (!member::has_ssize<T> && adl::has_ssize<T>)
             {
+                using ::std::ssize;
                 return (ssize(::std::forward<T>(t)));
             }
 
