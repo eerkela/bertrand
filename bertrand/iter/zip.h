@@ -26,6 +26,28 @@ namespace bertrand {
 
 namespace impl {
 
+    template <typename>
+    constexpr bool range_reverse_iterable = false;
+    template <typename... A> requires ((!meta::range<A> || meta::reverse_iterable<A>) && ...)
+    constexpr bool range_reverse_iterable<meta::pack<A...>> = true;
+
+    /// TODO: rename to `zip_indices`, since they are no longer needed by join.
+
+    /* Given a pack of types `A...`, find all indices in `A...` that correspond to
+    ranges, and generate a matching index sequence. */
+    template <typename out, size_t, typename...>
+    struct _range_indices { using type = out; };
+    template <size_t... Is, size_t I, typename T, typename... Ts>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is...>, I + 1, Ts...>
+    {};
+    template <size_t... Is, size_t I, meta::range T, typename... Ts>
+    struct _range_indices<std::index_sequence<Is...>, I, T, Ts...> :
+        _range_indices<std::index_sequence<Is..., I>, I + 1, Ts...>
+    {};
+    template <meta::not_rvalue... A>
+    using range_indices = _range_indices<std::index_sequence<>, 0, A...>::type;
+
     /* Arguments to a zip function will be either broadcasted as lvalues if they are
     non-range arguments or iterated elementwise if they are ranges.  If a range is
     given as an `unpack` type and yields tuples, then the tuples will destructured
