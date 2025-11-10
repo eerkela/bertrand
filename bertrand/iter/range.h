@@ -5738,6 +5738,208 @@ namespace impl {
         }
     };
 
+    ///////////////////////
+    ////    REVERSE    ////
+    ///////////////////////
+
+    /* An adaptor for a container that causes `range<impl::reversed<C>>` to reverse
+    iterate over the container `C` instead of forward iterating.  This equates to
+    swapping all of the `begin()` and `end()` methods with their reversed counterparts,
+    and modifying the indexing logic to map index `i` to index `-i - 1`, which
+    triggers Python-style wraparound. */
+    template <meta::not_rvalue T> requires (meta::reverse_iterable<T>)
+    struct reverse {
+        [[no_unique_address]] impl::ref<T> value;
+
+        [[nodiscard]] constexpr reverse(meta::forward<T> r)
+            noexcept (requires{{impl::ref<T>(std::forward<T>(r))} noexcept;})
+            requires (requires{{impl::ref<T>(std::forward<T>(r))};})
+        :
+            value(std::forward<T>(r))
+        {}
+
+        /* Swap the underlying containers between two reversed ranges. */
+        constexpr void swap(reverse& other)
+            noexcept (requires{{value.swap(other.value)} noexcept;})
+            requires (requires{{value.swap(other.value)};})
+        {
+            value.swap(other.value);
+        }
+
+        /* Indirectly access a member of the underlying container. */
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{meta::to_arrow(*value)} noexcept;})
+            requires (requires{{meta::to_arrow(*value)};})
+        {
+            return meta::to_arrow(*value);
+        }
+
+        /* Indirectly access a member of the underlying container. */
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{meta::to_arrow(*value)} noexcept;})
+            requires (requires{{meta::to_arrow(*value)};})
+        {
+            return meta::to_arrow(*value);
+        }
+
+        /* The total number of elements in the reversed range, as an unsigned
+        integer. */
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (
+                meta::nothrow::tuple_size_returns<size_t, T> ||
+                meta::nothrow::size_returns<size_t, meta::as_const_ref<T>>
+            )
+            requires (
+                meta::tuple_size_returns<size_t, T> ||
+                meta::size_returns<size_t, meta::as_const_ref<T>>
+            )
+        {
+            if constexpr (meta::tuple_size_returns<size_t, T>) {
+                return meta::tuple_size<T>;
+            } else {
+                return meta::size(*value);
+            }
+        }
+
+        /* The total number of elements in the reversed range, as a signed integer. */
+        [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (
+                meta::nothrow::tuple_size_returns<ssize_t, T> ||
+                meta::nothrow::ssize_returns<ssize_t, meta::as_const_ref<T>>
+            )
+            requires (
+                meta::tuple_size_returns<ssize_t, T> ||
+                meta::ssize_returns<ssize_t, meta::as_const_ref<T>>
+            )
+        {
+            if constexpr (meta::tuple_size_returns<ssize_t, T>) {
+                return meta::tuple_size<T>;
+            } else {
+                return meta::ssize(*value);
+            }
+        }
+
+        /* True if the reversed range contains zero elements.  False otherwise. */
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (meta::tuple_like<T> || meta::nothrow::has_empty<meta::as_const_ref<T>>)
+            requires (meta::tuple_like<T> || meta::has_empty<meta::as_const_ref<T>>)
+        {
+            if constexpr (meta::tuple_like<T>) {
+                return meta::tuple_size<T> == 0;
+            } else {
+                return meta::empty(*value);
+            }
+        }
+
+        /* Allow tuple-like access and destructuring of the reversed range, with
+        Python-style wraparound for negative indices.  This is identical to accessing
+        the underlying container, but maps index `I` to `-I - 1` before applying
+        wraparound. */
+        template <ssize_t I, typename Self>
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{meta::get<-I - 1>(*std::forward<Self>(self).value)} noexcept;})
+            requires (requires{{meta::get<-I - 1>(*std::forward<Self>(self).value)};})
+        {
+            return (meta::get<-I - 1>(*std::forward<Self>(self).value));
+        }
+
+        /// TODO: indexing should not require wraparound?
+
+        /* Index operator for accessing elements in the reversed range, with
+        Python-style wraparound for negative indices.  This is identical to indexing
+        the underlying container, but maps index `i` to `-i - 1` before applying
+        wraparound.  The actual index will always be forwarded as an unsigned `size_t`
+        to maintain compatibility with as many container types as possible. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (requires{{(*std::forward<Self>(self).value)[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))]
+            } noexcept;})
+            requires (requires{{(*std::forward<Self>(self).value)[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))]
+            };})
+        {
+            return ((*std::forward<Self>(self).value)[
+                size_t(impl::normalize_index(self.ssize(), -i - 1))
+            ]);
+        }
+
+        /* The reversed range maps `begin()` to the underlying container's `rbegin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) begin()
+            noexcept (requires{{meta::rbegin(*value)} noexcept;})
+            requires (requires{{meta::rbegin(*value)};})
+        {
+            return (meta::rbegin(*value));
+        }
+
+        /* The reversed range maps `begin()` to the underlying container's `rbegin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) begin() const
+            noexcept (requires{{meta::rbegin(*value)} noexcept;})
+            requires (requires{{meta::rbegin(*value)};})
+        {
+            return (meta::rbegin(*value));
+        }
+
+        /* The reversed range maps `end()` to the underlying container's `rend()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) end()
+            noexcept (requires{{meta::rend(*value)} noexcept;})
+            requires (requires{{meta::rend(*value)};})
+        {
+            return (meta::rend(*value));
+        }
+
+        /* The reversed range maps `end()` to the underlying container's `rend()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) end() const
+            noexcept (requires{{meta::rend(*value)} noexcept;})
+            requires (requires{{meta::rend(*value)};})
+        {
+            return (meta::rend(*value));
+        }
+
+        /* The reversed range maps `rbegin()` to the underlying container's `begin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rbegin()
+            noexcept (requires{{meta::begin(*value)} noexcept;})
+            requires (requires{{meta::begin(*value)};})
+        {
+            return (meta::begin(*value));
+        }
+
+        /* The reversed range maps `rbegin()` to the underlying container's `begin()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rbegin() const
+            noexcept (requires{{meta::begin(*value)} noexcept;})
+            requires (requires{{meta::begin(*value)};})
+        {
+            return (meta::begin(*value));
+        }
+
+        /* The reversed range maps `rend()` to the underlying container's `end()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rend()
+            noexcept (requires{{meta::end(*value)} noexcept;})
+            requires (requires{{meta::end(*value)};})
+        {
+            return (meta::end(*value));
+        }
+
+        /* The reversed range maps `rend()` to the underlying container's `end()`
+        method. */
+        [[nodiscard]] constexpr decltype(auto) rend() const
+            noexcept (requires{{meta::end(*value)} noexcept;})
+            requires (requires{{meta::end(*value)};})
+        {
+            return (meta::end(*value));
+        }
+    };
+
+    template <typename T>
+    reverse(T&&) -> reverse<meta::remove_rvalue<T>>;
+
 }
 
 
@@ -7331,6 +7533,35 @@ namespace iter {
         impl::sequence_category<C>,
         meta::shape_type<impl::sequence_container<C>>::size()
     >;
+
+    /* A function object that reverses the order of iteration for a supported container.
+
+    The ranges that are produced by this object act just like normal ranges, but with the
+    forward and reverse iterators swapped, and the indexing logic modified to map index
+    `i` to index `-i - 1` before applying Python-style wraparound.
+
+    Note that the `reverse` class must be default-constructed, which standardizes it with
+    respect to other range adaptors and allows it to be easily chained together with other
+    operations to form more complex range-based algorithms. */
+    struct reverse {
+        template <typename T>
+        [[nodiscard]] static constexpr auto operator()(T&& r)
+            noexcept (meta::range<T> ?
+                requires{{range{impl::reverse{*std::forward<T>(r).__value}}} noexcept;} :
+                requires{{range{impl::reverse{*range{std::forward<T>(r)}.__value}}} noexcept;}
+            )
+            requires (requires{
+                {range{std::forward<T>(r)}} -> meta::reverse_iterable;
+                {range{impl::reverse{*range{std::forward<T>(r)}.__value}}};
+            })
+        {
+            if constexpr (meta::range<T>) {
+                return range{impl::reverse{*std::forward<T>(r).__value}};
+            } else {
+                return range{impl::reverse{*range{std::forward<T>(r)}.__value}};
+            }
+        }
+    };
 
 }
 

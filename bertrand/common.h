@@ -2509,15 +2509,17 @@ namespace meta {
     }
 
     template <typename T, size_t N>
-    concept structured =
-        ::std::tuple_size<unqualify<T>>::value == N &&
-        detail::structured<T, ::std::make_index_sequence<N>>;
+    concept structured = ::std::tuple_size<unqualify<T>>::value == N;
 
     template <typename T>
-    concept tuple_like = structured<T, ::std::tuple_size<unqualify<T>>::value>;
+    concept tuple_like = requires{::std::tuple_size<unqualify<T>>::value;};
 
     template <tuple_like T>
     constexpr size_t tuple_size = ::std::tuple_size<unqualify<T>>::value;
+
+    template <typename Ret, typename T>
+    concept tuple_size_returns =
+        tuple_like<T> && convertible_to<decltype(meta::tuple_size<T>), Ret>;
 
     namespace nothrow {
 
@@ -2527,10 +2529,19 @@ namespace meta {
             detail::nothrow_structured<T, std::make_index_sequence<N>>;
 
         template <typename T>
-        concept tuple_like = nothrow::structured<T, ::std::tuple_size<unqualify<T>>::value>;
+        concept tuple_like =
+            meta::tuple_like<T> &&
+            detail::nothrow_structured<T, std::make_index_sequence<
+                ::std::tuple_size<unqualify<T>>::value
+            >>;
 
-        template <tuple_like T>
+        template <nothrow::tuple_like T>
         constexpr size_t tuple_size = ::std::tuple_size<unqualify<T>>::value;
+
+        template <typename Ret, typename T>
+        concept tuple_size_returns =
+            nothrow::tuple_like<T> &&
+            nothrow::convertible_to<decltype(nothrow::tuple_size<T>), Ret>;
 
     }
 

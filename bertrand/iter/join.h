@@ -833,8 +833,6 @@ namespace impl {
 
 namespace iter {
 
-
-
     template <meta::not_void... Sep> requires ((sizeof...(Sep) > 0) && ... && meta::not_rvalue<Sep>)
     struct join {
         static constexpr bool trivial =
