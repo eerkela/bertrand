@@ -1471,44 +1471,6 @@ namespace meta {
     }
 
     template <typename T>
-    concept has_signed = detail::as_signed<unqualify<T>>::enable;
-
-    template <has_signed T>
-    using as_signed = qualify<typename detail::as_signed<unqualify<T>>::type, T>;
-
-    template <has_signed T>
-    [[nodiscard]] constexpr auto to_signed(T value)
-        noexcept (requires{{static_cast<as_signed<T>>(value)} noexcept;})
-        requires (requires{{static_cast<as_signed<T>>(value)};})
-    {
-        return static_cast<as_signed<T>>(value);
-    }
-
-    template <auto min, auto max> requires (detail::in_range<int64_t, min, max>)
-    using smallest_signed_int = detail::smallest_signed_int<min, max>::type;
-
-    template <typename T>
-    concept has_unsigned = detail::as_unsigned<unqualify<T>>::enable;
-
-    template <has_unsigned T>
-    using as_unsigned = qualify<typename detail::as_unsigned<unqualify<T>>::type, T>;
-
-    template <has_unsigned T>
-    [[nodiscard]] constexpr auto to_unsigned(T value)
-        noexcept (requires{{static_cast<as_unsigned<T>>(value)} noexcept;})
-        requires (requires{{static_cast<as_unsigned<T>>(value)};})
-    {
-        return static_cast<as_unsigned<T>>(value);
-    }
-
-    template <auto max> requires (detail::in_range<uint64_t, 0, max>)
-    using smallest_unsigned_int = detail::smallest_unsigned_int<0, max>::type;
-
-    template <auto min, auto max>
-        requires (detail::in_range<int64_t, 0, max> || detail::in_range<uint64_t, 0, max>)
-    using smallest_int = detail::smallest_int<min, max>::type;
-
-    template <typename T>
     concept numeric = detail::numeric<T>;
 
     template <typename T>
@@ -1525,6 +1487,60 @@ namespace meta {
 
     template <typename T>
     concept floating = numeric<T> && detail::floating<T>;
+
+    template <typename T>
+    concept has_signed = detail::as_signed<unqualify<T>>::enable;
+
+    template <has_signed T>
+    using as_signed = qualify<typename detail::as_signed<unqualify<T>>::type, T>;
+
+    template <has_signed T>
+    [[nodiscard]] constexpr decltype(auto) to_signed(T&& value)
+        noexcept (signed_integer<T> || requires{
+            {as_signed<unqualify<T>>(::std::forward<T>(value))} noexcept;
+        })
+        requires (signed_integer<T> || requires{
+            {as_signed<unqualify<T>>(::std::forward<T>(value))};
+        })
+    {
+        if constexpr (signed_integer<T>) {
+            return (::std::forward<T>(value));
+        } else {
+            return (as_signed<unqualify<T>>(::std::forward<T>(value)));
+        }
+    }
+
+    template <auto min, auto max> requires (detail::in_range<int64_t, min, max>)
+    using smallest_signed_int = detail::smallest_signed_int<min, max>::type;
+
+    template <typename T>
+    concept has_unsigned = detail::as_unsigned<unqualify<T>>::enable;
+
+    template <has_unsigned T>
+    using as_unsigned = qualify<typename detail::as_unsigned<unqualify<T>>::type, T>;
+
+    template <has_unsigned T>
+    [[nodiscard]] constexpr decltype(auto) to_unsigned(T&& value)
+        noexcept (unsigned_integer<T> || requires{
+            {as_unsigned<unqualify<T>>(::std::forward<T>(value))} noexcept;
+        })
+        requires (unsigned_integer<T> || requires{
+            {as_unsigned<unqualify<T>>(::std::forward<T>(value))};
+        })
+    {
+        if constexpr (unsigned_integer<T>) {
+            return (::std::forward<T>(value));
+        } else {
+            return (as_unsigned<unqualify<T>>(::std::forward<T>(value)));
+        }
+    }
+
+    template <auto max> requires (detail::in_range<uint64_t, 0, max>)
+    using smallest_unsigned_int = detail::smallest_unsigned_int<0, max>::type;
+
+    template <auto min, auto max>
+        requires (detail::in_range<int64_t, 0, max> || detail::in_range<uint64_t, 0, max>)
+    using smallest_int = detail::smallest_int<min, max>::type;
 
     namespace detail {
 
