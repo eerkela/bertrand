@@ -4503,23 +4503,25 @@ namespace impl {
     };
 
     /* A trivial iterator that represents an empty range.  Instances of this type
-    always compare equal.  The template parameter sets the return type of the
-    dereference operators, which is useful for metaprogramming purposes.  No values
-    will ever actually be yielded. */
-    template <meta::not_void T = const NoneType>
+    always compare equal.  The template parameter sets the `reference` type returned by
+    the dereference operators, which is useful for metaprogramming purposes.  No values
+    will actually be yielded. */
+    template <meta::not_void T = const NoneType&>
     struct empty_iterator {
         using iterator_category = std::contiguous_iterator_tag;
         using difference_type = std::ptrdiff_t;
+        using reference = T;
         using value_type = meta::remove_reference<T>;
-        using reference = meta::as_lvalue<value_type>;
-        using pointer = meta::address_type<reference>;
+        using pointer = meta::as_pointer<reference>;
 
         [[noreturn]] constexpr reference operator*() { throw StopIteration(); }
         [[noreturn]] constexpr reference operator*() const { throw StopIteration(); }
         [[noreturn]] constexpr pointer operator->() { throw StopIteration(); }
         [[noreturn]] constexpr pointer operator->() const { throw StopIteration(); }
         [[noreturn]] constexpr reference operator[](difference_type) { throw StopIteration(); }
-        [[noreturn]] constexpr reference operator[](difference_type) const { throw StopIteration(); }
+        [[noreturn]] constexpr reference operator[](difference_type) const {
+            throw StopIteration();
+        }
         constexpr empty_iterator& operator++() noexcept { return *this; }
         [[nodiscard]] constexpr empty_iterator operator++(int) noexcept { return {}; }
         [[nodiscard]] friend constexpr empty_iterator operator+(

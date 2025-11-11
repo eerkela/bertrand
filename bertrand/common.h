@@ -4556,7 +4556,10 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{::std::forward<T>(t).front()} noexcept;})
-                requires (member::has_front<T>)
+                requires (
+                    !meta::structured<T, 0> &&
+                    member::has_front<T>
+                )
             {
                 return (::std::forward<T>(t).front());
             }
@@ -4564,7 +4567,11 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{front(::std::forward<T>(t))} noexcept;})
-                requires (!member::has_front<T> && adl::has_front<T>)
+                requires (
+                    !meta::structured<T, 0> &&
+                    !member::has_front<T> &&
+                    adl::has_front<T>
+                )
             {
                 return (front(::std::forward<T>(t)));
             }
@@ -4572,7 +4579,12 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{*meta::begin(t)} noexcept;})
-                requires (!member::has_front<T> && !adl::has_front<T> && meta::iterable<T>)
+                requires (
+                    !meta::structured<T, 0> &&
+                    !member::has_front<T> &&
+                    !adl::has_front<T> &&
+                    meta::iterable<T>
+                )
             {
                 return (*meta::begin(t));
             }
@@ -4639,7 +4651,10 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{::std::forward<T>(t).back()} noexcept;})
-                requires (member::has_back<T>)
+                requires (
+                    !meta::structured<T, 0> &&
+                    member::has_back<T>
+                )
             {
                 return (::std::forward<T>(t).back());
             }
@@ -4647,7 +4662,11 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{back(::std::forward<T>(t))} noexcept;})
-                requires (!member::has_back<T> && adl::has_back<T>)
+                requires (
+                    !meta::structured<T, 0> &&
+                    !member::has_back<T> &&
+                    adl::has_back<T>
+                )
             {
                 return (back(::std::forward<T>(t)));
             }
@@ -4656,6 +4675,7 @@ namespace meta {
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires{{*meta::rbegin(t)} noexcept;})
                 requires (
+                    !meta::structured<T, 0> &&
                     !member::has_back<T> &&
                     !adl::has_back<T> &&
                     meta::reverse_iterable<T>
@@ -4672,6 +4692,7 @@ namespace meta {
                     {*it} noexcept;
                 })
                 requires (
+                    !meta::structured<T, 0> &&
                     !member::has_back<T> &&
                     !adl::has_back<T> &&
                     !meta::reverse_iterable<T> &&

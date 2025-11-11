@@ -10,6 +10,10 @@ namespace bertrand {
 /// TODO: document all of this thoroughly
 
 
+/// TODO: concat{} can use a standardized meta::to_range_or_scalar() method and
+/// `meta::as_range_or_scalar<>` alias instead of implementing them manually.
+
+
 namespace impl {
     struct concat_tag {};
 

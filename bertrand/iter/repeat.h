@@ -9,16 +9,6 @@
 namespace bertrand {
 
 
-/// TODO: it may be possible to turn `repeat{}` ranges into common ranges, where
-/// the begin and end iterators are the same type.
-
-
-/// TODO: a static repeat count of 1 is identical to the original range, so that may
-/// be worth optimizing.  Maybe the `repeat{}` adaptor should special-case that in the
-/// call operator and just return the original range (or convert to a range if it was
-/// not one already).
-
-
 namespace impl {
 
     /* Repeat iterator implementations are tailored to the capabilities of the
@@ -28,15 +18,15 @@ namespace impl {
     template <meta::iterator Begin, meta::sentinel_for<Begin> End>
     struct repeat_iterator {
         using iterator_category = meta::iterator_category<Begin>;
-        using difference_type = meta::iterator_difference_type<Begin>;
-        using value_type = meta::iterator_value_type<Begin>;
-        using reference = meta::iterator_reference_type<Begin>;
-        using pointer = meta::iterator_pointer_type<Begin>;
+        using difference_type = meta::iterator_difference<Begin>;
+        using value_type = meta::iterator_value<Begin>;
+        using reference = meta::iterator_reference<Begin>;
+        using pointer = meta::iterator_pointer<Begin>;
 
-        Begin begin;
-        End end;
-        size_t count = 0;  // repetition count
-        Begin iter = begin;  // current iterator
+        [[no_unique_address]] Begin begin;
+        [[no_unique_address]] End end;
+        [[no_unique_address]] size_t count = 0;  // repetition count
+        [[no_unique_address]] Begin iter = begin;  // current iterator
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
@@ -46,23 +36,29 @@ namespace impl {
             return (*std::forward<Self>(self).iter);
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{meta::to_arrow(std::forward<Self>(self).iter)} noexcept;})
-            requires (requires{{meta::to_arrow(std::forward<Self>(self).iter)};})
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
         {
-            return meta::to_arrow(std::forward<Self>(self).iter);
+            return impl::arrow{**this};
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
+        {
+            return impl::arrow{**this};
         }
 
         constexpr repeat_iterator& operator++()
             noexcept (requires{
                 {++iter} noexcept;
-                {iter == end} noexcept;
+                {iter == end} noexcept -> meta::nothrow::truthy;
                 {iter = begin} noexcept;
             })
             requires (requires{
                 {++iter};
-                {iter == end};
+                {iter == end} -> meta::truthy;
                 {iter = begin};
             })
         {
@@ -75,11 +71,14 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr repeat_iterator operator++(int)
-            noexcept (
-                meta::nothrow::copyable<repeat_iterator> &&
-                meta::has_preincrement<repeat_iterator&>
-            )
-            requires (meta::copyable<repeat_iterator> && meta::has_preincrement<repeat_iterator&>)
+            noexcept (requires{
+                {repeat_iterator{*this}} noexcept;
+                {++*this} noexcept;
+            })
+            requires (requires{
+                {repeat_iterator{*this}};
+                {++*this};
+            })
         {
             repeat_iterator tmp = *this;
             ++*this;
@@ -87,10 +86,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool operator==(const repeat_iterator& other) const
-            noexcept (requires{{iter == other.iter} noexcept;})
-            requires (requires{{iter == other.iter};})
+            noexcept (requires{{iter == other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter == other.iter} -> meta::truthy;})
         {
-            return count == other.count && iter == other.iter;
+            return count == other.count && bool(iter == other.iter);
         }
 
         [[nodiscard]] friend constexpr bool operator==(
@@ -108,10 +107,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool operator!=(const repeat_iterator& other) const
-            noexcept (requires{{iter != other.iter} noexcept;})
-            requires (requires{{iter != other.iter};})
+            noexcept (requires{{iter != other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter != other.iter} -> meta::truthy;})
         {
-            return count != other.count || iter != other.iter;
+            return count != other.count || bool(iter != other.iter);
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
@@ -129,21 +128,21 @@ namespace impl {
         }
     };
 
-    /* Bidirectional iterators have to also store an iterator to the last item of the
+    /* Bidirectional iterators must also store an iterator to the last item of the
     previous repetition so that it can decrement backwards across the boundary. */
     template <meta::bidirectional_iterator Begin, meta::sentinel_for<Begin> End>
     struct repeat_iterator<Begin, End> {
         using iterator_category = meta::iterator_category<Begin>;
-        using difference_type = meta::iterator_difference_type<Begin>;
-        using value_type = meta::iterator_value_type<Begin>;
-        using reference = meta::iterator_reference_type<Begin>;
-        using pointer = meta::iterator_pointer_type<Begin>;
+        using difference_type = meta::iterator_difference<Begin>;
+        using value_type = meta::iterator_value<Begin>;
+        using reference = meta::iterator_reference<Begin>;
+        using pointer = meta::iterator_pointer<Begin>;
 
-        Begin begin;
-        End end;
-        size_t count = 0;  // repetition count
-        Begin iter = begin;  // current iterator
-        Begin last = begin;  // last iterator
+        [[no_unique_address]] Begin begin;
+        [[no_unique_address]] End end;
+        [[no_unique_address]] size_t count = 0;  // repetition count
+        [[no_unique_address]] Begin iter = begin;  // current iterator
+        [[no_unique_address]] Begin last = begin;  // last iterator
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
@@ -153,23 +152,29 @@ namespace impl {
             return (*std::forward<Self>(self).iter);
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{meta::to_arrow(std::forward<Self>(self).iter)} noexcept;})
-            requires (requires{{meta::to_arrow(std::forward<Self>(self).iter)};})
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
         {
-            return meta::to_arrow(std::forward<Self>(self).iter);
+            return impl::arrow{**this};
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
+        {
+            return impl::arrow{**this};
         }
 
         constexpr repeat_iterator& operator++()
             noexcept (requires{
                 {++iter} noexcept;
-                {iter == end} noexcept;
+                {iter == end} noexcept -> meta::nothrow::truthy;
                 {iter = begin} noexcept;
             })
             requires (requires{
                 {++iter};
-                {iter == end};
+                {iter == end} -> meta::truthy;
                 {iter = begin};
             })
         {
@@ -186,11 +191,14 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr repeat_iterator operator++(int)
-            noexcept (
-                meta::nothrow::copyable<repeat_iterator> &&
-                meta::has_preincrement<repeat_iterator&>
-            )
-            requires (meta::copyable<repeat_iterator> && meta::has_preincrement<repeat_iterator&>)
+            noexcept (requires{
+                {repeat_iterator{*this}} noexcept;
+                {++*this} noexcept;
+            })
+            requires (requires{
+                {repeat_iterator{*this}};
+                {++*this};
+            })
         {
             repeat_iterator tmp = *this;
             ++*this;
@@ -200,12 +208,12 @@ namespace impl {
         constexpr repeat_iterator& operator--()
             noexcept (requires{
                 {--iter} noexcept;
-                {iter == begin} noexcept;
+                {iter == begin} noexcept -> meta::nothrow::truthy;
                 {iter = last} noexcept;
             })
             requires (requires{
                 {--iter};
-                {iter == begin};
+                {iter == begin} -> meta::truthy;
                 {iter = last};
             })
         {
@@ -223,22 +231,25 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr repeat_iterator operator--(int)
-            noexcept (
-                meta::nothrow::copyable<repeat_iterator> &&
-                meta::has_predecrement<repeat_iterator&>
-            )
-            requires (meta::copyable<repeat_iterator> && meta::has_predecrement<repeat_iterator&>)
+            noexcept (requires{
+                {repeat_iterator{*this}} noexcept;
+                {--*this} noexcept;
+            })
+            requires (requires{
+                {repeat_iterator{*this}} ;
+                {--*this};
+            })
         {
-            --*this;
             repeat_iterator tmp = *this;
+            --*this;
             return tmp;
         }
 
         [[nodiscard]] constexpr bool operator==(const repeat_iterator& other) const
-            noexcept (requires{{iter == other.iter} noexcept;})
-            requires (requires{{iter == other.iter};})
+            noexcept (requires{{iter == other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter == other.iter} -> meta::truthy;})
         {
-            return count == other.count && iter == other.iter;
+            return count == other.count && bool(iter == other.iter);
         }
 
         [[nodiscard]] friend constexpr bool operator==(
@@ -256,10 +267,10 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr bool operator!=(const repeat_iterator& other) const
-            noexcept (requires{{iter != other.iter} noexcept;})
-            requires (requires{{iter != other.iter};})
+            noexcept (requires{{iter != other.iter} noexcept -> meta::nothrow::truthy;})
+            requires (requires{{iter != other.iter} -> meta::truthy;})
         {
-            return count != other.count || iter != other.iter;
+            return count != other.count || bool(iter != other.iter);
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
@@ -277,22 +288,22 @@ namespace impl {
         }
     };
 
-    /* Random access iterators have to also store the size of the range and current
-    index in order to map indices onto the repeated range. */
+    /* Random access iterators must also store the size of the range and current index
+    in order to project indices onto the repeated range. */
     template <meta::random_access_iterator Begin, meta::sentinel_for<Begin> End>
     struct repeat_iterator<Begin, End> {
         using iterator_category = meta::iterator_category<Begin>;
-        using difference_type = meta::iterator_difference_type<Begin>;
-        using value_type = meta::iterator_value_type<Begin>;
-        using reference = meta::iterator_reference_type<Begin>;
-        using pointer = meta::iterator_pointer_type<Begin>;
+        using difference_type = meta::iterator_difference<Begin>;
+        using value_type = meta::iterator_value<Begin>;
+        using reference = meta::iterator_reference<Begin>;
+        using pointer = meta::iterator_pointer<Begin>;
 
-        Begin begin;
-        End end;
-        size_t count = 0;  // repetition count
-        difference_type size = std::ranges::distance(begin, end);  // size of each repetition
-        difference_type index = 0;  // index in current repetition
-        Begin iter = begin;  // current iterator
+        [[no_unique_address]] Begin begin;
+        [[no_unique_address]] End end;
+        [[no_unique_address]] size_t count = 0;  // repetition count
+        [[no_unique_address]] difference_type size = std::ranges::distance(begin, end);  // size of each repetition
+        [[no_unique_address]] difference_type index = 0;  // index in current repetition
+        [[no_unique_address]] Begin iter = begin;  // current iterator
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
@@ -302,18 +313,28 @@ namespace impl {
             return (*std::forward<Self>(self).iter);
         }
 
-        template <typename Self>
-        [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{meta::to_arrow(std::forward<Self>(self).iter)} noexcept;})
-            requires (requires{{meta::to_arrow(std::forward<Self>(self).iter)};})
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
         {
-            return meta::to_arrow(std::forward<Self>(self).iter);
+            return impl::arrow{**this};
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
+        {
+            return impl::arrow{**this};
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, difference_type n)
-            noexcept (requires{{std::forward<Self>(self).begin[(self.index + n) % self.size]} noexcept;})
-            requires (requires{{std::forward<Self>(self).begin[(self.index + n) % self.size]};})
+            noexcept (requires{
+                {std::forward<Self>(self).begin[(self.index + n) % self.size]} noexcept;
+            })
+            requires (requires{
+                {std::forward<Self>(self).begin[(self.index + n) % self.size]};
+            })
         {
             return (std::forward<Self>(self).begin[(self.index + n) % self.size]);
         }
@@ -330,15 +351,34 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr repeat_iterator operator++(int)
-            noexcept (
-                meta::nothrow::copyable<repeat_iterator> &&
-                meta::has_preincrement<repeat_iterator&>
-            )
-            requires (meta::copyable<repeat_iterator> && meta::has_preincrement<repeat_iterator&>)
+            noexcept (requires{
+                {repeat_iterator{*this}} noexcept;
+                {++*this} noexcept;
+            })
+            requires (requires{
+                {repeat_iterator{*this}};
+                {++*this};
+            })
         {
             repeat_iterator tmp = *this;
             ++*this;
             return tmp;
+        }
+
+        constexpr repeat_iterator& operator+=(difference_type n)
+            noexcept (requires{{iter = begin + index} noexcept;})
+            requires (requires{{iter = begin + index};})
+        {
+            index += n;
+            difference_type q = index / size;
+            index %= size;
+            if (index < 0) {
+                --q;
+                index += size;
+            }
+            count -= q;
+            iter = begin + index;
+            return *this;
         }
 
         [[nodiscard]] friend constexpr repeat_iterator operator+(
@@ -417,22 +457,6 @@ namespace impl {
             };
         }
 
-        constexpr repeat_iterator& operator+=(difference_type n)
-            noexcept (requires{{iter = begin + index} noexcept;})
-            requires (requires{{iter = begin + index};})
-        {
-            index += n;
-            difference_type q = index / size;
-            index %= size;
-            if (index < 0) {
-                --q;
-                index += size;
-            }
-            count -= q;
-            iter = begin + index;
-            return *this;
-        }
-
         constexpr repeat_iterator& operator--()
             noexcept (requires{{iter = begin + index} noexcept;})
             requires (requires{{iter = begin + index};})
@@ -455,6 +479,22 @@ namespace impl {
             repeat_iterator tmp = *this;
             --*this;
             return tmp;
+        }
+
+        constexpr repeat_iterator& operator-=(difference_type n)
+            noexcept (requires{{iter = begin + index} noexcept;})
+            requires (requires{{iter = begin + index};})
+        {
+            index = index - n;
+            difference_type q = index / size;
+            index %= size;
+            if (index < 0) {
+                --q;
+                index += size;
+            }
+            count -= q;
+            iter = begin + index;
+            return *this;
         }
 
         [[nodiscard]] constexpr repeat_iterator operator-(difference_type n) const
@@ -498,22 +538,6 @@ namespace impl {
             return (count - other.count) * size + (index - other.index);
         }
 
-        constexpr repeat_iterator& operator-=(difference_type n)
-            noexcept (requires{{iter = begin + index} noexcept;})
-            requires (requires{{iter = begin + index};})
-        {
-            index = index - n;
-            difference_type q = index / size;
-            index %= size;
-            if (index < 0) {
-                --q;
-                index += size;
-            }
-            count -= q;
-            iter = begin + index;
-            return *this;
-        }
-
         [[nodiscard]] constexpr bool operator<(const repeat_iterator& other) const
             noexcept (requires{{iter < other.iter} noexcept;})
             requires (requires{{iter < other.iter};})
@@ -535,39 +559,11 @@ namespace impl {
             return count == other.count && iter == other.iter;
         }
 
-        [[nodiscard]] friend constexpr bool operator==(
-            const repeat_iterator& self,
-            NoneType
-        ) noexcept {
-            return self.count == 0;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
-            const repeat_iterator& self
-        ) noexcept {
-            return self.count == 0;
-        }
-
         [[nodiscard]] constexpr bool operator!=(const repeat_iterator& other) const
             noexcept (requires{{iter != other.iter} noexcept;})
             requires (requires{{iter != other.iter};})
         {
             return count != other.count || iter != other.iter;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const repeat_iterator& self,
-            NoneType
-        ) noexcept {
-            return self.count != 0;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
-            const repeat_iterator& self
-        ) noexcept {
-            return self.count != 0;
         }
 
         [[nodiscard]] constexpr bool operator>=(const repeat_iterator& other) const
@@ -583,303 +579,422 @@ namespace impl {
         {
             return count < other.count || (count == other.count && iter > other.iter);
         }
+
+        [[nodiscard]] constexpr auto operator<=>(const repeat_iterator& other) const
+            noexcept (requires{{iter <=> other.iter} noexcept;})
+            requires (requires{{iter <=> other.iter};})
+        {
+            if (auto cmp = other.count <=> count; cmp != 0) {
+                return cmp;
+            }
+            return iter <=> other.iter;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const repeat_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.count == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            NoneType,
+            const repeat_iterator& self
+        ) noexcept {
+            return self.count == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const repeat_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.count != 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            NoneType,
+            const repeat_iterator& self
+        ) noexcept {
+            return self.count != 0;
+        }
     };
 
-    template <typename B, typename E, typename... rest>
-    repeat_iterator(B, E, rest...) -> repeat_iterator<B, E>; 
+    /// NOTE: if the underlying iterator is random access and the range has a
+    /// compatible size, then we can avoid an extra `distance()` call by passing
+    /// the size directly to the repeat iterator.
+
+    template <typename T>
+    [[nodiscard]] constexpr auto repeat_begin(T& self)
+        noexcept ((
+            meta::random_access_iterator<decltype(self->begin())> &&
+            requires{{self->ssize()} -> meta::convertible_to<
+                meta::iterator_difference<decltype(self->begin())>
+            >;}
+        ) ?
+            requires{{repeat_iterator<decltype(self->begin()), decltype(self->end())>{
+                .begin = self->begin(),
+                .end = self->end(),
+                .count = self.reps(),
+                .size = self->ssize()
+            }} noexcept;} :
+            requires{{repeat_iterator<decltype(self->begin()), decltype(self->end())>{
+                .begin = self->begin(),
+                .end = self->end(),
+                .count = self.reps()
+            }} noexcept;}
+        )
+        requires (requires{{repeat_iterator<decltype(self->begin()), decltype(self->end())>{
+            .begin = self->begin(),
+            .end = self->end(),
+            .count = self.reps()
+        }};})
+    {
+        if constexpr (
+            meta::random_access_iterator<decltype(self->begin())> &&
+            requires{{self->ssize()} -> meta::convertible_to<
+                meta::iterator_difference<decltype(self->begin())>
+            >;}
+        ) {
+            return repeat_iterator<decltype(self->begin()), decltype(self->end())>{
+                .begin = self->begin(),
+                .end = self->end(),
+                .count = self.reps(),
+                .size = self->ssize(),
+            };
+        } else {
+            return repeat_iterator<decltype(self->begin()), decltype(self->end())>{
+                .begin = self->begin(),
+                .end = self->end(),
+                .count = self.reps(),
+            };
+        }
+    }
+
+    template <typename T>
+    [[nodiscard]] constexpr auto repeat_rbegin(T& self)
+        noexcept ((
+            meta::random_access_iterator<decltype(self->rbegin())> &&
+            requires{{self->ssize()} -> meta::convertible_to<
+                meta::iterator_difference<decltype(self->rbegin())>
+            >;}
+        ) ?
+            requires{{repeat_iterator<decltype(self->rbegin()), decltype(self->rend())>{
+                .begin = self->rbegin(),
+                .end = self->rend(),
+                .count = self.reps(),
+                .size = self->ssize()
+            }} noexcept;} :
+            requires{{repeat_iterator<decltype(self->rbegin()), decltype(self->rend())>{
+                .begin = self->rbegin(),
+                .end = self->rend(),
+                .count = self.reps()
+            }} noexcept;}
+        )
+        requires (requires{{repeat_iterator<decltype(self->rbegin()), decltype(self->rend())>{
+            .begin = self->rbegin(),
+            .end = self->rend(),
+            .count = self.reps()
+        }};})
+    {
+        if constexpr (
+            meta::random_access_iterator<decltype(self->rbegin())> &&
+            requires{{self->ssize()} -> meta::convertible_to<
+                meta::iterator_difference<decltype(self->rbegin())>
+            >;}
+        ) {
+            return repeat_iterator<decltype(self->rbegin()), decltype(self->rend())>{
+                .begin = self->rbegin(),
+                .end = self->rend(),
+                .count = self.reps(),
+                .size = self->ssize(),
+            };
+        } else {
+            return repeat_iterator<decltype(self->rbegin()), decltype(self->rend())>{
+                .begin = self->rbegin(),
+                .end = self->rend(),
+                .count = self.reps(),
+            };
+        }
+    }
+
 
     /* If the repetition count is known at compile time, then we can emit an optimized
-    range that retains tuple-like access.  Otherwise, tuple inputs will lose their
-    original structure. */
-    template <meta::not_rvalue C, Optional<size_t> N>
-        requires (meta::iterable<C> || meta::tuple_like<C>)
+    range that omits the count member and retains tuple-like access. */
+    template <meta::not_rvalue T, Optional<size_t> N> requires (meta::range<T>)
     struct repeat {
-        using type = C;
-        using size_type = size_t;
-        using index_type = ssize_t;
-
     private:
-        static constexpr size_type static_count = N == None ? 0 : N.__value.template get<1>();
-
-        [[no_unique_address]] impl::ref<type> m_range;
-        size_type m_count = static_count;
-
-        [[nodiscard]] constexpr size_type base_size() const
-            noexcept (
-                meta::nothrow::has_size<meta::as_const_ref<type>> ||
-                (!meta::has_size<meta::as_const_ref<type>> && meta::tuple_like<type>)
-            )
-        {
-            if constexpr (meta::has_size<meta::as_const_ref<type>>) {
-                return std::ranges::size(value());
-            } else {
-                return meta::tuple_size<type>;
-            }
-        }
+        [[no_unique_address]] impl::ref<T> m_value;
+        static constexpr size_t m_reps = *N;
 
     public:
-        [[nodiscard]] constexpr repeat(meta::forward<type> range)
-            noexcept (requires{{impl::ref<type>(std::forward<type>(range))} noexcept;})
-            requires (N != None && requires{{impl::ref<type>(std::forward<type>(range))};})
+        [[nodiscard]] constexpr repeat(meta::forward<T> r)
+            noexcept (requires{{impl::ref<T>(std::forward<T>(r))} noexcept;})
+            requires (requires{{impl::ref<T>(std::forward<T>(r))};})
         :
-            m_range(std::forward<type>(range))
+            m_value(std::forward<T>(r))
         {}
 
-        [[nodiscard]] constexpr repeat(meta::forward<type> range, size_type count)
-            noexcept (requires{{impl::ref<type>(std::forward<type>(range))} noexcept;})
-            requires (N == None && requires{{impl::ref<type>(std::forward<type>(range))};})
-        :
-            m_range(std::forward<type>(range)),
-            m_count(count)
-        {}
-
-        /* Perfectly forward the underlying container according to the repeated range's
-        current cvref qualifications. */
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) value(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_range);
+        [[nodiscard]] static constexpr size_t reps() noexcept {
+            return m_reps;
         }
 
-        /* Indirectly access a member of the underlying container. */
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_value} noexcept;})
+            requires (requires{{*std::forward<Self>(self).m_value};})
+        {
+            return (*std::forward<Self>(self).m_value);
+        }
+
         [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{meta::to_arrow(value())} noexcept;})
-            requires (requires{{meta::to_arrow(value())};})
+            noexcept (requires{{std::addressof(**this)} noexcept;})
+            requires (requires{{std::addressof(**this)};})
         {
-            return meta::to_arrow(value());
+            return std::addressof(**this);
         }
 
-        /* Indirectly access a member of the underlying container. */
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{meta::to_arrow(value())} noexcept;})
-            requires (requires{{meta::to_arrow(value())};})
+            noexcept (requires{{std::addressof(**this)} noexcept;})
+            requires (requires{{std::addressof(**this)};})
         {
-            return meta::to_arrow(value());
+            return std::addressof(**this);
         }
 
-        /* The repetition count for the repeated range. */
-        [[nodiscard]] constexpr size_type count() const noexcept {
-            if constexpr (N != None) {
-                return static_count;
-            } else {
-                return m_count;
-            }
-        }
-
-        /* The total number of elements that will be included in the repeated range, as
-        an unsigned integer. */
-        [[nodiscard]] constexpr size_type size() const
-            noexcept (
-                (N != None && static_count == 0) ||
-                requires{{count() * base_size()} noexcept;}
-            )
-            requires (
-                (N != None && static_count == 0) ||
-                requires{{count() * base_size()};}
-            )
+        [[nodiscard]] constexpr decltype(auto) size() const
+            noexcept (requires{{reps() * (**this).size()} noexcept;})
+            requires (requires{{reps() * (**this).size()};})
         {
-            if constexpr (N != None && static_count == 0) {
-                return 0;
-            } else {
-                return count() * base_size();
-            }
+            return (reps() * (**this).size());
         }
 
-        /* The total number of elements that will be included in the repeated range, as
-        a signed integer. */
-        [[nodiscard]] constexpr index_type ssize() const
-            noexcept (
-                (N != None && static_count == 0) ||
-                requires{{count() * index_type(base_size())} noexcept;}
-            )
-            requires (
-                (N != None && static_count == 0) ||
-                requires{{count() * index_type(base_size())};}
-            )
+        [[nodiscard]] constexpr decltype(auto) ssize() const
+            noexcept (requires{{reps() * (**this).ssize()} noexcept;})
+            requires (requires{{reps() * (**this).ssize()};})
         {
-            if constexpr (N != None && static_count == 0) {
-                return 0;
-            } else {
-                return count() * index_type(base_size());
-            }
+            return (reps() * (**this).ssize());
         }
 
-        /* True if the repeated range has zero elements, which can occur when either
-        the underlying container is empty or the repetition count is zero.  False
-        otherwise. */
         [[nodiscard]] constexpr bool empty() const
-            noexcept (
-                (N != None && static_count == 0) ||
-                meta::nothrow::has_empty<meta::as_const_ref<type>> ||
-                (!meta::has_empty<meta::as_const_ref<type>> && meta::tuple_like<type>)
-            )
-            requires (
-                (N != None && static_count == 0) ||
-                meta::has_empty<meta::as_const_ref<type>> ||
-                meta::tuple_like<type>
-            )
+            noexcept (reps() == 0 || requires{{(**this).empty()} noexcept;})
+            requires (reps() == 0 || requires{{(**this).empty()};})
         {
-            if constexpr (N != None && static_count == 0) {
+            if constexpr (reps() == 0) {
                 return true;
-            } else if constexpr (meta::has_empty<meta::as_const_ref<type>>) {
-                return std::ranges::empty(value());
             } else {
-                return meta::tuple_size<type> > 0;
+                return (**this).empty();
             }
         }
 
-        /* Maintain tuple-like access as long as the repetition count is known at
-        compile time and the underlying container is a tuple. */
-        template <size_type I, typename Self> requires (N != None && meta::tuple_like<type>)
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
+            noexcept (requires{{(*std::forward<Self>(self)).front()} noexcept;})
+            requires (requires{{(*std::forward<Self>(self)).front()};})
+        {
+            return ((*std::forward<Self>(self)).front());
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
+            noexcept (requires{{(*std::forward<Self>(self)).back()} noexcept;})
+            requires (requires{{(*std::forward<Self>(self)).back()};})
+        {
+            return ((*std::forward<Self>(self)).back());
+        }
+
+        template <ssize_t I, typename Self>
+            requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T> * reps(), I>)
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{meta::unpack_tuple<I % meta::tuple_size<type>>(
-                std::forward<Self>(self).value()
-            )} noexcept;})
-            requires (requires{{meta::unpack_tuple<I % meta::tuple_size<type>>(
-                std::forward<Self>(self).value()
-            )};})
+            noexcept (requires{{meta::get<size_t(
+                impl::normalize_index<meta::tuple_size<T> * reps(), I>() % meta::tuple_size<T>
+            )>(*std::forward<Self>(self))} noexcept;})
+            requires (requires{{meta::get<size_t(
+                impl::normalize_index<meta::tuple_size<T> * reps(), I>() % meta::tuple_size<T>
+            )>(*std::forward<Self>(self))};})
         {
-            /// NOTE: Python-style wraparound has already been applied by
-            /// `range.get<I>()`.
-            return (meta::unpack_tuple<I % meta::tuple_size<type>>(
-                std::forward<Self>(self).value()
-            ));
+            return (meta::get<size_t(
+                impl::normalize_index<meta::tuple_size<T> * reps(), I>() % meta::tuple_size<T>
+            )>(*std::forward<Self>(self)));
         }
 
-        /* Index into the repeated range as long as the underlying container is sized
-        or tuple-like. */
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_type i)
-            noexcept (requires{{impl::range_subscript(
-                std::forward<Self>(self).value(),
-                i % self.base_size()
-            )} noexcept;})
-            requires (requires{{impl::range_subscript(
-                std::forward<Self>(self).value(),
-                i % self.base_size()
-            )};})
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (requires{{(*std::forward<Self>(self))[size_t(
+                impl::normalize_index(self.ssize(), i) % self->ssize()
+            )]} noexcept;})
+            requires (requires{{(*std::forward<Self>(self))[size_t(
+                impl::normalize_index(self.ssize(), i) % self->ssize()
+            )]};})
         {
-            /// NOTE: Python-style wraparound has already been applied by `range[i]`.
-            return (impl::range_subscript(
-                std::forward<Self>(self).value(),
-                i % self.base_size()
-            ));
+            return ((*std::forward<Self>(self))[size_t(
+                impl::normalize_index(self.ssize(), i) % self->ssize()
+            )]);
         }
 
-        /* Get a forward iterator over the repeated range. */
-        template <typename Self>
-        [[nodiscard]] constexpr auto begin(this Self& self)
-            noexcept (requires{
-                {impl::make_range_iterator{self.value()}.begin()} -> meta::random_access_iterator;
-            } && (meta::has_size<meta::as_const_ref<type>> || meta::tuple_like<type>) ?
-                requires{{repeat_iterator{
-                    impl::make_range_iterator{self.value()}.begin(),
-                    impl::make_range_iterator{self.value()}.end(),
-                    self.count(),
-                    index_type(self.base_size())
-                }} noexcept;} :
-                requires{{repeat_iterator{
-                    impl::make_range_iterator{self.value()}.begin(),
-                    impl::make_range_iterator{self.value()}.end(),
-                    self.count()
-                }} noexcept;}
-            )
-            requires (requires{{repeat_iterator{
-                impl::make_range_iterator{self.value()}.begin(),
-                impl::make_range_iterator{self.value()}.end(),
-                self.count()
-            }};})
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{repeat_begin(*this)} noexcept;})
+            requires (requires{{repeat_begin(*this)};})
         {
-            if constexpr (
-                meta::random_access_iterator<
-                    decltype(impl::make_range_iterator{self.value()}.begin())
-                > && (meta::has_size<meta::as_const_ref<type>> || meta::tuple_like<type>)
-            ) {
-                /// NOTE: if the underlying iterator is random access and the range has
-                /// a definite size, then we can avoid an extra
-                /// `std::ranges::distance()` call by passing the size directly to the
-                /// repeat iterator.
-                return repeat_iterator{
-                    impl::make_range_iterator{self.value()}.begin(),
-                    impl::make_range_iterator{self.value()}.end(),
-                    self.count(),
-                    index_type(self.base_size()),
-                };
-            } else {
-                return repeat_iterator{
-                    impl::make_range_iterator{self.value()}.begin(),
-                    impl::make_range_iterator{self.value()}.end(),
-                    self.count()
-                };
-            }
+            return repeat_begin(*this);
         }
 
-        /* Get a forward sentinel for the end of the repeated range. */
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{repeat_begin(*this)} noexcept;})
+            requires (requires{{repeat_begin(*this)};})
+        {
+            return repeat_begin(*this);
+        }
+
         [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
 
-        /* Get a forward iterator over the repeated range. */
-        template <typename Self>
-        [[nodiscard]] constexpr auto rbegin(this Self& self)
-            noexcept (requires{
-                {impl::make_range_reversed{self.value()}.begin()} -> meta::random_access_iterator;
-            } && (meta::has_ssize<meta::as_const_ref<type>> || meta::tuple_like<type>) ?
-                requires{{repeat_iterator{
-                    impl::make_range_reversed{self.value()}.begin(),
-                    impl::make_range_reversed{self.value()}.end(),
-                    self.count(),
-                    index_type(self.base_size())
-                }} noexcept;} :
-                requires{{repeat_iterator{
-                    impl::make_range_reversed{self.value()}.begin(),
-                    impl::make_range_reversed{self.value()}.end(),
-                    self.count()
-                }} noexcept;}
-            )
-            requires (requires{{repeat_iterator{
-                impl::make_range_reversed{self.value()}.begin(),
-                impl::make_range_reversed{self.value()}.end(),
-                self.count()
-            }};})
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires{{repeat_rbegin(*this)} noexcept;})
+            requires (requires{{repeat_rbegin(*this)};})
         {
-            if constexpr (requires{
-                {impl::make_range_reversed{self.value()}.begin()} -> meta::random_access_iterator;
-            } && (meta::has_size<meta::as_const_ref<type>> || meta::tuple_like<type>)) {
-                /// NOTE: if the underlying iterator is random access and the range has
-                /// a definite size, then we can avoid an extra
-                /// `std::ranges::distance()` call by passing the size directly to the
-                /// repeat iterator.
-                return repeat_iterator{
-                    impl::make_range_reversed{self.value()}.begin(),
-                    impl::make_range_reversed{self.value()}.end(),
-                    self.count(),
-                    index_type(self.base_size()),
-                };
-            } else {
-                return repeat_iterator{
-                    impl::make_range_reversed{self.value()}.begin(),
-                    impl::make_range_reversed{self.value()}.end(),
-                    self.count()
-                };
-            }
+            return repeat_rbegin(*this);
         }
 
-        /* Get a reverse sentinel for the end of the repeated range. */
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{repeat_rbegin(*this)} noexcept;})
+            requires (requires{{repeat_rbegin(*this)};})
+        {
+            return repeat_rbegin(*this);
+        }
+
+        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
+    };
+
+    /* Runtime repetitions necessitate an extra `count` member and clobber the tuple
+    interface.  Additionally, providing `None` as a count initializer indicates an
+    infinite range.  For performance reasons, this may be downgraded to simply a max
+    `size_t` repetition count, meaning infinite repetitions are technically bounded,
+    but with a very large size. */
+    template <meta::not_rvalue T>
+    struct repeat<T, None> {
+    private:
+        [[no_unique_address]] impl::ref<T> m_value;
+        [[no_unique_address]] size_t m_reps = 0;
+
+    public:
+        [[nodiscard]] constexpr repeat(meta::forward<T> range, size_t count)
+            noexcept (requires{{impl::ref<T>(std::forward<T>(range))} noexcept;})
+            requires (requires{{impl::ref<T>(std::forward<T>(range))};})
+        :
+            m_value(std::forward<T>(range)),
+            m_reps(count)
+        {}
+
+        [[nodiscard]] constexpr size_t reps() const noexcept {
+            return m_reps;
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
+            noexcept (requires{{*std::forward<Self>(self).m_value} noexcept;})
+            requires (requires{{*std::forward<Self>(self).m_value};})
+        {
+            return (*std::forward<Self>(self).m_value);
+        }
+
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{std::addressof(**this)} noexcept;})
+            requires (requires{{std::addressof(**this)};})
+        {
+            return std::addressof(**this);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{std::addressof(**this)} noexcept;})
+            requires (requires{{std::addressof(**this)};})
+        {
+            return std::addressof(**this);
+        }
+
+        [[nodiscard]] constexpr decltype(auto) size() const
+            noexcept (requires{{reps() * (**this).size()} noexcept;})
+            requires (requires{{reps() * (**this).size()};})
+        {
+            return (reps() * (**this).size());
+        }
+
+        [[nodiscard]] constexpr decltype(auto) ssize() const
+            noexcept (requires{{reps() * (**this).ssize()} noexcept;})
+            requires (requires{{reps() * (**this).ssize()};})
+        {
+            return (reps() * (**this).ssize());
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{reps() == 0 || (**this).empty()} noexcept;})
+            requires (requires{{reps() == 0 || (**this).empty()};})
+        {
+            return reps() == 0 || (**this).empty();
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
+            noexcept (requires{{(*std::forward<Self>(self)).front()} noexcept;})
+            requires (requires{{(*std::forward<Self>(self)).front()};})
+        {
+            return ((*std::forward<Self>(self)).front());
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
+            noexcept (requires{{(*std::forward<Self>(self)).back()} noexcept;})
+            requires (requires{{(*std::forward<Self>(self)).back()};})
+        {
+            return ((*std::forward<Self>(self)).back());
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (requires{{(*std::forward<Self>(self))[size_t(
+                impl::normalize_index(self.ssize(), i) % self->ssize()
+            )]} noexcept;})
+            requires (requires{{(*std::forward<Self>(self))[size_t(
+                impl::normalize_index(self.ssize(), i) % self->ssize()
+            )]};})
+        {
+            return ((*std::forward<Self>(self))[size_t(
+                impl::normalize_index(self.ssize(), i) % self->ssize()
+            )]);
+        }
+
+
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{repeat_begin(*this)} noexcept;})
+            requires (requires{{repeat_begin(*this)};})
+        {
+            return repeat_begin(*this);
+        }
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{repeat_begin(*this)} noexcept;})
+            requires (requires{{repeat_begin(*this)};})
+        {
+            return repeat_begin(*this);
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires{{repeat_rbegin(*this)} noexcept;})
+            requires (requires{{repeat_rbegin(*this)};})
+        {
+            return repeat_rbegin(*this);
+        }
+
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{repeat_rbegin(*this)} noexcept;})
+            requires (requires{{repeat_rbegin(*this)};})
+        {
+            return repeat_rbegin(*this);
+        }
+
         [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
     };
 
 }
-
-
-/// TODO: the repeat{}() call operator should be able to take ranges or scalar values,
-/// and will treat any non-ranges as single elements.  It should also accept a variadic
-/// list of these, which will be concatenated and then repeated as a unit.  Probably,
-/// the best way to do this is to implement `join{}` before `repeat{}`, and then have
-/// the `repeat{}` call operator automatically join the arguments before passing the
-/// result to `impl::repeat{}`.
-
-/// -> join{} and zip{} are the basic entry points for translating generic argument
-/// lists into ranges.  If either is invoked with a single scalar value, then they
-/// degenerate to the same operation, and will simply return a contiguous iterator
-/// with a single element.
 
 
 namespace iter {
@@ -893,23 +1008,31 @@ namespace iter {
     same, and produce the same results when iterated over or indexed. */
     template <Optional<size_t> N = None>
     struct repeat {
-        static constexpr size_t count = N.__value.template get<1>();
+        static constexpr size_t reps = N == None ? 0 : *N;
 
-    private:
-        template <typename C>
-        using container = impl::repeat<meta::remove_rvalue<C>, N>;
+        template <typename T>
+        [[nodiscard]] constexpr auto operator()(T&& v) noexcept requires (reps == 0) {
+            return range<impl::empty_range<meta::yield_type<meta::as_range_or_scalar<T>>>>{};
+        }
 
-        template <typename C>
-        using range = iter::range<container<C>>;
-
-    public:
-        /* Invoking the repeat adaptor produces a corresponding range type. */
-        template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-        [[nodiscard]] constexpr range<C> operator()(C&& c)
-            noexcept (requires{{range<C>{container<C>{std::forward<C>(c)}}} noexcept;})
-            requires (requires{{range<C>{container<C>{std::forward<C>(c)}}};})
+        template <typename T>
+        [[nodiscard]] constexpr decltype(auto) operator()(T&& v)
+            noexcept (requires{{meta::to_range_or_scalar(std::forward<T>(v))} noexcept;})
+            requires (reps == 1 && requires{{meta::to_range_or_scalar(std::forward<T>(v))};})
         {
-            return range<C>{container<C>{std::forward<C>(c)}};
+            return (meta::to_range_or_scalar(std::forward<T>(v)));
+        }
+
+        template <typename T>
+        [[nodiscard]] constexpr auto operator()(T&& v)
+            noexcept (requires{{range<impl::repeat<meta::as_range_or_scalar<T>, N>>{
+                std::forward<T>(v)
+            }} noexcept;})
+            requires (reps > 1 && requires{{range<impl::repeat<meta::as_range_or_scalar<T>, N>>{
+                std::forward<T>(v)
+            }};})
+        {
+            return range<impl::repeat<meta::as_range_or_scalar<T>, N>>{std::forward<T>(v)};
         }
     };
 
@@ -922,46 +1045,62 @@ namespace iter {
     same, and produce the same results when iterated over or indexed. */
     template <>
     struct repeat<None> {
-        size_t count;
-
-    private:
-        template <typename C>
-        using container = impl::repeat<meta::remove_rvalue<C>, None>;
-
-        template <typename C>
-        using range = iter::range<container<C>>;
-
-    public:
-        /* When compiled in debug mode, the constructor ensures that the repetition count
-        is always non-negative, and throws an `IndexError` otherwise. */
-        template <meta::integer T>
-        [[nodiscard]] constexpr repeat(T n) noexcept (!DEBUG || meta::unsigned_integer<T>) :
-            count(size_t(n))
-        {
-            if constexpr (DEBUG && meta::signed_integer<T>) {
-                if (n < 0) {
-                    throw IndexError("repetition count must be non-negative");
-                }
-            }
-        }
+        size_t reps = std::numeric_limits<size_t>::max();
 
         /* Invoking the repeat adaptor produces a corresponding range type. */
-        template <typename C> requires (meta::iterable<C> || meta::tuple_like<C>)
-        [[nodiscard]] constexpr range<C> operator()(C&& c)
-            noexcept (requires{{range<C>{container<C>{std::forward<C>(c), count}}} noexcept;})
-            requires (requires{{range<C>{container<C>{std::forward<C>(c), count}}};})
+        template <typename T>
+        [[nodiscard]] constexpr auto operator()(T&& v)
+            noexcept (requires{{range<impl::repeat<meta::as_range_or_scalar<T>, None>>{
+                std::forward<T>(v),
+                reps
+        }} noexcept;})
+            requires (requires{{range<impl::repeat<meta::as_range_or_scalar<T>, None>>{
+                std::forward<T>(v),
+                reps
+            }};})
         {
-            return range<C>{container<C>{std::forward<C>(c), count}};
+            return range<impl::repeat<meta::as_range_or_scalar<T>, None>>{
+                std::forward<T>(v),
+                reps
+            };
         }
     };
 
-    template <meta::integer T>
+    template <typename T>
     repeat(T n) -> repeat<None>;
 
 }
 
 
-}
+}  // namespace bertrand
+
+
+_LIBCPP_BEGIN_NAMESPACE_STD
+
+    namespace ranges {
+
+        template <typename T, bertrand::Optional N>
+        constexpr bool enable_borrowed_range<bertrand::impl::repeat<T, N>> = 
+            enable_borrowed_range<bertrand::meta::unqualify<T>>;
+
+    }
+
+    template <bertrand::meta::tuple_like T, bertrand::Optional N> requires (N != bertrand::None)
+    struct tuple_size<bertrand::impl::repeat<T, N>> : integral_constant<
+        size_t,
+        tuple_size<bertrand::meta::unqualify<T>>::value * (*N)
+    > {};
+
+    template <size_t I, bertrand::meta::tuple_like T, bertrand::Optional N>
+        requires (N != bertrand::None && I < tuple_size<bertrand::impl::repeat<T, N>>::value)
+    struct tuple_element<I, bertrand::impl::repeat<T, N>> {
+        using type = tuple_element<
+            I % tuple_size<bertrand::meta::unqualify<T>>::value,
+            bertrand::meta::remove_reference<T>
+        >::type;
+    };
+
+_LIBCPP_END_NAMESPACE_STD
 
 
 #endif  // BERTRAND_ITER_REPEAT_H
