@@ -1,7 +1,6 @@
 #ifndef BERTRAND_ITER_REPEAT_H
 #define BERTRAND_ITER_REPEAT_H
 
-
 #include "bertrand/common.h"
 #include "bertrand/iter/range.h"
 

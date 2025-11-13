@@ -340,13 +340,19 @@ namespace meta {
         }
     }
 
+    /* Returns `true` if `T` is a trivial range with provably zero elements, or `false`
+    if it contains more than one, or if its size cannot be known until run time.
+    Dereferencing the range reveals the inner container or empty range type. */
+    template <typename T, typename... Rs>
+    concept empty_range = range<T, Rs...> && tuple_like<T> && tuple_size<T> == 0;
+
     /* Returns `true` if `T` is a trivial range of just a single element, or `false`
-    if it wraps an iterable or tuple-like container.  Iterating over a scalar always
-    yields another scalar referencing the same value. */
-    template <typename T, typename R = void>
-    concept scalar = range<T> && requires(T r) {
+    if it wraps an iterable or tuple-like container.  Dereferencing the scalar reveals
+    the underlying value. */
+    template <typename T, typename... Rs>
+    concept scalar = range<T, Rs...> && requires(T r) {
         {*r.__value} -> inherits<impl::scalar_tag>;
-    } && (is_void<R> || convertible_to<T, R>);
+    };
 
     /* A refinement of `meta::range<T, Rs...>` that only matches iota ranges (i.e.
     those of the form `[start, stop[, step]]`, where `start` is not an iterator).
@@ -365,8 +371,8 @@ namespace meta {
     };
 
     /* A refinement of `meta::range<T, Rs...>` that only matches type-erased sequences,
-    where the underlying container type is hidden from the user.  Such ranges cannot be
-    dereferenced. */
+    where the underlying container type is hidden from the user.  Dereferencing the
+    sequence reveals the inner type erasure mechanism. */
     template <typename T, typename... Rs>
     concept sequence = range<T, Rs...> && requires(T r) {
         {*r.__value} -> inherits<impl::sequence_tag>;
@@ -6014,14 +6020,6 @@ namespace iter {
         }
     };
 
-    /// TODO: similarly to range conversions and assignment, anything that involves
-    /// a function predicate may need to account for `meta::range_transparent` types,
-    /// so that the predicate is never called with an internal wrapper type.  This
-    /// may actually require a different helper that does a full dereference instead
-    /// of revealing the internal type.
-
-
-
     /* Range-based logical disjunction operator.  Accepts any number of arguments that
     are explicitly convertible to `bool` and returns true if at least one evaluates to
     true.  A custom function predicate may be supplied as a constructor argument, which
@@ -7680,6 +7678,102 @@ namespace impl {
             *static_cast<const C*>(control->container)
         ));
     }
+
+    /* A helper tag that distinguishes forward iterators from reverse iterators for
+    range algorithms that unify the two.  Such algorithms can accept either this or
+    `range_reverse` as a template parameter to specialize accordingly.  Invoking the
+    tag's `begin()` or `end()` methods with an iterable container will return a pair
+    of forward or reverse iterators, respectively. */
+    struct range_forward {
+        template <typename T>
+        [[nodiscard]] static constexpr decltype(auto) begin(T&& container)
+            noexcept (requires{{meta::begin(container)} noexcept;})
+            requires (requires{{meta::begin(container)};})
+        {
+            return (meta::begin(container));
+        }
+        template <typename T>
+        [[nodiscard]] static constexpr decltype(auto) end(T&& container)
+            noexcept (requires{{meta::end(container)} noexcept;})
+            requires (requires{{meta::end(container)};})
+        {
+            return (meta::end(container));
+        }
+    };
+    struct range_reverse {
+        template <typename T>
+        [[nodiscard]] static constexpr decltype(auto) begin(T&& container)
+            noexcept (requires{{meta::rbegin(container)} noexcept;})
+            requires (requires{{meta::rbegin(container)};})
+        {
+            return (meta::rbegin(container));
+        }
+        template <typename T>
+        [[nodiscard]] static constexpr decltype(auto) end(T&& container)
+            noexcept (requires{{meta::rend(container)} noexcept;})
+            requires (requires{{meta::rend(container)};})
+        {
+            return (meta::rend(container));
+        }
+    };
+
+    template <typename T>
+    concept range_direction = std::same_as<T, range_forward> || std::same_as<T, range_reverse>;
+
+    /* A helper tag that indicates an initial position for an iterator with respect to
+    its sentinel.  The tag can be invoked with the container and mutable references to
+    its begin/end iterators to advance to that position, returning the distance that
+    was covered.  For `range_first`, this will always be zero.  This tag is mostly used
+    in concat/flatten operations to allow decrementing over the boundary from one
+    subrange to its predecessor. */
+    struct range_first {
+        template <typename C, typename B, typename E>
+        [[nodiscard]] static constexpr ssize_t operator()(C& container, B& begin, E& end) noexcept {
+            return 0;
+        }
+    };
+    struct range_last {
+        template <typename C, typename B, typename E>
+        [[nodiscard]] static constexpr ssize_t operator()(C& container, B& begin, E& end)
+            noexcept (requires(ssize_t size) {
+                {meta::ssize(container) - 1} noexcept -> meta::nothrow::convertible_to<ssize_t>;
+                {begin += size} noexcept;
+            })
+            requires (requires(ssize_t size) {
+                {meta::ssize(container) - 1} -> meta::convertible_to<ssize_t>;
+                {begin += size};
+            })
+        {
+            ssize_t size = meta::ssize(container) - 1;
+            begin += size;
+            return size;
+        }
+        template <typename C, typename B, typename E>
+        [[nodiscard]] static constexpr ssize_t operator()(C& container, B& begin, E& end)
+            noexcept (requires{
+                {B{begin}} noexcept;
+                {++begin} noexcept;
+                {begin != end} noexcept -> meta::nothrow::truthy;
+            })
+            requires (requires{
+                {B{begin}};
+                {++begin};
+                {begin != end} -> meta::truthy;
+            })
+        {
+            ssize_t size = 0;
+            B tmp = begin;
+            ++tmp;
+            while (tmp != end) {
+                ++begin;
+                ++size;
+            }
+            return size;
+        }
+    };
+
+    template <typename T>
+    concept range_position = std::same_as<T, range_first> || std::same_as<T, range_last>;
 
 }
 

@@ -269,6 +269,114 @@ namespace impl {
         {
             return base::distance(other);
         }
+
+
+        /// TODO: from the original concat_subrange implementation, which is now
+        /// fully decoupled:
+
+
+        // using direction = Dir;
+        // using begin_type = Begin;
+        // using end_type = End;
+        // using category = meta::iterator_category<begin_type>;
+        // using reference = meta::pack<meta::dereference_type<const begin_type&>>;
+        // static constexpr bool trivial = true;
+
+        // begin_type begin;
+        // end_type end;
+        // ssize_t index = 0;
+
+        // template <typename Parent, range_direction Position>
+        // [[nodiscard]] constexpr concat_subrange(Parent& p, Position pos)
+        //     noexcept (requires{
+        //         {Dir::begin(p)} noexcept -> meta::nothrow::convertible_to<Begin>;
+        //         {Dir::end(p)} noexcept -> meta::nothrow::convertible_to<End>;
+        //         {pos(p, begin, end)} noexcept;
+        //     })
+        // :
+        //     begin(Dir::begin(p)),
+        //     end(Dir::end(p)),
+        //     index(pos(p, begin, end))
+        // {}
+
+        // template <typename T>
+        // [[nodiscard]] constexpr T deref() const
+        //     noexcept (requires{{*begin} noexcept -> meta::nothrow::convertible_to<T>;})
+        //     requires (requires{{*begin} -> meta::convertible_to<T>;})
+        // {
+        //     return *begin;
+        // }
+
+        // constexpr bool increment()
+        //     noexcept (requires{
+        //         {++begin} noexcept;
+        //         {begin != end} noexcept -> meta::nothrow::truthy;
+        //     })
+        // {
+        //     ++begin;
+        //     ++index;
+        //     return bool(begin != end);
+        // }
+
+        // constexpr bool increment(ssize_t& n)
+        //     noexcept (requires{
+        //         {end - begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
+        //         {begin += n} noexcept;
+        //     })
+        //     requires (requires{
+        //         {end - begin} -> meta::convertible_to<ssize_t>;
+        //         {begin += n};
+        //     })
+        // {
+        //     ssize_t remaining = end - begin;
+        //     if (n < remaining) {
+        //         begin += n;
+        //         index += n;
+        //         n = 0;
+        //         return true;
+        //     }
+        //     begin += remaining;
+        //     index += remaining;
+        //     n -= remaining;
+        //     return false;
+        // }
+
+        // constexpr bool decrement()
+        //     noexcept (requires{{--begin} noexcept;})
+        //     requires (requires{{--begin};})
+        // {
+        //     --begin;
+        //     --index;
+        //     return index >= 0;
+        // }
+
+        // constexpr bool decrement(ssize_t& n)
+        //     noexcept (requires{{begin -= n} noexcept;})
+        //     requires (requires{{begin -= n};})
+        // {
+        //     if (n < index) {
+        //         begin -= n;
+        //         index -= n;
+        //         n = 0;
+        //         return true;
+        //     }
+        //     begin -= index;
+        //     n -= index;
+        //     index = 0;
+        //     return false;
+        // }
+
+        // [[nodiscard]] constexpr ssize_t distance(const concat_subrange& other) const noexcept {
+        //     return index - other.index;
+        // }
+
+        // [[nodiscard]] constexpr auto compare(const concat_subrange& other) const
+        //     noexcept (requires{{index <=> other.index} noexcept;})
+        //     requires (requires{{index <=> other.index};})
+        // {
+        //     return index <=> other.index;
+        // }
+
     };
     template <meta::not_reference Outer, range_direction Dir, size_t Depth, meta::not_rvalue Parent>
         requires (meta::range<Parent> && Depth < Outer::sep_type::size())
