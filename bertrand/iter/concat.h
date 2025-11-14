@@ -99,16 +99,19 @@ namespace impl {
         static constexpr void skip(T& self)
             noexcept (
                 next<T::trivial> >= T::alternatives ||
-                requires(decltype(self.template get<next<T::trivial>>()) sub) {
+                requires(decltype(self.template get<next<T::trivial>, range_first>()) sub) {
                     {sub.begin != sub.end} noexcept -> meta::nothrow::truthy;
-                    {self.child = self.template get<next<T::trivial>>()} noexcept;
+                    {self.child = self.template get<next<T::trivial>, range_first>()} noexcept;
                     {concat_increment<next<T::trivial>>::skip(self)} noexcept;
                 }
             )
         {
             if constexpr (next<T::trivial> < T::alternatives) {
                 self.index = next<T::trivial>;
-                if (auto sub = self.template get<next<T::trivial>>(); sub.begin != sub.end) {
+                if (
+                    auto sub = self.template get<next<T::trivial>, range_first>();
+                    sub.begin != sub.end
+                ) {
                     self.child = std::move(sub);
                     return;
                 }
@@ -123,10 +126,11 @@ namespace impl {
             noexcept (requires(decltype((concat_get<I>(self))) curr) {
                 {++curr.begin} noexcept;
                 {curr.begin != curr.end} noexcept -> meta::nothrow::truthy;
-                {skip(self)} noexcept;
-            } && (T::trivial || I % 2 != 0 || I + 1 >= T::alternatives || requires{
-                {self.child = self.sep()} noexcept;
-            }))
+            } && (I + 1 >= T::alternatives || (requires{{skip(self)} noexcept;} && (
+                T::trivial || I % 2 != 0 || requires{
+                    {self.child = self.template get<I + 1, range_first>()} noexcept;
+                }
+            ))))
         {
             // inner increment
             auto& curr = concat_get<I>(self);
@@ -141,11 +145,11 @@ namespace impl {
             if constexpr (I + 1 < T::alternatives) {  // next alternative exists
                 if constexpr (!T::trivial && I % 2 == 0) {  // next alternative is a separator
                     if constexpr (T::static_size != 0) {  // size is known to be non-zero
-                        self.child = self.sep();
+                        self.child = self.template get<I + 1, range_first>();
                         return;
                     } else {  // size must be checked at run time
                         if (self.outer->sep_size != 0) {
-                            self.child = self.sep();
+                            self.child = self.template get<I + 1, range_first>();
                             return;
                         }
                         ++self.index;
@@ -162,15 +166,15 @@ namespace impl {
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
             noexcept (I + 1 < T::alternatives ?
-                requires(decltype((self.template get<I + 1>())) curr) {
-                    {self.child = self.template get<I + 1>()} noexcept;
+                requires(decltype((self.template get<I + 1, range_first>())) curr) {
+                    {self.child = self.template get<I + 1, range_first>()} noexcept;
                     {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
                     {curr.begin += n} noexcept;
                 } :
                 requires{{self.child = None} noexcept;}
             )
-            requires (requires(decltype((self.template get<I + 1>())) curr) {
-                {self.child = self.template get<I + 1>()};
+            requires (requires(decltype((self.template get<I + 1, range_first>())) curr) {
+                {self.child = self.template get<I + 1, range_first>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
                 {curr.begin += n};
             })
@@ -180,7 +184,7 @@ namespace impl {
                 if constexpr (!T::trivial && I % 2 == 0) {  // next alternative is a separator
                     ssize_t size = self.sep_size();
                     if (n < size) {
-                        auto curr = self.template get<I + 1>();
+                        auto curr = self.template get<I + 1, range_first>();
                         curr.begin += n;
                         curr.index += n;
                         self.child = std::move(curr);
@@ -188,7 +192,7 @@ namespace impl {
                     }
                     n -= size;
                 } else {  // next alternative is an argument
-                    auto curr = self.template get<I + 1>();
+                    auto curr = self.template get<I + 1, range_first>();
                     ssize_t size = curr.end - curr.begin;
                     if (n < size) {
                         curr.begin += n;
@@ -200,7 +204,7 @@ namespace impl {
                 }
                 concat_increment<I + 1>::skip(self, n);
             } else {
-                self.child = None;
+                /// TODO: 
             }
         }
 
@@ -242,7 +246,149 @@ namespace impl {
     low constant factor due to precomputed separator sizes and iterator indices. */
     template <size_t I>
     struct concat_decrement {
-        /// TODO: implement this similar to concat_increment
+        template <bool trivial>
+        static constexpr size_t prev = (trivial ? I - 1 : (I - 1) & ~1);
+
+        template <typename T>
+        static constexpr void skip(T& self)
+            noexcept (
+                I > 0 ||
+                requires(decltype(self.template get<prev<T::trivial>, range_last>()) sub) {
+                    {sub.begin != sub.end} noexcept -> meta::nothrow::truthy;
+                    {self.child = self.template get<prev<T::trivial>, range_last>()} noexcept;
+                    {concat_decrement<prev<T::trivial>>::skip(self)} noexcept;
+                }
+            )
+        {
+            if constexpr (I > 0) {
+                self.index = prev<T::trivial>;
+                if (
+                    auto sub = self.template get<prev<T::trivial>, range_last>();
+                    sub.begin != sub.end
+                ) {
+                    self.child = std::move(sub);
+                    return;
+                }
+                concat_decrement<prev<T::trivial>>::skip(self);
+            } else {
+                self.index = -1;
+            }
+        }
+
+        template <typename T>
+        static constexpr void operator()(T& self)
+            noexcept (requires(decltype((concat_get<I>(self))) curr) {
+                {--curr.begin} noexcept;
+            } && (I <= 0 || (requires{{skip(self)} noexcept;} && (
+                T::trivial || I % 2 != 0 || requires{
+                    {self.child = self.template get<I - 1, range_last>()} noexcept;
+                }
+            ))))
+        {
+            // inner increment
+            auto& curr = concat_get<I>(self);
+            if (curr.index > 0) {
+                --curr.begin;
+                --curr.index;
+                return;
+            }
+
+            // outer decrement
+            --self.index;
+            if constexpr (I > 0) {  // previous alternative exists
+                if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
+                    if constexpr (T::static_size != 0) {  // size is known to be non-zero
+                        self.child = self.template get<I - 1, range_last>();
+                        return;
+                    } else {  // size must be checked at run time
+                        if (self.outer->sep_size != 0) {
+                            self.child = self.template get<I - 1, range_last>();
+                            return;
+                        }
+                        --self.index;
+                    }
+                }
+                skip(self);
+            }
+        }
+
+        /// TODO: the reason why I needed to make unions comparable with alternative<>
+        /// and type<> is so that I can use them to reset the child not to None but to
+        /// the actual first or last value during the random access increment/decrement
+        /// operators, so that if the parent index is greater than the number of
+        /// alternatives (indicating an end iterator), then the child's begin will
+        /// always compare equal to its end, and the decrement operator does not need
+        /// to special-case that situation.  Similarly, if its index is less than zero,
+        /// then the child will always point to the first valid position, and the
+        /// increment operator does not need to special-case that situation either.
+        /// That also means I should be able to eliminate the internal optional that
+        /// the concat iterator is storing the union within, which is another benefit.
+
+        /// -> Essentially, in the last step of the random access increment/decrement,
+        /// I need to check whether the union's index matches the first/last position,
+        /// and if so, increment by the remaining distance.  Otherwise, initialize the
+        /// union to that position directly.
+
+
+
+        template <typename T>
+        static constexpr void skip(T& self, ssize_t& n)
+            requires (requires(decltype((self.template get<I - 1, range_first>())) curr) {
+                {self.child = self.template get<I - 1, range_first>()};
+
+            })
+        {
+            --self.index;
+            if constexpr (I > 0) {  // previous alternative exists
+                if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
+                    ssize_t size = self.sep_size();
+                    if (n < size) {
+                        auto curr = self.template get<I - 1, range_first>();
+                        size -= n;
+                        curr.begin += size;
+                        curr.index += size;
+                        self.child = std::move(curr);
+                        return;
+                    }
+                    n -= size;
+                } else {
+                    auto curr = self.template get<I - 1, range_first>();
+                    ssize_t size = curr.end - curr.begin;
+                    if (n < size) {
+                        size -= n;
+                        curr.begin += size;
+                        curr.index += size;
+                        self.child = std::move(curr);
+                        return;
+                    }
+                    n -= size;
+                }
+            }
+        }
+
+        template <typename T>
+        static constexpr void operator()(T& self, ssize_t& n)
+            noexcept (requires(decltype((concat_get<I>(self))) curr) {
+                {curr.begin -= n} noexcept;
+                {skip(self, n)} noexcept;
+            })
+            requires (requires(decltype((concat_get<I>(self))) curr) {
+                {curr.begin -= n};
+                {skip(self, n)};
+            })
+        {
+            // inner decrement
+            auto& curr = concat_get<I>(self);
+            if (n <= curr.index) {
+                curr.begin -= n;
+                curr.index -= n;
+                return;
+            }
+
+            // outer decrement
+            n -= curr.index;
+            skip(self, n);
+        }
     };
 
     /// TODO: remember that distance needs to encode both indices using a cartesian
@@ -301,18 +447,6 @@ namespace impl {
             end(Dir::end(p)),
             index(pos(p, begin, end))
         {}
-
-
-
-
-        constexpr bool decrement()
-            noexcept (requires{{--begin} noexcept;})
-            requires (requires{{--begin};})
-        {
-            --begin;
-            --index;
-            return index >= 0;
-        }
 
         constexpr bool decrement(ssize_t& n)
             noexcept (requires{{begin -= n} noexcept;})

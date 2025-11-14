@@ -209,6 +209,13 @@ namespace impl {
             return 0;
         }
 
+        template <typename U> requires (std::same_as<U, T>)
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T>
+        ) noexcept {
+            return std::strong_ordering::equal;
+        }
+
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> x) noexcept {
             return (std::forward<T>(x));
@@ -1054,6 +1061,13 @@ namespace impl {
             return u.__value.index();
         }
 
+        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            return u.__value.template is<meta::remove_rvalue<U>>();
+        }
+
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
             noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
@@ -1089,6 +1103,13 @@ namespace impl {
             return u.index();
         }
 
+        template <typename U> requires (meta::specialization<T>::template contains<U>())
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            return u.index() <=> meta::specialization<T>::template index<U>();
+        }
+
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
             noexcept (requires{{std::get<I>(std::forward<T>(u))} noexcept;})
@@ -1110,6 +1131,13 @@ namespace impl {
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             return u.__value.index();
+        }
+
+        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            return u.__value.template is<meta::remove_rvalue<U>>();
         }
 
         template <size_t I> requires (I < alternatives::size())
@@ -1137,6 +1165,13 @@ namespace impl {
             return 0;
         }
 
+        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            return std::strong_ordering::equal;
+        }
+
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
             noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
@@ -1157,6 +1192,22 @@ namespace impl {
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             return u.has_value();
+        }
+
+        template <typename U>
+            requires (
+                std::same_as<U, NoneType> ||
+                std::same_as<U, std::nullopt_t> ||
+                meta::specialization<T>::template contains<U>()
+            )
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            if constexpr (std::same_as<U, NoneType> || std::same_as<U, std::nullopt_t>) {
+                return u.has_value() ? std::strong_ordering::greater : std::strong_ordering::equal;
+            } else {
+                return u.has_value() ? std::strong_ordering::equal : std::strong_ordering::less;
+            }
         }
 
         template <size_t I> requires (I == 0)
@@ -1197,6 +1248,13 @@ namespace impl {
             return u.__value.index();
         }
 
+        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            return u.__value.template is<meta::remove_rvalue<U>>();
+        }
+
         template <size_t I> requires (I < alternatives::size())
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> u)
             noexcept (requires{{std::forward<T>(u).__value.template get<I>()} noexcept;})
@@ -1227,6 +1285,19 @@ namespace impl {
                     visitable<decltype((u.error()))>::index(u.error()) + 1;
             } else {
                 return u.has_value();
+            }
+        }
+
+        template <typename U> requires (meta::specialization<T>::template contains<U>())
+        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+            meta::as_const_ref<T> u
+        ) noexcept {
+            if constexpr (std::same_as<U, typename meta::specialization<T>::template at<0>>) {
+                return u.has_value() ? std::strong_ordering::equal : std::strong_ordering::less;
+            } else {
+                return u.has_value() ?
+                    std::strong_ordering::greater :
+                    visitable<decltype((u.error()))>::template is<U>(u.error());
             }
         }
 
@@ -1333,6 +1404,16 @@ namespace impl {
         static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
         static constexpr bool empty() noexcept { return (sizeof...(Ts) == 0); }
 
+        template <typename T>
+        [[nodiscard]] static constexpr bool contains() noexcept {
+            return types::template contains<T>();
+        }
+
+        template <typename T> requires (contains<T>())
+        [[nodiscard]] static constexpr size_t find() noexcept {
+            return types::template index<T>();
+        }
+
     private:
         template <typename... Us>
         union store {
@@ -1423,8 +1504,8 @@ namespace impl {
             noexcept (meta::nothrow::default_constructible<default_type>)
             requires (meta::not_void<default_type>)
         :
-            m_data(tag<meta::index_of<union_default_type<Ts...>, Ts...>>{}),
-            m_index(meta::index_of<union_default_type<Ts...>, Ts...>)
+            m_data(tag<find<union_default_type<Ts...>>()>{}),
+            m_index(find<union_default_type<Ts...>>())
         {}
 
         /* Tagged constructor specifically initializes the alternative at index `I`
@@ -1443,6 +1524,12 @@ namespace impl {
             return m_index;
         }
 
+        /* Check if the active alternative is of type `T`, assuming. */
+        template <typename T> requires (contains<T>())
+        [[nodiscard]] constexpr std::strong_ordering is() const noexcept {
+            return (m_index <=> find<T>());
+        }
+
         /* Access a specific value by index, where the index is known at compile
         time. */
         template <size_t I, typename Self> requires (I < sizeof...(Ts))
@@ -1451,9 +1538,9 @@ namespace impl {
         }
 
         /* Access a specific type, assuming it is present in the union. */
-        template <typename T, typename Self> requires (types::template contains<T>())
+        template <typename T, typename Self> requires (contains<T>())
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_data.template get<meta::index_of<T, Ts...>>().curr);
+            return (*std::forward<Self>(self).m_data.template get<find<T>()>().curr);
         }
 
         /* Get a pointer to a specific value by index if it is the active alternative.
@@ -1485,29 +1572,21 @@ namespace impl {
         /* Get a pointer to a specific type if it is the active alternative.  Returns
         a null pointer otherwise. */
         template <typename T>
-            requires (
-                types::template contains<T>() &&
-                meta::has_address<meta::as_lvalue<T>>
-            )
+            requires (contains<T>() && meta::has_address<meta::as_lvalue<T>>)
         [[nodiscard]] constexpr auto get_if() noexcept
             -> meta::address_type<meta::as_lvalue<T>>
         {
-            constexpr size_t I = meta::index_of<T, Ts...>;
-            return m_index == I ? std::addressof(get<I>()) : nullptr;
+            return m_index == find<T>() ? std::addressof(get<T>()) : nullptr;
         }
 
         /* Get a pointer to a specific type if it is the active alternative.  Returns
         a null pointer otherwise. */
         template <typename T>
-            requires (
-                types::template contains<T>() &&
-                meta::has_address<meta::as_const_ref<T>>
-            )
+            requires (contains<T>() && meta::has_address<meta::as_const_ref<T>>)
         [[nodiscard]] constexpr auto get_if() const noexcept
             -> meta::address_type<meta::as_const_ref<T>>
         {
-            constexpr size_t I = meta::index_of<T, Ts...>;
-            return m_index == I ? std::addressof(get<I>()) : nullptr;
+            return m_index == find<T>() ? std::addressof(get<T>()) : nullptr;
         }
 
     private:
@@ -3235,7 +3314,8 @@ This is similar to `std::variant<Ts...>`, but with the following changes:
  */
 template <typename... Ts> requires (impl::union_concept<Ts...>)
 struct Union : impl::union_tag {
-    impl::basic_union<meta::remove_rvalue<Ts>...> __value;
+    using __type = meta::pack<Ts...>;
+    [[no_unique_address]] impl::basic_union<meta::remove_rvalue<Ts>...> __value;
 
     /* Default constructor finds the first type in `Ts...` that can be default
     constructed.  If no such type exists, then the default constructor is disabled. */
@@ -3260,11 +3340,11 @@ struct Union : impl::union_tag {
     implicit conversions from other union types, regardless of source. */
     template <typename from>
     [[nodiscard]] constexpr Union(from&& v)
-        noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<meta::pack<Ts...>>, from>)
-        requires (meta::visit_exhaustive<impl::union_convert_from<meta::pack<Ts...>>, from>)
+        noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<__type>, from>)
+        requires (meta::visit_exhaustive<impl::union_convert_from<__type>, from>)
     :
         __value(impl::visit(
-            impl::union_convert_from<meta::pack<Ts...>>{},
+            impl::union_convert_from<__type>{},
             std::forward<from>(v)
         ))
     {}
@@ -3279,7 +3359,7 @@ struct Union : impl::union_tag {
         noexcept (meta::nothrow::visit_exhaustive<impl::union_construct_from<Ts...>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::visit_exhaustive<impl::union_convert_from<meta::pack<Ts...>>, A...> &&
+            !meta::visit_exhaustive<impl::union_convert_from<__type>, A...> &&
             meta::visit_exhaustive<impl::union_construct_from<Ts...>, A...>
         )
     :
@@ -3290,7 +3370,7 @@ struct Union : impl::union_tag {
     provided arguments.  This is more explicit than using the standard constructors,
     for cases where only a specific alternative should be considered. */
     template <size_t I, typename... A> requires (I < sizeof...(Ts))
-    [[nodiscard]] explicit constexpr Union(std::in_place_index_t<I> tag, A&&... args)
+    [[nodiscard]] constexpr explicit Union(std::in_place_index_t<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
         requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
     :
@@ -3300,8 +3380,8 @@ struct Union : impl::union_tag {
     /* Explicitly construct a union with the specified alternative using the given
     arguments.  This is more explicit than using the standard constructors, for cases
     where only a specific alternative should be considered. */
-    template <typename T, typename... A> requires (meta::pack<Ts...>::template contains<T>())
-    [[nodiscard]] explicit constexpr Union(std::type_identity<T> tag, A&&... args)
+    template <typename T, typename... A> requires (__type::template contains<T>())
+    [[nodiscard]] constexpr explicit Union(std::type_identity<T> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<T, A...>)
         requires (meta::constructible_from<T, A...>)
     :
@@ -3581,6 +3661,7 @@ namespace impl {
         using types = meta::pack<none, ref>;
         using default_type = none;
         using ptr = meta::address_type<ref>;
+        using const_ptr = meta::address_type<meta::as_const<ref>>;
 
         template <size_t I> requires (I < 2)
         using tag = std::in_place_index_t<I>;
@@ -3589,6 +3670,16 @@ namespace impl {
         static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
         static constexpr bool empty() noexcept { return false; }
 
+        template <typename T>
+        [[nodiscard]] static constexpr bool contains() noexcept {
+            return types::template contains<T>();
+        }
+
+        template <typename T> requires (contains<T>())
+        [[nodiscard]] static constexpr size_t find() noexcept {
+            return types::template index<T>();
+        }
+
         [[no_unique_address]] ptr m_data;
 
         /* Default constructor always initializes to the empty state. */
@@ -3596,7 +3687,7 @@ namespace impl {
 
         /* Tagged constructor specifically initializes the alternative at index `I`
         with the given arguments. */
-        [[nodiscard]] explicit constexpr basic_union(tag<1>, ref r)
+        [[nodiscard]] constexpr explicit basic_union(tag<1>, ref r)
             noexcept (meta::nothrow::has_address<ref>)
         :
             m_data(std::addressof(r))
@@ -3604,7 +3695,7 @@ namespace impl {
 
         /* Special constructor that takes a pointer directly, enabling direct
         conversions. */
-        [[nodiscard]] explicit constexpr basic_union(ptr p) noexcept : m_data(p) {}
+        [[nodiscard]] constexpr explicit basic_union(ptr p) noexcept : m_data(p) {}
 
         /* Swap the contents of two unions as efficiently as possible. */
         constexpr void swap(basic_union& other) noexcept {
@@ -3614,14 +3705,67 @@ namespace impl {
         /* Return the index of the active alternative. */
         [[nodiscard]] constexpr size_t index() const noexcept { return m_data != nullptr; }
 
+        /* Check if the active alternative is of type `T`, assuming `T` is a valid
+        alternative. */
+        template <typename T> requires (types::template contains<T>())
+        [[nodiscard]] constexpr std::strong_ordering is() const noexcept {
+            return index() <=> find<T>();
+        }
+
         /* Access a specific value by index, where the index is known at compile
         time. */
-        template <size_t I, typename Self> requires (I < 2)
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self) noexcept {
+        template <size_t I> requires (I < 2)
+        [[nodiscard]] constexpr auto& get() noexcept {
             if constexpr (I == 0) {
-                return (None);
+                return None;
             } else {
-                return (*self.m_data);
+                return *m_data;
+            }
+        }
+        template <size_t I> requires (I < 2)
+        [[nodiscard]] constexpr auto& get() const noexcept {
+            if constexpr (I == 0) {
+                return None;
+            } else {
+                return *static_cast<const_ptr>(m_data);
+            }
+        }
+
+        /* Access a specific value by index, where the index is known at compile
+        time. */
+        template <typename T> requires (types::template contains<T>())
+        [[nodiscard]] constexpr auto& get() noexcept {
+            if constexpr (std::is_same_v<T, none>) {
+                return None;
+            } else {
+                return *m_data;
+            }
+        }
+        template <typename T> requires (types::template contains<T>())
+        [[nodiscard]] constexpr auto& get() const noexcept {
+            if constexpr (std::is_same_v<T, none>) {
+                return None;
+            } else {
+                return *m_data;
+            }
+        }
+
+        /* Access a specific value by index, where the index is known at compile
+        time. */
+        template <size_t I> requires (I < 2)
+        [[nodiscard]] constexpr auto& get_if() noexcept {
+            if constexpr (I == 0) {
+                return None;
+            } else {
+                return *m_data;
+            }
+        }
+        template <size_t I> requires (I < 2)
+        [[nodiscard]] constexpr auto& get_if() const noexcept {
+            if constexpr (I == 0) {
+                return None;
+            } else {
+                return *m_data;
             }
         }
     };
@@ -4606,7 +4750,8 @@ generators will generate them wherever pointers or pointer-like objects are expo
 a language that otherwise does not implement them as first-class citizens. */
 template <typename T>
 struct Optional : impl::optional_tag {
-    impl::basic_union<NoneType, meta::remove_rvalue<T>> __value;
+    using __type = meta::pack<NoneType, T>;
+    [[no_unique_address]] impl::basic_union<NoneType, meta::remove_rvalue<T>> __value;
 
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
@@ -4669,7 +4814,7 @@ struct Optional : impl::optional_tag {
     `std::nullopt`, or `nullptr` (if `T` is an lvalue reference).  This operator only
     applies if an implicit conversion could not be found. */
     template <typename Self, typename to>
-    [[nodiscard]] explicit constexpr operator to(this Self&& self)
+    [[nodiscard]] constexpr explicit operator to(this Self&& self)
         noexcept (requires{
             {impl::optional_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
         })
@@ -4685,14 +4830,14 @@ struct Optional : impl::optional_tag {
 
     /* Contextually convert the optional to a boolean, where true indicates the
     presence of a value. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
         return __value.index();
     }
     [[deprecated(
         "`Optional<bool>` should never be contextually converted to `bool`.  Consider "
         "an explicit comparison against `None`, a dereference with a leading `*`, or "
         "an exhaustive visitor via trailing `->*` instead. "
-    )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
+    )]] constexpr explicit operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return __value.index();
     }
 
@@ -5034,6 +5179,9 @@ static_assert(!Foo<2.5>::empty);
 */
 template <typename T> requires (meta::is_void<T> || meta::None<T>)
 struct Optional<T> : impl::optional_tag {
+    using __type = meta::pack<NoneType, T>;
+    [[no_unique_address]] impl::basic_union<NoneType> __value;
+
     /* Default constructor.  Initializes the optional in the empty state. */
     [[nodiscard]] constexpr Optional() = default;
 
@@ -5071,7 +5219,7 @@ struct Optional<T> : impl::optional_tag {
 
     /* Contextually convert the optional to a boolean, where true indicates the
     presence of a value.  For empty optionals, this will always return false. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept { return false; }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return false; }
 
     /* Dereference to obtain the inner value, returning `None`. */
     [[nodiscard]] constexpr const NoneType& operator*() const noexcept { return None; }
@@ -5195,73 +5343,12 @@ struct Optional<T> : impl::optional_tag {
 
 namespace impl {
 
-    /* Expecteds can have void results, which get mapped to `None`. */
-    template <typename T>
-    using expected_value = std::conditional_t<meta::is_void<T>, NoneType, T>;
-
-    /* Result: convert to proximal type (void if none). */
-    template <typename from, typename proximal, typename...>
-    struct _expected_convert_from { using type = proximal; };
-
-    /* Recursive 1: prefer the most derived and least qualified matching error state,
-    with lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
-    prvalues.  If the result type is void, the candidate is more derived than it, or
-    the candidate is less qualified, replace the intermediate result. */
-    template <typename from, typename proximal, typename curr, typename... next>
-        requires (union_proximal<from, curr>)
-    struct _expected_convert_from<from, proximal, curr, next...> : _expected_convert_from<
-        from,
-        union_replace_proximal<from, curr, proximal>,
-        next...
-    > {};
-
-    /* Recursive 2: no match at this index, discard curr. */
-    template <typename from, typename proximal, typename curr, typename... next>
-    struct _expected_convert_from<from, proximal, curr, next...> :
-        _expected_convert_from<from, proximal, next...>
-    {};
-
-    /* A simple visitor that backs the implicit constructor for an `Expected<T, Es...>`
-    object, returning a corresponding `impl::basic_union` primitive type. */
-    template <typename, typename...>
-    struct expected_convert_from {};
-    template <typename T, typename... Es, typename in>
-    struct expected_convert_from<meta::pack<T, Es...>, in> {
-        using type = meta::remove_rvalue<expected_value<T>>;
-        using result = impl::basic_union<type, meta::remove_rvalue<Es>...>;
-
-        // 1) prefer direct conversion to `out` if possible
-        template <typename from>
-        static constexpr result operator()(from&& arg)
-            noexcept (meta::nothrow::convertible_to<from, type>)
-            requires (meta::convertible_to<from, type>)
-        {
-            return result{bertrand::alternative<0>, std::forward<from>(arg)};
-        }
-
-        template <typename from>
-        using err = _expected_convert_from<from, void, Es...>::type;
-
-        // 2) otherwise, if the input inherits from one of the expected error types,
-        // then we convert it to the most proximal such type.
-        template <typename from>
-        static constexpr result operator()(from&& arg)
-            noexcept (meta::nothrow::convertible_to<from, err<from>>)
-            requires (!meta::convertible_to<from, type> && meta::not_void<err<from>>)
-        {
-            return result{
-                bertrand::alternative<meta::index_of<err<from>, Es...> + 1>,
-                std::forward<from>(arg)
-            };
-        }
-    };
-
     /* A simple visitor that backs the explicit constructor for an `Expected<T, Es...>`
     object, returning a corresponding `impl::basic_union` primitive type.  Note that
-    this only applies if `expected_convert_from` is invalid. */
+    this only applies if `union_convert_from` is invalid. */
     template <typename T, typename... Es>
     struct expected_construct_from {
-        using type = meta::remove_rvalue<expected_value<T>>;
+        using type = meta::remove_rvalue<std::conditional_t<meta::is_void<T>, NoneType, T>>;
         using result = impl::basic_union<type, meta::remove_rvalue<Es>...>;
 
         template <typename... A>
@@ -5488,7 +5575,8 @@ which can be used as a safer and more explicit alternative to `try/catch` blocks
 promoting exhaustive error coverage via the type system. */
 template <typename T, typename E, typename... Es> requires (impl::expected_concept<T, E, Es...>)
 struct Expected : impl::expected_tag {
-    impl::basic_union<
+    using __type = meta::pack<T, E, Es...>;
+    [[no_unique_address]] impl::basic_union<
         meta::remove_rvalue<T>,
         meta::remove_rvalue<E>,
         meta::remove_rvalue<Es>...
@@ -5506,32 +5594,20 @@ struct Expected : impl::expected_tag {
     from other visitable types whose alternatives all meet the conversion criteria. */
     template <typename from>
     [[nodiscard]] constexpr Expected(from&& v)
-        noexcept (meta::nothrow::visit_exhaustive<
-            impl::expected_convert_from<meta::pack<T, E, Es...>, from>,
-            from
-        >)
-        requires (meta::visit_exhaustive<
-            impl::expected_convert_from<meta::pack<T, E, Es...>, from>,
-            from
-        >)
+        noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<__type>, from>)
+        requires (meta::visit_exhaustive<impl::union_convert_from<__type>, from>)
     :
-        __value(impl::visit(
-            impl::expected_convert_from<meta::pack<T, E, Es...>, from>{},
-            std::forward<from>(v)
-        ))
+        __value(impl::visit(impl::union_convert_from<__type>{}, std::forward<from>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the result type's
     constructor, and initializes the expected with the result. */
     template <typename... A>
-    [[nodiscard]] explicit constexpr Expected(A&&... args)
+    [[nodiscard]] constexpr explicit Expected(A&&... args)
         noexcept (meta::nothrow::visit_exhaustive<impl::expected_construct_from<T, E, Es...>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::visit_exhaustive<
-                impl::expected_convert_from<meta::pack<T, E, Es...>, A...>,
-                A...
-            > &&
+            !meta::visit_exhaustive<impl::union_convert_from<__type>, A...> &&
             meta::visit_exhaustive<impl::expected_construct_from<T, E, Es...>, A...>
         )
     :
@@ -5545,7 +5621,7 @@ struct Expected : impl::expected_tag {
     provided arguments.  This is more explicit than using the standard constructors,
     for cases where only a specific alternative should be considered. */
     template <size_t I, typename... A> requires (I < (sizeof...(Es) + 2))
-    [[nodiscard]] explicit constexpr Expected(std::in_place_index_t<I> tag, A&&... args)
+    [[nodiscard]] constexpr explicit Expected(std::in_place_index_t<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<
             meta::unpack_type<I, T, E, Es...>,
             A...
@@ -5563,7 +5639,7 @@ struct Expected : impl::expected_tag {
     where only a specific alternative should be considered. */
     template <typename U, typename... A>
         requires (meta::pack<T, E, Es...>::template contains<U>())
-    [[nodiscard]] explicit constexpr Expected(std::type_identity<U> tag, A&&... args)
+    [[nodiscard]] constexpr explicit Expected(std::type_identity<U> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<U, A...>)
         requires (meta::constructible_from<U, A...>)
     :
@@ -5602,7 +5678,7 @@ struct Expected : impl::expected_tag {
     instead.  This operator only applies if an implicit conversion could not be
     found. */
     template <typename Self, typename to>
-    [[nodiscard]] explicit constexpr operator to(this Self&& self)
+    [[nodiscard]] constexpr explicit operator to(this Self&& self)
         noexcept (requires{
             {impl::expected_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
         })
@@ -5618,14 +5694,14 @@ struct Expected : impl::expected_tag {
 
     /* Contextually convert the expected to a boolean, where true indicates the
     presence of a value. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
         return __value.index() == 0;
     }
     [[deprecated(
         "`Expected<bool>` should never be contextually converted to `bool`.  Consider "
         "an explicit comparison against `None`, a dereference with a leading `*`, or "
         "an exhaustive visitor via trailing `->*` instead. "
-    )]] explicit constexpr operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
+    )]] constexpr explicit operator bool() const noexcept requires (DEBUG && meta::boolean<T>) {
         return __value.index() == 0;
     }
 
@@ -5901,7 +5977,8 @@ auto foo(bool b) -> Expected<void, TypeError> {
 template <meta::is_void T, typename E, typename... Es>
     requires (impl::expected_concept<T, E, Es...>)
 struct Expected<T, E, Es...> {
-    impl::basic_union<
+    using __type = meta::pack<T, E, Es...>;
+    [[no_unique_address]] impl::basic_union<
         NoneType,
         meta::remove_rvalue<E>,
         meta::remove_rvalue<Es>...
@@ -5919,32 +5996,20 @@ struct Expected<T, E, Es...> {
     from other visitable types whose alternatives all meet the conversion criteria. */
     template <typename from>
     [[nodiscard]] constexpr Expected(from&& v)
-        noexcept (meta::nothrow::visit_exhaustive<
-            impl::expected_convert_from<meta::pack<NoneType, E, Es...>, from>,
-            from
-        >)
-        requires (meta::visit_exhaustive<
-            impl::expected_convert_from<meta::pack<NoneType, E, Es...>, from>,
-            from
-        >)
+        noexcept (meta::nothrow::visit_exhaustive<impl::union_convert_from<__type>, from>)
+        requires (meta::visit_exhaustive<impl::union_convert_from<__type>, from>)
     :
-        __value(impl::visit(
-            impl::expected_convert_from<meta::pack<NoneType, E, Es...>, from>{},
-            std::forward<from>(v)
-        ))
+        __value(impl::visit(impl::union_convert_from<__type>{}, std::forward<from>(v)))
     {}
 
     /* Explicit constructor.  Accepts arbitrary arguments to the result type's
     constructor, and initializes the expected with the result. */
     template <typename... A>
-    [[nodiscard]] explicit constexpr Expected(A&&... args)
+    [[nodiscard]] constexpr explicit Expected(A&&... args)
         noexcept (meta::nothrow::visit_exhaustive<impl::expected_construct_from<T, E, Es...>, A...>)
         requires (
             sizeof...(A) > 0 &&
-            !meta::visit_exhaustive<
-                impl::expected_convert_from<meta::pack<NoneType, E, Es...>, A...>,
-                A...
-            > &&
+            !meta::visit_exhaustive<impl::union_convert_from<__type>, A...> &&
             meta::visit_exhaustive<impl::expected_construct_from<T, E, Es...>, A...>
         )
     :
@@ -5958,7 +6023,7 @@ struct Expected<T, E, Es...> {
     provided arguments.  This is more explicit than using the standard constructors,
     for cases where only a specific alternative should be considered. */
     template <size_t I, typename... A> requires (I < (sizeof...(Es) + 2))
-    [[nodiscard]] explicit constexpr Expected(std::in_place_index_t<I> tag, A&&... args)
+    [[nodiscard]] constexpr explicit Expected(std::in_place_index_t<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<
             meta::unpack_type<I, NoneType, E, Es...>,
             A...
@@ -5976,7 +6041,7 @@ struct Expected<T, E, Es...> {
     where only a specific alternative should be considered. */
     template <typename U, typename... A>
         requires (meta::pack<NoneType, E, Es...>::template contains<U>())
-    [[nodiscard]] explicit constexpr Expected(std::type_identity<U> tag, A&&... args)
+    [[nodiscard]] constexpr explicit Expected(std::type_identity<U> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<U, A...>)
         requires (meta::constructible_from<U, A...>)
     :
@@ -6008,7 +6073,7 @@ struct Expected<T, E, Es...> {
     instead.  This operator only applies if an implicit conversion could not be
     found. */
     template <typename Self, typename to>
-    [[nodiscard]] explicit constexpr operator to(this Self&& self)
+    [[nodiscard]] constexpr explicit operator to(this Self&& self)
         noexcept (requires{
             {impl::expected_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;
         })
@@ -6033,7 +6098,7 @@ struct Expected<T, E, Es...> {
 
     /* Contextually convert the expected to a boolean, where true indicates the
     presence of a value. */
-    [[nodiscard]] explicit constexpr operator bool() const noexcept {
+    [[nodiscard]] constexpr explicit operator bool() const noexcept {
         return __value.index() == 0;
     }
 
@@ -6241,113 +6306,288 @@ constexpr decltype(auto) operator||(L&& lhs, R&& rhs)
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::Less, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::Less, L, R>
+    noexcept (meta::force_visit<1, impl::Less, L, R> ?
+        meta::nothrow::force_visit<1, impl::Less, L, R> :
+        requires{{std::forward<L>(lhs) <=> std::forward<R>(rhs)} noexcept;}
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::Less, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::Less{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::Less, L, R>) {
+        return (impl::visit<1>(
+            impl::Less{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else {
+        return (std::forward<L>(lhs) <=> std::forward<R>(rhs)) < 0;
+    }
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::LessEqual, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::LessEqual, L, R>
+    noexcept (meta::force_visit<1, impl::LessEqual, L, R> ?
+        meta::nothrow::force_visit<1, impl::LessEqual, L, R> :
+        requires{{std::forward<L>(lhs) <=> std::forward<R>(rhs)} noexcept;}
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::LessEqual, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::LessEqual{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::LessEqual, L, R>) {
+        return (impl::visit<1>(
+            impl::LessEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else {
+        return (std::forward<L>(lhs) <=> std::forward<R>(rhs)) <= 0;
+    }
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::Equal, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::Equal, L, R>
+    noexcept (meta::force_visit<1, impl::Equal, L, R> ?
+        meta::nothrow::force_visit<1, impl::Equal, L, R> :
+        requires{{std::forward<L>(lhs) <=> std::forward<R>(rhs)} noexcept;}
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::Equal, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::Equal{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::Equal, L, R>) {
+        return (impl::visit<1>(
+            impl::Equal{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else {
+        return (std::forward<L>(lhs) <=> std::forward<R>(rhs)) == 0;
+    }
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::NotEqual, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::NotEqual, L, R>
+    noexcept (meta::force_visit<1, impl::NotEqual, L, R> ?
+        meta::nothrow::force_visit<1, impl::NotEqual, L, R> :
+        requires{{std::forward<L>(lhs) <=> std::forward<R>(rhs)} noexcept;}
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::NotEqual, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::NotEqual{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::NotEqual, L, R>) {
+        return (impl::visit<1>(
+            impl::NotEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else {
+        return (std::forward<L>(lhs) <=> std::forward<R>(rhs)) != 0;
+    }
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::GreaterEqual, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::GreaterEqual, L, R>
+    noexcept (meta::force_visit<1, impl::GreaterEqual, L, R> ?
+        meta::nothrow::force_visit<1, impl::GreaterEqual, L, R> :
+        requires{{std::forward<L>(lhs) <=> std::forward<R>(rhs)} noexcept;}
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::GreaterEqual, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::GreaterEqual{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::GreaterEqual, L, R>) {
+        return (impl::visit<1>(
+            impl::GreaterEqual{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else {
+        return (std::forward<L>(lhs) <=> std::forward<R>(rhs)) >= 0;
+    }
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::Greater, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::Greater, L, R>
+    noexcept (meta::force_visit<1, impl::Greater, L, R> ?
+        meta::nothrow::force_visit<1, impl::Greater, L, R> :
+        requires{{std::forward<L>(lhs) <=> std::forward<R>(rhs)} noexcept;}
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::Greater, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::Greater{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::Greater, L, R>) {
+        return (impl::visit<1>(
+            impl::Greater{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else {
+        return (std::forward<L>(lhs) <=> std::forward<R>(rhs)) > 0;
+    }
 }
 
 
 template <typename L, typename R>
 constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
-    noexcept (meta::nothrow::force_visit<1, impl::Spaceship, L, R>)
-    requires (
-        (meta::visit_monad<L> || meta::visit_monad<R>) &&
-        meta::force_visit<1, impl::Spaceship, L, R>
+    noexcept (meta::force_visit<1, impl::Spaceship, L, R> ?
+        meta::nothrow::force_visit<1, impl::Spaceship, L, R> : (
+        meta::std::in_place_index<L> ?
+            requires{{
+                impl::visitable<meta::forward<R>>::index(std::forward<R>(rhs)) <=>
+                meta::std::in_place_index_value<L>
+            } noexcept;} : (
+            meta::std::in_place_index<R> ?
+                requires{{
+                    impl::visitable<meta::forward<L>>::index(std::forward<L>(lhs)) <=>
+                    meta::std::in_place_index_value<R>
+                } noexcept;} : (
+                meta::std::type_identity<L> ?
+                    requires{{impl::visitable<meta::forward<R>>::template is<
+                        meta::std::type_identity_type<L>
+                    >(std::forward<R>(rhs))} noexcept;} :
+                    requires{{impl::visitable<meta::forward<L>>::template is<
+                        meta::std::type_identity_type<R>
+                    >(std::forward<L>(lhs))} noexcept;}
+                )
+            )
+        )
     )
+    requires ((meta::visit_monad<L> || meta::visit_monad<R>) && (
+        meta::force_visit<1, impl::Spaceship, L, R> ||
+        (meta::std::in_place_index<L> &&
+            meta::std::in_place_index_value<L> <
+            impl::visitable<meta::forward<R>>::alternatives::size()
+        ) ||
+        (meta::std::in_place_index<R> &&
+            meta::std::in_place_index_value<R> <
+            impl::visitable<meta::forward<L>>::alternatives::size()
+        ) ||
+        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
+        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+    ))
 {
-    return (impl::visit<1>(
-        impl::Spaceship{},
-        std::forward<L>(lhs),
-        std::forward<R>(rhs)
-    ));
+    if constexpr (meta::force_visit<1, impl::Spaceship, L, R>) {
+        return (impl::visit<1>(
+            impl::Spaceship{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        ));
+    } else if constexpr (meta::std::in_place_index<L>) {
+        return (
+            impl::visitable<meta::forward<R>>::index(std::forward<R>(rhs)) <=>
+            meta::std::in_place_index_value<L>
+        );
+    } else if constexpr (meta::std::in_place_index<R>) {
+        return (
+            impl::visitable<meta::forward<L>>::index(std::forward<L>(lhs)) <=>
+            meta::std::in_place_index_value<R>
+        );
+    } else if constexpr (meta::std::type_identity<L>) {
+        return (impl::visitable<meta::forward<R>>::template is<
+            meta::std::type_identity_type<L>
+        >(std::forward<R>(rhs)));
+    } else {
+        return (impl::visitable<meta::forward<L>>::template is<
+            meta::std::type_identity_type<R>
+        >(std::forward<L>(lhs)));
+    }
 }
 
 

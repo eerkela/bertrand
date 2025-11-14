@@ -3900,10 +3900,10 @@ namespace impl {
         using vtable = impl::tuple_vtable<C>::dispatch;
 
         template <typename... Ts>
-        concept runtime = (meta::type_identity<Ts> && ...);
+        concept runtime = (meta::std::type_identity<Ts> && ...);
 
         template <typename... Ts>
-        concept comptime = (!meta::type_identity<Ts> && ...);
+        concept comptime = (!meta::std::type_identity<Ts> && ...);
 
         template <typename... Ts>
         concept valid = runtime<Ts...> || comptime<Ts...>;

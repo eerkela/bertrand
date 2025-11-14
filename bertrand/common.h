@@ -989,6 +989,16 @@ namespace meta {
             }
         }
 
+        template <typename T>
+        constexpr bool is_template = false;
+        template <template <typename...> class C, typename... Ts>
+        constexpr bool is_template<C<Ts...>> = true;
+
+        template <typename T>
+        struct specialization { using type = meta::pack<>; };
+        template <template <typename...> class C, typename... Ts>
+        struct specialization<C<Ts...>> { using type = meta::pack<Ts...>; };
+
     }
 
     /* Concept is satisfied only when `T` is an arbitrarily qualified */
@@ -1032,6 +1042,20 @@ namespace meta {
             ::std::forward<Ts>(args)...
         );
     }
+
+    /* `true` if the type is a specialization of some template.  Note that due to
+    restrictions in C++23, the template and all its parameters must be types.  This
+    restriction may be relaxed in a later standard if/when universal template
+    parameters are standardized. */
+    template <typename T>
+    concept is_template = detail::is_template<unqualify<T>>;
+
+    /* A pack containing the template parameters that were used to specialize some
+    template.  Note that due to restrictions in C++23, the template and all its
+    parameters must be types.  This restriction may be relaxed in a later standard
+    if/when universal template parameters are standardized. */
+    template <typename T>
+    using specialization = detail::specialization<unqualify<T>>::type;
 
     namespace detail {
 
@@ -1344,21 +1368,14 @@ namespace meta {
         using fold_right = meta::fold_right<F, Ts...>;
     };
 
+    template <typename T>
+    struct Foo {};
+
+    static_assert(std::same_as<specialization<Foo<double&&>>, meta::pack<double&&>>);
+
     //////////////////////////
     ////    PRIMITIVES    ////
     //////////////////////////
-
-    namespace detail {
-
-        template <typename T>
-        constexpr bool type_identity = false;
-        template <typename T>
-        constexpr bool type_identity<::std::type_identity<T>> = true;
-
-    }
-
-    template <typename T>
-    concept type_identity = detail::type_identity<unqualify<T>>;
 
     namespace detail {
 
@@ -5032,6 +5049,41 @@ namespace meta {
     /////////////////////////
 
     namespace std {
+
+        namespace detail {
+
+            template <typename T>
+            constexpr bool type_identity = false;
+            template <typename T>
+            constexpr bool type_identity<::std::type_identity<T>> = true;
+
+        }
+
+        template <typename T>
+        concept type_identity = detail::type_identity<unqualify<T>>;
+
+        template <type_identity T>
+        using type_identity_type = unqualify<T>::type;
+
+        namespace detail {
+
+            template <typename T>
+            constexpr bool in_place_index = false;
+            template <size_t I>
+            constexpr bool in_place_index<::std::in_place_index_t<I>> = true;
+
+            template <typename T>
+            constexpr size_t in_place_index_value = 0;
+            template <size_t I>
+            constexpr size_t in_place_index_value<::std::in_place_index_t<I>> = I;
+
+        }
+
+        template <typename T>
+        concept in_place_index = detail::in_place_index<unqualify<T>>;
+
+        template <in_place_index T>
+        constexpr size_t in_place_index_value = detail::in_place_index_value<unqualify<T>>;
 
         namespace detail {
 
