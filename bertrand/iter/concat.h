@@ -7,13 +7,6 @@
 namespace bertrand {
 
 
-/// TODO: document all of this thoroughly
-
-
-/// TODO: concat{} can use a standardized meta::to_range_or_scalar() method and
-/// `meta::as_range_or_scalar<>` alias instead of reimplementing them.
-
-
 namespace impl {
 
     template <size_t I, typename T> requires (I < T::alternatives)
@@ -24,11 +17,9 @@ namespace impl {
         >();
 
     /* Cast the internal union of a `concat_iterator` to the alternative encoded at
-    index `I`.  Separators are encoded as odd indices if they are present, and the
-    underlying union may be collapsed to just the unique alternatives as an
-    optimization, which complicates decoding.  Additionally, if the direction is
-    reversed, then the encoded index will count from right to left rather than left to
-    right. */
+    index `I`.  Separators are encoded as odd indices as long as they are not trivial,
+    and the underlying union may be collapsed to just the unique alternatives as an
+    optimization, which complicates decoding. */
     template <size_t I, typename T> requires (I < T::alternatives)
     constexpr decltype(auto) concat_get(T& self)
         noexcept (I < T::unique_alternatives ?
@@ -63,8 +54,9 @@ namespace impl {
     };
 
     /* Comparing two concat iterators first compares their indices, and only invokes
-    the vtable function if they happen to match, meaning that it can get away with
-    using unique alternatives, and forcing the argument types to match exactly. */
+    the vtable function if they are both in-bounds and happen to match, meaning that it
+    can get away with using unique alternatives, and forcing the argument types to
+    match exactly.  Doing so reduces dispatch overhead and binary size. */
     template <size_t I>
     struct concat_compare {
         template <typename U>
@@ -253,9 +245,9 @@ namespace impl {
     };
 
     /* Decrementing a concat iterator will attempt to decrement the current subrange
-    first, and then retreat to either the previous argument or separator if it causes
-    the index to decrement past zero, possibly requiring recursive calls for prior
-    indices (bypassing separators).
+    first, and then retreat to either the last element of a previous argument or
+    separator if it causes the index to decrement past zero, possibly requiring
+    recursive calls for prior indices (bypassing separators).
     
     Random-access decrements are optimized to skip over intermediate subranges where
     possible, but still require linear time in the number of arguments, albeit with a
@@ -403,9 +395,12 @@ namespace impl {
         }
     };
 
-    /// TODO: remember that distance needs to encode both indices using a cartesian
-    /// product, so that I can determine which subranges to sum over.
-
+    /* Computing the distance between two concat iterators requires a cartesian product
+    encoding both indices.  If the indices are the same, then we can simply visit that
+    alternative and take the difference between their internal indices.  Otherwise, we
+    need to get the distance from the leftmost iterator to the end of its current
+    subrange, sum over all intermediate subranges, and then add the distance from the
+    beginning of the rightmost iterator's subrange to its current position. */
     template <size_t I>
     struct concat_distance {
         /// TODO: implement this similar to join_distance
@@ -434,6 +429,9 @@ namespace impl {
     template <typename U>
     using concat_reference = _concat_reference<typename impl::visitable<const U&>::alternatives>::type;
 
+    /* A subrange is stored over each concatenated argument, consisting of a begin/end
+    iterator pair and an encoded index, which obeys the same rules as
+    `concat_iterator`.  See the algorithms above for behavioral details. */
     template <range_direction Dir, meta::unqualified Begin, meta::unqualified End>
     struct concat_subrange {
         using direction = Dir;
@@ -461,12 +459,17 @@ namespace impl {
             end(Dir::end(p)),
             index(pos(p, begin, end))
         {}
-
-        [[nodiscard]] constexpr ssize_t distance(const concat_subrange& other) const noexcept {
-            return index - other.index;
-        }
     };
 
+    /* The overall concatenated iterator stores a reference to the outer `impl::concat`
+    container and a union of subranges for each argument and separator.  As an
+    optimization, the subrange union is reduced to the unique iterator types for each
+    argument and separator, which avoids extra dispatch overhead when dereferencing or
+    comparing iterators.  An encoded index is used to track which argument or separator
+    is currently active, and to mark the end iterator state, with separators being
+    encoded as odd indices if they are not trivial.  The total number of alternatives
+    is always equal to `n` or `2n - 1` (if a nontrivial separator is given), where `n`
+    is equal to the number of concatenated arguments. */
     template <meta::not_reference Outer, range_direction Dir>
     struct concat_iterator {
         using outer_type = Outer;
@@ -615,6 +618,9 @@ namespace impl {
         }
 
     public:
+        /// TODO: figure out how to properly initialize an end iterator so that no
+        /// invariants are violated for the vtable functions.
+
         [[nodiscard]] constexpr concat_iterator(outer_type* outer = nullptr) noexcept :
             outer(outer),
             index(alternatives)
@@ -647,9 +653,6 @@ namespace impl {
         {
             return impl::arrow{*this};
         }
-
-        /// TODO: this may be able to be optimized to avoid duplicate dispatching,
-        /// and then possibly reused to implement the subscript operator for concat?
 
         [[nodiscard]] constexpr reference operator[](difference_type n) const
             noexcept (requires(concat_iterator tmp) {
@@ -831,72 +834,97 @@ namespace impl {
         }
     };
 
-    /// TODO: if the separator is tuple-like, then the `sep_size` member can be
-    /// omitted.
-
-    /// TODO: all the concat helpers should be private and declare the relevant
-    /// friends, since this container is publicly accessible on dereference.
-
-
-
-
-    /// TODO: actually, no memory will really be saved by unifying the concat
-    /// implementations.  Instead, I should split it into a tuple-like separator and
-    /// non-tuple like seperator, which controls whether the sep_size member is
-    /// compiled, and then another specialization for an empty tuple-like separator,
-    /// which will also omit the separator itself.
-
-
-    template <meta::not_rvalue Sep, meta::not_rvalue... As> requires (sizeof...(As) > 0)
-    struct concat {
-    private:
+    /* If the separator is tuple-like, then its size does not need to be stored as a
+    member, nor does it need to be checked at runtime in the above algorithms.  If the
+    separator is empty, then it may also be overlapped with the arguments, reducing
+    binary size to just a tuple of the input arguments. */
+    template <typename Sep, typename... A>
+    struct concat_storage {
+    protected:
         template <meta::not_reference Outer, range_direction Dir>
         friend struct concat_iterator;
 
+        using arg_type = impl::basic_tuple<meta::as_range_or_scalar<A>...>;
         using sep_type = meta::as_range_or_scalar<Sep>;
-        using arg_type = impl::basic_tuple<meta::as_range_or_scalar<As>...>;
-        static constexpr bool trivial = meta::empty_range<sep_type>;
-        static constexpr bool dynamic = !meta::tuple_like<sep_type>;
+        static constexpr bool trivial = false;
+        static constexpr bool dynamic = true;
 
-        using sep_size_type = std::conditional_t<dynamic, ssize_t, NoneType>;
-
-        [[no_unique_address]] impl::ref<sep_type> m_sep;
         [[no_unique_address]] arg_type m_args;
-        [[no_unique_address]] sep_size_type m_sep_size;
+        [[no_unique_address]] impl::ref<sep_type> m_sep;
+        [[no_unique_address]] ssize_t m_sep_size;
 
-        constexpr sep_size_type get_sep_size()
-            noexcept (!dynamic || requires{{ssize_t(meta::distance(*m_sep))} noexcept;})
-            requires (!dynamic || requires{{ssize_t(meta::distance(*m_sep))};})
+        constexpr ssize_t get_size()
+            noexcept (requires{{ssize_t(meta::distance(*m_sep))} noexcept;})
+            requires (requires{{ssize_t(meta::distance(*m_sep))};})
         {
-            if constexpr (dynamic) {
-                return ssize_t(meta::distance(*m_sep));
-            } else {
-                return None;
-            }
+            return ssize_t(meta::distance(*m_sep));
         }
 
     public:
-        [[nodiscard]] constexpr concat(meta::forward<Sep> sep, meta::forward<As>... args)
+        constexpr concat_storage(meta::forward<Sep> value, meta::forward<A>... args)
             noexcept (requires{
-                {sep_type{std::forward<Sep>(sep)}} noexcept;
-                {arg_type{std::forward<As>(args)...}} noexcept;
+                {arg_type{std::forward<A>(args)...}} noexcept;
+                {impl::ref<sep_type>{std::forward<Sep>(value)}} noexcept;
+                {get_size()} noexcept;
             })
             requires (requires{
-                {sep_type{std::forward<Sep>(sep)}};
-                {arg_type{std::forward<As>(args)...}};
+                {arg_type{std::forward<A>(args)...}};
+                {impl::ref<sep_type>{std::forward<Sep>(value)}};
+                {get_size()};
             })
         :
-            m_sep{std::forward<Sep>(sep)},
-            m_args{std::forward<As>(args)...},
-            m_sep_size(get_sep_size())
+            m_args{std::forward<A>(args)...},
+            m_sep(std::forward<Sep>(value)),
+            m_sep_size(get_size())
         {}
+    };
+    template <typename Sep, typename... A> requires (meta::tuple_like<meta::as_range_or_scalar<Sep>>)
+    struct concat_storage<Sep, A...> {
+    protected:
+        template <meta::not_reference Outer, range_direction Dir>
+        friend struct concat_iterator;
 
-        [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
-            if constexpr (dynamic) {
-                return m_sep_size;
-            } else {
-                return meta::tuple_size<sep_type>;
-            }
+        using arg_type = impl::basic_tuple<meta::as_range_or_scalar<A>...>;
+        using sep_type = meta::as_range_or_scalar<Sep>;
+        static constexpr bool trivial = meta::tuple_size<sep_type> == 0;
+        static constexpr bool dynamic = false;
+
+        [[no_unique_address]] arg_type m_args;
+        [[no_unique_address]] impl::ref<sep_type> m_sep;
+        static constexpr ssize_t m_sep_size = meta::tuple_size<sep_type>;
+
+    public:
+        constexpr concat_storage(meta::forward<Sep> value, meta::forward<A>... args)
+            noexcept (requires{
+                {arg_type{std::forward<A>(args)...}} noexcept;
+                {impl::ref<sep_type>{std::forward<Sep>(value)}} noexcept;
+            })
+            requires (requires{
+                {arg_type{std::forward<A>(args)...}};
+                {impl::ref<sep_type>{std::forward<Sep>(value)}};
+            })
+        :
+            m_args{std::forward<A>(args)...},
+            m_sep(std::forward<Sep>(value))
+        {}
+    };
+
+    /* The outermost `concat` type stores the arguments, separator, and relevant
+    metadata, as well as managing indexing and iteration over the concatenated ranges.
+    An instance of this type will only be generated when more than one argument is
+    given to `iter::concat{}(...)`.  For zero or one argument, an identity range will
+    be returned instead. */
+    template <meta::not_rvalue Sep, meta::not_rvalue... As> requires (sizeof...(As) > 1)
+    struct concat : concat_storage<Sep, As...> {
+    private:
+        using base = concat_storage<Sep, As...>;
+
+    public:
+        using base::base;
+
+        template <size_t I, typename Self> requires (I < sizeof...(As))
+        [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
+            return (std::forward<Self>(self).m_args.template get<I>());
         }
 
         template <typename Self>
@@ -904,9 +932,8 @@ namespace impl {
             return (*std::forward<Self>(self).m_sep);
         }
 
-        template <size_t I, typename Self> requires (I < sizeof...(As))
-        [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
-            return (std::forward<Self>(self).m_args.template get<I>());
+        [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
+            return base::m_sep_size;
         }
 
         [[nodiscard]] constexpr concat_iterator<concat, range_forward> begin()
@@ -959,6 +986,40 @@ namespace impl {
 
 namespace iter {
 
+    /* Concatenate any number of arguments into a single range, with possible
+    separators between each element.
+
+    By default, no separator will be used, resulting in the arguments being directly
+    adjacent in the output range.  A custom separator may be provided as the
+    initializer to `concat{}` (e.g. `concat{"."}("a", "b", "c")`), which will be
+    inserted between each argument in the resulting range (producing `"a.b.c"` as
+    output).  If the separator's size is known at compile time (i.e. a scalar or any
+    tuple-like type), then no runtime overhead will be incurred for storing or checking
+    its size, and the separator may be omitted from the binary entirely.
+
+    For both the separator and arguments, range inputs will be treated differently from
+    non-range inputs, which are always converted into scalars.  In contrast, ranges
+    will have their elements flattened into the concatenated range.  For example:
+
+        ```
+        iter::concat{"."}("ab", "cd", "ef");
+        ```
+
+    produces the range `["ab", ".", "cd", ".", "ef"]`, whereas:
+
+        ```
+        iter::concat{range(".")}(range("ab"), range("cd"), range("ef"));
+        ```
+
+    flattens to `['a', 'b', '.', 'c', 'd', '.', 'e', 'f']` (note the `char` elements).
+    Range inputs of this form can be used to flatten arguments (as shown above), or to
+    insert separators of more than one element, such as:
+
+        ```
+        iter::concat{range("::")}("ab", "cd", "ef");
+        ```
+
+    which gives `['a', 'b', ':', ':', 'c', 'd', ':', ':', 'e', 'f']` as output. */
     template <meta::not_void Sep = range<>> requires (meta::not_rvalue<Sep>)
     struct concat {
         [[no_unique_address]] Sep sep;
@@ -1008,46 +1069,18 @@ namespace iter {
 
 namespace bertrand::iter {
 
-
-    struct Foo {};
-    struct Foo2 {};
-    struct Bar : Foo, Foo2 {
-        int value = 42;
-    };
-    struct Baz : Bar {};
-    static_assert(sizeof(Baz) == sizeof(int));
-
-    template <typename...>
-    struct test : Foo {};
-    template <typename T, typename... Ts>
-    struct test<T, Ts...> : test<Ts...> {
-        T value;
-        [[no_unique_address]] NoneType r;
-    };
-
-
-    static_assert(sizeof(range<std::tuple<int, int>>) == sizeof(std::tuple<int, int>));
-
-
-    static_assert(sizeof(impl::basic_tuple<range<int>>) == sizeof(int));
-
-    static_assert(sizeof(test<range<int>>) == sizeof(int));
-
-
-
-    static constexpr auto c = concat{}(1, 2, 3);
-    static_assert(sizeof(c) == sizeof(int) * 3);
+    static constexpr auto c = concat{4}(1, 2, 3);
+    static_assert(sizeof(c) == sizeof(int) * 4);
     static_assert([] {
         auto it = c.begin();
         if (*it++ != 1) return false;
-        // if (*it++ != 4) return false;
+        if (*it++ != 4) return false;
         if (*it++ != 2) return false;
-        // if (*it++ != 4) return false;
+        if (*it++ != 4) return false;
         if (*it++ != 3) return false;
         if (it != c.end()) return false;
 
-
-        for (auto v : c) {
+        for (auto&& v : c) {
             if (v != 1 && v != 2 && v != 3 && v != 4) {
                 return false;
             }
@@ -1055,7 +1088,6 @@ namespace bertrand::iter {
 
         return true;
     }());
-
 
 }
 

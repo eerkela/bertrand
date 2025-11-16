@@ -36,7 +36,6 @@ namespace bertrand {
 
 
 namespace impl {
-    struct join_tag {};
 
     /* Invoke a vtable function on a `join_subrange` or `join_iterator` object,
     effectively promoting its index into a compile-time constant (modulo `N`).

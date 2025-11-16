@@ -130,10 +130,6 @@ namespace bertrand {
 
 
 namespace impl {
-    struct basic_union_tag {};
-    struct union_tag {};
-    struct optional_tag {};
-    struct expected_tag {};
 
     template <typename... Ts>
     concept union_concept =
@@ -225,31 +221,6 @@ namespace impl {
 }
 
 
-namespace meta {
-
-    /* True for types which have a custom `impl::visitable<T>` specialization. */
-    template <typename T>
-    concept visitable = impl::visitable<T>::enable;
-
-    /* True for types where `impl::visitable<T>::monad` is set to true. */
-    template <typename T>
-    concept visit_monad = impl::visitable<T>::monad;
-
-    template <typename T>
-    concept basic_union = inherits<T, impl::basic_union_tag>;
-
-    template <typename T>
-    concept Union = inherits<T, impl::union_tag>;
-
-    template <typename T>
-    concept Optional = inherits<T, impl::optional_tag>;
-
-    template <typename T>
-    concept Expected = inherits<T, impl::expected_tag>;
-
-}
-
-
 /// TODO: CTAD guides for `Union<Ts...>` and `Expected<T, Es...>` with visitable
 /// initializers, which will automatically deduce the correct types from
 /// `impl::visitable`.  Unfortunately, this is not possible in current C++, since
@@ -296,6 +267,23 @@ struct Expected;
 
 
 namespace meta {
+
+    /* True for types which have a custom `impl::visitable<T>` specialization. */
+    template <typename T>
+    concept visitable = impl::visitable<T>::enable;
+
+    /* True for types where `impl::visitable<T>::monad` is set to true. */
+    template <typename T>
+    concept visit_monad = impl::visitable<T>::monad;
+
+    template <typename T>
+    concept Union = specialization_of<T, bertrand::Union>;
+
+    template <typename T>
+    concept Optional = specialization_of<T, bertrand::Optional>;
+
+    template <typename T>
+    concept Expected = specialization_of<T, bertrand::Expected>;
 
     namespace detail {
 
@@ -1393,7 +1381,7 @@ namespace impl {
     dramatically reduce the amount of bookkeeping necessary to safely work with raw C
     unions. */
     template <meta::not_void... Ts> requires (!meta::rvalue<Ts> && ...)
-    struct basic_union : basic_union_tag {
+    struct basic_union {
         using types = meta::pack<Ts...>;
         using default_type = impl::union_default_type<Ts...>;
 
@@ -1469,28 +1457,6 @@ namespace impl {
                     return (std::forward<T>(self).rest.template get<I - 1>());
                 }
             }
-
-            /// TODO: maybe copy/move constructors can bypass the issue with
-            /// the swap operator?  I would just take a top-level move/assign
-            /// against the upper union, which might be smart enough to do what I
-            /// need.
-
-            /// -> The first move would call the move constructor of the top-level
-            /// type with the detected subtype from the current union.  Then, the
-            /// top-level assignment operator would destroy the leftover value and
-            /// then move-construct the new value in the appropriate place.  It's a
-            /// long shot, but that might be sophisticated enough to actually work.
-
-            /// I would need to use some kind of `owning_tag<I, _type&&>` class for
-            /// the assignment operator.  If `I` reaches zero, then I would destroy the
-            /// moved-from value at this index.  Then, if the moved type is further
-            /// down the chain, I would construct `rest` with
-            /// `owning_tag<I - 1, _type&&>` until the type is found, at which point
-            /// I use it to move-construct the new value in place.  If the `__type&&`
-            /// is above the zeroth index in the chain, then I would destroy `rest`
-            /// for every index between it and the new value, and then move-construct
-            /// the new value at the end.  This should hopefully ensure that I never
-            /// access a `rest` object that is outside its lifetime at any point.
         };
 
     public:
@@ -3313,7 +3279,7 @@ This is similar to `std::variant<Ts...>`, but with the following changes:
         represent the dereferenced types of each iterator.
  */
 template <typename... Ts> requires (impl::union_concept<Ts...>)
-struct Union : impl::union_tag {
+struct Union {
     using __type = meta::pack<Ts...>;
     [[no_unique_address]] impl::basic_union<meta::remove_rvalue<Ts>...> __value;
 
@@ -4749,7 +4715,7 @@ Note that because optional references are compatible with pointers, Bertrand's b
 generators will generate them wherever pointers or pointer-like objects are exposed to
 a language that otherwise does not implement them as first-class citizens. */
 template <typename T>
-struct Optional : impl::optional_tag {
+struct Optional {
     using __type = meta::pack<NoneType, T>;
     [[no_unique_address]] impl::basic_union<NoneType, meta::remove_rvalue<T>> __value;
 
@@ -5178,7 +5144,7 @@ static_assert(!Foo<2.5>::empty);
 ```
 */
 template <typename T> requires (meta::is_void<T> || meta::None<T>)
-struct Optional<T> : impl::optional_tag {
+struct Optional<T> {
     using __type = meta::pack<NoneType, T>;
     [[no_unique_address]] impl::basic_union<NoneType> __value;
 
@@ -5574,7 +5540,7 @@ Note that the intended use for `Expected` is as a value-based error handling str
 which can be used as a safer and more explicit alternative to `try/catch` blocks,
 promoting exhaustive error coverage via the type system. */
 template <typename T, typename E, typename... Es> requires (impl::expected_concept<T, E, Es...>)
-struct Expected : impl::expected_tag {
+struct Expected {
     using __type = meta::pack<T, E, Es...>;
     [[no_unique_address]] impl::basic_union<
         meta::remove_rvalue<T>,
@@ -7142,38 +7108,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         >::alternatives::template at<I>;
     };
 
-    template <size_t I, bertrand::meta::basic_union U>
-    [[nodiscard]] constexpr decltype(auto) get(U&& u)
-        noexcept (requires{{std::forward<U>(u).template get<I>()} noexcept;})
-        requires (requires{{std::forward<U>(u).template get<I>()};})
-    {
-        return (std::forward<U>(u).template get<I>());
-    }
-
-    template <typename T, bertrand::meta::basic_union U>
-    [[nodiscard]] constexpr decltype(auto) get(U&& u)
-        noexcept (requires{{std::forward<U>(u).template get<T>()} noexcept;})
-        requires (requires{{std::forward<U>(u).template get<T>()};})
-    {
-        return (std::forward<U>(u).template get<T>());
-    }
-
-    template <size_t I, bertrand::meta::basic_union U>
-    [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
-        noexcept (requires{{std::forward<U>(u).template get_if<I>()} noexcept;})
-        requires (requires{{std::forward<U>(u).template get_if<I>()};})
-    {
-        return (std::forward<U>(u).template get_if<I>());
-    }
-
-    template <typename T, bertrand::meta::basic_union U>
-    [[nodiscard]] constexpr decltype(auto) get_if(U&& u)
-        noexcept (requires{{std::forward<U>(u).template get_if<T>()} noexcept;})
-        requires (requires{{std::forward<U>(u).template get_if<T>()};})
-    {
-        return (std::forward<U>(u).template get_if<T>());
-    }
-
     template <bertrand::meta::Union T> requires (bertrand::impl::union_tuple<T>::enable)
     struct tuple_size<T> : std::integral_constant<
         size_t,
@@ -7211,21 +7145,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     struct tuple_element<I, T> {
         using type = decltype((std::declval<T>().template get<I>()));
     };
-
-    /// TODO: a CTAD guide from Union<Ts...> to variant<Ts...>.  This will require
-    /// manual specialization for a given number of types, since CTAD doesn't allow
-    /// unpacking variadic parameter packs in a deduction guide.
-
-    template <bertrand::meta::Optional T>
-    optional(T&&) -> optional<
-        bertrand::meta::remove_reference<typename bertrand::impl::visitable<T>::value>
-    >;
-
-    template <bertrand::meta::Expected T>
-    expected(T&&) -> expected<
-        bertrand::meta::remove_reference<typename bertrand::impl::visitable<T>::value>,
-        typename bertrand::impl::visitable<T>::errors::template eval<bertrand::meta::make_union>
-    >;
 
 _LIBCPP_END_NAMESPACE_STD
 

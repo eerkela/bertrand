@@ -11,21 +11,6 @@ namespace bertrand {
 
 
 namespace impl {
-    struct extent_tag {};
-    struct range_tag : prefer_constructor_tag {};
-    struct empty_range_tag {};
-    struct scalar_tag {};
-    struct tuple_range_tag {};
-    struct iota_tag {};
-    struct subrange_tag {};
-    struct sequence_tag {};
-
-    template <typename T>
-    constexpr bool range_transparent = false;
-    template <meta::inherits<scalar_tag> T>
-    constexpr bool range_transparent<T> = true;
-    template <meta::inherits<tuple_range_tag> T>
-    constexpr bool range_transparent<T> = true;
 
     /* An array of integers describing the length of each dimension in a regular,
     possibly multi-dimensional container.
@@ -39,7 +24,7 @@ namespace impl {
     Notably, the product of all dimensions must be equal to the total number of
     (flattened) elements in the tensor.  This generally precludes zero-length
     dimensions, which can cause information loss in the product.  As a result, setting
-    a dimension to zero has special meaning depending on context.  If the `extent` is
+    a dimension to zero has special meaning depending on context.  If the `shape` is
     provided as a template parameter used to specialize a supported container type,
     then setting a dimension to zero indicates that it is dynamic, allowing the zero to
     be replaced with its actual length at runtime.
@@ -49,7 +34,7 @@ namespace impl {
     dimensions may itself be `0`, which indicates a zero-dimensional tensor (i.e. a
     scalar). */
     template <size_t N>
-    struct extent : extent_tag {
+    struct shape {
         using size_type = size_t;
         using index_type = ssize_t;
         using value_type = size_type;
@@ -82,10 +67,10 @@ namespace impl {
     public:
         size_type dim[size()] {};
 
-        [[nodiscard]] constexpr extent() noexcept = default;
+        [[nodiscard]] constexpr shape() noexcept = default;
 
         template <typename... T> requires (sizeof...(T) > 0 && sizeof...(T) == size())
-        [[nodiscard]] constexpr extent(T&&... n)
+        [[nodiscard]] constexpr shape(T&&... n)
             noexcept ((meta::nothrow::convertible_to<T, size_type> && ...))
             requires ((meta::convertible_to<T, size_type> && ...))
         {
@@ -94,7 +79,7 @@ namespace impl {
         }
 
         template <typename T>
-        [[nodiscard]] constexpr extent(T&& n)
+        [[nodiscard]] constexpr shape(T&& n)
             noexcept (meta::nothrow::yields<T, size_type>)
             requires (
                 !meta::convertible_to<T, size_type> &&
@@ -115,7 +100,7 @@ namespace impl {
         }
 
         template <typename T>
-        [[nodiscard]] constexpr extent(T&& n)
+        [[nodiscard]] constexpr shape(T&& n)
             noexcept (requires{
                 {from_tuple(std::forward<T>(n), std::make_index_sequence<size()>{})} noexcept;
             })
@@ -131,7 +116,7 @@ namespace impl {
             from_tuple(std::forward<T>(n), std::make_index_sequence<size()>{});
         }
 
-        constexpr void swap(extent& other) noexcept {
+        constexpr void swap(shape& other) noexcept {
             for (size_type i = 0; i < size(); ++i) {
                 meta::swap(dim[i], other.dim[i]);
             }
@@ -161,7 +146,7 @@ namespace impl {
         }
 
         template <size_type R>
-        [[nodiscard]] constexpr bool operator==(const extent<R>& other) const noexcept {
+        [[nodiscard]] constexpr bool operator==(const shape<R>& other) const noexcept {
             if constexpr (R == size()) {
                 for (size_type i = 0; i < size(); ++i) {
                     if (dim[i] != other.dim[i]) {
@@ -176,7 +161,7 @@ namespace impl {
 
         template <size_type R>
         [[nodiscard]] constexpr std::strong_ordering operator<=>(
-            const extent<R>& other
+            const shape<R>& other
         ) const noexcept {
             size_type min = size() < R ? size() : R;
             for (size_type i = 0; i < min; ++i) {
@@ -200,8 +185,8 @@ namespace impl {
             return p;
         }
 
-        [[nodiscard]] constexpr extent reverse() const noexcept {
-            extent r;
+        [[nodiscard]] constexpr shape reverse() const noexcept {
+            shape r;
             for (size_type j = 0; j < size(); ++j) {
                 r.dim[j] = dim[size() - 1 - j];
             }
@@ -211,9 +196,9 @@ namespace impl {
         template <size_type M>
         [[nodiscard]] constexpr auto reduce() const noexcept {
             if constexpr (M >= size()) {
-                return extent<0>{};
+                return shape<0>{};
             } else {
-                extent<size() - M> s;
+                shape<size() - M> s;
                 for (size_type j = M; j < size(); ++j) {
                     s.dim[j - M] = dim[j];
                 }
@@ -221,11 +206,11 @@ namespace impl {
             }
         }
 
-        [[nodiscard]] constexpr extent strides(bool column_major) const noexcept {
+        [[nodiscard]] constexpr shape strides(bool column_major) const noexcept {
             if constexpr (size() == 0) {
                 return {};
             } else {
-                extent s;
+                shape s;
                 if (column_major) {
                     s.dim[0] = 1;
                     for (size_type j = 1; j < size(); ++j) {
@@ -244,7 +229,7 @@ namespace impl {
     };
 
     template <meta::convertible_to<size_t>... N>
-    extent(N...) -> extent<sizeof...(N)>;
+    shape(N...) -> shape<sizeof...(N)>;
 
     template <typename T>
         requires (
@@ -254,11 +239,11 @@ namespace impl {
                 meta::tuple_types<T>::template convertible_to<size_t>
             )
         )
-    extent(T&&) -> extent<meta::tuple_size<T>>;
+    shape(T&&) -> shape<meta::tuple_size<T>>;
 
     template <size_t N>
-    [[nodiscard]] constexpr extent<N + 1> operator|(const extent<N>& lhs, size_t rhs) noexcept {
-        extent<N + 1> s;
+    [[nodiscard]] constexpr shape<N + 1> operator|(const shape<N>& lhs, size_t rhs) noexcept {
+        shape<N + 1> s;
         for (size_t j = 0; j < N; ++j) {
             s.dim[j] = lhs.dim[j];
         }
@@ -267,8 +252,8 @@ namespace impl {
     }
 
     template <size_t N>
-    [[nodiscard]] constexpr extent<N + 1> operator|(size_t lhs, const extent<N>& rhs) noexcept {
-        extent<N + 1> s;
+    [[nodiscard]] constexpr shape<N + 1> operator|(size_t lhs, const shape<N>& rhs) noexcept {
+        shape<N + 1> s;
         s.dim[0] = lhs;
         for (size_t j = 1; j <= N; ++j) {
             s.dim[j] = rhs.dim[j - 1];
@@ -281,14 +266,27 @@ namespace impl {
 
 namespace meta {
 
-    /* Detect whether a type is an `impl::extent` object, which describes the number
-    and length of each dimension of a regular, possibly multidimensional, iterable.  If
-    `ndim` is provided, then the concept will only match if it is equal to the number
-    of dimensions in the extent. */
-    template <typename T, bertrand::Optional<size_t> ndim = bertrand::None>
-    concept extent = inherits<T, impl::extent_tag> && (
-        ndim == bertrand::None || unqualify<T>::size() == *ndim
-    );
+    namespace detail {
+
+        template <typename T>
+        constexpr bool range = false;
+
+        template <typename T>
+        constexpr bool range_transparent = false;
+
+        template <typename T>
+        constexpr bool scalar = false;
+
+        template <typename T>
+        constexpr bool iota = false;
+
+        template <typename T>
+        constexpr bool subrange = false;
+
+        template <typename T>
+        constexpr bool sequence = false;
+
+    }
 
     /* Detect whether a type is a `range`.  If additional types are provided, then they
     equate to a convertibility check against the range's yield type.  If more than one
@@ -297,11 +295,21 @@ namespace meta {
     over, the convertibility check will always take range conversion semantics into
     account.  See the `range` class for more details. */
     template <typename T, typename... Rs>
-    concept range = inherits<T, impl::range_tag> && (
+    concept range = detail::range<unqualify<T>> && (
         sizeof...(Rs) == 0 ||
         (sizeof...(Rs) == 1 && convertible_to<yield_type<T>, first_type<Rs...>>) ||
         structured_with<yield_type<T>, Rs...>
     );
+
+    /* Detect whether the given type is considered to be transparent to a range's
+    dereference operator.  If this is true, then dereferencing an equivalent range
+    will recursively call `T`'s dereference operator, rendering it invisible to the
+    user.  This is useful for implementing trivial adaptors, such as those that wrap
+    non-iterable scalars or tuple-like types, where the adaptor itself is not usually
+    what the user is interested in.  `meta::strip_range()` may be used to reveal
+    transparent types for internal use. */
+    template <typename T>
+    concept range_transparent = detail::range_transparent<unqualify<T>>;
 
     /* Perfectly forward the argument or retrieve its underlying value if it is a
     range.  This is equivalent to conditionally compiling a dereference based on the
@@ -350,33 +358,29 @@ namespace meta {
     if it wraps an iterable or tuple-like container.  Dereferencing the scalar reveals
     the underlying value. */
     template <typename T, typename... Rs>
-    concept scalar = range<T, Rs...> && requires(T r) {
-        {*r.__value} -> inherits<impl::scalar_tag>;
-    };
+    concept scalar =
+        range<T, Rs...> && detail::scalar<unqualify<decltype(*::std::declval<T>().__value)>>;
 
     /* A refinement of `meta::range<T, Rs...>` that only matches iota ranges (i.e.
     those of the form `[start, stop[, step]]`, where `start` is not an iterator).
     Dereferencing the range reveals the inner iota type. */
     template <typename T, typename... Rs>
-    concept iota = range<T, Rs...> && requires(T r) {
-        {*r.__value} -> inherits<impl::iota_tag>;
-    };
+    concept iota =
+        range<T, Rs...> && detail::iota<unqualify<decltype(*::std::declval<T>().__value)>>;
 
     /* A refinement of `meta::range<T, Rs...>` that only matches subranges (i.e.
     those of the form `[start, stop[, step]]`, where `start` is an iterator type).
     Dereferencing the range reveals the inner subrange type. */
     template <typename T, typename... Rs>
-    concept subrange = range<T, Rs...> && requires(T r) {
-        {*r.__value} -> inherits<impl::subrange_tag>;
-    };
+    concept subrange =
+        range<T, Rs...> && detail::subrange<unqualify<decltype(*::std::declval<T>().__value)>>;
 
     /* A refinement of `meta::range<T, Rs...>` that only matches type-erased sequences,
     where the underlying container type is hidden from the user.  Dereferencing the
     sequence reveals the inner type erasure mechanism. */
     template <typename T, typename... Rs>
-    concept sequence = range<T, Rs...> && requires(T r) {
-        {*r.__value} -> inherits<impl::sequence_tag>;
-    };
+    concept sequence =
+        range<T, Rs...> && detail::sequence<unqualify<decltype(*::std::declval<T>().__value)>>;
 
     /* A refinement of `meta::range<T, Rs...>` that specifies that the range's begin
     and end iterators are the same type.  Ranges of this form may be required for
@@ -422,13 +426,13 @@ namespace meta {
             template <typename T>
             concept has_static_shape = requires{
                 {shape<T>()};
-                {impl::extent(shape<T>())};
+                {impl::shape(shape<T>())};
             };
 
             template <typename T>
             concept has_shape = requires(T t) {
                 {shape(::std::forward<T>(t))};
-                {impl::extent(shape(::std::forward<T>(t)))};
+                {impl::shape(shape(::std::forward<T>(t)))};
             };
 
         }
@@ -438,13 +442,13 @@ namespace meta {
             template <typename T>
             concept has_static_shape = requires{
                 {unqualify<T>::shape()};
-                {impl::extent(unqualify<T>::shape())};
+                {impl::shape(unqualify<T>::shape())};
             };
 
             template <typename T>
             concept has_shape = requires(T t) {
                 {::std::forward<T>(t).shape()};
-                {impl::extent(::std::forward<T>(t).shape())};
+                {impl::shape(::std::forward<T>(t).shape())};
             };
 
         }
@@ -452,17 +456,17 @@ namespace meta {
         template <typename T>
         struct static_shape_fn {
             static constexpr auto operator()()
-                noexcept (requires{{impl::extent(unqualify<T>::shape())} noexcept;})
+                noexcept (requires{{impl::shape(unqualify<T>::shape())} noexcept;})
                 requires (member::has_static_shape<T>)
             {
-                return impl::extent(unqualify<T>::shape());
+                return impl::shape(unqualify<T>::shape());
             }
 
             static constexpr auto operator()()
-                noexcept (requires{{impl::extent(shape<T>())} noexcept;})
+                noexcept (requires{{impl::shape(shape<T>())} noexcept;})
                 requires (!member::has_static_shape<T> && adl::has_static_shape<T>)
             {
-                return impl::extent(shape<T>());
+                return impl::shape(shape<T>());
             }
 
             static constexpr auto operator()()
@@ -473,7 +477,7 @@ namespace meta {
                     member::has_shape<T>
                 )
             {
-                return meta::unqualify<decltype(impl::extent{::std::declval<T>().shape()})>{};
+                return meta::unqualify<decltype(impl::shape{::std::declval<T>().shape()})>{};
             }
 
             static constexpr auto operator()()
@@ -485,10 +489,10 @@ namespace meta {
                     adl::has_shape<T>
                 )
             {
-                return meta::unqualify<decltype(impl::extent{shape(::std::declval<T>())})>{};
+                return meta::unqualify<decltype(impl::shape{shape(::std::declval<T>())})>{};
             }
 
-            static constexpr impl::extent<1> operator()() noexcept
+            static constexpr impl::shape<1> operator()() noexcept
                 requires (
                     !member::has_static_shape<T> &&
                     !adl::has_static_shape<T> &&
@@ -510,11 +514,11 @@ namespace meta {
             static constexpr auto operator()(T&& t)
                 noexcept (requires{{::std::forward<T>(t).shape()} noexcept;})
                 requires (member::has_shape<T> && (
-                    decltype(impl::extent(::std::forward<T>(t).shape()))::size() ==
+                    decltype(impl::shape(::std::forward<T>(t).shape()))::size() ==
                     decltype(static_shape_fn<T>{}())::size()
                 ))
             {
-                return impl::extent(::std::forward<T>(t).shape());
+                return impl::shape(::std::forward<T>(t).shape());
             }
 
             template <typename T>
@@ -526,16 +530,16 @@ namespace meta {
                 requires (
                     !member::has_shape<T> &&
                     adl::has_shape<T> && (
-                        decltype(impl::extent(shape(::std::forward<T>(t))))::size() ==
+                        decltype(impl::shape(shape(::std::forward<T>(t))))::size() ==
                         decltype(static_shape_fn<T>{}())::size()
                     )
                 )
             {
-                return impl::extent(shape(::std::forward<T>(t)));
+                return impl::shape(shape(::std::forward<T>(t)));
             }
 
             template <typename T>
-            static constexpr impl::extent<1> operator()(T&& t)
+            static constexpr impl::shape<1> operator()(T&& t)
                 noexcept (requires{{shape(::std::forward<T>(t))} noexcept;})
                 requires (
                     !member::has_shape<T> &&
@@ -558,7 +562,7 @@ namespace meta {
     independent of any particular instance of `T`.
 
     This will invoke a static `T::shape()` or `shape<T>()` method if available, or
-    produce a dynamic extent of the same rank as `t.shape()` or `shape(t)` filled with
+    produce a dynamic shape of the same rank as `t.shape()` or `shape(t)` filled with
     `None` if either of those are present as instance methods.  If neither are present,
     then it will attempt to deduce a 1D shape for tuple-like or iterable `T`, where the
     single element is equal to the tuple size or `None`, respectively.
@@ -567,7 +571,7 @@ namespace meta {
     template.  Note that shapes containing `None` for one or more dimensions indicate
     dynamic shapes, where the actual size must be determined at runtime.
     
-    The result is always returned as an `impl::extent<N>` object, where `N` is equal to
+    The result is always returned as an `impl::shape<N>` object, where `N` is equal to
     the number of dimensions in the shape. */
     template <typename T>
     inline constexpr detail::static_shape_fn<T> static_shape;
@@ -580,7 +584,7 @@ namespace meta {
     respectively.  If an iterable does not supply a `size()` or `ssize()` method, then
     the shape may require a full traversal to determine its length.
 
-    The result is always returned as an `impl::extent<N>` object, where `N` is
+    The result is always returned as an `impl::shape<N>` object, where `N` is
     equal to the number of dimensions in the shape.  Note that `N` will always be the
     same between the result of this function and `meta::static_shape<T>()`, although
     any `None` values in that result will be replaced by their actual values. */
@@ -596,18 +600,18 @@ namespace meta {
     template <typename T>
     concept has_shape = requires(T t) {{shape(t)};};
 
-    /* Get the standardized `impl::extent` type that is returned by
+    /* Get the standardized `impl::shape` type that is returned by
     `meta::static_shape<T>()`, assuming that expression is well-formed. */
     template <has_static_shape T>
     using static_shape_type = decltype(static_shape<T>());
 
-    /* Get the standardized `impl::extent` type that is returned by `meta::shape(t)`,
+    /* Get the standardized `impl::shape` type that is returned by `meta::shape(t)`,
     assuming that expression is well-formed. */
     template <has_shape T>
     using shape_type = decltype(shape(::std::declval<T>()));
 
     /* Detect whether `meta::static_shape<T>()` is well-formed and then check for an
-    implicit conversion from the normalized `impl::extent` type to the given return
+    implicit conversion from the normalized `impl::shape` type to the given return
     type.  See `meta::has_static_shape<T>` and `meta::static_shape_type<T>` for more
     details. */
     template <typename Ret, typename T>
@@ -615,7 +619,7 @@ namespace meta {
         has_static_shape<T> && convertible_to<static_shape_type<T>, Ret>;
 
     /* Detect whether `meta::shape(t)` is well-formed and then check for an implicit
-    conversion from the normalized `impl::extent` type to the given return type.  See
+    conversion from the normalized `impl::shape` type to the given return type.  See
     `meta::has_static_shape<T>` and `meta::static_shape_type<T>` for more details. */
     template <typename Ret, typename T>
     concept shape_returns = has_shape<T> && convertible_to<shape_type<T>, Ret>;
@@ -723,11 +727,11 @@ namespace impl {
     the `reference` type returned by the iterator's dereference operators, which is
     useful for metaprogramming purposes.  No values will actually be yielded. */
     template <typename T = const NoneType&>
-    struct empty_range : empty_range_tag {
+    struct empty_range {
         static constexpr void swap(empty_range&) noexcept {}
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
-        [[nodiscard]] static constexpr impl::extent<0> shape() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::shape<0> shape() noexcept { return {}; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
         [[nodiscard]] static constexpr T operator[](ssize_t) {
             throw IndexError("empty ranges cannot be subscripted");
@@ -767,18 +771,18 @@ namespace impl {
     CTAD guide chooses this type when a single element is passed to the `range()`
     constructor. */
     template <range_concept T>
-    struct scalar_range : scalar_tag {
+    struct scalar {
         [[no_unique_address]] impl::ref<T> __value;
 
         template <typename... A>
-        [[nodiscard]] constexpr scalar_range(A&&... args)
+        [[nodiscard]] constexpr scalar(A&&... args)
             noexcept (meta::nothrow::constructible_from<T, A...>)
             requires (meta::constructible_from<T, A...>)
         :
             __value{std::forward<A>(args)...}
         {}
 
-        constexpr void swap(scalar_range& other)
+        constexpr void swap(scalar& other)
             noexcept (requires{{meta::swap(__value, other.__value)} noexcept;})
             requires (requires{{meta::swap(__value, other.__value)};})
         {
@@ -788,7 +792,7 @@ namespace impl {
         [[nodiscard]] static constexpr size_t size() noexcept { return 1; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 1; }
         [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-        [[nodiscard]] static constexpr impl::extent<1> shape() noexcept { return {1}; }
+        [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {1}; }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
@@ -913,15 +917,16 @@ namespace impl {
             return std::make_reverse_iterator(begin());
         }
     };
+
     template <typename T>
-    scalar_range(T&&) -> scalar_range<meta::remove_rvalue<T>>;
+    scalar(T&&) -> scalar<meta::remove_rvalue<T>>;
 
     /////////////////////
     ////    TUPLE    ////
     /////////////////////
 
     /* A unique vtable has to be emitted for each observed qualification of the tuple
-    type, in order to perfectly forward the results. */
+    type in order to perfectly forward the results. */
     template <meta::tuple_like C>
     struct tuple_vtable {
         using type = meta::tuple_types<C>::template eval<meta::make_union>;
@@ -939,11 +944,9 @@ namespace impl {
         using dispatch = impl::basic_vtable<fn, meta::tuple_size<C>>;
     };
 
-
     /* A generic iterator over an arbitrary tuple type embedded in a `tuple_range<C>`
-    wrapper.  The iterator works by traversing a separate array, which may either
-    contain references to the tuple's elements if they all happen to be the same type,
-    or a vtable of function pointers that yield each value dynamically. */
+    wrapper.  The iterator works by traversing a vtable of function pointers that yield
+    each value dynamically. */
     template <meta::lvalue T>
     struct tuple_iterator {
         using iterator_category = std::random_access_iterator_tag;
@@ -1038,12 +1041,11 @@ namespace impl {
         }
     };
 
-    /* A wrapper around a generic tuple type that allows it to be indexed and iterated
-    over at runtime via dynamic dispatch.  If the tuple consists of multiple types, then
-    the subscript and yield types will be promoted to unions of all the possible
-    results. */
+    /* A wrapper around a generic tuple that allows it to be indexed and iterated over
+    at runtime via dynamic dispatch.  If the tuple consists of multiple types, then the
+    subscript and yield types will be promoted to unions of all the possible results. */
     template <meta::tuple_like C>
-    struct tuple_range : tuple_range_tag {
+    struct tuple_range {
     private:
         template <meta::is<tuple_range> Self>
         using vtable = tuple_vtable<decltype((*std::declval<Self>()))>::dispatch;
@@ -1054,7 +1056,7 @@ namespace impl {
         [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
         [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-        [[nodiscard]] static constexpr impl::extent<1> shape() noexcept { return {size()}; }
+        [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {size()}; }
 
         template <typename... A>
         [[nodiscard]] constexpr tuple_range(A&&... args)
@@ -1165,13 +1167,13 @@ namespace impl {
         }
     };
     template <meta::tuple_like C> requires (meta::tuple_size<C> == 0)
-    struct tuple_range<C> : tuple_range_tag {
+    struct tuple_range<C> {
         [[no_unique_address]] impl::ref<C> __value;
 
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
-        [[nodiscard]] static constexpr impl::extent<1> shape() noexcept { return {0}; }
+        [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {0}; }
 
         template <typename... A>
         [[nodiscard]] constexpr tuple_range(A&&... args)
@@ -1289,7 +1291,7 @@ namespace impl {
     using iota_difference = _iota_difference<Start, Stop>::type;
 
     template <typename T>
-    concept iota_empty = meta::is<T, iota_tag>;
+    concept iota_empty = meta::is<T, trivial>;
 
     template <typename Stop>
     concept iota_infinite = iota_empty<Stop>;
@@ -1406,7 +1408,7 @@ namespace impl {
                 iota_nonlinear<Start, Step>
             )
         )
-    struct iota : iota_tag {
+    struct iota {
         using start_type = Start;
         using stop_type = Stop;
         using step_type = Step;
@@ -2064,7 +2066,7 @@ namespace impl {
         }
     };
 
-    template <typename Start, typename Stop = iota_tag, typename Step = iota_tag>
+    template <typename Start, typename Stop = trivial, typename Step = trivial>
     iota(Start&&, Stop&& stop, Step&& step = {}) -> iota<
         meta::remove_rvalue<Start>,
         meta::remove_rvalue<Stop>,
@@ -2079,7 +2081,7 @@ namespace impl {
     using subrange_difference = iota_difference<Start, Stop>;
 
     template <typename T>
-    concept subrange_empty = meta::is<T, subrange_tag>;
+    concept subrange_empty = meta::is<T, trivial>;
 
     template <typename Stop>
     concept subrange_infinite = subrange_empty<Stop>;
@@ -2243,9 +2245,9 @@ namespace impl {
     `data()` method as well.  Since the `end()` iterator is an empty sentinel, the
     range will never model `std::common_range` (but the sentinel may model
     `std::sized_sentinel_for<Begin>` if `ssize()` is available). */
-    template <typename Start, typename Stop = subrange_tag, typename Step = subrange_tag>
+    template <typename Start, typename Stop = trivial, typename Step = trivial>
         requires (subrange_concept<Start, Stop, Step>)
-    struct subrange : subrange_tag {
+    struct subrange {
         using difference_type = subrange_difference<Start, Stop>;
         using size_type = meta::as_unsigned<difference_type>;
         using value_type = meta::iterator_value<Start>;
@@ -2301,7 +2303,7 @@ namespace impl {
 
         using overflow_type = std::conditional_t<
             check == subrange_check::NEVER,
-            subrange_tag,
+            trivial,
             difference_type
         >;
 
@@ -3566,7 +3568,7 @@ namespace impl {
         }
     };
 
-    template <typename Start, typename Stop = subrange_tag, typename Step = subrange_tag>
+    template <typename Start, typename Stop = trivial, typename Step = trivial>
     subrange(Start&&, Stop&& stop, Step&& step = {}) -> subrange<
         meta::remove_rvalue<Start>,
         meta::remove_rvalue<Stop>,
@@ -3602,7 +3604,7 @@ namespace iter {
     template <typename C>
     range(C&&) -> range<meta::remove_rvalue<C>>;
 
-    template <typename Start, typename Stop = impl::iota_tag, typename Step = impl::iota_tag>
+    template <typename Start, typename Stop = impl::trivial, typename Step = impl::trivial>
         requires (!meta::iterator<Start>)
     range(Start&&, Stop&&, Step&& = {}) -> range<impl::iota<
         meta::remove_rvalue<Start>,
@@ -3610,7 +3612,7 @@ namespace iter {
         meta::remove_rvalue<Step>
     >>;
 
-    template <typename Start, typename Stop = impl::subrange_tag, typename Step = impl::subrange_tag>
+    template <typename Start, typename Stop = impl::trivial, typename Step = impl::trivial>
         requires (meta::iterator<Start>)
     range(Start&&, Stop&&, Step&& = {}) -> range<impl::subrange<
         meta::remove_rvalue<Start>,
@@ -3633,9 +3635,9 @@ namespace iter {
     /* A special case of `range` that contains only a single, non-iterable element.
     Default-constructing this range will create a range of zero elements instead. */
     template <impl::range_concept C> requires (!meta::iterable<C> && !meta::tuple_like<C>)
-    struct range<C> : range<impl::scalar_range<C>> {
-        using range<impl::scalar_range<C>>::range;
-        using range<impl::scalar_range<C>>::operator=;
+    struct range<C> : range<impl::scalar<C>> {
+        using range<impl::scalar<C>>::range;
+        using range<impl::scalar<C>>::operator=;
     };
 
     template <typename T, typename Category, size_t Rank>
@@ -3679,16 +3681,16 @@ namespace meta {
     template <typename T>
     [[nodiscard]] constexpr decltype(auto) to_range_or_scalar(T&& t)
         noexcept (meta::range<T> || requires{{
-            iter::range<impl::scalar_range<meta::remove_rvalue<T>>>{::std::forward<T>(t)}
+            iter::range<impl::scalar<meta::remove_rvalue<T>>>{::std::forward<T>(t)}
         } noexcept;})
         requires (meta::range<T> || requires{{
-            iter::range<impl::scalar_range<meta::remove_rvalue<T>>>{::std::forward<T>(t)}
+            iter::range<impl::scalar<meta::remove_rvalue<T>>>{::std::forward<T>(t)}
         };})
     {
         if constexpr (meta::range<T>) {
             return (::std::forward<T>(t));
         } else {
-            return iter::range<impl::scalar_range<meta::remove_rvalue<T>>>(::std::forward<T>(t));
+            return iter::range<impl::scalar<meta::remove_rvalue<T>>>(::std::forward<T>(t));
         }
     }
 
@@ -3698,6 +3700,32 @@ namespace meta {
     `meta::to_range_or_scalar()` method. */
     template <typename T>
     using as_range_or_scalar = remove_rvalue<decltype((to_range_or_scalar(::std::declval<T>())))>;
+
+    namespace detail {
+
+        template <typename T>
+        constexpr bool prefer_constructor<iter::range<T>> = true;
+
+        template <typename T>
+        constexpr bool range<iter::range<T>> = true;
+
+        template <typename T>
+        constexpr bool range_transparent<impl::scalar<T>> = true;
+        template <typename T>
+        constexpr bool range_transparent<impl::tuple_range<T>> = true;
+
+        template <typename T>
+        constexpr bool scalar<impl::scalar<T>> = true;
+
+        template <typename Start, typename Stop, typename Step>
+        constexpr bool iota<impl::iota<Start, Stop, Step>> = true;
+
+        template <typename Start, typename Stop, typename Step>
+        constexpr bool subrange<impl::subrange<Start, Stop, Step>> = true;
+
+        // template <typename C>
+
+    }
 
 }
 
@@ -4495,7 +4523,7 @@ namespace impl {
     template <typename C> requires (!meta::iterable<meta::as_const<C>> && meta::tuple_like<C>)
     struct _sequence_container<C> { using type = meta::as_const<impl::tuple_range<C>>; };
     template <typename C> requires (!meta::iterable<meta::as_const<C>> && !meta::tuple_like<C>)
-    struct _sequence_container<C> { using type = meta::as_const<impl::scalar_range<C>>; };
+    struct _sequence_container<C> { using type = meta::as_const<impl::scalar<C>>; };
     template <typename C>
     using sequence_container = _sequence_container<C>::type;
 
@@ -4649,7 +4677,7 @@ namespace impl {
 
         std::atomic<size_t> refcount = 1;
         const void* const container;
-        Optional<impl::extent<Rank>> shape_cache;
+        Optional<impl::shape<Rank>> shape_cache;
         std::once_flag shape_sync;
         const dtor_ptr dtor;
         const shape_ptr get_shape;
@@ -4674,9 +4702,9 @@ namespace impl {
         [[no_unique_address]] const iter_distance_ptr iter_distance;
         const iter_compare_ptr iter_compare;
 
-        [[nodiscard]] constexpr const impl::extent<Rank>& shape() {
+        [[nodiscard]] constexpr const impl::shape<Rank>& shape() {
             struct {
-                using type = const impl::extent<Rank>&;
+                using type = const impl::shape<Rank>&;
                 sequence_control* self;
                 constexpr type operator()(NoneType) {
                     self->get_shape(self);
@@ -5219,7 +5247,7 @@ namespace impl {
     `std::forward_iterator_tag`, owing to the common range guarantee.  Similarly, if
     the category is specified as contiguous by the template signature, but its shape
     has more than 1 dimension, then the category will be downgraded to
-    `std::random_access_tag` instead. */
+    `std::random_access_iterator_tag` instead. */
     template <typename T, typename Category, size_t Rank>
         requires (sequence_concept<T, Category, Rank>)
     struct sequence_iterator {
@@ -6859,7 +6887,7 @@ namespace iter {
     composition of common range algorithms.  See each of those adaptors for more
     details. */
     template <impl::range_concept C = impl::empty_range<>>
-    struct range : impl::range_tag {
+    struct range {
         [[no_unique_address]] impl::ref<C> __value;
 
         [[nodiscard]] constexpr range() = default;
@@ -6874,17 +6902,13 @@ namespace iter {
             __value{C(std::forward<A>(args)...)}
         {}
 
-        template <
-            typename Start,
-            typename Stop = impl::iota_tag,
-            typename Step = impl::iota_tag
-        >
+        template <typename Start, typename Stop = impl::trivial, typename Step = impl::trivial>
         [[nodiscard]] constexpr explicit range(
             Start&& start,
             Stop&& stop,
             Step&& step = {}
         )
-            requires (!meta::iterator<Start> && meta::inherits<C, impl::iota_tag>)
+            requires (!meta::iterator<Start> && meta::specialization_of<C, impl::iota>)
         :
             __value{C(
                 std::forward<Start>(start),
@@ -6893,17 +6917,13 @@ namespace iter {
             )}
         {}
 
-        template <
-            typename Start,
-            typename Stop = impl::subrange_tag,
-            typename Step = impl::subrange_tag
-        >
+        template <typename Start, typename Stop = impl::trivial, typename Step = impl::trivial>
         [[nodiscard]] constexpr explicit range(
             Start&& start,
             Stop&& stop,
             Step&& step = {}
         )
-            requires (meta::iterator<Start> && meta::inherits<C, impl::subrange_tag>)
+            requires (meta::iterator<Start> && meta::specialization_of<C, impl::subrange>)
         :
             __value{C(
                 std::forward<Start>(start),
@@ -6924,15 +6944,15 @@ namespace iter {
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
             noexcept (
-                !impl::range_transparent<C> ||
+                !meta::range_transparent<C> ||
                 requires{{**std::forward<Self>(self).__value} noexcept;}
             )
             requires (
-                !impl::range_transparent<C> ||
+                !meta::range_transparent<C> ||
                 requires{{**std::forward<Self>(self).__value};}
             )
         {
-            if constexpr (impl::range_transparent<C>) {
+            if constexpr (meta::range_transparent<C>) {
                 return (**std::forward<Self>(self).__value);
             } else {
                 return (*std::forward<Self>(self).__value);
@@ -6941,16 +6961,16 @@ namespace iter {
 
         /* Indirectly access a member of the underlying container or scalar value. */
         [[nodiscard]] constexpr auto operator->()
-            noexcept (!impl::range_transparent<C> || requires{{**__value} noexcept;})
-            requires (!impl::range_transparent<C> || requires{{**__value};})
+            noexcept (!meta::range_transparent<C> || requires{{**__value} noexcept;})
+            requires (!meta::range_transparent<C> || requires{{**__value};})
         {
             return std::addressof(**this);
         }
 
         /* Indirectly access a member of the underlying container or scalar value. */
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (!impl::range_transparent<C> || requires{{**__value} noexcept;})
-            requires (!impl::range_transparent<C> || requires{{**__value};})
+            noexcept (!meta::range_transparent<C> || requires{{**__value} noexcept;})
+            requires (!meta::range_transparent<C> || requires{{**__value};})
         {
             return std::addressof(**this);
         }
@@ -7088,10 +7108,10 @@ namespace iter {
         be deduced using the `meta::shape()` metafunction.  Note that sized iterables
         always produce a shape of at least one dimension.
 
-        This method always returns an `impl::extent<rank>` object, where `rank` is
+        This method always returns an `impl::shape<rank>` object, where `rank` is
         equal to the number of dimensions in the container's shape, or `None` if they
         cannot be determined at compile time (therefore yielding a dynamic shape).  In
-        both cases, the `extent` object behaves like a read-only
+        both cases, the `shape` object behaves like a read-only
         `std::array<size_t, N>` or `std::vector<size_t>`, respectively. */
         [[nodiscard]] constexpr auto shape() const
             noexcept (requires{{meta::shape(*__value)} noexcept;})
@@ -7445,6 +7465,18 @@ namespace iter {
 }
 
 
+namespace meta {
+
+    namespace detail {
+
+        template <typename T, typename Category, size_t Rank>
+        constexpr bool sequence<impl::sequence<T, Category, Rank>> = true;
+
+    }
+
+}
+
+
 namespace impl {
 
     template <typename T, typename Category, size_t Rank>
@@ -7613,7 +7645,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         constexpr bool enable_borrowed_range<bertrand::impl::empty_range<T>> = true;
 
         template <typename T>
-        constexpr bool enable_borrowed_range<bertrand::impl::scalar_range<T>> =
+        constexpr bool enable_borrowed_range<bertrand::impl::scalar<T>> =
             enable_borrowed_range<bertrand::Optional<T>>;
 
         template <typename T, typename Category, size_t Rank>
@@ -7622,7 +7654,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     }
 
     template <size_t N>
-    struct tuple_size<bertrand::impl::extent<N>> : std::integral_constant<size_t, N> {};
+    struct tuple_size<bertrand::impl::shape<N>> : std::integral_constant<size_t, N> {};
 
     template <bertrand::meta::tuple_like T>
     struct tuple_size<bertrand::iter::range<T>> : tuple_size<bertrand::meta::unqualify<T>> {};
@@ -7634,13 +7666,13 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     struct tuple_size<bertrand::impl::empty_range<T>> : std::integral_constant<size_t, 0> {};
 
     template <typename T>
-    struct tuple_size<bertrand::impl::scalar_range<T>> : std::integral_constant<size_t, 1> {};
+    struct tuple_size<bertrand::impl::scalar<T>> : std::integral_constant<size_t, 1> {};
 
     template <typename T>
     struct tuple_size<bertrand::impl::tuple_range<T>> : tuple_size<bertrand::meta::unqualify<T>> {};
 
     template <size_t I, size_t N>
-    struct tuple_element<I, bertrand::impl::extent<N>> {
+    struct tuple_element<I, bertrand::impl::shape<N>> {
         using type = size_t;
     };
 
@@ -7664,7 +7696,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     };
 
     template <size_t I, typename T> requires (I == 0)
-    struct tuple_element<I, bertrand::impl::scalar_range<T>> {
+    struct tuple_element<I, bertrand::impl::scalar<T>> {
         using type = T;
     };
 

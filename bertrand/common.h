@@ -186,8 +186,10 @@ static_assert(
 
 
 namespace impl {
-    struct prefer_constructor_tag {};
-    struct basic_tuple_tag : prefer_constructor_tag {};
+    /* A trivial helper class that can be used to enable anonymous `{}` initializers
+    for supported types, where such initializers have special meaning.  Not used in any
+    other case. */
+    struct trivial {};
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
@@ -413,58 +415,58 @@ namespace meta {
     concept None = detail::None<unqualify<T>>;
 
     namespace detail {
-        template <typename L, typename R>
-        struct qualify { using type = L; };
-        template <typename L, typename R>
-        struct qualify<L, const R> { using type = const L; };
-        template <typename L, typename R>
-        struct qualify<L, volatile R> { using type = volatile L; };
-        template <typename L, typename R>
-        struct qualify<L, const volatile R> { using type = const volatile L; };
-        template <typename L, typename R>
-        struct qualify<L, R&> { using type = L&; };
-        template <typename L, typename R>
-        struct qualify<L, const R&> { using type = const L&; };
-        template <typename L, typename R>
-        struct qualify<L, volatile R&> { using type = volatile L&; };
-        template <typename L, typename R>
-        struct qualify<L, const volatile R&> { using type = const volatile L&; };
-        template <typename L, typename R>
-        struct qualify<L, R&&> { using type = L&&; };
-        template <typename L, typename R>
-        struct qualify<L, const R&&> { using type = const L&&; };
-        template <typename L, typename R>
-        struct qualify<L, volatile R&&> { using type = volatile L&&; };
-        template <typename L, typename R>
-        struct qualify<L, const volatile R&&> { using type = const volatile L&&; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, R> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, const R> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, volatile R> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, const volatile R> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, R&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, const R&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, volatile R&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, const volatile R&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, R&&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, const R&&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, volatile R&&> { using type = L; };
-        template <meta::is_void L, typename R>
-        struct qualify<L, const volatile R&&> { using type = L; };
+        template <typename to, typename from>
+        struct qualify { using type = to; };
+        template <typename to, typename from>
+        struct qualify<to, const from> { using type = const to; };
+        template <typename to, typename from>
+        struct qualify<to, volatile from> { using type = volatile to; };
+        template <typename to, typename from>
+        struct qualify<to, const volatile from> { using type = const volatile to; };
+        template <typename to, typename from>
+        struct qualify<to, from&> { using type = to&; };
+        template <typename to, typename from>
+        struct qualify<to, const from&> { using type = const to&; };
+        template <typename to, typename from>
+        struct qualify<to, volatile from&> { using type = volatile to&; };
+        template <typename to, typename from>
+        struct qualify<to, const volatile from&> { using type = const volatile to&; };
+        template <typename to, typename from>
+        struct qualify<to, from&&> { using type = to&&; };
+        template <typename to, typename from>
+        struct qualify<to, const from&&> { using type = const to&&; };
+        template <typename to, typename from>
+        struct qualify<to, volatile from&&> { using type = volatile to&&; };
+        template <typename to, typename from>
+        struct qualify<to, const volatile from&&> { using type = const volatile to&&; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, from> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, const from> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, volatile from> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, const volatile from> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, from&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, const from&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, volatile from&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, const volatile from&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, from&&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, const from&&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, volatile from&&> { using type = to; };
+        template <meta::is_void to, typename from>
+        struct qualify<to, const volatile from&&> { using type = to; };
     }
 
-    template <typename L, typename R>
-    using qualify = detail::qualify<L, R>::type;
+    template <typename to, typename from>
+    using qualify = detail::qualify<to, from>::type;
 
     template <typename T>
     concept qualified = is_const<T> || is_volatile<T> || reference<T>;
@@ -994,6 +996,11 @@ namespace meta {
         template <template <typename...> class C, typename... Ts>
         constexpr bool is_template<C<Ts...>> = true;
 
+        template <typename T, template <typename...> class C>
+        constexpr bool specialization_of = false;
+        template <typename... Ts, template <typename...> class C>
+        constexpr bool specialization_of<C<Ts...>, C> = true;
+
         template <typename T>
         struct specialization { using type = meta::pack<>; };
         template <template <typename...> class C, typename... Ts>
@@ -1049,6 +1056,13 @@ namespace meta {
     parameters are standardized. */
     template <typename T>
     concept is_template = detail::is_template<unqualify<T>>;
+
+    /* `true` if `T` is a specialization of the template `C`.  Note that due to
+    restrictions in C++23, the template and all its parameters must be types.  This
+    restriction may be relaxed in a later standard if/when universal template
+    parameters are standardized. */
+    template <typename T, template <typename...> class C>
+    concept specialization_of = is_template<T> && detail::specialization_of<unqualify<T>, C>;
 
     /* A pack containing the template parameters that were used to specialize some
     template.  Note that due to restrictions in C++23, the template and all its
@@ -5242,7 +5256,7 @@ namespace meta {
         conversion paths.  The conversion operator must check this concept in its
         constraints. */
         template <typename T>
-        constexpr bool prefer_constructor = meta::inherits<T, impl::prefer_constructor_tag>;
+        constexpr bool prefer_constructor = false;
         template <typename T, auto Extent>
         constexpr bool prefer_constructor<::std::span<T, Extent>> = true;
         template <typename... Ts>
@@ -5282,7 +5296,7 @@ where all relevant information is isolated to the begin iterator.  Special signi
 is also given to this type within the monadic union interface, where it represents
 either the empty state of an `Optional` or the result state of an `Expected<void>`,
 depending on context. */
-struct NoneType : impl::prefer_constructor_tag {
+struct NoneType {
     [[nodiscard]] constexpr NoneType() = default;
     [[nodiscard]] constexpr NoneType(std::nullopt_t) noexcept {}
     [[nodiscard]] constexpr NoneType(std::nullptr_t) noexcept {}
@@ -5469,7 +5483,7 @@ namespace impl {
     need to store multiple values of different types, some of which may be lvalues,
     which should be stored by reference rather than by value. */
     template <meta::not_rvalue...>
-    struct basic_tuple : impl::basic_tuple_tag {
+    struct basic_tuple {
         [[nodiscard]] constexpr basic_tuple() noexcept {};
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
@@ -5944,7 +5958,7 @@ namespace impl {
 
     /* A simple functor that implements a universal, non-cryptographic FNV-1a string
     hashing algorithm, which is stable at both compile time and runtime. */
-    struct fnv1a : impl::prefer_constructor_tag {
+    struct fnv1a {
         static constexpr size_t seed =
             sizeof(size_t) > 4 ? size_t(14695981039346656037ULL) : size_t(2166136261U);
 
@@ -5997,7 +6011,7 @@ namespace impl {
     /// functions.
 
     template <typename T>
-    struct Construct : impl::prefer_constructor_tag {
+    struct Construct {
         template <typename... Args>
         static constexpr T operator()(Args&&... args)
             noexcept (meta::nothrow::constructible_from<T, Args...>)
@@ -6007,7 +6021,7 @@ namespace impl {
         }
     };
 
-    struct Assign : impl::prefer_constructor_tag {
+    struct Assign {
         template <typename T, typename U>
         static constexpr decltype(auto) operator()(T&& curr, U&& other)
             noexcept (meta::nothrow::assignable<T, U>)
@@ -6018,7 +6032,7 @@ namespace impl {
     };
 
     template <meta::not_void T>
-    struct ConvertTo : impl::prefer_constructor_tag {
+    struct ConvertTo {
         template <meta::convertible_to<T> U>
         static constexpr T operator()(U&& value)
             noexcept (meta::nothrow::convertible_to<U, T>)
@@ -6028,7 +6042,7 @@ namespace impl {
     };
 
     template <meta::not_void T>
-    struct ExplicitConvertTo : impl::prefer_constructor_tag {
+    struct ExplicitConvertTo {
         template <meta::explicitly_convertible_to<T> U>
         static constexpr T operator()(U&& value)
             noexcept (meta::nothrow::explicitly_convertible_to<U, T>)
@@ -6037,7 +6051,7 @@ namespace impl {
         }
     };
 
-    struct Hash : impl::prefer_constructor_tag {
+    struct Hash {
         template <meta::hashable T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept (meta::nothrow::hashable<T>)
@@ -6046,7 +6060,7 @@ namespace impl {
         }
     };
 
-    struct AddressOf : impl::prefer_constructor_tag {
+    struct AddressOf {
         template <meta::has_address T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_address<T>)
@@ -6055,7 +6069,7 @@ namespace impl {
         }
     };
 
-    struct Dereference : impl::prefer_constructor_tag {
+    struct Dereference {
         template <meta::has_dereference T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_dereference<T>)
@@ -6064,7 +6078,7 @@ namespace impl {
         }
     };
 
-    struct Arrow : impl::prefer_constructor_tag {
+    struct Arrow {
         template <meta::has_arrow T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_arrow<T>)
@@ -6073,7 +6087,7 @@ namespace impl {
         }
     };
 
-    struct ArrowDereference : impl::prefer_constructor_tag {
+    struct ArrowDereference {
         template <typename L, typename R> requires (meta::has_arrow_dereference<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_arrow_dereference<L, R>)
@@ -6082,7 +6096,7 @@ namespace impl {
         }
     };
 
-    struct Call : impl::prefer_constructor_tag {
+    struct Call {
         template <typename F, typename... A> requires (meta::callable<F, A...>)
         static constexpr decltype(auto) operator()(F&& f, A&&... args)
             noexcept(meta::nothrow::callable<F, A...>)
@@ -6091,7 +6105,7 @@ namespace impl {
         }
     };
 
-    struct Subscript : impl::prefer_constructor_tag {
+    struct Subscript {
         template <typename T, typename... K> requires (meta::indexable<T, K...>)
         static constexpr decltype(auto) operator()(T&& value, K&&... keys)
             noexcept(meta::nothrow::indexable<T, K...>)
@@ -6100,7 +6114,7 @@ namespace impl {
         }
     };
 
-    struct Pos : impl::prefer_constructor_tag {
+    struct Pos {
         template <meta::has_pos T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_pos<T>)
@@ -6109,7 +6123,7 @@ namespace impl {
         }
     };
 
-    struct Neg : impl::prefer_constructor_tag {
+    struct Neg {
         template <meta::has_neg T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_neg<T>)
@@ -6118,7 +6132,7 @@ namespace impl {
         }
     };
 
-    struct PreIncrement : impl::prefer_constructor_tag {
+    struct PreIncrement {
         template <meta::has_preincrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_preincrement<T>)
@@ -6127,7 +6141,7 @@ namespace impl {
         }
     };
 
-    struct PostIncrement : impl::prefer_constructor_tag {
+    struct PostIncrement {
         template <meta::has_postincrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_postincrement<T>)
@@ -6136,7 +6150,7 @@ namespace impl {
         }
     };
 
-    struct PreDecrement : impl::prefer_constructor_tag {
+    struct PreDecrement {
         template <meta::has_predecrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_predecrement<T>)
@@ -6145,7 +6159,7 @@ namespace impl {
         }
     };
 
-    struct PostDecrement : impl::prefer_constructor_tag {
+    struct PostDecrement {
         template <meta::has_postdecrement T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_postdecrement<T>)
@@ -6154,7 +6168,7 @@ namespace impl {
         }
     };
 
-    struct LogicalNot : impl::prefer_constructor_tag {
+    struct LogicalNot {
         template <meta::has_logical_not T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_logical_not<T>)
@@ -6163,7 +6177,7 @@ namespace impl {
         }
     };
 
-    struct LogicalAnd : impl::prefer_constructor_tag {
+    struct LogicalAnd {
         template <typename L, typename R> requires (meta::has_logical_and<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_logical_and<L, R>)
@@ -6172,7 +6186,7 @@ namespace impl {
         }
     };
 
-    struct LogicalOr : impl::prefer_constructor_tag {
+    struct LogicalOr {
         template <typename L, typename R> requires (meta::has_logical_or<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_logical_or<L, R>)
@@ -6181,7 +6195,7 @@ namespace impl {
         }
     };
 
-    struct Less : impl::prefer_constructor_tag {
+    struct Less {
         template <typename L, typename R> requires (meta::has_lt<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_lt<L, R>)
@@ -6190,7 +6204,7 @@ namespace impl {
         }
     };
 
-    struct LessEqual : impl::prefer_constructor_tag {
+    struct LessEqual {
         template <typename L, typename R> requires (meta::has_le<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_le<L, R>)
@@ -6199,7 +6213,7 @@ namespace impl {
         }
     };
 
-    struct Equal : impl::prefer_constructor_tag {
+    struct Equal {
         template <typename L, typename R> requires (meta::has_eq<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_eq<L, R>)
@@ -6208,7 +6222,7 @@ namespace impl {
         }
     };
 
-    struct NotEqual : impl::prefer_constructor_tag {
+    struct NotEqual {
         template <typename L, typename R> requires (meta::has_ne<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ne<L, R>)
@@ -6217,7 +6231,7 @@ namespace impl {
         }
     };
 
-    struct GreaterEqual : impl::prefer_constructor_tag {
+    struct GreaterEqual {
         template <typename L, typename R> requires (meta::has_ge<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ge<L, R>)
@@ -6226,7 +6240,7 @@ namespace impl {
         }
     };
 
-    struct Greater : impl::prefer_constructor_tag {
+    struct Greater {
         template <typename L, typename R> requires (meta::has_gt<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_gt<L, R>)
@@ -6235,7 +6249,7 @@ namespace impl {
         }
     };
 
-    struct Spaceship : impl::prefer_constructor_tag {
+    struct Spaceship {
         template <typename L, typename R> requires (meta::has_spaceship<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_spaceship<L, R>)
@@ -6244,7 +6258,7 @@ namespace impl {
         }
     };
 
-    struct Add : impl::prefer_constructor_tag {
+    struct Add {
         template <typename L, typename R> requires (meta::has_add<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_add<L, R>)
@@ -6253,7 +6267,7 @@ namespace impl {
         }
     };
 
-    struct InplaceAdd : impl::prefer_constructor_tag {
+    struct InplaceAdd {
         template <typename L, typename R> requires (meta::has_iadd<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_iadd<L, R>)
@@ -6262,7 +6276,7 @@ namespace impl {
         }
     };
 
-    struct Subtract : impl::prefer_constructor_tag {
+    struct Subtract {
         template <typename L, typename R> requires (meta::has_sub<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_sub<L, R>)
@@ -6271,7 +6285,7 @@ namespace impl {
         }
     };
 
-    struct InplaceSubtract : impl::prefer_constructor_tag {
+    struct InplaceSubtract {
         template <typename L, typename R> requires (meta::has_isub<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_isub<L, R>)
@@ -6280,7 +6294,7 @@ namespace impl {
         }
     };
 
-    struct Multiply : impl::prefer_constructor_tag {
+    struct Multiply {
         template <typename L, typename R> requires (meta::has_mul<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_mul<L, R>)
@@ -6289,7 +6303,7 @@ namespace impl {
         }
     };
 
-    struct InplaceMultiply : impl::prefer_constructor_tag {
+    struct InplaceMultiply {
         template <typename L, typename R> requires (meta::has_imul<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_imul<L, R>)
@@ -6298,7 +6312,7 @@ namespace impl {
         }
     };
 
-    struct Divide : impl::prefer_constructor_tag {
+    struct Divide {
         template <typename L, typename R> requires (meta::has_div<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_div<L, R>)
@@ -6307,7 +6321,7 @@ namespace impl {
         }
     };
 
-    struct InplaceDivide : impl::prefer_constructor_tag {
+    struct InplaceDivide {
         template <typename L, typename R> requires (meta::has_idiv<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_idiv<L, R>)
@@ -6316,7 +6330,7 @@ namespace impl {
         }
     };
 
-    struct Modulus : impl::prefer_constructor_tag {
+    struct Modulus {
         template <typename L, typename R> requires (meta::has_mod<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_mod<L, R>)
@@ -6325,7 +6339,7 @@ namespace impl {
         }
     };
 
-    struct InplaceModulus : impl::prefer_constructor_tag {
+    struct InplaceModulus {
         template <typename L, typename R> requires (meta::has_imod<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_imod<L, R>)
@@ -6334,7 +6348,7 @@ namespace impl {
         }
     };
 
-    struct LeftShift : impl::prefer_constructor_tag {
+    struct LeftShift {
         template <typename L, typename R> requires (meta::has_lshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_lshift<L, R>)
@@ -6343,7 +6357,7 @@ namespace impl {
         }
     };
 
-    struct InplaceLeftShift : impl::prefer_constructor_tag {
+    struct InplaceLeftShift {
         template <typename L, typename R> requires (meta::has_ilshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ilshift<L, R>)
@@ -6352,7 +6366,7 @@ namespace impl {
         }
     };
 
-    struct RightShift : impl::prefer_constructor_tag {
+    struct RightShift {
         template <typename L, typename R> requires (meta::has_rshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_rshift<L, R>)
@@ -6361,7 +6375,7 @@ namespace impl {
         }
     };
 
-    struct InplaceRightShift : impl::prefer_constructor_tag {
+    struct InplaceRightShift {
         template <typename L, typename R> requires (meta::has_irshift<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_irshift<L, R>)
@@ -6370,7 +6384,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseNot : impl::prefer_constructor_tag {
+    struct BitwiseNot {
         template <meta::has_bitwise_not T>
         static constexpr decltype(auto) operator()(T&& value)
             noexcept(meta::nothrow::has_bitwise_not<T>)
@@ -6379,7 +6393,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseAnd : impl::prefer_constructor_tag {
+    struct BitwiseAnd {
         template <typename L, typename R> requires (meta::has_and<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_and<L, R>)
@@ -6388,7 +6402,7 @@ namespace impl {
         }
     };
 
-    struct InplaceBitwiseAnd : impl::prefer_constructor_tag {
+    struct InplaceBitwiseAnd {
         template <typename L, typename R> requires (meta::has_iand<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_iand<L, R>)
@@ -6397,7 +6411,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseOr : impl::prefer_constructor_tag {
+    struct BitwiseOr {
         template <typename L, typename R> requires (meta::has_or<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_or<L, R>)
@@ -6406,7 +6420,7 @@ namespace impl {
         }
     };
 
-    struct InplaceBitwiseOr : impl::prefer_constructor_tag {
+    struct InplaceBitwiseOr {
         template <typename L, typename R> requires (meta::has_ior<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ior<L, R>)
@@ -6415,7 +6429,7 @@ namespace impl {
         }
     };
 
-    struct BitwiseXor : impl::prefer_constructor_tag {
+    struct BitwiseXor {
         template <typename L, typename R> requires (meta::has_xor<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_xor<L, R>)
@@ -6424,7 +6438,7 @@ namespace impl {
         }
     };
 
-    struct InplaceBitwiseXor : impl::prefer_constructor_tag {
+    struct InplaceBitwiseXor {
         template <typename L, typename R> requires (meta::has_ixor<L, R>)
         static constexpr decltype(auto) operator()(L&& lhs, R&& rhs)
             noexcept(meta::nothrow::has_ixor<L, R>)
@@ -6640,16 +6654,10 @@ namespace impl {
 
 namespace meta {
 
-    template <typename T>
-    concept basic_tuple = inherits<T, impl::basic_tuple_tag>;
-
     namespace detail {
 
-        template <typename T>
-        constexpr bool static_str = false;
-        template <size_t N>
-        constexpr bool static_str<bertrand::static_str<N>> = true;
-
+        template <>
+        inline constexpr bool prefer_constructor<bertrand::NoneType> = true;
         template <typename T>
         constexpr bool prefer_constructor<impl::ref<T>> = true;
         template <typename T>
@@ -6658,6 +6666,11 @@ namespace meta {
         constexpr bool prefer_constructor<impl::vtable<F, Ts...>> = true;
         template <typename T>
         constexpr bool prefer_constructor<impl::contiguous_iterator<T>> = true;
+
+        template <typename T>
+        constexpr bool static_str = false;
+        template <size_t N>
+        constexpr bool static_str<bertrand::static_str<N>> = true;
 
     }
 
@@ -6741,15 +6754,16 @@ namespace std {
         }
     };
 
-    template <bertrand::meta::basic_tuple T>
-    struct tuple_size<T> {
-        static constexpr size_t value = bertrand::meta::unqualify<T>::size();
+    template <typename... Ts>
+    struct tuple_size<bertrand::impl::basic_tuple<Ts...>> {
+        static constexpr size_t value = bertrand::impl::basic_tuple<Ts...>::size();
     };
 
-    template <size_t I, bertrand::meta::basic_tuple T>
-    struct tuple_element<I, T> {
+    template <size_t I, typename... Ts>
+        requires (I < tuple_size<bertrand::impl::basic_tuple<Ts...>>::value)
+    struct tuple_element<I, bertrand::impl::basic_tuple<Ts...>> {
         using type = bertrand::meta::remove_rvalue<
-            decltype((std::declval<T>().template get<I>()))
+            decltype((std::declval<bertrand::impl::basic_tuple<Ts...>>().template get<I>()))
         >;
     };
 
