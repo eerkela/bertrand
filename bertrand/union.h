@@ -210,7 +210,7 @@ namespace impl {
         }
 
         template <typename U> requires (std::same_as<U, T>)
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T>
         ) noexcept {
             return std::strong_ordering::equal;
@@ -1062,10 +1062,10 @@ namespace impl {
         }
 
         template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
-            return u.__value.template is<meta::remove_rvalue<U>>();
+            return u.__value.template compare<meta::remove_rvalue<U>>();
         }
 
         template <size_t I> requires (I < alternatives::size())
@@ -1104,7 +1104,7 @@ namespace impl {
         }
 
         template <typename U> requires (meta::specialization<T>::template contains<U>())
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
             return u.index() <=> meta::specialization<T>::template index<U>();
@@ -1134,10 +1134,10 @@ namespace impl {
         }
 
         template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
-            return u.__value.template is<meta::remove_rvalue<U>>();
+            return u.__value.template compare<meta::remove_rvalue<U>>();
         }
 
         template <size_t I> requires (I < alternatives::size())
@@ -1166,7 +1166,7 @@ namespace impl {
         }
 
         template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
             return std::strong_ordering::equal;
@@ -1200,7 +1200,7 @@ namespace impl {
                 std::same_as<U, std::nullopt_t> ||
                 meta::specialization<T>::template contains<U>()
             )
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
             if constexpr (std::same_as<U, NoneType> || std::same_as<U, std::nullopt_t>) {
@@ -1249,10 +1249,10 @@ namespace impl {
         }
 
         template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
-            return u.__value.template is<meta::remove_rvalue<U>>();
+            return u.__value.template compare<meta::remove_rvalue<U>>();
         }
 
         template <size_t I> requires (I < alternatives::size())
@@ -1289,7 +1289,7 @@ namespace impl {
         }
 
         template <typename U> requires (meta::specialization<T>::template contains<U>())
-        [[gnu::always_inline]] static constexpr std::strong_ordering is(
+        [[gnu::always_inline]] static constexpr std::strong_ordering compare(
             meta::as_const_ref<T> u
         ) noexcept {
             if constexpr (std::same_as<U, typename meta::specialization<T>::template at<0>>) {
@@ -1297,7 +1297,7 @@ namespace impl {
             } else {
                 return u.has_value() ?
                     std::strong_ordering::greater :
-                    visitable<decltype((u.error()))>::template is<U>(u.error());
+                    visitable<decltype((u.error()))>::template compare<U>(u.error());
             }
         }
 
@@ -1526,7 +1526,7 @@ namespace impl {
 
         /* Check if the active alternative is of type `T`, assuming. */
         template <typename T> requires (contains<T>())
-        [[nodiscard]] constexpr std::strong_ordering is() const noexcept {
+        [[nodiscard]] constexpr std::strong_ordering compare() const noexcept {
             return (m_index <=> find<T>());
         }
 
@@ -3708,7 +3708,7 @@ namespace impl {
         /* Check if the active alternative is of type `T`, assuming `T` is a valid
         alternative. */
         template <typename T> requires (types::template contains<T>())
-        [[nodiscard]] constexpr std::strong_ordering is() const noexcept {
+        [[nodiscard]] constexpr std::strong_ordering compare() const noexcept {
             return index() <=> find<T>();
         }
 
@@ -6320,12 +6320,16 @@ constexpr decltype(auto) operator<(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::Less, L, R>) {
@@ -6356,12 +6360,16 @@ constexpr decltype(auto) operator<=(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::LessEqual, L, R>) {
@@ -6392,12 +6400,16 @@ constexpr decltype(auto) operator==(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::Equal, L, R>) {
@@ -6428,12 +6440,16 @@ constexpr decltype(auto) operator!=(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::NotEqual, L, R>) {
@@ -6464,12 +6480,16 @@ constexpr decltype(auto) operator>=(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::GreaterEqual, L, R>) {
@@ -6500,12 +6520,16 @@ constexpr decltype(auto) operator>(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::Greater, L, R>) {
@@ -6535,10 +6559,10 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
                     meta::std::in_place_index_value<R>
                 } noexcept;} : (
                 meta::std::type_identity<L> ?
-                    requires{{impl::visitable<meta::forward<R>>::template is<
+                    requires{{impl::visitable<meta::forward<R>>::template compare<
                         meta::std::type_identity_type<L>
                     >(std::forward<R>(rhs))} noexcept;} :
-                    requires{{impl::visitable<meta::forward<L>>::template is<
+                    requires{{impl::visitable<meta::forward<L>>::template compare<
                         meta::std::type_identity_type<R>
                     >(std::forward<L>(lhs))} noexcept;}
                 )
@@ -6555,12 +6579,16 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R> <
             impl::visitable<meta::forward<L>>::alternatives::size()
         ) ||
-        (meta::std::type_identity<L> && requires{{impl::visitable<meta::forward<R>>::template is<
-            meta::std::type_identity_type<L>
-        >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;}) ||
-        (meta::std::type_identity<R> && requires{{impl::visitable<meta::forward<L>>::template is<
-            meta::std::type_identity_type<R>
-        >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;})
+        (meta::std::type_identity<L> && requires{
+            {impl::visitable<meta::forward<R>>::template compare<
+                meta::std::type_identity_type<L>
+            >(std::forward<R>(rhs))} -> std::same_as<std::strong_ordering>;
+        }) ||
+        (meta::std::type_identity<R> && requires{
+            {impl::visitable<meta::forward<L>>::template compare<
+                meta::std::type_identity_type<R>
+            >(std::forward<L>(lhs))} -> std::same_as<std::strong_ordering>;
+        })
     ))
 {
     if constexpr (meta::force_visit<1, impl::Spaceship, L, R>) {
@@ -6580,11 +6608,11 @@ constexpr decltype(auto) operator<=>(L&& lhs, R&& rhs)
             meta::std::in_place_index_value<R>
         );
     } else if constexpr (meta::std::type_identity<L>) {
-        return (impl::visitable<meta::forward<R>>::template is<
+        return (impl::visitable<meta::forward<R>>::template compare<
             meta::std::type_identity_type<L>
         >(std::forward<R>(rhs)));
     } else {
-        return (impl::visitable<meta::forward<L>>::template is<
+        return (impl::visitable<meta::forward<L>>::template compare<
             meta::std::type_identity_type<R>
         >(std::forward<L>(lhs)));
     }

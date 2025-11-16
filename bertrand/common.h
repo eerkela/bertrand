@@ -187,7 +187,7 @@ static_assert(
 
 namespace impl {
     struct prefer_constructor_tag {};
-    struct basic_tuple_tag {};
+    struct basic_tuple_tag : prefer_constructor_tag {};
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
@@ -5469,7 +5469,7 @@ namespace impl {
     need to store multiple values of different types, some of which may be lvalues,
     which should be stored by reference rather than by value. */
     template <meta::not_rvalue...>
-    struct basic_tuple : impl::basic_tuple_tag, impl::prefer_constructor_tag {
+    struct basic_tuple : impl::basic_tuple_tag {
         [[nodiscard]] constexpr basic_tuple() noexcept {};
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
@@ -5557,19 +5557,29 @@ namespace impl {
 
     /* A helper class that generates a compile-time vtable for a visitor function `F`,
     which must be a template class that accepts a single non-type template parameter
-    chosen from the enumerated options using a runtime index which is provided to the
-    constructor.  This effectively promotes the index to compile time, and allows the
-    inner function to specialize accordingly, which serves as the basis for most forms
-    of type erasure, polymorphism, and runtime dispatch.
+    chosen from the enumerated options via a runtime index.  This effectively promotes
+    the index to compile time, and allows the inner function to specialize accordingly,
+    which serves as the basis for most forms of type erasure, polymorphism, and runtime
+    dispatch.
 
     Note that the vtable will only be generated when the helper object is invoked, and
     will therefore be unique for each signature.  If the total vtable size (i.e. the
     number of non-type template parameters provided to this class) is less than
-    `MIN_VTABLE_SIZE`, then the vtable will be optimized into a recursive `if`/`else`
+    `MIN_VTABLE_SIZE`, then the vtable will be replaced with a recursive `if`/`else`
     chain instead, which promotes inlining optimizations and reduces binary size. */
+    template <template <auto> typename F, auto... Ts>
+        requires (meta::default_constructible<F<Ts>> && ...)
+    struct vtable {
+        size_t index;
+
+        static constexpr size_t size() noexcept { return 0; }
+        static constexpr ssize_t ssize() noexcept { return 0; }
+        static constexpr bool empty() noexcept { return true; }
+        constexpr void swap(vtable& other) noexcept { std::ranges::swap(index, other.index); }
+    };
     template <template <auto> typename F, auto T, auto... Ts>
         requires (meta::default_constructible<F<T>> && ... && meta::default_constructible<F<Ts>>)
-    struct vtable {
+    struct vtable<F, T, Ts...> {
         size_t index;
 
         static constexpr size_t size() noexcept { return sizeof...(Ts) + 1; }
@@ -5649,7 +5659,7 @@ namespace impl {
     struct _basic_vtable<F, std::index_sequence<Is...>> { using type = vtable<F, Is...>; };
 
     /* Produce a simple vtable with purely integer indices and a specified size. */
-    template <template <size_t> typename F, size_t N> requires (N > 0)
+    template <template <size_t> typename F, size_t N>
     using basic_vtable = _basic_vtable<F, std::make_index_sequence<N>>::type;
 
     /* A trivial iterator that applies a transformation function to the elements of

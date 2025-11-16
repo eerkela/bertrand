@@ -729,6 +729,9 @@ namespace impl {
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
         [[nodiscard]] static constexpr impl::extent<0> shape() noexcept { return {}; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+        [[nodiscard]] static constexpr T operator[](ssize_t) {
+            throw IndexError("empty ranges cannot be subscripted");
+        }
         [[nodiscard]] constexpr auto begin() noexcept {
             return empty_iterator<T>{};
         }
@@ -765,11 +768,9 @@ namespace impl {
     constructor. */
     template <range_concept T>
     struct scalar_range : scalar_tag {
-        [[no_unique_address]] Optional<T> __value;
+        [[no_unique_address]] impl::ref<T> __value;
 
-        [[nodiscard]] constexpr scalar_range() = default;
-
-        template <typename... A> requires (sizeof...(A) > 0)
+        template <typename... A>
         [[nodiscard]] constexpr scalar_range(A&&... args)
             noexcept (meta::nothrow::constructible_from<T, A...>)
             requires (meta::constructible_from<T, A...>)
@@ -784,9 +785,10 @@ namespace impl {
             meta::swap(__value, other.__value);
         }
 
-        [[nodiscard]] constexpr size_t size() const noexcept { return __value != None; }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return __value != None; }
-        [[nodiscard]] constexpr bool empty() const noexcept { return __value == None; }
+        [[nodiscard]] static constexpr size_t size() noexcept { return 1; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 1; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
+        [[nodiscard]] static constexpr impl::extent<1> shape() noexcept { return {1}; }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
@@ -794,31 +796,31 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{meta::to_arrow(*__value)} noexcept;})
-            requires (requires{{meta::to_arrow(*__value)};})
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
         {
-            return meta::to_arrow(*__value);
+            return std::addressof(*__value);
         }
 
         [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{meta::to_arrow(*__value)} noexcept;})
-            requires (requires{{meta::to_arrow(*__value)};})
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
         {
-            return meta::to_arrow(*__value);
+            return std::addressof(*__value);
         }
 
         [[nodiscard]] constexpr auto data()
-            noexcept (requires{{__value == None ? nullptr : std::addressof(*__value)} noexcept;})
-            requires (requires{{__value == None ? nullptr : std::addressof(*__value)};})
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
         {
-            return __value == None ? nullptr : std::addressof(*__value);
+            return std::addressof(*__value);
         }
 
         [[nodiscard]] constexpr auto data() const
-            noexcept (requires{{__value == None ? nullptr : std::addressof(*__value)} noexcept;})
-            requires (requires{{__value == None ? nullptr : std::addressof(*__value)};})
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
         {
-            return __value == None ? nullptr : std::addressof(*__value);
+            return std::addressof(*__value);
         }
 
         template <typename Self>
@@ -846,64 +848,69 @@ namespace impl {
         }
 
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t i) noexcept {
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (!DEBUG)
+        {
+            if constexpr (DEBUG) {
+                i = impl::normalize_index(1, i);  // may throw
+            }
             return (*std::forward<Self>(self).__value);
         }
 
         [[nodiscard]] constexpr auto begin()
-            noexcept (requires{{__value.begin()} noexcept;})
-            requires (requires{{__value.begin()};})
+            noexcept (requires{{data()} noexcept;})
+            requires (requires{{data()};})
         {
-            return __value.begin();
+            return data();
         }
 
         [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{__value.begin()} noexcept;})
-            requires (requires{{__value.begin()};})
+            noexcept (requires{{data()} noexcept;})
+            requires (requires{{data()};})
         {
-            return __value.begin();
+            return data();
         }
 
         [[nodiscard]] constexpr auto end()
-            noexcept (requires{{__value.end()} noexcept;})
-            requires (requires{{__value.end()};})
+            noexcept (requires{{data() + 1} noexcept;})
+            requires (requires{{data() + 1};})
         {
-            return __value.end();
+            return data() + 1;
         }
 
         [[nodiscard]] constexpr auto end() const
-            noexcept (requires{{__value.end()} noexcept;})
-            requires (requires{{__value.end()};})
+            noexcept (requires{{data() + 1} noexcept;})
+            requires (requires{{data() + 1};})
         {
-            return __value.end();
+            return data() + 1;
         }
 
         [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires{{__value.rbegin()} noexcept;})
-            requires (requires{{__value.rbegin()};})
+            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(end())};})
         {
-            return __value.rbegin();
+            return std::make_reverse_iterator(end());
         }
 
         [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires{{__value.rbegin()} noexcept;})
-            requires (requires{{__value.rbegin()};})
+            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(end())};})
         {
-            return __value.rbegin();
+            return std::make_reverse_iterator(end());
         }
 
         [[nodiscard]] constexpr auto rend()
-            noexcept (requires{{__value.rend()} noexcept;})
-            requires (requires{{__value.rend()};})
+            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(begin())};})
         {
-            return __value.rend();
+            return std::make_reverse_iterator(begin());
         }
 
         [[nodiscard]] constexpr auto rend() const
-            noexcept (requires{{__value.rend()} noexcept;})
-            requires (requires{{__value.rend()};})
+            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
+            requires (requires{{std::make_reverse_iterator(begin())};})
         {
-            return __value.rend();
+            return std::make_reverse_iterator(begin());
         }
     };
     template <typename T>
@@ -913,11 +920,25 @@ namespace impl {
     ////    TUPLE    ////
     /////////////////////
 
-    enum class tuple_kind : uint8_t {
-        EMPTY,
-        TRIVIAL,
-        VTABLE,
+    /* A unique vtable has to be emitted for each observed qualification of the tuple
+    type, in order to perfectly forward the results. */
+    template <meta::tuple_like C>
+    struct tuple_vtable {
+        using type = meta::tuple_types<C>::template eval<meta::make_union>;
+        template <size_t I>
+        struct fn {
+            static constexpr type operator()(meta::forward<C> c)
+                noexcept (requires{
+                    {meta::get<I>(c)} noexcept -> meta::nothrow::convertible_to<type>;
+                })
+                requires (requires{{meta::get<I>(c)} -> meta::convertible_to<type>;})
+            {
+                return meta::get<I>(c);
+            }
+        };
+        using dispatch = impl::basic_vtable<fn, meta::tuple_size<C>>;
     };
+
 
     /* A generic iterator over an arbitrary tuple type embedded in a `tuple_range<C>`
     wrapper.  The iterator works by traversing a separate array, which may either
@@ -927,9 +948,9 @@ namespace impl {
     struct tuple_iterator {
         using iterator_category = std::random_access_iterator_tag;
         using difference_type = std::ptrdiff_t;
-        using value_type = meta::remove_reference<decltype((std::declval<T>()[0]))>;
-        using reference = meta::as_lvalue<value_type>;
-        using pointer = meta::address_type<reference>;
+        using reference = tuple_vtable<decltype((*std::declval<T>()))>::type;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::as_pointer<value_type>;
 
         meta::as_pointer<T> dispatch;
         difference_type index;
@@ -1017,284 +1038,30 @@ namespace impl {
         }
     };
 
-    /* A unique vtable has to be emitted for each observed qualification of the tuple
-    type, in order to perfectly forward the results. */
-    template <meta::tuple_like C>
-    struct tuple_vtable {
-        using type = meta::tuple_types<C>::template eval<meta::make_union>;
-        template <size_t I>
-        struct fn {
-            static constexpr type operator()(meta::forward<C> c)
-                noexcept (requires{
-                    {meta::get<I>(c)} noexcept -> meta::nothrow::convertible_to<type>;
-                })
-                requires (requires{{meta::get<I>(c)} -> meta::convertible_to<type>;})
-            {
-                return meta::get<I>(c);
-            }
-        };
-        using dispatch = impl::basic_vtable<fn, meta::tuple_size<C>>;
-    };
-
-    template <typename>
-    struct _tuple_range : tuple_range_tag {
-        using type = const NoneType&;
-        static constexpr tuple_kind kind = tuple_kind::EMPTY;
-    };
-    template <typename T, typename... Ts>
-    struct _tuple_range<meta::pack<T, Ts...>> : tuple_range_tag {
-        using type = meta::make_union<T, Ts...>;
-        static constexpr tuple_kind kind =
-            meta::trivial_union<T, Ts...> ? tuple_kind::TRIVIAL : tuple_kind::VTABLE;
-    };
-
     /* A wrapper around a generic tuple type that allows it to be indexed and iterated
-    over at runtime, by dispatching to a reference array or vtable.  If the tuple
-    consists of multiple types, then the subscript and yield types will be promoted to
-    unions of all the possible results. */
+    over at runtime via dynamic dispatch.  If the tuple consists of multiple types, then
+    the subscript and yield types will be promoted to unions of all the possible
+    results. */
     template <meta::tuple_like C>
-    struct tuple_range : _tuple_range<meta::tuple_types<C>> {
+    struct tuple_range : tuple_range_tag {
+    private:
+        template <meta::is<tuple_range> Self>
+        using vtable = tuple_vtable<decltype((*std::declval<Self>()))>::dispatch;
+
+    public:
         [[no_unique_address]] impl::ref<C> __value;
+
+        [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
+        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
+        [[nodiscard]] static constexpr impl::extent<1> shape() noexcept { return {size()}; }
 
         template <typename... A>
-        [[nodiscard]] tuple_range(A&&... args)
-            noexcept (requires{{C(std::forward<A>(args)...)} noexcept;})
-            requires (requires{{C(std::forward<A>(args)...)};})
-        :
-            __value{C(std::forward<A>(args)...)}
-        {}
-
-        constexpr void swap(tuple_range& other)
-            noexcept (requires{{meta::swap(__value, other.__value)} noexcept;})
-            requires (requires{{meta::swap(__value, other.__value)};})
-        {
-            meta::swap(__value, other.__value);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).__value);
-        }
-
-        [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{meta::to_arrow(*__value)} noexcept;})
-            requires (requires{{meta::to_arrow(*__value)};})
-        {
-            return meta::to_arrow(*__value);
-        }
-
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{meta::to_arrow(*__value)} noexcept;})
-            requires (requires{{meta::to_arrow(*__value)};})
-        {
-            return meta::to_arrow(*__value);
-        }
-
-        [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
-        [[nodiscard]] static constexpr bool empty() noexcept { return true; }
-
-        [[nodiscard]] static constexpr auto begin() noexcept {
-            return empty_iterator{};
-        }
-
-        [[nodiscard]] static constexpr auto end() noexcept {
-            return empty_iterator{};
-        }
-
-        [[nodiscard]] static constexpr auto rbegin() noexcept {
-            return std::make_reverse_iterator(end());
-        }
-
-        [[nodiscard]] static constexpr auto rend() noexcept {
-            return std::make_reverse_iterator(begin());
-        }
-    };
-    template <meta::tuple_like C>
-        requires (_tuple_range<meta::tuple_types<C>>::kind == tuple_kind::TRIVIAL)
-    struct tuple_range<C> : _tuple_range<meta::tuple_types<C>> {
-        [[no_unique_address]] impl::ref<C> __value;
-
-        [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
-        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-
-    private:
-        using base = _tuple_range<meta::tuple_types<C>>;
-        using ref = impl::ref<typename base::type>;
-        using array = std::array<ref, size()>;
-
-        array elements {};
-
-        template <size_t... Is>
-        constexpr array init(std::index_sequence<Is...>)
-            noexcept ((requires{
-                {meta::get<Is>(*__value)} noexcept -> meta::nothrow::convertible_to<ref>;
-            } && ...))
-        {
-            return {meta::get<Is>(*__value)...};
-        }
-
-    public:
-        [[nodiscard]] constexpr tuple_range() = default;
-
-        template <typename... A> requires (sizeof...(A) > 0)
         [[nodiscard]] constexpr tuple_range(A&&... args)
-            noexcept (requires{{impl::ref<C>{{std::forward<A>(args)...}}} noexcept;})
-            requires (requires{{impl::ref<C>{{std::forward<A>(args)...}}};})
+            noexcept (requires{{impl::ref<C>{C{std::forward<A>(args)...}}} noexcept;})
+            requires (requires{{impl::ref<C>{C{std::forward<A>(args)...}}};})
         :
-            __value{{std::forward<A>(args)...}},
-            elements(init(std::make_index_sequence<size()>{}))
-        {}
-
-        constexpr void swap(tuple_range& other)
-            noexcept (requires{
-                {meta::swap(__value, other.__value)} noexcept;
-                {meta::swap(elements, other.elements)} noexcept;
-            })
-            requires (requires{
-                {meta::swap(__value, other.__value)};
-                {meta::swap(elements, other.elements)};
-            })
-        {
-            meta::swap(__value, other.__value);
-            meta::swap(elements, other.elements);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).__value);
-        }
-
-        [[nodiscard]] constexpr auto operator->()
-            noexcept (requires{{std::addressof(*__value)} noexcept;})
-            requires (requires{{std::addressof(*__value)};})
-        {
-            return std::addressof(*__value);
-        }
-
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{std::addressof(*__value)} noexcept;})
-            requires (requires{{std::addressof(*__value)};})
-        {
-            return std::addressof(*__value);
-        }
-
-        template <size_t I, typename Self>
-        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{meta::get<I>(*std::forward<Self>(self).__value)} noexcept;})
-            requires (requires{{meta::get<I>(*std::forward<Self>(self).__value)};})
-        {
-            return (meta::get<I>(*std::forward<Self>(self).__value));
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t i) noexcept {
-            if constexpr (meta::lvalue<Self>) {
-                return (*std::forward<Self>(self).elements[i]);
-            } else {
-                return (*std::move(std::forward<Self>(self).elements[i]));
-            }
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
-            if constexpr (meta::lvalue<Self>) {
-                return (*std::forward<Self>(self).elements[0]);
-            } else {
-                return (*std::move(std::forward<Self>(self).elements[0]));
-            }
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
-            if constexpr (meta::lvalue<Self>) {
-                return (*std::forward<Self>(self).elements[size() - 1]);
-            } else {
-                return (*std::move(std::forward<Self>(self).elements[size() - 1]));
-            }
-        }
-
-        [[nodiscard]] constexpr auto begin()
-            noexcept (requires{{tuple_iterator<tuple_range&>{this, 0}} noexcept;})
-            requires (requires{{tuple_iterator<tuple_range&>{this, 0}};})
-        {
-            return tuple_iterator<tuple_range&>{this, 0};
-        }
-
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{tuple_iterator<const tuple_range&>{this, 0}} noexcept;})
-            requires (requires{{tuple_iterator<const tuple_range&>{this, 0}};})
-        {
-            return tuple_iterator<const tuple_range&>{this, 0};
-        }
-
-        [[nodiscard]] constexpr auto end()
-            noexcept (requires{{tuple_iterator<tuple_range&>{this, ssize()}} noexcept;})
-            requires (requires{{tuple_iterator<tuple_range&>{this, ssize()}};})
-        {
-            return tuple_iterator<tuple_range&>{this, ssize()};
-        }
-
-        [[nodiscard]] constexpr auto end() const
-            noexcept (requires{{tuple_iterator<const tuple_range&>{this, ssize()}} noexcept;})
-            requires (requires{{tuple_iterator<const tuple_range&>{this, ssize()}};})
-        {
-            return tuple_iterator<const tuple_range&>{this, ssize()};
-        }
-
-        [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end())};})
-        {
-            return std::make_reverse_iterator(end());
-        }
-
-        [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end())};})
-        {
-            return std::make_reverse_iterator(end());
-        }
-
-        [[nodiscard]] constexpr auto rend()
-            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin())};})
-        {
-            return std::make_reverse_iterator(begin());
-        }
-
-        [[nodiscard]] constexpr auto rend() const
-            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin())};})
-        {
-            return std::make_reverse_iterator(begin());
-        }
-    };
-    template <meta::tuple_like C>
-        requires (_tuple_range<meta::tuple_types<C>>::kind == tuple_kind::VTABLE)
-    struct tuple_range<C> : _tuple_range<meta::tuple_types<C>> {
-        [[no_unique_address]] impl::ref<C> __value;
-
-        [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
-        [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-
-    private:
-        using base = _tuple_range<meta::tuple_types<C>>;
-
-        template <typename Self>
-        using dispatch = tuple_vtable<decltype((*std::declval<Self>().__value))>::dispatch;
-
-    public:
-        [[nodiscard]] constexpr tuple_range() = default;
-
-        template <typename... A> requires (sizeof...(A) > 0)
-        [[nodiscard]] constexpr tuple_range(A&&... args)
-            noexcept (requires{{impl::ref<C>{{std::forward<A>(args)...}}} noexcept;})
-            requires (requires{{impl::ref<C>{{std::forward<A>(args)...}}};})
-        :
-            __value{{std::forward<A>(args)...}}
+            __value{C{std::forward<A>(args)...}}
         {}
 
         constexpr void swap(tuple_range& other)
@@ -1323,93 +1090,144 @@ namespace impl {
             return std::addressof(*__value);
         }
 
-        template <size_t I, typename Self>
+        template <ssize_t I, typename Self> requires (impl::valid_index<ssize(), I>)
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{meta::get<I>(*std::forward<Self>(self).__value)} noexcept;})
-            requires (requires{{meta::get<I>(*std::forward<Self>(self).__value)};})
+            noexcept (requires{{meta::get<impl::normalize_index<ssize(), I>()>(
+                *std::forward<Self>(self)
+            )} noexcept;})
+            requires (requires{{meta::get<impl::normalize_index<ssize(), I>()>(
+                *std::forward<Self>(self)
+            )};})
         {
-            return (meta::get<I>(*std::forward<Self>(self).__value));
+            return (meta::get<impl::normalize_index<ssize(), I>()>(*std::forward<Self>(self)));
         }
 
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t i)
-            noexcept (requires{{dispatch<Self>{i}(*std::forward<Self>(self).__value)} noexcept;})
-            requires (requires{{dispatch<Self>{i}(*std::forward<Self>(self).__value)};})
+        [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, ssize_t i)
+            noexcept (requires{{vtable<Self>{size_t(impl::normalize_index(ssize(), i))}(
+                *std::forward<Self>(self)
+            )} noexcept;})
+            requires (requires{{vtable<Self>{size_t(impl::normalize_index(ssize(), i))}(
+                *std::forward<Self>(self)
+            )};})
         {
-            return (dispatch<Self>{i}(*std::forward<Self>(self).__value));
+            return (vtable<Self>{size_t(impl::normalize_index(ssize(), i))}(
+                *std::forward<Self>(self)
+            ));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
-            noexcept (requires{{dispatch<Self>{0}(*std::forward<Self>(self).__value)} noexcept;})
-            requires (requires{{dispatch<Self>{0}(*std::forward<Self>(self).__value)};})
+            noexcept (requires{{vtable<Self>{0}(*std::forward<Self>(self))} noexcept;})
+            requires (requires{{vtable<Self>{0}(*std::forward<Self>(self))};})
         {
-            return (dispatch<Self>{0}(*std::forward<Self>(self).__value));
+            return (vtable<Self>{0}(*std::forward<Self>(self)));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
-            noexcept (requires{
-                {dispatch<Self>{size() - 1}(*std::forward<Self>(self).__value)} noexcept;
-            })
-            requires (requires{{dispatch<Self>{size() - 1}(*std::forward<Self>(self).__value)};})
+            noexcept (requires{{vtable<Self>{size() - 1}(*std::forward<Self>(self))} noexcept;})
+            requires (requires{{vtable<Self>{size() - 1}(*std::forward<Self>(self))};})
         {
-            return (dispatch<Self>{size() - 1}(*std::forward<Self>(self).__value));
+            return (vtable<Self>{size() - 1}(*std::forward<Self>(self)));
         }
 
-        [[nodiscard]] constexpr auto begin()
-            noexcept (requires{{tuple_iterator<tuple_range&>{this, 0}} noexcept;})
-            requires (requires{{tuple_iterator<tuple_range&>{this, 0}};})
-        {
+        [[nodiscard]] constexpr auto begin() noexcept {
             return tuple_iterator<tuple_range&>{this, 0};
         }
 
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{tuple_iterator<const tuple_range&>{this, 0}} noexcept;})
-            requires (requires{{tuple_iterator<const tuple_range&>{this, 0}};})
-        {
+        [[nodiscard]] constexpr auto begin() const noexcept {
             return tuple_iterator<const tuple_range&>{this, 0};
         }
 
-        [[nodiscard]] constexpr auto end()
-            noexcept (requires{{tuple_iterator<tuple_range&>{this, ssize()}} noexcept;})
-            requires (requires{{tuple_iterator<tuple_range&>{this, ssize()}};})
-        {
+        [[nodiscard]] constexpr auto end() noexcept {
             return tuple_iterator<tuple_range&>{this, ssize()};
         }
 
-        [[nodiscard]] constexpr auto end() const
-            noexcept (requires{{tuple_iterator<const tuple_range&>{this, ssize()}} noexcept;})
-            requires (requires{{tuple_iterator<const tuple_range&>{this, ssize()}};})
-        {
+        [[nodiscard]] constexpr auto end() const noexcept {
             return tuple_iterator<const tuple_range&>{this, ssize()};
         }
 
-        [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end())};})
-        {
+        [[nodiscard]] constexpr auto rbegin() noexcept {
             return std::make_reverse_iterator(end());
         }
 
-        [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires{{std::make_reverse_iterator(end())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(end())};})
-        {
+        [[nodiscard]] constexpr auto rbegin() const noexcept {
             return std::make_reverse_iterator(end());
         }
 
-        [[nodiscard]] constexpr auto rend()
-            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin())};})
-        {
+        [[nodiscard]] constexpr auto rend() noexcept {
             return std::make_reverse_iterator(begin());
         }
 
-        [[nodiscard]] constexpr auto rend() const
-            noexcept (requires{{std::make_reverse_iterator(begin())} noexcept;})
-            requires (requires{{std::make_reverse_iterator(begin())};})
+        [[nodiscard]] constexpr auto rend() const noexcept {
+            return std::make_reverse_iterator(begin());
+        }
+    };
+    template <meta::tuple_like C> requires (meta::tuple_size<C> == 0)
+    struct tuple_range<C> : tuple_range_tag {
+        [[no_unique_address]] impl::ref<C> __value;
+
+        [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
+        [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
+        [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+        [[nodiscard]] static constexpr impl::extent<1> shape() noexcept { return {0}; }
+
+        template <typename... A>
+        [[nodiscard]] constexpr tuple_range(A&&... args)
+            noexcept (requires{{impl::ref<C>{C{std::forward<A>(args)...}}} noexcept;})
+            requires (requires{{impl::ref<C>{C{std::forward<A>(args)...}}};})
+        :
+            __value{C{std::forward<A>(args)...}}
+        {}
+
+        constexpr void swap(tuple_range& other)
+            noexcept (requires{{meta::swap(__value, other.__value)} noexcept;})
+            requires (requires{{meta::swap(__value, other.__value)};})
         {
+            meta::swap(__value, other.__value);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).__value);
+        }
+
+        [[nodiscard]] constexpr auto operator->()
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
+        {
+            return std::addressof(*__value);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{std::addressof(*__value)} noexcept;})
+            requires (requires{{std::addressof(*__value)};})
+        {
+            return std::addressof(*__value);
+        }
+
+        [[nodiscard]] static constexpr auto begin() noexcept {
+            return empty_iterator<>{};
+        }
+
+        [[nodiscard]] static constexpr auto end() noexcept {
+            return empty_iterator<>{};
+        }
+
+        [[nodiscard]] constexpr auto rbegin() noexcept {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr auto rbegin() const noexcept {
+            return std::make_reverse_iterator(end());
+        }
+
+        [[nodiscard]] constexpr auto rend() noexcept {
+            return std::make_reverse_iterator(begin());
+        }
+
+        [[nodiscard]] constexpr auto rend() const noexcept {
             return std::make_reverse_iterator(begin());
         }
     };

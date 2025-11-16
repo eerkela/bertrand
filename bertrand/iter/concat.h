@@ -20,7 +20,7 @@ namespace impl {
     constexpr size_t _concat_get = (!T::trivial && I % 2 == 1) ?
         0 :
         impl::visitable<const typename T::unique&>::alternatives::template index<
-            const typename T::template arg_type<I / (1 + !T::trivial)>&
+            const typename T::template type<I>&
         >();
 
     /* Cast the internal union of a `concat_iterator` to the alternative encoded at
@@ -32,16 +32,16 @@ namespace impl {
     template <size_t I, typename T> requires (I < T::alternatives)
     constexpr decltype(auto) concat_get(T& self)
         noexcept (I < T::unique_alternatives ?
-            requires{{impl::visitable<decltype((*self.child))>::template get<_concat_get<I, T>>(
-                *self.child
+            requires{{impl::visitable<decltype((self.child))>::template get<_concat_get<I, T>>(
+                self.child
             )} noexcept;} :
-            requires{{impl::visitable<decltype((*self.child))>::template get<_concat_get<I, T>>(
-                *self.child
+            requires{{impl::visitable<decltype((self.child))>::template get<_concat_get<I, T>>(
+                self.child
             )};}
         )
     {
-        return (impl::visitable<decltype((*self.child))>::template get<_concat_get<I, T>>(
-            *self.child
+        return (impl::visitable<decltype((self.child))>::template get<_concat_get<I, T>>(
+            self.child
         ));
     }
 
@@ -80,6 +80,11 @@ namespace impl {
         }
     };
 
+    template <size_t I, size_t alternatives>
+    constexpr size_t concat_next = I + 1 < alternatives ? I + 1 : I;
+    template <size_t I>
+    constexpr size_t concat_prev = I > 0 ? I - 1 : I;
+
     /* Incrementing a concat iterator will attempt to increment the current subrange
     first, and then advance to either the next argument or separator if it is
     exhausted, depending on the current index encoding.  Empty subranges will be
@@ -117,7 +122,10 @@ namespace impl {
                 }
                 concat_increment<next<T::trivial>>::skip(self);
             } else {
+                /// NOTE: if we reach this point, then the last alternative is
+                /// guaranteed to be empty
                 self.index = T::alternatives;
+                self.child = self.template get<T::alternatives - 1, range_first>();
             }
         }
 
@@ -144,11 +152,11 @@ namespace impl {
             ++self.index;
             if constexpr (I + 1 < T::alternatives) {  // next alternative exists
                 if constexpr (!T::trivial && I % 2 == 0) {  // next alternative is a separator
-                    if constexpr (T::static_size != 0) {  // size is known to be non-zero
+                    if constexpr (!T::dynamic) {  // size is known to be non-zero
                         self.child = self.template get<I + 1, range_first>();
                         return;
                     } else {  // size must be checked at run time
-                        if (self.outer->sep_size != 0) {
+                        if (self.outer->sep_size() != 0) {
                             self.child = self.template get<I + 1, range_first>();
                             return;
                         }
@@ -165,22 +173,25 @@ namespace impl {
 
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
-            noexcept (I + 1 < T::alternatives ?
-                requires(decltype((self.template get<I + 1, range_first>())) curr) {
-                    {self.child = self.template get<I + 1, range_first>()} noexcept;
-                    {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
-                    {curr.begin += n} noexcept;
-                } :
-                requires{{self.child = None} noexcept;}
-            )
-            requires (requires(decltype((self.template get<I + 1, range_first>())) curr) {
-                {self.child = self.template get<I + 1, range_first>()};
+            noexcept (requires(decltype((
+                self.template get<concat_next<I, T::alternatives>, range_first>()
+            )) curr) {
+                {
+                    self.child = self.template get<concat_next<I, T::alternatives>, range_first>()
+                } noexcept;
+                {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
+                {curr.begin += n} noexcept;
+            })
+            requires (requires(decltype((
+                self.template get<concat_next<I, T::alternatives>, range_first>()
+            )) curr) {
+                {self.child = self.template get<concat_next<I, T::alternatives>, range_first>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
                 {curr.begin += n};
             })
         {
-            ++self.index;
             if constexpr (I + 1 < T::alternatives) {  // next alternative exists
+                ++self.index;
                 if constexpr (!T::trivial && I % 2 == 0) {  // next alternative is a separator
                     ssize_t size = self.sep_size();
                     if (n < size) {
@@ -203,8 +214,13 @@ namespace impl {
                     n -= size;
                 }
                 concat_increment<I + 1>::skip(self, n);
-            } else {
-                /// TODO: 
+            } else {  // no next alternative - initialize to an end iterator
+                self.index = T::alternatives;
+                auto curr = self.template get<I, range_first>(self);
+                ssize_t size = curr.end - curr.begin;
+                curr.begin += size;
+                curr.index += size;
+                self.child = std::move(curr);
             }
         }
 
@@ -271,7 +287,10 @@ namespace impl {
                 }
                 concat_decrement<prev<T::trivial>>::skip(self);
             } else {
-                self.index = -1;
+                /// NOTE: if we reach this point, then the first alternative is
+                /// guaranteed to be empty
+                self.index = 0;
+                self.child = self.template get<0, range_first>(self);
             }
         }
 
@@ -294,14 +313,14 @@ namespace impl {
             }
 
             // outer decrement
-            --self.index;
             if constexpr (I > 0) {  // previous alternative exists
+                --self.index;
                 if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
-                    if constexpr (T::static_size != 0) {  // size is known to be non-zero
+                    if constexpr (!T::dynamic) {  // size is known to be non-zero
                         self.child = self.template get<I - 1, range_last>();
                         return;
                     } else {  // size must be checked at run time
-                        if (self.outer->sep_size != 0) {
+                        if (self.outer->sep_size() != 0) {
                             self.child = self.template get<I - 1, range_last>();
                             return;
                         }
@@ -312,34 +331,23 @@ namespace impl {
             }
         }
 
-        /// TODO: the reason why I needed to make unions comparable with alternative<>
-        /// and type<> is so that I can use them to reset the child not to None but to
-        /// the actual first or last value during the random access increment/decrement
-        /// operators, so that if the parent index is greater than the number of
-        /// alternatives (indicating an end iterator), then the child's begin will
-        /// always compare equal to its end, and the decrement operator does not need
-        /// to special-case that situation.  Similarly, if its index is less than zero,
-        /// then the child will always point to the first valid position, and the
-        /// increment operator does not need to special-case that situation either.
-        /// That also means I should be able to eliminate the internal optional that
-        /// the concat iterator is storing the union within, which is another benefit.
-
-        /// -> Essentially, in the last step of the random access increment/decrement,
-        /// I need to check whether the union's index matches the first/last position,
-        /// and if so, increment by the remaining distance.  Otherwise, initialize the
-        /// union to that position directly.
-
-
-
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
-            requires (requires(decltype((self.template get<I - 1, range_first>())) curr) {
-                {self.child = self.template get<I - 1, range_first>()};
-
+            noexcept (requires(decltype((self.template get<concat_prev<I>, range_first>())) curr) {
+                {
+                    self.child = self.template get<concat_prev<I>, range_first>()
+                } noexcept;
+                {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
+                {curr.begin += n} noexcept;
+            })
+            requires (requires(decltype((self.template get<concat_prev<I>, range_first>())) curr) {
+                {self.child = self.template get<concat_prev<I>, range_first>()};
+                {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
+                {curr.begin += n};
             })
         {
-            --self.index;
             if constexpr (I > 0) {  // previous alternative exists
+                --self.index;
                 if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
                     ssize_t size = self.sep_size();
                     if (n < size) {
@@ -363,6 +371,10 @@ namespace impl {
                     }
                     n -= size;
                 }
+                concat_decrement<I - 1>::skip(self, n);
+            } else {  // no previous alternative - initialize to a begin iterator
+                self.index = 0;
+                self.child = self.template get<I, range_first>(self);
             }
         }
 
@@ -435,6 +447,8 @@ namespace impl {
         end_type end;
         ssize_t index = 0;
 
+        [[nodiscard]] constexpr concat_subrange() = default;
+
         template <typename Parent, range_position Position>
         [[nodiscard]] constexpr concat_subrange(Parent& p, Position pos)
             noexcept (requires{
@@ -448,22 +462,6 @@ namespace impl {
             index(pos(p, begin, end))
         {}
 
-        constexpr bool decrement(ssize_t& n)
-            noexcept (requires{{begin -= n} noexcept;})
-            requires (requires{{begin -= n};})
-        {
-            if (n < index) {
-                begin -= n;
-                index -= n;
-                n = 0;
-                return true;
-            }
-            begin -= index;
-            n -= index;
-            index = 0;
-            return false;
-        }
-
         [[nodiscard]] constexpr ssize_t distance(const concat_subrange& other) const noexcept {
             return index - other.index;
         }
@@ -474,7 +472,7 @@ namespace impl {
         using outer_type = Outer;
         using direction = Dir;
         static constexpr bool trivial = outer_type::trivial;
-        static constexpr size_t static_size = outer_type::static_size;
+        static constexpr bool dynamic = outer_type::dynamic;
         static constexpr size_t alternatives =
             outer_type::arg_type::size() + (outer_type::arg_type::size() - 1) * !trivial;
 
@@ -518,8 +516,8 @@ namespace impl {
         struct _unique<std::index_sequence<I...>> {
             using separator = concat_subrange<
                 direction,
-                decltype(direction::begin(*std::declval<outer_type&>().sep)),
-                decltype(direction::end(*std::declval<outer_type&>().sep))
+                decltype(direction::begin(std::declval<outer_type&>().sep())),
+                decltype(direction::end(std::declval<outer_type&>().sep()))
             >;
             using unique = meta::make_union<separator, typename _type<I>::type...>;
         };
@@ -544,18 +542,18 @@ namespace impl {
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
-        template <size_t I>
+        template <size_t I> requires (I < alternatives)
         using type = _type<I>::type;
 
         outer_type* outer;
         difference_type index;
-        [[no_unique_address]] Optional<unique> child;
+        [[no_unique_address]] unique child;
 
         [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
-            if constexpr (static_size != 0) {
-                return static_size;
+            if constexpr (!dynamic) {
+                return meta::tuple_size<typename outer_type::sep_type>;
             } else {
-                return outer->sep_size;
+                return outer->sep_size();
             }
         }
 
@@ -570,37 +568,37 @@ namespace impl {
         template <size_t I, range_position Position> requires (I < alternatives)
         [[nodiscard]] constexpr type<I> get()
             noexcept (requires{
-                {type<I>{outer->args.template get<_type<I>::idx>(), Position{}}} noexcept;
+                {type<I>{outer->template arg<_type<I>::idx>(), Position{}}} noexcept;
             })
             requires (trivial || I % 2 == 0)
         {
-            return {outer->args.template get<_type<I>::idx>(), Position{}};
+            return {outer->template arg<_type<I>::idx>(), Position{}};
         }
 
     private:
         template <ssize_t I = 0> requires (I < alternatives)
-        constexpr Optional<unique> init()
+        constexpr unique init()
             noexcept (requires(decltype(get<I>()) curr) {
-                {get<I>()} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                {get<I, range_first>()} noexcept -> meta::nothrow::convertible_to<unique>;
                 {curr.begin != curr.end} noexcept -> meta::nothrow::truthy;
             } && (I + 2 >= alternatives || (
                 requires{{init<I + 2>()} noexcept;} &&
                 (trivial || I != 0 || requires{
-                    {get<1>()} noexcept -> meta::nothrow::convertible_to<Optional<unique>>;
+                    {get<1, range_first>()} noexcept -> meta::nothrow::convertible_to<unique>;
                 })
             )))
         {
-            if (auto curr = get<I>(); curr.begin != curr.end) {
+            if (auto curr = get<I, range_first>(); curr.begin != curr.end) {
                 return std::move(curr);
             }
             if constexpr (I + 2 < alternatives) {
                 if constexpr (!trivial && I == 0) {
                     ++index;
-                    if constexpr (static_size != 0) {
-                        return get<1>();
+                    if constexpr (!dynamic) {
+                        return get<1, range_first>();
                     } else {
-                        if (outer->sep_size != 0) {
-                            return get<1>();
+                        if (outer->sep_size() != 0) {
+                            return get<1, range_first>();
                         }
                     }
                     ++index;
@@ -609,31 +607,11 @@ namespace impl {
                 }
                 return init<I + 2>();
             } else {
+                /// NOTE: if we reach this point, then the last alternative is
+                /// guaranteed to be empty
                 ++index;
-                return None;
+                return get<alternatives - 1, range_first>();
             }
-        }
-
-        static constexpr decltype(auto) _deref(const unique& child)
-            noexcept (requires{{
-                impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>{
-                    impl::visitable<const unique&>::index(child)
-                }(child)
-            } noexcept;})
-        {
-            return (impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>{
-                impl::visitable<const unique&>::index(child)
-            }(child));
-        }
-
-        static constexpr std::strong_ordering _compare(const unique& lhs, const unique& rhs)
-            noexcept (requires{{impl::basic_vtable<concat_compare, unique_alternatives>{
-                impl::visitable<const unique&>::index(lhs)
-            }(lhs, rhs)} noexcept;})
-        {
-            return impl::basic_vtable<concat_compare, unique_alternatives>{
-                impl::visitable<const unique&>::index(lhs)
-            }(lhs, rhs);
         }
 
     public:
@@ -652,9 +630,15 @@ namespace impl {
         {}
 
         [[nodiscard]] constexpr reference operator*() const
-            noexcept (requires{{_deref(*child)} noexcept;})
+            noexcept (requires{{
+                impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>{
+                    impl::visitable<const unique&>::index(child)
+                }(child)
+            } noexcept;})
         {
-            return _deref(*child);
+            return (impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>{
+                impl::visitable<const unique&>::index(child)
+            }(child));
         }
 
         [[nodiscard]] constexpr auto operator->() const
@@ -835,11 +819,15 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr std::strong_ordering operator<=>(const concat_iterator& other) const
-            noexcept (requires{{_compare(*child, *other.child)} noexcept;})
+            noexcept (requires{{impl::basic_vtable<concat_compare, unique_alternatives>{
+                impl::visitable<const unique&>::index(child)
+            }(child, other.child)} noexcept;})
         {
             if (std::strong_ordering cmp = index <=> other.index; cmp != 0) return cmp;
             if (index < 0 || index >= ssize_t(alternatives)) return std::strong_ordering::equal;
-            return _compare(*child, *other.child);
+            return impl::basic_vtable<concat_compare, unique_alternatives>{
+                impl::visitable<const unique&>::index(child)
+            }(child, other.child);
         }
     };
 
@@ -849,34 +837,77 @@ namespace impl {
     /// TODO: all the concat helpers should be private and declare the relevant
     /// friends, since this container is publicly accessible on dereference.
 
-    template <typename Sep, typename... As>
-    concept concat_concept =
-        sizeof...(As) > 0 && (meta::not_rvalue<Sep> && ... && meta::not_rvalue<As>);
 
-    template <typename Sep, typename... As> requires (concat_concept<Sep, As...>)
+
+
+    /// TODO: actually, no memory will really be saved by unifying the concat
+    /// implementations.  Instead, I should split it into a tuple-like separator and
+    /// non-tuple like seperator, which controls whether the sep_size member is
+    /// compiled, and then another specialization for an empty tuple-like separator,
+    /// which will also omit the separator itself.
+
+
+    template <meta::not_rvalue Sep, meta::not_rvalue... As> requires (sizeof...(As) > 0)
     struct concat {
+    private:
+        template <meta::not_reference Outer, range_direction Dir>
+        friend struct concat_iterator;
+
         using sep_type = meta::as_range_or_scalar<Sep>;
         using arg_type = impl::basic_tuple<meta::as_range_or_scalar<As>...>;
-        static constexpr bool trivial = false;
-        static constexpr size_t static_size = 0;
+        static constexpr bool trivial = meta::empty_range<sep_type>;
+        static constexpr bool dynamic = !meta::tuple_like<sep_type>;
 
-        [[no_unique_address]] impl::ref<sep_type> sep;
-        [[no_unique_address]] arg_type args;
+        using sep_size_type = std::conditional_t<dynamic, ssize_t, NoneType>;
 
-    private:
-        constexpr ssize_t get_sep_size()
-            noexcept (!meta::range<Sep> || requires{{ssize_t(meta::distance(*sep))} noexcept;})
-            requires (!meta::range<Sep> || requires{{ssize_t(meta::distance(*sep))};})
+        [[no_unique_address]] impl::ref<sep_type> m_sep;
+        [[no_unique_address]] arg_type m_args;
+        [[no_unique_address]] sep_size_type m_sep_size;
+
+        constexpr sep_size_type get_sep_size()
+            noexcept (!dynamic || requires{{ssize_t(meta::distance(*m_sep))} noexcept;})
+            requires (!dynamic || requires{{ssize_t(meta::distance(*m_sep))};})
         {
-            if constexpr (meta::range<Sep>) {
-                return ssize_t(meta::distance(*sep));
+            if constexpr (dynamic) {
+                return ssize_t(meta::distance(*m_sep));
             } else {
-                return 1;
+                return None;
             }
         }
 
     public:
-        [[no_unique_address]] ssize_t sep_size = get_sep_size();
+        [[nodiscard]] constexpr concat(meta::forward<Sep> sep, meta::forward<As>... args)
+            noexcept (requires{
+                {sep_type{std::forward<Sep>(sep)}} noexcept;
+                {arg_type{std::forward<As>(args)...}} noexcept;
+            })
+            requires (requires{
+                {sep_type{std::forward<Sep>(sep)}};
+                {arg_type{std::forward<As>(args)...}};
+            })
+        :
+            m_sep{std::forward<Sep>(sep)},
+            m_args{std::forward<As>(args)...},
+            m_sep_size(get_sep_size())
+        {}
+
+        [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
+            if constexpr (dynamic) {
+                return m_sep_size;
+            } else {
+                return meta::tuple_size<sep_type>;
+            }
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) sep(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_sep);
+        }
+
+        template <size_t I, typename Self> requires (I < sizeof...(As))
+        [[nodiscard]] constexpr decltype(auto) arg(this Self&& self) noexcept {
+            return (std::forward<Self>(self).m_args.template get<I>());
+        }
 
         [[nodiscard]] constexpr concat_iterator<concat, range_forward> begin()
             noexcept (requires{{concat_iterator<concat, range_forward>{*this}} noexcept;})
@@ -923,23 +954,6 @@ namespace impl {
         }
     };
 
-    template <typename Sep, typename... As>
-        requires (concat_concept<Sep, As...> && meta::tuple_like<meta::as_range_or_scalar<Sep>>)
-    struct concat<Sep, As...> {
-        using sep_type = meta::as_range_or_scalar<Sep>;
-        using arg_type = impl::basic_tuple<meta::as_range_or_scalar<As>...>;
-        static constexpr bool trivial = meta::empty_range<Sep>;
-        static constexpr size_t static_size = meta::tuple_size<sep_type>;
-
-        [[no_unique_address]] impl::ref<sep_type> sep;
-        [[no_unique_address]] arg_type args;
-
-        /// TODO: iteration/indexing interface, etc., including tuple-like `get<>()`,
-        /// which the base specialization will not provide, as long as all the
-        /// arguments are also tuple-like.
-
-    };
-
 }
 
 
@@ -949,28 +963,16 @@ namespace iter {
     struct concat {
         [[no_unique_address]] Sep sep;
 
-        [[nodiscard]] constexpr concat() = default;
-        [[nodiscard]] constexpr concat(meta::forward<Sep> sep)
-            noexcept (requires{{Sep(std::forward<Sep>(sep))} noexcept;})
-            requires (requires{{Sep(std::forward<Sep>(sep))};})
-        :
-            sep(std::forward<Sep>(sep))
-        {}
-
         [[nodiscard]] static constexpr range<> operator()() noexcept {
             return {};
         }
 
         template <typename A>
         [[nodiscard]] static constexpr decltype(auto) operator()(A&& a)
-            noexcept (meta::range<A> || requires{{iter::range(std::forward<A>(a))} noexcept;})
-            requires (meta::range<A> || requires{{iter::range(std::forward<A>(a))};})
+            noexcept (requires{{meta::to_range_or_scalar(std::forward<A>(a))} noexcept;})
+            requires (requires{{meta::to_range_or_scalar(std::forward<A>(a))};})
         {
-            if constexpr (meta::range<A>) {
-                return (std::forward<A>(a));
-            } else {
-                return iter::range(std::forward<A>(a));
-            }
+            return (meta::to_range_or_scalar(std::forward<A>(a)));
         }
 
         template <typename Self, typename... A> requires (sizeof...(A) > 1)
@@ -995,6 +997,64 @@ namespace iter {
     concat(T&&) -> concat<meta::remove_rvalue<T>>;
 
 }
+
+
+}
+
+
+
+
+
+
+namespace bertrand::iter {
+
+
+    struct Foo {};
+    struct Foo2 {};
+    struct Bar : Foo, Foo2 {
+        int value = 42;
+    };
+    struct Baz : Bar {};
+    static_assert(sizeof(Baz) == sizeof(int));
+
+    template <typename...>
+    struct test : Foo {};
+    template <typename T, typename... Ts>
+    struct test<T, Ts...> : test<Ts...> {
+        T value;
+        [[no_unique_address]] NoneType r;
+    };
+
+
+    static_assert(sizeof(range<std::tuple<int, int>>) == sizeof(std::tuple<int, int>));
+
+
+    static_assert(sizeof(impl::basic_tuple<range<int>>) == sizeof(int));
+
+    static_assert(sizeof(test<range<int>>) == sizeof(int));
+
+
+
+    static constexpr auto c = concat{}(1, 2, 3);
+    static_assert(sizeof(c) == sizeof(int) * 3);
+    static_assert([] {
+        auto it = c.begin();
+        if (*it++ != 1) return false;
+        // if (*it++ != 4) return false;
+        if (*it++ != 2) return false;
+        // if (*it++ != 4) return false;
+        if (*it++ != 3) return false;
+        if (it != c.end()) return false;
+
+
+        for (auto v : c) {
+            if (v != 1 && v != 2 && v != 3 && v != 4) {
+                return false;
+            }
+        }
+
+        return true;
+    }());
 
 
 }
