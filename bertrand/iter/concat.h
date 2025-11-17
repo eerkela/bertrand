@@ -96,19 +96,16 @@ namespace impl {
         static constexpr void skip(T& self)
             noexcept (
                 next<T::trivial> >= T::alternatives ||
-                requires(decltype(self.template get<next<T::trivial>, range_first>()) sub) {
+                requires(decltype(self.template get<next<T::trivial>>()) sub) {
                     {sub.begin != sub.end} noexcept -> meta::nothrow::truthy;
-                    {self.child = self.template get<next<T::trivial>, range_first>()} noexcept;
+                    {self.child = self.template get<next<T::trivial>>()} noexcept;
                     {concat_increment<next<T::trivial>>::skip(self)} noexcept;
                 }
             )
         {
             if constexpr (next<T::trivial> < T::alternatives) {
                 self.index = next<T::trivial>;
-                if (
-                    auto sub = self.template get<next<T::trivial>, range_first>();
-                    sub.begin != sub.end
-                ) {
+                if (auto sub = self.template get<next<T::trivial>>(); sub.begin != sub.end) {
                     self.child = std::move(sub);
                     return;
                 }
@@ -117,7 +114,7 @@ namespace impl {
                 /// NOTE: if we reach this point, then the last alternative is
                 /// guaranteed to be empty
                 self.index = T::alternatives;
-                self.child = self.template get<T::alternatives - 1, range_first>();
+                self.child = self.template get<T::alternatives - 1>();
             }
         }
 
@@ -128,7 +125,7 @@ namespace impl {
                 {curr.begin != curr.end} noexcept -> meta::nothrow::truthy;
             } && (I + 1 >= T::alternatives || (requires{{skip(self)} noexcept;} && (
                 T::trivial || I % 2 != 0 || requires{
-                    {self.child = self.template get<I + 1, range_first>()} noexcept;
+                    {self.child = self.template get<I + 1>()} noexcept;
                 }
             ))))
         {
@@ -145,11 +142,11 @@ namespace impl {
             if constexpr (I + 1 < T::alternatives) {  // next alternative exists
                 if constexpr (!T::trivial && I % 2 == 0) {  // next alternative is a separator
                     if constexpr (!T::dynamic) {  // size is known to be non-zero
-                        self.child = self.template get<I + 1, range_first>();
+                        self.child = self.template get<I + 1>();
                         return;
                     } else {  // size must be checked at run time
                         if (self.outer->sep_size() != 0) {
-                            self.child = self.template get<I + 1, range_first>();
+                            self.child = self.template get<I + 1>();
                             return;
                         }
                         ++self.index;
@@ -166,18 +163,18 @@ namespace impl {
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
             noexcept (requires(decltype((
-                self.template get<concat_next<I, T::alternatives>, range_first>()
+                self.template get<concat_next<I, T::alternatives>>()
             )) curr) {
                 {
-                    self.child = self.template get<concat_next<I, T::alternatives>, range_first>()
+                    self.child = self.template get<concat_next<I, T::alternatives>>()
                 } noexcept;
                 {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
                 {curr.begin += n} noexcept;
             })
             requires (requires(decltype((
-                self.template get<concat_next<I, T::alternatives>, range_first>()
+                self.template get<concat_next<I, T::alternatives>>()
             )) curr) {
-                {self.child = self.template get<concat_next<I, T::alternatives>, range_first>()};
+                {self.child = self.template get<concat_next<I, T::alternatives>>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
                 {curr.begin += n};
             })
@@ -187,7 +184,7 @@ namespace impl {
                 if constexpr (!T::trivial && I % 2 == 0) {  // next alternative is a separator
                     ssize_t size = self.sep_size();
                     if (n < size) {
-                        auto curr = self.template get<I + 1, range_first>();
+                        auto curr = self.template get<I + 1>();
                         curr.begin += n;
                         curr.index += n;
                         self.child = std::move(curr);
@@ -195,7 +192,7 @@ namespace impl {
                     }
                     n -= size;
                 } else {  // next alternative is an argument
-                    auto curr = self.template get<I + 1, range_first>();
+                    auto curr = self.template get<I + 1>();
                     ssize_t size = curr.end - curr.begin;
                     if (n < size) {
                         curr.begin += n;
@@ -208,7 +205,7 @@ namespace impl {
                 concat_increment<I + 1>::skip(self, n);
             } else {  // no next alternative - initialize to an end iterator
                 self.index = T::alternatives;
-                auto curr = self.template get<I, range_first>(self);
+                auto curr = self.template get<I>(self);
                 ssize_t size = curr.end - curr.begin;
                 curr.begin += size;
                 curr.index += size;
@@ -257,23 +254,64 @@ namespace impl {
         template <bool trivial>
         static constexpr size_t prev = (trivial ? I - 1 : (I - 1) & ~1);
 
+        template <typename T, typename S>
+        static constexpr void last(T& self, S& sub)
+            noexcept (requires{{
+                meta::ssize(self.template arg<prev<T::trivial>>()) - 1
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;} ?
+                (requires(ssize_t size) {{sub.begin += size};} ?
+                    requires(ssize_t size) {{sub.begin += size} noexcept;} :
+                    requires{{++sub.begin} noexcept;}
+                ) :
+                requires{
+                    {sub.begin} noexcept -> meta::nothrow::copyable;
+                    {sub.begin != sub.end} noexcept -> meta::nothrow::truthy;
+                    {++sub.begin} noexcept;
+                }
+            )
+        {
+            if constexpr (requires{{
+                meta::ssize(self.template arg<prev<T::trivial>>()) - 1
+            } -> meta::convertible_to<ssize_t>;}) {
+                ssize_t size = meta::ssize(self.template arg<prev<T::trivial>>()) - 1;
+                if constexpr (requires{{sub.begin += size};}) {
+                    sub.begin += size;
+                    sub.index += size;
+                } else {
+                    sub.index += size;
+                    for (ssize_t i = 0; i < size; ++i) {
+                        ++sub.begin;
+                    }
+                }
+            } else {
+                auto it = sub.begin;
+                ++it;
+                while (it != sub.end) {
+                    ++it;
+                    ++sub.begin;
+                    ++sub.index;
+                }
+            }
+        }
+
+
+
         template <typename T>
         static constexpr void skip(T& self)
             noexcept (
                 I > 0 ||
-                requires(decltype(self.template get<prev<T::trivial>, range_last>()) sub) {
+                requires(decltype(self.template get<prev<T::trivial>>()) sub) {
                     {sub.begin != sub.end} noexcept -> meta::nothrow::truthy;
-                    {self.child = self.template get<prev<T::trivial>, range_last>()} noexcept;
+                    {last(self, sub)} noexcept;
+                    {self.child = self.template get<prev<T::trivial>>()} noexcept;
                     {concat_decrement<prev<T::trivial>>::skip(self)} noexcept;
                 }
             )
         {
             if constexpr (I > 0) {
                 self.index = prev<T::trivial>;
-                if (
-                    auto sub = self.template get<prev<T::trivial>, range_last>();
-                    sub.begin != sub.end
-                ) {
+                if (auto sub = self.template get<prev<T::trivial>>(); sub.begin != sub.end) {
+                    last(self, sub);
                     self.child = std::move(sub);
                     return;
                 }
@@ -282,7 +320,7 @@ namespace impl {
                 /// NOTE: if we reach this point, then the first alternative is
                 /// guaranteed to be empty
                 self.index = 0;
-                self.child = self.template get<0, range_first>(self);
+                self.child = self.template get<0>(self);
             }
         }
 
@@ -291,8 +329,9 @@ namespace impl {
             noexcept (requires(decltype((concat_get<I>(self))) curr) {
                 {--curr.begin} noexcept;
             } && (I <= 0 || (requires{{skip(self)} noexcept;} && (
-                T::trivial || I % 2 != 0 || requires{
-                    {self.child = self.template get<I - 1, range_last>()} noexcept;
+                T::trivial || I % 2 != 0 || requires(decltype((self.template get<I - 1>())) sub) {
+                    {self.child = self.template get<I - 1>()} noexcept;
+                    {last(self, sub)} noexcept;
                 }
             ))))
         {
@@ -309,11 +348,15 @@ namespace impl {
                 --self.index;
                 if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
                     if constexpr (!T::dynamic) {  // size is known to be non-zero
-                        self.child = self.template get<I - 1, range_last>();
+                        auto sub = self.template get<I - 1>();
+                        last(self, sub);
+                        self.child = std::move(sub);
                         return;
                     } else {  // size must be checked at run time
                         if (self.outer->sep_size() != 0) {
-                            self.child = self.template get<I - 1, range_last>();
+                            auto sub = self.template get<I - 1>();
+                            last(self, sub);
+                            self.child = std::move(sub);
                             return;
                         }
                         --self.index;
@@ -325,15 +368,13 @@ namespace impl {
 
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
-            noexcept (requires(decltype((self.template get<concat_prev<I>, range_first>())) curr) {
-                {
-                    self.child = self.template get<concat_prev<I>, range_first>()
-                } noexcept;
+            noexcept (requires(decltype((self.template get<concat_prev<I>>())) curr) {
+                {self.child = self.template get<concat_prev<I>>()} noexcept;
                 {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
                 {curr.begin += n} noexcept;
             })
-            requires (requires(decltype((self.template get<concat_prev<I>, range_first>())) curr) {
-                {self.child = self.template get<concat_prev<I>, range_first>()};
+            requires (requires(decltype((self.template get<concat_prev<I>>())) curr) {
+                {self.child = self.template get<concat_prev<I>>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
                 {curr.begin += n};
             })
@@ -343,7 +384,7 @@ namespace impl {
                 if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
                     ssize_t size = self.sep_size();
                     if (n < size) {
-                        auto curr = self.template get<I - 1, range_first>();
+                        auto curr = self.template get<I - 1>();
                         size -= n;
                         curr.begin += size;
                         curr.index += size;
@@ -352,7 +393,7 @@ namespace impl {
                     }
                     n -= size;
                 } else {
-                    auto curr = self.template get<I - 1, range_first>();
+                    auto curr = self.template get<I - 1>();
                     ssize_t size = curr.end - curr.begin;
                     if (n < size) {
                         size -= n;
@@ -366,7 +407,7 @@ namespace impl {
                 concat_decrement<I - 1>::skip(self, n);
             } else {  // no previous alternative - initialize to a begin iterator
                 self.index = 0;
-                self.child = self.template get<I, range_first>(self);
+                self.child = self.template get<I>(self);
             }
         }
 
@@ -444,21 +485,6 @@ namespace impl {
         begin_type begin;
         end_type end;
         ssize_t index = 0;
-
-        [[nodiscard]] constexpr concat_subrange() = default;
-
-        template <typename Parent, range_position Position>
-        [[nodiscard]] constexpr concat_subrange(Parent& p, Position pos)
-            noexcept (requires{
-                {Dir::begin(p)} noexcept -> meta::nothrow::convertible_to<Begin>;
-                {Dir::end(p)} noexcept -> meta::nothrow::convertible_to<End>;
-                {pos(p, begin, end)} noexcept;
-            })
-        :
-            begin(Dir::begin(p)),
-            end(Dir::end(p)),
-            index(pos(p, begin, end))
-        {}
     };
 
     /* The overall concatenated iterator stores a reference to the outer `impl::concat`
@@ -552,6 +578,14 @@ namespace impl {
         difference_type index;
         [[no_unique_address]] unique child;
 
+        template <size_t I> requires (I < alternatives)
+        [[nodiscard]] constexpr auto& arg()
+            noexcept (requires{{outer->template arg<_type<I>::idx>()} noexcept;})
+            requires (trivial || I % 2 == 0)
+        {
+            return outer->template arg<_type<I>::idx>();
+        }
+
         [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
             if constexpr (!dynamic) {
                 return meta::tuple_size<typename outer_type::sep_type>;
@@ -560,48 +594,58 @@ namespace impl {
             }
         }
 
-        template <size_t I, range_position Position> requires (I < alternatives)
+        template <size_t I> requires (I < alternatives)
         [[nodiscard]] constexpr type<I> get()
-            noexcept (requires{{type<I>{outer->sep(), Position{}}} noexcept;})
+            noexcept (requires{{type<I>{
+                .begin = Dir::begin(outer->sep()),
+                .end = Dir::end(outer->sep())
+            }} noexcept;})
             requires (!trivial && I % 2 == 1)
         {
-            return {outer->sep(), Position{}};
+            return {
+                .begin = Dir::begin(outer->sep()),
+                .end = Dir::end(outer->sep())
+            };
         }
 
-        template <size_t I, range_position Position> requires (I < alternatives)
+        template <size_t I> requires (I < alternatives)
         [[nodiscard]] constexpr type<I> get()
-            noexcept (requires{
-                {type<I>{outer->template arg<_type<I>::idx>(), Position{}}} noexcept;
-            })
+            noexcept (requires{{type<I>{
+                .begin = Dir::begin(arg<I>()),
+                .end = Dir::end(arg<I>())
+            }} noexcept;})
             requires (trivial || I % 2 == 0)
         {
-            return {outer->template arg<_type<I>::idx>(), Position{}};
+            return {
+                .begin = Dir::begin(arg<I>()),
+                .end = Dir::end(arg<I>())
+            };
         }
 
     private:
         template <ssize_t I = 0> requires (I < alternatives)
         constexpr unique init()
             noexcept (requires(decltype(get<I>()) curr) {
-                {get<I, range_first>()} noexcept -> meta::nothrow::convertible_to<unique>;
+                {get<I>()} noexcept -> meta::nothrow::convertible_to<unique>;
                 {curr.begin != curr.end} noexcept -> meta::nothrow::truthy;
             } && (I + 2 >= alternatives || (
                 requires{{init<I + 2>()} noexcept;} &&
                 (trivial || I != 0 || requires{
-                    {get<1, range_first>()} noexcept -> meta::nothrow::convertible_to<unique>;
+                    {get<1>()} noexcept -> meta::nothrow::convertible_to<unique>;
                 })
             )))
         {
-            if (auto curr = get<I, range_first>(); curr.begin != curr.end) {
+            if (auto curr = get<I>(); curr.begin != curr.end) {
                 return std::move(curr);
             }
             if constexpr (I + 2 < alternatives) {
                 if constexpr (!trivial && I == 0) {
                     ++index;
                     if constexpr (!dynamic) {
-                        return get<1, range_first>();
+                        return get<1>();
                     } else {
                         if (outer->sep_size() != 0) {
-                            return get<1, range_first>();
+                            return get<1>();
                         }
                     }
                     ++index;
@@ -613,7 +657,7 @@ namespace impl {
                 /// NOTE: if we reach this point, then the last alternative is
                 /// guaranteed to be empty
                 ++index;
-                return get<alternatives - 1, range_first>();
+                return get<alternatives - 1>();
             }
         }
 
@@ -878,7 +922,8 @@ namespace impl {
             m_sep_size(get_size())
         {}
     };
-    template <typename Sep, typename... A> requires (meta::tuple_like<meta::as_range_or_scalar<Sep>>)
+    template <typename Sep, typename... A>
+        requires (meta::tuple_like<meta::as_range_or_scalar<Sep>>)
     struct concat_storage<Sep, A...> {
     protected:
         template <meta::not_reference Outer, range_direction Dir>

@@ -7570,61 +7570,6 @@ namespace impl {
     template <typename T>
     concept range_direction = std::same_as<T, range_forward> || std::same_as<T, range_reverse>;
 
-    /* A helper tag that indicates an initial position for an iterator with respect to
-    its sentinel.  The tag can be invoked with the container and mutable references to
-    its begin/end iterators to advance to that position, returning the distance that
-    was covered.  For `range_first`, this will always be zero.  This tag is mostly used
-    in concat/flatten operations to allow decrementing over the boundary from one
-    subrange to its predecessor. */
-    struct range_first {
-        template <typename C, typename B, typename E>
-        [[nodiscard]] static constexpr ssize_t operator()(C& container, B& begin, E& end) noexcept {
-            return 0;
-        }
-    };
-    struct range_last {
-        template <typename C, typename B, typename E>
-        [[nodiscard]] static constexpr ssize_t operator()(C& container, B& begin, E& end)
-            noexcept (requires(ssize_t size) {
-                {meta::ssize(container) - 1} noexcept -> meta::nothrow::convertible_to<ssize_t>;
-                {begin += size} noexcept;
-            })
-            requires (requires(ssize_t size) {
-                {meta::ssize(container) - 1} -> meta::convertible_to<ssize_t>;
-                {begin += size};
-            })
-        {
-            ssize_t size = meta::ssize(container) - 1;
-            begin += size;
-            return size;
-        }
-        template <typename C, typename B, typename E>
-        [[nodiscard]] static constexpr ssize_t operator()(C& container, B& begin, E& end)
-            noexcept (requires{
-                {B{begin}} noexcept;
-                {++begin} noexcept;
-                {begin != end} noexcept -> meta::nothrow::truthy;
-            })
-            requires (requires{
-                {B{begin}};
-                {++begin};
-                {begin != end} -> meta::truthy;
-            })
-        {
-            ssize_t size = 0;
-            B tmp = begin;
-            ++tmp;
-            while (tmp != end) {
-                ++begin;
-                ++size;
-            }
-            return size;
-        }
-    };
-
-    template <typename T>
-    concept range_position = std::same_as<T, range_first> || std::same_as<T, range_last>;
-
 }
 
 
