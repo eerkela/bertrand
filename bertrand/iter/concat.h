@@ -205,7 +205,7 @@ namespace impl {
                 concat_increment<I + 1>::skip(self, n);
             } else {  // no next alternative - initialize to an end iterator
                 self.index = T::alternatives;
-                auto curr = self.template get<I>(self);
+                auto curr = self.template get<I>();
                 ssize_t size = curr.end - curr.begin;
                 curr.begin += size;
                 curr.index += size;
@@ -245,10 +245,14 @@ namespace impl {
     first, and then retreat to either the last element of a previous argument or
     separator if it causes the index to decrement past zero, possibly requiring
     recursive calls for prior indices (bypassing separators).
-    
+
     Random-access decrements are optimized to skip over intermediate subranges where
     possible, but still require linear time in the number of arguments, albeit with a
-    low constant factor due to precomputed separator sizes and iterator indices. */
+    low constant factor due to precomputed separator sizes and iterator indices.
+
+    An extra vtable entry will be generated to handle decrementing an end iterator,
+    whose subrange begin will always compare equal to its end.  Other than some extra
+    indexing, everything else is handled identically to normal decrements. */
     template <size_t I>
     struct concat_decrement {
         template <bool trivial>
@@ -294,8 +298,6 @@ namespace impl {
             }
         }
 
-
-
         template <typename T>
         static constexpr void skip(T& self)
             noexcept (
@@ -320,11 +322,11 @@ namespace impl {
                 /// NOTE: if we reach this point, then the first alternative is
                 /// guaranteed to be empty
                 self.index = 0;
-                self.child = self.template get<0>(self);
+                self.child = self.template get<0>();
             }
         }
 
-        template <typename T>
+        template <typename T> requires (I < T::alternatives)
         static constexpr void operator()(T& self)
             noexcept (requires(decltype((concat_get<I>(self))) curr) {
                 {--curr.begin} noexcept;
@@ -335,7 +337,7 @@ namespace impl {
                 }
             ))))
         {
-            // inner increment
+            // inner decrement
             auto& curr = concat_get<I>(self);
             if (curr.index > 0) {
                 --curr.begin;
@@ -366,13 +368,27 @@ namespace impl {
             }
         }
 
+        template <typename T> requires (I == T::alternatives)
+        static constexpr void operator()(T& self)
+            noexcept (requires{{concat_decrement<I - 1>::operator()(self)} noexcept;})
+        {
+            --self.index;
+            concat_decrement<I - 1>::operator()(self);
+        }
+
+
+        /// TODO: random access skips seem to be broken, and result in a dereference of
+        /// a one-past-the-end iterator in some cases.
+        /// -> The problem seems to be related to separator handling, but requires more
+        /// investigation.
+
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
-            noexcept (requires(decltype((self.template get<concat_prev<I>>())) curr) {
-                {self.child = self.template get<concat_prev<I>>()} noexcept;
-                {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
-                {curr.begin += n} noexcept;
-            })
+            // noexcept (requires(decltype((self.template get<concat_prev<I>>())) curr) {
+            //     {self.child = self.template get<concat_prev<I>>()} noexcept;
+            //     {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
+            //     {curr.begin += n} noexcept;
+            // })
             requires (requires(decltype((self.template get<concat_prev<I>>())) curr) {
                 {self.child = self.template get<concat_prev<I>>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
@@ -383,7 +399,7 @@ namespace impl {
                 --self.index;
                 if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
                     ssize_t size = self.sep_size();
-                    if (n < size) {
+                    if (n <= size) {
                         auto curr = self.template get<I - 1>();
                         size -= n;
                         curr.begin += size;
@@ -395,7 +411,7 @@ namespace impl {
                 } else {
                     auto curr = self.template get<I - 1>();
                     ssize_t size = curr.end - curr.begin;
-                    if (n < size) {
+                    if (n <= size) {
                         size -= n;
                         curr.begin += size;
                         curr.index += size;
@@ -407,11 +423,11 @@ namespace impl {
                 concat_decrement<I - 1>::skip(self, n);
             } else {  // no previous alternative - initialize to a begin iterator
                 self.index = 0;
-                self.child = self.template get<I>(self);
+                self.child = self.template get<I>();
             }
         }
 
-        template <typename T>
+        template <typename T> requires (I < T::alternatives)
         static constexpr void operator()(T& self, ssize_t& n)
             noexcept (requires(decltype((concat_get<I>(self))) curr) {
                 {curr.begin -= n} noexcept;
@@ -434,6 +450,15 @@ namespace impl {
             n -= curr.index;
             skip(self, n);
         }
+
+        template <typename T> requires (I == T::alternatives)
+        static constexpr void operator()(T& self, ssize_t& n)
+            noexcept (requires{{concat_decrement<I - 1>::operator()(self, n)} noexcept;})
+            requires (requires{{concat_decrement<I - 1>::operator()(self, n)};})
+        {
+            --self.index;
+            concat_decrement<I - 1>::operator()(self, n);
+        }
     };
 
     /* Computing the distance between two concat iterators requires a cartesian product
@@ -444,7 +469,10 @@ namespace impl {
     beginning of the rightmost iterator's subrange to its current position. */
     template <size_t I>
     struct concat_distance {
-        /// TODO: implement this similar to join_distance
+        /// TODO: 2 overloads, one for encoded indices (which must include end indices)
+        /// and another for NoneType sentinels, which simply count to the end of the
+        /// range, and can avoid cartesian dispatch.  The reversed operands will just
+        /// invert the result to avoid duplication of the vtable and logic.
     };
 
     /// TODO: concat_category and concat_reference can probably be simplified by just
@@ -661,6 +689,14 @@ namespace impl {
             }
         }
 
+        using deref = impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>;
+        using increment = impl::basic_vtable<concat_increment, alternatives>;
+        using decrement = impl::basic_vtable<concat_decrement, alternatives + 1>;
+        using compare = impl::basic_vtable<concat_compare, unique_alternatives>;
+        using iter_distance =
+            impl::basic_vtable<concat_distance, (alternatives + 1) * (alternatives + 1)>;
+        using sentinel_distance = impl::basic_vtable<concat_distance, alternatives + 1>;
+
     public:
         /// TODO: figure out how to properly initialize an end iterator so that no
         /// invariants are violated for the vtable functions.
@@ -680,15 +716,11 @@ namespace impl {
         {}
 
         [[nodiscard]] constexpr reference operator*() const
-            noexcept (requires{{
-                impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>{
-                    impl::visitable<const unique&>::index(child)
-                }(child)
-            } noexcept;})
+            noexcept (requires{
+                {deref{impl::visitable<const unique&>::index(child)}(child)} noexcept;
+            })
         {
-            return (impl::basic_vtable<concat_deref<reference>::template fn, unique_alternatives>{
-                impl::visitable<const unique&>::index(child)
-            }(child));
+            return (deref{impl::visitable<const unique&>::index(child)}(child));
         }
 
         [[nodiscard]] constexpr auto operator->() const
@@ -716,14 +748,10 @@ namespace impl {
         }
 
         constexpr concat_iterator& operator++()
-            noexcept (requires{{
-                impl::basic_vtable<concat_increment, alternatives>{size_t(index)}(*this)
-            } noexcept;})
-            requires (requires{{
-                impl::basic_vtable<concat_increment, alternatives>{size_t(index)}(*this)
-            };})
+            noexcept (requires{{increment{size_t(index)}(*this)} noexcept;})
+            requires (requires{{increment{size_t(index)}(*this)};})
         {
-            impl::basic_vtable<concat_increment, alternatives>{size_t(index)}(*this);
+            increment{size_t(index)}(*this);
             return *this;
         }
 
@@ -743,14 +771,21 @@ namespace impl {
         }
 
         constexpr concat_iterator& operator+=(difference_type n)
-            noexcept (requires{{
-                impl::basic_vtable<concat_increment, alternatives>{size_t(index)}(*this, n)
-            } noexcept;})
-            requires (requires{{
-                impl::basic_vtable<concat_increment, alternatives>{size_t(index)}(*this, n)
-            };})
+            noexcept (requires{
+                {decrement{size_t(index)}(*this, n)} noexcept;
+                {increment{size_t(index)}(*this, n)} noexcept;
+            })
+            requires (requires{
+                {decrement{size_t(index)}(*this, n)};
+                {increment{size_t(index)}(*this, n)};
+            })
         {
-            impl::basic_vtable<concat_increment, alternatives>{size_t(index)}(*this, n);
+            if (n < 0) {
+                n = -n;
+                decrement{size_t(index)}(*this, n);
+            } else if (n > 0) {
+                increment{size_t(index)}(*this, n);
+            }
             return *this;
         }
 
@@ -790,17 +825,14 @@ namespace impl {
             return tmp;
         }
 
+        /// TODO: I can add another index for the end iterator, where the index is
+        /// equal to `alternatives`, in which case 
+
         constexpr concat_iterator& operator--()
-            noexcept (requires{{
-                impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this)
-            } noexcept;})
-            requires (requires{{
-                impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this)
-            };})
+            noexcept (requires{{decrement{size_t(index)}(*this)} noexcept;})
+            requires (requires{{decrement{size_t(index)}(*this)};})
         {
-            /// TODO: what about decrementing an end iterator, where `curr` is none?
-            /// This should probably just initialize to the last valid position.
-            impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this);
+            decrement{size_t(index)}(*this);
             return *this;
         }
 
@@ -820,14 +852,10 @@ namespace impl {
         }
 
         constexpr concat_iterator& operator-=(difference_type n)
-            noexcept (requires{{
-                impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this, n)
-            } noexcept;})
-            requires (requires{{
-                impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this, n)
-            };})
+            noexcept (requires{{decrement{size_t(index)}(*this, n)} noexcept;})
+            requires (requires{{decrement{size_t(index)}(*this, n)};})
         {
-            impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this, n);
+            decrement{size_t(index)}(*this, n);
             return *this;
         }
 
@@ -846,17 +874,32 @@ namespace impl {
             return tmp;
         }
 
-        /// TODO: distance needs to encode both indices using a cartesian product
-
         [[nodiscard]] constexpr difference_type operator-(const concat_iterator& other) const
-            noexcept (requires{{
-                impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this, other)
-            } noexcept;})
-            requires (requires{{
-                impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this, other)
-            };})
+            noexcept (requires{{iter_distance{size_t(index)}(*this, other)} noexcept;})
+            requires (requires{{iter_distance{size_t(index)}(*this, other)};})
         {
-            return impl::basic_vtable<concat_decrement, alternatives>{size_t(index)}(*this, other);
+            return iter_distance{size_t(index)}(*this, other);
+        }
+
+
+        [[nodiscard]] friend constexpr difference_type operator-(
+            const concat_iterator& self,
+            NoneType
+        )
+            noexcept (requires{{sentinel_distance{size_t(self.index)}(self)} noexcept;})
+            requires (requires{{sentinel_distance{size_t(self.index)}(self)};})
+        {
+            return -sentinel_distance{size_t(self.index)}(self);
+        }
+
+        [[nodiscard]] friend constexpr difference_type operator-(
+            NoneType,
+            const concat_iterator& self
+        )
+            noexcept (requires{{sentinel_distance{size_t(self.index)}(self)} noexcept;})
+            requires (requires{{sentinel_distance{size_t(self.index)}(self)};})
+        {
+            return sentinel_distance{size_t(self.index)}(self);
         }
 
         [[nodiscard]] constexpr bool operator==(const concat_iterator& other) const
@@ -866,15 +909,41 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr std::strong_ordering operator<=>(const concat_iterator& other) const
-            noexcept (requires{{impl::basic_vtable<concat_compare, unique_alternatives>{
-                impl::visitable<const unique&>::index(child)
-            }(child, other.child)} noexcept;})
+            noexcept (requires{
+                {compare{impl::visitable<const unique&>::index(child)}(child, other.child)} noexcept;
+            })
         {
             if (std::strong_ordering cmp = index <=> other.index; cmp != 0) return cmp;
             if (index < 0 || index >= ssize_t(alternatives)) return std::strong_ordering::equal;
-            return impl::basic_vtable<concat_compare, unique_alternatives>{
-                impl::visitable<const unique&>::index(child)
-            }(child, other.child);
+            return compare{impl::visitable<const unique&>::index(child)}(child, other.child);
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const concat_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.index == ssize_t(alternatives);
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            NoneType,
+            const concat_iterator& self
+        ) noexcept {
+            return self.index == ssize_t(alternatives);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            const concat_iterator& self,
+            NoneType
+        ) noexcept {
+            return self.index <=> ssize_t(alternatives);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(
+            NoneType,
+            const concat_iterator& self
+        ) noexcept {
+            return ssize_t(alternatives) <=> self.index;
         }
     };
 
@@ -995,13 +1064,7 @@ namespace impl {
             return {*this};
         }
 
-        [[nodiscard]] constexpr concat_iterator<concat, range_forward> end() noexcept {
-            return {this};
-        }
-
-        [[nodiscard]] constexpr concat_iterator<const concat, range_forward> end() const noexcept {
-            return {this};
-        }
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
 
         [[nodiscard]] constexpr concat_iterator<concat, range_reverse> rbegin()
             noexcept (requires{{concat_iterator<concat, range_reverse>{*this}} noexcept;})
@@ -1017,13 +1080,7 @@ namespace impl {
             return {*this};
         }
 
-        [[nodiscard]] constexpr concat_iterator<concat, range_reverse> rend() noexcept {
-            return {this};
-        }
-
-        [[nodiscard]] constexpr concat_iterator<const concat, range_reverse> rend() const noexcept {
-            return {this};
-        }
+        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
     };
 
 }
@@ -1114,7 +1171,7 @@ namespace iter {
 
 namespace bertrand::iter {
 
-    static constexpr auto c = concat{4}(1, 2, 3);
+    static constexpr auto c = concat{4}(1, 2, range(std::array<int, 0>{}));
     static_assert(sizeof(c) == sizeof(int) * 4);
     static_assert([] {
         auto it = c.begin();
@@ -1122,7 +1179,7 @@ namespace bertrand::iter {
         if (*it++ != 4) return false;
         if (*it++ != 2) return false;
         if (*it++ != 4) return false;
-        if (*it++ != 3) return false;
+        // if (*it++ != 3) return false;
         if (it != c.end()) return false;
 
         for (auto&& v : c) {
