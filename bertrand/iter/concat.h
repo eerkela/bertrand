@@ -90,7 +90,7 @@ namespace impl {
     template <size_t I>
     struct concat_increment {
         template <bool trivial>
-        static constexpr size_t next = (trivial ? I + 1 : (I | 1) + 1);
+        static constexpr size_t next = trivial ? I + 1 : (I | 1) + 1;
 
         template <typename T>
         static constexpr void skip(T& self)
@@ -256,12 +256,12 @@ namespace impl {
     template <size_t I>
     struct concat_decrement {
         template <bool trivial>
-        static constexpr size_t prev = (trivial ? I - 1 : (I - 1) & ~1);
+        static constexpr size_t prev = trivial ? I - 1 : (I - 1) & ~1;
 
         template <typename T, typename S>
         static constexpr void last(T& self, S& sub)
             noexcept (requires{{
-                meta::ssize(self.template arg<prev<T::trivial>>()) - 1
+                meta::ssize(self.template get<prev<T::trivial>>()) - 1
             } noexcept -> meta::nothrow::convertible_to<ssize_t>;} ?
                 (requires(ssize_t size) {{sub.begin += size};} ?
                     requires(ssize_t size) {{sub.begin += size} noexcept;} :
@@ -275,9 +275,9 @@ namespace impl {
             )
         {
             if constexpr (requires{{
-                meta::ssize(self.template arg<prev<T::trivial>>()) - 1
+                meta::ssize(self.template get<prev<T::trivial>>()) - 1
             } -> meta::convertible_to<ssize_t>;}) {
-                ssize_t size = meta::ssize(self.template arg<prev<T::trivial>>()) - 1;
+                ssize_t size = meta::ssize(self.template get<prev<T::trivial>>()) - 1;
                 if constexpr (requires{{sub.begin += size};}) {
                     sub.begin += size;
                     sub.index += size;
@@ -351,6 +351,7 @@ namespace impl {
                 if constexpr (!T::trivial && I % 2 == 0) {  // previous alternative is a separator
                     if constexpr (!T::dynamic) {  // size is known to be non-zero
                         auto sub = self.template get<I - 1>();
+                        if (sub.begin == sub.end) throw TypeError();
                         last(self, sub);
                         self.child = std::move(sub);
                         return;
@@ -376,19 +377,13 @@ namespace impl {
             concat_decrement<I - 1>::operator()(self);
         }
 
-
-        /// TODO: random access skips seem to be broken, and result in a dereference of
-        /// a one-past-the-end iterator in some cases.
-        /// -> The problem seems to be related to separator handling, but requires more
-        /// investigation.
-
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
-            // noexcept (requires(decltype((self.template get<concat_prev<I>>())) curr) {
-            //     {self.child = self.template get<concat_prev<I>>()} noexcept;
-            //     {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
-            //     {curr.begin += n} noexcept;
-            // })
+            noexcept (requires(decltype((self.template get<concat_prev<I>>())) curr) {
+                {self.child = self.template get<concat_prev<I>>()} noexcept;
+                {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
+                {curr.begin += n} noexcept;
+            })
             requires (requires(decltype((self.template get<concat_prev<I>>())) curr) {
                 {self.child = self.template get<concat_prev<I>>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
@@ -469,49 +464,153 @@ namespace impl {
     beginning of the rightmost iterator's subrange to its current position. */
     template <size_t I>
     struct concat_distance {
-        /// TODO: 2 overloads, one for encoded indices (which must include end indices)
-        /// and another for NoneType sentinels, which simply count to the end of the
-        /// range, and can avoid cartesian dispatch.  The reversed operands will just
-        /// invert the result to avoid duplication of the vtable and logic.
-    };
+        template <size_t alternatives>
+        static constexpr size_t quotient = I / (alternatives + 1);
+        template <size_t alternatives>
+        static constexpr size_t remainder = I % (alternatives + 1);
+        template <size_t alternatives>
+        static constexpr size_t sentinel = (alternatives + 1) * (alternatives + 1) - 1;
 
-    /// TODO: concat_category and concat_reference can probably be simplified by just
-    /// traversing the separator and argument ranges and combining their categories and
-    /// reference types directly.  This recursive approach is only needed for
-    /// flatten{}.
+        template <size_t J, typename T> requires (J < T::alternatives)
+        static constexpr ssize_t left(const T& self)
+            noexcept (requires{{
+                concat_get<J>(self).end - concat_get<J>(self).begin
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires (requires{{
+                concat_get<J>(self).end - concat_get<J>(self).begin
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            return concat_get<J>(self).end - concat_get<J>(self).begin;
+        }
+
+        template <typename T> requires (quotient<T::alternatives> < remainder<T::alternatives>)
+        static constexpr ssize_t middle(const T& self)
+            noexcept (requires{{
+                self.sep_size() + concat_distance<I + T::alternatives + 1>::middle(self)
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires ((!T::trivial && quotient<T::alternatives> % 2 == 1) && requires{{
+                self.sep_size() + concat_distance<I + T::alternatives + 1>::middle(self)
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            return self.sep_size() + concat_distance<I + T::alternatives + 1>::middle(self);
+        }
+
+        template <typename T> requires (quotient<T::alternatives> < remainder<T::alternatives>)
+        static constexpr ssize_t middle(const T& self)
+            noexcept (requires{{
+                meta::distance(self.template arg<quotient<T::alternatives>>()) +
+                concat_distance<I + T::alternatives + 1>::middle(self)
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires ((T::trivial || quotient<T::alternatives> % 2 == 0) && requires{{
+                meta::distance(self.template arg<quotient<T::alternatives>>()) +
+                concat_distance<I + T::alternatives + 1>::middle(self)
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            return
+                meta::distance(self.template arg<quotient<T::alternatives>>()) +
+                concat_distance<I + T::alternatives + 1>::middle(self);
+        }
+
+        template <typename T> requires (quotient<T::alternatives> >= remainder<T::alternatives>)
+        static constexpr ssize_t middle(const T& self) noexcept {
+            return 0;
+        }
+
+        template <typename T> requires (I < sentinel<T::alternatives>)
+        static constexpr ssize_t operator()(const T& lhs, const T& rhs)
+            noexcept (requires{{
+                left<quotient<T::alternatives>>(lhs) +
+                concat_distance<I + T::alternatives + 1>::middle(lhs)
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires (quotient<T::alternatives> < remainder<T::alternatives> && requires{{
+                left<quotient<T::alternatives>>(lhs) +
+                concat_distance<I + T::alternatives + 1>::middle(lhs)
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            ssize_t size =
+                left<quotient<T::alternatives>>(lhs) +
+                concat_distance<I + T::alternatives + 1>::middle(lhs);
+            if constexpr (remainder<T::alternatives> < T::alternatives) {
+                size += concat_get<remainder<T::alternatives>>(rhs).index;
+            }
+            return size;
+        }
+
+        template <typename T> requires (I < sentinel<T::alternatives>)
+        static constexpr ssize_t operator()(const T& lhs, const T& rhs)
+            noexcept (requires{{
+                left<remainder<T::alternatives>>(rhs) +
+                concat_distance<I + T::alternatives + 1>::middle(rhs)
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires (remainder<T::alternatives> < quotient<T::alternatives> && requires{{
+                left<remainder<T::alternatives>>(rhs) +
+                concat_distance<I + T::alternatives + 1>::middle(rhs)
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            ssize_t size =
+                left<remainder<T::alternatives>>(rhs) +
+                concat_distance<I + T::alternatives + 1>::middle(rhs);
+            if constexpr (quotient<T::alternatives> < T::alternatives) {
+                size += concat_get<quotient<T::alternatives>>(lhs).index;
+            }
+            return -size;
+        }
+
+        template <typename T> requires (I < sentinel<T::alternatives>)
+        static constexpr ssize_t operator()(const T& lhs, const T& rhs) noexcept
+            requires (quotient<T::alternatives> == remainder<T::alternatives>)
+        {
+            return
+                concat_get<quotient<T::alternatives>>(lhs).index -
+                concat_get<quotient<T::alternatives>>(rhs).index;
+        }
+
+        template <typename T> requires (I >= sentinel<T::alternatives>)
+        static constexpr ssize_t operator()(const T& lhs, const T& rhs) noexcept {
+            return 0;
+        }
+
+        template <typename T> requires (I < T::alternatives)
+        static constexpr ssize_t operator()(NoneType, const T& rhs)
+            noexcept (requires{{
+                (concat_get<I>(rhs).end - concat_get<I>(rhs).begin) +
+                concat_distance<(I + 1) * (T::alternatives + 1) + T::alternatives>::middle(rhs)
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires (requires{{
+                (concat_get<I>(rhs).end - concat_get<I>(rhs).begin) +
+                concat_distance<(I + 1) * (T::alternatives + 1) + T::alternatives>::middle(rhs)
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            return
+                (concat_get<I>(rhs).end - concat_get<I>(rhs).begin) +
+                concat_distance<(I + 1) * (T::alternatives + 1) + T::alternatives>::middle(rhs);
+        }
+
+        template <typename T> requires (I == T::alternatives)
+        static constexpr ssize_t operator()(NoneType, const T& rhs) noexcept {
+            return 0;
+        }
+    };
 
     template <typename>
-    struct _concat_category;
+    struct _concat_traits;
     template <typename... U>
-    struct _concat_category<meta::pack<U...>> {
-        using type = meta::common_type<typename meta::remove_reference<U>::category...>;
+    struct _concat_traits<meta::pack<U...>> {
+        using category = meta::common_type<typename meta::remove_reference<U>::category...>;
+        using reference = meta::make_union<typename meta::remove_reference<U>::reference...>;
     };
     template <typename U>
-    using concat_category = _concat_category<typename impl::visitable<const U&>::alternatives>::type;
-
-    template <typename>
-    struct _concat_reference;
-    template <typename... U>
-    struct _concat_reference<meta::pack<U...>> {
-        using type = meta::concat<typename meta::remove_reference<U>::reference...>;
-    };
-    template <typename U>
-    using concat_reference = _concat_reference<typename impl::visitable<const U&>::alternatives>::type;
+    using concat_traits = _concat_traits<typename impl::visitable<const U&>::alternatives>;
 
     /* A subrange is stored over each concatenated argument, consisting of a begin/end
     iterator pair and an encoded index, which obeys the same rules as
     `concat_iterator`.  See the algorithms above for behavioral details. */
     template <range_direction Dir, meta::unqualified Begin, meta::unqualified End>
     struct concat_subrange {
-        using direction = Dir;
-        using begin_type = Begin;
-        using end_type = End;
-        using category = meta::iterator_category<begin_type>;
-        using reference = meta::pack<meta::dereference_type<const begin_type&>>;
-        static constexpr bool trivial = true;
-
-        begin_type begin;
-        end_type end;
+        using category = meta::iterator_category<Begin>;
+        using reference = meta::dereference_type<const Begin&>;
+        Begin begin;
+        End end;
         ssize_t index = 0;
     };
 
@@ -526,84 +625,83 @@ namespace impl {
     is equal to the number of concatenated arguments. */
     template <meta::not_reference Outer, range_direction Dir>
     struct concat_iterator {
-        using outer_type = Outer;
-        using direction = Dir;
-        static constexpr bool trivial = outer_type::trivial;
-        static constexpr bool dynamic = outer_type::dynamic;
+        static constexpr bool trivial = Outer::trivial;
+        static constexpr bool dynamic = Outer::dynamic;
         static constexpr size_t alternatives =
-            outer_type::arg_type::size() + (outer_type::arg_type::size() - 1) * !trivial;
+            Outer::arg_type::size() + (Outer::arg_type::size() - 1) * !trivial;
 
     private:
         template <size_t I>
         struct _type {
             static constexpr size_t idx = I / (1 + !trivial);
             using type = concat_subrange<
-                direction,
-                decltype(direction::begin(std::declval<outer_type&>().template arg<idx>())),
-                decltype(direction::end(std::declval<outer_type&>().template arg<idx>()))
+                Dir,
+                decltype(Dir::begin(std::declval<Outer&>().template arg<idx>())),
+                decltype(Dir::end(std::declval<Outer&>().template arg<idx>()))
             >;
         };
         template <size_t I>
-            requires ((trivial || I % 2 == 0) && std::same_as<direction, range_reverse>)
+            requires ((trivial || I % 2 == 0) && std::same_as<Dir, range_reverse>)
         struct _type<I> {
-            static constexpr size_t idx = (outer_type::arg_type::size() - 1 - I) / (1 + !trivial);
+            static constexpr size_t idx = (alternatives - 1 - I) / (1 + !trivial);
             using type = concat_subrange<
-                direction,
-                decltype(direction::begin(std::declval<outer_type&>().template arg<idx>())),
-                decltype(direction::end(std::declval<outer_type&>().template arg<idx>()))
+                Dir,
+                decltype(Dir::begin(std::declval<Outer&>().template arg<idx>())),
+                decltype(Dir::end(std::declval<Outer&>().template arg<idx>()))
             >;
         };
         template <size_t I> requires (!trivial && I % 2 == 1)
         struct _type<I> {
             using type = concat_subrange<
-                direction,
-                decltype(direction::begin(std::declval<outer_type&>().template sep())),
-                decltype(direction::end(std::declval<outer_type&>().template sep()))
+                Dir,
+                decltype(Dir::begin(std::declval<Outer&>().template sep())),
+                decltype(Dir::end(std::declval<Outer&>().template sep()))
             >;
         };
 
-        template <typename = std::make_index_sequence<outer_type::arg_type::size()>>
+        template <typename = std::make_index_sequence<Outer::arg_type::size()>>
         struct _unique;
         template <size_t... I>
         struct _unique<std::index_sequence<I...>> {
-            using separator = void;
-            using unique = meta::make_union<typename _type<I>::type...>;
+            using type = meta::make_union<typename _type<I>::type...>;
         };
         template <size_t... I> requires (!trivial)
         struct _unique<std::index_sequence<I...>> {
-            using separator = concat_subrange<
-                direction,
-                decltype(direction::begin(std::declval<outer_type&>().sep())),
-                decltype(direction::end(std::declval<outer_type&>().sep()))
+            using type = meta::make_union<
+                concat_subrange<
+                    Dir,
+                    decltype(Dir::begin(std::declval<Outer&>().sep())),
+                    decltype(Dir::end(std::declval<Outer&>().sep()))
+                >,
+                typename _type<I>::type...
             >;
-            using unique = meta::make_union<separator, typename _type<I>::type...>;
         };
 
     public:
-        using separator = _unique<>::separator;
-        using unique = _unique<>::unique;
-        static constexpr size_t unique_alternatives =
-            impl::visitable<unique>::alternatives::size();
-
+        using unique = _unique<>::type;
+        static constexpr size_t unique_alternatives = impl::visitable<unique>::alternatives::size();
         using iterator_category = std::conditional_t<
-            meta::inherits<concat_category<unique>, std::forward_iterator_tag>,
+            meta::inherits<typename concat_traits<unique>::category, std::forward_iterator_tag>,
             std::conditional_t<
-                meta::inherits<concat_category<unique>, std::random_access_iterator_tag>,
+                meta::inherits<
+                    typename concat_traits<unique>::category,
+                    std::random_access_iterator_tag
+                >,
                 std::random_access_iterator_tag,
-                concat_category<unique>
+                typename concat_traits<unique>::category
             >,
             std::forward_iterator_tag
         >;
         using difference_type = ssize_t;
-        using reference = concat_reference<unique>::template eval<meta::make_union>;
+        using reference = concat_traits<unique>::reference;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
         template <size_t I> requires (I < alternatives)
         using type = _type<I>::type;
 
-        outer_type* outer;
-        difference_type index;
+        Outer* outer = nullptr;
+        difference_type index = alternatives;
         [[no_unique_address]] unique child;
 
         template <size_t I> requires (I < alternatives)
@@ -614,9 +712,17 @@ namespace impl {
             return outer->template arg<_type<I>::idx>();
         }
 
+        template <size_t I> requires (I < alternatives)
+        [[nodiscard]] constexpr auto& arg() const
+            noexcept (requires{{outer->template arg<_type<I>::idx>()} noexcept;})
+            requires (trivial || I % 2 == 0)
+        {
+            return outer->template arg<_type<I>::idx>();
+        }
+
         [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
             if constexpr (!dynamic) {
-                return meta::tuple_size<typename outer_type::sep_type>;
+                return meta::tuple_size<typename Outer::sep_type>;
             } else {
                 return outer->sep_size();
             }
@@ -624,30 +730,20 @@ namespace impl {
 
         template <size_t I> requires (I < alternatives)
         [[nodiscard]] constexpr type<I> get()
-            noexcept (requires{{type<I>{
-                .begin = Dir::begin(outer->sep()),
-                .end = Dir::end(outer->sep())
-            }} noexcept;})
+            noexcept (requires{
+                {type<I>{Dir::begin(outer->sep()), Dir::end(outer->sep())}} noexcept;
+            })
             requires (!trivial && I % 2 == 1)
         {
-            return {
-                .begin = Dir::begin(outer->sep()),
-                .end = Dir::end(outer->sep())
-            };
+            return {Dir::begin(outer->sep()), Dir::end(outer->sep())};
         }
 
         template <size_t I> requires (I < alternatives)
         [[nodiscard]] constexpr type<I> get()
-            noexcept (requires{{type<I>{
-                .begin = Dir::begin(arg<I>()),
-                .end = Dir::end(arg<I>())
-            }} noexcept;})
+            noexcept (requires{{type<I>{Dir::begin(arg<I>()), Dir::end(arg<I>())}} noexcept;})
             requires (trivial || I % 2 == 0)
         {
-            return {
-                .begin = Dir::begin(arg<I>()),
-                .end = Dir::end(arg<I>())
-            };
+            return {Dir::begin(arg<I>()), Dir::end(arg<I>())};
         }
 
     private:
@@ -698,15 +794,8 @@ namespace impl {
         using sentinel_distance = impl::basic_vtable<concat_distance, alternatives + 1>;
 
     public:
-        /// TODO: figure out how to properly initialize an end iterator so that no
-        /// invariants are violated for the vtable functions.
-
-        [[nodiscard]] constexpr concat_iterator(outer_type* outer = nullptr) noexcept :
-            outer(outer),
-            index(alternatives)
-        {}
-
-        [[nodiscard]] constexpr concat_iterator(outer_type& outer)
+        [[nodiscard]] constexpr concat_iterator() noexcept = default;
+        [[nodiscard]] constexpr concat_iterator(Outer& outer)
             noexcept (requires{{init()} noexcept;})
             requires (requires{{init()};})
         :
@@ -825,9 +914,6 @@ namespace impl {
             return tmp;
         }
 
-        /// TODO: I can add another index for the end iterator, where the index is
-        /// equal to `alternatives`, in which case 
-
         constexpr concat_iterator& operator--()
             noexcept (requires{{decrement{size_t(index)}(*this)} noexcept;})
             requires (requires{{decrement{size_t(index)}(*this)};})
@@ -886,20 +972,20 @@ namespace impl {
             const concat_iterator& self,
             NoneType
         )
-            noexcept (requires{{sentinel_distance{size_t(self.index)}(self)} noexcept;})
-            requires (requires{{sentinel_distance{size_t(self.index)}(self)};})
+            noexcept (requires{{sentinel_distance{size_t(self.index)}(None, self)} noexcept;})
+            requires (requires{{sentinel_distance{size_t(self.index)}(None, self)};})
         {
-            return -sentinel_distance{size_t(self.index)}(self);
+            return -sentinel_distance{size_t(self.index)}(None, self);
         }
 
         [[nodiscard]] friend constexpr difference_type operator-(
             NoneType,
             const concat_iterator& self
         )
-            noexcept (requires{{sentinel_distance{size_t(self.index)}(self)} noexcept;})
-            requires (requires{{sentinel_distance{size_t(self.index)}(self)};})
+            noexcept (requires{{sentinel_distance{size_t(self.index)}(None, self)} noexcept;})
+            requires (requires{{sentinel_distance{size_t(self.index)}(None, self)};})
         {
-            return sentinel_distance{size_t(self.index)}(self);
+            return sentinel_distance{size_t(self.index)}(None, self);
         }
 
         [[nodiscard]] constexpr bool operator==(const concat_iterator& other) const
@@ -1173,6 +1259,7 @@ namespace bertrand::iter {
 
     static constexpr auto c = concat{4}(1, 2, range(std::array<int, 0>{}));
     static_assert(sizeof(c) == sizeof(int) * 4);
+    static_assert(c.end() - c.begin() == 4);
     static_assert([] {
         auto it = c.begin();
         if (*it++ != 1) return false;
@@ -1190,6 +1277,24 @@ namespace bertrand::iter {
 
         return true;
     }());
+
+    static_assert([] {
+        auto it = c.rbegin();
+        if (*it++ != 4) return false;
+        --it; if (*it++ != 4) return false;
+        if (*it++ != 2) return false;
+        if (*it++ != 4) return false;
+        if (*it++ != 1) return false;
+        if (it != c.rend()) return false;
+
+        return true;
+    }());
+
+
+    /// TODO: this part of the distance operator seems to be broken, but it's not
+    /// totally clear why atm.
+    static_assert((c.begin() + 4) - c.begin() == 4);
+
 
 }
 
