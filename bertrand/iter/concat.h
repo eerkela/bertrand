@@ -533,27 +533,36 @@ namespace impl {
             if constexpr (remainder<T::alternatives> < T::alternatives) {
                 size += concat_get<remainder<T::alternatives>>(rhs).index;
             }
-            return size;
+            return -size;
         }
 
         template <typename T> requires (I < sentinel<T::alternatives>)
         static constexpr ssize_t operator()(const T& lhs, const T& rhs)
             noexcept (requires{{
                 left<remainder<T::alternatives>>(rhs) +
-                concat_distance<I + T::alternatives + 1>::middle(rhs)
+                concat_distance<
+                    (remainder<T::alternatives> + 1) * (T::alternatives + 1) +
+                    quotient<T::alternatives>
+                >::middle(rhs)
             } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
             requires (remainder<T::alternatives> < quotient<T::alternatives> && requires{{
                 left<remainder<T::alternatives>>(rhs) +
-                concat_distance<I + T::alternatives + 1>::middle(rhs)
+                concat_distance<
+                    (remainder<T::alternatives> + 1) * (T::alternatives + 1) +
+                    quotient<T::alternatives>
+                >::middle(rhs)
             } -> meta::convertible_to<ssize_t>;})
         {
             ssize_t size =
                 left<remainder<T::alternatives>>(rhs) +
-                concat_distance<I + T::alternatives + 1>::middle(rhs);
+                concat_distance<
+                    (remainder<T::alternatives> + 1) * (T::alternatives + 1) +
+                    quotient<T::alternatives>
+                >::middle(rhs);
             if constexpr (quotient<T::alternatives> < T::alternatives) {
                 size += concat_get<quotient<T::alternatives>>(lhs).index;
             }
-            return -size;
+            return size;
         }
 
         template <typename T> requires (I < sentinel<T::alternatives>)
@@ -961,10 +970,23 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr difference_type operator-(const concat_iterator& other) const
-            noexcept (requires{{iter_distance{size_t(index)}(*this, other)} noexcept;})
-            requires (requires{{iter_distance{size_t(index)}(*this, other)};})
+            noexcept (requires{{
+                iter_distance{size_t(index) * (alternatives + 1) + size_t(other.index)}(
+                    *this,
+                    other
+                )
+            } noexcept;})
+            requires (requires{{
+                iter_distance{size_t(index) * (alternatives + 1) + size_t(other.index)}(
+                    *this,
+                    other
+                )
+            };})
         {
-            return iter_distance{size_t(index)}(*this, other);
+            return iter_distance{size_t(index) * (alternatives + 1) + size_t(other.index)}(
+                *this,
+                other
+            );
         }
 
 
@@ -1291,9 +1313,9 @@ namespace bertrand::iter {
     }());
 
 
-    /// TODO: this part of the distance operator seems to be broken, but it's not
-    /// totally clear why atm.
-    static_assert((c.begin() + 4) - c.begin() == 4);
+
+    static_assert((c.begin() + 4) - (c.begin()) == 4);
+    static_assert((c.begin()) - (c.begin() + 4) == -4);
 
 
 }
