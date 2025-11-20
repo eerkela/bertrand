@@ -72,11 +72,6 @@ namespace impl {
         }
     };
 
-    template <size_t I, size_t alternatives>
-    constexpr size_t concat_next = I + 1 < alternatives ? I + 1 : I;
-    template <size_t I>
-    constexpr size_t concat_prev = I > 0 ? I - 1 : I;
-
     /* Incrementing a concat iterator will attempt to increment the current subrange
     first, and then advance to either the next argument or separator if it is
     exhausted, depending on the current index encoding.  Empty subranges will be
@@ -163,18 +158,18 @@ namespace impl {
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
             noexcept (requires(decltype((
-                self.template get<concat_next<I, T::alternatives>>()
+                self.template get<I + 1 < T::alternatives ? I + 1 : I>()
             )) curr) {
                 {
-                    self.child = self.template get<concat_next<I, T::alternatives>>()
+                    self.child = self.template get<I + 1 < T::alternatives ? I + 1 : I>()
                 } noexcept;
                 {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
                 {curr.begin += n} noexcept;
             })
             requires (requires(decltype((
-                self.template get<concat_next<I, T::alternatives>>()
+                self.template get<I + 1 < T::alternatives ? I + 1 : I>()
             )) curr) {
-                {self.child = self.template get<concat_next<I, T::alternatives>>()};
+                {self.child = self.template get<I + 1 < T::alternatives ? I + 1 : I>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
                 {curr.begin += n};
             })
@@ -379,13 +374,13 @@ namespace impl {
 
         template <typename T>
         static constexpr void skip(T& self, ssize_t& n)
-            noexcept (requires(decltype((self.template get<concat_prev<I>>())) curr) {
-                {self.child = self.template get<concat_prev<I>>()} noexcept;
+            noexcept (requires(decltype((self.template get<(I > 0 ? I - 1 : I)>())) curr) {
+                {self.child = self.template get<(I > 0 ? I - 1 : I)>()} noexcept;
                 {curr.end - curr.begin} noexcept -> meta::nothrow::convertible_to<ssize_t>;
                 {curr.begin += n} noexcept;
             })
-            requires (requires(decltype((self.template get<concat_prev<I>>())) curr) {
-                {self.child = self.template get<concat_prev<I>>()};
+            requires (requires(decltype((self.template get<(I > 0 ? I - 1 : I)>())) curr) {
+                {self.child = self.template get<(I > 0 ? I - 1 : I)>()};
                 {curr.end - curr.begin} -> meta::convertible_to<ssize_t>;
                 {curr.begin += n};
             })
@@ -989,7 +984,6 @@ namespace impl {
             );
         }
 
-
         [[nodiscard]] friend constexpr difference_type operator-(
             const concat_iterator& self,
             NoneType
@@ -1141,6 +1135,30 @@ namespace impl {
     private:
         using base = concat_storage<Sep, As...>;
 
+        template <size_t... I>
+        constexpr size_t _size(std::index_sequence<I...>) const
+            noexcept (requires{{
+                (meta::size(base::m_args.template get<I>()) + ... + 0)
+            } noexcept -> meta::nothrow::convertible_to<size_t>;})
+            requires (requires{{
+                (meta::size(base::m_args.template get<I>()) + ... + 0)
+            } -> meta::convertible_to<size_t>;})
+        {
+            return (meta::size(base::m_args.template get<I>()) + ... + 0);
+        }
+
+        template <size_t... I>
+        constexpr ssize_t _ssize(std::index_sequence<I...>) const
+            noexcept (requires{{
+                (meta::ssize(base::m_args.template get<I>()) + ... + 0)
+            } noexcept -> meta::nothrow::convertible_to<ssize_t>;})
+            requires (requires{{
+                (meta::ssize(base::m_args.template get<I>()) + ... + 0)
+            } -> meta::convertible_to<ssize_t>;})
+        {
+            return (meta::ssize(base::m_args.template get<I>()) + ... + 0);
+        }
+
     public:
         using base::base;
 
@@ -1157,6 +1175,43 @@ namespace impl {
         [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
             return base::m_sep_size;
         }
+
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{
+                _size(std::index_sequence_for<As...>{}) + sep_size() * (sizeof...(As) - 1)
+            } noexcept;})
+            requires (requires{{
+                _size(std::index_sequence_for<As...>{}) + sep_size() * (sizeof...(As) - 1)
+            };})
+        {
+            return _size(std::index_sequence_for<As...>{}) + sep_size() * (sizeof...(As) - 1);
+        }
+
+        [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (requires{{
+                _ssize(std::index_sequence_for<As...>{}) + sep_size() * (sizeof...(As) - 1)
+            } noexcept;})
+            requires (requires{{
+                _ssize(std::index_sequence_for<As...>{}) + sep_size() * (sizeof...(As) - 1)
+            };})
+        {
+            return _ssize(std::index_sequence_for<As...>{}) + sep_size() * (sizeof...(As) - 1);
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{
+                sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0
+            } noexcept;})
+            requires (requires{{
+                sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0
+            };})
+        {
+            return sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0;
+        }
+
+        /// TODO: front, back, subscript and tuple get<>
+
+
 
         [[nodiscard]] constexpr concat_iterator<concat, range_forward> begin()
             noexcept (requires{{concat_iterator<concat, range_forward>{*this}} noexcept;})
@@ -1273,13 +1328,46 @@ namespace iter {
 }
 
 
+_LIBCPP_BEGIN_NAMESPACE_STD
+
+    namespace ranges {
+
+        template <typename Sep, typename... As>
+        constexpr bool enable_borrowed_range<bertrand::impl::concat<Sep, As...>> = (
+            enable_borrowed_range<bertrand::meta::unqualify<
+                bertrand::meta::as_range_or_scalar<Sep>
+            >> &&
+            ... &&
+            enable_borrowed_range<bertrand::meta::unqualify<
+                bertrand::meta::as_range_or_scalar<As>
+            >>
+        );
+
+    }
+
+    template <typename Sep, typename... As>
+        requires (
+            bertrand::meta::tuple_like<bertrand::meta::as_range_or_scalar<Sep>> &&
+            ... &&
+            bertrand::meta::tuple_like<bertrand::meta::as_range_or_scalar<As>>
+        )
+    struct tuple_size<bertrand::impl::concat<Sep, As...>> : std::integral_constant<size_t, (
+        (bertrand::meta::tuple_size<bertrand::meta::as_range_or_scalar<Sep>> * (sizeof...(As) - 1)) +
+        ... +
+        bertrand::meta::tuple_size<bertrand::meta::as_range_or_scalar<As>>
+    )> {};
+
+    /// TODO: tuple_element, which will derive the correct element type from the concat
+    /// container's get() method.
 
 
+_LIBCPP_END_NAMESPACE_STD
 
 
 namespace bertrand::iter {
 
     static constexpr auto c = concat{4}(1, 2, range(std::array<int, 0>{}));
+    static_assert(c.size() == 4);
     static_assert(sizeof(c) == sizeof(int) * 4);
     static_assert(c.end() - c.begin() == 4);
     static_assert([] {
