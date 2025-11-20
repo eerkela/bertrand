@@ -677,7 +677,7 @@ namespace impl {
                     decltype(Dir::begin(std::declval<Outer&>().sep())),
                     decltype(Dir::end(std::declval<Outer&>().sep()))
                 >,
-                typename _type<I>::type...
+                typename _type<I * 2>::type...
             >;
         };
 
@@ -1159,6 +1159,72 @@ namespace impl {
             return (meta::ssize(base::m_args.template get<I>()) + ... + 0);
         }
 
+        template <size_t I, size_t J>
+        struct _get {
+            template <typename Self>
+            static constexpr decltype(auto) operator()(Self&& self)
+                noexcept (requires{{meta::get<I>(
+                    std::forward<Self>(self).template arg<J / (1 + !base::trivial)>()
+                )} noexcept;})
+                requires (I < meta::tuple_size<meta::unpack_type<
+                    J / (1 + !base::trivial),
+                    meta::as_range_or_scalar<As>...
+                >>)
+            {
+                return (meta::get<I>(
+                    std::forward<Self>(self).template arg<J / (1 + !base::trivial)>()
+                ));
+            }
+            template <typename Self>
+            static constexpr decltype(auto) operator()(Self&& self)
+                noexcept (requires{{_get<
+                    I - meta::tuple_size<meta::unpack_type<
+                        J / (1 + !base::trivial),
+                        meta::as_range_or_scalar<As>...
+                    >>,
+                    J + 1
+                >{}(std::forward<Self>(self))} noexcept;})
+                requires (I >= meta::tuple_size<meta::unpack_type<
+                    J / (1 + !base::trivial),
+                    meta::as_range_or_scalar<As>...
+                >>)
+            {
+                return (_get<
+                    I - meta::tuple_size<meta::unpack_type<
+                        J / (1 + !base::trivial),
+                        meta::as_range_or_scalar<As>...
+                    >>,
+                    J + 1
+                >{}(std::forward<Self>(self)));
+            }
+        };
+        template <size_t I, size_t J> requires (!base::trivial && J % 2 == 1)
+        struct _get<I, J> {
+            template <typename Self>
+            static constexpr decltype(auto) operator()(Self&& self)
+                noexcept (requires{{meta::get<I>(std::forward<Self>(self).sep())} noexcept;})
+                requires (I < meta::tuple_size<meta::as_range_or_scalar<Sep>>)
+            {
+                return (meta::get<I>(std::forward<Self>(self).sep()));
+            }
+            template <typename Self>
+            static constexpr decltype(auto) operator()(Self&& self)
+                noexcept (requires{{_get<
+                    I - meta::tuple_size<meta::as_range_or_scalar<Sep>>,
+                    J + 1
+                >{}(std::forward<Self>(self))} noexcept;})
+                requires (I >= meta::tuple_size<meta::as_range_or_scalar<Sep>>)
+            {
+                return (_get<
+                    I - meta::tuple_size<meta::as_range_or_scalar<Sep>>,
+                    J + 1
+                >{}(std::forward<Self>(self)));
+            }
+        };
+
+        /// TODO: need to derive the proper reference type for `front()`, `back()`,
+        /// and the subscript operator.
+
     public:
         using base::base;
 
@@ -1209,9 +1275,27 @@ namespace impl {
             return sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0;
         }
 
-        /// TODO: front, back, subscript and tuple get<>
-
-
+        template <ssize_t I, typename Self>
+        [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            requires ((
+                meta::tuple_like<meta::as_range_or_scalar<Sep>> &&
+                ... &&
+                meta::tuple_like<meta::as_range_or_scalar<As>>
+            ) && impl::valid_index<(
+                (meta::tuple_size<meta::as_range_or_scalar<Sep>> * (sizeof...(As) - 1)) +
+                ... +
+                meta::tuple_size<meta::as_range_or_scalar<As>>
+            ), I>)
+        {
+            return (_get<
+                impl::normalize_index<(
+                    (meta::tuple_size<meta::as_range_or_scalar<Sep>> * (sizeof...(As) - 1)) +
+                    ... +
+                    meta::tuple_size<meta::as_range_or_scalar<As>>
+                ), I>(),
+                0
+            >{}(std::forward<Self>(self)));
+        }
 
         [[nodiscard]] constexpr concat_iterator<concat, range_forward> begin()
             noexcept (requires{{concat_iterator<concat, range_forward>{*this}} noexcept;})
@@ -1357,9 +1441,13 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         bertrand::meta::tuple_size<bertrand::meta::as_range_or_scalar<As>>
     )> {};
 
-    /// TODO: tuple_element, which will derive the correct element type from the concat
-    /// container's get() method.
-
+    template <size_t I, typename Sep, typename... As>
+        requires (I < tuple_size<bertrand::impl::concat<Sep, As...>>::value)
+    struct tuple_element<I, bertrand::impl::concat<Sep, As...>> {
+        using type = bertrand::meta::remove_rvalue<decltype((
+            std::declval<bertrand::impl::concat<Sep, As...>>().template get<I>()
+        ))>;
+    };
 
 _LIBCPP_END_NAMESPACE_STD
 
@@ -1404,6 +1492,17 @@ namespace bertrand::iter {
 
     static_assert((c.begin() + 4) - (c.begin()) == 4);
     static_assert((c.begin()) - (c.begin() + 4) == -4);
+
+
+    static constexpr auto c2 = concat{3}(1, 2.5);
+    static_assert([] {
+        auto&& [a, b, c] = c2;
+        if (a != 1) return false;
+        if (b != 3) return false;
+        if (c != 2.5) return false;
+
+        return true;
+    }());
 
 
 }
