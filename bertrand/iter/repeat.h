@@ -1044,7 +1044,9 @@ namespace iter {
     same, and produce the same results when iterated over or indexed. */
     template <>
     struct repeat<None> {
-        size_t reps = std::numeric_limits<size_t>::max();
+        size_t reps;
+
+        [[nodiscard]] constexpr repeat(size_t n) noexcept : reps(n) {}
 
         /* Invoking the repeat adaptor produces a corresponding range type. */
         template <typename T>

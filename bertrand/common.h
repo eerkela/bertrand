@@ -3063,66 +3063,31 @@ namespace meta {
     concept wraparound = detail::wraparound<T>;
 
     template <typename T, typename... Key>
-    concept indexable = !integer<T> && requires(T t, Key... key) {
+    concept has_subscript = !integer<T> && requires(T t, Key... key) {
         ::std::forward<T>(t)[::std::forward<Key>(key)...];
     };
 
-    template <typename T, typename... Key> requires (indexable<T, Key...>)
-    using index_type = decltype(::std::declval<T>()[::std::declval<Key>()...]);
+    template <typename T, typename... Key> requires (has_subscript<T, Key...>)
+    using subscript_type = decltype(::std::declval<T>()[::std::declval<Key>()...]);
 
     template <typename Ret, typename T, typename... Key>
-    concept index_returns =
-        indexable<T, Key...> && convertible_to<index_type<T, Key...>, Ret>;
+    concept subscript_returns =
+        has_subscript<T, Key...> && convertible_to<subscript_type<T, Key...>, Ret>;
 
     namespace nothrow {
 
         template <typename T, typename... Key>
-        concept indexable =
-            meta::indexable<T, Key...> &&
+        concept has_subscript =
+            meta::has_subscript<T, Key...> &&
             noexcept(::std::declval<T>()[::std::declval<Key>()...]);
 
-        template <typename T, typename... Key> requires (nothrow::indexable<T, Key...>)
-        using index_type = meta::index_type<T, Key...>;
+        template <typename T, typename... Key> requires (nothrow::has_subscript<T, Key...>)
+        using subscript_type = meta::subscript_type<T, Key...>;
 
         template <typename Ret, typename T, typename... Key>
-        concept index_returns =
-            nothrow::indexable<T, Key...> &&
-            nothrow::convertible_to<nothrow::index_type<T, Key...>, Ret>;
-
-    }
-
-    template <typename T, typename Value, typename... Key>
-    concept index_assignable =
-        !integer<T> && requires(T t, Key... key, Value value) {
-            { ::std::forward<T>(t)[::std::forward<Key>(key)...] = ::std::forward<Value>(value) };
-        };
-
-    template <typename T, typename Value, typename... Key>
-        requires (index_assignable<T, Value, Key...>)
-    using index_assign_type = decltype(
-        ::std::declval<T>()[::std::declval<Key>()...] = ::std::declval<Value>()
-    );
-
-    template <typename Ret, typename T, typename Value, typename... Key>
-    concept index_assign_returns =
-        index_assignable<T, Value, Key...> &&
-        convertible_to<index_assign_type<T, Value, Key...>, Ret>;
-
-    namespace nothrow {
-
-        template <typename T, typename Value, typename... Key>
-        concept index_assignable =
-            meta::index_assignable<T, Value, Key...> &&
-            noexcept(::std::declval<T>()[::std::declval<Key>()...] = ::std::declval<Value>());
-
-        template <typename T, typename Value, typename... Key>
-            requires (nothrow::index_assignable<T, Value, Key...>)
-        using index_assign_type = meta::index_assign_type<T, Value, Key...>;
-
-        template <typename Ret, typename T, typename Value, typename... Key>
-        concept index_assign_returns =
-            nothrow::index_assignable<T, Value, Key...> &&
-            nothrow::convertible_to<nothrow::index_assign_type<T, Value, Key...>, Ret>;
+        concept subscript_returns =
+            nothrow::has_subscript<T, Key...> &&
+            nothrow::convertible_to<nothrow::subscript_type<T, Key...>, Ret>;
 
     }
 
@@ -6106,9 +6071,9 @@ namespace impl {
     };
 
     struct Subscript {
-        template <typename T, typename... K> requires (meta::indexable<T, K...>)
+        template <typename T, typename... K> requires (meta::has_subscript<T, K...>)
         static constexpr decltype(auto) operator()(T&& value, K&&... keys)
-            noexcept(meta::nothrow::indexable<T, K...>)
+            noexcept(meta::nothrow::has_subscript<T, K...>)
         {
             return (std::forward<T>(value)[std::forward<K>(keys)...]);
         }

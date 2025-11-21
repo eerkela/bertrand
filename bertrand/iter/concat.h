@@ -2,6 +2,7 @@
 #define BERTRAND_ITER_CONCAT_H
 
 #include "bertrand/iter/range.h"
+#include <sys/types.h>
 
 
 namespace bertrand {
@@ -596,15 +597,112 @@ namespace impl {
         }
     };
 
-    template <typename>
-    struct _concat_traits;
-    template <typename... U>
-    struct _concat_traits<meta::pack<U...>> {
-        using category = meta::common_type<typename meta::remove_reference<U>::category...>;
-        using reference = meta::make_union<typename meta::remove_reference<U>::reference...>;
+    template <typename out, typename...>
+    struct concat_subscript { using type = out::template eval<meta::make_union>; };
+    template <typename... out, meta::has_subscript<ssize_t> T, typename... Ts>
+    struct concat_subscript<meta::pack<out...>, T, Ts...> :
+        concat_subscript<meta::pack<out..., meta::subscript_type<T, ssize_t>>, Ts...>
+    {};
+    template <typename... out, typename T, typename... Ts>
+        requires (!meta::has_subscript<T, ssize_t>)
+    struct concat_subscript<meta::pack<out...>, T, Ts...> :
+        concat_subscript<meta::pack<out...>, Ts...>
+    {};
+
+    template <typename out, typename...>
+    struct concat_front { using type = out::template eval<meta::make_union>; };
+    template <typename... out, meta::has_front T, typename... Ts>
+    struct concat_front<meta::pack<out...>, T, Ts...> :
+        concat_front<meta::pack<out..., meta::front_type<T>>, Ts...>
+    {};
+    template <typename... out, typename T, typename... Ts> requires (!meta::has_front<T>)
+    struct concat_front<meta::pack<out...>, T, Ts...> :
+        concat_front<meta::pack<out...>, Ts...>
+    {};
+
+    template <typename out, typename...>
+    struct concat_back { using type = out::template eval<meta::make_union>; };
+    template <typename... out, meta::has_back T, typename... Ts>
+    struct concat_back<meta::pack<out...>, T, Ts...> :
+        concat_back<meta::pack<out..., meta::back_type<T>>, Ts...>
+    {};
+    template <typename... out, typename T, typename... Ts> requires (!meta::has_back<T>)
+    struct concat_back<meta::pack<out...>, T, Ts...> :
+        concat_back<meta::pack<out...>, Ts...>
+    {};
+
+    /* The concatenated range can yield unions if the arguments and/or separator have
+    differing yield types.  Additionally, separate types may need to be inferred for
+    the outer container's subscript, front, and back operators, all of which will
+    attempt to match the corresponding types as closely as possible.
+
+    The concat container's iterator category is defined as the most permissive of its
+    separator and argument categories, and is bounded between
+    `std::forward_iterator_tag` (since concat iterators are always comparable via their
+    index) and `std::random_access_iterator_tag` (to which contiguous iterators will be
+    demoted after concatenation). */
+    template <
+        typename Self,
+        typename = std::make_index_sequence<meta::unqualify<Self>::arg_type::size()>
+    >
+    struct concat_traits;
+    template <typename Self, size_t... I> requires (!meta::unqualify<Self>::trivial)
+    struct concat_traits<Self, std::index_sequence<I...>> {
+        using category = meta::common_type<
+            meta::iterator_category<meta::begin_type<decltype((std::declval<Self>().sep()))>>,
+            meta::iterator_category<
+                meta::begin_type<decltype((std::declval<Self>().template arg<I>()))>
+            >...
+        >;
+        using yield = meta::make_union<
+            meta::yield_type<decltype((std::declval<Self>().sep()))>,
+            meta::yield_type<decltype((std::declval<Self>().template arg<I>()))>...
+        >;
+        using subscript = concat_subscript<
+            meta::pack<>,
+            decltype((std::declval<Self>().sep())),
+            decltype((std::declval<Self>().template arg<I>()))...
+        >::type;
+        static constexpr bool has_subscript = meta::not_void<subscript>;
+        using front = concat_front<
+            meta::pack<>,
+            decltype((std::declval<Self>().sep())),
+            decltype((std::declval<Self>().template arg<I>()))...
+        >::type;
+        static constexpr bool has_front = meta::not_void<front>;
+        using back = concat_back<
+            meta::pack<>,
+            decltype((std::declval<Self>().sep())),
+            decltype((std::declval<Self>().template arg<I>()))...
+        >::type;
+        static constexpr bool has_back = meta::not_void<back>;
     };
-    template <typename U>
-    using concat_traits = _concat_traits<typename impl::visitable<const U&>::alternatives>;
+    template <typename Self, size_t... I> requires (meta::unqualify<Self>::trivial)
+    struct concat_traits<Self, std::index_sequence<I...>> {
+        using category = meta::common_type<
+            meta::iterator_category<
+                meta::begin_type<decltype((std::declval<Self>().template arg<I>()))>
+            >...
+        >;
+        using yield = meta::make_union<
+            meta::yield_type<decltype((std::declval<Self>().template arg<I>()))>...
+        >;
+        using subscript = concat_subscript<
+            meta::pack<>,
+            decltype((std::declval<Self>().template arg<I>()))...
+        >::type;
+        static constexpr bool has_subscript = meta::not_void<subscript>;
+        using front = concat_front<
+            meta::pack<>,
+            decltype((std::declval<Self>().template arg<I>()))...
+        >::type;
+        static constexpr bool has_front = meta::not_void<front>;
+        using back = concat_back<
+            meta::pack<>,
+            decltype((std::declval<Self>().template arg<I>()))...
+        >::type;
+        static constexpr bool has_back = meta::not_void<back>;
+    };
 
     /* A subrange is stored over each concatenated argument, consisting of a begin/end
     iterator pair and an encoded index, which obeys the same rules as
@@ -685,19 +783,19 @@ namespace impl {
         using unique = _unique<>::type;
         static constexpr size_t unique_alternatives = impl::visitable<unique>::alternatives::size();
         using iterator_category = std::conditional_t<
-            meta::inherits<typename concat_traits<unique>::category, std::forward_iterator_tag>,
+            meta::inherits<typename concat_traits<Outer&>::category, std::forward_iterator_tag>,
             std::conditional_t<
                 meta::inherits<
-                    typename concat_traits<unique>::category,
+                    typename concat_traits<Outer&>::category,
                     std::random_access_iterator_tag
                 >,
                 std::random_access_iterator_tag,
-                typename concat_traits<unique>::category
+                typename concat_traits<Outer&>::category
             >,
             std::forward_iterator_tag
         >;
         using difference_type = ssize_t;
-        using reference = concat_traits<unique>::reference;
+        using reference = concat_traits<Outer&>::yield;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
@@ -1055,15 +1153,12 @@ namespace impl {
     binary size to just a tuple of the input arguments. */
     template <typename Sep, typename... A>
     struct concat_storage {
-    protected:
-        template <meta::not_reference Outer, range_direction Dir>
-        friend struct concat_iterator;
-
         using arg_type = impl::basic_tuple<meta::as_range_or_scalar<A>...>;
         using sep_type = meta::as_range_or_scalar<Sep>;
         static constexpr bool trivial = false;
         static constexpr bool dynamic = true;
 
+    protected:
         [[no_unique_address]] arg_type m_args;
         [[no_unique_address]] impl::ref<sep_type> m_sep;
         [[no_unique_address]] ssize_t m_sep_size;
@@ -1096,15 +1191,12 @@ namespace impl {
     template <typename Sep, typename... A>
         requires (meta::tuple_like<meta::as_range_or_scalar<Sep>>)
     struct concat_storage<Sep, A...> {
-    protected:
-        template <meta::not_reference Outer, range_direction Dir>
-        friend struct concat_iterator;
-
         using arg_type = impl::basic_tuple<meta::as_range_or_scalar<A>...>;
         using sep_type = meta::as_range_or_scalar<Sep>;
         static constexpr bool trivial = meta::tuple_size<sep_type> == 0;
         static constexpr bool dynamic = false;
 
+    protected:
         [[no_unique_address]] arg_type m_args;
         [[no_unique_address]] impl::ref<sep_type> m_sep;
         static constexpr ssize_t m_sep_size = meta::tuple_size<sep_type>;
@@ -1157,6 +1249,183 @@ namespace impl {
             } -> meta::convertible_to<ssize_t>;})
         {
             return (meta::ssize(base::m_args.template get<I>()) + ... + 0);
+        }
+
+        template <size_t... I>
+        constexpr bool _empty(std::index_sequence<I...>) const
+            noexcept (requires{
+                {(meta::empty(base::m_args.template get<I>()) && ... && 0)} noexcept;
+            })
+            requires (requires{{(meta::empty(base::m_args.template get<I>()) && ... && 0)};})
+        {
+            return (meta::empty(base::m_args.template get<I>()) && ... && 0);
+        }
+
+        template <size_t I = 0, typename Self>
+        constexpr concat_traits<Self>::front _front(this Self&& self)
+            noexcept ((
+                meta::tuple_like<meta::as_range_or_scalar<Sep>> &&
+                ... &&
+                meta::tuple_like<meta::as_range_or_scalar<As>>
+            ) && (
+                !meta::has_front<decltype((std::forward<Self>(self).template arg<I>()))> ||
+                requires{
+                    {meta::empty(self.template arg<I>())} noexcept;
+                    {
+                        meta::front(std::forward<Self>(self).template arg<I>())
+                    } noexcept -> meta::nothrow::convertible_to<typename concat_traits<Self>::front>;
+                }
+            ) && (
+                base::trivial ||
+                requires{{
+                    meta::front(std::forward<Self>(self).sep())
+                } noexcept -> meta::nothrow::convertible_to<typename concat_traits<Self>::front>;}
+            ) && (
+                I + 1 >= sizeof...(As) ||
+                requires{{std::forward<Self>(self).template _front<I + 1>()} noexcept;}
+            ))
+            requires ((
+                !meta::has_front<decltype((std::forward<Self>(self).template arg<I>()))> ||
+                requires{
+                    {meta::empty(self.template arg<I>())};
+                    {
+                        meta::front(std::forward<Self>(self).template arg<I>())
+                    } -> meta::convertible_to<typename concat_traits<Self>::front>;
+                }
+            ) && (
+                base::trivial ||
+                requires{{
+                    meta::front(std::forward<Self>(self).sep())
+                } -> meta::convertible_to<typename concat_traits<Self>::front>;}
+            ) && (
+                I + 1 >= sizeof...(As) ||
+                requires{{std::forward<Self>(self).template _front<I + 1>()};}
+            ))
+        {
+            if constexpr (meta::has_front<decltype((std::forward<Self>(self).template arg<I>()))>) {
+                if (!meta::empty(self.template arg<I>())) {
+                    return meta::front(std::forward<Self>(self).template arg<I>());
+                }
+            }
+            if constexpr (!base::trivial) {
+                if constexpr (!base::dynamic) {
+                    return meta::front(std::forward<Self>(self).sep());
+                } else if constexpr (I == 0) {
+                    if (self.sep_size() > 0) {
+                        return meta::front(std::forward<Self>(self).sep());
+                    }
+                }
+            }
+            if constexpr (I + 1 < sizeof...(As)) {
+                return std::forward<Self>(self).template _front<I + 1>();
+            } else {
+                throw IndexError("empty range has no front element");
+            }
+        }
+
+        template <size_t I = sizeof...(As) - 1, typename Self>
+        constexpr concat_traits<Self>::back _back(this Self&& self)
+            noexcept ((
+                meta::tuple_like<meta::as_range_or_scalar<Sep>> &&
+                ... &&
+                meta::tuple_like<meta::as_range_or_scalar<As>>
+            ) && (
+                !meta::has_back<decltype((std::forward<Self>(self).template arg<I>()))> ||
+                requires{
+                    {meta::empty(self.template arg<I>())} noexcept;
+                    {
+                        meta::back(std::forward<Self>(self).template arg<I>())
+                    } noexcept -> meta::nothrow::convertible_to<typename concat_traits<Self>::back>;
+                }
+            ) && (
+                base::trivial ||
+                requires{{
+                    meta::back(std::forward<Self>(self).sep())
+                } noexcept -> meta::nothrow::convertible_to<typename concat_traits<Self>::back>;}
+            ) && (
+                I == 0 ||
+                requires{{std::forward<Self>(self).template _back<I - 1>()} noexcept;}
+            ))
+            requires ((
+                !meta::has_back<decltype((std::forward<Self>(self).template arg<I>()))> ||
+                requires{
+                    {meta::empty(self.template arg<I>())};
+                    {
+                        meta::back(std::forward<Self>(self).template arg<I>())
+                    } -> meta::convertible_to<typename concat_traits<Self>::back>;
+                }
+            ) && (
+                base::trivial ||
+                requires{{
+                    meta::back(std::forward<Self>(self).sep())
+                } -> meta::convertible_to<typename concat_traits<Self>::back>;}
+            ) && (
+                I == 0 ||
+                requires{{std::forward<Self>(self).template _back<I - 1>()};}
+            ))
+        {
+            if constexpr (meta::has_back<decltype((std::forward<Self>(self).template arg<I>()))>) {
+                if (!meta::empty(self.template arg<I>())) {
+                    return meta::back(std::forward<Self>(self).template arg<I>());
+                }
+            }
+            if constexpr (!base::trivial) {
+                if constexpr (!base::dynamic) {
+                    return meta::back(std::forward<Self>(self).sep());
+                } else if constexpr (I == sizeof...(As) - 1) {
+                    if (self.sep_size() > 0) {
+                        return meta::back(std::forward<Self>(self).sep());
+                    }
+                }
+            }
+            if constexpr (I > 0) {
+                return std::forward<Self>(self).template _back<I - 1>();
+            } else {
+                throw IndexError("empty range has no back element");
+            }
+        }
+
+        template <size_t I = 0, typename Self>
+        constexpr concat_traits<Self>::subscript _subscript(this Self&& self, ssize_t& n)
+            requires ((
+                !meta::has_subscript<decltype((std::forward<Self>(self).template arg<I>()))> ||
+                requires{
+                    {
+                        meta::ssize(std::forward<Self>(self).template arg<I>())
+                    } -> meta::convertible_to<ssize_t>;
+                    {
+                        std::forward<Self>(self).template arg<I>()[n]
+                    } -> meta::convertible_to<typename concat_traits<Self>::subscript>;
+                }
+            ) && (I + 1 >= sizeof...(As) || (
+                (base::trivial || requires{{
+                    std::forward<Self>(self).sep()[n]
+                } -> meta::convertible_to<typename concat_traits<Self>::subscript>;}) &&
+                requires{{std::forward<Self>(self).template _subscript<I + 1>(n)};}
+            )))
+        {
+            if constexpr (meta::has_subscript<decltype((
+                std::forward<Self>(self).template arg<I>()
+            ))>) {
+                ssize_t m = meta::ssize(std::forward<Self>(self).template arg<I>());
+                if (n < m) {
+                    return std::forward<Self>(self).template arg<I>()[n];
+                }
+                n -= m;
+            }
+            if constexpr (I + 1 < sizeof...(As)) {
+                if constexpr (!base::trivial) {
+                    if (n < self.sep_size()) {
+                        return std::forward<Self>(self).sep()[n];
+                    }
+                    n -= self.sep_size();
+                }
+                return std::forward<Self>(self).template _subscript<I + 1>(n);
+            } else {
+                /// NOTE: this should be unreachable due to wraparound and bounds
+                /// checking in the caller
+                throw IndexError("index out of range");
+            }
         }
 
         template <size_t I, size_t J>
@@ -1222,9 +1491,6 @@ namespace impl {
             }
         };
 
-        /// TODO: need to derive the proper reference type for `front()`, `back()`,
-        /// and the subscript operator.
-
     public:
         using base::base;
 
@@ -1238,7 +1504,7 @@ namespace impl {
             return (*std::forward<Self>(self).m_sep);
         }
 
-        [[nodiscard]] constexpr ssize_t sep_size() const noexcept {
+        [[nodiscard]] constexpr size_t sep_size() const noexcept {
             return base::m_sep_size;
         }
 
@@ -1266,17 +1532,52 @@ namespace impl {
 
         [[nodiscard]] constexpr bool empty() const
             noexcept (requires{{
-                sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0
+                sep_size() == 0 && _empty(std::index_sequence_for<As...>{})
             } noexcept;})
             requires (requires{{
-                sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0
+                sep_size() == 0 && _empty(std::index_sequence_for<As...>{})
             };})
         {
-            return sep_size() == 0 && _size(std::index_sequence_for<As...>{}) == 0;
+            return sep_size() == 0 && _empty(std::index_sequence_for<As...>{});
+        }
+
+        template <typename Self> requires (concat_traits<Self>::has_front)
+        [[nodiscard]] constexpr concat_traits<Self>::front front(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self)._front()} noexcept;})
+            requires (requires{{std::forward<Self>(self)._front()};})
+        {
+            return std::forward<Self>(self)._front();
+        }
+
+        template <typename Self> requires (concat_traits<Self>::has_back)
+        [[nodiscard]] constexpr concat_traits<Self>::back back(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self)._back()} noexcept;})
+            requires (requires{{std::forward<Self>(self)._back()};})
+        {
+            return std::forward<Self>(self)._back();
+        }
+
+        template <typename Self> requires (concat_traits<Self>::has_subscript)
+        [[nodiscard]] constexpr concat_traits<Self>::subscript operator[](
+            this Self&& self,
+            ssize_t n
+        )
+            requires (requires{{std::forward<Self>(self)._subscript(n)};})
+        {
+            n = impl::normalize_index(self.ssize(), n);
+            return std::forward<Self>(self)._subscript(n);
         }
 
         template <ssize_t I, typename Self>
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+            noexcept (requires{{_get<
+                impl::normalize_index<(
+                    (meta::tuple_size<meta::as_range_or_scalar<Sep>> * (sizeof...(As) - 1)) +
+                    ... +
+                    meta::tuple_size<meta::as_range_or_scalar<As>>
+                ), I>(),
+                0
+            >{}(std::forward<Self>(self))} noexcept;})
             requires ((
                 meta::tuple_like<meta::as_range_or_scalar<Sep>> &&
                 ... &&
@@ -1458,6 +1759,8 @@ namespace bertrand::iter {
     static_assert(c.size() == 4);
     static_assert(sizeof(c) == sizeof(int) * 4);
     static_assert(c.end() - c.begin() == 4);
+    static_assert(c->back() == 4);
+    static_assert(c[-1] == 4);
     static_assert([] {
         auto it = c.begin();
         if (*it++ != 1) return false;

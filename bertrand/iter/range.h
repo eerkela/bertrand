@@ -733,9 +733,6 @@ namespace impl {
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
         [[nodiscard]] static constexpr impl::shape<0> shape() noexcept { return {}; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
-        [[nodiscard]] static constexpr T operator[](ssize_t) {
-            throw IndexError("empty ranges cannot be subscripted");
-        }
         [[nodiscard]] constexpr auto begin() noexcept {
             return empty_iterator<T>{};
         }
@@ -1056,7 +1053,6 @@ namespace impl {
         [[nodiscard]] static constexpr size_t size() noexcept { return meta::tuple_size<C>; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(size()); }
         [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-        [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {size()}; }
 
         template <typename... A>
         [[nodiscard]] constexpr tuple_range(A&&... args)
@@ -1173,7 +1169,6 @@ namespace impl {
         [[nodiscard]] static constexpr size_t size() noexcept { return 0; }
         [[nodiscard]] static constexpr ssize_t ssize() noexcept { return 0; }
         [[nodiscard]] static constexpr bool empty() noexcept { return true; }
-        [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {0}; }
 
         template <typename... A>
         [[nodiscard]] constexpr tuple_range(A&&... args)
@@ -3755,25 +3750,31 @@ namespace impl {
         concept valid = runtime<Ts...> || comptime<Ts...>;
 
         template <typename C, typename A>
-        concept offset_subscript = requires(C c, A a) {
-            {meta::begin(c)[std::forward<A>(a)]};
-        };
+        concept offset_subscript =
+            (!meta::tuple_like<C> || meta::tuple_size<C> > 0) &&
+            requires(C c, A a) {
+                {meta::begin(c)[std::forward<A>(a)]};
+            };
 
         template <typename C, typename A>
-        concept offset_random_access = requires(C c, A a, meta::begin_type<C> it) {
-            {meta::begin(c)};
-            {it += std::forward<A>(a)};
-            {*it};
-        };
+        concept offset_random_access =
+            (!meta::tuple_like<C> || meta::tuple_size<C> > 0) &&
+            requires(C c, A a, meta::begin_type<C> it) {
+                {meta::begin(c)};
+                {it += std::forward<A>(a)};
+                {*it};
+            };
 
         template <typename C, typename A>
-        concept offset_forward = requires(C c, A a, meta::begin_type<C> it) {
-            {meta::begin(c)};
-            {a > 0} -> meta::truthy;
-            {++it};
-            {--a};
-            {*it};
-        };
+        concept offset_forward =
+            (!meta::tuple_like<C> || meta::tuple_size<C> > 0) &&
+            requires(C c, A a, meta::begin_type<C> it) {
+                {meta::begin(c)};
+                {a > 0} -> meta::truthy;
+                {++it};
+                {--a};
+                {*it};
+            };
 
         template <typename C, typename A>
         concept offset_bidirectional =
@@ -6406,13 +6407,10 @@ namespace iter {
                 std::forward<C>(c),
                 meta::unpack_value<0, K...>
             ))} noexcept;})
-            requires (
-                sizeof...(K) > 1 &&
-                requires{{recur<1>{}(impl::range_index::offset(
-                    std::forward<C>(c),
-                    meta::unpack_value<0, K...>
-                ))};}
-            )
+            requires (sizeof...(K) > 1 && requires{{recur<1>{}(impl::range_index::offset(
+                std::forward<C>(c),
+                meta::unpack_value<0, K...>
+            ))};})
         {
             return (recur<1>{}(impl::range_index::offset(
                 std::forward<C>(c),

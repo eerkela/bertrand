@@ -217,6 +217,16 @@ namespace impl {
             return (std::forward<T>(x));
         }
     };
+    template <meta::is_void T>
+    struct visitable<T> {
+        static constexpr bool enable = false;
+        static constexpr bool monad = false;
+        using type = T;
+        using alternatives = meta::pack<>;
+        using value = void;  // no pointer-like dereference operators
+        using empty = void;  // no empty state
+        using errors = meta::pack<>;  // no error states
+    };
 
 }
 
