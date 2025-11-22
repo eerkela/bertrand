@@ -959,7 +959,6 @@ namespace impl {
             )]);
         }
 
-
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{{repeat_begin(*this)} noexcept;})
             requires (requires{{repeat_begin(*this)};})
