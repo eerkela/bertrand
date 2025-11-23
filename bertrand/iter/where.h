@@ -9,6 +9,493 @@ namespace bertrand {
 
 namespace impl {
 
+    /* Binary filters require the iterator to skip over false elements, thereby
+    preventing it from being a random access iterator, since the location of these
+    skips cannot be known ahead of time.  The iterator is thus restricted only to
+    forward or bidirectional modes. */
+    template <meta::not_reference Self, typename Begin, typename End>
+    struct binary_where_iterator {
+        using category = std::conditional_t<
+            meta::inherits<meta::iterator_category<Begin>, std::bidirectional_iterator_tag>,
+            std::bidirectional_iterator_tag,
+            std::forward_iterator_tag
+        >;
+        using difference_type = meta::iterator_difference<Begin>;
+        using reference = meta::dereference_type<meta::as_const_ref<Begin>>;
+        using value_type = meta::remove_reference<reference>;
+        using pointer = meta::as_pointer<value_type>;
+
+        [[no_unique_address]] Self* self = nullptr;
+        [[no_unique_address]] difference_type index = 0;
+        [[no_unique_address]] Begin begin;
+        [[no_unique_address]] End end;
+
+        constexpr void init()
+            noexcept (requires{
+                {begin != end} noexcept -> meta::nothrow::truthy;
+                {self->func()(*begin)} noexcept -> meta::nothrow::truthy;
+                {++begin} noexcept;
+            })
+            requires (requires{
+                {begin != end} -> meta::truthy;
+                {self->func()(*begin)} -> meta::truthy;
+                {++begin};
+            })
+        {
+            while (begin != end) {
+                if (self->func()(*begin)) {
+                    break;
+                }
+                ++begin;
+                ++index;
+            }
+        }
+
+        [[nodiscard]] constexpr decltype(auto) operator*() const
+            noexcept (requires{{*begin} noexcept;})
+            requires (requires{{*begin};})
+        {
+            return (*begin);
+        }
+
+        [[nodiscard]] constexpr auto operator->() const
+            noexcept (requires{{impl::arrow{**this}} noexcept;})
+            requires (requires{{impl::arrow{**this}};})
+        {
+            return impl::arrow{**this};
+        }
+
+        constexpr binary_where_iterator& operator++()
+            noexcept (requires{
+                {++begin} noexcept;
+                {begin != end} noexcept -> meta::nothrow::truthy;
+                {self->func()(*begin)} noexcept -> meta::nothrow::truthy;
+            })
+            requires (requires{
+                {++begin};
+                {begin != end} -> meta::truthy;
+                {self->func()(*begin)} -> meta::truthy;
+            })
+        {
+            ++begin;
+            ++index;
+            while (begin != end) {
+                if (self->func()(*begin)) {
+                    break;
+                }
+                ++begin;
+                ++index;
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr binary_where_iterator operator++(int)
+            noexcept (requires{
+                {binary_where_iterator{*this}} noexcept;
+                {++*this} noexcept;
+            })
+            requires (requires{
+                {binary_where_iterator{*this}};
+                {++*this};
+            })
+        {
+            binary_where_iterator temp = *this;
+            ++*this;
+            return temp;
+        }
+
+        constexpr binary_where_iterator& operator--()
+            noexcept (requires{
+                {--begin} noexcept;
+                {self->func()(*begin)} noexcept -> meta::nothrow::truthy;
+            })
+            requires (requires{
+                {--begin};
+                {self->func()(*begin)} -> meta::truthy;
+            })
+        {
+            --begin;
+            --index;
+            while (index >= 0) {
+                if (self->func()(*begin)) {
+                    break;
+                }
+                --begin;
+                --index;
+            }
+            return *this;
+        }
+
+        [[nodiscard]] constexpr binary_where_iterator operator--(int)
+            noexcept (requires{
+                {binary_where_iterator{*this}} noexcept;
+                {--*this} noexcept;
+            })
+            requires (requires{
+                {binary_where_iterator{*this}};
+                {--*this};
+            })
+        {
+            binary_where_iterator temp = *this;
+            --*this;
+            return temp;
+        }
+
+        [[nodiscard]] constexpr bool operator==(const binary_where_iterator& other) const noexcept {
+            return index == other.index;
+        }
+
+        [[nodiscard]] constexpr auto operator<=>(const binary_where_iterator& other) const noexcept {
+            return index <=> other.index;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            const binary_where_iterator& self,
+            NoneType
+        )
+            noexcept (requires{
+                {self.begin == self.end} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{
+                {self.begin == self.end} -> meta::convertible_to<bool>;
+            })
+        {
+            return self.begin == self.end;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(
+            NoneType,
+            const binary_where_iterator& self
+        )
+            noexcept (requires{
+                {self.begin == self.end} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{
+                {self.begin == self.end} -> meta::convertible_to<bool>;
+            })
+        {
+            return self.begin == self.end;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            const binary_where_iterator& self,
+            NoneType
+        )
+            noexcept (requires{
+                {self.begin != self.end} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{
+                {self.begin != self.end} -> meta::convertible_to<bool>;
+            })
+        {
+            return self.begin != self.end;
+        }
+
+        [[nodiscard]] friend constexpr bool operator!=(
+            NoneType,
+            const binary_where_iterator& self
+        )
+            noexcept (requires{
+                {self.begin != self.end} noexcept -> meta::nothrow::convertible_to<bool>;
+            })
+            requires (requires{
+                {self.begin != self.end} -> meta::convertible_to<bool>;
+            })
+        {
+            return self.begin != self.end;
+        }
+    };
+
+    /* Binary `where{}` expressions correspond to a filter that omits values where the
+    predicate evaluates to `false`.  Because this cannot be known generically ahead of
+    time, the resulting range is unsized, not a tuple, and not reliably indexable. */
+    template <meta::not_rvalue F, meta::not_rvalue C>
+    struct binary_where {
+        using function_type = F;
+        using true_type = meta::as_range<C>;
+
+        [[no_unique_address]] impl::ref<function_type> m_func;
+        [[no_unique_address]] impl::ref<true_type> m_true;
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) func(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_func);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) container(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_true);
+        }
+
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires(binary_where_iterator<
+                binary_where,
+                meta::begin_type<meta::as_lvalue<true_type>>,
+                meta::end_type<meta::as_lvalue<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    binary_where,
+                    meta::begin_type<meta::as_lvalue<true_type>>,
+                    meta::end_type<meta::as_lvalue<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().begin(),
+                    .end = container().end()
+                }} noexcept;
+                {result.init()};
+            })
+            requires (requires(binary_where_iterator<
+                binary_where,
+                meta::begin_type<meta::as_lvalue<true_type>>,
+                meta::end_type<meta::as_lvalue<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    binary_where,
+                    meta::begin_type<meta::as_lvalue<true_type>>,
+                    meta::end_type<meta::as_lvalue<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().begin(),
+                    .end = container().end()
+                }};
+                {result.init()};
+            })
+        {
+            binary_where_iterator<
+                binary_where,
+                meta::begin_type<meta::as_lvalue<true_type>>,
+                meta::end_type<meta::as_lvalue<true_type>>
+            > result {
+                .self = this,
+                .index = 0,
+                .begin = container().begin(),
+                .end = container().end()
+            };
+            result.init();
+            return result;
+        }
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires(binary_where_iterator<
+                const binary_where,
+                meta::begin_type<meta::as_const_ref<true_type>>,
+                meta::end_type<meta::as_const_ref<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    const binary_where,
+                    meta::begin_type<meta::as_const_ref<true_type>>,
+                    meta::end_type<meta::as_const_ref<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().begin(),
+                    .end = container().end()
+                }} noexcept;
+                {result.init()};
+            })
+            requires (requires(binary_where_iterator<
+                const binary_where,
+                meta::begin_type<meta::as_const_ref<true_type>>,
+                meta::end_type<meta::as_const_ref<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    const binary_where,
+                    meta::begin_type<meta::as_const_ref<true_type>>,
+                    meta::end_type<meta::as_const_ref<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().begin(),
+                    .end = container().end()
+                }};
+                {result.init()};
+            })
+        {
+            binary_where_iterator<
+                const binary_where,
+                meta::begin_type<meta::as_const_ref<true_type>>,
+                meta::end_type<meta::as_const_ref<true_type>>
+            > result {
+                .self = this,
+                .index = 0,
+                .begin = container().begin(),
+                .end = container().end()
+            };
+            result.init();
+            return result;
+        }
+
+        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+        
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires(binary_where_iterator<
+                binary_where,
+                meta::rbegin_type<meta::as_lvalue<true_type>>,
+                meta::rend_type<meta::as_lvalue<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    binary_where,
+                    meta::rbegin_type<meta::as_lvalue<true_type>>,
+                    meta::rend_type<meta::as_lvalue<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().rbegin(),
+                    .end = container().rend()
+                }} noexcept;
+                {result.init()};
+            })
+            requires (requires(binary_where_iterator<
+                binary_where,
+                meta::rbegin_type<meta::as_lvalue<true_type>>,
+                meta::rend_type<meta::as_lvalue<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    binary_where,
+                    meta::rbegin_type<meta::as_lvalue<true_type>>,
+                    meta::rend_type<meta::as_lvalue<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().rbegin(),
+                    .end = container().rend()
+                }};
+                {result.init()};
+            })
+        {
+            binary_where_iterator<
+                binary_where,
+                meta::rbegin_type<meta::as_lvalue<true_type>>,
+                meta::rend_type<meta::as_lvalue<true_type>>
+            > result {
+                .self = this,
+                .index = 0,
+                .begin = container().rbegin(),
+                .end = container().rend()
+            };
+            result.init();
+            return result;
+        }
+
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires(binary_where_iterator<
+                const binary_where,
+                meta::rbegin_type<meta::as_const_ref<true_type>>,
+                meta::rend_type<meta::as_const_ref<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    const binary_where,
+                    meta::rbegin_type<meta::as_const_ref<true_type>>,
+                    meta::rend_type<meta::as_const_ref<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().rbegin(),
+                    .end = container().rend()
+                }} noexcept;
+                {result.init()};
+            })
+            requires (requires(binary_where_iterator<
+                const binary_where,
+                meta::rbegin_type<meta::as_const_ref<true_type>>,
+                meta::rend_type<meta::as_const_ref<true_type>>
+            > result) {
+                {binary_where_iterator<
+                    const binary_where,
+                    meta::rbegin_type<meta::as_const_ref<true_type>>,
+                    meta::rend_type<meta::as_const_ref<true_type>>
+                >{
+                    .self = this,
+                    .index = 0,
+                    .begin = container().rbegin(),
+                    .end = container().rend()
+                }};
+                {result.init()};
+            })
+        {
+            binary_where_iterator<
+                const binary_where,
+                meta::rbegin_type<meta::as_const_ref<true_type>>,
+                meta::rend_type<meta::as_const_ref<true_type>>
+            > result {
+                .self = this,
+                .index = 0,
+                .begin = container().rbegin(),
+                .end = container().rend()
+            };
+            result.init();
+            return result;
+        }
+
+        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
+    };
+
+    template <typename F, typename C>
+    binary_where(F&&, C&&) -> binary_where<meta::remove_rvalue<F>, meta::remove_rvalue<C>>;
+
+    template <typename Self>
+    struct where_subscript { using type = void; };
+    template <typename Self>
+        requires (
+            meta::has_subscript<decltype((std::declval<Self>().if_true())), size_t> &&
+            meta::has_subscript<decltype((std::declval<Self>().if_false())), size_t>
+        )
+    struct where_subscript<Self> {
+        using type = meta::make_union<
+            meta::subscript_type<decltype((std::declval<Self>().if_true())), size_t>,
+            meta::subscript_type<decltype((std::declval<Self>().if_false())), size_t>
+        >;
+    };
+
+    template <typename Self>
+    struct where_front { using type = void; };
+    template <typename Self>
+        requires (
+            meta::has_front<decltype((std::declval<Self>().if_true()))> &&
+            meta::has_front<decltype((std::declval<Self>().if_false()))>
+        )
+    struct where_front<Self> {
+        using type = meta::make_union<
+            meta::front_type<decltype((std::declval<Self>().if_true()))>,
+            meta::front_type<decltype((std::declval<Self>().if_false()))>
+        >;
+    };
+
+    template <typename Self>
+    struct where_back { using type = void; };
+    template <typename Self>
+        requires (
+            meta::has_back<decltype((std::declval<Self>().if_true()))> &&
+            meta::has_back<decltype((std::declval<Self>().if_false()))>
+        )
+    struct where_back<Self> {
+        using type = meta::make_union<
+            meta::back_type<decltype((std::declval<Self>().if_true()))>,
+            meta::back_type<decltype((std::declval<Self>().if_false()))>
+        >;
+    };
+
+    template <typename Self>
+    struct where_traits {
+        using yield = meta::make_union<
+            meta::yield_type<decltype((std::declval<Self>().if_true()))>,
+            meta::yield_type<decltype((std::declval<Self>().if_false()))>
+        >;
+        using subscript = where_subscript<Self>::type;
+        static constexpr bool has_subscript = meta::not_void<subscript>;
+        using front = where_front<Self>::type;
+        static constexpr bool has_front = meta::not_void<front>;
+        using back = where_back<Self>::type;
+        static constexpr bool has_back = meta::not_void<back>;
+        template <size_t I>
+        using get = meta::make_union<
+            meta::get_type<decltype((std::declval<Self>().if_true())), I>,
+            meta::get_type<decltype((std::declval<Self>().if_false())), I>
+        >;
+    };
+
     /* Ternary filters never change the overall size of the underlying range, and never
     require the iterator to skip over false elements.  The iterator can therefore be
     either forward, bidirectional, or random access without any issues. */
@@ -27,10 +514,7 @@ namespace impl {
             meta::iterator_difference<True>,
             meta::iterator_difference<False>
         >;
-        using reference = meta::make_union<
-            meta::dereference_type<meta::as_const_ref<True>>,
-            meta::dereference_type<meta::as_const_ref<False>>
-        >;
+        using reference = where_traits<Self&>::yield;
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
@@ -42,17 +526,17 @@ namespace impl {
         template <typename T>
         constexpr reference deref(T&& value) const
             noexcept (requires{
-                {(*self->func)(value)} noexcept -> meta::nothrow::truthy;
+                {self->func()(value)} noexcept -> meta::nothrow::truthy;
                 {std::forward<T>(value)} noexcept -> meta::nothrow::convertible_to<reference>;
                 {*false_iter} noexcept -> meta::nothrow::convertible_to<reference>;
             })
             requires (requires{
-                {(*self->func)(value)} -> meta::truthy;
+                {self->func()(value)} -> meta::truthy;
                 {std::forward<T>(value)} -> meta::convertible_to<reference>;
                 {*false_iter} -> meta::convertible_to<reference>;
             })
         {
-            if ((*self->func)(value)) {
+            if (self->func()(value)) {
                 return std::forward<T>(value);
             } else {
                 return *false_iter;
@@ -62,17 +546,17 @@ namespace impl {
         template <typename T>
         constexpr reference deref(T&& value, difference_type n) const
             noexcept (requires{
-                {(*self->func)(value)} noexcept -> meta::nothrow::truthy;
+                {self->func()(value)} noexcept -> meta::nothrow::truthy;
                 {std::forward<T>(value)} noexcept -> meta::nothrow::convertible_to<reference>;
                 {false_iter[n]} noexcept -> meta::nothrow::convertible_to<reference>;
             })
             requires (requires{
-                {(*self->func)(value)} -> meta::truthy;
+                {self->func()(value)} -> meta::truthy;
                 {std::forward<T>(value)} -> meta::convertible_to<reference>;
                 {false_iter[n]} -> meta::convertible_to<reference>;
             })
         {
-            if ((*self->func)(value)) {
+            if (self->func()(value)) {
                 return std::forward<T>(value);
             } else {
                 return false_iter[n];
@@ -263,14 +747,19 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr difference_type operator-(const ternary_where_iterator& other) const
-            noexcept (requires{{
-                std::min(true_iter - other.true_iter, false_iter - other.false_iter)
-            } noexcept -> meta::nothrow::convertible_to<difference_type>;})
-            requires (requires{{
-                std::min(true_iter - other.true_iter, false_iter - other.false_iter)
-            } -> meta::convertible_to<difference_type>;})
+            noexcept (requires{{std::min(
+                difference_type(true_iter - other.true_iter),
+                difference_type(false_iter - other.false_iter)
+            )} noexcept -> meta::nothrow::convertible_to<difference_type>;})
+            requires (requires{{std::min(
+                difference_type(true_iter - other.true_iter),
+                difference_type(false_iter - other.false_iter)
+            )} -> meta::convertible_to<difference_type>;})
         {
-            return std::min(true_iter - other.true_iter, false_iter - other.false_iter);
+            return std::min(
+                difference_type(true_iter - other.true_iter),
+                difference_type(false_iter - other.false_iter)
+            );
         }
 
         [[nodiscard]] constexpr bool operator<(const ternary_where_iterator& other) const
@@ -352,9 +841,276 @@ namespace impl {
         using true_type = meta::as_range<True>;
         using false_type = meta::as_range<False>;
 
-        [[no_unique_address]] impl::ref<function_type> func;
-        [[no_unique_address]] impl::ref<true_type> if_true;
-        [[no_unique_address]] impl::ref<false_type> if_false;
+        [[no_unique_address]] impl::ref<function_type> m_func;
+        [[no_unique_address]] impl::ref<true_type> m_true;
+        [[no_unique_address]] impl::ref<false_type> m_false;
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) func(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_func);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) if_true(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_true);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) if_false(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_false);
+        }
+
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{std::min(
+                size_t(if_true().size()),
+                size_t(if_false().size())
+            )} noexcept;})
+            requires (requires{{std::min(
+                size_t(if_true().size()),
+                size_t(if_false().size())
+            )};})
+        {
+            return std::min(
+                size_t(if_true().size()),
+                size_t(if_false().size())
+            );
+        }
+
+        [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (requires{{std::min(
+                ssize_t(if_true().ssize()),
+                ssize_t(if_false().ssize())
+            )} noexcept;})
+            requires (requires{{std::min(
+                ssize_t(if_true().ssize()),
+                ssize_t(if_false().ssize())
+            )};})
+        {
+            return std::min(
+                ssize_t(if_true().ssize()),
+                ssize_t(if_false().ssize())
+            );
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{
+                if_true().empty() || if_false().empty()
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                if_true().empty() || if_false().empty()
+            } -> meta::convertible_to<bool>;})
+        {
+            return if_true().empty() || if_false().empty();
+        }
+
+    private:
+        template <typename Self, typename T>
+        constexpr where_traits<Self>::front _front(this Self&& self, T&& value)
+            noexcept (requires{
+                {self.func()(value)} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<T>(value)
+                } noexcept -> meta::nothrow::convertible_to<typename where_traits<Self>::front>;
+                {
+                    std::forward<Self>(self).if_false().front()
+                } noexcept -> meta::nothrow::convertible_to<typename where_traits<Self>::front>;
+            })
+            requires (requires{
+                {self.func()(value)} -> meta::truthy;
+                {
+                    std::forward<T>(value)
+                } -> meta::convertible_to<typename where_traits<Self>::front>;
+                {
+                    std::forward<Self>(self).if_false().front()
+                } -> meta::convertible_to<typename where_traits<Self>::front>;
+            })
+        {
+            if (self.func()(value)) {
+                return std::forward<T>(value);
+            } else {
+                return std::forward<Self>(self).if_false().front();
+            }
+        }
+
+        template <typename Self, typename T>
+        constexpr where_traits<Self>::back _back(this Self&& self, T&& value)
+            noexcept (requires{
+                {self.func()(value)} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<T>(value)
+                } noexcept -> meta::nothrow::convertible_to<typename where_traits<Self>::back>;
+                {
+                    std::forward<Self>(self).if_false().back()
+                } noexcept -> meta::nothrow::convertible_to<typename where_traits<Self>::back>;
+            })
+            requires (requires{
+                {self.func()(value)} -> meta::truthy;
+                {
+                    std::forward<T>(value)
+                } -> meta::convertible_to<typename where_traits<Self>::back>;
+                {
+                    std::forward<Self>(self).if_false().back()
+                } -> meta::convertible_to<typename where_traits<Self>::back>;
+            })
+        {
+            if (self.func()(value)) {
+                return std::forward<T>(value);
+            } else {
+                return std::forward<Self>(self).if_false().back();
+            }
+        }
+
+        template <typename Self, typename T>
+        constexpr where_traits<Self>::subscript _subscript(
+            this Self&& self,
+            T&& value,
+            size_t index
+        )
+            noexcept (requires{
+                {self.func()(value)} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<T>(value)
+                } noexcept -> meta::nothrow::convertible_to<typename where_traits<Self>::subscript>;
+                {
+                    std::forward<Self>(self).if_false()[index]
+                } noexcept -> meta::nothrow::convertible_to<typename where_traits<Self>::subscript>;
+            })
+            requires (requires{
+                {self.func()(value)} -> meta::truthy;
+                {
+                    std::forward<T>(value)
+                } -> meta::convertible_to<typename where_traits<Self>::subscript>;
+                {
+                    std::forward<Self>(self).if_false()[index]
+                } -> meta::convertible_to<typename where_traits<Self>::subscript>;
+            })
+        {
+            if (self.func()(value)) {
+                return std::forward<T>(value);
+            } else {
+                return std::forward<Self>(self).if_false()[index];
+            }
+        }
+
+        template <ssize_t I>
+        static constexpr size_t normalize = impl::normalize_index<std::min(
+            meta::tuple_size<true_type>,
+            meta::tuple_size<false_type>
+        ), I>();
+
+        template <size_t I, typename Self, typename T>
+        constexpr where_traits<Self>::template get<I> _get(this Self&& self, T&& value)
+            noexcept (requires{
+                {self.func()(value)} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<T>(value)
+                } noexcept -> meta::nothrow::convertible_to<
+                    typename where_traits<Self>::template get<I>
+                >;
+                {
+                    std::forward<Self>(self).if_false().template get<I>()
+                } noexcept -> meta::nothrow::convertible_to<
+                    typename where_traits<Self>::template get<I>
+                >;
+            })
+            requires (requires{
+                {self.func()(value)} -> meta::truthy;
+                {
+                    std::forward<T>(value)
+                } -> meta::convertible_to<typename where_traits<Self>::template get<I>>;
+                {
+                    std::forward<Self>(self).if_false().template get<I>()
+                } -> meta::convertible_to<typename where_traits<Self>::template get<I>>;
+            })
+        {
+            if (self.func()(value)) {
+                return std::forward<T>(value);
+            } else {
+                return std::forward<Self>(self).if_false().template get<I>();
+            }
+        }
+
+    public:
+        template <typename Self>
+        [[nodiscard]] constexpr where_traits<Self>::front front(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self)._front(
+                std::forward<Self>(self).if_true().front()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self)._front(
+                std::forward<Self>(self).if_true().front()
+            )};})
+        {
+            return std::forward<Self>(self)._front(
+                std::forward<Self>(self).if_true().front()
+            );
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr where_traits<Self>::back back(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self)._back(
+                std::forward<Self>(self).if_true().back()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self)._back(
+                std::forward<Self>(self).if_true().back()
+            )};})
+        {
+            return std::forward<Self>(self)._back(
+                std::forward<Self>(self).if_true().back()
+            );
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr where_traits<Self>::subscript operator[](
+            this Self&& self,
+            ssize_t n
+        )
+            noexcept (requires(size_t m) {
+                {size_t(impl::normalize_index(self.ssize(), n))} noexcept;
+                {std::forward<Self>(self)._subscript(
+                    std::forward<Self>(self).if_true()[m],
+                    m
+                )} noexcept;
+            })
+            requires (requires(size_t m) {
+                {size_t(impl::normalize_index(self.ssize(), n))};
+                {std::forward<Self>(self)._subscript(
+                    std::forward<Self>(self).if_true()[m],
+                    m
+                )};
+            })
+        {
+            size_t m = size_t(impl::normalize_index(self.ssize(), n));
+            return std::forward<Self>(self)._subscript(
+                std::forward<Self>(self).if_true()[m],
+                m
+            );
+        }
+
+        template <ssize_t I, typename Self>
+            requires (
+                meta::tuple_like<true_type> &&
+                meta::tuple_like<false_type> &&
+                impl::valid_index<
+                    std::min(meta::tuple_size<true_type>, meta::tuple_size<false_type>),
+                    I
+                >
+            )
+        [[nodiscard]] constexpr auto get(this Self&& self)
+            noexcept (requires{{std::forward<Self>(self).template _get<normalize<I>>(
+                std::forward<Self>(self).if_true().template get<normalize<I>>()
+            )} noexcept;})
+            -> where_traits<Self>::template get<impl::normalize_index<
+                std::min(meta::tuple_size<true_type>, meta::tuple_size<false_type>),
+                I
+            >()>
+            requires (requires{{std::forward<Self>(self).template _get<normalize<I>>(
+                std::forward<Self>(self).if_true().template get<normalize<I>>()
+            )};})
+        {
+            return std::forward<Self>(self).template _get<normalize<I>>(
+                std::forward<Self>(self).if_true().template get<normalize<I>>()
+            );
+        }
 
         [[nodiscard]] constexpr auto begin()
             noexcept (requires{{ternary_where_iterator<
@@ -363,8 +1119,8 @@ namespace impl {
                 meta::begin_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->begin(),
-                .false_iter = if_false->begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 ternary_where,
@@ -372,8 +1128,8 @@ namespace impl {
                 meta::begin_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->begin(),
-                .false_iter = if_false->begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
             }};})
         {
             return ternary_where_iterator<
@@ -382,8 +1138,8 @@ namespace impl {
                 meta::begin_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->begin(),
-                .false_iter = if_false->begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
             };
         }
 
@@ -394,8 +1150,8 @@ namespace impl {
                 meta::begin_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->begin(),
-                .false_iter = if_false->begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 const ternary_where,
@@ -403,8 +1159,8 @@ namespace impl {
                 meta::begin_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->begin(),
-                .false_iter = if_false->begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
             }};})
         {
             return ternary_where_iterator<
@@ -413,8 +1169,8 @@ namespace impl {
                 meta::begin_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->begin(),
-                .false_iter = if_false->begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
             };
         }
 
@@ -425,8 +1181,8 @@ namespace impl {
                 meta::end_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->end(),
-                .false_iter = if_false->end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 ternary_where,
@@ -434,8 +1190,8 @@ namespace impl {
                 meta::end_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->end(),
-                .false_iter = if_false->end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
             }};})
         {
             return ternary_where_iterator<
@@ -444,8 +1200,8 @@ namespace impl {
                 meta::end_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->end(),
-                .false_iter = if_false->end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
             };
         }
 
@@ -456,8 +1212,8 @@ namespace impl {
                 meta::end_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->end(),
-                .false_iter = if_false->end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 const ternary_where,
@@ -465,8 +1221,8 @@ namespace impl {
                 meta::end_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->end(),
-                .false_iter = if_false->end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
             }};})
         {
             return ternary_where_iterator<
@@ -475,8 +1231,8 @@ namespace impl {
                 meta::end_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->end(),
-                .false_iter = if_false->end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
             };
         }
 
@@ -487,8 +1243,8 @@ namespace impl {
                 meta::rbegin_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rbegin(),
-                .false_iter = if_false->rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 ternary_where,
@@ -496,8 +1252,8 @@ namespace impl {
                 meta::rbegin_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rbegin(),
-                .false_iter = if_false->rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
             }};})
         {
             return ternary_where_iterator<
@@ -506,8 +1262,8 @@ namespace impl {
                 meta::rbegin_type<meta::as_lvalue<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rbegin(),
-                .false_iter = if_false->rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
             };
         }
 
@@ -518,8 +1274,8 @@ namespace impl {
                 meta::rbegin_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rbegin(),
-                .false_iter = if_false->rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 const ternary_where,
@@ -527,8 +1283,8 @@ namespace impl {
                 meta::rbegin_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rbegin(),
-                .false_iter = if_false->rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
             }};})
         {
             return ternary_where_iterator<
@@ -537,8 +1293,8 @@ namespace impl {
                 meta::rbegin_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rbegin(),
-                .false_iter = if_false->rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
             };
         }
 
@@ -549,8 +1305,8 @@ namespace impl {
                 meta::rend_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rend(),
-                .false_iter = if_false->rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 ternary_where,
@@ -558,8 +1314,8 @@ namespace impl {
                 meta::rend_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rend(),
-                .false_iter = if_false->rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
             }};})
         {
             return ternary_where_iterator<
@@ -568,8 +1324,8 @@ namespace impl {
                 meta::rend_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rend(),
-                .false_iter = if_false->rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
             };
         }
 
@@ -580,8 +1336,8 @@ namespace impl {
                 meta::rend_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rend(),
-                .false_iter = if_false->rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
             }} noexcept;})
             requires (requires{{ternary_where_iterator<
                 const ternary_where,
@@ -589,8 +1345,8 @@ namespace impl {
                 meta::rend_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rend(),
-                .false_iter = if_false->rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
             }};})
         {
             return ternary_where_iterator<
@@ -599,8 +1355,8 @@ namespace impl {
                 meta::rend_type<meta::as_const_ref<false_type>>
             >{
                 .self = this,
-                .true_iter = if_true->rend(),
-                .false_iter = if_false->rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
             };
         }
     };
@@ -611,422 +1367,6 @@ namespace impl {
         meta::remove_rvalue<True>,
         meta::remove_rvalue<False>
     >;
-
-    /* Binary filters require the iterator to skip over false elements, thereby
-    preventing it from being a random access iterator, since the location of these
-    skips cannot be known ahead of time.  The iterator is thus restricted only to
-    forward or bidirectional modes. */
-    template <meta::not_reference Self, typename Begin, typename End>
-    struct binary_where_iterator {
-        using category = std::conditional_t<
-            meta::inherits<meta::iterator_category<Begin>, std::bidirectional_iterator_tag>,
-            std::bidirectional_iterator_tag,
-            std::forward_iterator_tag
-        >;
-        using difference_type = meta::iterator_difference<Begin>;
-        using reference = meta::dereference_type<meta::as_const_ref<Begin>>;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::as_pointer<value_type>;
-
-        [[no_unique_address]] Self* self = nullptr;
-        [[no_unique_address]] difference_type index = 0;
-        [[no_unique_address]] Begin begin;
-        [[no_unique_address]] End end;
-
-        constexpr void init()
-            noexcept (requires{
-                {begin != end} noexcept -> meta::nothrow::truthy;
-                {(*self->func)(*begin)} noexcept -> meta::nothrow::truthy;
-                {++begin} noexcept;
-            })
-            requires (requires{
-                {begin != end} -> meta::truthy;
-                {(*self->func)(*begin)} -> meta::truthy;
-                {++begin};
-            })
-        {
-            while (begin != end) {
-                if ((*self->func)(*begin)) {
-                    break;
-                }
-                ++begin;
-                ++index;
-            }
-        }
-
-        [[nodiscard]] constexpr decltype(auto) operator*() const
-            noexcept (requires{{*begin} noexcept;})
-            requires (requires{{*begin};})
-        {
-            return (*begin);
-        }
-
-        [[nodiscard]] constexpr auto operator->() const
-            noexcept (requires{{impl::arrow{**this}} noexcept;})
-            requires (requires{{impl::arrow{**this}};})
-        {
-            return impl::arrow{**this};
-        }
-
-        constexpr binary_where_iterator& operator++()
-            noexcept (requires{
-                {++begin} noexcept;
-                {begin != end} noexcept -> meta::nothrow::truthy;
-                {(*self->func)(*begin)} noexcept -> meta::nothrow::truthy;
-            })
-            requires (requires{
-                {++begin};
-                {begin != end} -> meta::truthy;
-                {(*self->func)(*begin)} -> meta::truthy;
-            })
-        {
-            ++begin;
-            ++index;
-            while (begin != end) {
-                if ((*self->func)(*begin)) {
-                    break;
-                }
-                ++begin;
-                ++index;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr binary_where_iterator operator++(int)
-            noexcept (requires{
-                {binary_where_iterator{*this}} noexcept;
-                {++*this} noexcept;
-            })
-            requires (requires{
-                {binary_where_iterator{*this}};
-                {++*this};
-            })
-        {
-            binary_where_iterator temp = *this;
-            ++*this;
-            return temp;
-        }
-
-        constexpr binary_where_iterator& operator--()
-            noexcept (requires{
-                {--begin} noexcept;
-                {(*self->func)(*begin)} noexcept -> meta::nothrow::truthy;
-            })
-            requires (requires{
-                {--begin};
-                {(*self->func)(*begin)} -> meta::truthy;
-            })
-        {
-            --begin;
-            --index;
-            while (index >= 0) {
-                if ((*self->func)(*begin)) {
-                    break;
-                }
-                --begin;
-                --index;
-            }
-            return *this;
-        }
-
-        [[nodiscard]] constexpr binary_where_iterator operator--(int)
-            noexcept (requires{
-                {binary_where_iterator{*this}} noexcept;
-                {--*this} noexcept;
-            })
-            requires (requires{
-                {binary_where_iterator{*this}};
-                {--*this};
-            })
-        {
-            binary_where_iterator temp = *this;
-            --*this;
-            return temp;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const binary_where_iterator& other) const noexcept {
-            return index == other.index;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const binary_where_iterator& other) const noexcept {
-            return index <=> other.index;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            const binary_where_iterator& self,
-            NoneType
-        )
-            noexcept (requires{
-                {self.begin == self.end} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {self.begin == self.end} -> meta::convertible_to<bool>;
-            })
-        {
-            return self.begin == self.end;
-        }
-
-        [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
-            const binary_where_iterator& self
-        )
-            noexcept (requires{
-                {self.begin == self.end} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {self.begin == self.end} -> meta::convertible_to<bool>;
-            })
-        {
-            return self.begin == self.end;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            const binary_where_iterator& self,
-            NoneType
-        )
-            noexcept (requires{
-                {self.begin != self.end} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {self.begin != self.end} -> meta::convertible_to<bool>;
-            })
-        {
-            return self.begin != self.end;
-        }
-
-        [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
-            const binary_where_iterator& self
-        )
-            noexcept (requires{
-                {self.begin != self.end} noexcept -> meta::nothrow::convertible_to<bool>;
-            })
-            requires (requires{
-                {self.begin != self.end} -> meta::convertible_to<bool>;
-            })
-        {
-            return self.begin != self.end;
-        }
-    };
-
-    /* Binary `where{}` expressions correspond to a filter that omits values where the
-    predicate evaluates to `false`.  Because this cannot be known generically ahead of
-    time, the resulting range is unsized, not a tuple, and not reliably indexable. */
-    template <meta::not_rvalue F, meta::not_rvalue C>
-    struct binary_where {
-        using function_type = F;
-        using true_type = meta::as_range<C>;
-
-        [[no_unique_address]] impl::ref<function_type> func;
-        [[no_unique_address]] impl::ref<true_type> if_true;
-
-        [[nodiscard]] constexpr auto begin()
-            noexcept (requires(binary_where_iterator<
-                binary_where,
-                meta::begin_type<meta::as_lvalue<true_type>>,
-                meta::end_type<meta::as_lvalue<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    binary_where,
-                    meta::begin_type<meta::as_lvalue<true_type>>,
-                    meta::end_type<meta::as_lvalue<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->begin(),
-                    .end = if_true->end()
-                }} noexcept;
-                {result.init()};
-            })
-            requires (requires(binary_where_iterator<
-                binary_where,
-                meta::begin_type<meta::as_lvalue<true_type>>,
-                meta::end_type<meta::as_lvalue<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    binary_where,
-                    meta::begin_type<meta::as_lvalue<true_type>>,
-                    meta::end_type<meta::as_lvalue<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->begin(),
-                    .end = if_true->end()
-                }};
-                {result.init()};
-            })
-        {
-            binary_where_iterator<
-                binary_where,
-                meta::begin_type<meta::as_lvalue<true_type>>,
-                meta::end_type<meta::as_lvalue<true_type>>
-            > result {
-                .self = this,
-                .index = 0,
-                .begin = if_true->begin(),
-                .end = if_true->end()
-            };
-            result.init();
-            return result;
-        }
-
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires(binary_where_iterator<
-                const binary_where,
-                meta::begin_type<meta::as_const_ref<true_type>>,
-                meta::end_type<meta::as_const_ref<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    const binary_where,
-                    meta::begin_type<meta::as_const_ref<true_type>>,
-                    meta::end_type<meta::as_const_ref<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->begin(),
-                    .end = if_true->end()
-                }} noexcept;
-                {result.init()};
-            })
-            requires (requires(binary_where_iterator<
-                const binary_where,
-                meta::begin_type<meta::as_const_ref<true_type>>,
-                meta::end_type<meta::as_const_ref<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    const binary_where,
-                    meta::begin_type<meta::as_const_ref<true_type>>,
-                    meta::end_type<meta::as_const_ref<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->begin(),
-                    .end = if_true->end()
-                }};
-                {result.init()};
-            })
-        {
-            binary_where_iterator<
-                const binary_where,
-                meta::begin_type<meta::as_const_ref<true_type>>,
-                meta::end_type<meta::as_const_ref<true_type>>
-            > result {
-                .self = this,
-                .index = 0,
-                .begin = if_true->begin(),
-                .end = if_true->end()
-            };
-            result.init();
-            return result;
-        }
-
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
-        
-        [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires(binary_where_iterator<
-                binary_where,
-                meta::rbegin_type<meta::as_lvalue<true_type>>,
-                meta::rend_type<meta::as_lvalue<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    binary_where,
-                    meta::rbegin_type<meta::as_lvalue<true_type>>,
-                    meta::rend_type<meta::as_lvalue<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->rbegin(),
-                    .end = if_true->rend()
-                }} noexcept;
-                {result.init()};
-            })
-            requires (requires(binary_where_iterator<
-                binary_where,
-                meta::rbegin_type<meta::as_lvalue<true_type>>,
-                meta::rend_type<meta::as_lvalue<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    binary_where,
-                    meta::rbegin_type<meta::as_lvalue<true_type>>,
-                    meta::rend_type<meta::as_lvalue<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->rbegin(),
-                    .end = if_true->rend()
-                }};
-                {result.init()};
-            })
-        {
-            binary_where_iterator<
-                binary_where,
-                meta::rbegin_type<meta::as_lvalue<true_type>>,
-                meta::rend_type<meta::as_lvalue<true_type>>
-            > result {
-                .self = this,
-                .index = 0,
-                .begin = if_true->rbegin(),
-                .end = if_true->rend()
-            };
-            result.init();
-            return result;
-        }
-
-        [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires(binary_where_iterator<
-                const binary_where,
-                meta::rbegin_type<meta::as_const_ref<true_type>>,
-                meta::rend_type<meta::as_const_ref<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    const binary_where,
-                    meta::rbegin_type<meta::as_const_ref<true_type>>,
-                    meta::rend_type<meta::as_const_ref<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->rbegin(),
-                    .end = if_true->rend()
-                }} noexcept;
-                {result.init()};
-            })
-            requires (requires(binary_where_iterator<
-                const binary_where,
-                meta::rbegin_type<meta::as_const_ref<true_type>>,
-                meta::rend_type<meta::as_const_ref<true_type>>
-            > result) {
-                {binary_where_iterator<
-                    const binary_where,
-                    meta::rbegin_type<meta::as_const_ref<true_type>>,
-                    meta::rend_type<meta::as_const_ref<true_type>>
-                >{
-                    .self = this,
-                    .index = 0,
-                    .begin = if_true->rbegin(),
-                    .end = if_true->rend()
-                }};
-                {result.init()};
-            })
-        {
-            binary_where_iterator<
-                const binary_where,
-                meta::rbegin_type<meta::as_const_ref<true_type>>,
-                meta::rend_type<meta::as_const_ref<true_type>>
-            > result {
-                .self = this,
-                .index = 0,
-                .begin = if_true->rbegin(),
-                .end = if_true->rend()
-            };
-            result.init();
-            return result;
-        }
-
-        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
-    };
-
-    template <typename F, typename C>
-    binary_where(F&&, C&&) -> binary_where<meta::remove_rvalue<F>, meta::remove_rvalue<C>>;
 
 }
 
@@ -1100,11 +1440,27 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     namespace ranges {
 
-
+        /// TODO: borrowed range support?
 
     }
 
+    template <typename F, bertrand::meta::tuple_like True, bertrand::meta::tuple_like False>
+    struct tuple_size<bertrand::impl::ternary_where<F, True, False>> : std::integral_constant<
+        size_t,
+        std::min(bertrand::meta::tuple_size<True>, bertrand::meta::tuple_size<False>)
+    > {};
 
+    template <
+        size_t I,
+        typename F,
+        bertrand::meta::tuple_like True,
+        bertrand::meta::tuple_like False
+    > requires (I < tuple_size<bertrand::impl::ternary_where<F, True, False>>::value)
+    struct tuple_element<I, bertrand::impl::ternary_where<F, True, False>> {
+        using type = bertrand::meta::remove_rvalue<typename bertrand::impl::where_traits<
+            bertrand::impl::ternary_where<F, True, False>
+        >::template get<I>>;
+    };
 
 _LIBCPP_END_NAMESPACE_STD
 
@@ -1140,6 +1496,8 @@ namespace bertrand::iter {
         std::array{4, 5, 6}
     );
     static_assert(w2->end() - w2->begin() == 3);
+    static_assert(w2.size() == 3);
+    static_assert((*w2).get<-1>() == 3);
     static_assert([] {
         auto it1 = w2->begin();
         if (*it1++ != 4) return false;
@@ -1159,6 +1517,7 @@ namespace bertrand::iter {
             }
         }
 
+        auto&& [a, b, c] = w2;
         return true;
     }());
 
