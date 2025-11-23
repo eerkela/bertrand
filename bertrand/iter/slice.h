@@ -1,7 +1,6 @@
 #ifndef BERTRAND_ITER_SLICE_H
 #define BERTRAND_ITER_SLICE_H
 
-#include "bertrand/common.h"
 #include "bertrand/iter/range.h"
 
 
