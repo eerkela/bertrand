@@ -2670,24 +2670,61 @@ namespace meta {
     concept sized_sentinel_for =
         sentinel_for<T, Iter> && ::std::sized_sentinel_for<unqualify<T>, Iter>;
 
-    template <iterator T>
-    using iterator_category = std::conditional_t<
-        contiguous_iterator<T>,
-        ::std::contiguous_iterator_tag,
-        typename ::std::iterator_traits<unqualify<T>>::iterator_category
-    >;
+    namespace detail {
 
-    template <iterator T>
-    using iterator_difference = ::std::iterator_traits<unqualify<T>>::difference_type;
+        template <typename T>
+        struct iterator_category { using type = ::std::input_iterator_tag; };
+        template <meta::contiguous_iterator T>
+        struct iterator_category<T> { using type = ::std::contiguous_iterator_tag; };
+        template <meta::iterator T>
+        struct iterator_category<T> {
+            using type = ::std::iterator_traits<unqualify<T>>::iterator_category;
+        };
 
-    template <iterator T>
-    using iterator_value = ::std::iterator_traits<unqualify<T>>::value_type;
+        template <typename T>
+        struct iterator_difference { using type = ptrdiff_t; };
+        template <meta::iterator T>
+        struct iterator_difference<T> {
+            using type = ::std::iterator_traits<unqualify<T>>::difference_type;
+        };
 
-    template <iterator T>
-    using iterator_reference = ::std::iterator_traits<unqualify<T>>::reference;
+        template <typename T>
+        struct iterator_reference { using type = T; };
+        template <meta::iterator T>
+        struct iterator_reference<T> {
+            using type = ::std::iterator_traits<unqualify<T>>::reference;
+        };
 
-    template <iterator T>
-    using iterator_pointer = ::std::iterator_traits<unqualify<T>>::pointer;
+        template <typename T>
+        struct iterator_value { using type = meta::remove_reference<T>; };
+        template <meta::iterator T>
+        struct iterator_value<T> {
+            using type = ::std::iterator_traits<unqualify<T>>::value_type;
+        };
+
+        template <typename T>
+        struct iterator_pointer { using type = meta::as_pointer<T>; };
+        template <meta::iterator T>
+        struct iterator_pointer<T> {
+            using type = ::std::iterator_traits<unqualify<T>>::pointer;
+        };
+
+    }
+
+    template <typename T>
+    using iterator_category = detail::iterator_category<T>::type;
+
+    template <typename T>
+    using iterator_difference = detail::iterator_difference<T>::type;
+
+    template <typename T>
+    using iterator_value = detail::iterator_value<T>::type;
+
+    template <typename T>
+    using iterator_reference = detail::iterator_reference<T>::type;
+
+    template <typename T>
+    using iterator_pointer = detail::iterator_pointer<T>::type;
 
     namespace nothrow {
 
