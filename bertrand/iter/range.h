@@ -3735,6 +3735,147 @@ namespace impl {
         return TypeError("empty range has no back()");
     }
 
+    namespace range_compare {
+
+        /* Lexicographic comparison functions are permitted as long as they accept 2
+        arguments and produce either a boolean result or STL ordering tag. */
+        template <typename F, typename L, typename R>
+        concept func = requires(
+            meta::as_const_ref<F> func,
+            meta::remove_range<meta::as_const_ref<L>> lhs,
+            meta::remove_range<meta::as_const_ref<R>> rhs
+        ) {
+            {func(lhs, rhs)} -> meta::std::ordering;
+        };
+
+        /* If a lexicographic comparison is invoked with more than 2 arguments, then
+        the function will be braodcasted over each logical pair, and must be separately
+        invocable for each one. */
+        template <typename F, typename L, typename R, typename... A>
+        constexpr bool recursive = false;
+        template <typename F, typename L, typename R>
+        constexpr bool recursive<F, L, R> = func<F, L, R>;
+        template <typename F, typename L, typename R, typename A, typename... As>
+            requires (func<F, L, R>)
+        constexpr bool recursive<F, L, R, A, As...> = recursive<F, R, A, As...>;
+
+        /* The function's return type will be coerced to `bool` if possible, or an
+        unqualified ordering tag otherwise, assuming it is valid. */
+        template <typename F, typename L, typename R> requires (func<F, L, R>)
+        using type = meta::unqualify<meta::call_type<
+            meta::as_const_ref<F>,
+            meta::remove_range<meta::as_const_ref<L>>,
+            meta::remove_range<meta::as_const_ref<R>>
+        >>;
+
+        /* If a lexicographic comparison is invoked with more than 2 arguments, then
+        there must be a single common return type, which allows widening from stronger
+        ordering constraints to weaker ones in case of inconsistency. */
+        template <typename out, typename F, typename L, typename... T>
+        struct _common_type { using type = out; };
+        template <typename out, typename F, typename L, typename R, typename... T>
+        struct _common_type<out, F, L, R, T...> :
+            _common_type<meta::common_type<out, type<F, L, R>>, F, R, T...>
+        {};
+        template <typename F, typename L, typename R, typename... T>
+        struct common_type : _common_type<type<F, L, R>, F, R, T...> {};
+
+        /* If a lexicographic comparison is invoked with more than 2 arguments, then
+        the actual function object will recursively consume the remaining arguments
+        until either the function returns a non-equal result or until there are only 2
+        arguments left. */
+        template <typename type, typename F, typename L, typename R, typename... A>
+        struct fn {
+            [[nodiscard]] static constexpr type operator()(
+                const F& func,
+                const L& lhs,
+                const R& rhs,
+                const A&... rest
+            )
+                noexcept (
+                    meta::nothrow::call_returns<type, const F&, const L&, const R&> &&
+                    meta::nothrow::call_returns<
+                        type,
+                        fn<type, F, R, A...>,
+                        const F&,
+                        const R&,
+                        const A&...
+                    >
+                )
+                requires (
+                    meta::call_returns<type, const F&, const L&, const R&> &&
+                    meta::call_returns<
+                        type,
+                        fn<type, F, R, A...>,
+                        const F&,
+                        const R&,
+                        const A&...
+                    >
+                )
+            {
+                if (type result = func(lhs, rhs); result != 0) {
+                    return result;
+                }
+                return fn<type, F, R, A...>{}(func, rhs, rest...);
+            }
+        };
+        template <typename type, typename F, typename L, typename R>
+        struct fn<type, F, L, R> {
+            [[nodiscard]] static constexpr type operator()(
+                const F& func,
+                const L& lhs,
+                const R& rhs
+            )
+                noexcept (meta::nothrow::call_returns<type, const F&, const L&, const R&>)
+                requires (meta::call_returns<type, const F&, const L&, const R&>)
+            {
+                return func(lhs, rhs);
+            }
+        };
+
+        /* The default comparison function to use for `iter::compare{}`.  This will
+        attempt to use the `<=>` operator if it is available, and otherwise fall back
+        to the `<`, `>`, and `==` operators, with a result of type
+        `std::partial_ordering`. */
+        struct trivial {
+            template <typename L, typename R>
+            [[nodiscard]] static constexpr auto operator()(const L& lhs, const R& rhs)
+                noexcept (requires{{lhs <=> rhs} noexcept;})
+                requires (requires{{lhs <=> rhs} -> meta::std::ordering;})
+            {
+                return lhs <=> rhs;
+            }
+            template <typename L, typename R>
+            [[nodiscard]] static constexpr auto operator()(const L& lhs, const R& rhs)
+                noexcept (requires{
+                    {lhs == rhs} noexcept -> meta::nothrow::truthy;
+                    {lhs < rhs} noexcept -> meta::nothrow::truthy;
+                    {lhs > rhs} noexcept -> meta::nothrow::truthy;
+                })
+                requires (
+                    !requires{{lhs <=> rhs} -> meta::std::ordering;} &&
+                    requires{
+                        {lhs == rhs} -> meta::truthy;
+                        {lhs < rhs} -> meta::truthy;
+                        {lhs > rhs} -> meta::truthy;
+                    }
+                )
+            {
+                if (lhs == rhs) {
+                    return std::partial_ordering::equivalent;
+                }
+                if (lhs < rhs) {
+                    return std::partial_ordering::less;
+                }
+                if (lhs > rhs) {
+                    return std::partial_ordering::greater;
+                }
+                return std::partial_ordering::unordered;
+            }
+        };
+
+    }
+
     namespace range_index {
 
         template <typename C>
@@ -4504,136 +4645,6 @@ namespace impl {
         {
             tuple_from_iter_impl(lhs, rhs, std::make_index_sequence<meta::tuple_size<LHS>>{});
         }
-
-    }
-
-    namespace range_compare {
-
-        /* Lexicographic comparison functions are permitted as long as they accept 2
-        arguments and produce either a boolean result or STL ordering tag. */
-        template <typename F, typename L, typename R>
-        concept predicate = meta::call_returns<
-            bool,
-            meta::as_const_ref<F>,
-            meta::remove_range<meta::as_const_ref<L>>,
-            meta::remove_range<meta::as_const_ref<R>>
-        >;
-        template <typename F, typename L, typename R>
-        concept ordering = meta::callable<
-            meta::as_const_ref<F>,
-            meta::remove_range<meta::as_const_ref<L>>,
-            meta::remove_range<meta::as_const_ref<R>>
-        > && meta::std::ordering<meta::call_type<
-            meta::as_const_ref<F>,
-            meta::remove_range<meta::as_const_ref<L>>,
-            meta::remove_range<meta::as_const_ref<R>>
-        >>;
-
-        /* If a lexicographic comparison is invoked with more than 2 arguments, then
-        the function will be braodcasted over each logical pair, and must be separately
-        invocable for each one. */
-        template <typename F, typename L, typename R, typename... A>
-        constexpr bool recursive_predicate = false;
-        template <typename F, typename L, typename R>
-        constexpr bool recursive_predicate<F, L, R> = predicate<F, L, R>;
-        template <typename F, typename L, typename R, typename A, typename... As>
-            requires (predicate<F, L, R>)
-        constexpr bool recursive_predicate<F, L, R, A, As...> = recursive_predicate<F, R, A, As...>;
-        template <typename F, typename L, typename R, typename... A>
-        constexpr bool recursive_ordering = false;
-        template <typename F, typename L, typename R>
-        constexpr bool recursive_ordering<F, L, R> = recursive_ordering<F, L, R>;
-        template <typename F, typename L, typename R, typename A, typename... As>
-            requires (ordering<F, L, R>)
-        constexpr bool recursive_ordering<F, L, R, A, As...> = recursive_ordering<F, R, A, As...>;
-
-        /* The function's return type will be coerced to `bool` if possible, or an
-        unqualified ordering tag otherwise, assuming it is valid. */
-        template <typename F, typename L, typename R>
-            requires (predicate<F, L, R> || ordering<F, L, R>)
-        using type = std::conditional_t<
-            predicate<F, L, R>,
-            bool,
-            meta::unqualify<meta::call_type<
-                meta::as_const_ref<F>,
-                meta::remove_range<meta::as_const_ref<L>>,
-                meta::remove_range<meta::as_const_ref<R>>
-            >>
-        >;
-
-        /* If a lexicographic comparison is invoked with more than 2 arguments, then
-        there must be a single common return type, which allows widening from stronger
-        ordering constraints to weaker ones in case of inconsistency. */
-        template <typename out, typename F, typename L, typename... T>
-        struct _get_common_type { using type = out; };
-        template <typename out, typename F, typename L, typename R, typename... T>
-        struct _get_common_type<out, F, L, R, T...> :
-            _get_common_type<meta::common_type<out, type<F, L, R>>, F, R, T...>
-        {};
-        template <typename F, typename L, typename R, typename... T>
-        struct _common_type : _get_common_type<type<F, L, R>, F, R, T...> {};
-        template <typename F, typename L, typename R, typename... T>
-            requires (recursive_predicate<F, L, R, T...>)
-        struct _common_type<F, L, R, T...> { using type = bool; };
-        template <typename F, typename... Ts> requires (sizeof...(Ts) > 1)
-        using common_type = _common_type<F, Ts...>::type;
-
-        /* If a lexicographic comparison is invoked with more than 2 arguments, then
-        the actual function object will recursively consume the remaining arguments
-        until either the function returns a non-equal result or until there are only 2
-        arguments left. */
-        template <typename type, typename F, typename L, typename R, typename... A>
-        struct recursive {
-            [[nodiscard]] static constexpr type operator()(
-                const F& func,
-                const L& lhs,
-                const R& rhs,
-                const A&... rest
-            )
-                noexcept (
-                    meta::nothrow::call_returns<type, const F&, const L&, const R&> &&
-                    meta::nothrow::call_returns<
-                        type,
-                        recursive<type, F, R, A...>,
-                        const F&,
-                        const R&,
-                        const A&...
-                    >
-                )
-                requires (
-                    meta::call_returns<type, const F&, const L&, const R&> &&
-                    meta::call_returns<
-                        type,
-                        recursive<type, F, R, A...>,
-                        const F&,
-                        const R&,
-                        const A&...
-                    >
-                )
-            {
-                if constexpr (std::same_as<type, bool>) {
-                    return func(lhs, rhs) && recursive<type, F, R, A...>{}(func, rhs, rest...);
-                } else {
-                    if (type result = func(lhs, rhs); result != 0) {
-                        return result;
-                    }
-                    return recursive<type, F, R, A...>{}(func, rhs, rest...);
-                }
-            }
-        };
-        template <typename type, typename F, typename L, typename R>
-        struct recursive<type, F, L, R> {
-            [[nodiscard]] static constexpr type operator()(
-                const F& func,
-                const L& lhs,
-                const R& rhs
-            )
-                noexcept (meta::nothrow::call_returns<type, const F&, const L&, const R&>)
-                requires (meta::call_returns<type, const F&, const L&, const R&>)
-            {
-                return func(lhs, rhs);
-            }
-        };
 
     }
 
@@ -6122,50 +6133,59 @@ namespace iter {
     template <typename F>
     all(F&&) -> all<meta::remove_rvalue<F>>;
 
+    /// TODO: min{}, max{}, and minmax{}
 
 
-    /// TODO: document these lexicographic comparisons
+    /* Range-based lexicographic comparison operator.
 
-    /* Range-based lexicographic comparison operator.  Accepts any number of arguments
-    and applies a less-than comparison between them in sequence, returning true if
-    each argument is less than the next.  A custom function predicate may be supplied
-    as a constructor argument, which will be applied to each pair of values.  If a
-    range is given and the function is not immediately callable with its underlying
-    value, then the function may be lexicographically broadcasted over its elements
-    before advancing to the next argument.  This process may recur until either the
-    predicate becomes callable or a scalar value is reached. */
-    template <meta::not_rvalue F = impl::Spaceship>
+    This function object can be initialized using any function that takes two immutable
+    values representing the left and right sides of a `<=>` comparison and produces an
+    STL ordering tag (`std::strong_ordering`, `std::weak_ordering`, or
+    `std::partial_ordering`) indicating their relative order.  Calling the function
+    object with two arguments will invoke the comparison over each pair of elements and
+    halt at the first non-equivalent result, following lexicographic order.  Non-range
+    arguments will be implicitly broadcasted to match the length of the other argument
+    if it is a range.  Otherwise, if both arguments are ranges with differing lengths
+    but equivalent values where they overlap, then the shorter range will be considered
+    less than the longer one, again according to lexicographic order.
+
+    This object can also be called with more than 2 arguments, in which case the
+    lexicographic comparison will proceed pairwise, overlapping from left to right
+    until a non-equivalent result is found or all arguments have been compared (similar
+    to `a <=> b <=> c`, if that were valid).  In that case, the common ordering type
+    between all comparisons will be returned, which may be weaker than the strongest
+    individual comparison.
+
+    The default comparison function is equivalent to the `<=>` operator if it is
+    available.  Otherwise, it will fall back to a combination of the `<`, `>`, and `==`
+    operators together with a `std::partial_ordering` result type. */
+    template <meta::not_rvalue F = impl::range_compare::trivial>
     struct compare {
-        template <typename L, typename R>
-        using type = impl::range_compare::type<F, L, R>;
-
         [[no_unique_address]] F func;
 
-        template <typename L, typename R>
-        [[nodiscard]] constexpr type<L, R> operator()(const L& lhs, const R& rhs) const
+        template <typename L, typename R> requires (impl::range_compare::func<F, L, R>)
+        [[nodiscard]] constexpr auto operator()(const L& lhs, const R& rhs) const
             noexcept (meta::nothrow::call_returns<
-                type<L, R>,
+                impl::range_compare::type<F, L, R>,
                 meta::as_const_ref<F>,
                 decltype((meta::from_range(lhs))),
                 decltype((meta::from_range(rhs)))
             >)
-            requires (impl::range_compare::ordering<F, L, R>)
         {
             return func(meta::from_range(lhs), meta::from_range(rhs));
         }
 
-        template <typename L, typename R>
-        [[nodiscard]] constexpr type<L, R> operator()(const L& lhs, const R& rhs) const
+        template <typename L, typename R> requires (!impl::range_compare::func<F, L, R>)
+        [[nodiscard]] constexpr auto operator()(const L& lhs, const R& rhs) const
             noexcept (
                 meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
+                requires(meta::begin_type<const R&> it) {{operator()(lhs, *it)} noexcept;}
             )
             requires (
-                !impl::range_compare::ordering<F, L, R> &&
                 !meta::range<L> &&
                 meta::range<R> &&
                 meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
+                requires(meta::begin_type<const R&> it) {{operator()(lhs, *it)};}
             )
         {
             auto it = meta::begin(rhs);
@@ -6176,21 +6196,20 @@ namespace iter {
                 }
                 ++it;
             }
-            return type<L, R>::equivalent;
+            return decltype(operator()(lhs, *it))::equivalent;
         }
 
-        template <typename L, typename R>
-        [[nodiscard]] constexpr type<L, R> operator()(const L& lhs, const R& rhs) const
+        template <typename L, typename R> requires (!impl::range_compare::func<F, L, R>)
+        [[nodiscard]] constexpr auto operator()(const L& lhs, const R& rhs) const
             noexcept (
                 meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
+                requires(meta::begin_type<const L&> it) {{operator()(*it, rhs)} noexcept;}
             )
             requires (
-                !impl::range_compare::ordering<F, L, R> &&
                 meta::range<L> &&
                 !meta::range<R> &&
                 meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
+                requires(meta::begin_type<const L&> it) {{operator()(*it, rhs)};}
             )
         {
             auto it = meta::begin(lhs);
@@ -6201,26 +6220,25 @@ namespace iter {
                 }
                 ++it;
             }
-            return type<L, R>::equivalent;
+            return decltype(operator()(lhs, *it))::equivalent;
         }
 
-        template <typename L, typename R>
-        [[nodiscard]] constexpr type<L, R> operator()(const L& lhs, const R& rhs) const
+        template <typename L, typename R> requires (!impl::range_compare::func<F, L, R>)
+        [[nodiscard]] constexpr auto operator()(const L& lhs, const R& rhs) const
             noexcept (
                 meta::nothrow::iterable<const L&> &&
                 meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
+                requires(meta::begin_type<const L&> l_it, meta::begin_type<const R&> r_it) {
+                    {operator()(*l_it, *r_it)} noexcept;
                 }
             )
             requires (
-                !impl::range_compare::ordering<F, L, R> &&
                 meta::range<L> &&
                 meta::range<R> &&
                 meta::iterable<const L&> &&
                 meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
+                requires(meta::begin_type<const L&> l_it, meta::begin_type<const R&> r_it) {
+                    {operator()(*l_it, *r_it)};
                 }
             )
         {
@@ -6236,706 +6254,37 @@ namespace iter {
                 ++r_it;
             }
             if (l_it != l_end) {
-                return type<L, R>::greater;
+                return decltype(operator()(*l_it, *r_it))::greater;
             }
             if (r_it != r_end) {
-                return type<L, R>::less;
+                return decltype(operator()(*l_it, *r_it))::less;
             }
-            return type<L, R>::equivalent;
+            return decltype(operator()(*l_it, *r_it))::equivalent;
         }
 
         template <typename... A> requires (sizeof...(A) > 2)
         [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{{impl::range_compare::recursive<
-                impl::range_compare::common_type<F, A...>,
+            noexcept (requires{{impl::range_compare::fn<
+                typename impl::range_compare::common_type<F, A...>::type,
                 compare,
                 A...
             >{}(*this, a...)} noexcept;})
             requires (
-                impl::range_compare::recursive_ordering<F, A...> &&
-                requires{{impl::range_compare::recursive<
-                    impl::range_compare::common_type<F, A...>,
+                impl::range_compare::recursive<F, A...> &&
+                requires{{impl::range_compare::fn<
+                    typename impl::range_compare::common_type<F, A...>::type,
                     compare,
                     A...
                 >{}(*this, a...)};}
             )
         {
-            return impl::range_compare::recursive<
-                impl::range_compare::common_type<F, A...>,
+            return impl::range_compare::fn<
+                typename impl::range_compare::common_type<F, A...>::type,
                 compare,
                 A...
             >{}(*this, a...);
         }
     };
-
-    template <meta::not_rvalue F = impl::Less>
-    struct less {
-        [[no_unique_address]] F func;
-
-        template <typename L, typename R> requires (impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (meta::nothrow::call_returns<
-                bool,
-                meta::as_const_ref<F>,
-                decltype((meta::from_range(lhs))),
-                decltype((meta::from_range(rhs)))
-            >)
-        {
-            return func(meta::from_range(lhs), meta::from_range(rhs));
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
-            )
-            requires (
-                !meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
-            )
-        {
-            auto it = meta::begin(rhs);
-            auto end = meta::end(rhs);
-            while (it != end) {
-                if (operator()(lhs, *it)) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
-            )
-            requires (
-                meta::range<L> &&
-                !meta::range<R> &&
-                meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
-            )
-        {
-            auto it = meta::begin(lhs);
-            auto end = meta::end(lhs);
-            while (it != end) {
-                if (operator()(*it, rhs)) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const L&> &&
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
-                }
-            )
-            requires (
-                meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const L&> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
-                }
-            )
-        {
-            auto l_it = meta::begin(lhs);
-            auto l_end = meta::end(lhs);
-            auto r_it = meta::begin(rhs);
-            auto r_end = meta::end(rhs);
-            while (l_it != l_end && r_it != r_end) {
-                if (operator()(*l_it, *r_it)) {
-                    return true;
-                }
-                ++l_it;
-                ++r_it;
-            }
-            return r_it != r_end;
-        }
-
-        template <typename... A> requires (sizeof...(A) > 2)
-        [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{
-                {impl::range_compare::recursive<bool, less, A...>{}(*this, a...)} noexcept;
-            })
-            requires (
-                impl::range_compare::recursive_predicate<F, A...> &&
-                requires{{impl::range_compare::recursive<bool, less, A...>{}(*this, a...)};}
-            )
-        {
-            return impl::range_compare::recursive<bool, less, A...>{}(*this, a...);
-        }
-    };
-
-    template <meta::not_rvalue F = impl::LessEqual>
-    struct less_equal {
-        [[no_unique_address]] F func;
-
-        template <typename L, typename R> requires (impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (meta::nothrow::call_returns<
-                bool,
-                meta::as_const_ref<F>,
-                decltype((meta::from_range(lhs))),
-                decltype((meta::from_range(rhs)))
-            >)
-        {
-            return func(meta::from_range(lhs), meta::from_range(rhs));
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
-            )
-            requires (
-                !meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
-            )
-        {
-            auto it = meta::begin(rhs);
-            auto end = meta::end(rhs);
-            while (it != end) {
-                if (!operator()(lhs, *it)) {
-                    return false;
-                }
-                ++it;
-            }
-            return true;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
-            )
-            requires (
-                meta::range<L> &&
-                !meta::range<R> &&
-                meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
-            )
-        {
-            auto it = meta::begin(lhs);
-            auto end = meta::end(lhs);
-            while (it != end) {
-                if (!operator()(*it, rhs)) {
-                    return false;
-                }
-                ++it;
-            }
-            return true;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const L&> &&
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
-                }
-            )
-            requires (
-                meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const L&> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
-                }
-            )
-        {
-            auto l_it = meta::begin(lhs);
-            auto l_end = meta::end(lhs);
-            auto r_it = meta::begin(rhs);
-            auto r_end = meta::end(rhs);
-            while (l_it != l_end && r_it != r_end) {
-                if (!operator()(*l_it, *r_it)) {
-                    return false;
-                }
-                ++l_it;
-                ++r_it;
-            }
-            return l_it == l_end;
-        }
-
-        template <typename... A> requires (sizeof...(A) > 2)
-        [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{
-                {impl::range_compare::recursive<bool, less_equal, A...>{}(*this, a...)} noexcept;
-            })
-            requires (
-                impl::range_compare::recursive_predicate<F, A...> &&
-                requires{{impl::range_compare::recursive<bool, less_equal, A...>{}(*this, a...)};}
-            )
-        {
-            return impl::range_compare::recursive<bool, less_equal, A...>{}(*this, a...);
-        }
-    };
-
-    template <meta::not_rvalue F = impl::Equal>
-    struct equal {
-        [[no_unique_address]] F func;
-
-        template <typename L, typename R> requires (impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (meta::nothrow::call_returns<
-                bool,
-                meta::as_const_ref<F>,
-                decltype((meta::from_range(lhs))),
-                decltype((meta::from_range(rhs)))
-            >)
-        {
-            return func(meta::from_range(lhs), meta::from_range(rhs));
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
-            )
-            requires (
-                !meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
-            )
-        {
-            auto it = meta::begin(rhs);
-            auto end = meta::end(rhs);
-            while (it != end) {
-                if (!operator()(lhs, *it)) {
-                    return false;
-                }
-                ++it;
-            }
-            return true;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
-            )
-            requires (
-                meta::range<L> &&
-                !meta::range<R> &&
-                meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
-            )
-        {
-            auto it = meta::begin(lhs);
-            auto end = meta::end(lhs);
-            while (it != end) {
-                if (!operator()(*it, rhs)) {
-                    return false;
-                }
-                ++it;
-            }
-            return true;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const L&> &&
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
-                }
-            )
-            requires (
-                meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const L&> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
-                }
-            )
-        {
-            auto l_it = meta::begin(lhs);
-            auto l_end = meta::end(lhs);
-            auto r_it = meta::begin(rhs);
-            auto r_end = meta::end(rhs);
-            while (l_it != l_end && r_it != r_end) {
-                if (!operator()(*l_it, *r_it)) {
-                    return false;
-                }
-                ++l_it;
-                ++r_it;
-            }
-            return l_it == l_end && r_it == r_end;
-        }
-
-        template <typename... A> requires (sizeof...(A) > 2)
-        [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{
-                {impl::range_compare::recursive<bool, equal, A...>{}(*this, a...)} noexcept;
-            })
-            requires (
-                impl::range_compare::recursive_predicate<F, A...> &&
-                requires{{impl::range_compare::recursive<bool, equal, A...>{}(*this, a...)};}
-            )
-        {
-            return impl::range_compare::recursive<bool, equal, A...>{}(*this, a...);
-        }
-    };
-
-    template <meta::not_rvalue F = impl::NotEqual>
-    struct not_equal {
-        [[no_unique_address]] F func;
-
-        template <typename L, typename R> requires (impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (meta::nothrow::call_returns<
-                bool,
-                meta::as_const_ref<F>,
-                decltype((meta::from_range(lhs))),
-                decltype((meta::from_range(rhs)))
-            >)
-        {
-            return func(meta::from_range(lhs), meta::from_range(rhs));
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
-            )
-            requires (
-                !meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
-            )
-        {
-            auto it = meta::begin(rhs);
-            auto end = meta::end(rhs);
-            while (it != end) {
-                if (operator()(lhs, *it)) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
-            )
-            requires (
-                meta::range<L> &&
-                !meta::range<R> &&
-                meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
-            )
-        {
-            auto it = meta::begin(lhs);
-            auto end = meta::end(lhs);
-            while (it != end) {
-                if (operator()(*it, rhs)) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const L&> &&
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
-                }
-            )
-            requires (
-                meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const L&> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
-                }
-            )
-        {
-            auto l_it = meta::begin(lhs);
-            auto l_end = meta::end(lhs);
-            auto r_it = meta::begin(rhs);
-            auto r_end = meta::end(rhs);
-            while (l_it != l_end && r_it != r_end) {
-                if (operator()(*l_it, *r_it)) {
-                    return true;
-                }
-                ++l_it;
-                ++r_it;
-            }
-            return l_it != l_end || r_it != r_end;
-        }
-
-        template <typename... A> requires (sizeof...(A) > 2)
-        [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{
-                {impl::range_compare::recursive<bool, not_equal, A...>{}(*this, a...)} noexcept;
-            })
-            requires (
-                impl::range_compare::recursive_predicate<F, A...> &&
-                requires{{impl::range_compare::recursive<bool, not_equal, A...>{}(*this, a...)};}
-            )
-        {
-            return impl::range_compare::recursive<bool, not_equal, A...>{}(*this, a...);
-        }
-    };
-
-    template <meta::not_rvalue F = impl::GreaterEqual>
-    struct greater_equal {
-        [[no_unique_address]] F func;
-
-        template <typename L, typename R> requires (impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (meta::nothrow::call_returns<
-                bool,
-                meta::as_const_ref<F>,
-                decltype((meta::from_range(lhs))),
-                decltype((meta::from_range(rhs)))
-            >)
-        {
-            return func(meta::from_range(lhs), meta::from_range(rhs));
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
-            )
-            requires (
-                !meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
-            )
-        {
-            auto it = meta::begin(rhs);
-            auto end = meta::end(rhs);
-            while (it != end) {
-                if (!operator()(lhs, *it)) {
-                    return false;
-                }
-                ++it;
-            }
-            return true;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
-            )
-            requires (
-                meta::range<L> &&
-                !meta::range<R> &&
-                meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
-            )
-        {
-            auto it = meta::begin(lhs);
-            auto end = meta::end(lhs);
-            while (it != end) {
-                if (!operator()(*it, rhs)) {
-                    return false;
-                }
-                ++it;
-            }
-            return true;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const L&> &&
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
-                }
-            )
-            requires (
-                meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const L&> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
-                }
-            )
-        {
-            auto l_it = meta::begin(lhs);
-            auto l_end = meta::end(lhs);
-            auto r_it = meta::begin(rhs);
-            auto r_end = meta::end(rhs);
-            while (l_it != l_end && r_it != r_end) {
-                if (!operator()(*l_it, *r_it)) {
-                    return false;
-                }
-                ++l_it;
-                ++r_it;
-            }
-            return r_it == r_end;
-        }
-
-        template <typename... A> requires (sizeof...(A) > 2)
-        [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{
-                {impl::range_compare::recursive<bool, greater_equal, A...>{}(*this, a...)} noexcept;
-            })
-            requires (
-                impl::range_compare::recursive_predicate<F, A...> &&
-                requires{{impl::range_compare::recursive<bool, greater_equal, A...>{}(*this, a...)};}
-            )
-        {
-            return impl::range_compare::recursive<bool, greater_equal, A...>{}(*this, a...);
-        }
-    };
-
-    template <meta::not_rvalue F = impl::Greater>
-    struct greater {
-        [[no_unique_address]] F func;
-
-        template <typename L, typename R> requires (impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (meta::nothrow::call_returns<
-                bool,
-                meta::as_const_ref<F>,
-                decltype((meta::from_range(lhs))),
-                decltype((meta::from_range(rhs)))
-            >)
-        {
-            return func(meta::from_range(lhs), meta::from_range(rhs));
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)} noexcept;}
-            )
-            requires (
-                !meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const R&> r) {{operator()(lhs, *r)};}
-            )
-        {
-            auto it = meta::begin(rhs);
-            auto end = meta::end(rhs);
-            while (it != end) {
-                if (operator()(lhs, *it)) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<L> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)} noexcept;}
-            )
-            requires (
-                meta::range<L> &&
-                !meta::range<R> &&
-                meta::iterable<const L&> &&
-                requires(meta::begin_type<const L&> l) {{operator()(*l, rhs)};}
-            )
-        {
-            auto it = meta::begin(lhs);
-            auto end = meta::end(lhs);
-            while (it != end) {
-                if (operator()(*it, rhs)) {
-                    return true;
-                }
-                ++it;
-            }
-            return false;
-        }
-
-        template <typename L, typename R> requires (!impl::range_compare::predicate<F, L, R>)
-        [[nodiscard]] constexpr bool operator()(const L& lhs, const R& rhs) const
-            noexcept (
-                meta::nothrow::iterable<const L&> &&
-                meta::nothrow::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)} noexcept;
-                }
-            )
-            requires (
-                meta::range<L> &&
-                meta::range<R> &&
-                meta::iterable<const L&> &&
-                meta::iterable<const R&> &&
-                requires(meta::begin_type<const L&> l, meta::begin_type<const R&> r) {
-                    {operator()(*l, *r)};
-                }
-            )
-        {
-            auto l_it = meta::begin(lhs);
-            auto l_end = meta::end(lhs);
-            auto r_it = meta::begin(rhs);
-            auto r_end = meta::end(rhs);
-            while (l_it != l_end && r_it != r_end) {
-                if (operator()(*l_it, *r_it)) {
-                    return true;
-                }
-                ++l_it;
-                ++r_it;
-            }
-            return l_it != l_end;
-        }
-
-        template <typename... A> requires (sizeof...(A) > 2)
-        [[nodiscard]] constexpr auto operator()(const A&... a) const
-            noexcept (requires{
-                {impl::range_compare::recursive<bool, greater, A...>{}(*this, a...)} noexcept;
-            })
-            requires (
-                impl::range_compare::recursive_predicate<F, A...> &&
-                requires{{impl::range_compare::recursive<bool, greater, A...>{}(*this, a...)};}
-            )
-        {
-            return impl::range_compare::recursive<bool, greater, A...>{}(*this, a...);
-        }
-    };
-
-    /// TODO: min{}, max{}, and minmax{}
-
 
     /* Check to see whether a particular value or consecutive subsequence is present
     in the arguments.  An arbitrary number of arguments may be supplied, in which case
@@ -8617,38 +7966,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     > {};
 
 _LIBCPP_END_NAMESPACE_STD
-
-
-
-
-
-
-namespace bertrand::iter {
-
-
-    static_assert(compare{}(
-        range{std::array{1, 2, 3}},
-        range{std::array{1, 2, 3}}
-    ) == 0);
-
-
-
-    static_assert(less{}(1, 2, 3));
-    static_assert(less_equal{}(
-        range{std::array{1, 2, 3}},
-        range{std::array{1, 2, 3}}
-    ));
-    static_assert(less{}(
-        1,
-        range{std::array{1, 1, 2}}
-    ));
-    static_assert(less{}(
-        range{std::array{1, 1, 0}},
-        1
-    ));
-
-
-}
 
 
 #endif  // BERTRAND_ITER_RANGE_H
