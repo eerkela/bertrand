@@ -5104,6 +5104,37 @@ namespace meta {
         namespace detail {
 
             template <typename T>
+            constexpr bool strong_ordering = false;
+            template <>
+            inline constexpr bool strong_ordering<::std::strong_ordering> = true;
+
+            template <typename T>
+            constexpr bool weak_ordering = false;
+            template <>
+            inline constexpr bool weak_ordering<::std::weak_ordering> = true;
+
+            template <typename T>
+            constexpr bool partial_ordering = false;
+            template <>
+            inline constexpr bool partial_ordering<::std::partial_ordering> = true;
+
+        }
+
+        template <typename T>
+        concept strong_ordering = detail::strong_ordering<unqualify<T>>;
+
+        template <typename T>
+        concept weak_ordering = detail::weak_ordering<unqualify<T>>;
+
+        template <typename T>
+        concept partial_ordering = detail::partial_ordering<unqualify<T>>;
+
+        template <typename T>
+        concept ordering = strong_ordering<T> || weak_ordering<T> || partial_ordering<T>;
+
+        namespace detail {
+
+            template <typename T>
             struct format_string { static constexpr bool enable = false; };
             template <typename Char, typename... Args>
             struct format_string<::std::basic_format_string<Char, Args...>> {

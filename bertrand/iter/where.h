@@ -443,9 +443,9 @@ namespace impl {
     /* Binary `where{}` expressions correspond to a filter that omits values where the
     predicate or mask evaluates to `false`.  Because this cannot be known generically
     ahead of time, the resulting range is unsized, not a tuple, and not indexable. */
-    template <meta::not_rvalue F, meta::not_rvalue C>
+    template <meta::not_rvalue Filter, meta::not_rvalue C>
     struct binary_where {
-        using filter_type = F;
+        using filter_type = Filter;
         using true_type = meta::as_range<C>;
 
         [[no_unique_address]] impl::ref<filter_type> m_filter;
@@ -509,8 +509,11 @@ namespace impl {
 
         [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
     };
-    template <typename F, typename C>
-    binary_where(F&&, C&&) -> binary_where<meta::remove_rvalue<F>, meta::remove_rvalue<C>>;
+    template <typename Filter, typename C>
+    binary_where(Filter&&, C&&) -> binary_where<
+        meta::remove_rvalue<Filter>,
+        meta::remove_rvalue<C>
+    >;
 
     /* Ternary filters never change the overall size of the underlying range, and never
     require the iterator to skip over false elements.  The iterator can therefore be
@@ -1261,6 +1264,426 @@ namespace impl {
     provided the operands support these operations. */
     template <meta::not_rvalue Filter, meta::not_rvalue True, meta::not_rvalue False>
     struct ternary_where {
+        using filter_type = meta::as_range<Filter>;
+        using true_type = meta::as_range<True>;
+        using false_type = meta::as_range<False>;
+
+        [[no_unique_address]] impl::ref<filter_type> m_filter;
+        [[no_unique_address]] impl::ref<true_type> m_true;
+        [[no_unique_address]] impl::ref<false_type> m_false;
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) filter(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_filter);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) if_true(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_true);
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr decltype(auto) if_false(this Self&& self) noexcept {
+            return (*std::forward<Self>(self).m_false);
+        }
+
+        [[nodiscard]] constexpr size_t size() const
+            noexcept (requires{{std::min({
+                size_t(filter().size()),
+                size_t(if_true().size()),
+                size_t(if_false().size())
+            })} noexcept;})
+            requires (requires{{std::min({
+                size_t(filter().size()),
+                size_t(if_true().size()),
+                size_t(if_false().size())
+            })};})
+        {
+            return std::min({
+                size_t(filter().size()),
+                size_t(if_true().size()),
+                size_t(if_false().size())
+            });
+        }
+
+        [[nodiscard]] constexpr ssize_t ssize() const
+            noexcept (requires{{std::min({
+                ssize_t(filter().ssize()),
+                ssize_t(if_true().ssize()),
+                ssize_t(if_false().ssize())
+            })} noexcept;})
+            requires (requires{{std::min({
+                ssize_t(filter().ssize()),
+                ssize_t(if_true().ssize()),
+                ssize_t(if_false().ssize())
+            })};})
+        {
+            return std::min({
+                ssize_t(filter().ssize()),
+                ssize_t(if_true().ssize()),
+                ssize_t(if_false().ssize())
+            });
+        }
+
+        [[nodiscard]] constexpr bool empty() const
+            noexcept (requires{{
+                filter().empty() || if_true().empty() || if_false().empty()
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                filter().empty() || if_true().empty() || if_false().empty()
+            } -> meta::convertible_to<bool>;})
+        {
+            return filter().empty() || if_true().empty() || if_false().empty();
+        }
+
+    private:
+        template <typename Self>
+        using front_type = meta::make_union<
+            meta::front_type<decltype((std::declval<Self>().if_true()))>,
+            meta::front_type<decltype((std::declval<Self>().if_false()))>
+        >;
+
+        template <typename Self>
+        using back_type = meta::make_union<
+            meta::back_type<decltype((std::declval<Self>().if_true()))>,
+            meta::back_type<decltype((std::declval<Self>().if_false()))>
+        >;
+
+        template <typename Self>
+        using subscript_type = meta::make_union<
+            meta::subscript_type<decltype((std::declval<Self>().if_true())), size_t>,
+            meta::subscript_type<decltype((std::declval<Self>().if_false())), size_t>
+        >;
+
+        template <ssize_t I>
+        static constexpr size_t normalize = impl::normalize_index<std::min(
+            meta::tuple_size<true_type>,
+            meta::tuple_size<false_type>
+        ), I>();
+
+        template <ssize_t I, typename Self>
+        using get_type = meta::make_union<
+            meta::get_type<decltype((std::declval<Self>().if_true())), normalize<I>>,
+            meta::get_type<decltype((std::declval<Self>().if_false())), normalize<I>>
+        >;
+
+    public:
+        template <typename Self>
+        [[nodiscard]] constexpr front_type<Self> front(this Self&& self)
+            noexcept (requires{
+                {self.filter().front()} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<Self>(self).if_true().front()
+                } noexcept -> meta::nothrow::convertible_to<front_type<Self>>;
+                {
+                    std::forward<Self>(self).if_false().front()
+                } noexcept -> meta::nothrow::convertible_to<front_type<Self>>;
+            })
+            requires (
+                meta::front_returns<
+                    front_type<Self>,
+                    decltype((std::forward<Self>(self).if_true()))
+                > &&
+                meta::front_returns<
+                    front_type<Self>,
+                    decltype((std::forward<Self>(self).if_false()))
+                > &&
+                meta::front_returns<
+                    bool,
+                    decltype((std::forward<Self>(self).filter()))
+                >
+            )
+        {
+            if (self.filter().front()) {
+                return std::forward<Self>(self).if_true().front();
+            } else {
+                return std::forward<Self>(self).if_false().front();
+            }
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr back_type<Self> back(this Self&& self)
+            noexcept (requires{
+                {self.filter().back()} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<Self>(self).if_true().back()
+                } noexcept -> meta::nothrow::convertible_to<back_type<Self>>;
+                {
+                    std::forward<Self>(self).if_false().back()
+                } noexcept -> meta::nothrow::convertible_to<back_type<Self>>;
+            })
+            requires (
+                meta::back_returns<
+                    back_type<Self>,
+                    decltype((std::forward<Self>(self).if_true()))
+                > &&
+                meta::back_returns<
+                    back_type<Self>,
+                    decltype((std::forward<Self>(self).if_false()))
+                > &&
+                meta::back_returns<
+                    bool,
+                    decltype((std::forward<Self>(self).filter()))
+                >
+            )
+        {
+            if (self.filter().back()) {
+                return std::forward<Self>(self).if_true().back();
+            } else {
+                return std::forward<Self>(self).if_false().back();
+            }
+        }
+
+        template <typename Self>
+        [[nodiscard]] constexpr subscript_type<Self> operator[](this Self&& self, ssize_t n)
+            noexcept (requires(size_t m) {
+                {size_t(impl::normalize_index(self.ssize(), n))} noexcept;
+                {self.filter()[m]} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<Self>(self).if_true()[m]
+                } noexcept -> meta::nothrow::convertible_to<subscript_type<Self>>;
+                {
+                    std::forward<Self>(self).if_false()[m]
+                } noexcept -> meta::nothrow::convertible_to<subscript_type<Self>>;
+            })
+            requires (
+                meta::subscript_returns<
+                    subscript_type<Self>,
+                    decltype((std::forward<Self>(self).if_true())),
+                    size_t
+                > &&
+                meta::subscript_returns<
+                    subscript_type<Self>,
+                    decltype((std::forward<Self>(self).if_false())),
+                    size_t
+                > &&
+                meta::subscript_returns<
+                    bool,
+                    decltype((std::forward<Self>(self).filter())),
+                    size_t
+                >
+            )
+        {
+            size_t m = size_t(impl::normalize_index(self.ssize(), n));
+            if (self.filter()[m]) {
+                return std::forward<Self>(self).if_true()[m];
+            } else {
+                return std::forward<Self>(self).if_false()[m];
+            }
+        }
+
+        template <ssize_t I, typename Self>
+            requires (
+                meta::tuple_like<filter_type> &&
+                meta::tuple_like<true_type> &&
+                meta::tuple_like<false_type> &&
+                impl::valid_index<
+                    std::min({
+                        meta::tuple_size<filter_type>,
+                        meta::tuple_size<true_type>,
+                        meta::tuple_size<false_type>
+                    }),
+                    I
+                >
+            )
+        [[nodiscard]] constexpr get_type<I, Self> get(this Self&& self)
+            noexcept (requires{
+                {self.filter().template get<normalize<I>>()} noexcept -> meta::nothrow::truthy;
+                {
+                    std::forward<Self>(self).if_true().template get<normalize<I>>()
+                } noexcept -> meta::nothrow::convertible_to<get_type<I, Self>>;
+                {
+                    std::forward<Self>(self).if_false().template get<normalize<I>>()
+                } noexcept -> meta::nothrow::convertible_to<get_type<I, Self>>;
+            })
+            requires (
+                meta::get_returns<
+                    get_type<I, Self>,
+                    decltype((std::forward<Self>(self).if_true())),
+                    normalize<I>
+                > &&
+                meta::get_returns<
+                    get_type<I, Self>,
+                    decltype((std::forward<Self>(self).if_false())),
+                    normalize<I>
+                > &&
+                meta::get_returns<
+                    bool,
+                    decltype((std::forward<Self>(self).filter())),
+                    normalize<I>
+                >
+            )
+        {
+            if (self.filter().template get<normalize<I>>()) {
+                return std::forward<Self>(self).if_true().template get<normalize<I>>();
+            } else {
+                return std::forward<Self>(self).if_false().template get<normalize<I>>();
+            }
+        }
+
+
+
+
+
+        [[nodiscard]] constexpr auto begin()
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto begin() const
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().begin(),
+                .true_iter = if_true().begin(),
+                .false_iter = if_false().begin(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto end()
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto end() const
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().end(),
+                .true_iter = if_true().end(),
+                .false_iter = if_false().end(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto rbegin()
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto rbegin() const
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().rbegin(),
+                .true_iter = if_true().rbegin(),
+                .false_iter = if_false().rbegin(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto rend()
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
+            };
+        }
+
+        [[nodiscard]] constexpr auto rend() const
+            noexcept (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
+            }} noexcept;})
+            requires (requires{{ternary_mask_iterator{
+                .mask_iter = filter().rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
+            }};})
+        {
+            return ternary_mask_iterator{
+                .mask_iter = filter().rend(),
+                .true_iter = if_true().rend(),
+                .false_iter = if_false().rend(),
+            };
+        }
+    };
+    template <meta::not_rvalue Filter, meta::not_rvalue True, meta::not_rvalue False>
+        requires (meta::call_returns<
+            bool,
+            meta::as_const_ref<Filter>,
+            meta::yield_type<meta::as_range<True>>
+        >)
+    struct ternary_where<Filter, True, False> {
         using filter_type = Filter;
         using true_type = meta::as_range<True>;
         using false_type = meta::as_range<False>;
@@ -1709,425 +2132,9 @@ namespace impl {
             };
         }
     };
-    template <meta::not_rvalue Filter, meta::not_rvalue True, meta::not_rvalue False>
-        requires (meta::range<meta::as_const_ref<Filter>, bool>)
-    struct ternary_where<Filter, True, False> {
-        using filter_type = Filter;
-        using true_type = meta::as_range<True>;
-        using false_type = meta::as_range<False>;
-
-        [[no_unique_address]] impl::ref<filter_type> m_filter;
-        [[no_unique_address]] impl::ref<true_type> m_true;
-        [[no_unique_address]] impl::ref<false_type> m_false;
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) filter(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_filter);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) if_true(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_true);
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) if_false(this Self&& self) noexcept {
-            return (*std::forward<Self>(self).m_false);
-        }
-
-        [[nodiscard]] constexpr size_t size() const
-            noexcept (requires{{std::min({
-                size_t(filter().size()),
-                size_t(if_true().size()),
-                size_t(if_false().size())
-            })} noexcept;})
-            requires (requires{{std::min({
-                size_t(filter().size()),
-                size_t(if_true().size()),
-                size_t(if_false().size())
-            })};})
-        {
-            return std::min({
-                size_t(filter().size()),
-                size_t(if_true().size()),
-                size_t(if_false().size())
-            });
-        }
-
-        [[nodiscard]] constexpr ssize_t ssize() const
-            noexcept (requires{{std::min({
-                ssize_t(filter().ssize()),
-                ssize_t(if_true().ssize()),
-                ssize_t(if_false().ssize())
-            })} noexcept;})
-            requires (requires{{std::min({
-                ssize_t(filter().ssize()),
-                ssize_t(if_true().ssize()),
-                ssize_t(if_false().ssize())
-            })};})
-        {
-            return std::min({
-                ssize_t(filter().ssize()),
-                ssize_t(if_true().ssize()),
-                ssize_t(if_false().ssize())
-            });
-        }
-
-        [[nodiscard]] constexpr bool empty() const
-            noexcept (requires{{
-                filter().empty() || if_true().empty() || if_false().empty()
-            } noexcept -> meta::nothrow::convertible_to<bool>;})
-            requires (requires{{
-                filter().empty() || if_true().empty() || if_false().empty()
-            } -> meta::convertible_to<bool>;})
-        {
-            return filter().empty() || if_true().empty() || if_false().empty();
-        }
-
-    private:
-        template <typename Self>
-        using front_type = meta::make_union<
-            meta::front_type<decltype((std::declval<Self>().if_true()))>,
-            meta::front_type<decltype((std::declval<Self>().if_false()))>
-        >;
-
-        template <typename Self>
-        using back_type = meta::make_union<
-            meta::back_type<decltype((std::declval<Self>().if_true()))>,
-            meta::back_type<decltype((std::declval<Self>().if_false()))>
-        >;
-
-        template <typename Self>
-        using subscript_type = meta::make_union<
-            meta::subscript_type<decltype((std::declval<Self>().if_true())), size_t>,
-            meta::subscript_type<decltype((std::declval<Self>().if_false())), size_t>
-        >;
-
-        template <ssize_t I>
-        static constexpr size_t normalize = impl::normalize_index<std::min(
-            meta::tuple_size<true_type>,
-            meta::tuple_size<false_type>
-        ), I>();
-
-        template <ssize_t I, typename Self>
-        using get_type = meta::make_union<
-            meta::get_type<decltype((std::declval<Self>().if_true())), normalize<I>>,
-            meta::get_type<decltype((std::declval<Self>().if_false())), normalize<I>>
-        >;
-
-    public:
-        template <typename Self>
-        [[nodiscard]] constexpr front_type<Self> front(this Self&& self)
-            noexcept (requires{
-                {self.filter().front()} noexcept -> meta::nothrow::truthy;
-                {
-                    std::forward<Self>(self).if_true().front()
-                } noexcept -> meta::nothrow::convertible_to<front_type<Self>>;
-                {
-                    std::forward<Self>(self).if_false().front()
-                } noexcept -> meta::nothrow::convertible_to<front_type<Self>>;
-            })
-            requires (
-                meta::front_returns<
-                    front_type<Self>,
-                    decltype((std::forward<Self>(self).if_true()))
-                > &&
-                meta::front_returns<
-                    front_type<Self>,
-                    decltype((std::forward<Self>(self).if_false()))
-                > &&
-                meta::front_returns<
-                    bool,
-                    decltype((std::forward<Self>(self).filter()))
-                >
-            )
-        {
-            if (self.filter().front()) {
-                return std::forward<Self>(self).if_true().front();
-            } else {
-                return std::forward<Self>(self).if_false().front();
-            }
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr back_type<Self> back(this Self&& self)
-            noexcept (requires{
-                {self.filter().back()} noexcept -> meta::nothrow::truthy;
-                {
-                    std::forward<Self>(self).if_true().back()
-                } noexcept -> meta::nothrow::convertible_to<back_type<Self>>;
-                {
-                    std::forward<Self>(self).if_false().back()
-                } noexcept -> meta::nothrow::convertible_to<back_type<Self>>;
-            })
-            requires (
-                meta::back_returns<
-                    back_type<Self>,
-                    decltype((std::forward<Self>(self).if_true()))
-                > &&
-                meta::back_returns<
-                    back_type<Self>,
-                    decltype((std::forward<Self>(self).if_false()))
-                > &&
-                meta::back_returns<
-                    bool,
-                    decltype((std::forward<Self>(self).filter()))
-                >
-            )
-        {
-            if (self.filter().back()) {
-                return std::forward<Self>(self).if_true().back();
-            } else {
-                return std::forward<Self>(self).if_false().back();
-            }
-        }
-
-        template <typename Self>
-        [[nodiscard]] constexpr subscript_type<Self> operator[](this Self&& self, ssize_t n)
-            noexcept (requires(size_t m) {
-                {size_t(impl::normalize_index(self.ssize(), n))} noexcept;
-                {self.filter()[m]} noexcept -> meta::nothrow::truthy;
-                {
-                    std::forward<Self>(self).if_true()[m]
-                } noexcept -> meta::nothrow::convertible_to<subscript_type<Self>>;
-                {
-                    std::forward<Self>(self).if_false()[m]
-                } noexcept -> meta::nothrow::convertible_to<subscript_type<Self>>;
-            })
-            requires (
-                meta::subscript_returns<
-                    subscript_type<Self>,
-                    decltype((std::forward<Self>(self).if_true())),
-                    size_t
-                > &&
-                meta::subscript_returns<
-                    subscript_type<Self>,
-                    decltype((std::forward<Self>(self).if_false())),
-                    size_t
-                > &&
-                meta::subscript_returns<
-                    bool,
-                    decltype((std::forward<Self>(self).filter())),
-                    size_t
-                >
-            )
-        {
-            size_t m = size_t(impl::normalize_index(self.ssize(), n));
-            if (self.filter()[m]) {
-                return std::forward<Self>(self).if_true()[m];
-            } else {
-                return std::forward<Self>(self).if_false()[m];
-            }
-        }
-
-        template <ssize_t I, typename Self>
-            requires (
-                meta::tuple_like<filter_type> &&
-                meta::tuple_like<true_type> &&
-                meta::tuple_like<false_type> &&
-                impl::valid_index<
-                    std::min({
-                        meta::tuple_size<filter_type>,
-                        meta::tuple_size<true_type>,
-                        meta::tuple_size<false_type>
-                    }),
-                    I
-                >
-            )
-        [[nodiscard]] constexpr get_type<I, Self> get(this Self&& self)
-            noexcept (requires{
-                {self.filter().template get<normalize<I>>()} noexcept -> meta::nothrow::truthy;
-                {
-                    std::forward<Self>(self).if_true().template get<normalize<I>>()
-                } noexcept -> meta::nothrow::convertible_to<get_type<I, Self>>;
-                {
-                    std::forward<Self>(self).if_false().template get<normalize<I>>()
-                } noexcept -> meta::nothrow::convertible_to<get_type<I, Self>>;
-            })
-            requires (
-                meta::get_returns<
-                    get_type<I, Self>,
-                    decltype((std::forward<Self>(self).if_true())),
-                    normalize<I>
-                > &&
-                meta::get_returns<
-                    get_type<I, Self>,
-                    decltype((std::forward<Self>(self).if_false())),
-                    normalize<I>
-                > &&
-                meta::get_returns<
-                    bool,
-                    decltype((std::forward<Self>(self).filter())),
-                    normalize<I>
-                >
-            )
-        {
-            if (self.filter().template get<normalize<I>>()) {
-                return std::forward<Self>(self).if_true().template get<normalize<I>>();
-            } else {
-                return std::forward<Self>(self).if_false().template get<normalize<I>>();
-            }
-        }
-
-
-
-
-
-        [[nodiscard]] constexpr auto begin()
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().begin(),
-                .true_iter = if_true().begin(),
-                .false_iter = if_false().begin(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().begin(),
-                .true_iter = if_true().begin(),
-                .false_iter = if_false().begin(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().begin(),
-                .true_iter = if_true().begin(),
-                .false_iter = if_false().begin(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto begin() const
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().begin(),
-                .true_iter = if_true().begin(),
-                .false_iter = if_false().begin(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().begin(),
-                .true_iter = if_true().begin(),
-                .false_iter = if_false().begin(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().begin(),
-                .true_iter = if_true().begin(),
-                .false_iter = if_false().begin(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto end()
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().end(),
-                .true_iter = if_true().end(),
-                .false_iter = if_false().end(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().end(),
-                .true_iter = if_true().end(),
-                .false_iter = if_false().end(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().end(),
-                .true_iter = if_true().end(),
-                .false_iter = if_false().end(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto end() const
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().end(),
-                .true_iter = if_true().end(),
-                .false_iter = if_false().end(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().end(),
-                .true_iter = if_true().end(),
-                .false_iter = if_false().end(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().end(),
-                .true_iter = if_true().end(),
-                .false_iter = if_false().end(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto rbegin()
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rbegin(),
-                .true_iter = if_true().rbegin(),
-                .false_iter = if_false().rbegin(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rbegin(),
-                .true_iter = if_true().rbegin(),
-                .false_iter = if_false().rbegin(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().rbegin(),
-                .true_iter = if_true().rbegin(),
-                .false_iter = if_false().rbegin(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto rbegin() const
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rbegin(),
-                .true_iter = if_true().rbegin(),
-                .false_iter = if_false().rbegin(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rbegin(),
-                .true_iter = if_true().rbegin(),
-                .false_iter = if_false().rbegin(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().rbegin(),
-                .true_iter = if_true().rbegin(),
-                .false_iter = if_false().rbegin(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto rend()
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rend(),
-                .true_iter = if_true().rend(),
-                .false_iter = if_false().rend(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rend(),
-                .true_iter = if_true().rend(),
-                .false_iter = if_false().rend(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().rend(),
-                .true_iter = if_true().rend(),
-                .false_iter = if_false().rend(),
-            };
-        }
-
-        [[nodiscard]] constexpr auto rend() const
-            noexcept (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rend(),
-                .true_iter = if_true().rend(),
-                .false_iter = if_false().rend(),
-            }} noexcept;})
-            requires (requires{{ternary_mask_iterator{
-                .mask_iter = filter().rend(),
-                .true_iter = if_true().rend(),
-                .false_iter = if_false().rend(),
-            }};})
-        {
-            return ternary_mask_iterator{
-                .mask_iter = filter().rend(),
-                .true_iter = if_true().rend(),
-                .false_iter = if_false().rend(),
-            };
-        }
-    };
-    template <typename F, typename True, typename False>
-    ternary_where(F&&, True&&, False&&) -> ternary_where<
-        meta::remove_rvalue<F>,
+    template <typename Filter, typename True, typename False>
+    ternary_where(Filter&&, True&&, False&&) -> ternary_where<
+        meta::remove_rvalue<Filter>,
         meta::remove_rvalue<True>,
         meta::remove_rvalue<False>
     >;
@@ -2154,9 +2161,9 @@ namespace iter {
     case, the value of the range at each index will be used to filter the input(s),
     instead of invoking a separate function.  All other behavior remains the same as
     the predicate case. */
-    template <meta::not_rvalue F>
+    template <meta::not_rvalue Filter>
     struct where {
-        [[no_unique_address]] F filter;
+        [[no_unique_address]] Filter filter;
 
         template <typename Self, typename T>
         [[nodiscard]] constexpr auto operator()(this Self&& self, T&& r)
@@ -2164,9 +2171,9 @@ namespace iter {
                 std::forward<Self>(self).filter,
                 std::forward<T>(r)
             }}} noexcept;})
-            requires ((meta::range<meta::as_const_ref<F>, bool> || meta::call_returns<
+            requires ((meta::yields<meta::as_const_ref<Filter>, bool> || meta::call_returns<
                 bool,
-                meta::as_const_ref<F>,
+                meta::as_const_ref<Filter>,
                 meta::yield_type<meta::as_range<T>>
             >) &&
             requires{{range{impl::binary_where{
@@ -2187,9 +2194,9 @@ namespace iter {
                 std::forward<True>(t),
                 std::forward<False>(f)
             }}} noexcept;})
-            requires ((meta::range<meta::as_const_ref<F>, bool> || meta::call_returns<
+            requires ((meta::yields<meta::as_const_ref<Filter>, bool> || meta::call_returns<
                 bool,
-                meta::as_const_ref<F>,
+                meta::as_const_ref<Filter>,
                 meta::yield_type<meta::as_range<True>>
             >) && requires{{range{impl::ternary_where{
                 std::forward<Self>(self).filter,
