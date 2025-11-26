@@ -929,7 +929,7 @@ namespace meta {
     };
 
     template <typename... Ts> requires (has_common_type<Ts...>)
-    using common_type = ::std::common_reference<Ts...>::type;
+    using common_type = remove_rvalue<typename ::std::common_reference<Ts...>::type>;
 
     namespace nothrow {
 
@@ -5328,7 +5328,11 @@ This type can also be used as a trivial sentinel in custom iterator implementati
 where all relevant information is isolated to the begin iterator.  Special significance
 is also given to this type within the monadic union interface, where it represents
 either the empty state of an `Optional` or the result state of an `Expected<void>`,
-depending on context. */
+depending on context.
+
+Lastly, the `<=>` operator between two `NoneType` objects always returns
+`std::partial_ordering::unordered`, allowing range algorithms to identify it as a
+missing value, without changing the behavior of the `==` and `!=` operators. */
 struct NoneType {
     [[nodiscard]] constexpr NoneType() = default;
     [[nodiscard]] constexpr NoneType(std::nullopt_t) noexcept {}
@@ -5336,6 +5340,9 @@ struct NoneType {
 
     [[nodiscard]] constexpr bool operator==(NoneType) const noexcept { return true; }
     [[nodiscard]] constexpr bool operator!=(NoneType) const noexcept { return false; }
+    [[nodiscard]] constexpr std::partial_ordering operator<=>(NoneType) const noexcept {
+        return std::partial_ordering::unordered;
+    }
 
     template <typename T>
     [[nodiscard]] constexpr operator T() const
