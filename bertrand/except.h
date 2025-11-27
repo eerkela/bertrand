@@ -407,8 +407,8 @@ public:
                     s.trace.full.frames.clear();
                 } else {
                     s.trace.full.frames.erase(
-                        s.trace.full.frames.begin(),
-                        s.trace.full.frames.begin() + n
+                        meta::begin(s.trace.full.frames),
+                        meta::begin(s.trace.full.frames) + n
                     );
                 }
             }
@@ -438,8 +438,8 @@ public:
                 for (size_t i = s.trace.full.frames.size(); i-- > s.skip;) {
                     if (s.trace.full.frames[i].raw_address == pivot) {
                         s.trace.full.frames.erase(
-                            s.trace.full.frames.begin(),
-                            s.trace.full.frames.begin() + i
+                            meta::begin(s.trace.full.frames),
+                            meta::begin(s.trace.full.frames) + i
                         );
                         s.skip = 0;
                         break;
@@ -449,8 +449,8 @@ public:
                 for (size_t i = s.trace.raw.frames.size(); i-- > s.skip;) {
                     if (s.trace.raw.frames[i] == pivot) {
                         s.trace.raw.frames.erase(
-                            s.trace.raw.frames.begin(),
-                            s.trace.raw.frames.begin() + i
+                            meta::begin(s.trace.raw.frames),
+                            meta::begin(s.trace.raw.frames) + i
                         );
                         s.skip = 0;
                         break;

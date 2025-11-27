@@ -3848,10 +3848,6 @@ namespace meta {
 
     namespace detail {
 
-        /// TODO: maybe add specializations for iterable types that are not directly
-        /// iterators, but where I can recursively inherit to forward to the begin
-        /// iterator's traits?
-
         template <typename T>
         struct iterator_category { using type = ::std::input_iterator_tag; };
         template <meta::contiguous_iterator T>
@@ -3992,13 +3988,6 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T>
-        struct _move_iterator_type { using type = T; };
-        template <typename T>
-        struct _move_iterator_type<::std::move_iterator<T>> { using type = T; };
-        template <typename T>
-        using move_iterator_type = _move_iterator_type<T>::type;
-
         namespace member {
 
             template <typename T>
@@ -4011,6 +4000,9 @@ namespace meta {
                 {auto(::std::forward<T>(t).begin())} noexcept -> meta::iterator;
             };
 
+            template <has_begin T>
+            using begin_type = decltype(::std::declval<T>().begin());
+
         }
 
         namespace adl {
@@ -4018,15 +4010,27 @@ namespace meta {
 
             template <typename T>
             concept has_begin = requires(T t) {
-                {begin(::std::forward<T>(t))} -> meta::iterator;
+                {auto(begin(::std::forward<T>(t)))} -> meta::iterator;
             };
 
             template <typename T>
             concept nothrow_begin = requires(T t) {
-                {begin(::std::forward<T>(t))} noexcept -> meta::iterator;
+                {auto(begin(::std::forward<T>(t)))} noexcept -> meta::iterator;
             };
 
+            template <has_begin T>
+            using begin_type = decltype(begin(::std::declval<T>()));
+
         }
+
+        template <typename T>
+        struct _begin_type { using type = decltype(::std::declval<T>() + 0); };
+        template <member::has_begin T>
+        struct _begin_type<T> { using type = member::begin_type<T>; };
+        template <typename T> requires (!member::has_begin<T> && adl::has_begin<T>)
+        struct _begin_type<T> { using type = adl::begin_type<T>; };
+        template <typename T>
+        using begin_type = _begin_type<T>::type;
 
         struct begin_fn {
             template <typename T>
@@ -4037,7 +4041,7 @@ namespace meta {
                 if constexpr (meta::lvalue<T>) {
                     return t + 0;
                 } else {
-                    return ::std::make_move_iterator(t + 0);
+                    return ::std::move_iterator(t + 0);
                 }
             }
 
@@ -4047,7 +4051,7 @@ namespace meta {
                 requires (!meta::raw_bounded_array<T> && member::has_begin<T>)
             {
                 if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
-                    return ::std::make_move_iterator(::std::forward<T>(t).begin());
+                    return ::std::move_iterator(::std::forward<T>(t).begin());
                 } else {
                     return ::std::forward<T>(t).begin();
                 }
@@ -4059,8 +4063,8 @@ namespace meta {
                 requires (!meta::raw_bounded_array<T> && !member::has_begin<T> && adl::has_begin<T>)
             {
                 using ::std::begin;
-                if constexpr (meta::rvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
-                    return ::std::make_move_iterator(begin(::std::forward<T>(t)));
+                if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
+                    return ::std::move_iterator(begin(::std::forward<T>(t)));
                 } else {
                     return begin(::std::forward<T>(t));
                 }
@@ -4101,16 +4105,14 @@ namespace meta {
 
             template <typename T>
             concept has_end = requires(T t) {
-                {
-                    auto(::std::forward<T>(t).end())
-                } -> meta::sentinel_for<detail::move_iterator_type<meta::begin_type<T>>>;
+                {auto(::std::forward<T>(t).end())} -> meta::sentinel_for<detail::begin_type<T>>;
             };
 
             template <typename T>
             concept nothrow_end = requires(T t) {
                 {
                     auto(::std::forward<T>(t).end())
-                } noexcept -> meta::sentinel_for<detail::move_iterator_type<meta::begin_type<T>>>;
+                } noexcept -> meta::sentinel_for<detail::begin_type<T>>;
             };
 
         }
@@ -4120,16 +4122,14 @@ namespace meta {
 
             template <typename T>
             concept has_end = requires(T t) {
-                {
-                    end(::std::forward<T>(t))
-                } -> meta::sentinel_for<detail::move_iterator_type<meta::begin_type<T>>>;
+                {auto(end(::std::forward<T>(t)))} -> meta::sentinel_for<detail::begin_type<T>>;
             };
 
             template <typename T>
             concept nothrow_end = requires(T t) {
                 {
-                    end(::std::forward<T>(t))
-                } noexcept -> meta::sentinel_for<detail::move_iterator_type<meta::begin_type<T>>>;
+                    auto(end(::std::forward<T>(t)))
+                } noexcept -> meta::sentinel_for<detail::begin_type<T>>;
             };
 
         }
@@ -4139,6 +4139,7 @@ namespace meta {
             [[nodiscard]] static constexpr auto operator()(T&& t)
                 noexcept (requires{{auto(t + 0)} noexcept;})
                 requires (
+                    meta::has_begin<T> &&
                     meta::raw_bounded_array<T> &&
                     requires{{auto(t + ::std::extent_v<meta::unqualify<T>>)};}
                 )
@@ -4153,12 +4154,16 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr auto operator()(T&& t)
                 noexcept (member::nothrow_end<T>)
-                requires (!meta::raw_bounded_array<T> && member::has_end<T>)
+                requires (
+                    meta::has_begin<T> &&
+                    !meta::raw_bounded_array<T> &&
+                    member::has_end<T>
+                )
             {
                 if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
                     if constexpr (::std::same_as<
-                        detail::move_iterator_type<meta::begin_type<T>>,
-                        detail::move_iterator_type<decltype(::std::forward<T>(t).end())>
+                        detail::begin_type<T>,
+                        decltype(::std::forward<T>(t).end())
                     >) {
                         return ::std::move_iterator(::std::forward<T>(t).end());
                     } else {
@@ -4172,13 +4177,18 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr auto operator()(T&& t)
                 noexcept (adl::nothrow_end<T>)
-                requires (!meta::raw_bounded_array<T> && !member::has_end<T> && adl::has_end<T>)
+                requires (
+                    meta::has_begin<T> &&
+                    !meta::raw_bounded_array<T> &&
+                    !member::has_end<T> &&
+                    adl::has_end<T>
+                )
             {
                 using ::std::end;
-                if constexpr (meta::rvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
+                if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
                     if constexpr (::std::same_as<
-                        detail::move_iterator_type<meta::begin_type<T>>,
-                        detail::move_iterator_type<decltype(end(::std::forward<T>(t)))>
+                        detail::begin_type<T>,
+                        decltype(end(::std::forward<T>(t)))
                     >) {
                         return ::std::move_iterator(end(::std::forward<T>(t)));
                     } else {
@@ -4232,6 +4242,9 @@ namespace meta {
                 {auto(::std::forward<T>(t).rbegin())} noexcept -> meta::iterator;
             };
 
+            template <has_rbegin T>
+            using rbegin_type = decltype(::std::declval<T>().rbegin());
+
         }
 
         namespace adl {
@@ -4239,15 +4252,29 @@ namespace meta {
 
             template <typename T>
             concept has_rbegin = requires(T t) {
-                {rbegin(::std::forward<T>(t))} -> meta::iterator;
+                {auto(rbegin(::std::forward<T>(t)))} -> meta::iterator;
             };
 
             template <typename T>
             concept nothrow_rbegin = requires(T t) {
-                {rbegin(::std::forward<T>(t))} noexcept -> meta::iterator;
+                {auto(rbegin(::std::forward<T>(t)))} noexcept -> meta::iterator;
             };
 
+            template <has_rbegin T>
+            using rbegin_type = decltype(rbegin(::std::declval<T>()));
+
         }
+
+        template <typename T>
+        struct _rbegin_type {
+            using type = decltype(::std::make_reverse_iterator(meta::end(::std::declval<T>())));
+        };
+        template <member::has_rbegin T>
+        struct _rbegin_type<T> { using type = member::rbegin_type<T>; };
+        template <typename T> requires (!member::has_rbegin<T> && adl::has_rbegin<T>)
+        struct _rbegin_type<T> { using type = adl::rbegin_type<T>; };
+        template <typename T>
+        using rbegin_type = _rbegin_type<T>::type;
 
         struct rbegin_fn {
             template <typename T>
@@ -4256,7 +4283,7 @@ namespace meta {
                 requires (member::has_rbegin<T>)
             {
                 if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
-                    return ::std::make_move_iterator(::std::forward<T>(t).rbegin());
+                    return ::std::move_iterator(::std::forward<T>(t).rbegin());
                 } else {
                     return ::std::forward<T>(t).rbegin();
                 }
@@ -4268,8 +4295,8 @@ namespace meta {
                 requires (!member::has_rbegin<T> && adl::has_rbegin<T>)
             {
                 using ::std::rbegin;
-                if constexpr (meta::rvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
-                    return ::std::make_move_iterator(rbegin(::std::forward<T>(t)));
+                if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
+                    return ::std::move_iterator(rbegin(::std::forward<T>(t)));
                 } else {
                     return rbegin(::std::forward<T>(t));
                 }
@@ -4327,16 +4354,14 @@ namespace meta {
 
             template <typename T>
             concept has_rend = requires(T t) {
-                {
-                    auto(::std::forward<T>(t).rend())
-                } -> meta::sentinel_for<detail::move_iterator_type<meta::rbegin_type<T>>>;
+                {auto(::std::forward<T>(t).rend())} -> meta::sentinel_for<detail::rbegin_type<T>>;
             };
 
             template <typename T>
             concept nothrow_rend = requires(T t) {
                 {
                     auto(::std::forward<T>(t).rend())
-                } noexcept -> meta::sentinel_for<detail::move_iterator_type<meta::rbegin_type<T>>>;
+                } noexcept -> meta::sentinel_for<detail::rbegin_type<T>>;
             };
 
         }
@@ -4346,16 +4371,14 @@ namespace meta {
 
             template <typename T>
             concept has_rend = requires(T t) {
-                {
-                    rend(::std::forward<T>(t))
-                } -> meta::sentinel_for<detail::move_iterator_type<meta::rbegin_type<T>>>;
+                {auto(rend(::std::forward<T>(t)))} -> meta::sentinel_for<detail::rbegin_type<T>>;
             };
 
             template <typename T>
             concept nothrow_rend = requires(T t) {
                 {
-                    rend(::std::forward<T>(t))
-                } noexcept -> meta::sentinel_for<detail::move_iterator_type<meta::rbegin_type<T>>>;
+                    auto(rend(::std::forward<T>(t)))
+                } noexcept -> meta::sentinel_for<detail::rbegin_type<T>>;
             };
 
         }
@@ -4364,12 +4387,15 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr auto operator()(T&& t)
                 noexcept (member::nothrow_rend<T>)
-                requires (member::has_rend<T>)
+                requires (
+                    meta::has_rbegin<T> &&
+                    member::has_rend<T>
+                )
             {
                 if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
                     if constexpr (::std::same_as<
-                        detail::move_iterator_type<meta::rbegin_type<T>>,
-                        detail::move_iterator_type<decltype(::std::forward<T>(t).rend())>
+                        detail::rbegin_type<T>,
+                        decltype(::std::forward<T>(t).rend())
                     >) {
                         return ::std::move_iterator(::std::forward<T>(t).rend());
                     } else {
@@ -4383,13 +4409,17 @@ namespace meta {
             template <typename T>
             [[nodiscard]] static constexpr auto operator()(T&& t)
                 noexcept (adl::nothrow_rend<T>)
-                requires (!member::has_rend<T> && adl::has_rend<T>)
+                requires (
+                    meta::has_rbegin<T> &&
+                    !member::has_rend<T> &&
+                    adl::has_rend<T>
+                )
             {
                 using ::std::rend;
-                if constexpr (meta::rvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
+                if constexpr (!meta::lvalue<T> && meta::detail::move_iterator<meta::unqualify<T>>) {
                     if constexpr (::std::same_as<
-                        detail::move_iterator_type<meta::rbegin_type<T>>,
-                        detail::move_iterator_type<decltype(rend(::std::forward<T>(t)))>
+                        detail::rbegin_type<T>,
+                        decltype(rend(::std::forward<T>(t)))
                     >) {
                         return ::std::move_iterator(rend(::std::forward<T>(t)));
                     } else {
@@ -4406,6 +4436,7 @@ namespace meta {
                     {::std::make_reverse_iterator(meta::begin(::std::forward<T>(t)))} noexcept;
                 })
                 requires (
+                    meta::has_rbegin<T> &&
                     !member::has_rend<T> &&
                     !adl::has_rend<T> &&
                     meta::has_begin<T> &&
@@ -6173,104 +6204,6 @@ namespace impl {
         }
     };
 
-    /// TODO: probably just use pointers rather than a separate contiguous iterator
-    /// class.
-
-    /* A trivial iterator that acts just like a raw pointer over contiguous storage.
-    Using a wrapper rather than the pointer directly comes with some advantages
-    regarding type safety, preventing accidental conversions to pointer arguments,
-    boolean conversions, placement new, etc. */
-    template <meta::lvalue T> requires (meta::has_address<T>)
-    struct contiguous_iterator {
-        using iterator_category = std::contiguous_iterator_tag;
-        using difference_type = std::ptrdiff_t;
-        using value_type = meta::remove_reference<T>;
-        using reference = T;
-        using pointer = meta::address_type<T>;
-
-        pointer ptr = nullptr;
-
-        constexpr void swap(contiguous_iterator& other) noexcept {
-            std::ranges::swap(ptr, other.ptr);
-        }
-
-        [[nodiscard]] constexpr reference operator*() const noexcept {
-            return *ptr;
-        }
-
-        [[nodiscard]] constexpr pointer operator->() const noexcept {
-            return ptr;
-        }
-
-        [[nodiscard]] constexpr reference operator[](difference_type n) const noexcept {
-            return *(ptr + n);
-        }
-
-        constexpr contiguous_iterator& operator++() noexcept {
-            ++ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator++(int) noexcept {
-            auto tmp = *this;
-            ++ptr;
-            return tmp;
-        }
-
-        [[nodiscard]] friend constexpr contiguous_iterator operator+(
-            const contiguous_iterator& self,
-            difference_type n
-        ) noexcept {
-            return {self.ptr + n};
-        }
-
-        [[nodiscard]] friend constexpr contiguous_iterator operator+(
-            difference_type n,
-            const contiguous_iterator& self
-        ) noexcept {
-            return {self.ptr + n};
-        }
-
-        constexpr contiguous_iterator& operator+=(difference_type n) noexcept {
-            ptr += n;
-            return *this;
-        }
-
-        constexpr contiguous_iterator& operator--() noexcept {
-            --ptr;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator--(int) noexcept {
-            auto tmp = *this;
-            --ptr;
-            return tmp;
-        }
-
-        [[nodiscard]] constexpr contiguous_iterator operator-(difference_type n) const noexcept {
-            return {ptr - n};
-        }
-
-        [[nodiscard]] constexpr difference_type operator-(
-            const contiguous_iterator& other
-        ) const noexcept {
-            return ptr - other.ptr;
-        }
-
-        constexpr contiguous_iterator& operator-=(difference_type n) noexcept {
-            ptr -= n;
-            return *this;
-        }
-
-        [[nodiscard]] constexpr bool operator==(const contiguous_iterator& other) const noexcept {
-            return ptr == other.ptr;
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const contiguous_iterator& other) const noexcept {
-            return ptr <=> other.ptr;
-        }
-    };
-
     /* A simple functor that implements a universal, non-cryptographic FNV-1a string
     hashing algorithm, which is stable at both compile time and runtime. */
     struct fnv1a {
@@ -6979,8 +6912,6 @@ namespace meta {
         constexpr bool prefer_constructor<impl::arrow<T>> = true;
         template <template <auto> typename F, auto... Ts>
         constexpr bool prefer_constructor<impl::vtable<F, Ts...>> = true;
-        template <typename T>
-        constexpr bool prefer_constructor<impl::contiguous_iterator<T>> = true;
 
         template <typename T>
         constexpr bool static_str = false;
