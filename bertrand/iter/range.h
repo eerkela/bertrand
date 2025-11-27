@@ -6074,12 +6074,12 @@ namespace iter {
 
         template <typename A>
         [[nodiscard]] constexpr bool operator()(A&& a) const
-            noexcept (requires{{func(
-                meta::from_range(std::forward<A>(a))
-            )} noexcept -> meta::nothrow::truthy;})
-            requires (requires{{func(
-                meta::from_range(std::forward<A>(a))
-            )} -> meta::truthy;})
+            noexcept (requires{
+                {func(meta::from_range(std::forward<A>(a)))} noexcept -> meta::nothrow::truthy;
+            })
+            requires (requires{
+                {func(meta::from_range(std::forward<A>(a)))} -> meta::truthy;
+            })
         {
             return bool(func(meta::from_range(std::forward<A>(a))));
         }
@@ -7022,12 +7022,13 @@ namespace iter {
 
     This is a natural extension of `iter::contains<T>` which does not terminate upon
     finding the first match, but instead continues until all elements have been
-    exhausted and returns the total number of matches found.  All the same rules apply
-    as in `iter::contains<T>` regarding how keys and arguments are treated.  The only
-    difference is in the addition of a default specialization for when no specific key
-    is given, in which case the algorithm will simply report the total length of all
-    arguments.  Such a size may be returned in constant time if the argument range
-    has a known size, or in linear time otherwise, requiring a full traversal.
+    exhausted and then returns the total number of matches found.  All the same rules
+    apply as for `iter::contains<T>` regarding how keys and arguments are treated.  The
+    only difference is the addition of a default specialization for when no specific
+    key is given, in which case the algorithm will simply report the total length of
+    all arguments similar to a sum of `std::ranges::distance()` calls.  Such a size may
+    be obtained in constant time if the argument range has a known size, or in linear
+    time otherwise, possibly requiring a full traversal.
 
     Note that subsequences must be non-overlapping to be counted; that is, once a match
     is found, the search for the next match will continue from the element after the
@@ -7210,14 +7211,32 @@ namespace iter {
 
 
 
+    /// TODO: min{}, max{}, and minmax{} should all reuse most of the same logic from
+    /// contains{} and count{} above regarding how subsequence matches are performed.
 
+    /// TODO: this is also going to be highly sensitive to the way iterating over a
+    /// temporary works, since it will probably end up attempting to return a reference
+    /// to the minimum element.  For types I control, I can mitigate this by providing
+    /// a special iterator type that yields by value (moving the contents) rather than
+    /// by reference, the same way that I do for front(), back(), indexing, etc.  The
+    /// only complication is that this will be specifically limited to input iterators,
+    /// and will not provide a multi-pass guarantee.
+
+
+
+    /// TODO: iterating over an rvalue should just wrap the underlying iterator in a
+    /// transform_iterator that conditionally moves the yielded values to maintain
+    /// proper lifetimes?
 
 
     template <meta::not_rvalue F = impl::range_compare::trivial>
     struct min {
         [[no_unique_address]] F func;
 
-        template <typename A>
+        /// TODO: the one-argument form should account for ranges, and broadcast over
+        /// them, possibly returning an optional if the range is empty?
+
+        template <typename A> requires (!meta::range<A>)
         [[nodiscard]] constexpr meta::remove_rvalue<A> operator()(A&& a) const
             noexcept (meta::nothrow::convertible_to<A, meta::remove_rvalue<A>>)
             requires (meta::convertible_to<A, meta::remove_rvalue<A>>)
@@ -7225,34 +7244,15 @@ namespace iter {
             return std::forward<A>(a);
         }
 
-        template <typename L, typename R> requires (impl::range_compare::func<F, L, R>)
-        [[nodiscard]] constexpr meta::common_type<L, R> operator()(L&& lhs, R&& rhs) const
-            noexcept (
-                meta::nothrow::call_returns<
-                    impl::range_compare::type<F, L, R>,
-                    meta::as_const_ref<F>,
-                    decltype((meta::from_range(lhs))),
-                    decltype((meta::from_range(rhs)))
-                > &&
-                meta::nothrow::has_common_type<L, R>
-            )
-            requires (meta::has_common_type<L, R>)
+        template <meta::range A>
+            requires (impl::range_compare::func<F, meta::yield_type<A>, meta::yield_type<A>>)
+        [[nodiscard]] constexpr meta::yield_type<A> operator()(A&& a) const
         {
-            auto cmp = func(meta::from_range(lhs), meta::from_range(rhs));
-            if (cmp > 0) {
-                return std::forward<R>(rhs);
-            }
-            if constexpr (meta::std::partial_ordering<decltype(cmp)>) {
-                if (
-                    cmp == std::partial_ordering::unordered &&
-                    func(meta::from_range(lhs), meta::from_range(lhs)) != 0 &&
-                    func(meta::from_range(rhs), meta::from_range(rhs)) == 0
-                ) {
-                    return std::forward<R>(rhs);
-                }
-            }
-            return std::forward<L>(lhs);
+
         }
+
+
+
 
         template <typename L, typename R> requires (impl::range_compare::func<F, L, R>)
         [[nodiscard]] constexpr meta::make_union<L, R> operator()(L&& lhs, R&& rhs) const
@@ -7267,7 +7267,6 @@ namespace iter {
                 meta::nothrow::convertible_to<R, meta::make_union<L, R>>
             )
             requires (
-                !meta::has_common_type<L, R> &&
                 meta::convertible_to<L, meta::make_union<L, R>> &&
                 meta::convertible_to<R, meta::make_union<L, R>>
             )
@@ -7286,6 +7285,14 @@ namespace iter {
                 }
             }
             return std::forward<L>(lhs);
+        }
+
+        template <typename L, typename R>
+            requires (meta::range<L> && !meta::range<R>)
+        [[nodiscard]] constexpr meta::common_type<L, R> operator()(L&& lhs, R&& rhs) const
+        {
+
+
         }
 
         /// TODO: figure out how to properly carry the min over ranges, with
@@ -7525,10 +7532,10 @@ namespace iter {
 
         /* Get a forward iterator to the start of the range. */
         [[nodiscard]] constexpr auto cbegin() const
-            noexcept (requires{{meta::cbegin(*__value)} noexcept;})
-            requires (requires{{meta::cbegin(*__value)};})
+            noexcept (requires{{meta::begin(*__value)} noexcept;})
+            requires (requires{{meta::begin(*__value)};})
         {
-            return meta::cbegin(*__value);
+            return meta::begin(*__value);
         }
 
         /* Get a forward iterator to one past the last element of the range. */
@@ -7549,10 +7556,10 @@ namespace iter {
 
         /* Get a forward iterator to one past the last element of the range. */
         [[nodiscard]] constexpr auto cend() const
-            noexcept (requires{{meta::cend(*__value)} noexcept;})
-            requires (requires{{meta::cend(*__value)};})
+            noexcept (requires{{meta::end(*__value)} noexcept;})
+            requires (requires{{meta::end(*__value)};})
         {
-            return meta::cend(*__value);
+            return meta::end(*__value);
         }
 
         /* Get a reverse iterator to the last element of the range. */
@@ -7573,10 +7580,10 @@ namespace iter {
 
         /* Get a reverse iterator to the last element of the range. */
         [[nodiscard]] constexpr auto crbegin() const
-            noexcept (requires{{meta::crbegin(*__value)} noexcept;})
-            requires (requires{{meta::crbegin(*__value)};})
+            noexcept (requires{{meta::rbegin(*__value)} noexcept;})
+            requires (requires{{meta::rbegin(*__value)};})
         {
-            return meta::crbegin(*__value);
+            return meta::rbegin(*__value);
         }
 
         /* Get a reverse iterator to one before the first element of the range. */
@@ -7597,10 +7604,10 @@ namespace iter {
 
         /* Get a reverse iterator to one before the first element of the range. */
         [[nodiscard]] constexpr auto crend() const
-            noexcept (requires{{meta::crend(*__value)} noexcept;})
-            requires (requires{{meta::crend(*__value)};})
+            noexcept (requires{{meta::rend(*__value)} noexcept;})
+            requires (requires{{meta::rend(*__value)};})
         {
-            return meta::crend(*__value);
+            return meta::rend(*__value);
         }
 
         /* Get a pointer to the underlying data array, if one exists.  This is
@@ -7999,15 +8006,23 @@ namespace iter {
     exported to the target language in order to avoid the explosion. */
     template <typename T, typename Category = std::input_iterator_tag, size_t Rank = 1>
         requires (impl::sequence_concept<T, Category, Rank>)
-    struct sequence : range<impl::sequence<meta::const_yield_type<T>, Category, Rank>> {
+    struct sequence : range<impl::sequence<
+        meta::yield_type<meta::as_const_ref<T>>,
+        Category,
+        Rank
+    >> {
         [[nodiscard]] constexpr sequence() = default;
         template <typename C> requires (impl::sequence_constructor<C, T, Category, Rank>)
         [[nodiscard]] constexpr sequence(C&& c) :
-            range<impl::sequence<meta::const_yield_type<T>, Category, Rank>>(
+            range<impl::sequence<meta::yield_type<meta::as_const_ref<T>>, Category, Rank>>(
                 meta::to_range(std::forward<C>(c))
             )
         {}
-        using range<impl::sequence<meta::const_yield_type<T>, Category, Rank>>::operator=;
+        using range<impl::sequence<
+            meta::yield_type<meta::as_const_ref<T>>,
+            Category,
+            Rank
+        >>::operator=;
     };
 
     template <typename C>
