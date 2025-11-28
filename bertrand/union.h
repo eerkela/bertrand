@@ -1238,7 +1238,7 @@ namespace impl {
         static constexpr bool monad = true;
         using type = T;
         using alternatives = basic_union_types<decltype((std::declval<T>().__value))>;
-        using value = decltype((*std::declval<T>()));
+        using value = decltype((std::declval<T>().__value.template get<0>()));
         using empty = void;
         using errors = _errors<std::make_index_sequence<alternatives::size() - 1>>::type;
 
@@ -1774,6 +1774,9 @@ namespace impl {
         }
     };
 
+    /// TODO: try to condense the union_convert_from structs as much as possible, so
+    /// this section reads better.
+
     /* Result 1: convert to proximal type. */
     template <typename from, typename proximal, typename convert, typename...>
     struct _union_convert_from { using type = proximal; };
@@ -1883,11 +1886,12 @@ namespace impl {
 
     /* A simple vtable that backs the implicit conversion operator from `Union<Ts...>`
     to any type `T` to which all alternatives can be converted. */
-    template <typename Self, typename to>
+    template <typename to>
     struct union_convert_to {
         template <size_t I>
         struct fn {
-            static constexpr to operator()(meta::forward<Self> self)
+            template <typename Self>
+            static constexpr to operator()(Self&& self)
                 noexcept (requires{{
                     std::forward<Self>(self).__value.template get<I>()
                 } noexcept -> meta::nothrow::convertible_to<to>;})
@@ -1898,41 +1902,17 @@ namespace impl {
                 return std::forward<Self>(self).__value.template get<I>();
             }
         };
-
-        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
-
-        [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
-        {
-            return dispatch{self.__value.index()}(std::forward<Self>(self));
-        }
     };
-
-    /* A special case of `union_convert_to` that corresponds to the result of the
-    dereference and indirection operators for `Union<Ts...>`. */
-    template <
-        typename Self,
-        typename = std::make_index_sequence<visitable<Self>::alternatives::size()>
-    >
-    struct union_flatten {};
-    template <typename Self, size_t... Is>
-        requires (meta::has_common_type<
-            decltype((std::declval<Self>().__value.template get<Is>()))...
-        >)
-    struct union_flatten<Self, std::index_sequence<Is...>> : union_convert_to<
-        Self,
-        meta::common_type<decltype((std::declval<Self>().__value.template get<Is>()))...>
-    > {};
 
     /* A simple vtable that backs the explicit conversion operator from `Union<Ts...>`
     to any type `T` to which all alternatives can be explicitly converted.  Only
     applies if `union_convert_to` would be malformed. */
-    template <typename Self, typename to>
+    template <typename to>
     struct union_cast_to {
         template <size_t I>
         struct fn {
-            static constexpr to operator()(meta::forward<Self> self)
+            template <typename Self>
+            static constexpr to operator()(Self&& self)
                 noexcept (requires{{
                     static_cast<to>(std::forward<Self>(self).__value.template get<I>())
                 } noexcept;})
@@ -1943,15 +1923,100 @@ namespace impl {
                 return static_cast<to>(std::forward<Self>(self).__value.template get<I>());
             }
         };
+    };
 
-        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
+    template <typename Return>
+    struct union_data {
+        template <size_t I>
+        struct fn {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::data(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::data(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return meta::data(std::forward<Self>(self).__value.template get<I>());
+            }
+        };
+    };
 
-        [[nodiscard]] static constexpr to operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
+    template <typename Return>
+    struct union_size {
+        template <size_t I>
+        struct fn {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::size(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::size(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return meta::size(std::forward<Self>(self).__value.template get<I>());
+            }
+        };
+    };
+
+    template <typename Return>
+    struct union_ssize {
+        template <size_t I>
+        struct fn {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::ssize(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::ssize(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return meta::ssize(std::forward<Self>(self).__value.template get<I>());
+            }
+        };
+    };
+
+    template <size_t I>
+    struct union_empty {
+        template <typename Self>
+        [[nodiscard]] static constexpr bool operator()(Self&& self)
+            noexcept (requires{{
+                meta::empty(std::forward<Self>(self).__value.template get<I>())
+            } noexcept -> meta::nothrow::convertible_to<bool>;})
+            requires (requires{{
+                meta::empty(std::forward<Self>(self).__value.template get<I>())
+            } -> meta::convertible_to<bool>;})
         {
-            return dispatch{self.__value.index()}(std::forward<Self>(self));
+            return meta::empty(std::forward<Self>(self).__value.template get<I>());
         }
+    };
+
+    /// TODO: union_shape(), but that would need to possibly return another union,
+    /// which interferes with the meta::shape() logic.  Also, extents would probably
+    /// need to be implemented earlier as well.  They would have to go in a separate
+    /// shape.h header that gets included by both union.h and iter/range.h, but there's
+    /// still no way around the union of shapes issue.  Maybe I can avoid that by just
+    /// only enabling shape() on unions where all alternatives have the same shape?
+
+    template <typename Return, auto... A>
+    struct union_get {
+        template <size_t I>
+        struct fn {
+            template <typename Self>
+            static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::get<A...>(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::get<A...>(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return meta::get<A...>(std::forward<Self>(self).__value.template get<I>());
+            }
+        };
     };
 
     /* Unions may be tuples if and only if all of their alternatives are tuples of the
@@ -1975,86 +2040,14 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr size_t size =
             meta::tuple_size<decltype(std::declval<Self>().__value.template get<I>())>;
-
-        template <ssize_t J>
-        static constexpr size_t wrap = size_t(impl::normalize_index<size, J>());
-
-        template <ssize_t J>
-        using type = meta::make_union<
-            decltype((meta::get<wrap<J>>(std::declval<Self>().__value.template get<I>()))),
-            decltype((meta::get<wrap<J>>(std::declval<Self>().__value.template get<Is>())))...
-        >;
-
-        template <ssize_t J, ssize_t K>
-        static constexpr type<J> get(meta::forward<Self> self)
-            noexcept (requires{{
-                meta::get<wrap<J>>(std::forward<Self>(self).__value.template get<K>())
-            } noexcept -> meta::nothrow::convertible_to<type<J>>;})
-            requires (requires{{
-                meta::get<wrap<J>>(std::forward<Self>(self).__value.template get<K>())
-            } -> meta::convertible_to<type<J>>;})
-        {
-            return meta::get<wrap<J>>(std::forward<Self>(self).__value.template get<K>());
-        }
-    };
-    template <typename Self, ssize_t I>
-        requires (union_tuple<Self>::enable && impl::valid_index<union_tuple<Self>::size, I>)
-    struct union_get {
-        using Union = union_tuple<Self>::template type<I>;
-
-        template <size_t J>
-        struct fn {
-            static constexpr Union operator()(meta::forward<Self> self)
-                noexcept (requires{{
-                    union_tuple<meta::forward<Self>>::template get<I, J>(std::forward<Self>(self))
-                } noexcept -> meta::nothrow::convertible_to<Union>;})
-                requires (requires{{
-                    union_tuple<meta::forward<Self>>::template get<I, J>(std::forward<Self>(self))
-                } -> meta::convertible_to<Union>;})
-            {
-                return union_tuple<meta::forward<Self>>::template get<I, J>(std::forward<Self>(self));
-            }
-        };
-
-        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
-
-        [[nodiscard]] static constexpr Union operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
-        {
-            return dispatch{self.__value.index()}(std::forward<Self>(self));
-        }
     };
 
-    /* Union iterators can dereference to exactly one type or a `Union` of 2 or more
-    possible types, depending on the configuration of the input iterators. */
-    template <typename, typename...>
-    struct _union_iterator_ref { using type = void; };
-    template <typename out>
-    struct _union_iterator_ref<meta::pack<out>> { using type = meta::remove_rvalue<out>; };
-    template <typename... out> requires (sizeof...(out) > 1)
-    struct _union_iterator_ref<meta::pack<out...>> { using type = bertrand::Union<out...>; };
-    template <typename... out, meta::has_dereference T, typename... Ts>
-        requires (meta::index_of<meta::dereference_type<T>, out...> == sizeof...(out))
-    struct _union_iterator_ref<meta::pack<out...>, T, Ts...> :
-        _union_iterator_ref<meta::pack<out..., meta::dereference_type<T>>, Ts...>
-    {};
-    template <typename... out, typename T, typename... Ts>
-    struct _union_iterator_ref<meta::pack<out...>, T, Ts...> :
-        _union_iterator_ref<meta::pack<out...>, Ts...>
-    {};
-    template <meta::iterator... Ts>
-    using union_iterator_ref = _union_iterator_ref<meta::pack<>, meta::as_const_ref<Ts>...>::type;
 
-
-
-    /// TODO: union iterators need to use a full iterator list (not filtered to unique
-    /// types) in order to ensure that the begin and end types match up correctly at
-    /// all times.  Otherwise, it can't be done.
 
 
     /// TODO: extract a separate union_iterator_vtable that encapsulates the union
-    /// iterator vtables and simplifies them as much as possible.
+    /// iterator vtables and simplifies them as much as possible.  The dereference
+    /// operators should be const only to further reduce template instantiations.
 
 
     /* A union of iterator types `Ts...`, which attempts to forward their combined
@@ -2070,9 +2063,9 @@ namespace impl {
         using types = meta::pack<Ts...>;
         using iterator_category = meta::common_type<meta::iterator_category<Ts>...>;
         using difference_type = meta::common_type<meta::iterator_difference<Ts>...>;
-        using reference = union_iterator_ref<Ts...>;
-        using value_type = meta::remove_reference<reference>;
-        using pointer = meta::address_type<reference>;
+        using reference = meta::make_union<meta::iterator_reference<Ts>...>;
+        using value_type = meta::make_union<meta::iterator_value<Ts>...>;
+        using pointer = meta::make_union<meta::iterator_pointer<Ts>...>;
 
         basic_union<Ts...> __value;
 
@@ -2848,15 +2841,14 @@ namespace impl {
     constexpr bool is_union_iterator<union_iterator<Ts...>> = true;
 
     template <typename... Ts>
-    struct as_union_iterator { using type = union_iterator<Ts...>; };
+    struct _as_union_iterator { using type = union_iterator<Ts...>; };
     template <typename... Ts> requires (meta::to_unique<Ts...>::size() == 1)
-    struct as_union_iterator<Ts...> { using type = meta::first_type<Ts...>; };
+    struct _as_union_iterator<Ts...> { using type = meta::first_type<Ts...>; };
+    template <typename... Ts>
+    using as_union_iterator = _as_union_iterator<Ts...>::type;
 
-    /* Union iterators and other iteration-related methods are constructed using manual
-    vtables indexed to the union's alternatives, which are only enabled if all
-    alternatives support the given operation. */
     template <typename Return>
-    struct union_vtable {
+    struct make_union_iterator {
         template <size_t I>
         struct begin {
             template <typename Self> requires (!is_union_iterator<Return>)
@@ -2980,53 +2972,6 @@ namespace impl {
                 }};
             }
         };
-
-        template <size_t I>
-        struct size {
-            template <typename Self>
-            [[nodiscard]] static constexpr Return operator()(Self&& self)
-                noexcept (requires{{
-                    meta::size(std::forward<Self>(self).__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<Return>;})
-                requires (requires{{
-                    meta::size(std::forward<Self>(self).__value.template get<I>())
-                } -> meta::convertible_to<Return>;})
-            {
-                return meta::size(std::forward<Self>(self).__value.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct ssize {
-            template <typename Self>
-            [[nodiscard]] static constexpr Return operator()(Self&& self)
-                noexcept (requires{{
-                    meta::ssize(std::forward<Self>(self).__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<Return>;})
-                requires (requires{{
-                    meta::ssize(std::forward<Self>(self).__value.template get<I>())
-                } -> meta::convertible_to<Return>;})
-            {
-                return meta::ssize(std::forward<Self>(self).__value.template get<I>());
-            }
-        };
-
-        template <size_t I>
-        struct empty {
-            template <typename Self>
-            [[nodiscard]] static constexpr Return operator()(Self&& self)
-                noexcept (requires{{
-                    meta::empty(std::forward<Self>(self).__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<Return>;})
-                requires (requires{{
-                    meta::empty(std::forward<Self>(self).__value.template get<I>())
-                } -> meta::convertible_to<Return>;})
-            {
-                return meta::empty(std::forward<Self>(self).__value.template get<I>());
-            }
-        };
-
-        /// TODO: shape(), but that would need to possibly return another union.
     };
 
 }
@@ -3177,13 +3122,24 @@ struct Union {
     criteria. */
     template <typename Self, typename to>
     [[nodiscard]] constexpr operator to(this Self&& self)
-        noexcept (requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))} noexcept;})
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_convert_to<to>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires (
             !meta::prefer_constructor<to> &&
-            requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))};}
+            (meta::convertible_to<
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())),
+                to
+            > && ...)
         )
     {
-        return impl::union_convert_to<Self, to>{}(std::forward<Self>(self));
+        return impl::basic_vtable<
+            impl::union_convert_to<to>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Explicit conversion operator allows functional-style conversions toward any type
@@ -3193,14 +3149,30 @@ struct Union {
     be malformed. */
     template <typename Self, typename to>
     [[nodiscard]] constexpr explicit operator to(this Self&& self)
-        noexcept (requires{{impl::union_cast_to<Self, to>{}(std::forward<Self>(self))} noexcept;})
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_cast_to<to>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires (
             !meta::prefer_constructor<to> &&
-            !requires{{impl::union_convert_to<Self, to>{}(std::forward<Self>(self))};} &&
-            requires{{impl::union_cast_to<Self, to>{}(std::forward<Self>(self))};}
+            (!meta::convertible_to<
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())),
+                to
+            > || ...) &&
+            (meta::explicitly_convertible_to<
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())),
+                to
+            > && ...)
         )
     {
-        return impl::union_cast_to<Self, to>{}(std::forward<Self>(self));
+        return impl::basic_vtable<
+            impl::union_cast_to<to>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Flatten the union into a common type, assuming one exists.  Fails to compile if
@@ -3208,10 +3180,22 @@ struct Union {
     according to their storage qualifiers as well as those of the union itself. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self)
-        noexcept (requires{{impl::union_flatten<Self>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::union_flatten<Self>{}(std::forward<Self>(self))};})
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_convert_to<meta::common_type<
+                decltype((std::forward<Self>(self).__value.template get<Ts>()))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires (meta::has_common_type<
+            decltype((std::forward<Self>(self).__value.template get<Ts>()))...
+        >)
     {
-        return (impl::union_flatten<Self>{}(std::forward<Self>(self)));
+        return (impl::basic_vtable<
+            impl::union_convert_to<meta::common_type<
+                decltype((std::forward<Self>(self).__value.template get<Ts>()))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self)));
     }
 
     /* Indirectly access a member of the flattened union type, assuming one exists.
@@ -3226,19 +3210,39 @@ struct Union {
         return impl::arrow{*std::forward<Self>(self)};
     }
 
-    /* Forward tuple access to `Ts...`, assuming they all support it and have the same
-    size.  If so, then the return type may be a further union if the indexed types
-    differ. */
-    template <ssize_t I, typename Self>
-    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-        noexcept (requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
+    /* Returns the result of `meta::data()` on the current alternative if it is
+    well-formed and all results share a common type.  Fails to compile otherwise. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto data(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_data<meta::common_type<
+                decltype((meta::data(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires (
-            impl::union_tuple<Self>::enable &&
-            impl::valid_index<impl::union_tuple<Self>::size, I> &&
-            requires{{impl::union_get<Self, I>{}(std::forward<Self>(self))};}
+            (meta::has_data<
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >()))
+            > && ...) &&
+            (meta::has_common_type<
+                decltype((meta::data(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >)
         )
     {
-        return (impl::union_get<Self, I>{}(std::forward<Self>(self)));
+        return impl::basic_vtable<
+            impl::union_data<meta::common_type<
+                decltype((meta::data(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Returns the result of `meta::size()` on the current alternative if it is
@@ -3246,24 +3250,32 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr auto size(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<meta::common_type<
-                decltype((meta::size(std::forward<Self>(self).__value.template get<Ts>())))...
-            >>::template size,
+            impl::union_size<meta::common_type<
+                decltype((meta::size(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires (
             (meta::has_size<
-                decltype((std::forward<Self>(self).__value.template get<Ts>()))
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >()))
             > && ...) &&
             (meta::has_common_type<
-                decltype((meta::size(std::forward<Self>(self).__value.template get<Ts>())))...
+                decltype((meta::size(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
             >)
         )
     {
         return impl::basic_vtable<
-            impl::union_vtable<meta::common_type<
-                decltype((meta::size(std::forward<Self>(self).__value.template get<Ts>())))...
-            >>::template size,
+            impl::union_size<meta::common_type<
+                decltype((meta::size(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
     }
@@ -3273,24 +3285,32 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr auto ssize(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<meta::common_type<
-                decltype((meta::ssize(std::forward<Self>(self).__value.template get<Ts>())))...
-            >>::template ssize,
+            impl::union_ssize<meta::common_type<
+                decltype((meta::ssize(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires (
             (meta::has_ssize<
-                decltype((std::forward<Self>(self).__value.template get<Ts>()))
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >()))
             > && ...) &&
             (meta::has_common_type<
-                decltype((meta::ssize(std::forward<Self>(self).__value.template get<Ts>())))...
+                decltype((meta::ssize(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
             >)
         )
     {
         return impl::basic_vtable<
-            impl::union_vtable<meta::common_type<
-                decltype((meta::ssize(std::forward<Self>(self).__value.template get<Ts>())))...
-            >>::template ssize,
+            impl::union_ssize<meta::common_type<
+                decltype((meta::ssize(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
     }
@@ -3300,20 +3320,59 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr bool empty(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<bool>::template empty,
+            impl::union_empty,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires ((meta::has_empty<
-            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            decltype((std::forward<Self>(self).__value.template get<
+                meta::remove_rvalue<Ts>
+            >()))
         > && ...))
     {
         return impl::basic_vtable<
-            impl::union_vtable<bool>::template empty,
+            impl::union_empty,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /// TODO: shape()?  This may have to return another union.
+
+    /// TODO: maybe union.get<A...>() should accept arbitrary auto... args and dispatch
+    /// them directly to the underlying alternatives.
+
+
+    /* Forward tuple access to `Ts...`, assuming they all support it and have the same
+    size.  If so, then the return type may be a further union if the indexed types
+    differ. */
+    template <auto... A, typename Self>
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_get<
+                meta::make_union<
+                    decltype(meta::get<A...>(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >,
+                A...
+            >::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires ((meta::has_get<decltype((std::forward<Self>(self).__value.template get<
+            meta::remove_rvalue<Ts>
+        >())), A...> && ...))
+    {
+        return (impl::basic_vtable<
+            impl::union_get<
+                meta::make_union<
+                    decltype(meta::get<A...>(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >,
+                A...
+            >::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self)));
+    }
 
     /* Get a forward iterator over the union, assuming all alternatives are iterable.
     Fails to compile otherwise.  The result is either passed through as-is if all
@@ -3324,22 +3383,28 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::begin(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::begin(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template begin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires ((meta::has_begin<
-            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            decltype((std::forward<Self>(self).__value.template get<
+                meta::remove_rvalue<Ts>
+            >()))
         > && ...))
     {
         return impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::begin(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::begin(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template begin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -3354,22 +3419,28 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::end(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::end(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template end,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires ((meta::has_end<
-            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            decltype((std::forward<Self>(self).__value.template get<
+                meta::remove_rvalue<Ts>
+            >()))
         > && ...))
     {
         return impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::end(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::end(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template end,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -3384,22 +3455,28 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr auto rbegin(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template rbegin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires ((meta::has_rbegin<
-            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            decltype((std::forward<Self>(self).__value.template get<
+                meta::remove_rvalue<Ts>
+            >()))
         > && ...))
     {
         return impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template rbegin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -3414,22 +3491,28 @@ struct Union {
     template <typename Self>
     [[nodiscard]] constexpr auto rend(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::rend(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template rend,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
         requires ((meta::has_rend<
-            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            decltype((std::forward<Self>(self).__value.template get<
+                meta::remove_rvalue<Ts>
+            >()))
         > && ...))
     {
         return impl::basic_vtable<
-            impl::union_vtable<
-                typename impl::as_union_iterator<
-                    decltype(meta::rend(std::forward<Self>(self).__value.template get<Ts>()))...
-                >::type
+            impl::make_union_iterator<
+                impl::as_union_iterator<
+                    decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...
+                >
             >::template rend,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -5130,7 +5213,7 @@ namespace impl {
     will be thrown as an exception.  Otherwise, perfectly forwards the contained
     value. */
     template <typename Self>
-    struct expected_access {
+    struct expected_deref {
         using type = decltype((std::declval<Self>().__value.template get<0>()));
 
         template <size_t I>
@@ -5390,7 +5473,7 @@ struct Expected {
     then the error will be thrown as an exception. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) {
-        return (impl::expected_access<Self>{}(std::forward<Self>(self)));
+        return (impl::expected_deref<Self>{}(std::forward<Self>(self)));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -5398,13 +5481,13 @@ struct Expected {
     then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->()
         noexcept (requires{
-            {meta::to_arrow(impl::expected_access<Expected&>{}(*this))} noexcept;
+            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))} noexcept;
         })
         requires (requires{
-            {meta::to_arrow(impl::expected_access<Expected&>{}(*this))};
+            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))};
         })
     {
-        return meta::to_arrow(impl::expected_access<Expected&>{}(*this));
+        return meta::to_arrow(impl::expected_deref<Expected&>{}(*this));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -5412,13 +5495,13 @@ struct Expected {
     then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->() const
         noexcept (requires{
-            {meta::to_arrow(impl::expected_access<const Expected&>{}(*this))} noexcept;
+            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))} noexcept;
         })
         requires (requires{
-            {meta::to_arrow(impl::expected_access<const Expected&>{}(*this))};
+            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))};
         })
     {
-        return meta::to_arrow(impl::expected_access<const Expected&>{}(*this));
+        return meta::to_arrow(impl::expected_deref<const Expected&>{}(*this));
     }
 
     /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
@@ -5566,9 +5649,9 @@ struct Expected {
                 };
             }
         } else if constexpr (meta::lvalue<Self>) {
-            return std::addressof(self.__value.template get<1>()) + 1;
+            return std::addressof(self.__value.template get<0>()) + 1;
         } else {
-            return std::move_iterator(std::addressof(self.__value.template get<1>()) + 1);
+            return std::move_iterator(std::addressof(self.__value.template get<0>()) + 1);
         }
     }
 
@@ -5807,7 +5890,7 @@ struct Expected<T, E, Es...> {
     then the error will be thrown as an exception. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) {
-        return (impl::expected_access<Self>{}(std::forward<Self>(self)));
+        return (impl::expected_deref<Self>{}(std::forward<Self>(self)));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -5815,13 +5898,13 @@ struct Expected<T, E, Es...> {
     then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->()
         noexcept (requires{
-            {meta::to_arrow(impl::expected_access<Expected&>{}(*this))} noexcept;
+            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))} noexcept;
         })
         requires (requires{
-            {meta::to_arrow(impl::expected_access<Expected&>{}(*this))};
+            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))};
         })
     {
-        return meta::to_arrow(impl::expected_access<Expected&>{}(*this));
+        return meta::to_arrow(impl::expected_deref<Expected&>{}(*this));
     }
 
     /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
@@ -5829,13 +5912,13 @@ struct Expected<T, E, Es...> {
     then the error will be thrown as an exception. */
     [[nodiscard]] constexpr auto operator->() const
         noexcept (requires{
-            {meta::to_arrow(impl::expected_access<const Expected&>{}(*this))} noexcept;
+            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))} noexcept;
         })
         requires (requires{
-            {meta::to_arrow(impl::expected_access<const Expected&>{}(*this))};
+            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))};
         })
     {
-        return meta::to_arrow(impl::expected_access<const Expected&>{}(*this));
+        return meta::to_arrow(impl::expected_deref<const Expected&>{}(*this));
     }
 
     /* Empty expected monads always have a size of zero. */
@@ -6878,11 +6961,12 @@ namespace bertrand {
 
     static_assert([] {
         Union<std::array<int, 3>, std::vector<int>> u = std::array<int, 3>{1, 2, 3};
+        if (u.size() != 3) return false;
         auto it = u.begin();
         auto end = u.end();
-        for (auto&& x : u) {
+        // for (auto&& x : u) {
             
-        }
+        // }
 
 
         return true;
