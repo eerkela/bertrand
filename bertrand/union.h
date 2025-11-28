@@ -2046,6 +2046,17 @@ namespace impl {
     template <meta::iterator... Ts>
     using union_iterator_ref = _union_iterator_ref<meta::pack<>, meta::as_const_ref<Ts>...>::type;
 
+
+
+    /// TODO: union iterators need to use a full iterator list (not filtered to unique
+    /// types) in order to ensure that the begin and end types match up correctly at
+    /// all times.  Otherwise, it can't be done.
+
+
+    /// TODO: extract a separate union_iterator_vtable that encapsulates the union
+    /// iterator vtables and simplifies them as much as possible.
+
+
     /* A union of iterator types `Ts...`, which attempts to forward their combined
     interface as faithfully as possible.  All operations are enabled if each of the
     underlying types supports them, and will use vtables to exhaustively cover them.
@@ -2054,12 +2065,7 @@ namespace impl {
     except where otherwise specified.  Iteration performance will be reduced slightly
     due to the extra dynamic dispatch, but should otherwise not degrade functionality
     in any way. */
-    template <meta::unqualified... Ts>
-        requires (
-            (meta::iterator<Ts> && ... && (sizeof...(Ts) > 1)) &&
-            meta::has_common_type<meta::iterator_category<Ts>...> &&
-            meta::has_common_type<meta::iterator_difference<Ts>...>
-        )
+    template <meta::unqualified... Ts> requires (sizeof...(Ts) > 1)
     struct union_iterator {
         using types = meta::pack<Ts...>;
         using iterator_category = meta::common_type<meta::iterator_category<Ts>...>;
@@ -2836,401 +2842,192 @@ namespace impl {
         }
     };
 
-    /* `make_union_iterator<Ts...>` accepts a union of types `Ts...` and composes a set
-    of iterators over it, which can be used to traverse the union, possibly yielding
-    further unions.  If all types share the same iterator type, then the iterator will
-    be returned directly.  Otherwise, a `union_iterator<Iters...>` will be returned,
-    where `Iters...` are the (index-aligned) iterator types that were detected. */
-    template <size_t, typename, typename, typename, typename, typename>
-    struct _make_union_iterator;
-    template <size_t N, typename U, typename... B, typename... E, typename... RB, typename... RE>
-    struct _make_union_iterator<
-        N,
-        U,
-        meta::pack<B...>,
-        meta::pack<E...>,
-        meta::pack<RB...>,
-        meta::pack<RE...>
-    > {
-    private:
-        template <typename unique, typename... S>
-        struct _iter {
-            static constexpr bool direct = false;
-            using type = union_iterator<S...>;
-        };
-        template <typename T, typename... S>
-        struct _iter<meta::pack<T>, S...> {
-            static constexpr bool direct = true;
-            using type = T;
-        };
-        template <typename... S>
-        struct _iter<meta::pack<>, S...> { using type = void; };
-        template <typename... S>
-        using iter = _iter<meta::to_unique<S...>, S...>;
+    template <typename T>
+    constexpr bool is_union_iterator = false;
+    template <typename... Ts>
+    constexpr bool is_union_iterator<union_iterator<Ts...>> = true;
 
-        template <typename = std::make_index_sequence<N>>
-        struct _size_type { using type = void; };
-        template <size_t... Is>
-            requires (meta::has_size<decltype(std::declval<U>().__value.template get<Is>())> && ...)
-        struct _size_type<std::index_sequence<Is...>> {
-            using type = meta::common_type<
-                meta::size_type<decltype(std::declval<U>().__value.template get<Is>())>...
-            >;
-        };
+    template <typename... Ts>
+    struct as_union_iterator { using type = union_iterator<Ts...>; };
+    template <typename... Ts> requires (meta::to_unique<Ts...>::size() == 1)
+    struct as_union_iterator<Ts...> { using type = meta::first_type<Ts...>; };
 
-        template <typename = std::make_index_sequence<N>>
-        struct _ssize_type { using type = void; };
-        template <size_t... Is>
-            requires (meta::has_ssize<decltype(std::declval<U>().__value.template get<Is>())> && ...)
-        struct _ssize_type<std::index_sequence<Is...>> {
-            using type = meta::common_type<
-                meta::ssize_type<decltype(std::declval<U>().__value.template get<Is>())>...
-            >;
-        };
-
-    public:
-        using begin_type = iter<B...>::type;
-        using end_type = iter<E...>::type;
-        using rbegin_type = iter<RB...>::type;
-        using rend_type = iter<RE...>::type;
-        using size_type = _size_type<>::type;
-        using ssize_type = _ssize_type<>::type;
-
-    private:
+    /* Union iterators and other iteration-related methods are constructed using manual
+    vtables indexed to the union's alternatives, which are only enabled if all
+    alternatives support the given operation. */
+    template <typename Return>
+    struct union_vtable {
         template <size_t I>
-        struct begin_fn {
-            static constexpr begin_type operator()(U u)
+        struct begin {
+            template <typename Self> requires (!is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
                 noexcept (requires{{
-                    meta::begin(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<begin_type>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    meta::begin(u.__value.template get<I>())
-                } -> meta::convertible_to<begin_type>;})
+                    meta::begin(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::begin(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
             {
-                return meta::begin(u.__value.template get<I>());
+                return meta::begin(std::forward<Self>(self).__value.template get<I>());
             }
-            static constexpr begin_type operator()(U u)
-                noexcept (requires{{begin_type{
-                    {bertrand::alternative<I>, meta::begin(u.__value.template get<I>())}
-                }} noexcept;})
-                requires (sizeof...(B) == N && !iter<B...>::direct && requires{{begin_type{
-                    {bertrand::alternative<I>, meta::begin(u.__value.template get<I>())}
-                }};})
-            {
-                return {{bertrand::alternative<I>, meta::begin(u.__value.template get<I>())}};
-            }
-        };
-        using _begin = impl::basic_vtable<begin_fn, N>;
-
-        template <size_t I>
-        struct end_fn {
-            static constexpr end_type operator()(U u)
-                noexcept (requires{{
-                    meta::end(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<end_type>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    meta::end(u.__value.template get<I>())
-                } -> meta::convertible_to<end_type>;})
-            {
-                return meta::end(u.__value.template get<I>());
-            }
-            static constexpr end_type operator()(U u)
-                noexcept (requires{{end_type{
-                    {bertrand::alternative<I>, meta::end(u.__value.template get<I>())}
-                }} noexcept;})
-                requires (sizeof...(B) == N && !iter<B...>::direct && requires{{end_type{
-                    {bertrand::alternative<I>, meta::end(u.__value.template get<I>())}
-                }};})
-            {
-                return {{bertrand::alternative<I>, meta::end(u.__value.template get<I>())}};
-            }
-        };
-        using _end = impl::basic_vtable<end_fn, N>;
-
-        template <size_t I>
-        struct rbegin_fn {
-            static constexpr rbegin_type operator()(U u)
-                noexcept (requires{{
-                    meta::rbegin(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<rbegin_type>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    meta::rbegin(u.__value.template get<I>())
-                } -> meta::convertible_to<rbegin_type>;})
-            {
-                return meta::rbegin(u.__value.template get<I>());
-            }
-            static constexpr rbegin_type operator()(U u)
-                noexcept (requires{{rbegin_type{
-                    {bertrand::alternative<I>, meta::rbegin(u.__value.template get<I>())}
-                }} noexcept;})
-                requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rbegin_type{
-                    {bertrand::alternative<I>, meta::rbegin(u.__value.template get<I>())}
-                }};})
+            template <typename Self> requires (is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::begin(std::forward<Self>(self).__value.template get<I>())
+                }}} noexcept;})
+                requires (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::begin(std::forward<Self>(self).__value.template get<I>())
+                }}};})
             {
                 return {{
                     bertrand::alternative<I>,
-                    meta::rbegin(u.__value.template get<I>())
+                    meta::begin(std::forward<Self>(self).__value.template get<I>())
                 }};
             }
         };
-        using _rbegin = impl::basic_vtable<rbegin_fn, N>;
 
         template <size_t I>
-        struct rend_fn {
-            static constexpr rend_type operator()(U u)
+        struct end {
+            template <typename Self> requires (!is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
                 noexcept (requires{{
-                    meta::rend(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<rend_type>;})
-                requires (sizeof...(B) == N && iter<B...>::direct && requires{{
-                    meta::rend(u.__value.template get<I>())
-                } -> meta::convertible_to<rend_type>;})
+                    meta::end(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::end(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
             {
-                return meta::rend(u.__value.template get<I>());
+                return meta::end(std::forward<Self>(self).__value.template get<I>());
             }
-            static constexpr rend_type operator()(U u)
-                noexcept (requires{{rend_type{
-                    {bertrand::alternative<I>, meta::rend(u.__value.template get<I>())}
-                }} noexcept;})
-                requires (sizeof...(B) == N && !iter<B...>::direct && requires{{rend_type{
-                    {bertrand::alternative<I>, meta::rend(u.__value.template get<I>())}
-                }};})
+            template <typename Self> requires (is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::end(std::forward<Self>(self).__value.template get<I>())
+                }}} noexcept;})
+                requires (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::end(std::forward<Self>(self).__value.template get<I>())
+                }}};})
             {
                 return {{
                     bertrand::alternative<I>,
-                    meta::rend(u.__value.template get<I>())
+                    meta::end(std::forward<Self>(self).__value.template get<I>())
                 }};
             }
         };
-        using _rend = impl::basic_vtable<rend_fn, N>;
 
         template <size_t I>
-        struct size_fn {
-            static constexpr size_type operator()(U u)
+        struct rbegin {
+            template <typename Self> requires (!is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
                 noexcept (requires{{
-                    meta::size(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<size_type>;})
+                    meta::rbegin(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
                 requires (requires{{
-                    meta::size(u.__value.template get<I>())
-                } -> meta::convertible_to<size_type>;})
+                    meta::rbegin(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
             {
-                return meta::size(u.__value.template get<I>());
+                return meta::rbegin(std::forward<Self>(self).__value.template get<I>());
+            }
+            template <typename Self> requires (is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::rbegin(std::forward<Self>(self).__value.template get<I>())
+                }}} noexcept;})
+                requires (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::rbegin(std::forward<Self>(self).__value.template get<I>())
+                }}};})
+            {
+                return {{
+                    bertrand::alternative<I>,
+                    meta::rbegin(std::forward<Self>(self).__value.template get<I>())
+                }};
             }
         };
-        using _size = impl::basic_vtable<size_fn, N>;
 
         template <size_t I>
-        struct ssize_fn {
-            static constexpr ssize_type operator()(U u)
+        struct rend {
+            template <typename Self> requires (!is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
                 noexcept (requires{{
-                    meta::ssize(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<ssize_type>;})
+                    meta::rend(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
                 requires (requires{{
-                    meta::ssize(u.__value.template get<I>())
-                } -> meta::convertible_to<ssize_type>;})
+                    meta::rend(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
             {
-                return meta::ssize(u.__value.template get<I>());
+                return meta::rend(std::forward<Self>(self).__value.template get<I>());
+            }
+            template <typename Self> requires (is_union_iterator<Return>)
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::rend(std::forward<Self>(self).__value.template get<I>())
+                }}} noexcept;})
+                requires (requires{{Return{{
+                    bertrand::alternative<I>,
+                    meta::rend(std::forward<Self>(self).__value.template get<I>())
+                }}};})
+            {
+                return {{
+                    bertrand::alternative<I>,
+                    meta::rend(std::forward<Self>(self).__value.template get<I>())
+                }};
             }
         };
-        using _ssize = impl::basic_vtable<ssize_fn, N>;
 
         template <size_t I>
-        struct empty_fn {
-            static constexpr bool operator()(U u)
+        struct size {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
                 noexcept (requires{{
-                    meta::empty(u.__value.template get<I>())
-                } noexcept -> meta::nothrow::convertible_to<bool>;})
+                    meta::size(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
                 requires (requires{{
-                    meta::empty(u.__value.template get<I>())
-                } -> meta::convertible_to<bool>;})
+                    meta::size(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
             {
-                return meta::empty(u.__value.template get<I>());
+                return meta::size(std::forward<Self>(self).__value.template get<I>());
             }
         };
-        using _empty = impl::basic_vtable<empty_fn, N>;
 
-    public:
-        static constexpr begin_type begin(U u)
-            noexcept (requires{{_begin{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_begin{u.__value.index()}(u)};})
-        {
-            return _begin{u.__value.index()}(u);
-        }
+        template <size_t I>
+        struct ssize {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::ssize(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::ssize(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return meta::ssize(std::forward<Self>(self).__value.template get<I>());
+            }
+        };
 
-        static constexpr end_type end(U u)
-            noexcept (requires{{_end{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_end{u.__value.index()}(u)};})
-        {
-            return _end{u.__value.index()}(u);
-        }
+        template <size_t I>
+        struct empty {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::empty(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::empty(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return meta::empty(std::forward<Self>(self).__value.template get<I>());
+            }
+        };
 
-        static constexpr rbegin_type rbegin(U u)
-            noexcept (requires{{_rbegin{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_rbegin{u.__value.index()}(u)};})
-        {
-            return _rbegin{u.__value.index()}(u);
-        }
-
-        static constexpr rend_type rend(U u)
-            noexcept (requires{{_rend{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_rend{u.__value.index()}(u)};})
-        {
-            return _rend{u.__value.index()}(u);
-        }
-
-        static constexpr size_type size(U u)
-            noexcept (requires{{_size{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_size{u.__value.index()}(u)};})
-        {
-            return _size{u.__value.index()}(u);
-        }
-
-        static constexpr ssize_type ssize(U u)
-            noexcept (requires{{_ssize{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_ssize{u.__value.index()}(u)};})
-        {
-            return _ssize{u.__value.index()}(u);
-        }
-
-        static constexpr bool empty(U u)
-            noexcept (requires{{_empty{u.__value.index()}(u)} noexcept;})
-            requires (requires{{_empty{u.__value.index()}(u)};})
-        {
-            return _empty{u.__value.index()}(u);
-        }
+        /// TODO: shape(), but that would need to possibly return another union.
     };
-    template <
-        size_t I,
-        typename U,
-        typename... begin,
-        typename... end,
-        typename... rbegin,
-        typename... rend
-    > requires (
-        I < visitable<U>::alternatives::size() &&
-        meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
-        meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
-    )
-    struct _make_union_iterator<
-        I,
-        U,
-        meta::pack<begin...>,
-        meta::pack<end...>,
-        meta::pack<rbegin...>,
-        meta::pack<rend...>
-    > : _make_union_iterator<
-        I + 1,
-        U,
-        meta::pack<begin..., meta::unqualify<meta::begin_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>,
-        meta::pack<end..., meta::unqualify<meta::end_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>,
-        meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>,
-        meta::pack<rend..., meta::unqualify<meta::rend_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>
-    > {};
-    template <
-        size_t I,
-        typename U,
-        typename... begin,
-        typename... end,
-        typename... rbegin,
-        typename... rend
-    > requires (
-        I < visitable<U>::alternatives::size() &&
-        meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
-        !meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
-    )
-    struct _make_union_iterator<
-        I,
-        U,
-        meta::pack<begin...>,
-        meta::pack<end...>,
-        meta::pack<rbegin...>,
-        meta::pack<rend...>
-    > : _make_union_iterator<
-        I + 1,
-        U,
-        meta::pack<begin..., meta::unqualify<meta::begin_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>,
-        meta::pack<end..., meta::unqualify<meta::end_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>,
-        meta::pack<rbegin...>,
-        meta::pack<rend...>
-    > {};
-    template <
-        size_t I,
-        typename U,
-        typename... begin,
-        typename... end,
-        typename... rbegin,
-        typename... rend
-    > requires (
-        I < visitable<U>::alternatives::size() &&
-        !meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
-        meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
-    )
-    struct _make_union_iterator<
-        I,
-        U,
-        meta::pack<begin...>,
-        meta::pack<end...>,
-        meta::pack<rbegin...>,
-        meta::pack<rend...>
-    > : _make_union_iterator<
-        I + 1,
-        U,
-        meta::pack<begin...>,
-        meta::pack<end...>,
-        meta::pack<rbegin..., meta::unqualify<meta::rbegin_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>,
-        meta::pack<rend..., meta::unqualify<meta::rend_type<
-            decltype(std::declval<U>().__value.template get<I>())
-        >>>
-    > {};
-    template <
-        size_t I,
-        typename U,
-        typename... begin,
-        typename... end,
-        typename... rbegin,
-        typename... rend
-    > requires (
-        I < visitable<U>::alternatives::size() &&
-        !meta::iterable<decltype(std::declval<U>().__value.template get<I>())> &&
-        !meta::reverse_iterable<decltype(std::declval<U>().__value.template get<I>())>
-    )
-    struct _make_union_iterator<
-        I,
-        U,
-        meta::pack<begin...>,
-        meta::pack<end...>,
-        meta::pack<rbegin...>,
-        meta::pack<rend...>
-    > : _make_union_iterator<
-        I + 1,
-        U,
-        meta::pack<begin...>,
-        meta::pack<end...>,
-        meta::pack<rbegin...>,
-        meta::pack<rend...>
-    > {};
-    template <meta::lvalue U> requires (meta::Union<U>)
-    using make_union_iterator = _make_union_iterator<
-        0,
-        U,
-        meta::pack<>,
-        meta::pack<>,
-        meta::pack<>,
-        meta::pack<>
-    >;
 
 }
 
@@ -3447,32 +3244,76 @@ struct Union {
     /* Returns the result of `meta::size()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) size(this Self&& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::size(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::size(self)};})
+    [[nodiscard]] constexpr auto size(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<meta::common_type<
+                decltype((meta::size(std::forward<Self>(self).__value.template get<Ts>())))...
+            >>::template size,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires (
+            (meta::has_size<
+                decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            > && ...) &&
+            (meta::has_common_type<
+                decltype((meta::size(std::forward<Self>(self).__value.template get<Ts>())))...
+            >)
+        )
     {
-        return (impl::make_union_iterator<Self&>::size(self));
+        return impl::basic_vtable<
+            impl::union_vtable<meta::common_type<
+                decltype((meta::size(std::forward<Self>(self).__value.template get<Ts>())))...
+            >>::template size,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Returns the result of `meta::ssize()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) ssize(this Self&& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::ssize(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::ssize(self)};})
+    [[nodiscard]] constexpr auto ssize(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<meta::common_type<
+                decltype((meta::ssize(std::forward<Self>(self).__value.template get<Ts>())))...
+            >>::template ssize,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires (
+            (meta::has_ssize<
+                decltype((std::forward<Self>(self).__value.template get<Ts>()))
+            > && ...) &&
+            (meta::has_common_type<
+                decltype((meta::ssize(std::forward<Self>(self).__value.template get<Ts>())))...
+            >)
+        )
     {
-        return (impl::make_union_iterator<Self&>::ssize(self));
+        return impl::basic_vtable<
+            impl::union_vtable<meta::common_type<
+                decltype((meta::ssize(std::forward<Self>(self).__value.template get<Ts>())))...
+            >>::template ssize,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Returns the result of `meta::empty()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) empty(this Self&& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::empty(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::empty(self)};})
+    [[nodiscard]] constexpr bool empty(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<bool>::template empty,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires ((meta::has_empty<
+            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+        > && ...))
     {
-        return (impl::make_union_iterator<Self&>::empty(self));
+        return impl::basic_vtable<
+            impl::union_vtable<bool>::template empty,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
+
+    /// TODO: shape()?  This may have to return another union.
 
     /* Get a forward iterator over the union, assuming all alternatives are iterable.
     Fails to compile otherwise.  The result is either passed through as-is if all
@@ -3481,11 +3322,27 @@ struct Union {
     their overall interface.  Iteration performance may be slightly degraded in the
     latter case due to an extra vtable lookup for each iterator operation. */
     template <typename Self>
-    [[nodiscard]] constexpr auto begin(this Self& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::begin(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::begin(self)};})
+    [[nodiscard]] constexpr auto begin(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::begin(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template begin,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires ((meta::has_begin<
+            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+        > && ...))
     {
-        return impl::make_union_iterator<Self&>::begin(self);
+        return impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::begin(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template begin,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Get a forward sentinel for the union, assuming all alternatives are iterable.
@@ -3495,11 +3352,27 @@ struct Union {
     their overall interface.  Iteration performance may be slightly degraded in the
     latter case due to an extra vtable lookup for each iterator operation. */
     template <typename Self>
-    [[nodiscard]] constexpr auto end(this Self& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::end(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::end(self)};})
+    [[nodiscard]] constexpr auto end(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::end(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template end,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires ((meta::has_end<
+            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+        > && ...))
     {
-        return impl::make_union_iterator<Self&>::end(self);
+        return impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::end(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template end,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Get a reverse iterator over the union, assuming all alternatives are reverse
@@ -3509,11 +3382,27 @@ struct Union {
     their overall interface.  Iteration performance may be slightly degraded in the
     latter case due to an extra vtable lookup for each iterator operation. */
     template <typename Self>
-    [[nodiscard]] constexpr auto rbegin(this Self& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::rbegin(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::rbegin(self)};})
+    [[nodiscard]] constexpr auto rbegin(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template rbegin,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires ((meta::has_rbegin<
+            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+        > && ...))
     {
-        return impl::make_union_iterator<Self&>::rbegin(self);
+        return impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template rbegin,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     /* Get a reverse sentinel for the union, assuming all alternatives are reverse
@@ -3523,11 +3412,27 @@ struct Union {
     their overall interface.  Iteration performance may be slightly degraded in the
     latter case due to an extra vtable lookup for each iterator operation. */
     template <typename Self>
-    [[nodiscard]] constexpr auto rend(this Self& self)
-        noexcept (requires{{impl::make_union_iterator<Self&>::rend(self)} noexcept;})
-        requires (requires{{impl::make_union_iterator<Self&>::rend(self)};})
+    [[nodiscard]] constexpr auto rend(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::rend(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template rend,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires ((meta::has_rend<
+            decltype((std::forward<Self>(self).__value.template get<Ts>()))
+        > && ...))
     {
-        return impl::make_union_iterator<Self&>::rend(self);
+        return impl::basic_vtable<
+            impl::union_vtable<
+                typename impl::as_union_iterator<
+                    decltype(meta::rend(std::forward<Self>(self).__value.template get<Ts>()))...
+                >::type
+            >::template rend,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
     }
 
     template <typename Self, typename... A>
@@ -6966,6 +6871,19 @@ namespace bertrand {
         for (auto&& x : o) {
             if (x != 1) return false;
         }
+
+        return true;
+    }());
+
+
+    static_assert([] {
+        Union<std::array<int, 3>, std::vector<int>> u = std::array<int, 3>{1, 2, 3};
+        auto it = u.begin();
+        auto end = u.end();
+        for (auto&& x : u) {
+            
+        }
+
 
         return true;
     }());

@@ -4087,6 +4087,9 @@ namespace meta {
     template <has_begin T>
     using begin_type = decltype(begin(::std::declval<T>()));
 
+    template <typename Ret, typename T>
+    concept begin_returns = has_begin<T> && convertible_to<begin_type<T>, Ret>;
+
     namespace nothrow {
 
         template <typename T>
@@ -4096,6 +4099,11 @@ namespace meta {
 
         template <nothrow::has_begin T>
         using begin_type = meta::begin_type<T>;
+
+        template <typename Ret, typename T>
+        concept begin_returns =
+            nothrow::has_begin<T> &&
+            nothrow::convertible_to<nothrow::begin_type<T>, Ret>;
 
     }
 
@@ -4216,6 +4224,9 @@ namespace meta {
     template <has_end T>
     using end_type = decltype(end(::std::declval<T>()));
 
+    template <typename Ret, typename T>
+    concept end_returns = has_end<T> && convertible_to<end_type<T>, Ret>;
+
     namespace nothrow {
 
         template <typename T>
@@ -4225,6 +4236,11 @@ namespace meta {
 
         template <nothrow::has_end T>
         using end_type = meta::end_type<T>;
+
+        template <typename Ret, typename T>
+        concept end_returns =
+            nothrow::has_end<T> &&
+            nothrow::convertible_to<nothrow::end_type<T>, Ret>;
 
     }
 
@@ -4336,6 +4352,9 @@ namespace meta {
     template <has_rbegin T>
     using rbegin_type = decltype(rbegin(::std::declval<T>()));
 
+    template <typename Ret, typename T>
+    concept rbegin_returns = has_rbegin<T> && convertible_to<rbegin_type<T>, Ret>;
+
     namespace nothrow {
 
         template <typename T>
@@ -4345,6 +4364,11 @@ namespace meta {
 
         template <nothrow::has_rbegin T>
         using rbegin_type = meta::rbegin_type<T>;
+
+        template <typename Ret, typename T>
+        concept nothrow_rbegin_returns =
+            nothrow::has_rbegin<T> &&
+            nothrow::convertible_to<nothrow::rbegin_type<T>, Ret>;
 
     }
 
@@ -4465,6 +4489,9 @@ namespace meta {
     template <has_rend T>
     using rend_type = decltype(rend(::std::declval<T>()));
 
+    template <typename Ret, typename T>
+    concept rend_returns = has_rend<T> && convertible_to<rend_type<T>, Ret>;
+
     namespace nothrow {
 
         template <typename T>
@@ -4474,6 +4501,11 @@ namespace meta {
 
         template <nothrow::has_rend T>
         using rend_type = meta::rend_type<T>;
+
+        template <typename Ret, typename T>
+        concept rend_returns =
+            nothrow::has_rend<T> &&
+            nothrow::convertible_to<nothrow::rend_type<T>, Ret>;
 
     }
 
