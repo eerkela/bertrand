@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include "bertrand/shape.h"
 
 
 /* INTRODUCTION
@@ -1774,17 +1775,6 @@ namespace impl {
         }
     };
 
-    /// TODO: try to condense the union_convert_from structs as much as possible, so
-    /// this section reads better.
-
-    /* Result 1: convert to proximal type. */
-    template <typename from, typename proximal, typename convert, typename...>
-    struct _union_convert_from { using type = proximal; };
-
-    /* Result 2: convert to first implicitly convertible type (void if none). */
-    template <typename from, meta::is_void proximal, typename convert>
-    struct _union_convert_from<from, proximal, convert> { using type = convert; };
-
     template <typename from, typename curr>
     concept union_proximal =
         meta::inherits<from, curr> &&
@@ -1792,7 +1782,7 @@ namespace impl {
         (meta::lvalue<from> ? !meta::rvalue<curr> : !meta::lvalue<curr>);
 
     template <typename from, typename proximal, typename curr>
-    using union_replace_proximal = std::conditional_t<
+    using union_most_proximal = std::conditional_t<
         meta::is_void<proximal> ||
         (meta::inherits<curr, proximal> && !meta::is<curr, proximal>) || (
             meta::is<curr, proximal> && (
@@ -1804,40 +1794,40 @@ namespace impl {
         proximal
     >;
 
-    /* Recursive 1: prefer the most derived and least qualified matching alternative,
-    with lvalues binding to lvalues and prvalues, and rvalues binding to rvalues and
-    prvalues.  If the result type is void, the candidate is more derived than it, or
-    the candidate is less qualified, replace the intermediate result. */
-    template <typename from, typename proximal, typename convert, typename curr, typename... next>
-        requires (union_proximal<from, curr>)
-    struct _union_convert_from<from, proximal, convert, curr, next...> : _union_convert_from<
-        from,
-        union_replace_proximal<from, proximal, curr>,
-        convert,
-        next...
-    > {};
-
     template <typename from, typename curr, typename convert>
     concept union_convertible =
         meta::is_void<convert> && !meta::lvalue<curr> && meta::convertible_to<from, curr>;
 
-    /* Recursive 2: if no proximal match is found, prefer the leftmost implicitly
-    convertible type. */
+    template <typename from, typename proximal, typename convert, typename...>
+    struct _union_convert_from {
+        using type = std::conditional_t<meta::not_void<proximal>, proximal, convert>;
+    };
+    template <typename from, typename proximal, typename convert, typename curr, typename... next>
+        requires (union_proximal<from, curr>)
+    struct _union_convert_from<from, proximal, convert, curr, next...> : _union_convert_from<
+        from,
+        union_most_proximal<from, proximal, curr>,
+        convert,
+        next...
+    > {};
     template <typename from, typename proximal, typename convert, typename curr, typename... next>
         requires (!union_proximal<from, curr> && union_convertible<from, curr, convert>)
     struct _union_convert_from<from, proximal, convert, curr, next...> :
         _union_convert_from<from, proximal, curr, next...>
     {};
-
-    /* Recursive 3: no match at this index, discard curr. */
     template <typename from, typename proximal, typename convert, typename curr, typename... next>
         requires (!union_proximal<from, curr> && !union_convertible<from, curr, convert>)
     struct _union_convert_from<from, proximal, convert, curr, next...> :
         _union_convert_from<from, proximal, convert, next...>
     {};
 
-    /* A simple visitor that backs the implicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::basic_union` primitive type. */
+    /* A manual visitor that backs the implicit constructor for a `Union<Ts...>`
+    object, returning a corresponding `basic_union` primitive type initialized to the
+    most derived and least qualified alternative in the inheritance chain of `from`,
+    or the first implicitly convertible alternative if no such type exists. Lvalue
+    inputs will only bind to lvalue or prvalue alternatives, and rvalue inputs will
+    only bind to rvalues or prvalues.  If no convertible alternative exists, the `type`
+    member will be `void`. */
     template <typename>
     struct union_convert_from {};
     template <typename... Ts>
@@ -1856,9 +1846,6 @@ namespace impl {
         }
     };
 
-    /* A simple visitor that backs the explicit constructor for a `Union<Ts...>`
-    object, returning a corresponding `impl::basic_union` primitive type.  Note that
-    this only applies if `union_convert_from` would be invalid. */
     template <typename... A>
     struct _union_construct_from {
         template <typename... Ts>
@@ -1868,6 +1855,11 @@ namespace impl {
         template <typename T, typename... Ts>
         struct select<T, Ts...> : select<Ts...> {};
     };
+
+    /* A manual visitor that backs the explicit constructor for a `Union<Ts...>`
+    object, returning a corresponding `basic_union` primitive type initialized to the
+    first alternative in `Ts...` that is constructible from the given arguments.  Note
+    that this only applies if `union_convert_from` would be invalid. */
     template <typename... Ts>
     struct union_construct_from {
         template <typename... A>
@@ -1884,7 +1876,7 @@ namespace impl {
         }
     };
 
-    /* A simple vtable that backs the implicit conversion operator from `Union<Ts...>`
+    /* A manual visitor that backs the implicit conversion operator from `Union<Ts...>`
     to any type `T` to which all alternatives can be converted. */
     template <typename to>
     struct union_convert_to {
@@ -1904,7 +1896,7 @@ namespace impl {
         };
     };
 
-    /* A simple vtable that backs the explicit conversion operator from `Union<Ts...>`
+    /* A manual visitor that backs the explicit conversion operator from `Union<Ts...>`
     to any type `T` to which all alternatives can be explicitly converted.  Only
     applies if `union_convert_to` would be malformed. */
     template <typename to>
@@ -1994,12 +1986,23 @@ namespace impl {
         }
     };
 
-    /// TODO: union_shape(), but that would need to possibly return another union,
-    /// which interferes with the meta::shape() logic.  Also, extents would probably
-    /// need to be implemented earlier as well.  They would have to go in a separate
-    /// shape.h header that gets included by both union.h and iter/range.h, but there's
-    /// still no way around the union of shapes issue.  Maybe I can avoid that by just
-    /// only enabling shape() on unions where all alternatives have the same shape?
+    template <typename Return>
+    struct union_shape {
+        template <size_t I>
+        struct fn {
+            template <typename Self>
+            [[nodiscard]] static constexpr Return operator()(Self&& self)
+                noexcept (requires{{
+                    meta::shape(std::forward<Self>(self).__value.template get<I>())
+                } noexcept -> meta::nothrow::convertible_to<Return>;})
+                requires (requires{{
+                    meta::shape(std::forward<Self>(self).__value.template get<I>())
+                } -> meta::convertible_to<Return>;})
+            {
+                return (meta::shape(std::forward<Self>(self).__value.template get<I>()));
+            }
+        };
+    };
 
     template <typename Return, auto... A>
     struct union_get {
@@ -3299,41 +3302,6 @@ struct Union {
         return impl::arrow{*std::forward<Self>(self)};
     }
 
-    /* Returns the result of `meta::data()` on the current alternative if it is
-    well-formed and all results share a common type.  Fails to compile otherwise. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto data(this Self&& self)
-        noexcept (requires{{impl::basic_vtable<
-            impl::union_data<meta::common_type<
-                decltype((meta::data(std::forward<Self>(self).__value.template get<
-                    meta::remove_rvalue<Ts>
-                >())))...
-            >>::template fn,
-            sizeof...(Ts)
-        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-        requires (
-            (meta::has_data<
-                decltype((std::forward<Self>(self).__value.template get<
-                    meta::remove_rvalue<Ts>
-                >()))
-            > && ...) &&
-            (meta::has_common_type<
-                decltype((meta::data(std::forward<Self>(self).__value.template get<
-                    meta::remove_rvalue<Ts>
-                >())))...
-            >)
-        )
-    {
-        return impl::basic_vtable<
-            impl::union_data<meta::common_type<
-                decltype((meta::data(std::forward<Self>(self).__value.template get<
-                    meta::remove_rvalue<Ts>
-                >())))...
-            >>::template fn,
-            sizeof...(Ts)
-        >{self.__value.index()}(std::forward<Self>(self));
-    }
-
     /* Returns the result of `meta::size()` on the current alternative if it is
     well-formed and all results share a common type.  Fails to compile otherwise. */
     template <typename Self>
@@ -3424,11 +3392,75 @@ struct Union {
         >{self.__value.index()}(std::forward<Self>(self));
     }
 
-    /// TODO: shape()?  This may have to return another union.
+    /* Returns the result of `meta::data()` on the current alternative if it is
+    well-formed and all results share a common type.  Fails to compile otherwise. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto data(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_data<meta::common_type<
+                decltype((meta::data(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires (
+            (meta::has_data<
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >()))
+            > && ...) &&
+            (meta::has_common_type<
+                decltype((meta::data(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >)
+        )
+    {
+        return impl::basic_vtable<
+            impl::union_data<meta::common_type<
+                decltype((meta::data(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self));
+    }
 
-    /// TODO: maybe union.get<A...>() should accept arbitrary auto... args and dispatch
-    /// them directly to the underlying alternatives.
-
+    /* Returns the result of `meta::shape()` on the current alternative if it is
+    well-formed and all results share a common type.  Fails to compile otherwise. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) shape(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::union_shape<meta::common_type<
+                decltype((meta::shape(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires (
+            (meta::has_shape<
+                decltype((std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >()))
+            > && ...) &&
+            meta::has_common_type<
+                decltype((meta::shape(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >
+        )
+    {
+        return (impl::basic_vtable<
+            impl::union_shape<meta::common_type<
+                decltype((meta::shape(std::forward<Self>(self).__value.template get<
+                    meta::remove_rvalue<Ts>
+                >())))...
+            >>::template fn,
+            sizeof...(Ts)
+        >{self.__value.index()}(std::forward<Self>(self)));
+    }
 
     /* Forward tuple access to `Ts...`, assuming they all support it and have the same
     size.  If so, then the return type may be a further union if the indexed types
@@ -3636,10 +3668,6 @@ struct Union {
 ////////////////////////
 ////    OPTIONAL    ////
 ////////////////////////
-
-
-/// TODO: optionals and expecteds can conditionally expose `data()`, returning a
-/// null pointer if empty.
 
 
 namespace impl {
@@ -4802,18 +4830,6 @@ struct Optional {
         return opt.__value.index() != 0;
     }
 
-    /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
-    type will be promoted to an `Optional<R>`, where `R` represents the forwarded
-    result, and the empty state is implicitly propagated. */
-    template <ssize_t I, typename Self>
-        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
-    [[nodiscard]] constexpr auto get(this Self&& self)
-        noexcept (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))};})
-    {
-        return impl::optional_get<Self, I>{}(std::forward<Self>(self));
-    }
-
     /* Return 0 if the optional is empty or `meta::size(*opt)` otherwise.  If
     `meta::size(*opt)` would be malformed and the value is not iterable (meaning that
     iterating over the optional would return just a single element), then the result
@@ -4886,6 +4902,67 @@ struct Optional {
         } else {
             return !__value.index();
         }
+    }
+
+    /* Get a pointer to the underlying data buffer if the templated type supports it.
+    If the optional is empty, then a null pointer will be returned instead. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto data(this Self&& self)
+        noexcept (meta::nothrow::has_data<decltype((*std::forward<Self>(self)))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+        requires (meta::has_data<decltype((*std::forward<Self>(self)))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+    {
+        if constexpr (meta::has_data<decltype((*std::forward<Self>(self)))>) {
+            return self == None ?
+                nullptr :
+                meta::data(std::forward<Self>(self).__value.template get<1>());
+        } else {
+            return self == None ?
+                nullptr :
+                std::addressof(self.__value.template get<1>());
+        }
+    }
+
+    /* Forward the shape of the underlying value if the templated type supports it.
+    If the optional is empty, then an empty shape filled with zeros will be returned
+    instead. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto shape(this Self&& self)
+        noexcept (meta::nothrow::has_shape<decltype(*std::forward<Self>(self))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+        requires (meta::has_shape<decltype(*std::forward<Self>(self))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+    {
+        if constexpr (meta::has_shape<decltype(*std::forward<Self>(self))>) {
+            if (self == None) {
+                return meta::unqualify<meta::shape_type<decltype(*std::forward<Self>(self))>>{};
+            } else {
+                return meta::shape(std::forward<Self>(self).__value.template get<1>());
+            }
+        } else {
+            return impl::shape<1>{self != None};
+        }
+    }
+
+    /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
+    type will be promoted to an `Optional<R>`, where `R` represents the forwarded
+    result, and the empty state is implicitly propagated. */
+    template <ssize_t I, typename Self>
+        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
+    [[nodiscard]] constexpr auto get(this Self&& self)
+        noexcept (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
+        requires (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))};})
+    {
+        return impl::optional_get<Self, I>{}(std::forward<Self>(self));
     }
 
     /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
@@ -5161,6 +5238,9 @@ struct Optional<T> {
 
     /* Empty optionals are always empty. */
     [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+
+    /* Empty optionals always have a 1D shape of length zero. */
+    [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {0}; }
 
     /* Get a forward iterator over an empty optional.  This will always return a
     trivial iterator that yields no values and always compares equal to `end()`. */
@@ -5593,18 +5673,6 @@ struct Expected {
         return meta::to_arrow(impl::expected_deref<const Expected&>{}(*this));
     }
 
-    /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
-    type will be promoted to an `Expected<R, Es...>`, where `R` represents the
-    forwarded result, and `Es...` represent the forwarded error state(s). */
-    template <ssize_t I, typename Self>
-        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
-    [[nodiscard]] constexpr auto get(this Self&& self)
-        noexcept (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))};})
-    {
-        return impl::expected_get<Self, I>{}(std::forward<Self>(self));
-    }
-
     /* Return 0 if the expected is empty or `meta::size(*exp)` otherwise.  If
     `meta::size(*exp)` would be malformed and the value is not iterable (meaning that
     iterating over the expected would return just a single element), then the result
@@ -5677,6 +5745,68 @@ struct Expected {
         } else {
             return __value.index() != 0;
         }
+    }
+
+    /* Get a pointer to the underlying data buffer if the templated type supports it.
+    If the expected represents an error state, then a null pointer will be returned
+    instead. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto data(this Self&& self)
+        noexcept (meta::nothrow::has_data<decltype((*std::forward<Self>(self)))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+        requires (meta::has_data<decltype((*std::forward<Self>(self)))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+    {
+        if constexpr (meta::has_data<decltype((*std::forward<Self>(self)))>) {
+            return self.__value.index() != 0 ?
+                nullptr :
+                meta::data(std::forward<Self>(self).__value.template get<0>());
+        } else {
+            return self.__value.index() != 0 ?
+                nullptr :
+                std::addressof(self.__value.template get<0>());
+        }
+    }
+
+    /* Forward the shape of the underlying value if the templated type supports it.
+    If the expected represents an error state, then an empty shape filled with zeros
+    will be returned instead. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto shape(this Self&& self)
+        noexcept (meta::nothrow::has_shape<decltype(*std::forward<Self>(self))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+        requires (meta::has_shape<decltype(*std::forward<Self>(self))> || (
+            !impl::optional_forward_iterable<Self> &&
+            !impl::optional_reverse_iterable<Self>
+        ))
+    {
+        if constexpr (meta::has_shape<decltype(*std::forward<Self>(self))>) {
+            if (self.__value.index() != 0) {
+                return meta::unqualify<meta::shape_type<decltype(*std::forward<Self>(self))>>{};
+            } else {
+                return meta::shape(std::forward<Self>(self).__value.template get<0>());
+            }
+        } else {
+            return impl::shape<1>{self.__value.index() == 0};
+        }
+    }
+
+    /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
+    type will be promoted to an `Expected<R, Es...>`, where `R` represents the
+    forwarded result, and `Es...` represent the forwarded error state(s). */
+    template <ssize_t I, typename Self>
+        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
+    [[nodiscard]] constexpr auto get(this Self&& self)
+        noexcept (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
+        requires (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))};})
+    {
+        return impl::expected_get<Self, I>{}(std::forward<Self>(self));
     }
 
     /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
@@ -5837,14 +5967,14 @@ This specialization is necessary to allow `Expected` to be used as a return type
 functions that may fail, but do not otherwise return a value.  With this in place,
 the following code compiles:
 
-```
-auto foo(bool b) -> Expected<void, TypeError> {
-    if (!b) {
-        return TypeError("some error");  // OK, returns the error state
+    ```
+    auto foo(bool b) -> Expected<void, TypeError> {
+        if (!b) {
+            return TypeError("some error");  // OK, returns the error state
+        }
+        return {};  // OK, returns the result state (None)
     }
-    return {};  // OK, returns the result state (None)
-}
-```
+    ```
 */
 template <meta::is_void T, typename E, typename... Es>
     requires (impl::expected_concept<T, E, Es...>)
@@ -6018,6 +6148,9 @@ struct Expected<T, E, Es...> {
 
     /* Empty expected monads are always empty. */
     [[nodiscard]] static constexpr bool empty() noexcept { return true; }
+
+    /* Empty expected monads always have a 1D shape of length zero. */
+    [[nodiscard]] static constexpr impl::shape<1> shape() noexcept { return {}; }
 
     /* Get a forward iterator over an empty expected monad.  This will always return a
     trivial iterator that yields no values and always compares equal to `end()`. */
@@ -7029,43 +7162,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     };
 
 _LIBCPP_END_NAMESPACE_STD
-
-
-namespace bertrand {
-
-    static_assert([] {
-        Optional<int> o = 1;
-        // auto it = meta::rbegin(std::move(o));
-        auto it = std::move(o).rbegin();
-        // auto sentinel = meta::rend(std::move(o));
-        auto sentinel = std::move(o).rend();
-
-        for (auto&& x : o) {
-            if (x != 1) return false;
-        }
-
-        return true;
-    }());
-
-
-    static_assert([] {
-        Union<std::array<int, 3>, std::vector<int>> u = std::array<int, 3>{1, 2, 3};
-        if (u.size() != 3) return false;
-        auto it = u.begin();
-        auto end = u.end();
-        while (it != end) {
-            if (*it != 1 && *it != 2 && *it != 3) return false;
-            ++it;
-        }
-        for (auto&& x : u) {
-            
-        }
-
-
-        return true;
-    }());
-
-}
 
 
 #endif  // BERTRAND_UNION_H
