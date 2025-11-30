@@ -4069,52 +4069,39 @@ namespace impl {
 
     /* A simple visitor that backs the tuple indexing operator for `Optional<T>`, where
     `T` is tuple-like, and the return type is promoted to an optional. */
-    template <typename Self, ssize_t I>
-        requires (
-            visitable<Self>::alternatives::size() == 2 &&
-            meta::tuple_like<typename visitable<Self>::value> &&
-            impl::valid_index<meta::tuple_size<typename visitable<Self>::value>, I>
-        )
+    template <auto... A>
     struct optional_get {
-        using value = visitable<Self>::value;
-        static constexpr size_t idx = size_t(impl::normalize_index<meta::tuple_size<value>, I>());
-        using Optional = bertrand::Optional<
-            meta::remove_rvalue<decltype((meta::get<idx>(std::declval<value>())))>
-        >;
+        template <typename Self>
+        using type = Optional<meta::remove_rvalue<
+            meta::get_type<decltype((*std::declval<Self>())), A...>
+        >>;
 
-        template <size_t J>
+        template <size_t I>
         struct fn {
-            static constexpr Optional operator()(meta::forward<Self> self)
-                noexcept (requires{{meta::get<idx>(
-                    visitable<Self>::template get<J>(std::forward<Self>(self))
-                )} noexcept -> meta::nothrow::convertible_to<Optional>;})
-                requires (requires{{meta::get<idx>(
-                    visitable<Self>::template get<J>(std::forward<Self>(self))
-                )} -> meta::convertible_to<Optional>;})
+            template <typename Self>
+            static constexpr type<Self> operator()(Self&& self)
+                noexcept (requires{{meta::get<A...>(
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
+                )} noexcept -> meta::nothrow::convertible_to<type<Self>>;})
+                requires (requires{{meta::get<A...>(
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
+                )} -> meta::convertible_to<type<Self>>;})
             {
-                return meta::get<idx>(
-                    visitable<Self>::template get<J>(std::forward<Self>(self))
+                return meta::get<A...>(
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
                 );
             }
         };
         template <>
         struct fn<0> {
-            static constexpr Optional operator()(meta::forward<Self> self)
-                noexcept (meta::nothrow::default_constructible<Optional>)
-                requires (meta::default_constructible<Optional>)
+            template <typename Self>
+            static constexpr type<Self> operator()(Self&& self)
+                noexcept (meta::nothrow::default_constructible<type<Self>>)
+                requires (meta::default_constructible<type<Self>>)
             {
                 return {};
             }
         };
-
-        using dispatch = impl::basic_vtable<fn, 2>;
-
-        [[nodiscard]] static constexpr Optional operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
-        {
-            return dispatch{self.__value.index()}(std::forward<Self>(self));
-        }
     };
 
     /* A wrapper for an arbitrary iterator that allows it to be constructed in an empty
@@ -4269,10 +4256,10 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr auto operator->(this Self&& self)
-            noexcept (requires{{std::to_address(std::forward<Self>(self).__value.iter)} noexcept;})
-            requires (requires{{std::to_address(std::forward<Self>(self).__value.iter)};})
+            noexcept (requires{{impl::arrow{*std::forward<Self>(self)}} noexcept;})
+            requires (requires{{impl::arrow{*std::forward<Self>(self)}};})
         {
-            return std::to_address(std::forward<Self>(self).__value.iter);
+            return impl::arrow{*std::forward<Self>(self)};
         }
 
         template <typename Self, typename V>
@@ -4630,7 +4617,7 @@ struct Optional {
         })
         requires (
             !meta::prefer_constructor<to> &&
-            !meta::boolean<to> &&
+            !meta::is<to, bool> &&
             requires{{impl::optional_convert_to<Self, to>{}(std::forward<Self>(self))};}
         )
     {
@@ -4684,38 +4671,22 @@ struct Optional {
         return (std::forward<Self>(self).__value.template get<1>());
     }
 
-    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  A `TypeError` error will be thrown if
-    the program is compiled in debug mode and the optional is empty.  This requires a
-    single extra conditional, which will be optimized out in release builds to maintain
-    zero overhead. */
-    [[nodiscard]] constexpr auto operator->()
-        noexcept (!DEBUG && requires{{meta::to_arrow(__value.template get<1>())} noexcept;})
-        requires (requires{{meta::to_arrow(__value.template get<1>())};})
+    /* Indirectly read the stored value, returning a proxy that extends its lifetime
+    if necessary and forwards to its `->` where possible.  A `TypeError` error will be
+    thrown if the program is compiled in debug mode and the optional is empty.  This
+    requires a single extra conditional, which will be optimized out in release builds
+    to maintain zero overhead. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto operator->(this Self&& self)
+        noexcept (!DEBUG && requires{{impl::arrow{*std::forward<Self>(self)}} noexcept;})
+        requires (requires{{impl::arrow{*std::forward<Self>(self)}};})
     {
         if constexpr (DEBUG) {
-            if (__value.index() == 0) {
+            if (self.__value.index() == 0) {
                 throw impl::bad_optional_access<T>();
             }
         }
-        return meta::to_arrow(__value.template get<1>());
-    }
-
-    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  A `TypeError` error will be thrown if
-    the program is compiled in debug mode and the optional is empty.  This requires a
-    single extra conditional, which will be optimized out in release builds to maintain
-    zero overhead. */
-    [[nodiscard]] constexpr auto operator->() const
-        noexcept (!DEBUG && requires{{meta::to_arrow(__value.template get<1>())} noexcept;})
-        requires (requires{{meta::to_arrow(__value.template get<1>())};})
-    {
-        if constexpr (DEBUG) {
-            if (__value.index() == 0) {
-                throw impl::bad_optional_access<T>();
-            }
-        }
-        return meta::to_arrow(__value.template get<1>());
+        return impl::arrow{*std::forward<Self>(self)};
     }
 
     /* Explicitly check whether the optional is in the empty state by comparing against
@@ -4900,13 +4871,16 @@ struct Optional {
     /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
     type will be promoted to an `Optional<R>`, where `R` represents the forwarded
     result, and the empty state is implicitly propagated. */
-    template <ssize_t I, typename Self>
-        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
-    [[nodiscard]] constexpr auto get(this Self&& self)
-        noexcept (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::optional_get<Self, I>{}(std::forward<Self>(self))};})
+    template <auto... A, typename Self>
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<impl::optional_get<A...>::template fn, 2>{
+            self.__value.index()
+        }(std::forward<Self>(self))} noexcept;})
+        requires (meta::has_get<decltype((*std::forward<Self>(self))), A...>)
     {
-        return impl::optional_get<Self, I>{}(std::forward<Self>(self));
+        return (impl::basic_vtable<impl::optional_get<A...>::template fn, 2>{
+            self.__value.index()
+        }(std::forward<Self>(self)));
     }
 
     /* Get a forward iterator over the optional.  If the wrapped type is iterable, then
@@ -5325,84 +5299,66 @@ namespace impl {
     /* Attempt to dereference an expected.  If it is in an error state, then that state
     will be thrown as an exception.  Otherwise, perfectly forwards the contained
     value. */
-    template <typename Self>
+    template <size_t I>
     struct expected_deref {
-        using type = decltype((std::declval<Self>().__value.template get<0>()));
-
-        template <size_t I>
-        struct fn {
-            static constexpr type operator()(meta::forward<Self> self)
-                requires (I == 0)
-            {
-                return (std::forward<Self>(self).__value.template get<0>());
-            }
-            [[noreturn]] static constexpr type operator()(meta::forward<Self> self)
-                requires (I > 0)
-            {
-                throw std::forward<Self>(self).__value.template get<I>();
-            }
-        };
-
-        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
-
-        [[nodiscard]] static constexpr type operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
+        template <typename Self>
+        static constexpr auto operator()(Self&& self)
+            -> decltype((std::forward<Self>(self).__value.template get<0>()))
+            requires (I == 0)
         {
-            return dispatch{self.__value.index()}(std::forward<Self>(self));
+            return (std::forward<Self>(self).__value.template get<0>());
+        }
+        template <typename Self>
+        [[noreturn]] static constexpr auto operator()(Self&& self)
+            -> decltype((std::forward<Self>(self).__value.template get<0>()))
+            requires (I > 0)
+        {
+            throw std::forward<Self>(self).__value.template get<I>();
         }
     };
 
     /* A simple visitor that backs the tuple indexing operator for `Optional<T>`, where
     `T` is tuple-like, and the return type is promoted to an optional. */
-    template <typename Self, ssize_t I>
-        requires (
-            meta::tuple_like<typename visitable<Self>::value> &&
-            impl::valid_index<meta::tuple_size<typename visitable<Self>::value>, I>
-        )
+    template <auto... A>
     struct expected_get {
-        using value = visitable<Self>::value;
-        static constexpr size_t idx = size_t(impl::normalize_index<meta::tuple_size<value>, I>());
-        using T = meta::remove_rvalue<decltype((meta::get<idx>(std::declval<value>())))>;
         template <typename... Es>
-        using _Expected = bertrand::Expected<T, Es...>;
-        using Expected = visitable<Self>::errors::template eval<_Expected>;
+        struct _type {
+            template <typename Self>
+            using type = Expected<meta::remove_rvalue<
+                meta::get_type<decltype((*std::declval<Self>())), A...>
+            >, Es...>;
+        };
 
-        template <size_t J>
+        template <typename Self>
+        using type = impl::visitable<Self>::errors::template eval<_type>::template type<Self>;
+
+        template <size_t I>
         struct fn {
-            static constexpr Expected operator()(meta::forward<Self> self)
+            template <typename Self> requires (I == 0)
+            static constexpr type<Self> operator()(Self&& self)
+                noexcept (requires{{meta::get<A...>(
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
+                )} noexcept -> meta::nothrow::convertible_to<type<Self>>;})
+                requires (requires{{meta::get<A...>(
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
+                )} -> meta::convertible_to<type<Self>>;})
+            {
+                return meta::get<A...>(visitable<Self>::template get<I>(
+                    std::forward<Self>(self)
+                ));
+            }
+            template <typename Self> requires (I > 0)
+            static constexpr type<Self> operator()(Self&& self)
                 noexcept (requires{{
-                    visitable<Self>::template get<J>(std::forward<Self>(self))
-                } noexcept -> meta::nothrow::convertible_to<Expected>;})
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
+                } noexcept -> meta::nothrow::convertible_to<type<Self>>;})
                 requires (requires{{
-                    visitable<Self>::template get<J>(std::forward<Self>(self))
-                } -> meta::convertible_to<Expected>;})
+                    visitable<Self>::template get<I>(std::forward<Self>(self))
+                } -> meta::convertible_to<type<Self>>;})
             {
-                return visitable<Self>::template get<J>(std::forward<Self>(self));
+                return visitable<Self>::template get<I>(std::forward<Self>(self));
             }
         };
-        template <>
-        struct fn<0> {
-            static constexpr Expected operator()(meta::forward<Self> self)
-                noexcept (requires{{meta::get<idx>(
-                    visitable<Self>::template get<0>(std::forward<Self>(self))
-                )} noexcept -> meta::nothrow::convertible_to<Expected>;})
-                requires (requires{{meta::get<idx>(
-                    visitable<Self>::template get<0>(std::forward<Self>(self))
-                )} -> meta::convertible_to<Expected>;})
-            {
-                return meta::get<idx>(visitable<Self>::template get<0>(std::forward<Self>(self)));
-            }
-        };
-
-        using dispatch = impl::basic_vtable<fn, visitable<Self>::alternatives::size()>;
-
-        [[nodiscard]] static constexpr Expected operator()(meta::forward<Self> self)
-            noexcept (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-            requires (requires{{dispatch{self.__value.index()}(std::forward<Self>(self))};})
-        {
-            return dispatch{self.__value.index()}(std::forward<Self>(self));
-        }
     };
 
 }
@@ -5586,35 +5542,21 @@ struct Expected {
     then the error will be thrown as an exception. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) {
-        return (impl::expected_deref<Self>{}(std::forward<Self>(self)));
+        return (impl::basic_vtable<
+            impl::expected_deref,
+            impl::visitable<Self>::alternatives::size()
+        >{self.__value.index()}(std::forward<Self>(self)));
     }
 
-    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  If the expected is in an error state,
-    then the error will be thrown as an exception. */
-    [[nodiscard]] constexpr auto operator->()
-        noexcept (requires{
-            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))} noexcept;
-        })
-        requires (requires{
-            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))};
-        })
+    /* Indirectly read the stored value, returning a proxy that extends its lifetime if
+    necessary and forwards to its `->` operator where possible.  If the expected is in
+    an error state, then the error will be thrown as an exception. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto operator->(this Self&& self)
+        noexcept (requires{{impl::arrow{*std::forward<Self>(self)}} noexcept;})
+        requires (requires{{impl::arrow{*std::forward<Self>(self)}};})
     {
-        return meta::to_arrow(impl::expected_deref<Expected&>{}(*this));
-    }
-
-    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  If the expected is in an error state,
-    then the error will be thrown as an exception. */
-    [[nodiscard]] constexpr auto operator->() const
-        noexcept (requires{
-            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))} noexcept;
-        })
-        requires (requires{
-            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))};
-        })
-    {
-        return meta::to_arrow(impl::expected_deref<const Expected&>{}(*this));
+        return impl::arrow{*std::forward<Self>(self)};
     }
 
     /* Return 0 if the expected is empty or `meta::size(*exp)` otherwise.  If
@@ -5744,13 +5686,18 @@ struct Expected {
     /* Forward tuple access to `T`, assuming it supports it.  If so, then the return
     type will be promoted to an `Expected<R, Es...>`, where `R` represents the
     forwarded result, and `Es...` represent the forwarded error state(s). */
-    template <ssize_t I, typename Self>
-        requires (meta::tuple_like<T> && impl::valid_index<meta::tuple_size<T>, I>)
-    [[nodiscard]] constexpr auto get(this Self&& self)
-        noexcept (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))} noexcept;})
-        requires (requires{{impl::expected_get<Self, I>{}(std::forward<Self>(self))};})
+    template <auto... A, typename Self>
+    [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
+        noexcept (requires{{impl::basic_vtable<
+            impl::expected_get<A...>::template fn,
+            impl::visitable<Self>::alternatives::size()
+        >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
+        requires (meta::has_get<decltype((*std::forward<Self>(self))), A...>)
     {
-        return impl::expected_get<Self, I>{}(std::forward<Self>(self));
+        return (impl::basic_vtable<
+            impl::expected_get<A...>::template fn,
+            impl::visitable<Self>::alternatives::size()
+        >{self.__value.index()}(std::forward<Self>(self)));
     }
 
     /* Get a forward iterator over the expected.  If the wrapped type is iterable, then
@@ -6053,35 +6000,21 @@ struct Expected<T, E, Es...> {
     then the error will be thrown as an exception. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) {
-        return (impl::expected_deref<Self>{}(std::forward<Self>(self)));
+        return (impl::basic_vtable<
+            impl::expected_deref,
+            impl::visitable<Self>::alternatives::size()
+        >{self.__value.index()}(std::forward<Self>(self)));
     }
 
-    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  If the expected is in an error state,
-    then the error will be thrown as an exception. */
-    [[nodiscard]] constexpr auto operator->()
-        noexcept (requires{
-            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))} noexcept;
-        })
-        requires (requires{
-            {meta::to_arrow(impl::expected_deref<Expected&>{}(*this))};
-        })
+    /* Indirectly read the stored value, returning a proxy that extends its lifetime if
+    necessary and forwards to its `->` operator where possible.  If the expected is in
+    an error state, then the error will be thrown as an exception. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto operator->(this Self&& self)
+        noexcept (requires{{impl::arrow{*std::forward<Self>(self)}} noexcept;})
+        requires (requires{{impl::arrow{*std::forward<Self>(self)}};})
     {
-        return meta::to_arrow(impl::expected_deref<Expected&>{}(*this));
-    }
-
-    /* Indirectly read the stored value, forwarding to its `->` operator if it exists,
-    or directly returning its address otherwise.  If the expected is in an error state,
-    then the error will be thrown as an exception. */
-    [[nodiscard]] constexpr auto operator->() const
-        noexcept (requires{
-            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))} noexcept;
-        })
-        requires (requires{
-            {meta::to_arrow(impl::expected_deref<const Expected&>{}(*this))};
-        })
-    {
-        return meta::to_arrow(impl::expected_deref<const Expected&>{}(*this));
+        return impl::arrow{*std::forward<Self>(self)};
     }
 
     /* Empty expected monads always have a size of zero. */
