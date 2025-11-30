@@ -88,8 +88,8 @@ namespace impl {
             )
         {
             size_type i = 0;
-            auto it = meta::begin(n);
-            auto end = meta::end(n);
+            auto it = meta::begin(std::forward<T>(n));
+            auto end = meta::end(std::forward<T>(n));
             while (i < size() && it != end) {
                 dim[i] = *it;
                 ++i;
@@ -122,17 +122,13 @@ namespace impl {
 
         [[nodiscard]] constexpr pointer data() const noexcept { return static_cast<pointer>(dim); }
         [[nodiscard]] constexpr iterator begin() const noexcept { return data(); }
-        [[nodiscard]] constexpr iterator cbegin() const noexcept { return begin(); }
         [[nodiscard]] constexpr iterator end() const noexcept { return data() + size(); }
-        [[nodiscard]] constexpr iterator cend() const noexcept { return end(); }
         [[nodiscard]] constexpr reverse_iterator rbegin() const noexcept {
             return std::make_reverse_iterator(end());
         }
-        [[nodiscard]] constexpr reverse_iterator crbegin() const noexcept { return rbegin(); }
         [[nodiscard]] constexpr reverse_iterator rend() const noexcept {
             return std::make_reverse_iterator(begin());
         }
-        [[nodiscard]] constexpr reverse_iterator crend() const noexcept { return rend(); }
 
         template <index_type I> requires (impl::valid_index<ssize(), I>)
         [[nodiscard]] constexpr value_type get() const noexcept {

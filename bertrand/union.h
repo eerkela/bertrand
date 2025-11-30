@@ -2706,13 +2706,6 @@ namespace impl {
             return sub{__value.index()}(*this, n);
         }
 
-        [[nodiscard]] constexpr difference_type operator-(const union_iterator& rhs)
-            noexcept (requires{{distance{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{distance{__value.index()}(*this, rhs)};})
-        {
-            return distance{__value.index()}(*this, rhs);
-        }
-
         template <typename other>
         [[nodiscard]] friend constexpr difference_type operator-(
             const union_iterator& lhs,
@@ -2724,7 +2717,7 @@ namespace impl {
             return distance{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr difference_type operator-(
             const other& rhs,
             const union_iterator& lhs
@@ -2733,13 +2726,6 @@ namespace impl {
             requires (requires{{distance{lhs.__value.index()}(lhs, rhs)};})
         {
             return distance{lhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator<(const union_iterator& rhs) const
-            noexcept (requires{{less{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{less{__value.index()}(*this, rhs)};})
-        {
-            return less{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2753,7 +2739,7 @@ namespace impl {
             return less{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr bool operator<(
             const other& lhs,
             const union_iterator& rhs
@@ -2762,13 +2748,6 @@ namespace impl {
             requires (requires{{less{rhs.__value.index()}(lhs, rhs)};})
         {
             return less{rhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator<=(const union_iterator& rhs) const
-            noexcept (requires{{less_equal{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{less_equal{__value.index()}(*this, rhs)};})
-        {
-            return less_equal{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2782,7 +2761,7 @@ namespace impl {
             return less_equal{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr bool operator<=(
             const other& lhs,
             const union_iterator& rhs
@@ -2791,13 +2770,6 @@ namespace impl {
             requires (requires{{less_equal{rhs.__value.index()}(lhs, rhs)};})
         {
             return less_equal{rhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator==(const union_iterator& rhs) const
-            noexcept (requires{{equal{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{equal{__value.index()}(*this, rhs)};})
-        {
-            return equal{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2811,7 +2783,7 @@ namespace impl {
             return equal{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr bool operator==(
             const other& lhs,
             const union_iterator& rhs
@@ -2820,13 +2792,6 @@ namespace impl {
             requires (requires{{equal{rhs.__value.index()}(lhs, rhs)};})
         {
             return equal{rhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator!=(const union_iterator& rhs) const
-            noexcept (requires{{not_equal{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{not_equal{__value.index()}(*this, rhs)};})
-        {
-            return not_equal{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2840,7 +2805,7 @@ namespace impl {
             return not_equal{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr bool operator!=(
             const other& lhs,
             const union_iterator& rhs
@@ -2849,13 +2814,6 @@ namespace impl {
             requires (requires{{not_equal{rhs.__value.index()}(lhs, rhs)};})
         {
             return not_equal{rhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator>=(const union_iterator& rhs) const
-            noexcept (requires{{greater_equal{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{greater_equal{__value.index()}(*this, rhs)};})
-        {
-            return greater_equal{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2869,7 +2827,7 @@ namespace impl {
             return greater_equal{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr bool operator>=(
             const other& lhs,
             const union_iterator& rhs
@@ -2878,13 +2836,6 @@ namespace impl {
             requires (requires{{greater_equal{rhs.__value.index()}(lhs, rhs)};})
         {
             return greater_equal{rhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr bool operator>(const union_iterator& rhs) const
-            noexcept (requires{{greater{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{greater{__value.index()}(*this, rhs)};})
-        {
-            return greater{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2898,7 +2849,7 @@ namespace impl {
             return greater{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr bool operator>(
             const other& lhs,
             const union_iterator& rhs
@@ -2907,13 +2858,6 @@ namespace impl {
             requires (requires{{greater{rhs.__value.index()}(lhs, rhs)};})
         {
             return greater{rhs.__value.index()}(lhs, rhs);
-        }
-
-        [[nodiscard]] constexpr auto operator<=>(const union_iterator& rhs) const
-            noexcept (requires{{three_way{__value.index()}(*this, rhs)} noexcept;})
-            requires (requires{{three_way{__value.index()}(*this, rhs)};})
-        {
-            return three_way{__value.index()}(*this, rhs);
         }
 
         template <typename other>
@@ -2927,7 +2871,7 @@ namespace impl {
             return three_way{lhs.__value.index()}(lhs, rhs);
         }
 
-        template <typename other>
+        template <typename other> requires (!is_union_iterator<other>)
         [[nodiscard]] friend constexpr decltype(auto) operator<=>(
             const other& lhs,
             const union_iterator& rhs
