@@ -4617,6 +4617,12 @@ namespace iter {
     template <typename F>
     any(F&&) -> any<meta::remove_rvalue<F>>;
 
+    /// TODO: iter::at(range(...)) should produce a range of results by applying each
+    /// index to the range individually.  The question is how should this behave with
+    /// respect to multidimensional indexing and the nested container normalizations
+    /// that are also being performed?  That's where all the complexity lies.
+    /// -> Invariably, it will require another proxy type in the impl:: namespace
+
     /* Range-based multidimensional indexing operator, with support for both
     compile-time (tuple-like) and runtime (subscript) indexing.
 
@@ -6758,26 +6764,6 @@ namespace iter {
             return (at{std::forward<K>(k)...}(std::forward<Self>(self)));
         }
 
-        /* Range-based logical disjunction operator.  This is expression-equalivant to
-        `iter::any{f}(self)`.  See that algorithm for more information. */
-        template <typename F = impl::ExplicitConvertTo<bool>>
-        [[nodiscard]] constexpr bool any(F&& f = {}) const
-            noexcept (requires{{iter::any{std::forward<F>(f)}(*this)} noexcept;})
-            requires (requires{{iter::any{std::forward<F>(f)}(*this)};})
-        {
-            return iter::any{std::forward<F>(f)}(*this);
-        }
-
-        /* Range-based logical conjunction operator.  This is expression-equalivant to
-        `iter::all{f}(self)`.  See that algorithm for more information. */
-        template <typename F = impl::ExplicitConvertTo<bool>>
-        [[nodiscard]] constexpr bool all(F&& f = {}) const
-            noexcept (requires{{iter::all{std::forward<F>(f)}(*this)} noexcept;})
-            requires (requires{{iter::all{std::forward<F>(f)}(*this)};})
-        {
-            return iter::all{std::forward<F>(f)}(*this);
-        }
-
         /* Range-based membership test.  This is expression-equivalent to
         `iter::contains{k}(self)`.  See that algorithm for more information. */
         template <typename T>
@@ -7057,8 +7043,8 @@ namespace bertrand::iter {
     static constexpr decltype(auto) m2 = max{}(range(std::array{1, 2, 3}));
     static_assert(m2 == 3);
 
-    static constexpr auto m3 = minmax{}(range(std::array{1, 2, 3}), 4, 5, 0);
-    static_assert(m3.min == 0 && m3.max == 5);
+    static constexpr auto m3 = minmax{}(range(std::array{1, 2, 3}), 4, 5, 2);
+    static_assert(m3.min == 1 && m3.max == 5);
 
 }
 

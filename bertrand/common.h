@@ -5205,7 +5205,7 @@ namespace meta {
 
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
-                noexcept (requires{{*meta::begin(t)} noexcept;})
+                noexcept (requires{{*meta::begin(::std::forward<T>(t))} noexcept;})
                 requires (
                     !meta::structured<T, 0> &&
                     !member::has_front<T> &&
@@ -5213,7 +5213,7 @@ namespace meta {
                     meta::iterable<T>
                 )
             {
-                return (*meta::begin(t));
+                return (*meta::begin(::std::forward<T>(t)));
             }
         };
 
@@ -5300,7 +5300,7 @@ namespace meta {
 
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
-                noexcept (requires{{*meta::rbegin(t)} noexcept;})
+                noexcept (requires{{*meta::rbegin(::std::forward<T>(t))} noexcept;})
                 requires (
                     !meta::structured<T, 0> &&
                     !member::has_back<T> &&
@@ -5308,13 +5308,13 @@ namespace meta {
                     meta::reverse_iterable<T>
                 )
             {
-                return (*meta::rbegin(t));
+                return (*meta::rbegin(::std::forward<T>(t)));
             }
 
             template <typename T>
             [[nodiscard]] static constexpr decltype(auto) operator()(T&& t)
                 noexcept (requires(meta::begin_type<T> it) {
-                    {meta::begin(t)} noexcept;
+                    {meta::begin(::std::forward<T>(t))} noexcept;
                     {it += meta::ssize(t) - 1} noexcept;
                     {*it} noexcept;
                 })
@@ -5326,7 +5326,7 @@ namespace meta {
                     requires(meta::begin_type<T> it) { {it += meta::ssize(t) - 1};}
                 )
             {
-                auto it = meta::begin(t);
+                auto it = meta::begin(::std::forward<T>(t));
                 it += meta::ssize(t) - 1;
                 return (*it);
             }
