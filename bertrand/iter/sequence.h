@@ -2,7 +2,6 @@
 #define BERTRAND_ITER_SEQUENCE_H
 
 #include "bertrand/iter/range.h"
-#include <__config>
 
 
 namespace bertrand {
