@@ -3321,7 +3321,15 @@ namespace impl {
             (!meta::tuple_like<C> || meta::tuple_size<C> > 0) &&
             requires(C c, A a) {
                 {meta::begin(std::forward<C>(c))[std::forward<A>(a)]};
-            };
+            } && (
+                !meta::reverse_iterable<C> ||
+                meta::unsigned_integer<A> ||
+                requires(C c, A a) {
+                    {meta::rbegin(std::forward<C>(c))[-std::forward<A>(a) - 1]} -> std::same_as<
+                        decltype((meta::begin(std::forward<C>(c))[std::forward<A>(a)]))
+                    >;
+                }
+            );
 
         template <typename C, typename A>
         concept offset_random_access =
@@ -3330,10 +3338,18 @@ namespace impl {
                 {meta::begin(std::forward<C>(c))};
                 {it += std::forward<A>(a)};
                 {*it};
-            };
+            } && (
+                !meta::reverse_iterable<C> ||
+                meta::unsigned_integer<A> ||
+                requires(C c, A a, meta::begin_type<C> it, meta::rbegin_type<C> rit) {
+                    {meta::rbegin(std::forward<C>(c))};
+                    {rit += -std::forward<A>(a) - 1};
+                    {*rit} -> std::same_as<decltype((*it))>;
+                }
+            );
 
         template <typename C, typename A>
-        concept offset_forward =
+        concept offset_linear =
             (!meta::tuple_like<C> || meta::tuple_size<C> > 0) &&
             requires(C c, A a, meta::begin_type<C> it) {
                 {meta::begin(std::forward<C>(c))};
@@ -3341,23 +3357,37 @@ namespace impl {
                 {++it};
                 {--a};
                 {*it};
-            };
-
-        template <typename C, typename A>
-        concept offset_bidirectional =
-            offset_forward<C, A> &&
-            requires(C c, A a, meta::begin_type<C> it) {
-                {a < 0} -> meta::truthy;
-                {--it};
-                {++a};
-            };
+            } && (
+                !meta::reverse_iterable<C> ||
+                meta::unsigned_integer<A> ||
+                requires(C c, A a, meta::begin_type<C> it, meta::rbegin_type<C> rit) {
+                    {meta::rbegin(std::forward<C>(c))};
+                    {a < 0} -> meta::truthy;
+                    {++rit};
+                    {++a};
+                    {*rit} -> std::same_as<decltype((*it))>;
+                }
+            );
 
         template <meta::iterable C, meta::integer A>
         constexpr decltype(auto) offset(C&& c, A&& a)
-            noexcept (requires{{meta::begin(std::forward<C>(c))[std::forward<A>(a)]} noexcept;})
+            noexcept (requires{{meta::begin(std::forward<C>(c))[std::forward<A>(a)]} noexcept;} && (
+                !meta::reverse_iterable<C> ||
+                meta::unsigned_integer<A> ||
+                requires{
+                    {a < 0} noexcept -> meta::nothrow::truthy;
+                    {meta::rbegin(std::forward<C>(c))[-std::forward<A>(a) - 1]} noexcept;
+                }
+            ))
             requires (offset_subscript<C, A>)
         {
-            return (meta::begin(std::forward<C>(c))[std::forward<A>(a)]);
+            if constexpr (meta::reverse_iterable<C> && !meta::unsigned_integer<A>) {
+                if (a < 0) {
+                    return (meta::rbegin(std::forward<C>(c))[-std::forward<A>(a) - 1]);
+                }
+            } else {
+                return (meta::begin(std::forward<C>(c))[std::forward<A>(a)]);
+            }
         }
 
         template <meta::iterable C, meta::integer A>
@@ -3366,12 +3396,28 @@ namespace impl {
                 {meta::begin(std::forward<C>(c))} noexcept;
                 {it += std::forward<A>(a)} noexcept;
                 {*it} noexcept;
-            })
+            } && (
+                !meta::reverse_iterable<C> ||
+                meta::unsigned_integer<A> ||
+                requires(meta::rbegin_type<C> it) {
+                    {a < 0} noexcept -> meta::nothrow::truthy;
+                    {meta::rbegin(std::forward<C>(c))} noexcept;
+                    {it += -std::forward<A>(a) - 1} noexcept;
+                    {*it} noexcept;
+                }
+            ))
             requires (
                 !offset_subscript<C, A> &&
                 offset_random_access<C, A>
             )
         {
+            if constexpr (meta::reverse_iterable<C> && !meta::unsigned_integer<A>) {
+                if (a < 0) {
+                    auto it = meta::rbegin(std::forward<C>(c));
+                    it += -a - 1;
+                    return (*it);
+                }
+            }
             auto it = meta::begin(std::forward<C>(c));
             it += std::forward<A>(a);
             return (*it);
@@ -3384,45 +3430,34 @@ namespace impl {
                 {a > 0} noexcept -> meta::nothrow::truthy;
                 {++it} noexcept;
                 {--a} noexcept;
-                {a < 0} noexcept -> meta::nothrow::truthy;
-                {--it} noexcept;
-                {++a} noexcept;
                 {*it} noexcept;
-            })
+            } && (
+                !meta::reverse_iterable<C> ||
+                meta::unsigned_integer<A> ||
+                requires(meta::rbegin_type<C> it) {
+                    {a < 0} noexcept -> meta::nothrow::truthy;
+                    {++it} noexcept;
+                    {++a} noexcept;
+                    {*it} noexcept;
+                }
+            ))
             requires (
                 !offset_subscript<C, A> &&
                 !offset_random_access<C, A> &&
-                offset_bidirectional<C, A>
+                offset_linear<C, A>
             )
         {
-            auto it = meta::begin(std::forward<C>(c));
-            while (a > 0) {
-                ++it;
-                --a;
+            if constexpr (meta::reverse_iterable<C> && !meta::unsigned_integer<A>) {
+                if (a < 0) {
+                    ++a;  // Adjust for zero-based indexing
+                    auto it = meta::rbegin(std::forward<C>(c));
+                    while (a < 0) {
+                        ++it;
+                        ++a;
+                    }
+                    return (*it);
+                }
             }
-            while (a < 0) {
-                --it;
-                ++a;
-            }
-            return (*it);
-        }
-
-        template <meta::iterable C, meta::integer A>
-        constexpr decltype(auto) offset(C&& c, A&& a)
-            noexcept (requires(meta::begin_type<C> it) {
-                {meta::begin(std::forward<C>(c))} noexcept;
-                {a > 0} noexcept -> meta::nothrow::truthy;
-                {++it} noexcept;
-                {--a} noexcept;
-                {*it} noexcept;
-            })
-            requires (
-                !offset_subscript<C, A> &&
-                !offset_random_access<C, A> &&
-                !offset_bidirectional<C, A> &&
-                offset_forward<C, A>
-            )
-        {
             auto it = meta::begin(std::forward<C>(c));
             while (a > 0) {
                 ++it;
@@ -4635,7 +4670,11 @@ namespace iter {
             Python-style wraparound for negative values.
         2.  Integer values that do not satisfy (1).  These will be interpreted as
             offsets from the `begin()` iterator of the container, and will be applied
-            using iterator arithmetic, including a linear traversal if necessary.
+            using iterator arithmetic, including a linear traversal if necessary.  If
+            the container also supports reverse iteration and the index is negative,
+            then the offset will be applied from the `rbegin()` iterator instead,
+            effectively applying Python-style wraparound (but not bounds checking) for
+            negative indices.
         3.  Predicate functions that take the container as an argument and return an
             arbitrary value.  This includes both user-defined functions as well as
             range adaptors within the `iter::` namespace, such as `iter::slice{}`,

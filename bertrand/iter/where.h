@@ -2129,10 +2129,10 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     namespace ranges {
 
-        template <typename F, typename C>
-        constexpr bool enable_borrowed_range<bertrand::impl::binary_filter<F, C>> =
+        template <typename F, typename True>
+        constexpr bool enable_borrowed_range<bertrand::impl::binary_filter<F, True>> =
             (bertrand::meta::lvalue<F> || enable_borrowed_range<bertrand::meta::unqualify<F>>) &&
-            (bertrand::meta::lvalue<C> || enable_borrowed_range<bertrand::meta::unqualify<C>>);
+            (bertrand::meta::lvalue<True> || enable_borrowed_range<bertrand::meta::unqualify<True>>);
 
         template <typename F, typename True, typename False>
         constexpr bool enable_borrowed_range<bertrand::impl::ternary_filter<F, True, False>> =
