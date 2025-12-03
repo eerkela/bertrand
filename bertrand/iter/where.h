@@ -9,21 +9,11 @@ namespace bertrand {
 
 namespace impl {
 
-    /// TODO: revise documentation to note that the binary form is only available
-    /// if the `true` value is a range.
-
-    /// TODO: reverse iteration over a `where{}` expression would need to account
-    /// for the arguments not all having the same size, or else it will give
-    /// erroneous results.  This also has to be done for the binary case as well.
-
-    /// TODO: `Self` must be allowed to be an rvalue, in which case we move the
-    /// results out of it (but still store an lvalue internally).
-
-    template <range_direction Dir, meta::lvalue Self>
+    template <range_direction Dir, typename Self>
     struct binary_filter_iterator {
         using function_type = meta::remove_reference<decltype((std::declval<Self>().filter()))>;
-        using begin_type = decltype(Dir::begin(std::declval<Self>().container()));
-        using end_type = decltype(Dir::end(std::declval<Self>().container()));
+        using begin_type = decltype(Dir::begin(std::declval<Self>().if_true()));
+        using end_type = decltype(Dir::end(std::declval<Self>().if_true()));
         using category = std::conditional_t<
             meta::inherits<meta::iterator_category<begin_type>, std::bidirectional_iterator_tag>,
             std::bidirectional_iterator_tag,
@@ -34,25 +24,25 @@ namespace impl {
         using value_type = meta::remove_reference<reference>;
         using pointer = meta::as_pointer<value_type>;
 
-        [[no_unique_address]] function_type* func = nullptr;
+        [[no_unique_address]] meta::as_const<function_type>* func = nullptr;
         [[no_unique_address]] difference_type index = 0;
         [[no_unique_address]] begin_type begin;
         [[no_unique_address]] end_type end;
 
         [[nodiscard]] constexpr binary_filter_iterator() = default;
-        [[nodiscard]] constexpr binary_filter_iterator(Self self)
+        [[nodiscard]] constexpr binary_filter_iterator(meta::forward<Self> self)
             noexcept (requires{
                 {std::addressof(self.filter())} noexcept;
-                {Dir::begin(self.container())} noexcept;
-                {Dir::end(self.container())} noexcept;
+                {Dir::begin(std::forward<Self>(self).if_true())} noexcept;
+                {Dir::end(std::forward<Self>(self).if_true())} noexcept;
                 {begin != end} noexcept -> meta::nothrow::truthy;
                 {(*func)(*begin)} noexcept -> meta::nothrow::truthy;
                 {++begin} noexcept;
             })
-            requires (requires{
+            requires (std::same_as<Dir, range_forward> && requires{
                 {std::addressof(self.filter())};
-                {Dir::begin(self.container())};
-                {Dir::end(self.container())};
+                {Dir::begin(std::forward<Self>(self).if_true())};
+                {Dir::end(std::forward<Self>(self).if_true())};
                 {begin != end} -> meta::truthy;
                 {(*func)(*begin)} -> meta::truthy;
                 {++begin};
@@ -60,9 +50,43 @@ namespace impl {
         :
             func(std::addressof(self.filter())),
             index(0),
-            begin(Dir::begin(self.container())),
-            end(Dir::end(self.container()))
+            begin(Dir::begin(std::forward<Self>(self).if_true())),
+            end(Dir::end(std::forward<Self>(self).if_true()))
         {
+            while (begin != end) {
+                if ((*func)(*begin)) {
+                    break;
+                }
+                ++begin;
+                ++index;
+            }
+        }
+        [[nodiscard]] constexpr binary_filter_iterator(meta::forward<Self> self, size_t size)
+            noexcept (requires{
+                {std::addressof(self.filter())} noexcept;
+                {Dir::begin(std::forward<Self>(self).if_true())} noexcept;
+                {Dir::end(std::forward<Self>(self).if_true())} noexcept;
+                {begin != end} noexcept -> meta::nothrow::truthy;
+                {(*func)(*begin)} noexcept -> meta::nothrow::truthy;
+                {++begin} noexcept;
+                {begin += (end - begin) - size} noexcept;
+            })
+            requires (std::same_as<Dir, range_reverse> && requires{
+                {std::addressof(self.filter())};
+                {Dir::begin(std::forward<Self>(self).if_true())};
+                {Dir::end(std::forward<Self>(self).if_true())};
+                {begin != end} -> meta::truthy;
+                {(*func)(*begin)} -> meta::truthy;
+                {++begin};
+                {begin += (end - begin) - size};
+            })
+        :
+            func(std::addressof(self.filter())),
+            index(0),
+            begin(Dir::begin(std::forward<Self>(self).if_true())),
+            end(Dir::end(std::forward<Self>(self).if_true()))
+        {
+            begin += (end - begin) - size;
             while (begin != end) {
                 if ((*func)(*begin)) {
                     break;
@@ -226,13 +250,13 @@ namespace impl {
             return self.begin != self.end;
         }
     };
-    template <range_direction Dir, meta::lvalue Self>
+    template <range_direction Dir, typename Self>
         requires (meta::range<decltype(std::declval<Self>().filter()), bool>)
     struct binary_filter_iterator<Dir, Self> {
         using mask_begin_type = decltype(Dir::begin(std::declval<Self>().filter()));
         using mask_end_type = decltype(Dir::end(std::declval<Self>().filter()));
-        using begin_type = decltype(Dir::begin(std::declval<Self>().container()));
-        using end_type = decltype(Dir::end(std::declval<Self>().container()));
+        using begin_type = decltype(Dir::begin(std::declval<Self>().if_true()));
+        using end_type = decltype(Dir::end(std::declval<Self>().if_true()));
         using category = std::conditional_t<
             meta::inherits<
                 meta::common_type<
@@ -259,34 +283,77 @@ namespace impl {
         [[no_unique_address]] end_type end;
 
         [[nodiscard]] constexpr binary_filter_iterator() = default;
-        [[nodiscard]] constexpr binary_filter_iterator(Self& self)
+        [[nodiscard]] constexpr binary_filter_iterator(meta::forward<Self> self)
             noexcept (requires{
-                {Dir::begin(self.filter())} noexcept;
-                {Dir::end(self.filter())} noexcept;
-                {Dir::begin(self.container())} noexcept;
-                {Dir::end(self.container())} noexcept;
+                {Dir::begin(std::forward<Self>(self).filter())} noexcept;
+                {Dir::end(std::forward<Self>(self).filter())} noexcept;
+                {Dir::begin(std::forward<Self>(self).if_true())} noexcept;
+                {Dir::end(std::forward<Self>(self).if_true())} noexcept;
                 {begin != end && mask_begin != mask_end} noexcept -> meta::nothrow::truthy;
                 {*mask_begin} noexcept -> meta::nothrow::truthy;
                 {++begin} noexcept;
                 {++mask_begin} noexcept;
             })
-            requires (requires{
-                {Dir::begin(self.filter())};
-                {Dir::end(self.filter())};
-                {Dir::begin(self.container())};
-                {Dir::end(self.container())};
+            requires (std::same_as<Dir, range_forward> && requires{
+                {Dir::begin(std::forward<Self>(self).filter())};
+                {Dir::end(std::forward<Self>(self).filter())};
+                {Dir::begin(std::forward<Self>(self).if_true())};
+                {Dir::end(std::forward<Self>(self).if_true())};
                 {begin != end && mask_begin != mask_end} -> meta::truthy;
                 {*mask_begin} -> meta::truthy;
                 {++begin};
                 {++mask_begin};
             })
         :
-            mask_begin(Dir::begin(self.filter())),
-            mask_end(Dir::end(self.filter())),
+            mask_begin(Dir::begin(std::forward<Self>(self).filter())),
+            mask_end(Dir::end(std::forward<Self>(self).filter())),
             index(0),
-            begin(Dir::begin(self.container())),
-            end(Dir::end(self.container()))
+            begin(Dir::begin(std::forward<Self>(self).if_true())),
+            end(Dir::end(std::forward<Self>(self).if_true()))
         {
+            while (begin != end && mask_begin != mask_end) {
+                if (*mask_begin) {
+                    break;
+                }
+                ++begin;
+                ++mask_begin;
+                ++index;
+            }
+        }
+        [[nodiscard]] constexpr binary_filter_iterator(meta::forward<Self> self, size_t size)
+            noexcept (requires{
+                {Dir::begin(std::forward<Self>(self).filter())} noexcept;
+                {Dir::end(std::forward<Self>(self).filter())} noexcept;
+                {Dir::begin(std::forward<Self>(self).if_true())} noexcept;
+                {Dir::end(std::forward<Self>(self).if_true())} noexcept;
+                {begin != end && mask_begin != mask_end} noexcept -> meta::nothrow::truthy;
+                {*mask_begin} noexcept -> meta::nothrow::truthy;
+                {++begin} noexcept;
+                {++mask_begin} noexcept;
+                {mask_begin += (mask_end - mask_begin) - size} noexcept;
+                {begin += (end - begin) - size} noexcept;
+            })
+            requires (std::same_as<Dir, range_reverse> && requires{
+                {Dir::begin(std::forward<Self>(self).filter())};
+                {Dir::end(std::forward<Self>(self).filter())};
+                {Dir::begin(std::forward<Self>(self).if_true())};
+                {Dir::end(std::forward<Self>(self).if_true())};
+                {begin != end && mask_begin != mask_end} -> meta::truthy;
+                {*mask_begin} -> meta::truthy;
+                {++begin};
+                {++mask_begin};
+                {mask_begin += (mask_end - mask_begin) - size};
+                {begin += (end - begin) - size};
+            })
+        :
+            mask_begin(Dir::begin(std::forward<Self>(self).filter())),
+            mask_end(Dir::end(std::forward<Self>(self).filter())),
+            index(0),
+            begin(Dir::begin(std::forward<Self>(self).if_true())),
+            end(Dir::end(std::forward<Self>(self).if_true()))
+        {
+            mask_begin += (mask_end - mask_begin) - size;
+            begin += (end - begin) - size;
             while (begin != end && mask_begin != mask_end) {
                 if (*mask_begin) {
                     break;
@@ -451,10 +518,10 @@ namespace impl {
     known generically ahead of time, the resulting range is unsized, not a tuple, and
     not indexable.  Its iterators may only satisfy forward or bidirectional modes, and
     will never be common. */
-    template <meta::not_rvalue Filter, meta::not_rvalue C> requires (meta::range<C>)
+    template <meta::not_rvalue Filter, meta::not_rvalue True> requires (meta::range<True>)
     struct binary_filter {
         using filter_type = Filter;
-        using true_type = C;
+        using true_type = True;
 
         [[no_unique_address]] impl::ref<filter_type> m_filter;
         [[no_unique_address]] impl::ref<true_type> m_true;
@@ -465,18 +532,18 @@ namespace impl {
         }
 
         template <typename Self>
-        [[nodiscard]] constexpr decltype(auto) container(this Self&& self) noexcept {
+        [[nodiscard]] constexpr decltype(auto) if_true(this Self&& self) noexcept {
             return (*std::forward<Self>(self).m_true);
         }
 
         template <typename Self>
         [[nodiscard]] constexpr auto begin(this Self&& self)
-            noexcept (requires{
-                {binary_filter_iterator<range_forward, Self>{std::forward<Self>(self)}} noexcept;
-            })
-            requires (requires{
-                {binary_filter_iterator<range_forward, Self>{std::forward<Self>(self)}};
-            })
+            noexcept (requires{{binary_filter_iterator<range_forward, Self>{
+                std::forward<Self>(self)
+            }} noexcept;})
+            requires (requires{{binary_filter_iterator<range_forward, Self>{
+                std::forward<Self>(self)
+            }};})
         {
             return binary_filter_iterator<range_forward, Self>{std::forward<Self>(self)};
         }
@@ -485,28 +552,50 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr auto rbegin(this Self&& self)
-            noexcept (requires{
-                {binary_filter_iterator<range_reverse, Self>{std::forward<Self>(self)}} noexcept;
-            })
-            requires (requires{
-                {binary_filter_iterator<range_reverse, Self>{std::forward<Self>(self)}};
-            })
+            noexcept (requires(size_t size) {
+                {binary_filter_iterator<range_reverse, Self>{
+                    std::forward<Self>(self),
+                    size
+                }} noexcept;
+                {self.if_true().size()} noexcept -> meta::nothrow::convertible_to<size_t>;
+            } && (!meta::range<meta::as_const_ref<Filter>, bool> || requires{
+                {self.filter().size()} noexcept -> meta::nothrow::convertible_to<size_t>;
+            }))
+            requires (requires(size_t size) {
+                {binary_filter_iterator<range_reverse, Self>{
+                    std::forward<Self>(self),
+                    size
+                }};
+                {self.if_true().size()} -> meta::convertible_to<size_t>;
+            } && (!meta::range<meta::as_const_ref<Filter>, bool> || requires{
+                {self.filter().size()} -> meta::convertible_to<size_t>;
+            }))
         {
-            return binary_filter_iterator<range_reverse, Self>{std::forward<Self>(self)};
+            size_t size = self.if_true().size();
+            if constexpr (meta::range<meta::as_const_ref<Filter>, bool>) {
+                size = iter::min{}(size, size_t(self.filter().size()));
+            }
+            return binary_filter_iterator<range_reverse, Self>{
+                std::forward<Self>(self),
+                size
+            };
         }
 
         [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
     };
-    template <typename Filter, typename C>
-    binary_filter(Filter&&, C&&) -> binary_filter<
+    template <typename Filter, typename True>
+    binary_filter(Filter&&, True&&) -> binary_filter<
         meta::remove_rvalue<Filter>,
-        meta::remove_rvalue<C>
+        meta::remove_rvalue<True>
     >;
 
-    /* In order to simplify the implementation of ternary `where` with scalar operands,
-    they will be wrapped in a trivial iterator type that infinitely repeats a const
-    reference to that value when accessed, so that the filtered iterators do not
-    need to specialize for scalar cases. */
+    template <meta::not_rvalue Filter, meta::not_rvalue True, meta::not_rvalue False>
+    struct ternary_filter;
+
+    /* In order to simplify broadcasting of ternary `where` iterators with scalar
+    operands, they will be wrapped in a trivial iterator type that infinitely repeats a
+    const reference to them when accessed, so that nothing needs to specialize for that
+    case. */
     template <meta::lvalue T> requires (meta::is_const<T>)
     struct trivial_repeat_iterator {
         using iterator_category = std::random_access_iterator_tag;
@@ -583,16 +672,43 @@ namespace impl {
             return std::numeric_limits<difference_type>::max();
         }
 
+        /// NOTE: these comparisons are chosen to not affect the logical conjunctions
+        /// in `ternary_filter_iterator`.
+
+        [[nodiscard]] constexpr bool operator<(
+            const trivial_repeat_iterator& other
+        ) const noexcept {
+            return true;
+        }
+
+        [[nodiscard]] constexpr bool operator<=(
+            const trivial_repeat_iterator& other
+        ) const noexcept {
+            return true;
+        }
+
         [[nodiscard]] constexpr bool operator==(
             const trivial_repeat_iterator& other
         ) const noexcept {
             return false;
         }
 
-        [[nodiscard]] constexpr auto operator<=>(
+        [[nodiscard]] constexpr bool operator!=(
             const trivial_repeat_iterator& other
         ) const noexcept {
-            return std::strong_ordering::less;
+            return true;
+        }
+
+        [[nodiscard]] constexpr bool operator>=(
+            const trivial_repeat_iterator& other
+        ) const noexcept {
+            return true;
+        }
+
+        [[nodiscard]] constexpr bool operator>(
+            const trivial_repeat_iterator& other
+        ) const noexcept {
+            return true;
         }
     };
     template <typename T>
@@ -942,24 +1058,35 @@ namespace impl {
                 difference_type(if_false - other.if_false)
             )} -> meta::convertible_to<difference_type>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return difference_type(filter - other.filter);
+            if constexpr (mask) {
+                if constexpr (
+                    meta::specialization_of<True, trivial_repeat_iterator> &&
+                    meta::specialization_of<False, trivial_repeat_iterator>
+                ) {
+                    return difference_type(filter - other.filter);
+                } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
+                    return iter::min{}(
+                        difference_type(filter - other.filter),
+                        difference_type(if_false - other.if_false)
+                    );
+                } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
+                    return iter::min{}(
+                        difference_type(filter - other.filter),
+                        difference_type(if_true - other.if_true)
+                    );
+                } else {
+                    return iter::min{}(
+                        difference_type(filter - other.filter),
+                        difference_type(if_true - other.if_true),
+                        difference_type(if_false - other.if_false)
+                    );
+                }
             } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return iter::min{}(
-                    difference_type(filter - other.filter),
-                    difference_type(if_false - other.if_false)
-                );
+                return difference_type(if_false - other.if_false);
             } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return iter::min{}(
-                    difference_type(filter - other.filter),
-                    difference_type(if_true - other.if_true)
-                );
+                return difference_type(if_true - other.if_true);
             } else {
                 return iter::min{}(
-                    difference_type(filter - other.filter),
                     difference_type(if_true - other.if_true),
                     difference_type(if_false - other.if_false)
                 );
@@ -968,207 +1095,72 @@ namespace impl {
 
         [[nodiscard]] constexpr bool operator<(const ternary_filter_iterator& other) const
             noexcept (requires{{
-                filter < other.filter &&
-                if_true < other.if_true &&
-                if_false < other.if_false
+                filter < other.filter && if_true < other.if_true && if_false < other.if_false
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                filter < other.filter &&
-                if_true < other.if_true &&
-                if_false < other.if_false
+                filter < other.filter && if_true < other.if_true && if_false < other.if_false
             } -> meta::convertible_to<bool>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return filter < other.filter;
-            } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return
-                    filter < other.filter &&
-                    if_false < other.if_false;
-            } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return
-                    filter < other.filter &&
-                    if_true < other.if_true;
-            } else {
-                return
-                    filter < other.filter &&
-                    if_true < other.if_true &&
-                    if_false < other.if_false;
-            }
+            return filter < other.filter && if_true < other.if_true && if_false < other.if_false;
         }
 
         [[nodiscard]] constexpr bool operator<=(const ternary_filter_iterator& other) const
             noexcept (requires{{
-                filter <= other.filter &&
-                if_true <= other.if_true &&
-                if_false <= other.if_false
+                filter <= other.filter && if_true <= other.if_true && if_false <= other.if_false
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                filter <= other.filter &&
-                if_true <= other.if_true &&
-                if_false <= other.if_false
+                filter <= other.filter && if_true <= other.if_true && if_false <= other.if_false
             } -> meta::convertible_to<bool>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return filter <= other.filter;
-            } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return
-                    filter <= other.filter &&
-                    if_false <= other.if_false;
-            } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return
-                    filter <= other.filter &&
-                    if_true <= other.if_true;
-            } else {
-                return
-                    filter <= other.filter &&
-                    if_true <= other.if_true &&
-                    if_false <= other.if_false;
-            }
+            return filter <= other.filter && if_true <= other.if_true && if_false <= other.if_false;
         }
 
         [[nodiscard]] constexpr bool operator==(const ternary_filter_iterator& other) const
             noexcept (requires{{
-                filter == other.filter ||
-                if_true == other.if_true ||
-                if_false == other.if_false
+                filter == other.filter || if_true == other.if_true || if_false == other.if_false
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                filter == other.filter ||
-                if_true == other.if_true ||
-                if_false == other.if_false
+                filter == other.filter || if_true == other.if_true || if_false == other.if_false
             } -> meta::convertible_to<bool>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return filter == other.filter;
-            } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return
-                    filter == other.filter ||
-                    if_false == other.if_false;
-            } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return
-                    filter == other.filter ||
-                    if_true == other.if_true;
-            } else {
-                return
-                    filter == other.filter ||
-                    if_true == other.if_true ||
-                    if_false == other.if_false;
-            }
+            return filter == other.filter || if_true == other.if_true || if_false == other.if_false;
         }
 
         [[nodiscard]] constexpr bool operator!=(const ternary_filter_iterator& other) const
             noexcept (requires{{
-                filter != other.filter &&
-                if_true != other.if_true &&
-                if_false != other.if_false
+                filter != other.filter && if_true != other.if_true && if_false != other.if_false
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                filter != other.filter &&
-                if_true != other.if_true &&
-                if_false != other.if_false
+                filter != other.filter && if_true != other.if_true && if_false != other.if_false
             } -> meta::convertible_to<bool>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return filter != other.filter;
-            } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return
-                    filter != other.filter &&
-                    if_false != other.if_false;
-            } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return
-                    filter != other.filter &&
-                    if_true != other.if_true;
-            } else {
-                return
-                    filter != other.filter &&
-                    if_true != other.if_true &&
-                    if_false != other.if_false;
-            }
+            return filter != other.filter && if_true != other.if_true && if_false != other.if_false;
         }
 
         [[nodiscard]] constexpr bool operator>=(const ternary_filter_iterator& other) const
             noexcept (requires{{
-                filter >= other.filter &&
-                if_true >= other.if_true &&
-                if_false >= other.if_false
+                filter >= other.filter && if_true >= other.if_true && if_false >= other.if_false
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                filter >= other.filter &&
-                if_true >= other.if_true &&
-                if_false >= other.if_false
+                filter >= other.filter && if_true >= other.if_true && if_false >= other.if_false
             } -> meta::convertible_to<bool>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return filter >= other.filter;
-            } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return
-                    filter >= other.filter &&
-                    if_false >= other.if_false;
-            } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return
-                    filter >= other.filter &&
-                    if_true >= other.if_true;
-            } else {
-                return
-                    filter >= other.filter &&
-                    if_true >= other.if_true &&
-                    if_false >= other.if_false;
-            }
+            return filter >= other.filter && if_true >= other.if_true && if_false >= other.if_false;
         }
 
         [[nodiscard]] constexpr bool operator>(const ternary_filter_iterator& other) const
             noexcept (requires{{
-                filter > other.filter &&
-                if_true > other.if_true &&
-                if_false > other.if_false
+                filter > other.filter && if_true > other.if_true && if_false > other.if_false
             } noexcept -> meta::nothrow::convertible_to<bool>;})
             requires (requires{{
-                filter > other.filter &&
-                if_true > other.if_true &&
-                if_false > other.if_false
+                filter > other.filter && if_true > other.if_true && if_false > other.if_false
             } -> meta::convertible_to<bool>;})
         {
-            if constexpr (
-                meta::specialization_of<True, trivial_repeat_iterator> &&
-                meta::specialization_of<False, trivial_repeat_iterator>
-            ) {
-                return filter > other.filter;
-            } else if constexpr (meta::specialization_of<True, trivial_repeat_iterator>) {
-                return
-                    filter > other.filter &&
-                    if_false > other.if_false;
-            } else if constexpr (meta::specialization_of<False, trivial_repeat_iterator>) {
-                return
-                    filter > other.filter &&
-                    if_true > other.if_true;
-            } else {
-                return
-                    filter > other.filter &&
-                    if_true > other.if_true &&
-                    if_false > other.if_false;
-            }
+            return filter > other.filter && if_true > other.if_true && if_false > other.if_false;
         }
     };
     template <typename Mask, typename True, typename False>
     ternary_filter_iterator(Mask, True, False) -> ternary_filter_iterator<Mask, True, False>;
-
-    template <meta::not_rvalue Filter, meta::not_rvalue True, meta::not_rvalue False>
-    struct ternary_filter;
 
     template <typename T>
     constexpr size_t ternary_filter_size(T&& value)
@@ -1265,23 +1257,24 @@ namespace impl {
     template <typename Self>
     constexpr size_t ternary_filter_tuple_size = 0;
     template <meta::specialization_of<ternary_filter> Self>
-        requires (meta::unqualified<Self> && Self::tuple_like)
-    constexpr size_t ternary_filter_tuple_size<Self> = (
-        Self::mask ||
-        meta::range<typename Self::true_type> ||
-        meta::range<typename Self::false_type>
-    ) ?
-        iter::min{}(
-            Self::mask ?
-                meta::tuple_size<meta::as_range_or_scalar<typename Self::filter_type>> :
-                std::numeric_limits<size_t>::max(),
-            meta::range<typename Self::true_type> ?
-                meta::tuple_size<meta::as_range_or_scalar<typename Self::true_type>> :
-                std::numeric_limits<size_t>::max(),
-            meta::range<typename Self::false_type> ?
-                meta::tuple_size<meta::as_range_or_scalar<typename Self::false_type>> :
-                std::numeric_limits<size_t>::max()
-        ) : 1;
+        requires (meta::unqualified<Self> && Self::tuple_like && Self::mask)
+    constexpr size_t ternary_filter_tuple_size<Self> = iter::min{}(
+        meta::tuple_size<meta::as_range_or_scalar<typename Self::filter_type>>,
+        meta::range<typename Self::true_type> ?
+            meta::tuple_size<meta::as_range_or_scalar<typename Self::true_type>> :
+            std::numeric_limits<size_t>::max(),
+        meta::range<typename Self::false_type> ?
+            meta::tuple_size<meta::as_range_or_scalar<typename Self::false_type>> :
+            std::numeric_limits<size_t>::max()
+    );
+    template <meta::specialization_of<ternary_filter> Self>
+        requires (meta::unqualified<Self> && Self::tuple_like && !Self::mask)
+    constexpr size_t ternary_filter_tuple_size<Self> = iter::min{}(
+        meta::tuple_size<meta::as_range_or_scalar<typename Self::true_type>>,
+        meta::range<typename Self::false_type> ?
+            meta::tuple_size<meta::as_range_or_scalar<typename Self::false_type>> :
+            std::numeric_limits<size_t>::max()
+    );
 
     template <size_t I, typename T>
     struct _ternary_filter_get_type { using type = T; };
@@ -1309,7 +1302,7 @@ namespace impl {
         }
     }
 
-    template <typename T>
+    template <bool trivial = false, typename T>
     constexpr auto ternary_filter_begin(T&& value)
         noexcept (!meta::range<T> || requires{{std::forward<T>(value).begin()} noexcept;})
         requires (!meta::range<T> || requires{{std::forward<T>(value).begin()};})
@@ -1372,10 +1365,12 @@ namespace impl {
     will be called with each value from the `True` operand to determine whether to
     select that value or the corresponding value from the `False` operand.  If either
     `True` or `False` is not a range, then it implies broadcasting of that value across
-    the length of the other operands.
+    the length of the other operands.  A special case exists for a boolean predicate
+    with a non-range `True` value, which is treated as a range of length 1 or 0 (if
+    `False` is an empty range).
 
-    Since the size may be known, the resulting range may be tuple-like and can be
-    indexed if all of the operands support these operations. */
+    Since the size can be known, the resulting range may be tuple-like and indexed if
+    all of the operands support these operations. */
     template <meta::not_rvalue Filter, meta::not_rvalue True, meta::not_rvalue False>
     struct ternary_filter {
         static constexpr bool mask = meta::range<meta::as_const_ref<Filter>, bool>;
@@ -1497,9 +1492,14 @@ namespace impl {
         {
             if constexpr (tuple_like) {
                 return ternary_filter_tuple_size<ternary_filter>;
-            } else if constexpr (mask || meta::range<true_type> || meta::range<false_type>) {
+            } else if constexpr (mask) {
                 return iter::min{}(
                     ternary_filter_size(filter()),
+                    ternary_filter_size(if_true()),
+                    ternary_filter_size(if_false())
+                );
+            } else if constexpr (meta::range<true_type>) {
+                return iter::min{}(
                     ternary_filter_size(if_true()),
                     ternary_filter_size(if_false())
                 );
@@ -1522,9 +1522,14 @@ namespace impl {
         {
             if constexpr (tuple_like) {
                 return ssize_t(ternary_filter_tuple_size<ternary_filter>);
-            } else if constexpr (mask || meta::range<true_type> || meta::range<false_type>) {
+            } else if constexpr (mask) {
                 return iter::min{}(
                     ternary_filter_ssize(filter()),
+                    ternary_filter_ssize(if_true()),
+                    ternary_filter_ssize(if_false())
+                );
+            } else if constexpr (meta::range<true_type>) {
+                return iter::min{}(
                     ternary_filter_ssize(if_true()),
                     ternary_filter_ssize(if_false())
                 );
@@ -1860,7 +1865,7 @@ namespace impl {
                 .if_false = ternary_filter_begin(std::forward<Self>(self).if_false()),
             }};})
         {
-            if constexpr (mask || meta::range<true_type> || meta::range<false_type>) {
+            if constexpr (mask || meta::range<true_type>) {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_begin(std::forward<Self>(self).filter()),
                     .if_true = ternary_filter_begin(std::forward<Self>(self).if_true()),
@@ -1869,8 +1874,8 @@ namespace impl {
             } else {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_begin(std::forward<Self>(self).filter()),
-                    .if_true = std::addressof(self.if_true()),
-                    .if_false = std::addressof(self.if_false()),
+                    .if_true = impl::trivial_iterator(std::forward<Self>(self).if_true()),
+                    .if_false = ternary_filter_begin(std::forward<Self>(self).if_false()),
                 };
             }
         }
@@ -1888,7 +1893,7 @@ namespace impl {
                 .if_false = ternary_filter_end(std::forward<Self>(self).if_false()),
             }};})
         {
-            if constexpr (mask || meta::range<true_type> || meta::range<false_type>) {
+            if constexpr (mask || meta::range<true_type>) {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_end(std::forward<Self>(self).filter()),
                     .if_true = ternary_filter_end(std::forward<Self>(self).if_true()),
@@ -1897,8 +1902,8 @@ namespace impl {
             } else {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_end(std::forward<Self>(self).filter()),
-                    .if_true = std::addressof(self.if_true()) + 1,
-                    .if_false = std::addressof(self.if_false()) + 1,
+                    .if_true = impl::trivial_iterator(std::forward<Self>(self).if_true()) + 1,
+                    .if_false = ternary_filter_end(std::forward<Self>(self).if_false()),
                 };
             }
         }
@@ -1935,7 +1940,7 @@ namespace impl {
             }};})
         {
             ssize_t size = self.ssize();
-            if constexpr (mask || meta::range<true_type> || meta::range<false_type>) {
+            if constexpr (mask || meta::range<true_type>) {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_rbegin(
                         std::forward<Self>(self).filter(),
@@ -1956,8 +1961,13 @@ namespace impl {
                         std::forward<Self>(self).filter(),
                         size
                     ),
-                    .if_true = std::make_reverse_iterator(std::addressof(self.if_true()) + 1),
-                    .if_false = std::make_reverse_iterator(std::addressof(self.if_false()) + 1),
+                    .if_true = std::make_reverse_iterator(
+                        impl::trivial_iterator(std::forward<Self>(self).if_true()) + 1
+                    ),
+                    .if_false = ternary_filter_rbegin(
+                        std::forward<Self>(self).if_false(),
+                        size
+                    ),
                 };
             }
         }
@@ -1975,7 +1985,7 @@ namespace impl {
                 .if_false = ternary_filter_rend(std::forward<Self>(self).if_false()),
             }};})
         {
-            if constexpr (mask || meta::range<true_type> || meta::range<false_type>) {
+            if constexpr (mask || meta::range<true_type>) {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_rend(std::forward<Self>(self).filter()),
                     .if_true = ternary_filter_rend(std::forward<Self>(self).if_true()),
@@ -1984,8 +1994,10 @@ namespace impl {
             } else {
                 return ternary_filter_iterator{
                     .filter = ternary_filter_rend(std::forward<Self>(self).filter()),
-                    .if_true = std::make_reverse_iterator(std::addressof(self.if_true())),
-                    .if_false = std::make_reverse_iterator(std::addressof(self.if_false())),
+                    .if_true = std::make_reverse_iterator(
+                        impl::trivial_iterator(std::forward<Self>(self).if_true())
+                    ),
+                    .if_false = ternary_filter_rend(std::forward<Self>(self).if_false()),
                 };
             }
         }
@@ -2002,75 +2014,104 @@ namespace impl {
 
 namespace iter {
 
-    /* A function object that filters elements from a range based on a user-defined
-    predicate function or boolean mask.
+    /* A function object that conditionally filters or replaces elements from a range
+    based on a boolean predicate or mask.
 
-    If the `where` object is constructed with a predicate function and later called
-    with one or more arguments, then the function must be callable with the elements of
-    the first argument and return values that are convertible to `bool`.  If the
-    predicate returns `true`, then the value from the first argument will be included
-    in the output range; otherwise, if a second argument is provided, the corresponding
-    element from that argument will be included instead, acting as a ternary operator.
-    If no second argument is provided, then elements for which the predicate returns
-    `false` will be excluded from the output range.
+    `where{}` algorithms can be used in one of two ways, depending on the number and
+    type of the arguments provided during construction and invocation:
 
-    As an alternative to a predicate function, the `where` object can also be
-    constructed with any `range` that yields a type convertible to `bool`.  In this
-    case, the value of the range at each index will be used to filter the input(s),
-    instead of invoking a separate function.  All other behavior remains the same as
-    the predicate case. */
+        1.  If the initializer to `where{}` is a range, then it must yield values that
+            are implicitly convertible to `bool`, where `true` indicates that the
+            original element should be retained, and `false` indicates that it should
+            omitted or replaced.
+        2.  If the initializer to `where{}` is not a range, then it must be a function
+            object that is callable with a const reference to a single argument and
+            returns a value implicitly convertible to `bool`.  If the `where{}` object
+            is later invoked with one or more arguments, this function will be applied
+            to each element from the first argument to determine whether to retain or
+            omit/replace that element.
+
+    In both cases, the `where{}` object can be invoked with either one or two
+    arguments:
+
+        a.  If invoked with a single argument, then that argument will first be
+            converted to a range and then filtered according to the predicate or mask,
+            omitting any `false` indices.  Since it is not generically possible to know
+            the number of true or false values in the mask or predicate ahead of time,
+            the resulting range will not support size or indexing operations, and will
+            never be tuple-like.
+        b.  If invoked with two arguments, then replacements will be drawn from the
+            first where the mask or predicate evaluates to `true` and from the second
+            where it evaluates to `false`.  If the initializer is a function predicate,
+            then it will be applied only to elements from the first argument, with
+            non-ranges being treated as ranges of length 1.  If the initializer is a
+            boolean mask instead, then non-range arguments will be broadcast across the
+            length of the mask.  In either case, the length of the resulting range will
+            always be equal to the smallest of the range operands, assuming they all
+            have a defined size.  If none of the arguments are ranges, then the result
+            will be a range of length 1.
+
+    Note that in the ternary case, all range arguments will be co-iterated in parallel
+    rather than in series, meaning that unchosen values will effectively be skipped.
+    `iter::merge{}` makes the opposite choice, and only advances the range from which
+    values are drawn, which may be more appropriate depending on circumstance.
+
+    Many languages call this operation "select", "choose", or "filter", but Bertrand's
+    implementation most resembles the behavior of NumPy's `where()` function, hence the
+    name.  It can also be thought of as a kind of vectorized `if` (binary) or `if/else`
+    (ternary) expression, with the aforementioned caveats around broadcasting. */
     template <meta::not_rvalue Filter>
     struct where {
         [[no_unique_address]] Filter filter;
 
-        template <typename Self, meta::range T>
+        template <typename Self, typename T>
         [[nodiscard]] constexpr auto operator()(this Self&& self, T&& r)
             noexcept (requires{{range{impl::binary_filter{
                 std::forward<Self>(self).filter,
-                std::forward<T>(r)
+                meta::to_range(std::forward<T>(r))
             }}} noexcept;})
             requires ((meta::range<meta::as_const_ref<Filter>, bool> || (
                 !meta::range<Filter> &&
                 meta::call_returns<
                     bool,
                     meta::as_const_ref<Filter>,
-                    meta::yield_type<T>
+                    meta::as_const_ref<meta::yield_type<T>>
                 >
             )) && requires{{range{impl::binary_filter{
                 std::forward<Self>(self).filter,
-                std::forward<T>(r)
+                meta::to_range(std::forward<T>(r))
             }}};})
         {
             return range{impl::binary_filter{
                 std::forward<Self>(self).filter,
-                std::forward<T>(r)
+                meta::to_range(std::forward<T>(r))
             }};
         }
 
         template <typename Self, typename True, typename False>
-        [[nodiscard]] constexpr auto operator()(this Self&& self, True&& t, False&& f)
+        [[nodiscard]] constexpr auto operator()(this Self&& self, True&& if_true, False&& if_false)
             noexcept (requires{{range{impl::ternary_filter{
                 std::forward<Self>(self).filter,
-                std::forward<True>(t),
-                std::forward<False>(f)
+                std::forward<True>(if_true),
+                std::forward<False>(if_false)
             }}} noexcept;})
             requires ((meta::range<meta::as_const_ref<Filter>, bool> || (
                 !meta::range<Filter> &&
                 meta::call_returns<
                     bool,
                     meta::as_const_ref<Filter>,
-                    meta::yield_type<meta::as_range_or_scalar<True>>
+                    meta::as_const_ref<meta::yield_type<meta::as_range_or_scalar<True>>>
                 >
             )) && requires{{range{impl::ternary_filter{
                 std::forward<Self>(self).filter,
-                std::forward<True>(t),
-                std::forward<False>(f)
+                std::forward<True>(if_true),
+                std::forward<False>(if_false)
             }}};})
         {
             return range{impl::ternary_filter{
                 std::forward<Self>(self).filter,
-                std::forward<True>(t),
-                std::forward<False>(f)
+                std::forward<True>(if_true),
+                std::forward<False>(if_false)
             }};
         }
     };
@@ -2119,124 +2160,6 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     };
 
 _LIBCPP_END_NAMESPACE_STD
-
-
-namespace bertrand::iter {
-
-    static constexpr auto w = where{range(std::array{true, true, false})}(
-        range(std::array{1, 2, 3, 4}),
-        10
-    );
-    static_assert(w.size() == 3);
-    static_assert(w.ssize() == 3);
-    static_assert(!w.empty());
-    static_assert(w.front() == 1);
-    static_assert(w.back() == 10);
-    static_assert(w[0] == 1);
-    static_assert(w[1] == 2);
-    static_assert(w[2] == 10);
-    static_assert(w[-1] == 10);
-    static_assert(w[-2] == 2);
-    static_assert(w[-3] == 1);
-    static_assert(w.get<0>() == 1);
-    static_assert(w.get<1>() == 2);
-    static_assert(w.get<2>() == 10);
-    static_assert(w.get<-1>() == 10);
-    static_assert(w.get<-2>() == 2);
-    static_assert(w.get<-3>() == 1);
-    static_assert([] {
-        auto it = w.begin();
-        if (*it != 1) return false;
-        ++it; if (*it != 2) return false;
-        ++it; if (*it != 10) return false;
-        ++it; if (it != w.end()) return false;
-
-        auto rit = w.rbegin();
-        if (*rit != 10) return false;
-        ++rit; if (*rit != 2) return false;
-        ++rit; if (*rit != 1) return false;
-        ++rit; if (rit != w.rend()) return false;
-
-        auto&& [a, b, c] = w;
-        return true;
-    }());
-
-
-    static constexpr auto w2 = where{[](int x){ return x < 3; }}(
-        range(std::array{1, 2, 3, 4}),
-        10
-    );
-    static_assert(w2.size() == 4);
-    static_assert(w2.ssize() == 4);
-    static_assert(!w2.empty());
-    static_assert(w2.front() == 1);
-    static_assert(w2.back() == 10);
-    static_assert(w2[0] == 1);
-    static_assert(w2[1] == 2);
-    static_assert(w2[2] == 10);
-    static_assert(w2[3] == 10);
-    static_assert(w2[-1] == 10);
-    static_assert(w2[-2] == 10);
-    static_assert(w2[-3] == 2);
-    static_assert(w2[-4] == 1);
-    static_assert(w2.get<0>() == 1);
-    static_assert(w2.get<1>() == 2);
-    static_assert(w2.get<2>() == 10);
-    static_assert(w2.get<3>() == 10);
-    static_assert(w2.get<-1>() == 10);
-    static_assert(w2.get<-2>() == 10);
-    static_assert(w2.get<-3>() == 2);
-    static_assert(w2.get<-4>() == 1);
-    static_assert([] {
-        auto it = w2.begin();
-        if (*it != 1) return false;
-        ++it; if (*it != 2) return false;
-        ++it; if (*it != 10) return false;
-        ++it; if (*it != 10) return false;
-        ++it; if (it != w2.end()) return false;
-
-        auto rit = w2.rbegin();
-        if (*rit != 10) return false;
-        ++rit; if (*rit != 10) return false;
-        ++rit; if (*rit != 2) return false;
-        ++rit; if (*rit != 1) return false;
-        ++rit; if (rit != w2.rend()) return false;
-
-        auto&& [a, b, c, d] = w2;
-        return true;
-    }());
-
-    /// TODO: this special case must have a size of 1 unless the replacement range is
-    /// empty.  Luckily, pretty much everything else is good to go.
-
-    static constexpr auto w3 = where{[](int x) { return x < 3; }}(
-        3,
-        range(std::array{2, 3, 4})
-    );
-    static_assert(w3.size() == 1);
-    static_assert(w3.ssize() == 1);
-    static_assert(!w3.empty());
-    static_assert(w3.front() == 2);
-    static_assert(w3.back() == 2);
-    static_assert(w3[0] == 2);
-    static_assert(w3[-1] == 2);
-    static_assert(w3.get<0>() == 2);
-    static_assert(w3.get<-1>() == 2);
-    static_assert([] {
-        auto it = w3.begin();
-        if (*it != 2) return false;
-        ++it; if (it != w3.end()) return false;
-
-        auto rit = w3.rbegin();
-        if (*rit != 2) return false;
-        ++rit; if (rit != w3.rend()) return false;
-
-        auto&& [a] = w3;
-        return true;
-    }());
-
-
-}
 
 
 #endif  // BERTRAND_ITER_WHERE_H

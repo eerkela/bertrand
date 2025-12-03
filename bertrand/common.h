@@ -6054,6 +6054,17 @@ namespace impl {
     template <template <size_t> typename F, size_t N>
     using basic_vtable = _basic_vtable<F, std::make_index_sequence<N>>::type;
 
+    /* Get a trivial iterator (a pointer) to a given object, which preserves its
+    lvalue/rvalue qualifications upon dereference. */
+    template <typename T>
+    constexpr auto trivial_iterator(T&& t) noexcept {
+        if constexpr (meta::lvalue<T>) {
+            return std::addressof(t);
+        } else {
+            return std::move_iterator(std::addressof(t));
+        }
+    }
+
     /* A trivial iterator that applies a transformation function to the elements of
     another iterator.  The increment/decrement and comparison operators are
     unchanged. */

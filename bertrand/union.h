@@ -4908,12 +4908,10 @@ struct Optional {
                     meta::begin(std::forward<Self>(self).__value.template get<1>())
                 };
             }
-        } else if constexpr (meta::lvalue<Self>) {
-            return std::addressof(self.__value.template get<1>()) + (self == None);
         } else {
-            return std::move_iterator(
-                std::addressof(self.__value.template get<1>()) + (self == None)
-            );
+            return
+                impl::trivial_iterator(std::forward<Self>(self).__value.template get<1>()) +
+                (self == None);
         }
     }
 
@@ -4941,10 +4939,9 @@ struct Optional {
                     meta::end(std::forward<Self>(self).__value.template get<1>())
                 };
             }
-        } else if constexpr (meta::lvalue<Self>) {
-            return std::addressof(self.__value.template get<1>()) + 1;
         } else {
-            return std::move_iterator(std::addressof(self.__value.template get<1>()) + 1);
+            return
+                impl::trivial_iterator(std::forward<Self>(self).__value.template get<1>()) + 1;
         }
     }
 
@@ -5725,12 +5722,10 @@ struct Expected {
                     meta::begin(std::forward<Self>(self).__value.template get<0>())
                 };
             }
-        } else if constexpr (meta::lvalue<Self>) {
-            return std::addressof(self.__value.template get<0>()) + (self.__value.index() != 0);
         } else {
-            return std::move_iterator(
-                std::addressof(self.__value.template get<0>()) + (self.__value.index() != 0)
-            );
+            return
+                impl::trivial_iterator(std::forward<Self>(self).__value.template get<0>()) +
+                (self.__value.index() != 0);
         }
     }
 
@@ -5758,10 +5753,9 @@ struct Expected {
                     meta::end(std::forward<Self>(self).__value.template get<0>())
                 };
             }
-        } else if constexpr (meta::lvalue<Self>) {
-            return std::addressof(self.__value.template get<0>()) + 1;
         } else {
-            return std::move_iterator(std::addressof(self.__value.template get<0>()) + 1);
+            return
+                impl::trivial_iterator(std::forward<Self>(self).__value.template get<0>()) + 1;
         }
     }
 

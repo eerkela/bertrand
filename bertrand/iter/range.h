@@ -380,26 +380,26 @@ namespace impl {
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) front(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).__value} noexcept;})
-            requires (requires{{*std::forward<Self>(self).__value};})
+            noexcept (requires{{*std::forward<Self>(self)} noexcept;})
+            requires (requires{{*std::forward<Self>(self)};})
         {
-            return (*std::forward<Self>(self).__value);
+            return (*std::forward<Self>(self));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr decltype(auto) back(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).__value} noexcept;})
-            requires (requires{{*std::forward<Self>(self).__value};})
+            noexcept (requires{{*std::forward<Self>(self)} noexcept;})
+            requires (requires{{*std::forward<Self>(self)};})
         {
-            return (*std::forward<Self>(self).__value);
+            return (*std::forward<Self>(self));
         }
 
         template <size_t I, typename Self> requires (I == 0)
         [[nodiscard]] constexpr decltype(auto) get(this Self&& self)
-            noexcept (requires{{*std::forward<Self>(self).__value} noexcept;})
-            requires (requires{{*std::forward<Self>(self).__value};})
+            noexcept (requires{{*std::forward<Self>(self)} noexcept;})
+            requires (requires{{*std::forward<Self>(self)};})
         {
-            return (*std::forward<Self>(self).__value);
+            return (*std::forward<Self>(self));
         }
 
         template <typename Self>
@@ -409,31 +409,23 @@ namespace impl {
             if constexpr (DEBUG) {
                 i = impl::normalize_index(1, i);  // may throw
             }
-            return (*std::forward<Self>(self).__value);
+            return (*std::forward<Self>(self));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr auto begin(this Self&& self)
-            noexcept (requires{{self.data()} noexcept;})
-            requires (requires{{self.data()};})
+            noexcept (requires{{impl::trivial_iterator(*std::forward<Self>(self))} noexcept;})
+            requires (requires{{impl::trivial_iterator(*std::forward<Self>(self))};})
         {
-            if constexpr (meta::lvalue<Self> || meta::lvalue<T>) {
-                return self.data();
-            } else {
-                return std::make_move_iterator(self.data());
-            }
+            return impl::trivial_iterator(*std::forward<Self>(self));
         }
 
         template <typename Self>
         [[nodiscard]] constexpr auto end(this Self&& self)
-            noexcept (requires{{self.data() + 1} noexcept;})
-            requires (requires{{self.data() + 1};})
+            noexcept (requires{{impl::trivial_iterator(*std::forward<Self>(self)) + 1} noexcept;})
+            requires (requires{{impl::trivial_iterator(*std::forward<Self>(self)) + 1};})
         {
-            if constexpr (meta::lvalue<Self> || meta::lvalue<T>) {
-                return self.data() + 1;
-            } else {
-                return std::make_move_iterator(self.data() + 1);
-            }
+            return impl::trivial_iterator(*std::forward<Self>(self)) + 1;
         }
 
         template <typename Self>
