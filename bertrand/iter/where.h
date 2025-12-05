@@ -1498,13 +1498,11 @@ namespace impl {
                     ternary_filter_size(if_true()),
                     ternary_filter_size(if_false())
                 );
-            } else if constexpr (meta::range<true_type>) {
+            } else {
                 return iter::min{}(
-                    ternary_filter_size(if_true()),
+                    meta::range<true_type> ? ternary_filter_size(if_true()) : 1,
                     ternary_filter_size(if_false())
                 );
-            } else {
-                return 1;
             }
         }
 
@@ -1528,13 +1526,11 @@ namespace impl {
                     ternary_filter_ssize(if_true()),
                     ternary_filter_ssize(if_false())
                 );
-            } else if constexpr (meta::range<true_type>) {
+            } else {
                 return iter::min{}(
-                    ternary_filter_ssize(if_true()),
+                    meta::range<true_type> ? ternary_filter_ssize(if_true()) : 1,
                     ternary_filter_ssize(if_false())
                 );
-            } else {
-                return 1;
             }
         }
 
