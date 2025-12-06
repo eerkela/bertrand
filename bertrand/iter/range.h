@@ -16,6 +16,9 @@ namespace meta {
     namespace detail {
 
         template <typename T>
+        constexpr bool range_algorithm = false;
+
+        template <typename T>
         constexpr bool range = false;
 
         template <typename T>
@@ -31,6 +34,13 @@ namespace meta {
         constexpr bool subrange = false;
 
     }
+
+    /* Detect whether a function object type represents a range algorithm.  If this
+    evaluates to `true`, then the `range ->* T` operator will attempt to call `T`
+    directly with the input range, rather than zipping it for elementwise
+    application. */
+    template <typename T>
+    concept range_algorithm = detail::range_algorithm<unqualify<T>>;
 
     /* Detect whether a type is a `range`.  If additional types are provided, then they
     equate to a convertibility check against the range's yield type.  If more than one
@@ -5897,30 +5907,37 @@ namespace impl {
         }
     };
 
+    /* Non-range arguments are forwarded as lvalues, while ranges are yielded from. */
     template <typename T>
-    struct zip_call { using type = meta::as_lvalue<T>; };
+    struct _zip_arg { using type = meta::as_lvalue<T>; };
     template <meta::range T>
-    struct zip_call<T> { using type = meta::yield_type<T>; };
+    struct _zip_arg<T> { using type = meta::yield_type<T>; };
+    template <typename T>
+    using zip_arg = _zip_arg<meta::remove_rvalue<T>>::type;
 
+    /* The yield type must be determined using an index sequence over the parent
+    container, which ensures the function is callable with the broadcasted
+    arguments. */
     template <typename, typename>
     struct zip_yield { static constexpr bool enable = false; };
     template <typename Self, size_t... Is>
         requires (meta::callable<
             decltype((std::declval<Self>().func())),
-            typename zip_call<decltype((std::declval<Self>().template arg<Is>()))>::type...
+            zip_arg<decltype((std::declval<Self>().template arg<Is>()))>...
         >)
     struct zip_yield<Self, std::index_sequence<Is...>> {
         static constexpr bool enable = true;
         using type = meta::remove_rvalue<decltype(std::declval<Self>().func()(std::declval<
-            typename zip_call<decltype((std::declval<Self>().template arg<Is>()))>::type
+            zip_arg<decltype((std::declval<Self>().template arg<Is>()))>
         >()...))>;
     };
 
-    /* Zip store nested iterators over only the range operands.  In order to substitute
-    the proper dereference value for each range, an index sequence over all operands
-    must be translated into a correponding index into the iterator tuple.  If the index
-    does not represent a range, then this index will evaluate to the size of the
-    index sequence provided as the second template argument. */
+    /* Zip iterators store individual iterators over just the range operands, in order
+    to save space.  Non-range values are referenced indirectly via a pointer to the
+    parent zipped range.  Upon dereference, an index sequence over all operands is
+    translated into a corresponding index into the iterator tuple or the parent range
+    depending on its status as a range.  If it is not, then this index will evaluate
+    to the size of the range-only index sequence. */
     template <size_t I, typename>
     constexpr size_t zip_index = 0;
     template <size_t I, size_t J, size_t... Js> requires (I != J)
@@ -5932,12 +5949,13 @@ namespace impl {
     broadcasted scalars will be accessed indirectly via the pointer, and the iterator
     interface is delegated to the backing iterators via fold expressions.
     Dereferencing the iterator equates to calling the transformation function with the
-    scalar values or dereference types of the iterator tuple. */
+    scalar values or dereference types of the iterator tuple, in the same order as the
+    original argument list. */
     template <typename Self, meta::not_rvalue... Iters>
         requires (zip_yield<Self, typename meta::unqualify<Self>::args>::enable)
     struct zip_iterator {
     private:
-        using args = meta::unqualify<Self>::indices;
+        using args = meta::unqualify<Self>::args;
         using ranges = meta::unqualify<Self>::ranges;
 
     public:
@@ -6377,19 +6395,15 @@ namespace impl {
     template <typename F, typename... A>
     concept zip_concept =
         sizeof...(A) > 0 &&
-        (meta::not_void<F> && ... && meta::not_void<A>) &&
-        (meta::not_rvalue<F> && ... && meta::not_rvalue<A>) &&
         (meta::range<A> || ...) &&
-        meta::callable<meta::as_lvalue<F>, typename zip_call<A>::type...>;
-
-    /// TODO: allow zips over purely scalar arguments as well, for good measure.
-    /// They would be treated as ranges of size 1.
+        meta::callable<meta::as_lvalue<F>, zip_arg<A>...> &&
+        meta::not_void<meta::call_type<meta::as_lvalue<F>, zip_arg<A>...>>;
 
     /* Zipped ranges store an arbitrary set of arguments as well as a function to apply
     over them or their elements, if any are ranges.  The overall length of the zipped
     range is always equal to the smallest of the range operands, and the function must
     always be callable with the unpacked values. */
-    template <typename F, typename... A> requires (zip_concept<F, A...>)
+    template <meta::not_rvalue F, meta::not_rvalue... A> requires (zip_concept<F, A...>)
     struct zip {
         using function_type = F;
         using argument_types = meta::pack<A...>;
@@ -6584,23 +6598,43 @@ namespace impl {
             };
         }
 
-        /// TODO: rbegin() needs to account for uneven range lengths, similar to
-        /// `where{}`.
+        template <size_t R, typename Self>
+        constexpr auto _rbegin_impl(this Self&& self, size_t size)
+            noexcept (requires(meta::rbegin_type<decltype((
+                std::forward<Self>(self).template arg<R>()
+            ))> it) {
+                {self.template arg<R>().size()} noexcept -> meta::nothrow::convertible_to<size_t>;
+                {meta::rbegin(std::forward<Self>(self).template arg<R>())} noexcept;
+                {it += size} noexcept;
+            })
+            requires (requires(meta::rbegin_type<decltype((
+                std::forward<Self>(self).template arg<R>()
+            ))> it) {
+                {self.template arg<R>().size()} -> meta::convertible_to<size_t>;
+                {meta::rbegin(std::forward<Self>(self).template arg<R>())};
+                {it += size};
+            })
+        {
+            size = size_t(self.template arg<R>().size()) - size;
+            auto it = meta::rbegin(std::forward<Self>(self).template arg<R>());
+            it += size;
+            return it;
+        }
 
         template <typename Self, size_t... Rs>
-        constexpr auto _rbegin(this Self&& self, std::index_sequence<Rs...>)
+        constexpr auto _rbegin(this Self&& self, std::index_sequence<Rs...>, size_t size)
             noexcept (requires{{zip_iterator{
                 std::forward<Self>(self),
-                meta::rbegin(std::forward<Self>(self).template arg<Rs>())...
+                std::forward<Self>(self).template _rbegin_impl<Rs>(size)...
             }} noexcept;})
             requires (requires{{zip_iterator{
                 std::forward<Self>(self),
-                meta::rbegin(std::forward<Self>(self).template arg<Rs>())...
+                std::forward<Self>(self).template _rbegin_impl<Rs>(size)...
             }};})
         {
             return zip_iterator{
                 std::forward<Self>(self),
-                meta::rbegin(std::forward<Self>(self).template arg<Rs>())...
+                std::forward<Self>(self).template _rbegin_impl<Rs>(size)...
             };
         }
 
@@ -6743,15 +6777,16 @@ namespace impl {
             return std::forward<Self>(self)._end(ranges{});
         }
 
-        /// TODO: rbegin() needs to account for uneven range lengths, similar to
-        /// `where{}`.
-
         template <typename Self>
         [[nodiscard]] constexpr auto rbegin(this Self&& self)
-            noexcept (requires{{std::forward<Self>(self)._rbegin(ranges{})} noexcept;})
-            requires (requires{{std::forward<Self>(self)._rbegin(ranges{})};})
+            noexcept (requires{
+                {std::forward<Self>(self)._rbegin(ranges{}, self.size())} noexcept;
+            })
+            requires (requires{
+                {std::forward<Self>(self)._rbegin(ranges{}, self.size())};
+            })
         {
-            return std::forward<Self>(self)._rbegin(ranges{});
+            return std::forward<Self>(self)._rbegin(ranges{}, self.size());
         }
 
         template <typename Self>
@@ -6779,6 +6814,118 @@ namespace impl {
         //     return Tuple{std::forward<A>(args)...};
         // }
     };
+
+    /* The range call operator simply inserts the range elements as an additional
+    argument, and then invokes it with the remaining arguments.  Zip handles the
+    rest. */
+    struct zip_call {
+        template <typename F, typename... A>
+        constexpr decltype(auto) operator()(F&& func, A&&... args)
+            noexcept (requires{{std::forward<F>(func)(std::forward<A>(args)...)} noexcept;})
+            requires (requires{{std::forward<F>(func)(std::forward<A>(args)...)};})
+        {
+            return (std::forward<F>(func)(std::forward<A>(args)...));
+        }
+    };
+
+    /// TODO: a similar adaptor that handles the multidimensional index operator.
+    /// See my notes for how to implement it.
+
+    /* The range visit operator `->*` attempts to destructure tuple inputs if the
+    visitor is not immediately callable with the yield type and that yield type is a
+    tuple. */
+    template <meta::not_rvalue F>
+    struct zip_visit {
+        [[no_unique_address]] impl::ref<F> func;
+
+        [[nodiscard]] constexpr zip_visit(meta::forward<F> f)
+            noexcept (requires{{impl::ref<F>{F{std::forward<F>(f)}}} noexcept;})
+            requires (requires{{impl::ref<F>{F{std::forward<F>(f)}}};})
+        :
+            func{F{std::forward<F>(f)}}
+        {}
+
+        template <typename T>
+        [[nodiscard]] constexpr decltype(auto) operator()(T&& val)
+            noexcept (requires{{(*func)(std::forward<T>(val))} noexcept;})
+            requires (requires{{(*func)(std::forward<T>(val))};})
+        {
+            return (*func)(std::forward<T>(val));
+        }
+
+        template <typename T>
+        [[nodiscard]] constexpr decltype(auto) operator()(T&& val) const
+            noexcept (requires{{(*func)(std::forward<T>(val))} noexcept;})
+            requires (requires{{(*func)(std::forward<T>(val))};})
+        {
+            return ((*func)(std::forward<T>(val)));
+        }
+
+    private:
+        template <meta::tuple_like T, size_t... Is>
+        constexpr decltype(auto) tuple(T&& val, std::index_sequence<Is...>)
+            noexcept (requires{{(*func)(meta::get<Is>(std::forward<T>(val))...)} noexcept;})
+            requires (requires{{(*func)(meta::get<Is>(std::forward<T>(val))...)};})
+        {
+            return ((*func)(meta::get<Is>(std::forward<T>(val))...));
+        }
+
+        template <meta::tuple_like T, size_t... Is>
+        constexpr decltype(auto) tuple(T&& val, std::index_sequence<Is...>) const
+            noexcept (requires{{(*func)(meta::get<Is>(std::forward<T>(val))...)} noexcept;})
+            requires (requires{{(*func)(meta::get<Is>(std::forward<T>(val))...)};})
+        {
+            return ((*func)(meta::get<Is>(std::forward<T>(val))...));
+        }
+
+    public:
+        template <meta::tuple_like T>
+        [[nodiscard]] constexpr decltype(auto) operator()(T&& val)
+            noexcept (requires{{tuple(
+                std::forward<T>(val),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            )} noexcept;})
+            requires (
+                !requires{{func(std::forward<T>(val))};} &&
+                requires{{tuple(
+                    std::forward<T>(val),
+                    std::make_index_sequence<meta::tuple_size<T>>{}
+                )};}
+            )
+        {
+            return tuple(
+                std::forward<T>(val),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            );
+        }
+
+        template <meta::tuple_like T>
+        [[nodiscard]] constexpr decltype(auto) operator()(T&& val) const
+            noexcept (requires{{tuple(
+                std::forward<T>(val),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            )} noexcept;})
+            requires (
+                !requires{{func(std::forward<T>(val))};} &&
+                requires{{tuple(
+                    std::forward<T>(val),
+                    std::make_index_sequence<meta::tuple_size<T>>{}
+                )};}
+            )
+        {
+            return tuple(
+                std::forward<T>(val),
+                std::make_index_sequence<meta::tuple_size<T>>{}
+            );
+        }
+    };
+    template <typename F>
+    zip_visit(F&&) -> zip_visit<meta::remove_rvalue<F>>;
+
+    template <typename L, typename R>
+    concept zip_visitable =
+        meta::callable<zip_visit<meta::remove_rvalue<R>>, zip_arg<L>> &&
+        meta::not_void<meta::call_type<zip_visit<meta::remove_rvalue<R>>, zip_arg<L>>>;
 
 }
 
@@ -7407,10 +7554,7 @@ namespace iter {
                 std::forward<A>(a)...
             }}} noexcept;})
             requires (
-                impl::zip_concept<
-                    decltype((std::forward<Self>(self).f)),
-                    meta::remove_rvalue<A>...
-                > &&
+                impl::zip_concept<decltype((self.f)), A...> &&
                 requires{{range{impl::zip{
                     std::forward<Self>(self).f,
                     std::forward<A>(a)...
@@ -7938,28 +8082,71 @@ namespace iter {
             return *this;
         }
 
-        /// TODO: monadic call operator, which may be forward-declared and filled in
-        /// later in zip.h, once `zip{}` has been defined.
-
         template <typename Self, typename... A>
-        constexpr decltype(auto) operator()(this Self&& self, A&&... a)
-            noexcept (meta::nothrow::iterable<Self> && requires(meta::yield_type<Self> x) {
-                {x(std::forward<A>(a)...)} noexcept;
-            })
-            requires (requires(meta::yield_type<Self> x) {
-                {x(std::forward<A>(a)...)};
-            });
-
+        constexpr auto operator()(this Self&& self, A&&... a)
+            noexcept (requires{{
+                zip{impl::zip_call{}}(std::forward<Self>(self), std::forward<A>(a)...)
+            } noexcept;})
+            requires (
+                meta::callable<meta::yield_type<Self>, impl::zip_arg<A>...> &&
+                meta::not_void<meta::call_type<meta::yield_type<Self>, impl::zip_arg<A>...>>
+            )
+        {
+            return zip{impl::zip_call{}}(std::forward<Self>(self), std::forward<A>(a)...);
+        }
     };
+
+    /* Broadcasting operator for range monads.  A visitor function must be provided on
+    the right hand side of this operator, which must either be a range algorithm for
+    which `meta::range_algorithm` evaluates true and which is directly callable with
+    the left-hand range, or another function object that is callable with the range's
+    yield type.  If the range yields tuples and the function is not directly callable
+    with the tuple, then this operator will attempt to destructure it and invoke the
+    function with each element as a separate argument.
+    
+    Similar to the built-in `->` indirection operator, this operator will attempt to
+    recursively call itself in order to match nested patterns involving other monads.
+    Namely, if neither of the above conditions are met, but the continuation
+    `->* visitor` operation is valid for the range's yield type, then that operation
+    will be invoked instead, possibly creating a nested comprehension that preserves
+    the original's shape. */
+    template <meta::range L, typename R> requires (!meta::range<R>)
+    [[nodiscard]] constexpr decltype(auto) operator->*(L&& l, R&& r)
+        noexcept ((meta::range_algorithm<R> && meta::callable<R, L>) ?
+            requires{{std::forward<R>(r)(std::forward<L>(l))} noexcept;} : (
+                impl::zip_visitable<L, R> ?
+                    requires{{zip{impl::zip_visit{std::forward<R>(r)}}(std::forward<L>(l))} noexcept;} :
+                    requires{{
+                        zip{impl::ArrowDereference{}}(std::forward<L>(l), std::forward<R>(r))
+                    } noexcept;}
+            )
+        )
+        requires (
+            (meta::range_algorithm<R> && meta::callable<R, L>) ||
+            impl::zip_visitable<L, R> ||
+            requires{
+                {zip{impl::ArrowDereference{}}(std::forward<L>(l), std::forward<R>(r))};
+            }
+        )
+    {
+        if constexpr (meta::range_algorithm<R> && meta::callable<R, L>) {
+            return (std::forward<R>(r)(std::forward<L>(l)));
+        } else if constexpr (impl::zip_visitable<L, R>) {
+            return (zip{impl::zip_visit{std::forward<R>(r)}}(std::forward<L>(l)));
+        } else {
+            return (zip{impl::ArrowDereference{}}(std::forward<L>(l), std::forward<R>(r)));
+        }
+    }
 
     template <meta::range T>
     [[nodiscard]] constexpr auto operator!(T&& r)
         noexcept (requires{
             {zip{impl::LogicalNot{}}(std::forward<T>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::LogicalNot{}}(std::forward<T>(r))};
-        })
+        requires (
+            meta::has_logical_not<meta::yield_type<T>> &&
+            meta::not_void<meta::logical_not_type<meta::yield_type<T>>>
+        )
     {
         return zip{impl::LogicalNot{}}(std::forward<T>(r));
     }
@@ -7969,9 +8156,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::LogicalAnd{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::LogicalAnd{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_logical_and<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::logical_and_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::LogicalAnd{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -7981,9 +8169,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::LogicalOr{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::LogicalOr{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_logical_or<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::logical_or_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::LogicalOr{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -7993,9 +8182,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Less{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Less{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_lt<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::lt_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Less{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8005,9 +8195,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::LessEqual{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::LessEqual{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_le<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::le_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::LessEqual{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8017,9 +8208,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Equal{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Equal{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_eq<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::eq_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Equal{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8029,9 +8221,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::NotEqual{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::NotEqual{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_ne<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::ne_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::NotEqual{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8041,9 +8234,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::GreaterEqual{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::GreaterEqual{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_ge<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::ge_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::GreaterEqual{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8053,9 +8247,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Greater{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Greater{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_gt<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::gt_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Greater{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8065,9 +8260,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Spaceship{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Spaceship{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_spaceship<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::spaceship_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Spaceship{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8077,9 +8273,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Pos{}}(std::forward<T>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Pos{}}(std::forward<T>(r))};
-        })
+        requires (
+            meta::has_pos<meta::yield_type<T>> &&
+            meta::not_void<meta::pos_type<meta::yield_type<T>>>
+        )
     {
         return zip{impl::Pos{}}(std::forward<T>(r));
     }
@@ -8089,9 +8286,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Neg{}}(std::forward<T>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Neg{}}(std::forward<T>(r))};
-        })
+        requires (
+            meta::has_neg<meta::yield_type<T>> &&
+            meta::not_void<meta::neg_type<meta::yield_type<T>>>
+        )
     {
         return zip{impl::Neg{}}(std::forward<T>(r));
     }
@@ -8101,9 +8299,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::PreIncrement{}}(std::forward<T>(r)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::PreIncrement{}}(std::forward<T>(r)))};
-        })
+        requires (
+            meta::has_preincrement<meta::yield_type<T>>
+        )
     {
         exhaust{}(zip{impl::PreIncrement{}}(std::forward<T>(r)));
         return (std::forward<T>);
@@ -8115,10 +8313,10 @@ namespace iter {
             {r.copy()} noexcept;
             {++std::forward<T>(r)} noexcept;
         })
-        requires (requires{
-            {r.copy()};
-            {++std::forward<T>(r)};
-        })
+        requires (
+            requires{{r.copy()};} &&
+            meta::has_preincrement<meta::yield_type<T>>
+        )
     {
         auto copy = r.copy();
         ++std::forward<T>(r);
@@ -8130,9 +8328,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::PreDecrement{}}(std::forward<T>(r)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::PreDecrement{}}(std::forward<T>(r)))};
-        })
+        requires (
+            meta::has_predecrement<meta::yield_type<T>>
+        )
     {
         exhaust{}(zip{impl::PreDecrement{}}(std::forward<T>(r)));
         return (std::forward<T>);
@@ -8144,10 +8342,10 @@ namespace iter {
             {r.copy()} noexcept;
             {--std::forward<T>(r)} noexcept;
         })
-        requires (requires{
-            {r.copy()};
-            {--std::forward<T>(r)};
-        })
+        requires (
+            requires{{r.copy()};} &&
+            meta::has_predecrement<meta::yield_type<T>>
+        )
     {
         auto copy = r.copy();
         --std::forward<T>(r);
@@ -8159,9 +8357,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Add{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Add{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_add<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::add_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Add{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8171,9 +8370,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceAdd{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceAdd{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_iadd<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceAdd{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8184,9 +8383,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Subtract{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Subtract{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_sub<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::sub_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Subtract{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8196,9 +8396,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceSubtract{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceSubtract{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_isub<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceSubtract{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8209,9 +8409,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Multiply{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Multiply{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_mul<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::mul_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Multiply{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8221,9 +8422,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceMultiply{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceMultiply{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_imul<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceMultiply{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8234,9 +8435,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Divide{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Divide{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_div<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::div_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Divide{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8246,9 +8448,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceDivide{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceDivide{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_idiv<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceDivide{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8259,9 +8461,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::Modulus{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::Modulus{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_mod<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::mod_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::Modulus{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8271,9 +8474,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceModulus{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceModulus{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_imod<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceModulus{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8284,9 +8487,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::LeftShift{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::LeftShift{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_lshift<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::lshift_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::LeftShift{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8296,9 +8500,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceLeftShift{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceLeftShift{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_ilshift<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceLeftShift{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8309,9 +8513,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::RightShift{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
         })
-        requires (requires{
-            {zip{impl::RightShift{}}(std::forward<L>(lhs), std::forward<R>(rhs))};
-        })
+        requires (
+            meta::has_rshift<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::rshift_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::RightShift{}}(std::forward<L>(lhs), std::forward<R>(rhs));
     }
@@ -8321,9 +8526,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceRightShift{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceRightShift{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_irshift<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceRightShift{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8331,8 +8536,13 @@ namespace iter {
 
     template <meta::range T>
     [[nodiscard]] constexpr auto operator~(T&& r)
-        noexcept (requires{{zip{impl::BitwiseNot{}}(std::forward<T>(r))} noexcept;})
-        requires (requires{{zip{impl::BitwiseNot{}}(std::forward<T>(r))};})
+        noexcept (requires{
+            {zip{impl::BitwiseNot{}}(std::forward<T>(r))} noexcept;
+        })
+        requires (
+            meta::has_bitwise_not<meta::yield_type<T>> &&
+            meta::not_void<meta::bitwise_not_type<meta::yield_type<T>>>
+        )
     {
         return zip{impl::BitwiseNot{}}(std::forward<T>(r));
     }
@@ -8342,9 +8552,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::BitwiseAnd{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::BitwiseAnd{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_and<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::and_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::BitwiseAnd{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8354,9 +8565,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceBitwiseAnd{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceBitwiseAnd{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_iand<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceBitwiseAnd{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8367,9 +8578,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::BitwiseOr{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::BitwiseOr{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_or<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::or_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::BitwiseOr{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8379,9 +8591,9 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceBitwiseOr{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceBitwiseOr{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_ior<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceBitwiseOr{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
@@ -8392,9 +8604,10 @@ namespace iter {
         noexcept (requires{
             {zip{impl::BitwiseXor{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
         })
-        requires (requires{
-            {zip{impl::BitwiseXor{}}(std::forward<L>(l), std::forward<R>(r))};
-        })
+        requires (
+            meta::has_xor<impl::zip_arg<L>, impl::zip_arg<R>> &&
+            meta::not_void<meta::xor_type<impl::zip_arg<L>, impl::zip_arg<R>>>
+        )
     {
         return zip{impl::BitwiseXor{}}(std::forward<L>(l), std::forward<R>(r));
     }
@@ -8404,12 +8617,46 @@ namespace iter {
         noexcept (requires{
             {exhaust{}(zip{impl::InplaceBitwiseXor{}}(lhs, std::forward<R>(rhs)))} noexcept;
         })
-        requires (requires{
-            {exhaust{}(zip{impl::InplaceBitwiseXor{}}(lhs, std::forward<R>(rhs)))};
-        })
+        requires (
+            meta::has_ixor<meta::yield_type<L>, impl::zip_arg<R>>
+        )
     {
         exhaust{}(zip{impl::InplaceBitwiseXor{}}(lhs, std::forward<R>(rhs)));
         return (std::forward<L>(lhs));
+    }
+
+}
+
+
+namespace meta {
+
+    namespace detail {
+
+        template <typename F>
+        constexpr bool range_algorithm<iter::all<F>> = true;
+        template <typename F>
+        constexpr bool range_algorithm<iter::any<F>> = true;
+        template <typename F>
+        constexpr bool range_algorithm<iter::compare<F>> = true;
+        template <typename T>
+        constexpr bool range_algorithm<iter::contains<T>> = true;
+        template <typename T>
+        constexpr bool range_algorithm<iter::count<T>> = true;
+        template <>
+        inline constexpr bool range_algorithm<iter::exhaust> = true;
+        template <typename F>
+        constexpr bool range_algorithm<iter::max<F>> = true;
+        template <typename F>
+        constexpr bool range_algorithm<iter::min<F>> = true;
+        template <typename F>
+        constexpr bool range_algorithm<iter::minmax<F>> = true;
+        template <auto... K>
+        constexpr bool range_algorithm<iter::at<K...>> = true;
+        template <>
+        inline constexpr bool range_algorithm<iter::reverse> = true;
+        template <typename F>
+        constexpr bool range_algorithm<iter::zip<F>> = true;
+
     }
 
 }
@@ -8452,8 +8699,12 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     template <typename T>
     struct tuple_size<bertrand::impl::tuple_range<T>> : tuple_size<bertrand::meta::unqualify<T>> {};
 
-    /// TODO: impl::zip{}
-
+    template <typename F, typename... A>
+        requires (!(bertrand::meta::range<A> || bertrand::meta::tuple_like<A>) && ...)
+    struct tuple_size<bertrand::impl::zip<F, A...>> : std::integral_constant<
+        size_t,
+        bertrand::impl::zip_tuple_size<A...>
+    > {};
 
     template <size_t I, bertrand::meta::tuple_like T>
         requires (requires{typename tuple_element<I, bertrand::meta::remove_reference<T>>;})
@@ -8486,7 +8737,16 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         bertrand::meta::remove_reference<T>
     > {};
 
-    /// TODO: impl::zip{}
+    template <size_t I, typename F, typename... A>
+        requires (
+            (!(bertrand::meta::range<A> || bertrand::meta::tuple_like<A>) && ...) &&
+            I < bertrand::impl::zip_tuple_size<A...>
+        )
+    struct tuple_element<I, bertrand::impl::zip<F, A...>> {
+        using type = bertrand::meta::remove_rvalue<
+            decltype((std::declval<bertrand::impl::zip<F, A...>>().template get<I>()))
+        >;
+    };
 
 _LIBCPP_END_NAMESPACE_STD
 
@@ -8542,6 +8802,57 @@ namespace bertrand::iter {
         r[0] = 100;
         if (r[0] != 100) return false;
         if (r2[0] != 10) return false;
+
+        return true;
+    }());
+
+    static_assert([] {
+        range r = std::array{1, 2, 3};
+        auto z = r + 1;
+        auto it = z.begin();
+        if (*it++ != 2) return false;
+        if (*it++ != 3) return false;
+        if (*it++ != 4) return false;
+        if (it != z.end()) return false;
+
+        auto z2 = r ->* [](int x) { return x - 1; };
+        auto it2 = z2.begin();
+        if (*it2++ != 0) return false;
+        if (*it2++ != 1) return false;
+        if (*it2++ != 2) return false;
+        if (it2 != z2.end()) return false;
+
+        if (((r + 1) ->* max{}) != 4) return false;
+        if (((r + range(std::array{2, 1, 0})) != 3) ->* any()) return false;
+
+        return true;
+    }());
+
+    static_assert([] {
+        range r = std::array{Optional<int>{1}, Optional<int>{2}, Optional<int>{None}};
+        auto r2 = r ->* [](int x) { return x * 10; };
+        auto it = r2.begin();
+        if (**it++ != 10) return false;
+        if (**it++ != 20) return false;
+        if (*it++ != None) return false;
+        if (it != r2.end()) return false;
+
+        auto rit = r2.rbegin();
+        if (*rit++ != None) return false;
+        if (**rit++ != 20) return false;
+        if (**rit++ != 10) return false;
+        if (rit != r2.rend()) return false;
+        return true;
+    }());
+
+    static_assert([] {
+        Optional<range<std::array<int, 3>>> orng = std::array{1, 2, 3};
+        auto orng2 = orng ->* [](int x) { return x + 5; };
+        auto it = orng2->begin();
+        if (*it++ != 6) return false;
+        if (*it++ != 7) return false;
+        if (*it++ != 8) return false;
+        if (it != orng2->end()) return false;
 
         return true;
     }());

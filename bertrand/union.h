@@ -6082,6 +6082,10 @@ struct Expected<T, E, Es...> {
 /////////////////////////////////
 
 
+/// TODO: note that ->* is now not required to be exhaustive, since that would
+/// interfere with stacked range monads.  It's better to be loose to simplify usage.
+
+
 /* Pattern matching operator for union monads.  A visitor function must be provided on
 the right hand side of this operator, which must be callable using all alternatives
 of the monad on the left.  Nested monads will be recursively expanded into their
@@ -6096,8 +6100,8 @@ former over the latter.  If neither are satisfied, then the operator will fail t
 compile. */
 template <meta::visit_monad T, typename F>
 constexpr decltype(auto) operator->*(T&& val, F&& func)
-    noexcept (meta::nothrow::force_visit_exhaustive<1, impl::visit_pattern<F>, F, T>)
-    requires (meta::force_visit_exhaustive<1, impl::visit_pattern<F>, F, T>)
+    noexcept (meta::nothrow::force_visit<1, impl::visit_pattern<F>, F, T>)
+    requires (meta::force_visit<1, impl::visit_pattern<F>, F, T>)
 {
     return (impl::visit<1>(
         impl::visit_pattern<F>{},
