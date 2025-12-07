@@ -6815,6 +6815,14 @@ namespace impl {
         // }
     };
 
+    /* If any of the arguments to `iter::at{}` (and therefore the range subscript
+    operator) are ranges, then they will be zipped into a fancy index, which otherwise
+    preserves shape and all the other normalizations of that algorithm. */
+    template <meta::not_rvalue T>
+    struct zip_subscript;
+    template <typename T>
+    zip_subscript(T&&) -> zip_subscript<meta::remove_rvalue<T>>;
+
     /* The range call operator simply inserts the range elements as an additional
     argument, and then invokes it with the remaining arguments.  Zip handles the
     rest. */
@@ -6827,9 +6835,6 @@ namespace impl {
             return (std::forward<F>(func)(std::forward<A>(args)...));
         }
     };
-
-    /// TODO: a similar adaptor that handles the multidimensional index operator.
-    /// See my notes for how to implement it.
 
     /* The range visit operator `->*` attempts to destructure tuple inputs if the
     visitor is not immediately callable with the yield type and that yield type is a
@@ -6932,20 +6937,8 @@ namespace impl {
 
 namespace iter {
 
-    /// TODO: iter::at(range(...)) should produce a range of results by applying each
-    /// index to the range individually.  The question is how should this behave with
-    /// respect to multidimensional indexing and the nested container normalizations
-    /// that are also being performed?  That's where all the complexity lies.
-    /// -> Invariably, it will require another proxy type in the impl:: namespace
-
-    /// TODO: what I might do is just detect whether any ranges are present in the
-    /// outer arguments, and if so, produce a proxy that independently calls `at{}`
-    /// for each one, returning a range of results with all the proper normalizations
-    /// applied.  That way, the existing `at{}` implementation can remain unchanged,
-    /// and all the complexity is isolated to the new proxy type.  In fact, this might
-    /// just be the same as `zip` in the end.  It's essentially just the same
-    /// operation.
-
+    /// TODO: update documentation for at{} to note that range indices will be zipped
+    /// into a fancy index
 
 
     /* Range-based multidimensional indexing operator, with support for both
@@ -7140,7 +7133,7 @@ namespace iter {
         }
 
     public:
-        template <typename C>
+        template <typename C> requires (!meta::range<decltype(K)> && ...)
         [[nodiscard]] static constexpr decltype(auto) operator()(C&& c)
             noexcept (
                 requires{{get(meta::strip_range(std::forward<C>(c)))};} ?
@@ -7169,6 +7162,23 @@ namespace iter {
             } else {
                 return (invoke(meta::from_range(std::forward<C>(c))));
             }
+        }
+
+        template <typename C> requires (meta::range<decltype(K)> || ...)
+        [[nodiscard]] static constexpr auto operator()(C&& c)
+            noexcept (requires{{range{impl::zip{
+                impl::zip_subscript{std::forward<C>(c)},
+                K...
+            }}} noexcept;})
+            requires (requires{{range{impl::zip{
+                impl::zip_subscript{std::forward<C>(c)},
+                K...
+            }}};})
+        {
+            return range{impl::zip{
+                impl::zip_subscript{std::forward<C>(c)},
+                K...
+            }};
         }
     };
     template <auto... K>
@@ -7378,13 +7388,31 @@ namespace iter {
             }
         };
 
+        template <typename Self, typename C, size_t... I>
+        constexpr auto zip(this Self&& self, C&& c, std::index_sequence<I...>)
+            noexcept (requires{{range{impl::zip{
+                impl::zip_subscript{std::forward<C>(c)},
+                std::forward<Self>(self).idx.template get<I>()...
+            }}} noexcept;})
+            requires (requires{{range{impl::zip{
+                impl::zip_subscript{std::forward<C>(c)},
+                std::forward<Self>(self).idx.template get<I>()...
+            }}};})
+        {
+            return range{impl::zip{
+                impl::zip_subscript{std::forward<C>(c)},
+                std::forward<Self>(self).idx.template get<I>()...
+            }};
+        }
+
     public:
         template <typename C> requires (sizeof...(K) == 0)
         [[nodiscard]] static constexpr decltype(auto) operator()(C&& c) noexcept {
             return (std::forward<C>(c));
         }
 
-        template <typename Self, typename C> requires (sizeof...(K) > 0)
+        template <typename Self, typename C>
+            requires (sizeof...(K) > 0 && (!meta::range<typename decltype(K)::type> && ...))
         [[nodiscard]] constexpr decltype(auto) operator()(this Self&& self, C&& c)
             noexcept (
                 requires{{eval<>::subscript(
@@ -7468,6 +7496,24 @@ namespace iter {
                 ));
             }
         }
+
+        template <typename Self, typename C>
+            requires (sizeof...(K) > 0 && (meta::range<typename decltype(K)::type> || ...))
+        [[nodiscard]] constexpr auto operator()(this Self&& self, C&& c)
+            noexcept (requires{{std::forward<Self>(self).zip(
+                std::forward<C>(c),
+                std::make_index_sequence<sizeof...(K)>()
+            )} noexcept;})
+            requires (requires{{std::forward<Self>(self).zip(
+                std::forward<C>(c),
+                std::make_index_sequence<sizeof...(K)>()
+            )};})
+        {
+            return std::forward<Self>(self).zip(
+                std::forward<C>(c),
+                std::make_index_sequence<sizeof...(K)>()
+            );
+        }
     };
     template <typename... K>
     at(K&&...) -> at<type<meta::remove_rvalue<K>>...>;
@@ -7496,9 +7542,9 @@ namespace iter {
     };
 
     /* A function object that merges multiple ranges and/or scalar values into a single
-    range, passing each element to a given transformation function.  If no
-    transformation function is given, then the range defaults to returning a `Tuple` of
-    the individual elements.
+    range, passing each element to a given transformation function, which is computed
+    lazily.  If no transformation function is given, then the range defaults to
+    returning a `Tuple` of the individual elements.
 
     This class unifies and replaces the following standard library views:
 
@@ -7522,7 +7568,7 @@ namespace iter {
     `operator()`, `operator->*`, `operator[]`, which use simple adaptors to forward
     the intended behavior.
 
-    For the range-based call operator, the adaptor simply extends the argument list
+    For the range-based call `operator()`, the adaptor simply extends the argument list
     with the range on which the operator was invoked, and then forwards the remaining
     arguments to each element after broadcasting.  `range(x)(a...)` is therefore
     expression-equivalent to:
@@ -7535,14 +7581,24 @@ namespace iter {
         }}(range(x), a...);
         ```
 
-    The visitation operator `->*` uses an adaptor that recursively attempts the visitor
-    function on each element, unpacking yield types until the function becomes callable
-    or the parent type is no longer a range.  This allows visitors to be applied to
-    multidimensional ranges.
+    The visitation `operator->*` uses an adaptor that attempts to destructure tuple
+    elements into separate arguments, enabling simple pattern matching if the visitor
+    is not directly callable with the tuple itself.  Additionally, because the `->*`
+    operator attempts to recursively call itself if it cannot be resolved (similar to
+    the `->` operator), the resulting comprehension will respect any nested ranges
+    and preserve their shape as long as the visitor eventually becomes callable at
+    some depth.  This recursion also allows nested pattern matching for ranges
+    containing union types, in which case the visitor may customize behavior for each
+    alternative separately.  See the general monad documentation for more details on
+    this operator and its behavior.
 
-    /// TODO: finish this documentation once the implementation is complete
-
-    */
+    Lastly, the multidimensional indexing `operator[]` detects whether any of the
+    arguments are ranges, and if so, zips them along with the range on which the
+    operator was invoked.  It then recursively invokes `iter::at{}` using the
+    broadcasted arguments until the indexing operation can be resolved.  This respects
+    both the shape of the outer range as well as those of the index arguments, allowing
+    numpy-style fancy indexing with all the other normalizations of that algorithm.
+    See `iter::at{}` for more details on the indexing behavior. */
     template <meta::not_rvalue F = impl::zip_tuple>
     struct zip {
         [[no_unique_address]] F f;
@@ -8084,15 +8140,21 @@ namespace iter {
 
         template <typename Self, typename... A>
         constexpr auto operator()(this Self&& self, A&&... a)
-            noexcept (requires{{
-                zip{impl::zip_call{}}(std::forward<Self>(self), std::forward<A>(a)...)
-            } noexcept;})
+            noexcept (requires{{iter::range{impl::zip{
+                impl::zip_call{},
+                std::forward<Self>(self),
+                std::forward<A>(a)...
+            }}} noexcept;})
             requires (
                 meta::callable<meta::yield_type<Self>, impl::zip_arg<A>...> &&
                 meta::not_void<meta::call_type<meta::yield_type<Self>, impl::zip_arg<A>...>>
             )
         {
-            return zip{impl::zip_call{}}(std::forward<Self>(self), std::forward<A>(a)...);
+            return iter::range{impl::zip{
+                impl::zip_call{},
+                std::forward<Self>(self),
+                std::forward<A>(a)...
+            }};
         }
     };
 
@@ -8115,196 +8177,280 @@ namespace iter {
         noexcept ((meta::range_algorithm<R> && meta::callable<R, L>) ?
             requires{{std::forward<R>(r)(std::forward<L>(l))} noexcept;} : (
                 impl::zip_visitable<L, R> ?
-                    requires{{zip{impl::zip_visit{std::forward<R>(r)}}(std::forward<L>(l))} noexcept;} :
-                    requires{{
-                        zip{impl::ArrowDereference{}}(std::forward<L>(l), std::forward<R>(r))
-                    } noexcept;}
+                    requires{{iter::range{impl::zip{
+                        impl::zip_visit{std::forward<R>(r)},
+                        std::forward<L>(l)
+                    }}} noexcept;} :
+                    requires{{iter::range{impl::zip{
+                        impl::ArrowDereference{},
+                        std::forward<L>(l),
+                        std::forward<R>(r)
+                    }}} noexcept;}
             )
         )
         requires (
             (meta::range_algorithm<R> && meta::callable<R, L>) ||
             impl::zip_visitable<L, R> ||
-            requires{
-                {zip{impl::ArrowDereference{}}(std::forward<L>(l), std::forward<R>(r))};
-            }
+            requires{{iter::range{impl::zip{
+                impl::ArrowDereference{},
+                std::forward<L>(l),
+                std::forward<R>(r)
+            }}};}
         )
     {
         if constexpr (meta::range_algorithm<R> && meta::callable<R, L>) {
             return (std::forward<R>(r)(std::forward<L>(l)));
         } else if constexpr (impl::zip_visitable<L, R>) {
-            return (zip{impl::zip_visit{std::forward<R>(r)}}(std::forward<L>(l)));
+            return (iter::range{impl::zip{
+                impl::zip_visit{std::forward<R>(r)},
+                std::forward<L>(l)
+            }});
         } else {
-            return (zip{impl::ArrowDereference{}}(std::forward<L>(l), std::forward<R>(r)));
+            return (iter::range{impl::zip{
+                impl::ArrowDereference{},
+                std::forward<L>(l),
+                std::forward<R>(r)
+            }});
         }
     }
 
     template <meta::range T>
     [[nodiscard]] constexpr auto operator!(T&& r)
-        noexcept (requires{
-            {zip{impl::LogicalNot{}}(std::forward<T>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::LogicalNot{},
+            std::forward<T>(r)
+        }}} noexcept;})
         requires (
             meta::has_logical_not<meta::yield_type<T>> &&
             meta::not_void<meta::logical_not_type<meta::yield_type<T>>>
         )
     {
-        return zip{impl::LogicalNot{}}(std::forward<T>(r));
+        return iter::range{impl::zip{
+            impl::LogicalNot{},
+            std::forward<T>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator&&(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::LogicalAnd{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::LogicalAnd{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_logical_and<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::logical_and_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::LogicalAnd{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::LogicalAnd{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator||(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::LogicalOr{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::LogicalOr{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_logical_or<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::logical_or_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::LogicalOr{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::LogicalOr{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator<(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::Less{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Less{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_lt<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::lt_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Less{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::Less{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator<=(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::LessEqual{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::LessEqual{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_le<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::le_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::LessEqual{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::LessEqual{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator==(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::Equal{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Equal{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_eq<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::eq_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Equal{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::Equal{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator!=(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::NotEqual{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::NotEqual{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_ne<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::ne_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::NotEqual{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::NotEqual{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator>=(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::GreaterEqual{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::GreaterEqual{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_ge<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::ge_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::GreaterEqual{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::GreaterEqual{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator>(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::Greater{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Greater{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_gt<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::gt_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Greater{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::Greater{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator<=>(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::Spaceship{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Spaceship{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_spaceship<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::spaceship_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Spaceship{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::Spaceship{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <meta::range T>
     [[nodiscard]] constexpr auto operator+(T&& r)
-        noexcept (requires{
-            {zip{impl::Pos{}}(std::forward<T>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Pos{},
+            std::forward<T>(r)
+        }}} noexcept;})
         requires (
             meta::has_pos<meta::yield_type<T>> &&
             meta::not_void<meta::pos_type<meta::yield_type<T>>>
         )
     {
-        return zip{impl::Pos{}}(std::forward<T>(r));
+        return iter::range{impl::zip{
+            impl::Pos{},
+            std::forward<T>(r)
+        }};
     }
 
     template <meta::range T>
     [[nodiscard]] constexpr auto operator-(T&& r)
-        noexcept (requires{
-            {zip{impl::Neg{}}(std::forward<T>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Neg{},
+            std::forward<T>(r)
+        }}} noexcept;})
         requires (
             meta::has_neg<meta::yield_type<T>> &&
             meta::not_void<meta::neg_type<meta::yield_type<T>>>
         )
     {
-        return zip{impl::Neg{}}(std::forward<T>(r));
+        return iter::range{impl::zip{
+            impl::Neg{},
+            std::forward<T>(r)
+        }};
     }
 
     template <meta::range T>
     constexpr decltype(auto) operator++(T&& r)
-        noexcept (requires{
-            {exhaust{}(zip{impl::PreIncrement{}}(std::forward<T>(r)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::PreIncrement{},
+            std::forward<T>(r)
+        }})} noexcept;})
         requires (
             meta::has_preincrement<meta::yield_type<T>>
         )
     {
-        exhaust{}(zip{impl::PreIncrement{}}(std::forward<T>(r)));
-        return (std::forward<T>);
+        exhaust{}(iter::range{impl::zip{
+            impl::PreIncrement{},
+            std::forward<T>(r)
+        }});
+        return (std::forward<T>(r));
     }
 
     template <meta::range T>
@@ -8325,15 +8471,19 @@ namespace iter {
 
     template <meta::range T>
     constexpr decltype(auto) operator--(T&& r)
-        noexcept (requires{
-            {exhaust{}(zip{impl::PreDecrement{}}(std::forward<T>(r)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::PreDecrement{},
+            std::forward<T>(r)
+        }})} noexcept;})
         requires (
             meta::has_predecrement<meta::yield_type<T>>
         )
     {
-        exhaust{}(zip{impl::PreDecrement{}}(std::forward<T>(r)));
-        return (std::forward<T>);
+        exhaust{}(iter::range{impl::zip{
+            impl::PreDecrement{},
+            std::forward<T>(r)
+        }});
+        return (std::forward<T>(r));
     }
 
     template <meta::range T>
@@ -8354,79 +8504,115 @@ namespace iter {
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator+(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {zip{impl::Add{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Add{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }}} noexcept;})
         requires (
             meta::has_add<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::add_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Add{}}(std::forward<L>(lhs), std::forward<R>(rhs));
+        return iter::range{impl::zip{
+            impl::Add{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator+=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceAdd{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceAdd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_iadd<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceAdd{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceAdd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator-(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {zip{impl::Subtract{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Subtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }}} noexcept;})
         requires (
             meta::has_sub<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::sub_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Subtract{}}(std::forward<L>(lhs), std::forward<R>(rhs));
+        return iter::range{impl::zip{
+            impl::Subtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator-=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceSubtract{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceSubtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_isub<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceSubtract{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceSubtract{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator*(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {zip{impl::Multiply{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Multiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }}} noexcept;})
         requires (
             meta::has_mul<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::mul_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Multiply{}}(std::forward<L>(lhs), std::forward<R>(rhs));
+        return iter::range{impl::zip{
+            impl::Multiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator*=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceMultiply{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceMultiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_imul<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceMultiply{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceMultiply{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
@@ -8445,185 +8631,289 @@ namespace iter {
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator/=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceDivide{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceDivide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_idiv<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceDivide{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceDivide{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator%(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {zip{impl::Modulus{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::Modulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }}} noexcept;})
         requires (
             meta::has_mod<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::mod_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::Modulus{}}(std::forward<L>(lhs), std::forward<R>(rhs));
+        return iter::range{impl::zip{
+            impl::Modulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator%=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceModulus{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceModulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_imod<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceModulus{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceModulus{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator<<(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {zip{impl::LeftShift{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::LeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }}} noexcept;})
         requires (
             meta::has_lshift<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::lshift_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::LeftShift{}}(std::forward<L>(lhs), std::forward<R>(rhs));
+        return iter::range{impl::zip{
+            impl::LeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator<<=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceLeftShift{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceLeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_ilshift<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceLeftShift{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceLeftShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator>>(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {zip{impl::RightShift{}}(std::forward<L>(lhs), std::forward<R>(rhs))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::RightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }}} noexcept;})
         requires (
             meta::has_rshift<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::rshift_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::RightShift{}}(std::forward<L>(lhs), std::forward<R>(rhs));
+        return iter::range{impl::zip{
+            impl::RightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator>>=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceRightShift{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceRightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_irshift<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceRightShift{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceRightShift{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <meta::range T>
     [[nodiscard]] constexpr auto operator~(T&& r)
-        noexcept (requires{
-            {zip{impl::BitwiseNot{}}(std::forward<T>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::BitwiseNot{},
+            std::forward<T>(r)
+        }}} noexcept;})
         requires (
             meta::has_bitwise_not<meta::yield_type<T>> &&
             meta::not_void<meta::bitwise_not_type<meta::yield_type<T>>>
         )
     {
-        return zip{impl::BitwiseNot{}}(std::forward<T>(r));
+        return iter::range{impl::zip{
+            impl::BitwiseNot{},
+            std::forward<T>(r)
+        }};
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator&(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::BitwiseAnd{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::BitwiseAnd{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_and<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::and_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::BitwiseAnd{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::BitwiseAnd{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator&=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceBitwiseAnd{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceBitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_iand<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceBitwiseAnd{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceBitwiseAnd{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator|(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::BitwiseOr{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::BitwiseOr{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_or<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::or_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::BitwiseOr{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::BitwiseOr{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator|=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceBitwiseOr{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceBitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_ior<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceBitwiseOr{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceBitwiseOr{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
 
     template <typename L, typename R> requires (meta::range<L> || meta::range<R>)
     [[nodiscard]] constexpr auto operator^(L&& l, R&& r)
-        noexcept (requires{
-            {zip{impl::BitwiseXor{}}(std::forward<L>(l), std::forward<R>(r))} noexcept;
-        })
+        noexcept (requires{{iter::range{impl::zip{
+            impl::BitwiseXor{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }}} noexcept;})
         requires (
             meta::has_xor<impl::zip_arg<L>, impl::zip_arg<R>> &&
             meta::not_void<meta::xor_type<impl::zip_arg<L>, impl::zip_arg<R>>>
         )
     {
-        return zip{impl::BitwiseXor{}}(std::forward<L>(l), std::forward<R>(r));
+        return iter::range{impl::zip{
+            impl::BitwiseXor{},
+            std::forward<L>(l),
+            std::forward<R>(r)
+        }};
     }
 
     template <meta::range L, typename R>
     constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
-        noexcept (requires{
-            {exhaust{}(zip{impl::InplaceBitwiseXor{}}(lhs, std::forward<R>(rhs)))} noexcept;
-        })
+        noexcept (requires{{exhaust{}(iter::range{impl::zip{
+            impl::InplaceBitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }})} noexcept;})
         requires (
             meta::has_ixor<meta::yield_type<L>, impl::zip_arg<R>>
         )
     {
-        exhaust{}(zip{impl::InplaceBitwiseXor{}}(lhs, std::forward<R>(rhs)));
+        exhaust{}(iter::range{impl::zip{
+            impl::InplaceBitwiseXor{},
+            std::forward<L>(lhs),
+            std::forward<R>(rhs)
+        }});
         return (std::forward<L>(lhs));
     }
+
+}
+
+
+namespace impl {
+
+    template <meta::not_rvalue T>
+    struct zip_subscript {
+        [[no_unique_address]] impl::ref<T> container;
+
+        template <typename Self, typename... A>
+        constexpr decltype(auto) operator()(this Self&& self, A&&... args)
+            noexcept (requires{
+                {iter::at{std::forward<A>(args)...}(*std::forward<Self>(self).container)} noexcept;
+            })
+            requires (requires{
+                {iter::at{std::forward<A>(args)...}(*std::forward<Self>(self).container)};
+            })
+        {
+            return (iter::at{std::forward<A>(args)...}(*std::forward<Self>(self).container));
+        }
+    };
 
 }
 
@@ -8853,6 +9143,30 @@ namespace bertrand::iter {
         if (*it++ != 7) return false;
         if (*it++ != 8) return false;
         if (it != orng2->end()) return false;
+
+        return true;
+    }());
+
+    static_assert([] {
+        range r = std::array{std::pair{1, 2}, std::pair{3, 4}};
+        auto r2 = r ->* [](int a, int b) { return a + b; };
+        auto it = r2.begin();
+        if (*it++ != 3) return false;
+        if (*it++ != 7) return false;
+        if (it != r2.end()) return false;
+
+        return true;
+    }());
+
+
+    static_assert([] {
+        range r = std::array{1, 2, 3, 4, 5};
+        auto r2 = r[range(std::array{1, 1, 1})] + 1;
+        auto it = r2.begin();
+        if (*it++ != 3) return false;
+        if (*it++ != 3) return false;
+        if (*it++ != 3) return false;
+        if (it != r2.end()) return false;
 
         return true;
     }());
