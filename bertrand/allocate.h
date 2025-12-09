@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include "bertrand/union.h"
 
 
 namespace bertrand {
@@ -132,48 +133,114 @@ namespace impl {
         return true;
     }();
 
+    template <typename U>
+    static constexpr size_t capacity_size = sizeof(U);  // never returns 0
+    template <meta::is_void U>
+    static constexpr size_t capacity_size<U> = 1;
+
+    template <typename U>
+    static constexpr size_t capacity_alignment = alignof(U);  // never returns 0
+    template <meta::is_void U>
+    static constexpr size_t capacity_alignment<U> = 1;
+
     /* A self-aligning helper for defining the capacity of a fixed-size container using
-    either explicit units or raw integers, which are interpreted in units of `T`. */
+    either explicit units or raw integers, which are interpreted in units of `T`.  Can
+    also be in an empty state, which indicates a dynamic capacity.
+
+    Usually, this class is used in a template signature or constructor like so:
+
+        ```
+        template <typename T, impl::capacity<T> N = None>
+        struct Foo {
+            Foo(impl::capacity<T> n) requires (!N) { ... }
+        };
+
+        using Bar = Foo<int, 1024>;  // static capacity
+        Foo<double> baz{2048};  // dynamic capacity
+        ```
+    */
     template <typename T>
     struct capacity {
-    private:
-        template <typename U>
-        static constexpr size_t raw_size = sizeof(U);  // never returns 0
-        template <meta::is_void U>
-        static constexpr size_t raw_size<U> = 1;
+        static constexpr size_t aligned_size = (
+            capacity_size<T> + (capacity_alignment<T> - 1) / capacity_alignment<T>
+        ) * capacity_alignment<T>;
 
-        template <typename U>
-        static constexpr size_t alignment = alignof(U);  // never returns 0
-        template <meta::is_void U>
-        static constexpr size_t alignment<U> = 1;
+        [[no_unique_address]] Optional<size_t> value;
 
-    public:
-        static constexpr size_t item_size =
-            (raw_size<T> + (alignment<T> - 1) / alignment<T>) * alignment<T>;
+        [[nodiscard]] constexpr capacity(NoneType size = None) noexcept {}
 
-        const size_t value;
-        constexpr capacity(size_t size) noexcept : value(size * item_size) {}
-        constexpr capacity(impl::nbytes size) noexcept :
-            value((size.value / item_size) * item_size)
+        [[nodiscard]] constexpr capacity(size_t size) noexcept :
+            value(size * aligned_size)
         {}
 
-        constexpr operator size_t() const noexcept { return value; }
+        [[nodiscard]] constexpr capacity(impl::nbytes size) noexcept :
+            value((size.value / aligned_size) * aligned_size)
+        {}
+
+        /* Contextually converting the capacity to a boolean returns true if the
+        capacity is not None (which indicates a dynamic capacity in template
+        contexts). */
+        [[nodiscard]] friend constexpr bool operator==(
+            const capacity& self,
+            NoneType
+        ) noexcept {
+            return self.value == None;
+        }
+        [[nodiscard]] friend constexpr bool operator==(
+            NoneType,
+            const capacity& self
+        ) noexcept {
+            return self.value == None;
+        }
+
+        // [[nodiscard]] friend constexpr bool operator==(
+        //     size_t size,
+        //     const capacity& self
+        // ) noexcept {
+        //     return self.value == size * aligned_size;
+        // }
+
+
+        /* Implicitly converting the capacity to a `size_t` returns the amount of
+        static memory that ought to be allocated. */
+        [[nodiscard]] constexpr operator size_t() const noexcept {
+            struct visit {
+                static constexpr size_t operator()(size_t value) noexcept { return value; }
+                static constexpr size_t operator()(NoneType) noexcept { return 0; }
+            };
+            return value ->* visit{};
+        }
 
         /* Get the total number of aligned instances of `T` that will fit within the
         capacity.  If the type is `void`, then it will return a raw number of bytes.
-        Otherwise, it is equivalent to `value / item_size`. */
-        constexpr size_t count() const noexcept {
-            return value / item_size;
+        Otherwise, it is equivalent to `value / aligned_size`. */
+        [[nodiscard]] constexpr size_t count() const noexcept {
+            return size_t(*this) / aligned_size;
         }
 
         /* Align the capacity to the nearest physical page, increasing it to a multiple
         of the `PAGE_SIZE`, and then adjusting it downwards to account for the
         alignment of `T`. */
-        constexpr capacity page_align() const noexcept {
-            size_t pages = ((value + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
-            return (pages / item_size) * item_size;
+        [[nodiscard]] constexpr capacity page_align() const noexcept {
+            size_t pages = ((size_t(*this) + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+            return (pages / aligned_size) * aligned_size;
         }
     };
+
+
+    static constexpr Optional<int> o = 1;
+    static constexpr capacity<int> y = o;
+
+    static constexpr capacity<int> x = 2;
+    static_assert(x != capacity<int>{3});
+
+
+    struct A { A(int) {} };
+    struct B { B(A) {} };
+
+    B b1 = 1;  // ❌ does NOT compile
+    B b2{1};   // ✅ compiles
+    B b3(1);   // ✅ compiles
 
 }
 

@@ -1839,9 +1839,6 @@ namespace meta {
         template <typename T>
         concept type_identity = detail::type_identity<unqualify<T>>;
 
-        template <type_identity T>
-        using type_identity_type = unqualify<T>::type;
-
         namespace detail {
 
             template <typename T>
@@ -5681,6 +5678,36 @@ struct NoneType {
     [[nodiscard]] constexpr std::partial_ordering operator<=>(NoneType) const noexcept {
         return std::partial_ordering::unordered;
     }
+
+    // template <typename T> requires (!meta::None<T>)
+    // [[nodiscard]] friend constexpr bool operator==(const NoneType& self, const T&) noexcept {
+    //     return meta::convertible_to<T, NoneType>;
+    // }
+
+    // template <typename T> requires (!meta::None<T>)
+    // [[nodiscard]] friend constexpr bool operator==(const T&, const NoneType& self) noexcept {
+    //     return meta::convertible_to<T, NoneType>;
+    // }
+
+    // template <typename T> requires (!meta::None<T>)
+    // [[nodiscard]] friend constexpr bool operator!=(const NoneType& self, const T&) noexcept {
+    //     return !meta::convertible_to<T, NoneType>;
+    // }
+
+    // template <typename T> requires (!meta::None<T>)
+    // [[nodiscard]] friend constexpr bool operator!=(const T&, const NoneType& self) noexcept {
+    //     return !meta::convertible_to<T, NoneType>;
+    // }
+
+    // template <typename T> requires (!meta::None<T>)
+    // [[nodiscard]] friend constexpr auto operator<=>(const NoneType& self, const T&) noexcept {
+    //     return std::partial_ordering::unordered;
+    // }
+
+    // template <typename T> requires (!meta::None<T>)
+    // [[nodiscard]] friend constexpr auto operator<=>(const T&, const NoneType& self) noexcept {
+    //     return std::partial_ordering::unordered;
+    // }
 
     template <typename T>
     [[nodiscard]] constexpr operator T() const

@@ -17,6 +17,28 @@ namespace bertrand {
 
 namespace impl {
 
+    /* A normalized set of slice indices that can be used to initialize a proper slice
+    range.  An instance of this class must be provided to the `impl::slice`
+    constructor, and is usually produced by the `bertrand::slice{...}.normalize(ssize)`
+    helper method in the case of integer indices.  Containers that allow non-integer
+    indices can construct an instance of this within their own `operator[](slice)`
+    method to provide custom indexing, if needed. */
+    struct slice_indices {
+        ssize_t start = 0;
+        ssize_t stop = 0;
+        ssize_t step = 1;
+
+        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept {
+            ssize_t bias = step + (step < 0) - (step > 0);
+            ssize_t length = (stop - start + bias) / step;
+            return length * (length > 0);
+        }
+        [[nodiscard]] constexpr bool empty() const noexcept { return ssize() == 0; }
+    };
+
+
+
     template <meta::lvalue Self>
     struct slice_iterator;
 
@@ -48,25 +70,7 @@ namespace impl {
     template <typename T, typename C>
     concept slice_param = meta::None<T> || meta::integer<T> || slice_predicate<T, C>;
 
-    /* A normalized set of slice indices that can be used to initialize a proper slice
-    range.  An instance of this class must be provided to the `impl::slice`
-    constructor, and is usually produced by the `bertrand::slice{...}.normalize(ssize)`
-    helper method in the case of integer indices.  Containers that allow non-integer
-    indices can construct an instance of this within their own `operator[](slice)`
-    method to provide custom indexing, if needed. */
-    struct slice_indices {
-        ssize_t start = 0;
-        ssize_t stop = 0;
-        ssize_t step = 1;
 
-        [[nodiscard]] constexpr size_t size() const noexcept { return size_t(ssize()); }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept {
-            ssize_t bias = step + (step < 0) - (step > 0);
-            ssize_t length = (stop - start + bias) / step;
-            return length * (length > 0);
-        }
-        [[nodiscard]] constexpr bool empty() const noexcept { return ssize() == 0; }
-    };
 
     template <meta::lvalue C> requires (slice_container<C>)
     constexpr bool slice_from_tail = false;
@@ -799,9 +803,6 @@ namespace iter {
         [[no_unique_address]] start_type start;
         [[no_unique_address]] stop_type stop;
         [[no_unique_address]] step_type step;
-
-        /// TODO: this slice object should also be able to be piped with other view
-        /// operators?
 
         /* Normalize the provided indices against a container of a given size, returning a
         4-tuple with members `start`, `stop`, `step`, and `length` in that order, and
