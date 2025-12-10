@@ -133,6 +133,9 @@ namespace impl {
         return true;
     }();
 
+    template <typename T>
+    struct capacity;
+
     template <typename U>
     static constexpr size_t capacity_size = sizeof(U);  // never returns 0
     template <meta::is_void U>
@@ -142,6 +145,21 @@ namespace impl {
     static constexpr size_t capacity_alignment = alignof(U);  // never returns 0
     template <meta::is_void U>
     static constexpr size_t capacity_alignment<U> = 1;
+
+    struct capacity_cmp {
+        static constexpr std::partial_ordering operator()(NoneType, NoneType) noexcept {
+            return std::partial_ordering::equivalent;
+        }
+        static constexpr std::partial_ordering operator()(NoneType, size_t) noexcept {
+            return std::partial_ordering::unordered;
+        }
+        static constexpr std::partial_ordering operator()(size_t, NoneType) noexcept {
+            return std::partial_ordering::unordered;
+        }
+        static constexpr std::partial_ordering operator()(size_t lhs, size_t rhs) noexcept {
+            return lhs <=> rhs;
+        }
+    };
 
     /* A self-aligning helper for defining the capacity of a fixed-size container using
     either explicit units or raw integers, which are interpreted in units of `T`.  Can
@@ -161,91 +179,131 @@ namespace impl {
     */
     template <typename T>
     struct capacity {
-        static constexpr size_t aligned_size = (
-            capacity_size<T> + (capacity_alignment<T> - 1) / capacity_alignment<T>
-        ) * capacity_alignment<T>;
+        static constexpr size_t aligned_size =
+            capacity_size<T> + (capacity_alignment<T> - 1) / capacity_alignment<T>;
 
         [[no_unique_address]] Optional<size_t> value;
 
         [[nodiscard]] constexpr capacity(NoneType size = None) noexcept {}
-
         [[nodiscard]] constexpr capacity(size_t size) noexcept :
             value(size * aligned_size)
         {}
-
         [[nodiscard]] constexpr capacity(impl::nbytes size) noexcept :
             value((size.value / aligned_size) * aligned_size)
         {}
 
-        /* Contextually converting the capacity to a boolean returns true if the
-        capacity is not None (which indicates a dynamic capacity in template
-        contexts). */
-        [[nodiscard]] friend constexpr bool operator==(
-            const capacity& self,
-            NoneType
-        ) noexcept {
-            return self.value == None;
-        }
-        [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
-            const capacity& self
-        ) noexcept {
-            return self.value == None;
-        }
-
-        // [[nodiscard]] friend constexpr bool operator==(
-        //     size_t size,
-        //     const capacity& self
-        // ) noexcept {
-        //     return self.value == size * aligned_size;
-        // }
-
-
         /* Implicitly converting the capacity to a `size_t` returns the amount of
-        static memory that ought to be allocated. */
-        [[nodiscard]] constexpr operator size_t() const noexcept {
+        memory that ought to be allocated in bytes. */
+        [[nodiscard]] constexpr size_t operator*() const noexcept {
             struct visit {
                 static constexpr size_t operator()(size_t value) noexcept { return value; }
                 static constexpr size_t operator()(NoneType) noexcept { return 0; }
             };
-            return value ->* visit{};
+            return impl::visit<1>(visit{}, value);
         }
 
         /* Get the total number of aligned instances of `T` that will fit within the
-        capacity.  If the type is `void`, then it will return a raw number of bytes.
-        Otherwise, it is equivalent to `value / aligned_size`. */
-        [[nodiscard]] constexpr size_t count() const noexcept {
-            return size_t(*this) / aligned_size;
+        capacity.  If the type is `void`, then it will return a raw number of bytes. */
+        [[nodiscard]] constexpr size_t size() const noexcept {
+            return **this / aligned_size;
+        }
+
+        /* Get the total number of aligned instances of `T` that will fit within the
+        capacity as a signed integer.  If the type is `void`, then it will return a
+        raw number of bytes. */
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept {
+            return ssize_t(**this);
+        }
+
+        /* Check whether any memory must actually be allocated. */
+        [[nodiscard]] constexpr bool empty() const noexcept {
+            return **this == 0;
         }
 
         /* Align the capacity to the nearest physical page, increasing it to a multiple
         of the `PAGE_SIZE`, and then adjusting it downwards to account for the
         alignment of `T`. */
         [[nodiscard]] constexpr capacity page_align() const noexcept {
-            size_t pages = ((size_t(*this) + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
+            size_t pages = ((**this + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
             return (pages / aligned_size) * aligned_size;
         }
+
+        /// TODO: arithmetic operators and comparisons should take the same arguments
+        /// as the constructor, so that I don't waste any time constructing or
+        /// dispatching to the resulting optional.
+
+        [[nodiscard]] friend constexpr auto operator<=>(const capacity& lhs, NoneType rhs)
+            noexcept
+        {
+            return impl::visit<1>(capacity_cmp{}, lhs.value, rhs);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(NoneType lhs, const capacity& rhs)
+            noexcept
+        {
+            return impl::visit<1>(capacity_cmp{}, lhs, rhs.value);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(const capacity& lhs, size_t rhs)
+            noexcept
+        {
+            return impl::visit<1>(capacity_cmp{}, lhs.value, rhs * aligned_size);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(size_t lhs, const capacity& rhs)
+            noexcept
+        {
+            return impl::visit<1>(capacity_cmp{}, lhs * aligned_size, rhs.value);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(const capacity& lhs, impl::nbytes rhs)
+            noexcept
+        {
+            return impl::visit<1>(capacity_cmp{}, lhs.value, rhs.value);
+        }
+
+        [[nodiscard]] friend constexpr auto operator<=>(impl::nbytes lhs, const capacity& rhs)
+            noexcept
+        {
+            return impl::visit<1>(capacity_cmp{}, lhs.value, rhs.value);
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(const capacity& lhs, NoneType rhs) noexcept {
+            return (lhs <=> rhs) == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(NoneType lhs, const capacity& rhs) noexcept {
+            return (lhs <=> rhs) == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(const capacity& lhs, size_t rhs) noexcept {
+            return (lhs <=> rhs) == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(size_t lhs, const capacity& rhs) noexcept {
+            return (lhs <=> rhs) == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(const capacity& lhs, impl::nbytes rhs) noexcept {
+            return (lhs <=> rhs) == 0;
+        }
+
+        [[nodiscard]] friend constexpr bool operator==(impl::nbytes lhs, const capacity& rhs) noexcept {
+            return (lhs <=> rhs) == 0;
+        }
+
+        /// TODO: addition, subtraction, etc?
     };
 
-
-    static constexpr Optional<int> o = 1;
-    static constexpr capacity<int> y = o;
-
     static constexpr capacity<int> x = 2;
-    static_assert(x != capacity<int>{3});
-
-
-    struct A { A(int) {} };
-    struct B { B(A) {} };
-
-    B b1 = 1;  // ❌ does NOT compile
-    B b2{1};   // ✅ compiles
-    B b3(1);   // ✅ compiles
+    static constexpr Optional<int> y = 2;
+    static constexpr auto z = y + 2;
+    static_assert(x == y);
 
 }
 
 
-template <meta::unqualified T = void, impl::capacity<T> N = 8_MiB>
+template <meta::unqualified T = void, impl::capacity<T> N = None>
 struct arena;
 
 

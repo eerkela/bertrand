@@ -144,6 +144,11 @@ namespace bertrand {
 
 
 
+/// TODO: also note in documentation that I've removed `meta::consistent` and
+/// `meta::trivial_union`.  You can just check whether the return type is visitable
+/// instead.
+
+
 
 namespace impl {
 
@@ -166,22 +171,32 @@ namespace impl {
         -   `monad`: a boolean which exposes type `T` to bertrand's monadic operator
             interface.  This can be checked via the `meta::visit_monad<T>` concept,
             which all monadic operators are constrained with.
-        -   `type`: an alias to the type being visited, which must be identical to `T`.
-        -   `alternatives`: a `meta::pack<Ts...>` with one or more types, which
-            represent the exact alternatives that the monad can dispatch to.
-        -   `value`: if the monad supports pointer-like dereference operators, then
-            this must be an alias to the exact type returned by the `*` dereference
-            operator.  Otherwise, it must be `void`.
-        -   `empty`: an alias to the `None` state for this monad, or `void` if the
+        -   `type`: an alias to the type being visited, which must be identical to `T`,
+            preserving cvref qualifications.
+        -   `alternatives`: a `meta::pack<Ts...>` with one or more types, all of which
+            represent alternatives that the monad can dispatch to.  These must be
+            perfectly-forwarded from the visitable type `T`, retaining all its cvref
+            qualifications.
+        -   `empty`: the type of the `None` state for this monad, or `void` if the
             monad does not model an empty state.  If this is not `void`, then it
             signals that the monad acts like an optional within the dispatch logic,
             which can trigger automatic propagation of the empty state and/or
-            canonicalization of `T` to `Optional<T>` when appropriate.
+            canonicalization of `T` to `bertrand::Optional<T>` when appropriate.  Just
+            like `alternatives`, this must be perfectly forwarded from `T`, retaining
+            all cvref qualifications.
         -   `errors`: a `meta::pack<Es...>` with zero or more error types, which
             represent the possible error states that the monad models.  If this is
-            non-empty, then it singals that the monad acts like an expected within the
+            non-empty, then it signals that the monad acts like an expected within the
             dispatch logic, which can trigger automatic propagation of the error state
-            and/or canonicalization of `T` to `Expected<T, Es...>` when appropriate.
+            and/or canonicalization of `T` to `bertrand::Expected<T, Es...>` when
+            appropriate.  Again, this must be perfectly forwarded from `T`, retaining
+            all cvref qualifications.
+        -   `values`: A filtered `meta::pack<Ts...>` containing only the types in
+            `alternatives` that are not `empty` or in `errors`.  These types will
+            normalize to `bertrand::Union<Ts...>` if there are multiple such types,
+            after concatenating the results from all visited monads and filtering for
+            uniqueness.  This may be an empty pack if all alternatives are either empty
+            or error states.
         -   `index(T)`: a static method that returns the monad's active index, aligned
             to the given `alternatives`.  This is used to determine which branch to
             dispatch to when the monad is destructured within `impl::visit()`.
@@ -189,9 +204,20 @@ namespace impl {
             template parameter, and casts the monad to the `I`-th type in
             `alternatives` (including cvref qualifications).  The output from this is
             what gets passed into the visitor function, completing the dispatch.
+        -   `compare(T, std::type_identity<U>)` and `compare(std::type_identity<U>, T)`:
+            static methods that return an ordering tag (e.g. `std::strong_ordering`)
+            where `::equivalent` indicates that the indicated type is the active
+            alternative, and `::less` and `::greater` compare the active index to that
+            of the indicated type.  This method is responsible for implementing
+            monadic comparisons against `bertrand::type<U>`, which effectively replaces
+            a traditional `holds_alternative<U>()` method.  Note that the cvref
+            qualifications of `U` must always exactly match the explicit template
+            parameters of `T`, and must not perfectly forward, unlike the other aliases
+            and methods in this class, and it is up to the user to ensure this is done.
 
-    Built-in specializations are provided for:
+    Built-in specializations are provided for all qualifications of:
 
+        -   `void`
         -   `bertrand::Union<Ts...>`
         -   `bertrand::Optional<T>`
         -   `bertrand::Expected<T, Es...>`
@@ -202,10 +228,10 @@ namespace impl {
     The default specialization covers all other non-monad types, which will be passed
     through without dispatching.
 
-    Note also that the type `T` may be arbitrarily-qualified, and always matches the
+    Note that the type `T` may be arbitrarily-qualified, and always matches the
     qualifications of the observed type at the point where `impl::visit()` is called.
     It may therefore be useful to define all aliases in terms of `decltype()`
-    reflection, which should always forward the qualifications of the input type,
+    reflections, which should always forward the qualifications of the input type,
     otherwise the visit logic may not work as intended. */
     template <typename T>
     struct visitable {
@@ -213,9 +239,9 @@ namespace impl {
         static constexpr bool monad = false;
         using type = T;
         using alternatives = meta::pack<T>;
-        using value = void;  // no pointer-like dereference operators
-        using empty = void;  // no empty state
-        using errors = meta::pack<>;  // no error states
+        using empty = void;
+        using errors = meta::pack<>;
+        using values = meta::pack<T>;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T>) noexcept {
             return 0;
@@ -248,9 +274,9 @@ namespace impl {
         static constexpr bool monad = false;
         using type = T;
         using alternatives = meta::pack<>;
-        using value = void;  // no pointer-like dereference operators
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
+        using values = meta::pack<>;  // no pointer-like dereference operators
     };
 
 }
@@ -266,6 +292,13 @@ namespace impl {
 /// Alternatively, a standards proposal that allows syntax such as
 /// `using alternatives = Ts...;`, or direct fold expressions over `meta::pack<...>`
 /// would also work, but none of these are currently available.
+
+/// -> It may be possible to work around this by defining a specialization of
+/// `Union<meta::pack<Ts...>>` and `Expected<T, meta::pack<Es...>>`, which would
+/// trivially inherit from the unpacked versions.  Then, the CTAD guide will
+/// instantiate the packed version using metaprogramming to infer the alternatives
+/// similar to the way optionals do it.
+
 
 
 /* A convenience function that produces a `std::in_place_index_t` instance specialized
@@ -283,18 +316,6 @@ struct Union;
 
 template <typename T = void>
 struct Optional;
-
-
-template <meta::not_pointer T> requires (meta::is_void<typename impl::visitable<T>::empty>)
-Optional(T&&) -> Optional<meta::remove_rvalue<T>>;
-
-
-template <meta::pointer T> requires (meta::is_void<typename impl::visitable<T>::empty>)
-Optional(T) -> Optional<meta::dereference_type<T>>;
-
-
-template <typename T> requires (meta::not_void<typename impl::visitable<T>::empty>)
-Optional(T&&) -> Optional<typename impl::visitable<T>::value>;
 
 
 template <typename T, typename E, typename... Es> requires (impl::expected_concept<T, E, Es...>)
@@ -320,562 +341,583 @@ namespace meta {
     template <typename T>
     concept Expected = specialization_of<T, bertrand::Expected>;
 
-    namespace detail {
+    namespace detail::visit {
 
-        /* The base case for the dispatch logic is to directly forward to the
-        underlying function, assuming the permutation is valid. */
-        template <typename F, size_t j, typename prefix, typename... suffix>
-        struct visit_base {
-            using permutations = meta::pack<>;
-            using errors = meta::pack<>;
-            static constexpr bool optional = false;
-            static constexpr bool enable = false;
-        };
-        template <typename F, size_t j, typename... prefix, typename... suffix>
-            requires (j == 0 && meta::callable<F, prefix..., suffix...>)
-        struct visit_base<F, j, meta::pack<prefix...>, suffix...> {
-            using permutations = meta::pack<meta::pack<prefix..., suffix...>>;
-            using errors = meta::pack<>;
-            static constexpr bool optional = false;
-            static constexpr bool enable = true;
-
-            template <typename R>
-            struct fn {
-                using type = R;
-                [[gnu::always_inline]] static constexpr R operator()(
-                    meta::forward<F> func,
-                    meta::forward<prefix>... prefix_args,
-                    meta::forward<suffix>... suffix_args
-                ) noexcept (meta::nothrow::call_returns<R, F, prefix..., suffix...>) {
-                    return ::std::forward<F>(func)(
-                        ::std::forward<prefix>(prefix_args)...,
-                        ::std::forward<suffix>(suffix_args)...
-                    );
-                }
-            };
-        };
+        /// TODO: the `fn<R>` call operators likely need to make sure that they always
+        /// initialize the return type at the proper nesting level, which is hard to
+        /// accomplish cleanly, and requires some careful thought.  Otherwise, there
+        /// may be some ambiguities with initializing the expected alternatives.  I can
+        /// disambiguate using the `bertrand::type<T>` constructors and some
+        /// metaprogramming to unwrap the canonicalized return type.
 
         ///////////////////////////
         ////    PERMUTATION    ////
         ///////////////////////////
 
-        /* Base case: either `F` is directly callable with the given arguments, or
-        we've run out of visitable arguments to match against. */
+        /* The permutation algorithm works by tracking a minimum and maximum visit
+        budget, as well as a partial argument list split between the processed and
+        unprocessed portions.  The argument under consideration will always be the
+        first argument of the suffix, and will always be visitable, skipping over any
+        non-visitable arguments.  This base specialization represents an invalid
+        permutation. */
         template <
             typename F,  // function to invoke
+            size_t force,  // remaining number of mandatory visits along this path
+            size_t budget,  // remaining visit budget (strictly >= `force`)
             typename prefix,  // processed arguments
-            size_t j,  // remaining number of mandatory visits along this path
-            size_t k,  // remaining visit budget (strictly >= j)
-            typename... suffix  // unprocessed arguments
+            typename suffix  // unprocessed arguments (starting at first visitable)
         >
-        struct _visit_permute : visit_base<F, j, prefix, suffix...> {};
-
-        /* Skip to the next visitable argument in the event of a substitution
-        failure, avoiding unnecessary instantiations of `_visit_permute` and limiting
-        template depth. */
-        template <typename...>
-        constexpr size_t _visit_skip = 0;
-        template <typename A, typename... As> requires (!meta::visitable<A>)
-        constexpr size_t _visit_skip<A, As...> = _visit_skip<As...> + 1;
-        template <typename, typename, typename, typename, size_t, size_t, typename...>
-        struct visit_skip;
-        template <
-            size_t... prev,  // identifies the non-visitable suffix arguments to skip over
-            size_t... next,  // identifies the arguments to skip to
-            typename F,  // function to invoke
-            typename... prefix,  // processed arguments to this point
-            size_t j,  // remaining number of mandatory visits along this path
-            size_t k,  // remaining visit budget (strictly >= j)
-            typename... suffix  // unprocessed arguments
-        >
-        struct visit_skip<
-            ::std::index_sequence<prev...>,
-            ::std::index_sequence<next...>,
-            F,
-            meta::pack<prefix...>,
-            j,
-            k,
-            suffix...
-        > {
-            using type = _visit_permute<
-                F,
-                meta::pack<prefix..., meta::unpack_type<prev, suffix...>...>,
-                j,
-                k,
-                meta::unpack_type<sizeof...(prev) + next, suffix...>...
-            >;
+        struct permute {
+            static constexpr bool enable = false;
+            static constexpr bool optional = false;
+            using types = meta::pack<>;
+            using errors = meta::pack<>;
         };
 
-        template <typename F, size_t j, size_t k, typename... As>
-        concept visit_failure = k > 0 && (j > 0 || !meta::callable<F, As...>);
-
-        /* Recursive case: `F` is not directly callable and `k` allows further visits,
-        but either the current argument `A` is not visitable, or attempting to visit it
-        results in substitution failure.  In either case, we forward it as-is and try
-        to visit a future argument instead, skipping immediately to that argument if it
-        exists. */
-        template <typename F, typename... prefix, size_t j, size_t k, typename A, typename... suffix>
-            requires (visit_failure<F, j, k, prefix..., A, suffix...>)
-        struct _visit_permute<F, meta::pack<prefix...>, j, k, A, suffix...> : visit_skip<
-            ::std::make_index_sequence<_visit_skip<suffix...>>,
-            ::std::make_index_sequence<sizeof...(suffix) - _visit_skip<suffix...>>,
-            F,
-            meta::pack<prefix..., A>,
-            j,
-            k,
-            suffix...
-        >::type {};
-
-        /* Attempt to substitute alternatives for the current argument, assuming it is
-        visitable.  If not all alternatives are valid, then this will evaluate to a
-        substitution failure that causes the algorithm to ignore this argument and
-        attempt to visit a future argument instead. */
+        /* Valid permutations will have their return types decomposed into their
+        monadic components in order to normalize void return types and nested monads.
+        `void` and `None` return types will be normalized to empty optionals if
+        combined with at least one non-void and non-None alternative. */
         template <
-            typename F,  // function to invoke
-            typename prefix,  // processed arguments preceding current
-            typename A,  // current argument
-            typename alts,  // alternatives for current argument
-            size_t j,  // remaining number of mandatory visits along this path
-            size_t k,  // remaining visit budget along this path
-            typename suffix  // unprocessed arguments
+            typename T,
+            typename Types = meta::pack<>,
+            typename Errors = meta::pack<>,
+            bool Optional = false
         >
-        struct visit_substitute { static constexpr bool enable = false; };
+        struct decompose {
+            using types = meta::append<Types, meta::remove_rvalue<T>>;
+            using errors = Errors;
+            static constexpr bool optional = Optional;
+        };
+        template <
+            typename T,
+            typename Types,
+            typename Errors,
+            bool Optional
+        > requires (meta::is_void<T> || meta::None<T>)
+        struct decompose<T, Types, Errors, Optional> {
+            using types = Types;
+            using errors = Errors;
+            static constexpr bool optional = true;
+        };
+        template <
+            meta::visitable T,
+            typename Types,
+            typename Errors,
+            bool Optional
+        >
+        struct decompose<T, Types, Errors, Optional> {
+            template <typename... Alts>
+            struct _collect {
+                using types = meta::concat<Types, typename decompose<Alts>::types...>;
+                using errors = meta::concat<
+                    Errors,
+                    typename impl::visitable<T>::errors::template map<meta::remove_rvalue>,
+                    typename decompose<Alts>::errors...
+                >;
+                static constexpr bool optional =
+                    Optional ||
+                    meta::not_void<typename impl::visitable<T>::empty> ||
+                    (decompose<Alts>::optional || ...);
+            };
+            using collect = impl::visitable<T>::values::template eval<_collect>;
+            using types = collect::types;
+            using errors = collect::errors;
+            static constexpr bool optional = collect::optional;
+        };
 
-        template <typename E, typename>
-        constexpr bool visit_propagate_error = false;
-        template <typename E, typename... Es> requires (meta::is<E, Es> || ...)
-        constexpr bool visit_propagate_error<E, meta::pack<Es...>> = true;
-
-        /* Substitution only succeeds if every alternative is associated with at least
-        one valid permutation, or is an empty or error state of the parent visitable
-        which can be implicitly propagated, and the permutation is not ambiguous. */
+        /* Valid permutations decompose the return type directly and expose a call
+        operator templated on the final, deduced return type, which actually invokes
+        the function. */
         template <
             typename F,
+            size_t force,
+            size_t budget,
             typename... prefix,
-            meta::visitable A,
-            typename... alts,
-            size_t j,
-            size_t k,
             typename... suffix
         >
-            requires ((
-                _visit_permute<
-                    F,
-                    meta::pack<prefix...>,
-                    j == 0 ? 0 : j - 1,
-                    k - 1,
-                    alts,
-                    suffix...
-                >::permutations::size() > 0 ||
-                meta::is<alts, typename impl::visitable<A>::empty> ||
-                visit_propagate_error<alts, typename impl::visitable<A>::errors>
-            ) && ... && !_visit_permute<F, meta::pack<prefix..., A>, j, k, suffix...>::enable)
-        struct visit_substitute<
-            F,
-            meta::pack<prefix...>,
-            A,
-            meta::pack<alts...>,
-            j,
-            k,
-            meta::pack<suffix...>
-        > {
+            requires (force == 0 && meta::callable<F, prefix..., suffix...>)
+        struct permute<F, force, budget, meta::pack<prefix...>, meta::pack<suffix...>> {
         private:
-            using traits = impl::visitable<A>;
-
-            template <typename alt>
-            using sub = _visit_permute<
-                F,
-                meta::pack<prefix...>,
-                j == 0 ? 0 : j - 1,
-                k - 1,
-                alt,
-                suffix...
-            >;
+            using result = decompose<meta::call_type<F, prefix..., suffix...>>;
 
         public:
-            using permutations = meta::concat<typename sub<alts>::permutations...>;
-            using errors = meta::concat_unique<::std::conditional_t<
-                (
-                    sub<alts>::permutations::empty() &&
-                    visit_propagate_error<alts, typename traits::errors>
-                ),
-                meta::pack<alts>,
-                typename sub<alts>::errors
-            >...>;
-            static constexpr bool optional = ((sub<alts>::optional || (
-                sub<alts>::permutations::empty() && meta::is<alts, typename traits::empty>
-            )) || ...);
             static constexpr bool enable = true;
+            static constexpr bool optional = result::optional;
+            using types = result::types;
+            using errors = result::errors;
 
-            /* `impl::visitable<A>::get<I>()` is used to unpack the correct alternative
-            when forwarding to the substituted permutation.  If the substituted
-            permutation is invalid, then the result of `get<I>()` will be directly
-            forwarded to the return type instead. */
             template <typename R>
             struct fn {
-            private:
-
-                template <size_t I>
-                struct dispatch {
-                    using alt = meta::unpack_type<I, alts...>;
-                    using child = sub<alt>;
-                    static constexpr R operator()(
-                        meta::forward<F> func,
-                        meta::forward<prefix>... prefix_args,
-                        meta::forward<A> visitable,
-                        meta::forward<suffix>... suffix_args
-                    )
-                        noexcept (requires{{typename child::template fn<R>{}(
-                            ::std::forward<F>(func),
-                            ::std::forward<prefix>(prefix_args)...,
-                            traits::template get<I>(::std::forward<A>(visitable)),
-                            ::std::forward<suffix>(suffix_args)...
-                        )} noexcept;})
-                        requires (child::enable)
-                    {
-                        return typename child::template fn<R>{}(
-                            ::std::forward<F>(func),
-                            ::std::forward<prefix>(prefix_args)...,
-                            traits::template get<I>(::std::forward<A>(visitable)),
-                            ::std::forward<suffix>(suffix_args)...
-                        );
-                    }
-                    static constexpr R operator()(
-                        meta::forward<F> func,
-                        meta::forward<prefix>... prefix_args,
-                        meta::forward<A> visitable,
-                        meta::forward<suffix>... suffix_args
-                    )
-                        noexcept (
-                            meta::is<alt, typename traits::empty> ||
-                            requires{{traits::template get<I>(
-                                ::std::forward<A>(visitable)
-                            )} noexcept -> meta::nothrow::convertible_to<R>;}
-                        )
-                        requires (!child::enable)
-                    {
-                        if constexpr (meta::is<alt, typename traits::empty>) {
-                            if constexpr (meta::not_void<R>) {
-                                return bertrand::None;
-                            }
-                        } else {
-                            return traits::template get<I>(::std::forward<A>(visitable));
-                        }
-                    }
-                };
-
-                using vtable = impl::basic_vtable<dispatch, traits::alternatives::size()>;
-
-            public:
                 using type = R;
-                [[gnu::always_inline]] static constexpr R operator()(
+                [[gnu::always_inline]] static constexpr type operator()(
                     meta::forward<F> func,
-                    meta::forward<prefix>... prefix_args,
-                    meta::forward<A> visitable,
-                    meta::forward<suffix>... suffix_args
-                )
-                    noexcept (requires{{vtable{traits::index(visitable)}(
-                        ::std::forward<F>(func),
-                        ::std::forward<prefix>(prefix_args)...,
-                        ::std::forward<A>(visitable),
-                        ::std::forward<suffix>(suffix_args)...
-                    )} noexcept;})
-                {
-                    return vtable{traits::index(visitable)}(
-                        ::std::forward<F>(func),
-                        ::std::forward<prefix>(prefix_args)...,
-                        ::std::forward<A>(visitable),
-                        ::std::forward<suffix>(suffix_args)...
+                    meta::forward<prefix>... pre,
+                    meta::forward<suffix>... suf
+                ) noexcept (meta::nothrow::call_returns<type, F, prefix..., suffix...>) {
+                    return ::std::forward<F>(func)(
+                        ::std::forward<prefix>(pre)...,
+                        ::std::forward<suffix>(suf)...
                     );
                 }
             };
         };
 
+        /* In the event of a substitution failure, `skip` computes the required
+        `prefix...` and `suffix...` packs to specialize the next `permute` helper,
+        skipping over non-visitable arguments.  This limits overall template depth and
+        reduces the number of unique instantiations needed to evaluate the algorithm. */
+        template <typename P, typename S>
+        struct skip {
+            using prefix = P;
+            using suffix = S;
+        };
+        template <typename... P, typename A, typename... S> requires (!meta::visitable<A>)
+        struct skip<meta::pack<P...>, meta::pack<A, S...>> :
+            skip<meta::pack<P..., A>, meta::pack<S...>>
+        {};
+
+        /* `substitute` will attempt to replace a visitable argument with each of its
+        alternatives, and recursively continue the algorithm with a reduced budget.  If
+        any permutations are invalid and do not represent empty or error states that
+        can be trivially propagated, then the substitution fails and the algorithm will
+        continue to a future argument using `skip`, without changing the current
+        budget.  Otherwise, the return types and monadic components from each
+        alternative will be collected and merged. */
         template <
             typename F,
+            size_t,
+            size_t,
             typename prefix,
-            typename A,
-            typename alts,
-            size_t j,
-            size_t k,
-            typename suffix,
-            typename... As
+            typename alt,
+            typename suffix
         >
-        concept visit_success =
-            visit_failure<F, j, k, As...> &&
-            visit_substitute<F, prefix, A, alts, j, k, suffix>::enable;
-
-        /* Visit success: `F` is not directly callable, `k` allows visits, and the
-        current argument `A` is substitutable with its alternatives.  This terminates
-        the recursion early, effectively preferring to visit earlier arguments before
-        later ones in case of ambiguity, without ever needing to check them. */
-        template <typename F, typename... prefix, size_t j, size_t k, typename A, typename... suffix>
-            requires (visit_success<
+        struct substitute {  // invalid, nontrivial alternative
+            static constexpr bool enable = false;
+            static constexpr bool optional = false;
+            using types = meta::pack<>;
+            using errors = meta::pack<>;
+        };
+        template <
+            typename F,
+            size_t force,
+            size_t budget,
+            typename prefix,
+            meta::not_pack alt,
+            meta::visitable curr,
+            typename... suffix
+        >
+            requires (permute<
                 F,
-                meta::pack<prefix...>,
-                A,
-                typename impl::visitable<A>::alternatives,
-                j,
-                k,
-                meta::pack<suffix...>,
-                prefix...,
-                A,
-                suffix...
-            >)
-        struct _visit_permute<F, meta::pack<prefix...>, j, k, A, suffix...> : visit_substitute<
+                force == 0 ? 0 : force - 1,
+                budget - 1,
+                prefix,
+                meta::pack<alt, suffix...>
+            >::enable)
+        struct substitute<  // valid alternative - skip forward
             F,
-            meta::pack<prefix...>,
-            A,
-            typename impl::visitable<A>::alternatives,
-            j,
-            k,
-            meta::pack<suffix...>
+            force,
+            budget,
+            prefix,
+            alt,
+            meta::pack<curr, suffix...>
+        > : permute<
+            F,
+            force == 0 ? 0 : force - 1,
+            budget - 1,
+            typename skip<prefix, meta::pack<alt, suffix...>>::prefix,
+            typename skip<prefix, meta::pack<alt, suffix...>>::suffix
         > {};
-
-        /* Recursion is bounded by the number of visitables (including nested
-        visitables) in the input arguments.  Choices of `k` beyond this limit are
-        meaningless, since there are not enough visitables to satisfy them. */
-        template <typename>
-        constexpr size_t visit_max_k = 0;
-        template <typename A, typename... As>
-        constexpr size_t visit_max_k<meta::pack<A, As...>> = visit_max_k<meta::pack<As...>>;
-        template <meta::visitable A, typename... As>
-        constexpr size_t visit_max_k<meta::pack<A, As...>> =
-            visit_max_k<typename impl::visitable<A>::alternatives> + 1 +
-            visit_max_k<meta::pack<As...>>;
-
-        template <size_t j, typename... A>
-        struct visit_ctx {
-            static constexpr size_t max_k = visit_max_k<meta::pack<A...>>;
-
-            template <typename F, size_t k>
-            using permute = _visit_permute<F, meta::pack<>, j, k, A...>;
-
-            template <typename F, size_t k = j>
-            struct type : permute<F, k> {};
-            template <typename F, size_t k> requires (!permute<F, k>::enable && k < max_k)
-            struct type<F, k> : type<F, k + 1> {};
-        };
-
-        /* Evaluate `_visit_permute` with a recursively-increasing `k`, starting at 0,
-        until a minimal set of valid permutations is found, or `k` exceeds the number
-        of visitables in the arguments, whichever comes first.  The result is a struct
-        holding a 2D pack of packs, where the inner packs represent the valid
-        permutations for each argument, along with metadata about implicitly-propagated
-        empty and error states, from which an overall return type can be deduced. */
-        template <typename F, size_t j, typename... A>
-        using visit_permute = visit_ctx<j, A...>::template type<F>;
-
-        /////////////////////////////////////
-        ////    RETURN TYPE DEDUCTION    ////
-        /////////////////////////////////////
-
-        template <typename F, typename args>
-        struct _visit_invoke {
-            using type = void;
-            static constexpr bool nothrow = false;
-        };
-        template <typename F, typename... args> requires (meta::callable<F, args...>)
-        struct _visit_invoke<F, meta::pack<args...>> {
-            using type = meta::call_type<F, args...>;
-            static constexpr bool nothrow = meta::nothrow::callable<F, args...>;
-        };
-        template <typename F, typename... args>
-            requires (meta::call_returns<bertrand::NoneType, F, args...>)
-        struct _visit_invoke<F, meta::pack<args...>> {
-            using type = void;
-            static constexpr bool nothrow =
-                meta::nothrow::call_returns<bertrand::NoneType, F, args...>;
-        };
-
-        /* Convert a permutation matrix from `visit_permute` into its corresponding
-        unique return types, mapping types that are convertible to `None` into `void`,
-        to simplify the optional promotion logic. */
-        template <typename F, typename permutations>
-        struct visit_invoke;
-        template <typename F, typename... permutations>
-        struct visit_invoke<F, meta::pack<permutations...>> {
-            using returns = meta::to_unique<typename _visit_invoke<F, permutations>::type...>;
-            static constexpr bool nothrow = (_visit_invoke<F, permutations>::nothrow && ...);
-        };
-
-        /* If there are multiple non-void return types, then we need to return a
-        `Union` of those types.  Otherwise, we return the type itself if there is
-        only one, or void if there are none. */
-        template <typename>
-        struct visit_to_union {
-            using type = void;
-            static constexpr bool trivial = true;
-        };
-        template <typename R>
-        struct visit_to_union<meta::pack<R>> {
-            using type = R;
-            static constexpr bool trivial = true;
-        };
-        template <typename... Rs> requires (sizeof...(Rs) > 1)
-        struct visit_to_union<meta::pack<Rs...>> {
-            using type = bertrand::Union<Rs...>;
-            static constexpr bool trivial = false;
-        };
-
-        /* If `option` is true (indicating either an unhandled empty state or void
-        return type), then the result deduces to `Optional<R>`, where `R` is the output
-        from `visit_to_union`.  If `R` is itself an optional type, then it will be
-        flattened into the output. */
-        template <typename R, bool optional>
-        struct visit_to_optional {
-            using type = R;
-            static constexpr bool trivial = true;
-        };
-        template <meta::not_void R>
-        struct visit_to_optional<R, true> {
-            using type = bertrand::Optional<R>;
-            static constexpr bool trivial = false;
-        };
-
-        /* If there are any accumulated error states, then the result will be further
-        wrapped in `Expected<R, errors...>` to propagate them. */
-        template <typename R, typename>
-        struct visit_to_expected {
-            using type = R;
-            static constexpr bool trivial = true;
-        };
-        template <typename R, typename E, typename... Es>
-        struct visit_to_expected<R, meta::pack<E, Es...>> {
-            using type = bertrand::Expected<R, E, Es...>;
-            static constexpr bool trivial = false;
-        };
-
-        template <typename R, typename returns, typename errors, bool optional>
-        constexpr bool visit_nothrow = false;
-        template <typename R, typename... returns, typename... errors, bool optional>
-        constexpr bool visit_nothrow<R, meta::pack<returns...>, meta::pack<errors...>, optional> =
-            (meta::nothrow::convertible_to<returns, R> && ...) &&
-            (meta::nothrow::convertible_to<errors, R> && ...) &&
-            (!optional || meta::nothrow::convertible_to<const bertrand::NoneType&, R>);
-
-        /* Base case: combine the returns, errors, and optionals to form an overall
-        return type */
-        template <typename returns, typename errors, bool optional, typename>
-        struct visit_deduce {
-        private:
-            using to_union = visit_to_union<returns>;
-            using to_optional = visit_to_optional<typename to_union::type, optional>;
-            using to_expected = visit_to_expected<typename to_optional::type, errors>;
-
-        public:
-            using type = to_expected::type;
-            static constexpr bool trivial =
-                to_union::trivial && to_optional::trivial && to_expected::trivial;
-            static constexpr bool nothrow = visit_nothrow<type, returns, errors, optional>;
-        };
-
-        /* Recursive case: if `R` is void or convertible to `NoneType`, set `optional`
-        to true and do not add it to the return types.  Otherwise, insert it as a
-        return type if it is unique, or unpack its alternatives if it is a visitable
-        union. */
-        template <typename returns, typename errors, bool optional, typename R, typename... Rs>
-        struct visit_deduce<returns, errors, optional, meta::pack<R, Rs...>> : visit_deduce<
-            ::std::conditional_t<
-                meta::is_void<R> || meta::convertible_to<R, bertrand::NoneType>,
-                returns,
-                meta::concat_unique<
-                    returns,
-                    typename impl::visitable<R>::alternatives::template map<meta::remove_rvalue>
-                >
-            >,
-            errors,
-            optional || meta::is_void<R> || meta::convertible_to<R, bertrand::NoneType>,
-            meta::pack<Rs...>
-        > {};
-
-        /* Optional/Expected case: if `R` is an optional or expected type, then record
-        those states in `optional` and `errors` before recurring for the underlying
-        value type. */
-        template <typename returns, typename errors, bool optional, typename R, typename... Rs>
+        template <
+            typename F,
+            size_t force,
+            size_t budget,
+            typename prefix,
+            meta::not_pack alt,
+            meta::visitable curr,
+            typename... suffix
+        >
             requires (
-                meta::not_void<typename impl::visitable<R>::empty> ||
-                impl::visitable<R>::errors::size() > 0
+                !permute<
+                    F,
+                    force == 0 ? 0 : force - 1,
+                    budget - 1,
+                    prefix,
+                    meta::pack<alt, suffix...>
+                >::enable &&
+                ::std::same_as<alt, typename impl::visitable<curr>::empty>
             )
-        struct visit_deduce<returns, errors, optional, meta::pack<R, Rs...>> : visit_deduce<
-            returns,
-            meta::concat_unique<
-                errors,
-                typename impl::visitable<R>::errors::template map<meta::remove_rvalue>
-            >,
-            optional || meta::not_void<typename impl::visitable<R>::empty>,
-            meta::pack<typename impl::visitable<R>::value, Rs...>
+        struct substitute<  // invalid alternative, trivial empty state
+            F,
+            force,
+            budget,
+            prefix,
+            alt,
+            meta::pack<curr, suffix...>
+        > {
+            static constexpr bool enable = true;
+            static constexpr bool optional = true;
+            using types = meta::pack<>;
+            using errors = meta::pack<>;
+
+            /* If an empty state if left unhandled by the visitor, it will be converted
+            into `None` to initialize the resulting `Optional`. */
+            template <typename R>
+            struct fn {
+                using type = R;
+                template <typename... A>
+                [[gnu::always_inline]] static constexpr type operator()(
+                    meta::forward<F> func,
+                    A&&... args
+                ) noexcept (meta::nothrow::convertible_to<bertrand::NoneType, type>) {
+                    return bertrand::NoneType{};
+                }
+            };
+        };
+        template <
+            typename F,
+            size_t force,
+            size_t budget,
+            typename prefix,
+            meta::not_pack alt,
+            meta::visitable curr,
+            typename... suffix
+        >
+            requires (
+                !permute<
+                    F,
+                    force == 0 ? 0 : force - 1,
+                    budget - 1,
+                    prefix,
+                    meta::pack<alt, suffix...>
+                >::enable &&
+                !::std::same_as<alt, typename impl::visitable<curr>::empty> &&
+                impl::visitable<curr>::errors::template contains<alt>()
+            )
+        struct substitute<  // invalid alternative, trivial error state
+            F,
+            force,
+            budget,
+            prefix,
+            alt,
+            meta::pack<curr, suffix...>
+        > {
+            static constexpr bool enable = true;
+            static constexpr bool optional = false;
+            using types = meta::pack<>;
+            using errors = meta::pack<alt>;
+
+            /* If an error state is left unhandled by the visitor, it will be
+            perfectly-forwarded to the return type. */
+            template <typename R>
+            struct fn {
+                using type = R;
+                template <typename... A>
+                [[gnu::always_inline]] static constexpr type operator()(
+                    meta::forward<F> func,
+                    A&&... args
+                ) noexcept (meta::nothrow::convertible_to<
+                    meta::unpack_type<prefix::size(), A...>,
+                    type
+                >) {
+                    return meta::unpack_arg<prefix::size()>(::std::forward<A>(args)...);
+                }
+            };
+        };
+        template <
+            typename F,
+            size_t force,
+            size_t budget,
+            typename... prefix,
+            typename... alts,
+            meta::visitable curr,
+            typename... suffix
+        >
+            requires (substitute<
+                F,
+                force,
+                budget,
+                meta::pack<prefix...>,
+                alts,
+                meta::pack<curr, suffix...>
+            >::enable && ...)
+        struct substitute<  // valid overall, merge results
+            F,
+            force,
+            budget,
+            meta::pack<prefix...>,
+            meta::pack<alts...>,
+            meta::pack<curr, suffix...>
+        > {
+            static constexpr bool enable = true;
+            static constexpr bool optional = (substitute<
+                F,
+                force,
+                budget,
+                meta::pack<prefix...>,
+                alts,
+                meta::pack<curr, suffix...>
+            >::optional || ...);
+            using types = meta::concat<typename substitute<
+                F,
+                force,
+                budget,
+                meta::pack<prefix...>,
+                alts,
+                meta::pack<curr, suffix...>
+            >::types...>;
+            using errors = meta::concat<typename substitute<
+                F,
+                force,
+                budget,
+                meta::pack<prefix...>,
+                alts,
+                meta::pack<curr, suffix...>
+            >::errors...>;
+
+            /* Invoking a valid substitution performs the dispatch necessary to
+            access the active alternative, and then forwards to the proper scalar
+            `substitute` specialization listed above.  Those specializations expose
+            their own call operators, which may either return early, call the function,
+            or recur to another substitution, as necessary. */
+            template <typename R>
+            struct fn {
+                using type = R;
+
+                template <size_t I>
+                struct dispatch {
+                    static constexpr type operator()(
+                        meta::forward<F> func,
+                        meta::forward<prefix>... pre,
+                        meta::forward<curr> v,
+                        meta::forward<suffix>... suf
+                    )
+                        noexcept (requires{{typename substitute<
+                            F,
+                            force,
+                            budget,
+                            meta::pack<prefix...>,
+                            meta::unpack_type<I, alts...>,
+                            meta::pack<curr, suffix...>
+                        >::template fn<type>{}(
+                            ::std::forward<F>(func),
+                            ::std::forward<prefix>(pre)...,
+                            impl::visitable<curr>::template get<I>(::std::forward<curr>(v)),
+                            ::std::forward<suffix>(suf)...
+                        )} noexcept;})
+                    {
+                        return typename substitute<
+                            F,
+                            force,
+                            budget,
+                            meta::pack<prefix...>,
+                            meta::unpack_type<I, alts...>,
+                            meta::pack<curr, suffix...>
+                        >::template fn<type>{}(
+                            ::std::forward<F>(func),
+                            ::std::forward<prefix>(pre)...,
+                            impl::visitable<curr>::template get<I>(::std::forward<curr>(v)),
+                            ::std::forward<suffix>(suf)...
+                        );
+                    }
+                };
+
+                [[gnu::always_inline]] static constexpr type operator()(
+                    meta::forward<F> func,
+                    meta::forward<prefix>... pre,
+                    meta::forward<curr> v,
+                    meta::forward<suffix>... suf
+                )
+                    noexcept (requires{{impl::basic_vtable<
+                        dispatch,
+                        impl::visitable<curr>::alternatives::size()
+                    >{impl::visitable<curr>::index(v)}(
+                        ::std::forward<F>(func),
+                        ::std::forward<prefix>(pre)...,
+                        ::std::forward<curr>(v),
+                        ::std::forward<suffix>(suf)...
+                    )} noexcept;})
+                {
+                    return impl::basic_vtable<
+                        dispatch,
+                        impl::visitable<curr>::alternatives::size()
+                    >{impl::visitable<curr>::index(v)}(
+                        ::std::forward<F>(func),
+                        ::std::forward<prefix>(pre)...,
+                        ::std::forward<curr>(v),
+                        ::std::forward<suffix>(suf)...
+                    );
+                }
+            };
+        };
+
+        /* If the permutation is not immediately callable with the argument list or we
+        have not yet exhausted the forced visits, and we have enough budget to visit
+        the current argument, then the permutation will invoke the `substitute`
+        algorithm to extend the the function chain and gather the appropriate types. */
+        template <
+            typename F,
+            size_t force,
+            size_t budget,
+            typename... prefix,
+            meta::visitable curr,
+            typename... suffix
+        >
+            requires (budget > 0 && (force > 0 || !meta::callable<F, prefix..., suffix...>))
+        struct permute<
+            F,
+            force,
+            budget,
+            meta::pack<prefix...>,
+            meta::pack<curr, suffix...>
+        > : substitute<
+            F,
+            force,
+            budget,
+            meta::pack<prefix...>,
+            typename impl::visitable<curr>::alternatives,
+            meta::pack<curr, suffix...>
         > {};
+
+        ///////////////////////////
+        ////    RETURN TYPE    ////
+        ///////////////////////////
+
+        /* First, the `::types` from the outermost `permute` specialization are
+        filtered to their unique types and then converted into a `Union` if there are
+        more than one.  If there is precisely one result type, it will be returned
+        directly.  Zero result types get converted to `void` instead. */
+        template <typename>
+        struct to_union { using type = void; };
+        template <typename T>
+        struct to_union<meta::pack<T>> { using type = T; };
+        template <typename... T> requires (sizeof...(T) > 1)
+        struct to_union<meta::pack<T...>> { using type = bertrand::Union<T...>; };
+
+        /* Next, the `::optional` flag is applied.  If true, then the result from
+        `to_union` will be converted into an `Optional`. */
+        template <typename R, bool optional>
+        struct to_optional { using type = R; };
+        template <meta::not_void R>
+        struct to_optional<R, true> { using type = bertrand::Optional<R>; };
+
+        /* Finally, the `::errors` are applied, if there are any.  This converts the
+        result from `to_optional` into an `Expected` with the indicated, unique error
+        types. */
+        template <typename R, typename>
+        struct to_expected { using type = R; };
+        template <typename R, typename... Es> requires (sizeof...(Es) > 0)
+        struct to_expected<R, meta::pack<Es...>> { using type = bertrand::Expected<R, Es...>; };
 
         ///////////////////////////
         ////    ENTRY POINT    ////
         ///////////////////////////
 
-        /* The actual visit metafunction provides simplified access to the dispatch
-        logic and metaprogramming traits for the visit operation.  Calling the
-        `visit` metafunction will execute the dispatch logic for the
-        perfectly-forwarded function and argument types. */
-        template <typename F, size_t j, typename... A>
-        struct visit {
+        /* Recursion is bounded by the number of visitables (including nested
+        visitables) in the input arguments.  Choices of `k` beyond this limit are
+        meaningless, since there are not enough visitables to satisfy them. */
+        template <typename>
+        constexpr size_t max_budget = 0;
+        template <typename A, typename... As>
+        constexpr size_t max_budget<meta::pack<A, As...>> = max_budget<meta::pack<As...>>;
+        template <meta::visitable A, typename... As>
+        constexpr size_t max_budget<meta::pack<A, As...>> =
+            max_budget<typename impl::visitable<A>::alternatives> + 1 +
+            max_budget<meta::pack<As...>>;
+
+        /* The public entry point starts by specializing the `permute` helper with a
+        budget equal to the number of forced visits (usually zero) and the full
+        argument list.  If that fails, it will increment the budget by 1 and repeat
+        until a valid permutation is found or the budget exceeds the maximum. */
+        template <typename F, size_t force, size_t budget, typename... A>
+        struct search : permute<
+            F,
+            force,
+            budget,
+            typename skip<meta::pack<>, meta::pack<A...>>::prefix,
+            typename skip<meta::pack<>, meta::pack<A...>>::suffix
+        > {};
+        template <typename F, size_t force, size_t budget, typename... A>
+            requires (budget < max_budget<meta::pack<A...>> && !permute<
+                F,
+                force,
+                budget,
+                typename skip<meta::pack<>, meta::pack<A...>>::prefix,
+                typename skip<meta::pack<>, meta::pack<A...>>::suffix
+            >::enable)
+        struct search<F, force, budget, A...> : search<F, force, budget + 1, A...> {};
+
+        /* If a valid permutation is found, then the return type will be deduced
+        according to the above helpers, which is then spliced into the permutation's
+        call operator, which inherited by this object.  The call operator executes the
+        proper, minimal sequence of substitutions needed to call the function. */
+        template <typename F, size_t force, typename... A>
+        struct eval {
+            using permute = search<F, force, force, A...>;
             using type = void;
             static constexpr bool enable = false;
             static constexpr bool exhaustive = false;
-            static constexpr bool consistent = false;
-            static constexpr bool nothrow = false;
         };
-        template <typename F, size_t j, typename... A> requires (visit_permute<F, j, A...>::enable)
-        struct visit<F, j, A...> : visit_permute<F, j, A...>::template fn<
-            typename visit_deduce<
-                meta::pack<>,
-                typename visit_permute<F, j, A...>::errors,
-                visit_permute<F, j, A...>::optional,
-                typename visit_invoke<F, typename visit_permute<F, j, A...>::permutations>::returns
+        template <typename F, size_t force, typename... A>
+            requires (search<F, force, force, A...>::enable)
+        struct eval<F, force, A...> : search<F, force, force, A...>::template fn<
+            typename to_expected<
+                typename to_optional<
+                    typename to_union<
+                        typename search<F, force, force, A...>::types::template eval<
+                            meta::to_unique
+                        >
+                    >::type,
+                    search<F, force, force, A...>::optional
+                >::type,
+                typename search<F, force, force, A...>::errors::template eval<
+                    meta::to_unique
+                >
             >::type
         > {
-        private:
-            using permute = visit_permute<F, j, A...>;
-            using invoke = visit_invoke<F, typename permute::permutations>;
-            using deduce = visit_deduce<
-                meta::pack<>,
-                typename permute::errors,
-                permute::optional,
-                typename invoke::returns
-            >;
 
-        public:
-            /// NOTE: ::type is inherited from `fn<R>`, along with an appropriate call
-            /// operator.
+            using permute = search<F, force, force, A...>;
+            /// NOTE: type inherited from fn<R>
             static constexpr bool enable = true;
             static constexpr bool exhaustive = !permute::optional && permute::errors::empty();
-            static constexpr bool consistent = exhaustive && invoke::returns::size() <= 1;
-            static constexpr bool nothrow = invoke::nothrow && deduce::nothrow;
         };
 
     }
 
+    /* Form a canonical union type from the given input types, filtering for uniqueness
+    and flattening any nested monads. */
+    template <typename... T>
+    using make_union = detail::visit::to_expected<
+        typename detail::visit::to_optional<
+            typename detail::visit::to_union<
+                typename meta::concat<
+                    typename detail::visit::decompose<T>::types...
+                >::template eval<meta::to_unique>
+            >::type,
+            (detail::visit::decompose<T>::optional || ...)
+        >::type,
+        typename meta::concat<
+            typename detail::visit::decompose<T>::errors...
+        >::template eval<meta::to_unique>
+    >::type;
+
     /* A visitor function can only be applied to a set of arguments if it covers all
     non-empty and non-error states of the visitable arguments. */
     template <typename F, typename... Args>
-    concept visit = detail::visit<F, 0, Args...>::enable;
+    concept visit = detail::visit::eval<F, 0, Args...>::enable;
     template <size_t min_visits, typename F, typename... Args>
-    concept force_visit = detail::visit<F, min_visits, Args...>::enable;
+    concept force_visit = detail::visit::eval<F, min_visits, Args...>::enable;
 
     /* Specifies that a visitor function covers all states of the visitable arguments,
     including empty and error states. */
     template <typename F, typename... Args>
-    concept visit_exhaustive = visit<F, Args...> && detail::visit<F, 0, Args...>::exhaustive;
+    concept visit_exhaustive =
+        visit<F, Args...> &&
+        detail::visit::eval<F, 0, Args...>::exhaustive;
     template <size_t min_visits, typename F, typename... Args>
     concept force_visit_exhaustive =
-        force_visit<min_visits, F, Args...> && detail::visit<F, min_visits, Args...>::exhaustive;
-
-    /* Specifies that a visitor function covers all states of the visitable arguments,
-    including empty and error states, and that all permutations return the same
-    type. */
-    template <typename F, typename... Args>
-    concept visit_consistent = visit<F, Args...> && detail::visit<F, 0, Args...>::consistent;
-    template <size_t min_visits, typename F, typename... Args>
-    concept force_visit_consistent =
-        force_visit<min_visits, F, Args...> && detail::visit<F, min_visits, Args...>::consistent;
+        force_visit<min_visits, F, Args...> &&
+        detail::visit::eval<F, min_visits, Args...>::exhaustive;
 
     /* Visitor functions return a type that is derived from each permutation according
     to the following rules:
@@ -910,10 +952,10 @@ namespace meta {
     for visitable types.  By applying the above rules, such operations will always
     yield a regular, canonical form that can be used in further operations. */
     template <typename F, typename... Args> requires (visit<F, Args...>)
-    using visit_type = detail::visit<F, 0, Args...>::type;
+    using visit_type = detail::visit::eval<F, 0, Args...>::type;
     template <size_t min_visits, typename F, typename... Args>
         requires (force_visit<min_visits, F, Args...>)
-    using force_visit_type = detail::visit<F, min_visits, Args...>::type;
+    using force_visit_type = detail::visit::eval<F, min_visits, Args...>::type;
 
     /* Tests whether `meta::visit<F, Args...>` is satisfied and the result can be
     implicitly converted to the specified type.  See `meta::visit_type<F, Args...>` for
@@ -928,11 +970,11 @@ namespace meta {
     namespace nothrow {
 
         template <typename F, typename... Args>
-        concept visit = meta::visit<F, Args...> && detail::visit<F, 0, Args...>::nothrow;
+        concept visit = meta::visit<F, Args...> && detail::visit::eval<F, 0, Args...>::nothrow;
         template <size_t min_visits, typename F, typename... Args>
         concept force_visit =
             meta::force_visit<min_visits, F, Args...> &&
-            detail::visit<F, min_visits, Args...>::nothrow;
+            detail::visit::eval<F, min_visits, Args...>::nothrow;
 
         template <typename F, typename... Args>
         concept visit_exhaustive =
@@ -940,14 +982,6 @@ namespace meta {
         template <size_t min_visits, typename F, typename... Args>
         concept force_visit_exhaustive =
             meta::force_visit_exhaustive<min_visits, F, Args...> &&
-            nothrow::force_visit<min_visits, F, Args...>;
-
-        template <typename F, typename... Args>
-        concept visit_consistent =
-            meta::visit_consistent<F, Args...> && nothrow::visit<F, Args...>;
-        template <size_t min_visits, typename F, typename... Args>
-        concept force_visit_consistent =
-            meta::force_visit_consistent<min_visits, F, Args...> &&
             nothrow::force_visit<min_visits, F, Args...>;
 
         template <typename F, typename... Args> requires (nothrow::visit<F, Args...>)
@@ -965,32 +999,7 @@ namespace meta {
             nothrow::force_visit<min_visits, F, Args...> &&
             nothrow::convertible_to<Ret, nothrow::force_visit_type<min_visits, F, Args...>>;
 
-        template <typename... Ts>
-            requires (
-                detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::nothrow
-            )
-        using make_union =
-            detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
-
     }
-
-    /* Form a canonical union type from the given input types, filtering for uniqueness
-    and flattening any nested monads. */
-    template <typename... Ts>
-    using make_union =
-        detail::visit_deduce<meta::pack<>, meta::pack<>, false, meta::pack<Ts...>>::type;
-
-    /* Detect whether the canonical union type for the given inputs does not trigger
-    promotion to a `Union`, `Optional`, or `Expected` monad, meaning that `make_union`
-    reduces to a single scalar type after filtering for uniqueness and flattening any
-    nested monads. */
-    template <typename... Ts>
-    concept trivial_union = detail::visit_deduce<
-        meta::pack<>,
-        meta::pack<>,
-        false,
-        meta::pack<Ts...>
-    >::trivial;
 
     namespace detail {
 
@@ -1053,7 +1062,7 @@ namespace impl {
         noexcept (meta::nothrow::force_visit<min_visits, F, Args...>)
         requires (meta::force_visit<min_visits, F, Args...>)
     {
-        return (meta::detail::visit<F, min_visits, Args...>{}(
+        return (meta::detail::visit::eval<F, min_visits, Args...>{}(
             std::forward<F>(f),
             std::forward<Args>(args)...
         ));
@@ -1074,9 +1083,9 @@ namespace impl {
         static constexpr bool monad = true;
         using type = T;
         using alternatives = basic_union_types<decltype((std::declval<T>().__value))>;
-        using value = void;
         using empty = void;
         using errors = meta::pack<>;
+        using values = alternatives;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u)
             noexcept (requires{{u.__value.index()} noexcept;})
@@ -1125,9 +1134,9 @@ namespace impl {
         using alternatives = _alternatives<
             std::make_index_sequence<std::variant_size_v<meta::unqualify<T>>>
         >::type;
-        using value = void;
         using empty = void;
         using errors = meta::pack<>;
+        using values = alternatives;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u)
             noexcept (requires{{u.index()} noexcept;})
@@ -1166,9 +1175,9 @@ namespace impl {
         static constexpr bool monad = true;
         using type = T;
         using empty = decltype((std::declval<T>().__value.template get<0>()));
-        using value = decltype((std::declval<T>().__value.template get<1>()));
-        using alternatives = meta::pack<empty, value>;
+        using alternatives = meta::pack<empty, decltype((std::declval<T>().__value.template get<1>()))>;
         using errors = meta::pack<>;
+        using values = meta::pack<decltype((std::declval<T>().__value.template get<1>()))>;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             return u.__value.index();
@@ -1207,9 +1216,9 @@ namespace impl {
         static constexpr bool monad = true;
         using type = T;
         using empty = decltype((std::declval<T>().__value.template get<0>()));
-        using value = empty;
         using alternatives = meta::pack<empty>;
         using errors = meta::pack<>;
+        using values = meta::pack<>;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             return 0;
@@ -1245,9 +1254,9 @@ namespace impl {
         static constexpr bool monad = false;
         using type = T;
         using empty = const NoneType&;
-        using value = decltype((*std::declval<T>()));
-        using alternatives = meta::pack<const NoneType&, value>;
+        using alternatives = meta::pack<const NoneType&, decltype((*std::declval<T>()))>;
         using errors = meta::pack<>;
+        using values = meta::pack<decltype((*std::declval<T>()))>;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             return u.has_value();
@@ -1309,9 +1318,9 @@ namespace impl {
         static constexpr bool monad = true;
         using type = T;
         using alternatives = basic_union_types<decltype((std::declval<T>().__value))>;
-        using value = decltype((std::declval<T>().__value.template get<0>()));
         using empty = void;
         using errors = _errors<std::make_index_sequence<alternatives::size() - 1>>::type;
+        using values = meta::pack<decltype((std::declval<T>().__value.template get<0>()))>;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             return u.__value.index();
@@ -1341,19 +1350,14 @@ namespace impl {
         }
     };
 
-    template <typename T>
-    struct std_expected_type { using type = decltype((*std::declval<T>())); };
-    template <typename T> requires (meta::is_void<typename meta::unqualify<T>::value_type>)
-    struct std_expected_type<T> { using type = NoneType; };
-
     template <meta::std::expected T>
     struct visitable<T> {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
-        using value = std_expected_type<typename meta::unqualify<T>::value_type>::type;
+        using values = meta::pack<decltype((*std::declval<T>()))>;
         using errors = visitable<decltype((std::declval<T>().error()))>::alternatives;
-        using alternatives = meta::concat<meta::pack<value>, errors>;
+        using alternatives = meta::concat<values, errors>;
         using empty = void;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
@@ -1450,7 +1454,7 @@ namespace impl {
 
     namespace visit_cmp {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = std::partial_ordering;
@@ -1467,7 +1471,7 @@ namespace impl {
             using type = meta::common_type<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
             requires (meta::has_common_type<typename result<L, R...>::type...>)
@@ -1494,7 +1498,7 @@ namespace impl {
                         I % visitable<R>::alternatives::size()
                     >(std::forward<R>(rhs))))
                 >)
-                -> result<
+                -> _fn<
                     typename visitable<L>::alternatives,
                     typename visitable<R>::alternatives
                 >::type
@@ -1503,7 +1507,7 @@ namespace impl {
                     !meta::std::in_place_index<R> &&
                     !meta::std::type_identity<L> &&
                     !meta::std::type_identity<R> &&
-                    result<
+                    _fn<
                         typename visitable<L>::alternatives,
                         typename visitable<R>::alternatives
                     >::exists
@@ -1567,7 +1571,7 @@ namespace impl {
 
     namespace visit_lt {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = bool;
@@ -1583,7 +1587,7 @@ namespace impl {
             using type = meta::pack<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
         struct _fn<meta::pack<L...>, meta::pack<R...>> {
@@ -1671,7 +1675,7 @@ namespace impl {
 
     namespace visit_le {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = bool;
@@ -1687,7 +1691,7 @@ namespace impl {
             using type = meta::pack<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
         struct _fn<meta::pack<L...>, meta::pack<R...>> {
@@ -1775,7 +1779,7 @@ namespace impl {
 
     namespace visit_eq {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = bool;
@@ -1791,7 +1795,7 @@ namespace impl {
             using type = meta::pack<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
         struct _fn<meta::pack<L...>, meta::pack<R...>> {
@@ -1879,7 +1883,7 @@ namespace impl {
 
     namespace visit_ne {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = bool;
@@ -1895,7 +1899,7 @@ namespace impl {
             using type = meta::pack<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
         struct _fn<meta::pack<L...>, meta::pack<R...>> {
@@ -1983,7 +1987,7 @@ namespace impl {
 
     namespace visit_ge {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = bool;
@@ -1999,7 +2003,7 @@ namespace impl {
             using type = meta::pack<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
         struct _fn<meta::pack<L...>, meta::pack<R...>> {
@@ -2087,7 +2091,7 @@ namespace impl {
 
     namespace visit_gt {
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _result {
             static constexpr bool exists = false;
             using type = bool;
@@ -2103,7 +2107,7 @@ namespace impl {
             using type = meta::pack<typename _result<L, R>::type...>;
         };
 
-        template <typename L, typename R>
+        template <typename, typename>
         struct _fn { static constexpr bool exists = false; };
         template <typename... L, typename... R>
         struct _fn<meta::pack<L...>, meta::pack<R...>> {
@@ -2226,7 +2230,40 @@ namespace impl {
     constexpr bool alternatives_are_formattable =
         _alternatives_are_formattable<typename impl::visitable<T>::alternatives, Char>;
 
+    /* CTAD guides for optionals will use `impl::visitable` to detect the possible
+    alternatives of the initializer, and then use `meta::make_union` to form them into
+    a canonical union type.  It then filters out  */
+    template <typename T>
+    struct remove_optional { using type = T; };
+    template <meta::Optional T>
+    struct remove_optional<T> { using type = decltype((*std::declval<T>())); };
+
+    template <typename... T>
+    struct _optional_guide {
+        using type = meta::detail::visit::to_expected<
+            typename meta::detail::visit::to_union<
+                typename meta::concat<
+                    typename meta::detail::visit::decompose<T>::types...
+                >::template eval<meta::to_unique>
+            >::type,
+            typename meta::concat<
+                typename meta::detail::visit::decompose<T>::errors...
+            >::template eval<meta::to_unique>
+        >::type;
+    };
+    template <typename T>
+    using optional_guide = impl::visitable<T>::alternatives::template eval<_optional_guide>::type;
+
+
 }
+
+
+template <meta::not_pointer T>
+Optional(T&&) -> Optional<impl::optional_guide<T>>;
+
+
+template <meta::pointer T>
+Optional(T) -> Optional<meta::dereference_type<T>>;
 
 
 /////////////////////
@@ -4749,7 +4786,8 @@ namespace impl {
         static constexpr bool from_none = requires{{bertrand::None} -> meta::convertible_to<to>;};
         static constexpr bool from_nullopt = requires{{std::nullopt} -> meta::convertible_to<to>;};
         static constexpr bool from_nullptr =
-            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
+            /// TODO: change the way ::values are accessed here
+            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::values::template at<0>> &&
             requires(meta::forward<Self> self) {
                 {nullptr} -> meta::convertible_to<to>;
                 {

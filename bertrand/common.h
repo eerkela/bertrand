@@ -954,11 +954,6 @@ namespace meta {
 
     namespace detail {
 
-        template <typename T>
-        constexpr bool is_pack = false;
-        template <typename... Ts>
-        constexpr bool is_pack<pack<Ts...>> = true;
-
         template <typename Search, size_t I, typename... Ts>
         constexpr size_t index_of = 0;
         template <typename Search, size_t I, typename T, typename... Ts>
@@ -1007,10 +1002,6 @@ namespace meta {
         struct specialization<C<Ts...>> { using type = meta::pack<Ts...>; };
 
     }
-
-    /* Concept is satisfied only when `T` is an arbitrarily qualified */
-    template <typename T>
-    concept is_pack = detail::is_pack<unqualify<T>>;
 
     /* Get the count of a particular type within a parameter pack.  Returns zero if
     the type is not present. */
@@ -1070,6 +1061,16 @@ namespace meta {
     if/when universal template parameters are standardized. */
     template <typename T>
     using specialization = detail::specialization<unqualify<T>>::type;
+
+    /* Concept satisfied only when `T` is an arbitrarily qualified specialization of
+    `meta::pack<>` */
+    template <typename T>
+    concept is_pack = specialization_of<T, pack>;
+
+    /* Concept satisfied only when `T` is not an arbitrarily qualified specialization
+    of `meta::pack<>` */
+    template <typename T>
+    concept not_pack = !is_pack<T>;
 
     namespace detail {
 
