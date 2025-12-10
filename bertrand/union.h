@@ -154,7 +154,9 @@ namespace impl {
 
     template <typename... Ts>
     concept union_concept =
-        sizeof...(Ts) > 1 && (meta::not_void<Ts> && ... && meta::unique<Ts...>);
+        sizeof...(Ts) > (meta::not_pack<Ts> || ...) &&
+        (meta::not_void<Ts> && ...) &&
+        meta::unique<Ts...>;
 
     template <typename T, typename E, typename... Es>
     concept expected_concept =
@@ -177,6 +179,12 @@ namespace impl {
             represent alternatives that the monad can dispatch to.  These must be
             perfectly-forwarded from the visitable type `T`, retaining all its cvref
             qualifications.
+        -   `lookup`: a `meta::pack<Ts...>` containing the same types as `alternatives`
+            (in the same order), but with the same cvref qualifications as were used to
+            specialize `T`.  This is used to enable monadic comparisons against
+            `bertrand::type<U>`, which effectively replace a traditional
+            `holds_alternative<U>()` method, and reduces to a comparison between the
+            active index and that of `U` within this pack (assuming it is present).
         -   `empty`: the type of the `None` state for this monad, or `void` if the
             monad does not model an empty state.  If this is not `void`, then it
             signals that the monad acts like an optional within the dispatch logic,
@@ -204,16 +212,6 @@ namespace impl {
             template parameter, and casts the monad to the `I`-th type in
             `alternatives` (including cvref qualifications).  The output from this is
             what gets passed into the visitor function, completing the dispatch.
-        -   `compare(T, std::type_identity<U>)` and `compare(std::type_identity<U>, T)`:
-            static methods that return an ordering tag (e.g. `std::strong_ordering`)
-            where `::equivalent` indicates that the indicated type is the active
-            alternative, and `::less` and `::greater` compare the active index to that
-            of the indicated type.  This method is responsible for implementing
-            monadic comparisons against `bertrand::type<U>`, which effectively replaces
-            a traditional `holds_alternative<U>()` method.  Note that the cvref
-            qualifications of `U` must always exactly match the explicit template
-            parameters of `T`, and must not perfectly forward, unlike the other aliases
-            and methods in this class, and it is up to the user to ensure this is done.
 
     Built-in specializations are provided for all qualifications of:
 
@@ -238,6 +236,7 @@ namespace impl {
         static constexpr bool enable = false;
         static constexpr bool monad = false;
         using type = T;
+        using lookup = meta::pack<T>;
         using alternatives = meta::pack<T>;
         using empty = void;
         using errors = meta::pack<>;
@@ -251,32 +250,17 @@ namespace impl {
         [[gnu::always_inline]] static constexpr decltype(auto) get(meta::forward<T> x) noexcept {
             return (std::forward<T>(x));
         }
-
-        template <std::same_as<T> U>
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            return std::strong_ordering::equal;
-        }
-
-        template <std::same_as<T> U>
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            return std::strong_ordering::equal;
-        }
     };
     template <meta::is_void T>
     struct visitable<T> {
         static constexpr bool enable = false;
         static constexpr bool monad = false;
         using type = T;
+        using lookup = meta::pack<>;
         using alternatives = meta::pack<>;
         using empty = void;  // no empty state
         using errors = meta::pack<>;  // no error states
-        using values = meta::pack<>;  // no pointer-like dereference operators
+        using values = meta::pack<>;  // no value states
     };
 
 }
@@ -312,6 +296,11 @@ constexpr std::in_place_index_t<I> alternative;
 
 template <typename... Ts> requires (impl::union_concept<Ts...>)
 struct Union;
+template <typename... Ts> requires (impl::union_concept<Ts...>)
+struct Union<meta::pack<Ts...>> : Union<Ts...> {
+    using Union<Ts...>::Union;
+    using Union<Ts...>::operator=;
+};
 
 
 template <typename T = void>
@@ -331,6 +320,10 @@ namespace meta {
     /* True for types where `impl::visitable<T>::monad` is set to true. */
     template <typename T>
     concept visit_monad = impl::visitable<T>::monad;
+
+    /// TODO: I may want to add extra `Ts...` parameters to these concepts to allow
+    /// users to check for particular structures, such as `meta::Union<int, double>`,
+    /// etc.
 
     template <typename T>
     concept Union = specialization_of<T, bertrand::Union>;
@@ -389,23 +382,14 @@ namespace meta {
             using errors = Errors;
             static constexpr bool optional = Optional;
         };
-        template <
-            typename T,
-            typename Types,
-            typename Errors,
-            bool Optional
-        > requires (meta::is_void<T> || meta::None<T>)
+        template <typename T, typename Types, typename Errors, bool Optional>
+            requires (meta::is_void<T> || meta::None<T>)
         struct decompose<T, Types, Errors, Optional> {
             using types = Types;
             using errors = Errors;
             static constexpr bool optional = true;
         };
-        template <
-            meta::visitable T,
-            typename Types,
-            typename Errors,
-            bool Optional
-        >
+        template <meta::visitable T, typename Types, typename Errors, bool Optional>
         struct decompose<T, Types, Errors, Optional> {
             template <typename... Alts>
             struct _collect {
@@ -429,13 +413,7 @@ namespace meta {
         /* Valid permutations decompose the return type directly and expose a call
         operator templated on the final, deduced return type, which actually invokes
         the function. */
-        template <
-            typename F,
-            size_t force,
-            size_t budget,
-            typename... prefix,
-            typename... suffix
-        >
+        template <typename F, size_t force, size_t budget, typename... prefix, typename... suffix>
             requires (force == 0 && meta::callable<F, prefix..., suffix...>)
         struct permute<F, force, budget, meta::pack<prefix...>, meta::pack<suffix...>> {
         private:
@@ -484,14 +462,7 @@ namespace meta {
         continue to a future argument using `skip`, without changing the current
         budget.  Otherwise, the return types and monadic components from each
         alternative will be collected and merged. */
-        template <
-            typename F,
-            size_t,
-            size_t,
-            typename prefix,
-            typename alt,
-            typename suffix
-        >
+        template <typename F, size_t, size_t, typename prefix, typename alt, typename suffix>
         struct substitute {  // invalid, nontrivial alternative
             static constexpr bool enable = false;
             static constexpr bool optional = false;
@@ -1082,6 +1053,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
+        using lookup = meta::unqualify<T>::__type;
         using alternatives = basic_union_types<decltype((std::declval<T>().__value))>;
         using empty = void;
         using errors = meta::pack<>;
@@ -1099,22 +1071,6 @@ namespace impl {
         {
             return (std::forward<T>(u).__value.template get<I>());
         }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            return u.__value <=> t;
-        }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            return t <=> u.__value;
-        }
     };
 
     template <meta::std::variant T>
@@ -1131,6 +1087,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
+        using lookup = meta::specialization<T>;
         using alternatives = _alternatives<
             std::make_index_sequence<std::variant_size_v<meta::unqualify<T>>>
         >::type;
@@ -1150,22 +1107,6 @@ namespace impl {
         {
             return (std::get<I>(std::forward<T>(u)));
         }
-
-        template <typename U> requires (meta::specialization<T>::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            return u.index() <=> meta::specialization<T>::template index<U>();
-        }
-
-        template <typename U> requires (meta::specialization<T>::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            return meta::specialization<T>::template index<U>() <=> u.index();
-        }
     };
 
     template <meta::Optional T>
@@ -1174,6 +1115,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
+        using lookup = meta::unqualify<T>::__type;
         using empty = decltype((std::declval<T>().__value.template get<0>()));
         using alternatives = meta::pack<empty, decltype((std::declval<T>().__value.template get<1>()))>;
         using errors = meta::pack<>;
@@ -1189,22 +1131,6 @@ namespace impl {
         {
             return (std::forward<T>(u).__value.template get<I>());
         }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            return u.__value <=> t;
-        }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            return t <=> u.__value;
-        }
     };
 
     /// NOTE: we need a separate specialization to account for `Optional<void>`, which
@@ -1215,6 +1141,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
+        using lookup = meta::unqualify<T>::__type;
         using empty = decltype((std::declval<T>().__value.template get<0>()));
         using alternatives = meta::pack<empty>;
         using errors = meta::pack<>;
@@ -1230,22 +1157,6 @@ namespace impl {
         {
             return (std::forward<T>(u).__value.template get<0>());
         }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            return std::strong_ordering::equal;
-        }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            return std::strong_ordering::equal;
-        }
     };
 
     template <meta::std::optional T>
@@ -1253,6 +1164,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
+        using specialization = meta::pack<typename meta::unqualify<T>::value_type>;
         using empty = const NoneType&;
         using alternatives = meta::pack<const NoneType&, decltype((*std::declval<T>()))>;
         using errors = meta::pack<>;
@@ -1273,32 +1185,6 @@ namespace impl {
         {
             return (*std::forward<T>(u));
         }
-
-        template <typename U>
-            requires (std::same_as<U, NoneType> || meta::specialization<T>::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            if constexpr (std::same_as<U, NoneType>) {
-                return u.has_value() ? std::strong_ordering::greater : std::strong_ordering::equal;
-            } else {
-                return u.has_value() ? std::strong_ordering::equal : std::strong_ordering::less;
-            }
-        }
-
-        template <typename U>
-            requires (std::same_as<U, NoneType> || meta::specialization<T>::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            if constexpr (std::same_as<U, NoneType>) {
-                return u.has_value() ? std::strong_ordering::less : std::strong_ordering::equal;
-            } else {
-                return u.has_value() ? std::strong_ordering::equal : std::strong_ordering::greater;
-            }
-        }
     };
 
     template <meta::Expected T>
@@ -1317,6 +1203,7 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = true;
         using type = T;
+        using lookup = meta::unqualify<T>::__type;
         using alternatives = basic_union_types<decltype((std::declval<T>().__value))>;
         using empty = void;
         using errors = _errors<std::make_index_sequence<alternatives::size() - 1>>::type;
@@ -1332,22 +1219,6 @@ namespace impl {
         {
             return (std::forward<T>(u).__value.template get<I>());
         }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        ) noexcept {
-            return u.__value <=> t;
-        }
-
-        template <typename U> requires (meta::unqualify<T>::__type::template contains<U>())
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        ) noexcept {
-            return t <=> u.__value;
-        }
     };
 
     template <meta::std::expected T>
@@ -1355,10 +1226,14 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
+        using lookup = meta::concat<
+            meta::pack<typename meta::unqualify<T>::value_type>,
+            typename visitable<typename meta::unqualify<T>::error_type>::lookup
+        >;
         using values = meta::pack<decltype((*std::declval<T>()))>;
+        using empty = void;
         using errors = visitable<decltype((std::declval<T>().error()))>::alternatives;
         using alternatives = meta::concat<values, errors>;
-        using empty = void;
 
         [[gnu::always_inline]] static constexpr size_t index(meta::as_const_ref<T> u) noexcept {
             if constexpr (errors::size() > 1) {
@@ -1395,52 +1270,6 @@ namespace impl {
             return (visitable<decltype((std::forward<T>(u).error()))>::template get<I - 1>(
                 std::forward<T>(u).error()
             ));
-        }
-
-        template <typename U>
-        [[gnu::always_inline]] static constexpr auto compare(
-            meta::as_const_ref<T> u,
-            std::type_identity<U> t
-        )
-            noexcept (
-                std::same_as<U, typename meta::specialization<T>::template at<0>> ||
-                requires{{visitable<decltype((u.error()))>::compare(u.error(), t)} noexcept;}
-            )
-            requires (
-                std::same_as<U, typename meta::specialization<T>::template at<0>> ||
-                requires{{visitable<decltype((u.error()))>::compare(u.error(), t)};}
-            )
-        {
-            if constexpr (std::same_as<U, typename meta::specialization<T>::template at<0>>) {
-                return u.has_value() ? std::strong_ordering::equal : std::strong_ordering::less;
-            } else {
-                return u.has_value() ?
-                    std::strong_ordering::greater :
-                    visitable<decltype((u.error()))>::compare(u.error(), t);
-            }
-        }
-
-        template <typename U>
-        [[gnu::always_inline]] static constexpr auto compare(
-            std::type_identity<U> t,
-            meta::as_const_ref<T> u
-        )
-            noexcept (
-                std::same_as<U, typename meta::specialization<T>::template at<0>> ||
-                requires{{visitable<decltype((u.error()))>::compare(t, u.error())} noexcept;}
-            )
-            requires (
-                std::same_as<U, typename meta::specialization<T>::template at<0>> ||
-                requires{{visitable<decltype((u.error()))>::compare(t, u.error())};}
-            )
-        {
-            if constexpr (std::same_as<U, typename meta::specialization<T>::template at<0>>) {
-                return u.has_value() ? std::strong_ordering::equal : std::strong_ordering::greater;
-            } else {
-                return u.has_value() ?
-                    std::strong_ordering::less :
-                    visitable<decltype((u.error()))>::compare(t, u.error());
-            }
         }
     };
 
@@ -1552,18 +1381,28 @@ namespace impl {
 
             template <typename L, typename R>
             static constexpr auto operator()(L&& lhs, std::type_identity<R> rhs)
-                noexcept (requires{{impl::visitable<L>::compare(std::forward<L>(lhs), rhs)} noexcept;})
-                requires (requires{{impl::visitable<L>::compare(std::forward<L>(lhs), rhs)};})
+                noexcept (requires{{
+                    impl::visitable<L>::index(std::forward<L>(lhs)) <=>
+                    impl::visitable<L>::lookup::template index<R>()
+                } noexcept;})
+                requires (impl::visitable<L>::lookup::template contains<R>())
             {
-                return impl::visitable<R>::compare(std::forward<L>(lhs), rhs);
+                return
+                    impl::visitable<L>::index(std::forward<L>(lhs)) <=>
+                    impl::visitable<L>::lookup::template index<R>();
             }
 
             template <typename L, typename R>
             static constexpr auto operator()(std::type_identity<L> lhs, R&& rhs)
-                noexcept (requires{{impl::visitable<L>::compare(lhs, std::forward<R>(rhs))} noexcept;})
-                requires (requires{{impl::visitable<L>::compare(lhs, std::forward<R>(rhs))};})
+                noexcept (requires{{
+                    impl::visitable<R>::lookup::template index<L>() <=>
+                    impl::visitable<R>::index(std::forward<R>(rhs))
+                } noexcept;})
+                requires (impl::visitable<R>::lookup::template contains<L>())
             {
-                return impl::visitable<R>::compare(rhs, std::forward<R>(rhs));
+                return
+                    impl::visitable<R>::lookup::template index<L>() <=>
+                    impl::visitable<R>::index(std::forward<R>(rhs));
             }
         };
 
@@ -2238,6 +2077,9 @@ namespace impl {
     template <meta::Optional T>
     struct remove_optional<T> { using type = decltype((*std::declval<T>())); };
 
+    /* CTAD guides to optional types work the same way as `meta::make_union`, but omit
+    the intermediate converion to `Optional`.  This allows deduction of other visitable
+    types (possibly from the STL), with canonical nesting. */
     template <typename... T>
     struct _optional_guide {
         using type = meta::detail::visit::to_expected<
@@ -2254,6 +2096,7 @@ namespace impl {
     template <typename T>
     using optional_guide = impl::visitable<T>::alternatives::template eval<_optional_guide>::type;
 
+    /// TODO: address the other CTAD guides 
 
 }
 
@@ -7592,6 +7435,12 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
         std::forward<R>(rhs)
     ));
 }
+
+
+static constexpr Union<int, double> x = 1;
+static constexpr Union<meta::pack<int, double>> y = 1;
+static_assert((type<double> <=> x) > 0);
+
 
 
 }  // namespace bertrand
