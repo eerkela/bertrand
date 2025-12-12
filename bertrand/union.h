@@ -136,13 +136,6 @@ namespace bertrand {
 /// can naturally test whether optionals are None or not via simple equality, without
 /// any special overloads at all.
 
-/// TODO: it also means that I might be able to just convert union iterators into
-/// true unions at some point, since the comparisons are what require the iterators to
-/// remain index-aligned.  If comparisons are well formed as long as there is at least
-/// one good pair, then union comparisons would just work naturally.  It might be
-/// slightly faster to keep the index alignment anyways, though.
-
-
 
 /// TODO: also note in documentation that I've removed `meta::consistent` and
 /// `meta::trivial_union`.  You can just check whether the return type is visitable
@@ -152,11 +145,26 @@ namespace bertrand {
 
 namespace impl {
 
+    template <typename>
+    constexpr bool valid_union_pack = false;
     template <typename... Ts>
-    concept union_concept =
-        sizeof...(Ts) > (meta::not_pack<Ts> || ...) &&
-        (meta::not_void<Ts> && ...) &&
-        meta::unique<Ts...>;
+        requires (
+            sizeof...(Ts) > 1 &&
+            ((meta::not_void<Ts> && meta::not_pack<Ts>) && ...) &&
+            meta::unique<Ts...>
+        )
+    constexpr bool valid_union_pack<meta::pack<Ts...>> = true;
+
+    template <typename... Ts>
+    concept union_concept = (
+        sizeof...(Ts) > 1 &&
+        ((meta::not_void<Ts> && meta::not_pack<Ts>) && ...) &&
+        meta::unique<Ts...>
+    ) || (
+        sizeof...(Ts) == 1 &&
+        (meta::is_pack<Ts> && ...) &&
+        valid_union_pack<meta::unqualify<Ts>...>
+    );
 
     template <typename T, typename E, typename... Es>
     concept expected_concept =
@@ -253,12 +261,45 @@ namespace impl {
     };
     template <meta::is_void T>
     struct visitable<T> {
+        static constexpr bool enable = false;  // meta::visitable is false
+        static constexpr bool monad = false;
+        using type = T;
+        using lookup = meta::pack<T>;
+        using alternatives = meta::pack<>;
+        using empty = T;  // no empty state
+        using errors = meta::pack<>;  // no error states
+        using values = meta::pack<>;  // no value states
+    };
+    template <meta::None T>
+    struct visitable<T> {
         static constexpr bool enable = false;
         static constexpr bool monad = false;
         using type = T;
-        using lookup = meta::pack<>;
-        using alternatives = meta::pack<>;
-        using empty = void;  // no empty state
+        using lookup = meta::pack<T>;
+        using alternatives = meta::pack<T>;
+        using empty = T;  // empty state is NoneType
+        using errors = meta::pack<>;  // no error states
+        using values = meta::pack<>;  // no value states
+    };
+    template <meta::is<std::nullopt_t> T>
+    struct visitable<T> {
+        static constexpr bool enable = false;  // meta::visitable is false
+        static constexpr bool monad = false;
+        using type = T;
+        using lookup = meta::pack<T>;
+        using alternatives = meta::pack<T>;
+        using empty = T;  // empty state is std::nullopt_t
+        using errors = meta::pack<>;  // no error states
+        using values = meta::pack<>;  // no value states
+    };
+    template <meta::is<std::nullptr_t> T>
+    struct visitable<T> {
+        static constexpr bool enable = false;  // meta::visitable is false
+        static constexpr bool monad = false;
+        using type = T;
+        using lookup = meta::pack<T>;
+        using alternatives = meta::pack<T>;
+        using empty = T;  // empty state is std::nullptr_t
         using errors = meta::pack<>;  // no error states
         using values = meta::pack<>;  // no value states
     };
@@ -296,11 +337,6 @@ constexpr std::in_place_index_t<I> alternative;
 
 template <typename... Ts> requires (impl::union_concept<Ts...>)
 struct Union;
-template <typename... Ts> requires (impl::union_concept<Ts...>)
-struct Union<meta::pack<Ts...>> : Union<Ts...> {
-    using Union<Ts...>::Union;
-    using Union<Ts...>::operator=;
-};
 
 
 template <typename T = void>
@@ -320,10 +356,6 @@ namespace meta {
     /* True for types where `impl::visitable<T>::monad` is set to true. */
     template <typename T>
     concept visit_monad = impl::visitable<T>::monad;
-
-    /// TODO: I may want to add extra `Ts...` parameters to these concepts to allow
-    /// users to check for particular structures, such as `meta::Union<int, double>`,
-    /// etc.
 
     template <typename T>
     concept Union = specialization_of<T, bertrand::Union>;
@@ -369,8 +401,10 @@ namespace meta {
 
         /* Valid permutations will have their return types decomposed into their
         monadic components in order to normalize void return types and nested monads.
-        `void` and `None` return types will be normalized to empty optionals if
-        combined with at least one non-void and non-None alternative. */
+        `void`, `None`, `std::nullopt_t`, and `std::nullptr_t` return types (as well as
+        any other non-visitable types with a non-void `visitable<T>::empty` alias) will
+        be normalized to empty optionals if combined with at least one other
+        alternative. */
         template <
             typename T,
             typename Types = meta::pack<>,
@@ -383,13 +417,12 @@ namespace meta {
             static constexpr bool optional = Optional;
         };
         template <typename T, typename Types, typename Errors, bool Optional>
-            requires (meta::is_void<T> || meta::None<T>)
-        struct decompose<T, Types, Errors, Optional> {
-            using types = Types;
-            using errors = Errors;
-            static constexpr bool optional = true;
-        };
-        template <meta::visitable T, typename Types, typename Errors, bool Optional>
+            requires (
+                meta::visitable<T> ||
+                meta::is_void<T> ||
+                meta::not_void<typename impl::visitable<T>::empty> ||
+                impl::visitable<T>::errors::size() > 0
+            )
         struct decompose<T, Types, Errors, Optional> {
             template <typename... Alts>
             struct _collect {
@@ -766,7 +799,7 @@ namespace meta {
         struct to_union<meta::pack<T...>> { using type = bertrand::Union<T...>; };
 
         /* Next, the `::optional` flag is applied.  If true, then the result from
-        `to_union` will be converted into an `Optional`. */
+        `to_union` will be converted into an `Optional`, but not if it is void. */
         template <typename R, bool optional>
         struct to_optional { using type = R; };
         template <meta::not_void R>
@@ -1164,9 +1197,12 @@ namespace impl {
         static constexpr bool enable = true;
         static constexpr bool monad = false;
         using type = T;
-        using specialization = meta::pack<typename meta::unqualify<T>::value_type>;
-        using empty = const NoneType&;
-        using alternatives = meta::pack<const NoneType&, decltype((*std::declval<T>()))>;
+        using lookup = meta::pack<
+            std::nullopt_t,
+            typename meta::unqualify<T>::value_type
+        >;
+        using empty = const std::nullopt_t&;
+        using alternatives = meta::pack<const std::nullopt_t&, decltype((*std::declval<T>()))>;
         using errors = meta::pack<>;
         using values = meta::pack<decltype((*std::declval<T>()))>;
 
@@ -2060,22 +2096,23 @@ namespace impl {
         }
     };
 
-    /* Monads are formattable if all of their alternatives are formattable in turn. */
-    template <typename, typename>
-    constexpr bool _alternatives_are_formattable = false;
-    template <typename... Ts, typename Char> requires (meta::formattable<Ts, Char> && ...)
-    constexpr bool _alternatives_are_formattable<meta::pack<Ts...>, Char> = true;
-    template <meta::visit_monad T, typename Char>
-    constexpr bool alternatives_are_formattable =
-        _alternatives_are_formattable<typename impl::visitable<T>::alternatives, Char>;
+    /* Unions specialized with packs as a single argument expand to equivalent unions
+    specialized with the contents of the pack. */
+    template <meta::is_pack T> requires (impl::union_concept<T>)
+    using union_pack = meta::unqualify<T>::template eval<bertrand::Union>;
 
-    /* CTAD guides for optionals will use `impl::visitable` to detect the possible
-    alternatives of the initializer, and then use `meta::make_union` to form them into
-    a canonical union type.  It then filters out  */
+    /* The pack specialization for unions allows CTAD from any other visitable type
+    with 2 or more unique alternatives. */
     template <typename T>
-    struct remove_optional { using type = T; };
-    template <meta::Optional T>
-    struct remove_optional<T> { using type = decltype((*std::declval<T>())); };
+    using union_guide = impl::visitable<T>::alternatives::
+        template map<meta::remove_rvalue>::
+        template eval<meta::to_unique>;
+
+    /// TODO: the optional and expected guides will currently not deduce nested types
+    /// correctly, since they stop at one level of alternatives.  I have to instead
+    /// decompose the incoming type, and then construct the union from the flattened
+    /// types and errors, etc, plus inject the proper empty type if the input is an
+    /// optional.
 
     /* CTAD guides to optional types work the same way as `meta::make_union`, but omit
     the intermediate converion to `Optional`.  This allows deduction of other visitable
@@ -2096,9 +2133,54 @@ namespace impl {
     template <typename T>
     using optional_guide = impl::visitable<T>::alternatives::template eval<_optional_guide>::type;
 
-    /// TODO: address the other CTAD guides 
+    /* CTAD guides to expected types work the same way as `meta::make_union`, but omit
+    the outermost conversion to `Expected`.  This allows deduction of other visitable
+    types (possibly from the STL) with canonical nesting. */
+    template <typename... T>
+    struct _expected_guide {
+        using type = meta::detail::visit::to_optional<
+            typename meta::detail::visit::to_union<
+                typename meta::concat<
+                    typename meta::detail::visit::decompose<T>::types...
+                >::template eval<meta::to_unique>
+            >::type,
+            (meta::detail::visit::decompose<T>::optional || ...)
+        >::type;
+    };
+    template <typename T>
+    using expected_guide = impl::visitable<T>::alternatives::template eval<_expected_guide>::type;
+
+
+    /// TODO: expected CTAD guides, which can actually act just like the two inner
+    /// stages of make_union
+
+    /* Monads are formattable if all of their alternatives are formattable in turn. */
+    template <typename, typename>
+    constexpr bool _alternatives_are_formattable = false;
+    template <typename... Ts, typename Char> requires (meta::formattable<Ts, Char> && ...)
+    constexpr bool _alternatives_are_formattable<meta::pack<Ts...>, Char> = true;
+    template <meta::visit_monad T, typename Char>
+    constexpr bool alternatives_are_formattable =
+        _alternatives_are_formattable<typename impl::visitable<T>::alternatives, Char>;
 
 }
+
+
+/* A special case of Union where the types are provided as a single `meta::pack<Ts...>`
+rather than separate template parameters.  Sometimes, as is the case for CTAD guides,
+it may not be possible to generate a fold expression over the types directly.  In that
+case, this form expands to an equivalent Union with the types extracted from the pack.
+Everything else remains the same, including the definition of `impl::visitable`, which
+controls the visitation mechanism. */
+template <meta::is_pack T> requires (impl::union_concept<T>)
+struct Union<T> : impl::union_pack<T> {
+    using impl::union_pack<T>::union_pack;
+    using impl::union_pack<T>::operator=;
+};
+
+
+template <typename T>
+Union(T&&) -> Union<impl::union_guide<T>>;
 
 
 template <meta::not_pointer T>
@@ -2807,13 +2889,6 @@ namespace impl {
     constexpr bool is_union_iterator = false;
     template <typename... Ts>
     constexpr bool is_union_iterator<union_iterator<Ts...>> = true;
-
-    template <typename... Ts>
-    struct _as_union_iterator { using type = union_iterator<Ts...>; };
-    template <typename... Ts> requires (meta::to_unique<Ts...>::size() == 1)
-    struct _as_union_iterator<Ts...> { using type = meta::first_type<Ts...>; };
-    template <typename... Ts>
-    using as_union_iterator = _as_union_iterator<Ts...>::type;
 
     template <typename Return>
     struct union_iterator_deref {
@@ -3638,6 +3713,23 @@ namespace impl {
         }
     };
 
+    /* If all alternatives share a common begin/end type, then those iterators will be
+    returned directly.  Otherwise, they will be merged into a `union_iterator` with
+    aligned alternatives. */
+    template <typename Begin, typename End>
+    struct as_union_iterator {
+        using begin = Begin::template eval<union_iterator>;
+        using end = End::template eval<union_iterator>;
+    };
+    template <typename... Begin, typename... End>
+        requires (
+            meta::to_unique<Begin...>::size() == 1 &&
+            meta::to_unique<End...>::size() == 1
+        )
+    struct as_union_iterator<meta::pack<Begin...>, meta::pack<End...>> {
+        using begin = meta::first_type<Begin...>;
+        using end = meta::first_type<End...>;
+    };
     template <typename Return>
     struct make_union_iterator {
         template <size_t I>
@@ -4204,15 +4296,18 @@ struct Union {
     [[nodiscard]] constexpr auto begin(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::begin(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::begin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::end(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::begin
             >::template begin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-        requires ((meta::has_begin<
+        requires ((meta::iterable<
             decltype((std::forward<Self>(self).__value.template get<
                 meta::remove_rvalue<Ts>
             >()))
@@ -4220,11 +4315,14 @@ struct Union {
     {
         return impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::begin(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::begin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::end(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::begin
             >::template begin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -4240,15 +4338,18 @@ struct Union {
     [[nodiscard]] constexpr auto end(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::end(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::begin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::end(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::end
             >::template end,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-        requires ((meta::has_end<
+        requires ((meta::iterable<
             decltype((std::forward<Self>(self).__value.template get<
                 meta::remove_rvalue<Ts>
             >()))
@@ -4256,11 +4357,14 @@ struct Union {
     {
         return impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::end(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::begin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::end(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::end
             >::template end,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -4276,15 +4380,18 @@ struct Union {
     [[nodiscard]] constexpr auto rbegin(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::begin
             >::template rbegin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-        requires ((meta::has_rbegin<
+        requires ((meta::reverse_iterable<
             decltype((std::forward<Self>(self).__value.template get<
                 meta::remove_rvalue<Ts>
             >()))
@@ -4292,11 +4399,14 @@ struct Union {
     {
         return impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::begin
             >::template rbegin,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -4312,15 +4422,18 @@ struct Union {
     [[nodiscard]] constexpr auto rend(this Self&& self)
         noexcept (requires{{impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::end
             >::template rend,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self))} noexcept;})
-        requires ((meta::has_rend<
+        requires ((meta::reverse_iterable<
             decltype((std::forward<Self>(self).__value.template get<
                 meta::remove_rvalue<Ts>
             >()))
@@ -4328,11 +4441,14 @@ struct Union {
     {
         return impl::basic_vtable<
             impl::make_union_iterator<
-                impl::as_union_iterator<
-                    decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                typename impl::as_union_iterator<
+                    meta::pack<decltype(meta::rbegin(std::forward<Self>(self).__value.template get<
                         meta::remove_rvalue<Ts>
-                    >()))...
-                >
+                    >()))...>,
+                    meta::pack<decltype(meta::rend(std::forward<Self>(self).__value.template get<
+                        meta::remove_rvalue<Ts>
+                    >()))...>
+                >::end
             >::template rend,
             sizeof...(Ts)
         >{self.__value.index()}(std::forward<Self>(self));
@@ -4408,10 +4524,12 @@ namespace impl {
             return types::template index<T>();
         }
 
-        [[no_unique_address]] ptr m_data;
+        [[no_unique_address]] ptr m_data = nullptr;
+
+        [[nodiscard]] constexpr basic_union() noexcept = default;
 
         /* Default constructor always initializes to the empty state. */
-        [[nodiscard]] constexpr basic_union(tag<0> = tag<0>{}) noexcept : m_data(nullptr) {};
+        [[nodiscard]] constexpr basic_union(tag<0>, NoneType) noexcept : m_data(nullptr) {};
 
         /* Tagged constructor specifically initializes the alternative at index `I`
         with the given arguments. */
@@ -6745,14 +6863,12 @@ struct Expected<T, E, Es...> {
 /////////////////////////////////
 
 
-/// TODO: note that ->* is now not required to be exhaustive, since that would
-/// interfere with stacked range monads.  It's better to be loose to simplify usage.
-
-
 /* Pattern matching operator for union monads.  A visitor function must be provided on
-the right hand side of this operator, which must be callable using all alternatives
-of the monad on the left.  Nested monads will be recursively expanded into their
-alternatives before attempting to invoke the visitor.
+the right hand side of this operator, which must be callable using the alternatives of
+the monad on the left.  If the monad is an optional or expected, then the visitor may
+omit the empty/error state(s), in which case they will be implicitly propagated to the
+return type.  Nested monads will be recursively expanded into their alternatives before
+attempting to invoke the visitor.
 
 Similar to the built-in `->` indirection operator, this operator will attempt to
 recursively call itself in order to match nested patterns involving other monads.
@@ -7437,12 +7553,6 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 }
 
 
-static constexpr Union<int, double> x = 1;
-static constexpr Union<meta::pack<int, double>> y = 1;
-static_assert((type<double> <=> x) > 0);
-
-
-
 }  // namespace bertrand
 
 
@@ -7622,6 +7732,26 @@ _LIBCPP_BEGIN_NAMESPACE_STD
     };
 
 _LIBCPP_END_NAMESPACE_STD
+
+
+namespace bertrand {
+
+    static constexpr Union<int, NoneType> u1 = 1;
+    static constexpr Optional o1 = u1;
+    static constexpr Union u11 = o1;
+
+    static constexpr std::variant<int, NoneType> u2 = 1;
+    static constexpr Optional o2 = u2;
+
+    static constexpr std::optional<int> u3 = 1;
+    static constexpr Optional o3 = u3;
+
+    // static constexpr std::expected<int, NoneType> u4 = 1;
+    // static constexpr Expected e1 = u4;
+
+
+
+}
 
 
 #endif  // BERTRAND_UNION_H

@@ -1074,6 +1074,11 @@ namespace meta {
 
     namespace detail {
 
+        template <typename T>
+        struct as_pack { using type = meta::pack<T>; };
+        template <meta::is_pack T>
+        struct as_pack<T> { using type = meta::unqualify<T>; };
+
         template <typename out, typename...>
         struct concat { using type = out; };
         template <typename... out, typename... curr, typename... next>
@@ -1207,6 +1212,10 @@ namespace meta {
         {};
 
     }
+
+    /* Convert a type into a pack of 1 element if it is not already a pack. */
+    template <typename T>
+    using as_pack = detail::as_pack<T>::type;
 
     /* Return a pack with the merged contents of all constituent packs. */
     template <is_pack... packs>
