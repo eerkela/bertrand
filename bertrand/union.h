@@ -6,7 +6,7 @@
 #include "bertrand/shape.h"
 
 
-/* INTRODUCTION
+/* A (Gentle) Introduction to Monads
 
     "A monad is a monoid in the category of endofunctors of some fixed category"
         - Category Theory (https://medium.com/@felix.kuehl/a-monad-is-just-a-monoid-in-the-category-of-endofunctors-lets-actually-unravel-this-f5d4b7dbe5d6)
@@ -14,58 +14,97 @@
 Unless you already know what each of these words means, this definition is about as
 clear as mud, so here's a better one:
 
-    A monad (in the context of computer science) is a separate *domain* of values, in
-    which results are *labeled* with the monad type, and compositions of monads return
-    other monads.
+    Monads (in the context of computer science) can be thought of as separate *domains*
+    of values, in which results are *labeled* with the monad type, and compositions of
+    monads return other monads in the same domain.
 
 Intuitively, a monad is a kind of "sticky" wrapper around a value, which behaves
-similarly to the value itself, but with extra properties that alter its semantics in
-a way that is consistent across the entire domain.  It is a natural extension of the
-Gang of Four's Decorator pattern, and is a fundamental abstraction in functional
-programming languages, such as Haskell, Scala, and Elixir.
+similarly to the value itself in most respects, but with extra properties that alter
+its semantics in a way that is consistent across the domain.  It is a natural extension
+of the Gang of Four's Decorator pattern, and is a fundamental abstraction in functional
+programming languages, such as Haskell, Scala, Elixir, etc.
 
-Let's look at one of the most basic examples of a monad: the `Optional` type:
+To decode this further, let's look at one of the most basic examples of a monad present
+in nearly every language in some form: the `Optional` type:
 
 ```
-    // the default constructor for `int` is undefined, so `x` is technically uninitialized
-    int x1;
+    int x1;  // the default constructor for `int` is undefined => `x` uninitialized
     int y1 = x1 + 2;  // undefined behavior -> `y1` may contain garbage
 
-    // Optional<> provides a default constructor, initializing to an empty state
-    Optional<int> x2;
+    Optional<int> x2;  // Optional<> provides a default constructor => empty state
     Optional<int> y2 = x2 + 2;  // well-defined -> `y2` is also empty.  No computation takes place
 ```
 
-Formally, `Optional<T>` adds a universal `None` state to the domain of `T`, which can
-be used to represent the absence of a value, regardless of the specific characteristics
-of `T`.  Operating on an `Optional<T>` is exactly like operating on `T` itself, except
-that the empty state will be propagated through the computation, and usually maps to
-itself (which turns the operation into an identity function).  Thus, any algorithm that
-operates on `T` should also be able to operate on `Optional<T>` without any changes;
-it will simply not be computed if the input is in the empty state.  Such operations can
-thus be chained together without needing to check for the empty state at every step,
-allowing for more concise and readable code, which better models the underlying problem
-space.
+Formally, `Optional<T>` is a monad that adds a universal `None` state to the domain of
+`T`, which can be used to represent the absence of a value regardless of the specific
+characteristics of `T`.  Operating on an `Optional<T>` is exactly like operating on `T`
+itself, except that the empty state will be implicitly propagated through the
+computation unless otherwise handled (via visitor-based pattern matching).  Thus, any
+algorithm that operates on `T` should also be able to operate on `Optional<T>` without
+significant changes, and the result will simply not be computed if the input is in the
+empty state.  Such operations can therefore be chained together without needing to
+check for the empty state at every step, leading to more concise and readable syntax,
+which better models the underlying problem space.
 
-`Optional`s are just one example of a monad, and are actually just a special case of
-`Union`, where the first type is the empty state.  In (mathematical) type theory, these
-are categorized as "sum types": composite types that can hold **one** (and only one) of
-several possible types, where the overall space of types is given by the disjunction
-(logical OR) between every alternative.  Bertrand's `Union<Ts...>` monad generalizes
-this concept to any choice of (non-void) `Ts...`, and provides a type-safe, monadic way
-to represent values of indeterminate type in statically-typed languages such as C++.
-Operators for monadic unions are allowed if and only if all alternatives support the
-same operation, and may return further unions of several unique types, reflecting the
-results from each alternative.
+Note that `Optional`s are simply one example of a monad, and are actually just a
+special case of `Union`, where the first type is the empty state.  In mathematical type
+theory, monads of this form are categorized as "sum types": composites that can hold
+**one** (and only one) of several possible types, where the overall space of types is
+given by the disjunction (logical OR) between every alternative.  Bertrand's
+`Union<Ts...>` monad generalizes this to any choice of `Ts...`, providing a type-safe,
+monadic way of representing values with indeterminate type in statically-typed
+languages such as C++.  Just as with `Optional`s, operations on a `Union` will be
+forwarded to the active member, possibly returning a new `Union` if the alternatives
+support the operation and the result type is ambiguous.  This allows Bertrand to
+simulate a limited form of dynamic typing directly within C++, where the exact type of
+an object may not be known until runtime, but the overall set of possible types can be
+deduced at compile time and verified on that basis.  The compiler will simply emit a
+small dispatch table (which usually amounts to a handful of `if` statements) whenever
+the monad is operated on, ensuring that overhead is minimal, predictable, and
+significantly lower than full dynamic typing in languages like Python and JavaScript,
+while still allowing a semantic bridge between both worlds.
 
-Sometimes, it is beneficial to explicitly leave the monadic domain and unwrap the raw
+Sometimes, it is beneficial to explicitly leave a monadic domain and unwrap the raw
 value(s), which can be done in a number of ways.  First, all monads support both
-implicit and explicit conversion to arbitrary types as long as all alternatives can be
+implicit and explicit conversion to arbitrary types as long as each alternative can be
 converted to that type in turn.  This generates a "projection" from the monadic domain
 to that of the destination type, which is the logical inversion of the monad's
-constructor.  Additionally, monads support pattern matching, as is commonly used by
-functional languages to destructure algebraic types into their constituent parts.
-Here's a simple example:
+constructor.  Just like all other operations, this is performed via a dispatch table
+that selects the active alternative and converts it accordingly.  One can thus write:
+
+```
+    Union<int, double> u = 3.14;
+    double d = u;  // int -> double || double -> double
+```
+
+... but not:
+
+```
+    Union<int, std::string> u = 42;
+    double d = u;  // int -> double || std::string -> double (invalid)
+```
+
+This also enables fluent conversions to and from other monadic types, including
+standard library equivalents like `std::variant`, `std::optional`, and `std::expected`,
+possibly even in nested form.  For example:
+
+```
+    Union u = std::variant<std::optional<int>, double>{2.0};  // Union<std::nullopt_t, int, double>
+    std::variant<std::nullopt_t, int, double> v = u;
+    Optional o = u;  // Optional<Union<const int&, const double&>>
+```
+
+Note the use of CTAD to initialized `u`, which deduces the correct alternative types
+from the nested `std::variant` and `std::optional`, using `std::nullopt` as the empty
+alternative.  This produces a flattened union containing just the 3 primitive types,
+which can then be converted to `v`, an equivalent `std::variant`.  Similarly, `u` can
+also be converted to another Bertrand monad,`Optional` in this case (again using CTAD),
+which generates a nested monad that treats `std::nullopt` as an empty state and
+generates a union with the remaining, perfectly-forwarded types.
+
+Additionally, monads support pattern matching via the `->*` operator, as is commonly
+used by functional languages to destructure algebraic types into their constituent
+parts.  Here's a simple example:
 
 ```
     using A = std::array<double, 3>;
@@ -73,7 +112,7 @@ Here's a simple example:
     using C = std::vector<bool>;
 
     Union<A, B, C> u = "Hello, World!";  // 13 characters
-    int n = u ->* def{
+    size_t n = u ->* def{
         [](const A& a) { return a.size(); },
         [](const B& b) { return b.size(); },
         [](const C& c) { return c.size(); }
@@ -84,63 +123,79 @@ Here's a simple example:
 
 Note that the `assert` in the last line only compiles because all 3 alternatives
 support the `size()` operator, meaning that `u.size()` is well-formed and returns a
-type comparable to `int`.  The pattern matching expression `u ->* def{...}` is not
-constrained in the same way, and will compile as long as all alternatives are
-(unambiguously) handled, regardless of each case's return type or internal logic.  This
-allows for detailed and type-safe access to the internal structure of a union, possibly
-including unique projections or other behavior for each alternative.
+type comparable to `size_t`.  The pattern matching expression `u ->* def{...}` is not
+so encumbered, and will compile as long as all alternatives are (unambiguously)
+handled, regardless of each case's return type or internal logic.  If multiple cases
+return different types (including `void`), then the overall return type may be promoted
+to a new `Union`, `Optional`, or `Expected` monad as needed, with canonical nesting
+(e.g. `Expected<Optional<Union<Ts...>>, Es...>`).  This pattern requires a similar
+dispatch table to all other operations, but allows for arbitrary logic to be executed
+for each alternative, rather than forwarding a predetermined operation.  The `->*`
+operator is much more powerful than shown in this example, and also supports partial
+matches for `Optional` and `Expected` operands, where only the non-empty and non-error
+states are handled explicitly, as well as automatic recursion for each alternative in
+the case of nested monads, until either the visitor function becomes callable or all
+monads are exhausted.  See the documentation for that operator for more details.
 
-Some monads, including `Optional` and `Expected` also support pointer-like dereference
-operators, which trivially map from the monadic domain to the underlying type, assuming
-the monad is not in an empty or error state.  This means that `Optional<T>` (and
-particularly `Optional<T&>`) can be used to model pointers, which is useful when
-integrating with languages that do not otherwise expose them to the user, such as
-Python.  In fact, optional references are literally reduced to pointers in the
-underlying implementation, with the only change being that they forward all operations
-to the referenced value, rather than exposing pointer arithmetic or similar operations
-(which may be error-prone and potentially insecure) to the user.  `Union<Ts...>` also
-support the same operators, but only if all alternatives share a common type, and will
-fail to compile otherwise.
+Besides the `->*` operator, all Bertrand `def` functions will also automatically
+perform pattern matching when called with monadic arguments, allowing users to visit
+multiple monads simultaneously without any extra syntax.  As long as the underlying
+function is callable with either the monad itself or each of its alternatives (possibly
+recurring for nested monads), the function will compile, and will emit a familiar
+dispatch table to select the correct alternative(s) at runtime.  This furthers the
+illusion of dynamic typing, since any collection of statically-typed C++ functions can
+be trivially converted into an equivalent visitor that accepts monadic arguments, as
+well as simulating C++-style function overloading in unmangled languages that do not
+normally permit it, such as Python.  For example:
 
-There are also other monads not covered here, such as `Tuple<Ts...>` and `range<C>`,
-which extend these monadic principles to so-called "product types", where the overall
-space of types is given by the conjunction (logical AND) of each alternative.  Monads
-can also be useful when modeling operations across time, as is the case for
-`async<F, A...>`, which schedules a function `F` to be executed asynchronously on a
-separate resource (usually a thread).  Operating on the `async` monad after it has been
-scheduled extends it with one or more continuations, which will be executed on the same
-resource immediately after the original function completes, allowing users to chain
-together asynchronous operations in a more intuitive and type-safe manner.  See the
-documentation of these types for more details on their specific behavior and how it
-relates to Bertrand's overall monad ecosystem.
+```
+def func{
+    [] (int x) { return x + 1; },
+    [] (const std::string& s) { return s + "!"; }
+};  // -> Union<int, std::string>
+
+Union<int, std::string> u = "Hello, World";
+print(func(u));  // >>> "Hello, World!"
+u = 41;
+print(func(u));  // >>> 42
+```
+
+Lastly, some monads, including `Optional` and `Expected` also support pointer-like
+dereference operators, which trivially map from the monadic domain to the underlying
+type, assuming the monad is not in an empty or error state.  This means that
+`Optional<T>` (and particularly `Optional<T&>`) can be used to model pointers, which is
+useful when integrating with languages that do not normally expose them to the user,
+including Python.  In fact, optional references are literally reduced to pointers in
+the underlying implementation, with the only change being that they forward all
+operations to the referenced value, rather than exposing pointer arithmetic or similar
+operations (which may be error-prone and potentially insecure) to the user.
+`Union<Ts...>` also support the same operators, but only if all alternatives share a
+common type, and will fail to compile otherwise.
+
+There are also other monads not covered here, such as `range<C>`, which extend these
+monadic principles to so-called "product types", where the overall space of types is
+given by the conjunction (logical AND) of each alternative.  Monads can also be useful
+when modeling operations across time, as is the case for `async<F, A...>` as well as
+`def` itself, which represent "continuation" monads.  Operating on such a monad extends
+it with one or more continuation functions, which will be executed immediately after
+the original function completes, in so-called "continuation-passing style".  This is
+especially useful for asynchronous programming, where continuations allow users to
+chain operations in a more intuitive and type-safe manner, without interrupting their
+execution.  See the documentation of these types for more details on their specific
+behavior and how it relates to Bertrand's overall monad ecosystem.
 
 One of the most powerful features of monads is their composability.  There is nothing
-inherently wrong with an optional union, or union of optionals, or async expected
-tuple, for example.  They will all be treated in exactly the same way during pattern
-matching and monadic operations.  Formally, visitors act by flattening monads into
-their constituent types, meaning that they will recursively unpack any nested monads,
-and monadic return types will always be merged into a canonical (non-nested) form.
-These kinds of transformations keep the monadic interface clean and predictable, with
-no extra boilerplate or special syntax, leading to simpler code that is easier to
-reason about, maintain, and generalize to other languages, regardless of their
-capabilities.
+inherently wrong with nested structures like optional unions, or unions of optionals,
+or async ranges of expected tuples, for example.  They will all be treated
+symmetrically during pattern matching and monadic operations, recurring into each layer
+automatically until a valid permutation is found.  These kinds of transformations keep
+the monadic interface clean and predictable, with no extra boilerplate or special
+syntax, leading to simpler code that is easier to reason about, maintain, and
+generalize to other languages, regardless of their capabilities.
 */
 
 
 namespace bertrand {
-
-
-/// TODO: note that comparisons are now enabled if ANY of the alternatives support it,
-/// not ALL of them.  If the observed combination does not support the comparison, then
-/// it will just return false or std::partial_ordering::unordered.  This is so that you
-/// can naturally test whether optionals are None or not via simple equality, without
-/// any special overloads at all.
-
-
-/// TODO: also note in documentation that I've removed `meta::consistent` and
-/// `meta::trivial_union`.  You can just check whether the return type is visitable
-/// instead.
-
 
 
 namespace impl {
@@ -239,6 +294,9 @@ namespace impl {
     Built-in specializations are provided for all qualifications of:
 
         -   `void`
+        -   `bertrand::NoneType`
+        -   `std::nullopt_t`
+        -   `std::nullptr_t`
         -   `bertrand::Union<Ts...>`
         -   `bertrand::Optional<T>`
         -   `bertrand::Expected<T, Es...>`
@@ -285,7 +343,7 @@ namespace impl {
         using errors = meta::pack<>;  // no error states
         using values = meta::pack<>;  // no value states
     };
-    template <meta::None T>
+    template <meta::is<NoneType> T>
     struct visitable<T> {
         static constexpr bool enable = false;
         static constexpr bool monad = false;
@@ -349,11 +407,22 @@ namespace impl {
 }
 
 
-/* A convenience function that produces a `std::in_place_index_t` instance specialized
-for a given alternative.  This is meant to be used as a disambiguation tag for union
-constructors, which manually selects an alternative to initialize.  It can be followed
-by any number of arguments, which will be forwarded to that alternative's
-constructor. */
+/* A helper that produces a `std::in_place_index_t` instance specialized for a given
+alternative.  This is meant to be used as a disambiguation tag for monadic `Union`,
+`Optional`, and `Expected` constructors, which manually select an alternative to
+initialize.  It can be followed by any number of arguments, which will be forwarded to
+that alternative's constructor in turn.
+
+The same tag can also be used during monadic comparisons to check against the active
+alternative of a `Union`, `Optional`, `Expected`, or similar type.  For example:
+
+```
+    Union<int, double, std::string> u = 3.14;
+    if (u == alternative<1>) {  // true, since `double` is at index 1
+        print("u holds a double!");
+    }
+```
+*/
 template <size_t I>
 constexpr std::in_place_index_t<I> alternative;
 
@@ -372,7 +441,7 @@ struct Expected;
 
 namespace meta {
 
-    /* True for types which have a custom `impl::visitable<T>` specialization. */
+    /* True for types that have a custom `impl::visitable<T>` specialization. */
     template <typename T>
     concept visitable = impl::visitable<T>::enable;
 
@@ -380,12 +449,15 @@ namespace meta {
     template <typename T>
     concept visit_monad = impl::visitable<T>::monad;
 
+    /* True for any specialization of `bertrand::Union`. */
     template <typename T>
     concept Union = specialization_of<T, bertrand::Union>;
 
+    /* True for any specialization of `bertrand::Optional`. */
     template <typename T>
     concept Optional = specialization_of<T, bertrand::Optional>;
 
+    /* True for any specialization of `bertrand::Expected`. */
     template <typename T>
     concept Expected = specialization_of<T, bertrand::Expected>;
 
@@ -435,12 +507,11 @@ namespace meta {
 
             template <typename R>
             struct fn {
-                using type = R;
-                [[gnu::always_inline]] static constexpr type operator()(
+                [[gnu::always_inline]] static constexpr R operator()(
                     meta::forward<F> func,
                     meta::forward<prefix>... pre,
                     meta::forward<suffix>... suf
-                ) noexcept (meta::nothrow::call_returns<type, F, prefix..., suffix...>) {
+                ) noexcept (meta::nothrow::call_returns<R, F, prefix..., suffix...>) {
                     return ::std::forward<F>(func)(
                         ::std::forward<prefix>(pre)...,
                         ::std::forward<suffix>(suf)...
@@ -543,12 +614,11 @@ namespace meta {
             into `None` to initialize the resulting `Optional`. */
             template <typename R>
             struct fn {
-                using type = R;
                 template <typename... A>
-                [[gnu::always_inline]] static constexpr type operator()(
+                [[gnu::always_inline]] static constexpr R operator()(
                     meta::forward<F> func,
                     A&&... args
-                ) noexcept (meta::nothrow::convertible_to<bertrand::NoneType, type>) {
+                ) noexcept (meta::nothrow::convertible_to<bertrand::NoneType, R>) {
                     return bertrand::NoneType{};
                 }
             };
@@ -590,14 +660,13 @@ namespace meta {
             perfectly-forwarded to the return type. */
             template <typename R>
             struct fn {
-                using type = R;
                 template <typename... A>
-                [[gnu::always_inline]] static constexpr type operator()(
+                [[gnu::always_inline]] static constexpr R operator()(
                     meta::forward<F> func,
                     A&&... args
                 ) noexcept (meta::nothrow::convertible_to<
                     meta::unpack_type<prefix::size(), A...>,
-                    type
+                    R
                 >) {
                     return meta::unpack_arg<prefix::size()>(::std::forward<A>(args)...);
                 }
@@ -661,11 +730,9 @@ namespace meta {
             or recur to another substitution, as necessary. */
             template <typename R>
             struct fn {
-                using type = R;
-
                 template <size_t I>
                 struct dispatch {
-                    static constexpr type operator()(
+                    static constexpr R operator()(
                         meta::forward<F> func,
                         meta::forward<prefix>... pre,
                         meta::forward<curr> v,
@@ -678,7 +745,7 @@ namespace meta {
                             meta::pack<prefix...>,
                             meta::unpack_type<I, alts...>,
                             meta::pack<curr, suffix...>
-                        >::template fn<type>{}(
+                        >::template fn<R>{}(
                             ::std::forward<F>(func),
                             ::std::forward<prefix>(pre)...,
                             impl::visitable<curr>::template get<I>(::std::forward<curr>(v)),
@@ -692,7 +759,7 @@ namespace meta {
                             meta::pack<prefix...>,
                             meta::unpack_type<I, alts...>,
                             meta::pack<curr, suffix...>
-                        >::template fn<type>{}(
+                        >::template fn<R>{}(
                             ::std::forward<F>(func),
                             ::std::forward<prefix>(pre)...,
                             impl::visitable<curr>::template get<I>(::std::forward<curr>(v)),
@@ -701,7 +768,7 @@ namespace meta {
                     }
                 };
 
-                [[gnu::always_inline]] static constexpr type operator()(
+                [[gnu::always_inline]] static constexpr R operator()(
                     meta::forward<F> func,
                     meta::forward<prefix>... pre,
                     meta::forward<curr> v,
@@ -899,11 +966,6 @@ namespace meta {
             >::enable)
         struct search<F, force, budget, A...> : search<F, force, budget + 1, A...> {};
 
-        /// TODO: ::consistent doesn't need to be precomputed every time the visit
-        /// algorithm is invoked, but I should add the corresponding concepts back
-        /// into the `meta::` namespace for users to check directly.  These can
-        /// compute the consistency by inspecting the ::permute alias.
-
         /* If a valid permutation is found, then the return type will be deduced
         according to the above helpers, which is then spliced into the permutation's
         call operator, which inherited by this object.  The call operator executes the
@@ -912,9 +974,6 @@ namespace meta {
         struct eval {
             using permute = search<F, force, force, A...>;
             using type = void;
-            static constexpr bool enable = false;
-            static constexpr bool exhaustive = false;
-            static constexpr bool consistent = false;
         };
         template <typename F, size_t force, typename... A>
             requires (search<F, force, force, A...>::enable)
@@ -923,11 +982,7 @@ namespace meta {
         > {
 
             using permute = search<F, force, force, A...>;
-            /// NOTE: type inherited from fn<R>
-            static constexpr bool enable = true;
-            static constexpr bool exhaustive = !permute::optional && permute::errors::empty();
-            static constexpr bool consistent =
-                permute::returns::template eval<meta::to_unique>::size() == 1;
+            using type = deduce<search<F, force, force, A...>>;
         };
 
     }
@@ -952,20 +1007,36 @@ namespace meta {
     /* A visitor function can only be applied to a set of arguments if it covers all
     non-empty and non-error states of the visitable arguments. */
     template <typename F, typename... Args>
-    concept visit = detail::visit::eval<F, 0, Args...>::enable;
+    concept visit = detail::visit::eval<F, 0, Args...>::permute::enable;
     template <size_t min_visits, typename F, typename... Args>
-    concept force_visit = detail::visit::eval<F, min_visits, Args...>::enable;
+    concept force_visit = detail::visit::eval<F, min_visits, Args...>::permute::enable;
 
     /* Specifies that a visitor function covers all states of the visitable arguments,
     including empty and error states. */
     template <typename F, typename... Args>
     concept visit_exhaustive =
         visit<F, Args...> &&
-        detail::visit::eval<F, 0, Args...>::exhaustive;
+        !detail::visit::eval<F, 0, Args...>::permute::optional &&
+        detail::visit::eval<F, 0, Args...>::permute::errors::empty();
     template <size_t min_visits, typename F, typename... Args>
     concept force_visit_exhaustive =
         force_visit<min_visits, F, Args...> &&
-        detail::visit::eval<F, min_visits, Args...>::exhaustive;
+        !detail::visit::eval<F, min_visits, Args...>::permute::optional &&
+        detail::visit::eval<F, min_visits, Args...>::permute::errors::empty();
+
+    /* Specifies that a visitor function covers all states of the visitable arguments,
+    including empty and error states, and that the visitor returns the same type in
+    all cases.  This concept implies `meta::visit_exhaustive`. */
+    template <typename F, typename... Args>
+    concept visit_consistent =
+        visit_exhaustive<F, Args...> &&
+        detail::visit::eval<F, 0, Args...>::permute::returns
+            ::template eval<meta::to_unique>::size() == 1;
+    template <size_t min_visits, typename F, typename... Args>
+    concept force_visit_consistent =
+        force_visit_exhaustive<min_visits, F, Args...> &&
+        detail::visit::eval<F, min_visits, Args...>::permute::returns
+            ::template eval<meta::to_unique>::size() == 1;
 
     /* Visitor functions return a type that is derived from each permutation according
     to the following rules:
@@ -1018,11 +1089,21 @@ namespace meta {
     namespace nothrow {
 
         template <typename F, typename... Args>
-        concept visit = meta::visit<F, Args...> && detail::visit::eval<F, 0, Args...>::nothrow;
+        concept visit = meta::visit<F, Args...> && requires(F f, Args... args) {
+            {meta::detail::visit::eval<F, 0, Args...>{}(
+                ::std::forward<F>(f),
+                ::std::forward<Args>(args)...
+            )} noexcept;
+        };
         template <size_t min_visits, typename F, typename... Args>
         concept force_visit =
             meta::force_visit<min_visits, F, Args...> &&
-            detail::visit::eval<F, min_visits, Args...>::nothrow;
+            requires(F f, Args... args) {
+                {meta::detail::visit::eval<F, min_visits, Args...>{}(
+                    ::std::forward<F>(f),
+                    ::std::forward<Args>(args)...
+                )} noexcept;
+            };
 
         template <typename F, typename... Args>
         concept visit_exhaustive =
@@ -1031,6 +1112,15 @@ namespace meta {
         concept force_visit_exhaustive =
             meta::force_visit_exhaustive<min_visits, F, Args...> &&
             nothrow::force_visit<min_visits, F, Args...>;
+
+        template <typename F, typename... Args>
+        concept visit_consistent =
+            nothrow::visit_exhaustive<F, Args...> &&
+            meta::visit_consistent<F, Args...>;
+        template <size_t min_visits, typename F, typename... Args>
+        concept force_visit_consistent =
+            nothrow::force_visit_exhaustive<min_visits, F, Args...> &&
+            meta::force_visit_consistent<min_visits, F, Args...>;
 
         template <typename F, typename... Args> requires (nothrow::visit<F, Args...>)
         using visit_type = meta::visit_type<F, Args...>;
@@ -1389,7 +1479,6 @@ namespace impl {
             ));
         }
     };
-
 
     /// NOTE: comparisons between visitable monads are allowed if ANY of the
     /// alternative permutations support it.  Those that do not will be converted into
@@ -2180,13 +2269,18 @@ namespace impl {
 
     /* Unions specialized with packs as a single argument expand to equivalent Unions
     specialized with the contents of the pack.  This allows CTAD from any other
-    visitable type with 2 or more unique alternatives. */
+    visitable type with 2 or more unique alternatives, after collapsing nested
+    monads. */
     template <meta::is_pack T> requires (impl::union_concept<T>)
     using union_pack = meta::unqualify<T>::template eval<bertrand::Union>;
+    template <typename T, typename Alts = impl::visitable<T>::alternatives>
+    struct _union_guide { using type = Alts::template map<meta::remove_rvalue>; };
+    template <meta::visitable T, typename... Alts>
+    struct _union_guide<T, meta::pack<Alts...>> {
+        using type = meta::concat<typename _union_guide<Alts>::type...>;
+    };
     template <typename T>
-    using union_guide = impl::visitable<T>::alternatives::
-        template map<meta::remove_rvalue>::
-        template eval<meta::to_unique>;
+    using union_guide = _union_guide<T>::type::template eval<meta::to_unique>;
 
     /* CTAD guides to optional types work the same way as `meta::make_union`, but omit
     the intermediate conversion to `Optional`.  This allows deduction from other
@@ -4824,8 +4918,7 @@ namespace impl {
         static constexpr bool from_none = requires{{bertrand::None} -> meta::convertible_to<to>;};
         static constexpr bool from_nullopt = requires{{std::nullopt} -> meta::convertible_to<to>;};
         static constexpr bool from_nullptr =
-            /// TODO: change the way ::values are accessed here
-            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::values::template at<0>> &&
+            meta::lvalue<typename impl::visitable<Self>::lookup::template at<1>> &&
             requires(meta::forward<Self> self) {
                 {nullptr} -> meta::convertible_to<to>;
                 {
@@ -4929,7 +5022,7 @@ namespace impl {
         static constexpr bool from_none = requires{{static_cast<to>(bertrand::None)};};
         static constexpr bool from_nullopt = requires{{static_cast<to>(std::nullopt)};};
         static constexpr bool from_nullptr =
-            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
+            meta::lvalue<typename impl::visitable<Self>::lookup::template at<1>> &&
             requires(meta::forward<Self> self) {
                 {static_cast<to>(nullptr)} -> meta::convertible_to<to>;
                 {static_cast<to>(
@@ -5001,7 +5094,7 @@ namespace impl {
         static constexpr bool from_nullopt =
             meta::explicitly_convertible_to<const std::nullopt_t&, to>;
         static constexpr bool from_nullptr =
-            meta::lvalue<typename impl::visitable<meta::unqualify<Self>>::value> &&
+            meta::lvalue<typename impl::visitable<Self>::lookup::template at<1>> &&
             meta::explicitly_convertible_to<std::nullptr_t, to>;
         static constexpr bool convert = requires(meta::forward<Self> self) {{
             static_cast<to>(std::forward<Self>(self).__value.template get<0>())
@@ -7820,10 +7913,13 @@ namespace bertrand {
     static constexpr std::optional<int> u3 = 1;
     static constexpr Optional o3 = u3;
 
-    static constexpr std::expected<void, double> u4 = std::unexpected(2.0);
-    static constexpr Expected e1 = u4;
+    static constexpr std::expected<int, double> u4 = std::unexpected(2.0);
+    static constexpr Expected e4 = u4;
 
 
+    static constexpr Union u5 = std::variant<std::optional<int>, double>{2.0};
+    static constexpr std::variant<std::nullopt_t, int, double> v5 = u5;
+    static constexpr Optional o5 = u5;
 
 }
 
