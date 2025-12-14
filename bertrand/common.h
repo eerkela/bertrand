@@ -205,29 +205,6 @@ namespace impl {
 }
 
 
-/* A helper that produces a `std::type_identity` instance specialized for type `T`.
-Instances of this form can be supplied as `auto` template parameters in order to mix
-values and types within the same argument list.
-
-Additionally, the generated type identity can be used as a disambiguation tag for
-monadic `Union`, `Optional`, and `Expected` constructors, which manually selevt an
-alternative to initialize.  It can be followed by any number of arguments, which will
-be forwarded to that alternative's constructor in turn.
-
-Lastly, the same tag can also be used during monadic comparisons to check against the
-active alternative of a `Union`, `Optional`, `Expected`, or similar type.  For example:
-
-```
-    Union<int, double, std::string> u = 3.14;
-    if (u == type<double>) {  // true, since `double` is the active alternative
-        print("u holds a double!");
-    }
-```
-*/
-template <typename T>
-constexpr std::type_identity<T> type;
-
-
 struct NoneType;
 
 
