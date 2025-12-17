@@ -499,21 +499,9 @@ namespace impl {
 
     template <typename... Ts>
     using union_flatten = meta::concat<
-        typename meta::detail::visit::flatten<
-            meta::pack<Ts...>,
-            meta::pack<>,
-            meta::pack<>
-        >::optionals,
-        typename meta::detail::visit::flatten<
-            meta::pack<Ts...>,
-            meta::pack<>,
-            meta::pack<>
-        >::values,
-        typename meta::detail::visit::flatten<
-            meta::pack<Ts...>,
-            meta::pack<>,
-            meta::pack<>
-        >::errors
+        typename meta::detail::visit::flatten<meta::pack<Ts...>>::optionals,
+        typename meta::detail::visit::flatten<meta::pack<Ts...>>::values,
+        typename meta::detail::visit::flatten<meta::pack<Ts...>>::errors
     >;
     template <typename... Ts>
     concept union_concept =
@@ -579,6 +567,9 @@ alternative of a `Union`, `Optional`, `Expected`, or similar type.  For example:
 */
 template <size_t I>
 constexpr std::in_place_index_t<I> alternative;
+
+
+/// TODO: note that type<T> where T is visitable will broadcast across any of them.
 
 
 /* A helper that produces a `std::type_identity` instance specialized for type `T`.
@@ -2655,6 +2646,25 @@ Expected(T&&) -> Expected<meta::remove_rvalue<T>>;
 
 namespace impl {
 
+    /* Because unions always flatten their alternatives, initializing one with a
+    `bertrand::type<T>` disambiguation tag (where `T` is a visitable type) requires a
+    fold expression over all alternatives to ensure they are all present in the
+    union's template signature. */
+    template <typename, typename>
+    constexpr bool _union_init_subset = false;
+    template <typename lookup, typename... Ts>
+    constexpr bool _union_init_subset<lookup, meta::pack<Ts...>> =
+        (lookup::template contains<Ts>() && ...);
+    template <typename Self, typename T>
+    constexpr bool union_init_subset = _union_init_subset<
+        typename impl::visitable<Self>::lookup,
+        meta::concat<
+            typename meta::detail::visit::decompose<T>::values,
+            typename meta::detail::visit::decompose<T>::optionals,
+            typename meta::detail::visit::decompose<T>::errors
+        >
+    >;
+
     /* Find the first type in Ts... that is default constructible (void if none) */
     template <typename...>
     struct _union_default_type { using type = void; };
@@ -2779,26 +2789,6 @@ namespace impl {
         /* Return the index of the active alternative. */
         [[nodiscard]] constexpr size_t index() const noexcept {
             return m_index;
-        }
-
-        /* Check if the active alternative is of type `T`, permitting ordered
-        comparisons. */
-        template <typename T> requires (contains<T>())
-        [[nodiscard]] friend constexpr auto operator<=>(
-            const basic_union& lhs,
-            std::type_identity<T>
-        ) noexcept {
-            return lhs.m_index <=> find<T>();
-        }
-
-        /* Check if the active alternative is of type `T`, permitting ordered
-        comparisons. */
-        template <typename T> requires (contains<T>()) 
-        [[nodiscard]] friend constexpr auto operator<=>(
-            std::type_identity<T>,
-            const basic_union& lhs
-        ) noexcept {
-            return find<T>() <=> lhs.m_index;
         }
 
         /* Access a specific value by index, where the index is known at compile
@@ -4400,6 +4390,43 @@ struct Union {
         ))
     {}
 
+    /* Construct a union with the alternative at index `I` using a
+    `std::in_place_index<I>` disambiguation tag, forwarding the remaining arguments to
+    that alternative's constructor.  This is more explicit than using the standard
+    constructors, for cases where only a specific alternative should be considered.
+    Additionally, users should note that due to flattening of nested monads, the index
+    may not exactly match the template signature for this class, but is guaranteed to
+    always align with `impl::visitable<Union<Ts...>>::alternatives`. */
+    template <size_t I, typename... A> requires (I < sizeof...(Ts))
+    [[nodiscard]] constexpr Union(std::in_place_index_t<I> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
+        requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
+    :
+        __value{tag, std::forward<A>(args)...}
+    {}
+
+    /* Explicitly construct a union with the specified alternative using the given
+    arguments.  This is more explicit than using the standard constructors, for cases
+    where only a specific subset of alternatives should be considered.  If the
+    specified alternative is given as a visitable type, then each of its alternatives
+    must be present in the union's template signature.  All arguments after the
+    disambiguation tag will be perfectly forwarded to the indicated type's
+    constructor. */
+    template <typename T, typename... A> requires (impl::union_init_subset<Union, T>)
+    [[nodiscard]] constexpr Union(std::type_identity<T> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<T, A...>)
+        requires (!meta::visitable<T> && meta::constructible_from<T, A...>)
+    :
+        __value{bertrand::alternative<meta::index_of<T, Ts...>>, std::forward<A>(args)...}
+    {}
+    template <typename T, typename... A> requires (impl::union_init_subset<Union, T>)
+    [[nodiscard]] constexpr Union(std::type_identity<T> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<Union, T>)
+        requires (meta::visitable<T> && meta::constructible_from<T, A...>)
+    :
+        Union(T(std::forward<A>(args)...))
+    {}
+
     /* Explicit constructor finds the first type in `Ts...` that can be constructed
     from the given arguments.  If no such type exists, the explicit constructor is
     disabled.  If one or more visitables are provided, then the constructor must be
@@ -4415,28 +4442,6 @@ struct Union {
         )
     :
         __value(impl::visit(impl::union_construct_from<Ts...>{}, std::forward<A>(args)...))
-    {}
-
-    /* Explicitly construct a union with the alternative at index `I` using the
-    provided arguments.  This is more explicit than using the standard constructors,
-    for cases where only a specific alternative should be considered. */
-    template <size_t I, typename... A> requires (I < sizeof...(Ts))
-    [[nodiscard]] constexpr explicit Union(std::in_place_index_t<I> tag, A&&... args)
-        noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, Ts...>, A...>)
-        requires (meta::constructible_from<meta::unpack_type<I, Ts...>, A...>)
-    :
-        __value{tag, std::forward<A>(args)...}
-    {}
-
-    /* Explicitly construct a union with the specified alternative using the given
-    arguments.  This is more explicit than using the standard constructors, for cases
-    where only a specific alternative should be considered. */
-    template <typename T, typename... A> requires (__type::template contains<T>())
-    [[nodiscard]] constexpr explicit Union(std::type_identity<T> tag, A&&... args)
-        noexcept (meta::nothrow::constructible_from<T, A...>)
-        requires (meta::constructible_from<T, A...>)
-    :
-        __value{bertrand::alternative<meta::index_of<T, Ts...>>, std::forward<A>(args)...}
     {}
 
     /* Swap the contents of two unions as efficiently as possible.  This will use
@@ -4949,26 +4954,6 @@ namespace impl {
 
         /* Return the index of the active alternative. */
         [[nodiscard]] constexpr size_t index() const noexcept { return m_data != nullptr; }
-
-        /* Check if the active alternative is of type `T`, permitting ordered
-        comparisons. */
-        template <typename T> requires (contains<T>())
-        [[nodiscard]] friend constexpr auto operator<=>(
-            const basic_union& lhs,
-            std::type_identity<T>
-        ) noexcept {
-            return lhs.m_index <=> find<T>();
-        }
-
-        /* Check if the active alternative is of type `T`, permitting ordered
-        comparisons. */
-        template <typename T> requires (contains<T>()) 
-        [[nodiscard]] friend constexpr auto operator<=>(
-            std::type_identity<T>,
-            const basic_union& lhs
-        ) noexcept {
-            return find<T>() <=> lhs.m_index;
-        }
 
         /* Access a specific value by index, where the index is known at compile
         time. */
@@ -6702,7 +6687,7 @@ struct Expected {
     /* Explicitly construct an expected with the alternative at index `I` using the
     provided arguments.  This is more explicit than using the standard constructors,
     for cases where only a specific alternative should be considered. */
-    template <size_t I, typename... A> requires (I < (sizeof...(Es) + 2))
+    template <size_t I, typename... A> requires (I < (sizeof...(Es) + 1))
     [[nodiscard]] constexpr explicit Expected(std::in_place_index_t<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<meta::unpack_type<I, T, Es...>, A...>)
         requires (meta::constructible_from<meta::unpack_type<I, T, Es...>, A...>)
@@ -6712,13 +6697,24 @@ struct Expected {
 
     /* Explicitly construct an expected with the specified alternative using the given
     arguments.  This is more explicit than using the standard constructors, for cases
-    where only a specific alternative should be considered. */
-    template <typename U, typename... A> requires (meta::pack<T, Es...>::template contains<U>())
-    [[nodiscard]] constexpr explicit Expected(std::type_identity<U> tag, A&&... args)
+    where only a specific subset of alternatives should be considered.  If the
+    specified alternative is given as a visitable type, then each of its alternatives
+    must be present in the union's template signature.  All arguments after the
+    disambiguation tag will be perfectly forwarded to the indicated type's
+    constructor. */
+    template <typename U, typename... A> requires (impl::union_init_subset<Expected, U>)
+    [[nodiscard]] constexpr Expected(std::type_identity<U> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<U, A...>)
-        requires (meta::constructible_from<U, A...>)
+        requires (!meta::visitable<U> && meta::constructible_from<U, A...>)
     :
-        __value(bertrand::alternative<meta::index_of<U, T, Es...>>, std::forward<A>(args)...)
+        __value{bertrand::alternative<meta::index_of<U, T, Es...>>, std::forward<A>(args)...}
+    {}
+    template <typename U, typename... A> requires (impl::union_init_subset<Expected, U>)
+    [[nodiscard]] constexpr Expected(std::type_identity<U> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<Expected, U>)
+        requires (meta::visitable<U> && meta::constructible_from<U, A...>)
+    :
+        Expected(U(std::forward<A>(args)...))
     {}
 
     /* Swap the contents of two expecteds as efficiently as possible. */
@@ -7188,7 +7184,7 @@ struct Expected<T, Es...> {
     /* Explicitly construct an expected with the alternative at index `I` using the
     provided arguments.  This is more explicit than using the standard constructors,
     for cases where only a specific alternative should be considered. */
-    template <size_t I, typename... A> requires (I < (sizeof...(Es) + 2))
+    template <size_t I, typename... A> requires (I < (sizeof...(Es) + 1))
     [[nodiscard]] constexpr explicit Expected(std::in_place_index_t<I> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<
             meta::unpack_type<I, NoneType, Es...>,
@@ -7204,17 +7200,24 @@ struct Expected<T, Es...> {
 
     /* Explicitly construct an expected with the specified alternative using the given
     arguments.  This is more explicit than using the standard constructors, for cases
-    where only a specific alternative should be considered. */
-    template <typename U, typename... A>
-        requires (meta::pack<NoneType, Es...>::template contains<U>())
-    [[nodiscard]] constexpr explicit Expected(std::type_identity<U> tag, A&&... args)
+    where only a specific subset of alternatives should be considered.  If the
+    specified alternative is given as a visitable type, then each of its alternatives
+    must be present in the union's template signature.  All arguments after the
+    disambiguation tag will be perfectly forwarded to the indicated type's
+    constructor. */
+    template <typename U, typename... A> requires (impl::union_init_subset<Expected, U>)
+    [[nodiscard]] constexpr Expected(std::type_identity<U> tag, A&&... args)
         noexcept (meta::nothrow::constructible_from<U, A...>)
-        requires (meta::constructible_from<U, A...>)
+        requires (!meta::visitable<U> && meta::constructible_from<U, A...>)
     :
-        __value{
-            bertrand::alternative<meta::index_of<U, NoneType, Es...>>,
-            std::forward<A>(args)...
-        }
+        __value{bertrand::alternative<meta::index_of<U, T, Es...>>, std::forward<A>(args)...}
+    {}
+    template <typename U, typename... A> requires (impl::union_init_subset<Expected, U>)
+    [[nodiscard]] constexpr Expected(std::type_identity<U> tag, A&&... args)
+        noexcept (meta::nothrow::constructible_from<Expected, U>)
+        requires (meta::visitable<U> && meta::constructible_from<U, A...>)
+    :
+        Expected(U(std::forward<A>(args)...))
     {}
 
     /* Implicitly convert the `Expected` to any other type to which all alternatives
