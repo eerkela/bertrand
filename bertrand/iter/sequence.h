@@ -1353,7 +1353,7 @@ namespace impl {
 }  // namespace bertrand
 
 
-_LIBCPP_BEGIN_NAMESPACE_STD
+namespace std {
 
     namespace ranges {
 
@@ -1362,7 +1362,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     }
 
-_LIBCPP_END_NAMESPACE_STD
+}
 
 
 #endif  // BERTRAND_ITER_SEQUENCE_H

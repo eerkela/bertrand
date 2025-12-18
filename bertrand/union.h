@@ -5073,7 +5073,7 @@ namespace impl {
         }
     };
     template <typename T, typename in>
-        requires (meta::is_void<T> || meta::is<T, typename impl::visitable<T>::empty>)
+        requires (meta::is_void<T> || std::same_as<T, typename impl::visitable<T>::empty>)
     struct optional_convert_from<T, in> {
         using result = impl::basic_union<NoneType>;
 
@@ -5120,7 +5120,7 @@ namespace impl {
         }
     };
     template <typename T>
-        requires (meta::is_void<T> || meta::is<T, typename impl::visitable<T>::empty>)
+        requires (meta::is_void<T> || std::same_as<T, typename impl::visitable<T>::empty>)
     struct optional_construct_from<T> {
         template <typename... A>
         static constexpr auto operator()(A&&... args)
@@ -6258,7 +6258,7 @@ static_assert(!Foo<2.5>::empty);
 ```
 */
 template <meta::not_rvalue T>
-    requires (meta::is_void<T> || meta::is<T, typename impl::visitable<T>::empty>)
+    requires (meta::is_void<T> || std::same_as<T, typename impl::visitable<T>::empty>)
 struct Optional<T> {
     using __type = meta::pack<NoneType, T>;
     [[no_unique_address]] impl::basic_union<NoneType> __value;
@@ -8041,28 +8041,34 @@ constexpr decltype(auto) operator^=(L&& lhs, R&& rhs)
 }  // namespace bertrand
 
 
-_LIBCPP_BEGIN_NAMESPACE_STD
+namespace std {
 
     namespace ranges {
+
+        template <typename... Ts>
+            requires ((bertrand::meta::lvalue<Ts> || (
+                bertrand::meta::iterable<Ts> &&
+                enable_borrowed_range<bertrand::meta::unqualify<Ts>>
+            )) && ...)
+        constexpr bool enable_borrowed_range<bertrand::Union<Ts...>> = true;
 
         template <typename T>
             requires (
                 bertrand::meta::lvalue<T> ||
-                bertrand::meta::is_void<T> ||
-                bertrand::meta::is<T, typename bertrand::impl::visitable<T>::empty>
+                std::same_as<T, typename bertrand::impl::visitable<T>::empty> ||
+                enable_borrowed_range<bertrand::meta::unqualify<T>>
             )
         constexpr bool enable_borrowed_range<bertrand::Optional<T>> = true;
 
         template <typename T, typename... Es>
             requires (
                 bertrand::meta::lvalue<T> ||
-                bertrand::meta::is_void<T> ||
-                bertrand::meta::is<T, typename bertrand::impl::visitable<T>::empty>
+                std::same_as<T, typename bertrand::impl::visitable<T>::empty> ||
+                enable_borrowed_range<bertrand::meta::unqualify<T>>
             )
         constexpr bool enable_borrowed_range<bertrand::Expected<T, Es...>> = true;
 
     }
-
 
     template <bertrand::meta::visit_monad T>
         requires (bertrand::meta::force_visit<1, bertrand::impl::Hash, T>)
@@ -8224,7 +8230,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
         using type = decltype((std::declval<T>().template get<I>()));
     };
 
-_LIBCPP_END_NAMESPACE_STD
+}
 
 
 #endif  // BERTRAND_UNION_H

@@ -186,10 +186,15 @@ static_assert(
 
 
 namespace impl {
-    /* A trivial helper class that can be used to enable anonymous `{}` initializers
-    for supported types, where such initializers have special meaning.  Not used in any
+    /* A trivial tag that can be used to enable anonymous `{}` initializers for
+    supported types, where such initializers have special meaning.  Not used in any
     other case. */
     struct trivial {};
+
+    /* A trivial tag that can be used to represent the end of a non-common range.
+    Iterators can compare against this type in a self-contained fashion in order to
+    properly terminate the range. */
+    struct sentinel {};
 
     /* Check to see if applying Python-style wraparound to a compile-time index would
     yield a valid index into a container of a given size.  Returns false if the
@@ -205,7 +210,43 @@ namespace impl {
 }
 
 
-struct NoneType;
+/* A generalized `swap()` operator that allows any type in the `bertrand::` namespace
+that exposes a `.swap()` member method to be used in conjunction with
+`std::ranges::swap()`. */
+template <typename T>
+constexpr void swap(T& lhs, T& rhs)
+    noexcept (requires{{lhs.swap(rhs)} noexcept;})
+    requires (requires{{lhs.swap(rhs)};})
+{
+    lhs.swap(rhs);
+}
+
+
+/* An empty type that represents the absence of a value within Bertrand's monadic
+type system, similar to Python's `None` and C++'s `std::nullopt` and `nullptr`.
+
+A single, trivial instance of this type is provided as a global `None` constant.
+Unlike `std::nullopt`, additional instances can be trivially constructed, which is done
+internally to represent the empty states of `bertrand::Optional` monads, as well as a
+valid replacement for `void` in cases where a value is expected, including visitor
+return types and the `Optional<void>` and `Expected<void, Es...>` special cases.
+
+Additionally, while instances of `NoneType` will always compare equal to one another,
+a three-way comparison between them will always return
+`std::partial_ordering::unordered`.  This is done to allow range algorithms to identify
+it as a missing value (and therefore possibly skip or fill it), while still allowing
+identity comparisons via the equality operators. */
+struct NoneType {
+    [[nodiscard]] constexpr bool operator==(NoneType) const noexcept { return true; }
+    [[nodiscard]] constexpr bool operator!=(NoneType) const noexcept { return false; }
+    [[nodiscard]] constexpr std::partial_ordering operator<=>(NoneType) const noexcept {
+        return std::partial_ordering::unordered;
+    }
+};
+
+
+/* The global `None` singleton, representing the absence of a value. */
+inline constexpr NoneType None;
 
 
 namespace meta {
@@ -5655,45 +5696,6 @@ namespace meta {
 }
 
 
-/* An empty type that represents the absence of a value within Bertrand's monadic
-type system, similar to Python's `None` and C++'s `std::nullopt` and `nullptr`.
-
-A single, trivial instance of this type is provided as a global `None` constant.
-Unlike `std::nullopt`, additional instances can be trivially constructed, which is done
-internally to represent the empty states of `bertrand::Optional` monads, as well as a
-valid replacement for `void` in cases where a value is expected, including visitor
-return types and the `Optional<void>` and `Expected<void, Es...>` special cases.
-
-Additionally, while instances of `NoneType` will always compare equal to one another,
-a three-way comparison between them will always return
-`std::partial_ordering::unordered`.  This is done to allow range algorithms to identify
-it as a missing value (and therefore possibly skip or fill it), while still allowing
-identity comparisons via the equality operators. */
-struct NoneType {
-    [[nodiscard]] constexpr bool operator==(NoneType) const noexcept { return true; }
-    [[nodiscard]] constexpr bool operator!=(NoneType) const noexcept { return false; }
-    [[nodiscard]] constexpr std::partial_ordering operator<=>(NoneType) const noexcept {
-        return std::partial_ordering::unordered;
-    }
-};
-
-
-/* The global `None` singleton, representing the absence of a value. */
-inline constexpr NoneType None;
-
-
-/* A generalized `swap()` operator that allows any type in the `bertrand::` namespace
-that exposes a `.swap()` member method to be used in conjunction with
-`std::ranges::swap()`. */
-template <typename T>
-constexpr void swap(T& lhs, T& rhs)
-    noexcept (requires{{lhs.swap(rhs)} noexcept;})
-    requires (requires{{lhs.swap(rhs)};})
-{
-    lhs.swap(rhs);
-}
-
-
 namespace impl {
 
     /* A generalized `swap()` operator that allows any type in the `bertrand::impl`
@@ -6026,11 +6028,6 @@ namespace impl {
             return std::move_iterator(std::addressof(t));
         }
     }
-
-    /* A trivial tag that can be used to represent the end of a non-common range.
-    Iterators can compare against this type with in a self-contained fashion in order
-    to properly terminate the range. */
-    struct sentinel {};
 
     /* A trivial iterator that applies a transformation function to the elements of
     another iterator.  The increment/decrement and comparison operators are
