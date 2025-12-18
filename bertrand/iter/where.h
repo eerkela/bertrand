@@ -196,7 +196,7 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const binary_filter_iterator& self,
-            NoneType
+            impl::sentinel
         )
             noexcept (requires{
                 {self.begin == self.end} noexcept -> meta::nothrow::convertible_to<bool>;
@@ -209,7 +209,7 @@ namespace impl {
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const binary_filter_iterator& self
         )
             noexcept (requires{
@@ -224,7 +224,7 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator!=(
             const binary_filter_iterator& self,
-            NoneType
+            impl::sentinel
         )
             noexcept (requires{
                 {self.begin != self.end} noexcept -> meta::nothrow::convertible_to<bool>;
@@ -237,7 +237,7 @@ namespace impl {
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
+            impl::sentinel,
             const binary_filter_iterator& self
         )
             noexcept (requires{
@@ -472,7 +472,7 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const binary_filter_iterator& self,
-            NoneType
+            impl::sentinel
         )
             noexcept (requires{{
                 self.begin == self.end || self.mask_begin == self.mask_end
@@ -485,7 +485,7 @@ namespace impl {
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const binary_filter_iterator& self
         )
             noexcept (requires{{
@@ -500,7 +500,7 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator!=(
             const binary_filter_iterator& self,
-            NoneType
+            impl::sentinel
         )
             noexcept (requires{{
                 self.begin != self.end && self.mask_begin != self.mask_end
@@ -548,7 +548,7 @@ namespace impl {
             return binary_filter_iterator<range_forward, Self>{std::forward<Self>(self)};
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept { return {}; }
 
         template <typename Self>
         [[nodiscard]] constexpr auto rbegin(this Self&& self)
@@ -581,7 +581,7 @@ namespace impl {
             };
         }
 
-        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel rend() noexcept { return {}; }
     };
     template <typename Filter, typename True>
     binary_filter(Filter&&, True&&) -> binary_filter<

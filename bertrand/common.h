@@ -5655,91 +5655,25 @@ namespace meta {
 }
 
 
-/* An empty type that can be used as a drop-in replacement for `std::nullopt` and
-`std::nullptr_t`, with the only difference being that conversions to pointer types must
-be explicit, in order to avoid ambiguities in overload resolution.  Comparisons with
-pointer types are unrestricted, in which `NoneType` acts just like `nullptr`.
+/* An empty type that represents the absence of a value within Bertrand's monadic
+type system, similar to Python's `None` and C++'s `std::nullopt` and `nullptr`.
 
-This type can also be used as a trivial sentinel in custom iterator implementations,
-where all relevant information is isolated to the begin iterator.  Special significance
-is also given to this type within the monadic union interface, where it represents
-either the empty state of an `Optional` or the result state of an `Expected<void>`,
-depending on context.
+A single, trivial instance of this type is provided as a global `None` constant.
+Unlike `std::nullopt`, additional instances can be trivially constructed, which is done
+internally to represent the empty states of `bertrand::Optional` monads, as well as a
+valid replacement for `void` in cases where a value is expected, including visitor
+return types and the `Optional<void>` and `Expected<void, Es...>` special cases.
 
-Lastly, the `<=>` operator between two `NoneType` objects always returns
-`std::partial_ordering::unordered`, allowing range algorithms to identify it as a
-missing value, without changing the behavior of the `==` and `!=` operators. */
+Additionally, while instances of `NoneType` will always compare equal to one another,
+a three-way comparison between them will always return
+`std::partial_ordering::unordered`.  This is done to allow range algorithms to identify
+it as a missing value (and therefore possibly skip or fill it), while still allowing
+identity comparisons via the equality operators. */
 struct NoneType {
-    [[nodiscard]] constexpr NoneType() = default;
-    [[nodiscard]] constexpr NoneType(std::nullopt_t) noexcept {}
-    [[nodiscard]] constexpr NoneType(std::nullptr_t) noexcept {}
-
     [[nodiscard]] constexpr bool operator==(NoneType) const noexcept { return true; }
     [[nodiscard]] constexpr bool operator!=(NoneType) const noexcept { return false; }
     [[nodiscard]] constexpr std::partial_ordering operator<=>(NoneType) const noexcept {
         return std::partial_ordering::unordered;
-    }
-
-    // template <typename T> requires (!meta::None<T>)
-    // [[nodiscard]] friend constexpr bool operator==(const NoneType& self, const T&) noexcept {
-    //     return meta::convertible_to<T, NoneType>;
-    // }
-
-    // template <typename T> requires (!meta::None<T>)
-    // [[nodiscard]] friend constexpr bool operator==(const T&, const NoneType& self) noexcept {
-    //     return meta::convertible_to<T, NoneType>;
-    // }
-
-    // template <typename T> requires (!meta::None<T>)
-    // [[nodiscard]] friend constexpr bool operator!=(const NoneType& self, const T&) noexcept {
-    //     return !meta::convertible_to<T, NoneType>;
-    // }
-
-    // template <typename T> requires (!meta::None<T>)
-    // [[nodiscard]] friend constexpr bool operator!=(const T&, const NoneType& self) noexcept {
-    //     return !meta::convertible_to<T, NoneType>;
-    // }
-
-    // template <typename T> requires (!meta::None<T>)
-    // [[nodiscard]] friend constexpr auto operator<=>(const NoneType& self, const T&) noexcept {
-    //     return std::partial_ordering::unordered;
-    // }
-
-    // template <typename T> requires (!meta::None<T>)
-    // [[nodiscard]] friend constexpr auto operator<=>(const T&, const NoneType& self) noexcept {
-    //     return std::partial_ordering::unordered;
-    // }
-
-    template <typename T>
-    [[nodiscard]] constexpr operator T() const
-        noexcept (meta::nothrow::convertible_to<const std::nullopt_t&, T>)
-        requires (!meta::prefer_constructor<T> && meta::convertible_to<const std::nullopt_t&, T>)
-    {
-        return std::nullopt;
-    }
-
-    template <typename T>
-    [[nodiscard]] explicit constexpr operator T() const
-        noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, T>)
-        requires (
-            !meta::prefer_constructor<T> &&
-            !meta::convertible_to<const std::nullopt_t&, T> &&
-            meta::explicitly_convertible_to<const std::nullopt_t&, T>
-        )
-    {
-        return static_cast<T>(std::nullopt);
-    }
-
-    template <typename T>
-    [[nodiscard]] explicit constexpr operator T() const
-        noexcept (meta::nothrow::explicitly_convertible_to<const std::nullopt_t&, T>)
-        requires (
-            !meta::prefer_constructor<T> &&
-            !meta::explicitly_convertible_to<const std::nullopt_t&, T> &&
-            meta::explicitly_convertible_to<std::nullptr_t, T>
-        )
-    {
-        return static_cast<T>(nullptr);
     }
 };
 
@@ -6092,6 +6026,11 @@ namespace impl {
             return std::move_iterator(std::addressof(t));
         }
     }
+
+    /* A trivial tag that can be used to represent the end of a non-common range.
+    Iterators can compare against this type with in a self-contained fashion in order
+    to properly terminate the range. */
+    struct sentinel {};
 
     /* A trivial iterator that applies a transformation function to the elements of
     another iterator.  The increment/decrement and comparison operators are

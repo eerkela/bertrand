@@ -93,13 +93,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const repeat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.count == 0;
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const repeat_iterator& self
         ) noexcept {
             return self.count == 0;
@@ -114,13 +114,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator!=(
             const repeat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.count != 0;
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
+            impl::sentinel,
             const repeat_iterator& self
         ) noexcept {
             return self.count != 0;
@@ -253,13 +253,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const repeat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.count == 0;
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const repeat_iterator& self
         ) noexcept {
             return self.count == 0;
@@ -274,13 +274,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator!=(
             const repeat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.count != 0;
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
+            impl::sentinel,
             const repeat_iterator& self
         ) noexcept {
             return self.count != 0;
@@ -591,13 +591,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const repeat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.count == 0;
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const repeat_iterator& self
         ) noexcept {
             return self.count == 0;
@@ -605,13 +605,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator!=(
             const repeat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.count != 0;
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
+            impl::sentinel,
             const repeat_iterator& self
         ) noexcept {
             return self.count != 0;
@@ -843,7 +843,7 @@ namespace impl {
             return repeat_begin(*this);
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept { return {}; }
 
         [[nodiscard]] constexpr auto rbegin()
             noexcept (requires{{repeat_rbegin(*this)} noexcept;})
@@ -859,7 +859,7 @@ namespace impl {
             return repeat_rbegin(*this);
         }
 
-        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel rend() noexcept { return {}; }
     };
 
     /* Runtime repetitions necessitate an extra `count` member and clobber the tuple
@@ -973,7 +973,7 @@ namespace impl {
             return repeat_begin(*this);
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept { return {}; }
 
         [[nodiscard]] constexpr auto rbegin()
             noexcept (requires{{repeat_rbegin(*this)} noexcept;})
@@ -989,7 +989,7 @@ namespace impl {
             return repeat_rbegin(*this);
         }
 
-        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel rend() noexcept { return {}; }
     };
 
 }

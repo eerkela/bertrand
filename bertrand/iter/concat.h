@@ -576,7 +576,7 @@ namespace impl {
         }
 
         template <typename T> requires (I < T::alternatives)
-        static constexpr ssize_t operator()(NoneType, const T& rhs)
+        static constexpr ssize_t operator()(impl::sentinel, const T& rhs)
             noexcept (requires{{
                 (concat_get<I>(rhs).end - concat_get<I>(rhs).begin) +
                 concat_distance<(I + 1) * (T::alternatives + 1) + T::alternatives>::middle(rhs)
@@ -592,7 +592,7 @@ namespace impl {
         }
 
         template <typename T> requires (I == T::alternatives)
-        static constexpr ssize_t operator()(NoneType, const T& rhs) noexcept {
+        static constexpr ssize_t operator()(impl::sentinel, const T& rhs) noexcept {
             return 0;
         }
     };
@@ -1084,7 +1084,7 @@ namespace impl {
 
         [[nodiscard]] friend constexpr difference_type operator-(
             const concat_iterator& self,
-            NoneType
+            impl::sentinel
         )
             noexcept (requires{{sentinel_distance{size_t(self.index)}(None, self)} noexcept;})
             requires (requires{{sentinel_distance{size_t(self.index)}(None, self)};})
@@ -1093,7 +1093,7 @@ namespace impl {
         }
 
         [[nodiscard]] friend constexpr difference_type operator-(
-            NoneType,
+            impl::sentinel,
             const concat_iterator& self
         )
             noexcept (requires{{sentinel_distance{size_t(self.index)}(None, self)} noexcept;})
@@ -1120,13 +1120,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const concat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.index == ssize_t(alternatives);
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const concat_iterator& self
         ) noexcept {
             return self.index == ssize_t(alternatives);
@@ -1134,13 +1134,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr auto operator<=>(
             const concat_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.index <=> ssize_t(alternatives);
         }
 
         [[nodiscard]] friend constexpr auto operator<=>(
-            NoneType,
+            impl::sentinel,
             const concat_iterator& self
         ) noexcept {
             return ssize_t(alternatives) <=> self.index;
@@ -1612,7 +1612,7 @@ namespace impl {
             return {*this};
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept { return {}; }
 
         [[nodiscard]] constexpr concat_iterator<concat, range_reverse> rbegin()
             noexcept (requires{{concat_iterator<concat, range_reverse>{*this}} noexcept;})
@@ -1628,7 +1628,7 @@ namespace impl {
             return {*this};
         }
 
-        [[nodiscard]] static constexpr NoneType rend() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel rend() noexcept { return {}; }
     };
 
 }

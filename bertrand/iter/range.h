@@ -1163,7 +1163,7 @@ namespace impl {
             };
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept {
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept {
             return {};
         }
 
@@ -1308,72 +1308,72 @@ namespace impl {
             return !empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator<(const iota& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator<(const iota& self, impl::sentinel)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
             return !self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator<(NoneType, const iota& self) noexcept {
+        [[nodiscard]] friend constexpr bool operator<(impl::sentinel, const iota& self) noexcept {
             return false;
         }
 
-        [[nodiscard]] friend constexpr bool operator<=(const iota& self, NoneType) noexcept {
+        [[nodiscard]] friend constexpr bool operator<=(const iota& self, impl::sentinel) noexcept {
             return true;
         }
 
-        [[nodiscard]] friend constexpr bool operator<=(NoneType, const iota& self)
+        [[nodiscard]] friend constexpr bool operator<=(impl::sentinel, const iota& self)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator==(const iota& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator==(const iota& self, impl::sentinel)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator==(NoneType, const iota& self)
+        [[nodiscard]] friend constexpr bool operator==(impl::sentinel, const iota& self)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator!=(const iota& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator!=(const iota& self, impl::sentinel)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
             return !self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator!=(NoneType, const iota& self)
+        [[nodiscard]] friend constexpr bool operator!=(impl::sentinel, const iota& self)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
             return !self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator>=(const iota& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator>=(const iota& self, impl::sentinel)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator>=(NoneType, const iota& self) noexcept {
+        [[nodiscard]] friend constexpr bool operator>=(impl::sentinel, const iota& self) noexcept {
             return true;
         }
 
-        [[nodiscard]] friend constexpr bool operator>(const iota& self, NoneType) noexcept {
+        [[nodiscard]] friend constexpr bool operator>(const iota& self, impl::sentinel) noexcept {
             return false;
         }
 
-        [[nodiscard]] friend constexpr bool operator>(NoneType, const iota& self)
+        [[nodiscard]] friend constexpr bool operator>(impl::sentinel, const iota& self)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
@@ -1463,7 +1463,7 @@ namespace impl {
             >{}((other.stop() - other.start()) - (stop() - start()), step()));
         }
 
-        [[nodiscard]] friend constexpr difference_type operator-(const iota& self, NoneType)
+        [[nodiscard]] friend constexpr difference_type operator-(const iota& self, impl::sentinel)
             noexcept (requires{
                 {-self.ssize()} noexcept -> meta::nothrow::convertible_to<difference_type>;
             })
@@ -1472,7 +1472,7 @@ namespace impl {
             return -self.ssize();
         }
 
-        [[nodiscard]] friend constexpr difference_type operator-(NoneType, const iota& self)
+        [[nodiscard]] friend constexpr difference_type operator-(impl::sentinel, const iota& self)
             noexcept (requires{{self.ssize()} noexcept;})
             requires (requires{{self.ssize()};})
         {
@@ -2098,7 +2098,7 @@ namespace impl {
             };
         }
 
-        [[nodiscard]] static constexpr NoneType end() noexcept {
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept {
             return {};
         }
 
@@ -2192,72 +2192,78 @@ namespace impl {
             return !empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator<(const subrange& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator<(const subrange& self, impl::sentinel)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
             return !self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator<(NoneType, const subrange& self) noexcept {
+        [[nodiscard]] friend constexpr bool operator<(impl::sentinel, const subrange& self) noexcept {
             return false;
         }
 
-        [[nodiscard]] friend constexpr bool operator<=(const subrange& self, NoneType) noexcept {
+        [[nodiscard]] friend constexpr bool operator<=(const subrange& self, impl::sentinel) noexcept {
             return true;
         }
 
-        [[nodiscard]] friend constexpr bool operator<=(NoneType, const subrange& self)
+        [[nodiscard]] friend constexpr bool operator<=(impl::sentinel, const subrange& self)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator==(const subrange& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator==(const subrange& self, impl::sentinel)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator==(NoneType, const subrange& self)
+        [[nodiscard]] friend constexpr bool operator==(impl::sentinel, const subrange& self)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator!=(const subrange& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator!=(const subrange& self, impl::sentinel)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
             return !self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator!=(NoneType, const subrange& self)
+        [[nodiscard]] friend constexpr bool operator!=(impl::sentinel, const subrange& self)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
             return !self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator>=(const subrange& self, NoneType)
+        [[nodiscard]] friend constexpr bool operator>=(const subrange& self, impl::sentinel)
             noexcept (requires{{self.empty()} noexcept;})
             requires (requires{{self.empty()};})
         {
             return self.empty();
         }
 
-        [[nodiscard]] friend constexpr bool operator>=(NoneType, const subrange& self) noexcept {
+        [[nodiscard]] friend constexpr bool operator>=(
+            impl::sentinel,
+            const subrange& self
+        ) noexcept {
             return true;
         }
 
-        [[nodiscard]] friend constexpr bool operator>(const subrange& self, NoneType) noexcept {
+        [[nodiscard]] friend constexpr bool operator>(
+            const subrange& self,
+            impl::sentinel
+        ) noexcept {
             return false;
         }
 
-        [[nodiscard]] friend constexpr bool operator>(NoneType, const subrange& self)
+        [[nodiscard]] friend constexpr bool operator>(impl::sentinel, const subrange& self)
             noexcept (requires{{!self.empty()} noexcept;})
             requires (requires{{!self.empty()};})
         {
@@ -9497,7 +9503,7 @@ _LIBCPP_BEGIN_NAMESPACE_STD
 
     template <size_t I, typename T>
     struct tuple_element<I, bertrand::impl::empty_range<T>> {
-        using type = bertrand::NoneType;
+        using type = T;
     };
 
     template <size_t I, typename T> requires (I == 0)

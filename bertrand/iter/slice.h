@@ -355,7 +355,7 @@ namespace impl {
         }
 
         /* Return a sentinel representing the end of the slice. */
-        [[nodiscard]] static constexpr NoneType end() noexcept { return {}; }
+        [[nodiscard]] static constexpr impl::sentinel end() noexcept { return {}; }
     };
 
     /* A specialization of `slice<...>` that is chosen if any of the start, stop, and
@@ -699,13 +699,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator==(
             const slice_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.size <= 0;
         }
 
         [[nodiscard]] friend constexpr bool operator==(
-            NoneType,
+            impl::sentinel,
             const slice_iterator& self
         ) noexcept {
             return self.size <= 0;
@@ -717,13 +717,13 @@ namespace impl {
 
         [[nodiscard]] friend constexpr bool operator!=(
             const slice_iterator& self,
-            NoneType
+            impl::sentinel
         ) noexcept {
             return self.size > 0;
         }
 
         [[nodiscard]] friend constexpr bool operator!=(
-            NoneType,
+            impl::sentinel,
             const slice_iterator& self
         ) noexcept {
             return self.size > 0;
