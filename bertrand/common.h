@@ -151,6 +151,23 @@ exhaustively enforced by the type system. */
 #endif
 
 
+/* An integer indicating the number of threads to use for Bertrand's async features.
+
+If set to 1, then all async features will be disabled and run synchronously on the main
+thread.  If set to a value greater than 1, then `N-1` hardware threads will be spawned
+at program startup in order to service async requests, which are scheduled entirely in
+user-space using green threads and awaitable coroutines. */
+#ifdef BERTRAND_NTHREADS
+    constexpr size_t NTHREADS = BERTRAND_NTHREADS;
+#else
+    constexpr size_t NTHREADS = 1;
+#endif
+static_assert(
+    NTHREADS > 0,
+    "Number of Bertrand hardware threads must be positive (minimum 1)."
+);
+
+
 /* Bertrand uses a large amount of template metaprogramming for its basic features,
 which can easily overflow the compiler's normal template recursion limits.  This should
 be rare, but can happen in some cases, forcing the user to manually increase the limit.
