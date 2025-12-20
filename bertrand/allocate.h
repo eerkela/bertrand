@@ -84,6 +84,10 @@ static_assert(
     "arena size must be a multiple of the page size"
 );
 static_assert(
+    ARENA_SIZE / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
+    "arena size too large to fully index using 32-bit integers"
+);
+static_assert(
     ARENA_SIZE == 0 || ARENA_SIZE >= (PAGE_SIZE * 2),
     "arena must contain at least two pages of memory to store a freelist and "
     "public partition"
@@ -307,114 +311,7 @@ struct arena;
 
 namespace impl {
 
-    /// TODO: for windows, use a bitset where every 8 bits represents a chunk of
-    /// memory within the arena, consisting of 256 pages (1 MiB on most systems).
-    /// The 8-bit value tells how many pages are committed within that chunk, and if
-    /// coalescing causes that number to fall to zero, then it will be decommitted to
-    /// save space.
-
-
-    /* Reserve a range of virtual addresses with the given number of bytes at program
-    startup.  Returns a void pointer to the start of the address range or nullptr on
-    error.
-
-    On unix systems, this will reserve the address space with full read/write
-    privileges, and physical pages will be mapped into the region by the OS when they
-    are first accessed.  On windows systems, the address space is reserved without any
-    privileges, and memory must be explicitly committed before use. */
-    [[nodiscard]] inline std::byte* map_address_space(size_t size) noexcept {
-        #if defined(_WIN32)
-            return reinterpret_cast<std::byte*>(VirtualAlloc(
-                reinterpret_cast<LPVOID>(nullptr),
-                size,
-                MEM_RESERVE,  // does not charge against commit limit
-                PAGE_NOACCESS  // no permissions yet
-            ));
-        #elif defined(__unix__)
-            void* ptr = mmap(
-                nullptr,
-                size,  // no pages are allocated yet
-                PROT_READ | PROT_WRITE,  // always read/write
-                #if defined(MAP_NORESERVE)
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                #else
-                    MAP_PRIVATE | MAP_ANONYMOUS,
-                #endif
-                -1,  // no file descriptor
-                0  // no offset
-            );
-            return ptr == MAP_FAILED ? nullptr : static_cast<std::byte*>(ptr);
-        #else
-            return nullptr;  // not supported
-        #endif
-    }
-
-    /* Release a range of virtual addresses starting at the given pointer with the
-    specified number of bytes, returning them to the OS at program shutdown.  This is
-    the inverse of `map_address_space()`.  Returns `false` to indicate an error. */
-    [[nodiscard]] inline bool unmap_address_space(std::byte* ptr, size_t size) noexcept {
-        #if defined(_WIN32)
-            return VirtualFree(reinterpret_cast<LPVOID>(ptr), 0, MEM_RELEASE) != 0;
-        #elif defined(__unix__)
-            return munmap(ptr, size) == 0;
-        #else
-            return false;  // not supported
-        #endif
-    }
-
-    /* Commit pages to a portion of a mapped address space starting at `ptr` and
-    continuing for `size` bytes.  Physical pages will be mapped into the committed
-    region by the OS when they are first accessed.  Returns the same pointer as the
-    input if successful, or null to indicate an error.
-
-    On unix systems, this function does nothing, since the entire mapped region is
-    always committed, and there is no commit limit to charge against.  On windows
-    systems, this will be called in order to expand the committed region as needed,
-    increasing syscall overhead, but minimizing commit charge so as not to interfere
-    with other processes on the system. */
-    [[nodiscard]] inline std::byte* commit_address_space(std::byte* ptr, size_t size) noexcept {
-        #if defined(_WIN32)
-            return reinterpret_cast<std::byte*>(VirtualAlloc(
-                reinterpret_cast<LPVOID>(ptr),
-                size,
-                MEM_COMMIT,
-                PAGE_READWRITE
-            ));
-        #elif defined(__unix__)
-            return ptr;  // nothing to do - always committed
-        #else
-            return nullptr;  // not supported
-        #endif
-    }
-
-    /* Decommit pages from a portion of a mapped address space starting at `ptr` and
-    continuing for `size` bytes, allowing the OS to reclaim the physical pages
-    associated with that region, without affecting the address space itself.  Returns
-    `false` to indicate an error.
-
-    On unix systems, this function will be called periodically during the coalesce step
-    of the allocator once the total amount of freed memory exceeds a certain threshold.
-    On windows systems, this will be called in order to shrink the committed region as
-    needed, increasing syscall overhead, but minimizing commit charge so as not to
-    interfere with other processes on the system. */
-    [[nodiscard]] inline bool decommit_address_space(std::byte* ptr, size_t size) noexcept {
-        #if defined(_WIN32)
-            return VirtualFree(reinterpret_cast<LPVOID>(ptr), size, MEM_DECOMMIT) != 0;
-        #elif defined(__unix__)
-            return madvise(ptr, size, MADV_DONTNEED) == 0;
-        #else
-            return false;  // not supported
-        #endif
-    }
-
-    /* The overall, global address space is mapped at program startup and unmapped at
-    shutdown, writing and reading from a global variable.  `gnu::constructor` and
-    `gnu::destructor` with the stated priorities ensure that this mapping is done
-    before any other static objects are initialized, and after all other static objects
-    have been destroyed, respectively. */
-    static std::byte* global_address_space = nullptr;
-    static std::atomic<size_t> global_num_address_spaces = 0;
-    [[gnu::constructor(101)]] static void alloc_address_space() {
+    static NoneType check_page_size = [] {
         #if defined(_WIN32)
             SYSTEM_INFO si;
             GetSystemInfo(&si);
@@ -442,32 +339,100 @@ namespace impl {
                 ));
             }
         #endif
+        return None;
+    }();
 
-        if constexpr (ARENA_SIZE > 0) {
-            global_address_space = map_address_space(ARENA_SIZE * NTHREADS);
-            if (global_address_space == nullptr) {
-                throw MemoryError(std::format(
-                    "failed to map global address space for {} arenas of "
-                    "{:.2e} MiB each -> {}",
-                    NTHREADS,
-                    double(ARENA_SIZE) / double(1_MiB),
-                    system_err_msg()
-                ));
-            }
-        }
+    /* Reserve a range of virtual addresses with the given number of bytes at program
+    startup.  Returns a void pointer to the start of the address range or nullptr on
+    error.
+
+    On unix systems, this will reserve the address space with full read/write
+    privileges, and physical pages will be mapped into the region by the OS when they
+    are first accessed.  On windows systems, the address space is reserved without any
+    privileges, and memory must be explicitly committed before use. */
+    [[nodiscard]] inline void* map_address_space(size_t size) noexcept {
+        #if defined(_WIN32)
+            return reinterpret_cast<void*>(VirtualAlloc(
+                reinterpret_cast<LPVOID>(nullptr),
+                size,
+                MEM_RESERVE,  // does not charge against commit limit
+                PAGE_NOACCESS  // no permissions yet
+            ));
+        #elif defined(__unix__)
+            void* ptr = mmap(
+                nullptr,
+                size,  // no pages are allocated yet
+                PROT_READ | PROT_WRITE,  // always read/write
+                #if defined(MAP_NORESERVE)
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                #else
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                #endif
+                -1,  // no file descriptor
+                0  // no offset
+            );
+            return ptr == MAP_FAILED ? nullptr : ptr;
+        #else
+            return nullptr;  // not supported
+        #endif
     }
-    [[gnu::destructor(65535)]] static void dealloc_address_space() {
-        if constexpr (ARENA_SIZE > 0) {
-            if (!unmap_address_space(global_address_space, ARENA_SIZE * NTHREADS)) {
-                throw MemoryError(std::format(
-                    "failed to unmap global address space for {} arenas of "
-                    "{:.2e} MiB each -> {}",
-                    NTHREADS,
-                    double(ARENA_SIZE) / double(1_MiB),
-                    system_err_msg()
-                ));
-            }
-        }
+
+    /* Release a range of virtual addresses starting at the given pointer with the
+    specified number of bytes, returning them to the OS at program shutdown.  This is
+    the inverse of `map_address_space()`.  Returns `false` to indicate an error. */
+    [[nodiscard]] inline bool unmap_address_space(void* ptr, size_t size) noexcept {
+        #if defined(_WIN32)
+            return VirtualFree(reinterpret_cast<LPVOID>(ptr), 0, MEM_RELEASE) != 0;
+        #elif defined(__unix__)
+            return munmap(ptr, size) == 0;
+        #else
+            return false;  // not supported
+        #endif
+    }
+
+    /* Commit pages to a portion of a mapped address space starting at `ptr` and
+    continuing for `size` bytes.  Physical pages will be mapped into the committed
+    region by the OS when they are first accessed.  Returns the same pointer as the
+    input if successful, or null to indicate an error.
+
+    On unix systems, this function does nothing, since the entire mapped region is
+    always committed, and there is no commit limit to charge against.  On windows
+    systems, this will be called in order to expand the committed region as needed,
+    increasing syscall overhead, but minimizing commit charge so as not to interfere
+    with other processes on the system. */
+    [[nodiscard]] inline void* commit_address_space(void* ptr, size_t size) noexcept {
+        #if defined(_WIN32)
+            return reinterpret_cast<void*>(VirtualAlloc(
+                reinterpret_cast<LPVOID>(ptr),
+                size,
+                MEM_COMMIT,
+                PAGE_READWRITE
+            ));
+        #elif defined(__unix__)
+            return ptr;  // nothing to do - always committed
+        #else
+            return nullptr;  // not supported
+        #endif
+    }
+
+    /* Decommit pages from a portion of a mapped address space starting at `ptr` and
+    continuing for `size` bytes, allowing the OS to reclaim the physical pages
+    associated with that region, without affecting the address space itself.  Returns
+    `false` to indicate an error.
+
+    On unix systems, this function will be called periodically during the coalesce step
+    of the allocator once the total amount of freed memory exceeds a certain threshold.
+    On windows systems, this will be called in order to shrink the committed region as
+    needed, increasing syscall overhead, but minimizing commit charge so as not to
+    interfere with other processes on the system. */
+    [[nodiscard]] inline bool decommit_address_space(void* ptr, size_t size) noexcept {
+        #if defined(_WIN32)
+            return VirtualFree(reinterpret_cast<LPVOID>(ptr), size, MEM_DECOMMIT) != 0;
+        #elif defined(__unix__)
+            return madvise(ptr, size, MADV_DONTNEED) == 0;
+        #else
+            return false;  // not supported
+        #endif
     }
 
     /* Each hardware thread has its own local address space, which it can access
@@ -486,120 +451,273 @@ namespace impl {
     such, regions will be committed in chunks of 256 pages (1 MiB on most systems) at a
     time in order to minimize syscall overhead, and decommitted whenever their occupied
     count falls to zero.  This process can be avoided on unix because they lack a
-    hard commit limit, and only fail when the system runs out of physical memory.
-
-
-
-    */
+    hard commit limit, and only fail when the system runs out of physical memory. */
     inline thread_local struct address_space {
-        /* The free list is stored contiguously in the first 1/1024th of the address
-        space, which is held as a private partition for bookkeeping purposes. */
-        static constexpr size_t ADDRESS_SPACE_PARTITION =
-            std::min(((ARENA_SIZE + 1023) / 1024), PAGE_SIZE);
+    private:
+        template <meta::unqualified T, impl::capacity<T> N>
+        friend struct bertrand::arena;
 
-        /* The size of the local address space is always set by the build
-        configuration. */
-        [[nodiscard]] static constexpr size_t size() noexcept {
-            return ARENA_SIZE - ADDRESS_SPACE_PARTITION;
-        }
-        [[nodiscard]] static constexpr ssize_t ssize() noexcept {
-            return static_cast<ssize_t>(size());
-        }
-        [[nodiscard]] static constexpr bool empty() noexcept {
-            return size() == 0;
-        }
-
-        /* A unique identifier for the current thread, where `0` indicates the main
-        thread. */
-        size_t id = 0;
-
-        /* A pointer to the start of this thread's local address space.  Note that this
-        always comes after the private partition containing the free list. */
-        std::byte* ptr = nullptr;
-
-        /* The free list is arranged as a max heap with the largest block at the
-        root. */
+        /* Nodes use an intrusive heap + treap data structure that compresses to just
+        36 bytes on average.  The nodes are stored in a stable array beginning at the
+        start of the private partition and growing towards the end, with the `right`
+        member being reused as a pointer to the next node in either the free list or
+        the batch list.  If `right` is set equal to the current index, then it will be
+        considered a terminal node. */
         struct node {
-            std::byte* ptr;  // start of unoccupied memory region
+            void* ptr;  // start of unoccupied memory region
             size_t size;  // length of unoccupied memory region
-            node* left = nullptr;  // left subtree
-            node* right = nullptr;  // right subtree
+            uint32_t heap;  // index into the heap array for this node
+            uint32_t left;  // left BST child index
+            uint32_t right;  // right BST child index or index of next node in singly-linked list
+            uint32_t priority;  // treap priority for balancing the coalesce tree
         };
-        node* freelist = nullptr;
-        size_t count = 1;  // number of nodes in the freelist
-        size_t occupied = 0;  // number of bytes currently allocated to the user
-        size_t committed = ADDRESS_SPACE_PARTITION;  // number of bytes committed
 
-        [[nodiscard]] address_space() :
-            id(global_num_address_spaces.fetch_add(1)),
-            ptr(ADDRESS_SPACE_PARTITION + (id < NTHREADS ?
-                global_address_space + (id * ARENA_SIZE) :
-                map_address_space(ARENA_SIZE)
-            )),
-            freelist(reinterpret_cast<node*>(ptr - ADDRESS_SPACE_PARTITION))
-        {
-            // map address space for this thread or reuse pre-mapped space
-            if (id < NTHREADS) {
-                ptr = global_address_space + (id * ARENA_SIZE) + ADDRESS_SPACE_PARTITION;
-            } else {
-                ptr = map_address_space(ARENA_SIZE);
-                if (!ptr) {
-                    throw MemoryError(std::format(
-                        "failed to map local address space for newly-created "
-                        "thread {} ({:.2e} MiB) -> {}",
-                        id,
-                        double(ARENA_SIZE) / double(1_MiB),
-                        system_err_msg()
-                    ));
-                }
-                ptr += ADDRESS_SPACE_PARTITION;
+        /* The node list and max heap are stored contiguously in a region large enough
+        to hold one page per node in the worst case.  Allocations will never be more
+        fine-grained than this due to strict page alignment, so we will never run out
+        of nodes unless the entire address space is full.  Because each node only
+        consumes 36 bytes on average, and pages are generally 4 KiB in the worst case,
+        this private partition will require less than 1% of the overall address
+        space, and will be able to represent up to 16 TiB of address space per
+        thread. */
+        static constexpr size_t LIST_SIZE = ARENA_SIZE / PAGE_SIZE;
+        static constexpr size_t PARTITION_SIZE = std::max(
+            (
+                (LIST_SIZE * sizeof(node) + sizeof(uint32_t)) + alignof(node) - 1
+            ) & ~(alignof(node) - 1),
+            PAGE_SIZE
+        );
+
+        #ifdef _WIN32
+            /* A ledger of "chunks", where each 8-bit chunk represents up to 255 pages
+            (~1 MiB on most systems), and the value indicates how many of those pages
+            are allocated to the user.  If this number falls to zero, then the
+            corresponding chunk can be decommitted as a full region to reclaim physical
+            memory in a batched fashion. */
+            static constexpr size_t CHUNK_WIDTH = std::numeric_limits<uint8_t>::max() * PAGE_SIZE;
+            static constexpr size_t CHUNK_SIZE =
+                (ARENA_SIZE - PARTITION_SIZE + CHUNK_WIDTH - 1) / CHUNK_WIDTH;
+            uint8_t chunks[CHUNK_SIZE] {};
+        #endif
+
+        enum : uint8_t {
+            INITIALIZED = 0b1,  // whether the address space has been initialized
+            TEARDOWN = 0b10,  // whether the address space's destructor has been called
+            HAS_FREE = 0b100  // whether there are any free nodes in the free list
+        };
+        uint8_t flags = 0;  // status flags
+        uint32_t count = 1;  // number of nodes in storage
+        uint32_t root = 0;  // root of coalesce tree
+        uint32_t free = 0;  // index of first empty node in storage, assuming HAS_FREE is set
+        uint32_t batch = 0;  // index of first batched (but not yet freed) node in storage
+        uint32_t batch_count = 0;  // number of nodes in the batch list
+        size_t batch_occupied = 0;  // total size of all batched nodes
+        node* nodes = nullptr;  // start of node storage
+        uint32_t* heap = nullptr;  // max heap beginning at LIST_SIZE
+        size_t occupied = 0;  // number of bytes currently allocated to the user
+        size_t committed = 0;  // number of bytes currently committed to this address space
+        void* ptr = nullptr;  // start of this thread's local address space
+
+        /* Initialize the address space on first use.  This is called in the
+        constructor for `arena<T, N>`, ensuring proper initialization order, even for
+        objects with static storage duration. */
+        void acquire() {
+            if (flags & INITIALIZED) {
+                return;
             }
 
-            // commit private partition for freelist
-            if (!commit_address_space(
-                reinterpret_cast<std::byte*>(freelist),
-                ADDRESS_SPACE_PARTITION
-            )) {
+            // map address space for this thread
+            ptr = map_address_space(ARENA_SIZE);
+            if (!ptr) {
                 throw MemoryError(std::format(
-                    "failed to commit private partition for local address space "
-                    "of thread {} starting at address {:#x} and ending at "
-                    "address {:#x} ({:.2e} MiB) -> {}",
-                    id,
-                    reinterpret_cast<uintptr_t>(ptr - ADDRESS_SPACE_PARTITION),
-                    reinterpret_cast<uintptr_t>(ptr),
-                    double(ADDRESS_SPACE_PARTITION) / double(1_MiB),
+                    "failed to map local address space for newly-created thread "
+                    "({:.3e} MiB) -> {}",
+                    double(ARENA_SIZE) / double(1_MiB),
                     system_err_msg()
                 ));
             }
 
-            // push the entire public partition onto the freelist
-            std::construct_at(freelist, ptr, size());
+            // commit private partition for node storage and search structures
+            if (!commit_address_space(ptr, PARTITION_SIZE)) {
+                flags |= TEARDOWN;
+                release();
+                throw MemoryError(std::format(
+                    "failed to commit private partition for local address space "
+                    "starting at address {:#x} and ending at address {:#x} ({:.3e} "
+                    "MiB) -> {}",
+                    reinterpret_cast<uintptr_t>(ptr),
+                    reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + PARTITION_SIZE),
+                    double(PARTITION_SIZE) / double(1_MiB),
+                    system_err_msg()
+                ));
+            }
+            nodes = reinterpret_cast<node*>(ptr);
+            ptr = static_cast<std::byte*>(ptr) + PARTITION_SIZE;
+            std::construct_at(
+                nodes,
+                ptr,  // start of public partition
+                ARENA_SIZE - PARTITION_SIZE,  // whole public partition
+                0,  // heap index
+                0,  // left child
+                0,  // right child
+                0  // parent
+            );
+            heap = static_cast<uint32_t*>(ptr) - 1;
+            std::construct_at(heap, 0);
+
+            // set initialized signal
+            flags |= INITIALIZED;
         }
 
+        /* Release the address space on last use.  This is a no-op unless `teardown` is
+        set to `true`, indicating that the address space's destructor has been called,
+        and the address space is empty.  It will be called in the destructor for
+        `arena<T, N>` to ensure proper destruction order, even for objects with static
+        storage duration. */
+        void release() {
+            if ((flags & TEARDOWN) && occupied == 0) {
+                if (!unmap_address_space(
+                    static_cast<std::byte*>(ptr) - PARTITION_SIZE,
+                    ARENA_SIZE
+                )) {
+                    throw MemoryError(std::format(
+                        "failed to unmap local address space starting at address "
+                        "{:#x} and ending at address {:#x} ({:.3e} MiB) -> {}",
+                        reinterpret_cast<uintptr_t>(
+                            static_cast<std::byte*>(ptr) - PARTITION_SIZE
+                        ),
+                        reinterpret_cast<uintptr_t>(
+                            static_cast<std::byte*>(ptr) - PARTITION_SIZE + ARENA_SIZE
+                        ),
+                        double(ARENA_SIZE) / double(1_MiB),
+                        system_err_msg()
+                    ));
+                }
+            }
+        }
+
+        /* Purge the batch buffer and coalesce adjacent free blocks, informing the
+        operating system that the physical memory backing them can be reclaimed. */
+        void coalesce() {
+            /// TODO: not really sure how to do this.  I think I need to coalesce
+            /// first, and then call decommit for every region that was freed.
+        }
+
+        [[nodiscard]] void* allocate(size_t size) {
+            acquire();  // ensure mapping/partition ready
+            size = ((size + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;  // align to page size
+
+            // check if there is enough space available
+            node& largest = nodes[*heap];
+            if (size > largest.size) {
+                throw MemoryError(std::format(
+                    "failed to allocate {:.3e} MiB from local address space ({:.3e} "
+                    "MiB occupied / {:.3e} MiB total) -> insufficient space available",
+                    double(size) / double(1_MiB),
+                    double(occupied) / double(1_MiB),
+                    double(ARENA_SIZE) / double(1_MiB)
+                ));
+            }
+
+            // bisect the largest available region
+            largest.size -= size;
+            size_t left = largest.size / 2;
+            size_t right = largest.size - left;
+            void* p = static_cast<std::byte*>(largest.ptr) + left;
+            occupied += size;
+            ++count;
+
+            // If there is one remaining half, reuse the existing node without
+            // allocating a new one.  Otherwise, grab a new node from the free list
+            // or push the current node onto the free list as needed.
+            if (left) {
+                largest.size = left;
+                if (right) {
+                    if (flags & HAS_FREE) {
+                        node* child = nodes + free;
+                        if (child->right == free) {
+                            flags &= ~HAS_FREE;  // no more free nodes
+                        } else {
+                            free = child->right;  // advance free list
+                        }
+                        std::construct_at(
+                            child,
+                            static_cast<std::byte*>(p) + size,
+                            right
+                            /// TODO: set other members appropriately
+                        );
+                    } else {
+                        node* child = nodes + count;
+                        /// TODO: make sure the count does not exceed LIST_SIZE
+                    }
+                }
+            } else if (right) {
+                largest.ptr = static_cast<std::byte*>(p) + size;
+                largest.size = right;
+            } else {
+                largest.right = free;
+                free = static_cast<uint32_t>(&largest - nodes);
+            }
+
+            /// TODO: rebalance the heap and coalesce tree
+
+
+
+
+            /// TODO: insert into coalesce tree
+            /// -> search for current node in coalesce tree and adjust its size
+            /// downwards or remove it if it is zero.  Then, rebalance the tree.
+
+
+            // push the left and right halves onto the freelist and rebalance the heap
+            // free[0].size = left;
+            // std::swap(free[0], free[count - 1]);
+            // std::construct_at(free + count, p + size, right);
+            // size_t curr = 0;
+            // while (true) {
+            //     size_t l = (curr * 2) + 1;
+            //     size_t r = (curr * 2) + 2;
+            //     if (l < count && free[l].size > free[curr].size) {
+            //         std::swap(free[curr], free[l]);
+            //         curr = l;
+            //     } else if (r < count && free[r].size > free[curr].size) {
+            //         std::swap(free[curr], free[r]);
+            //         curr = r;
+            //     } else {
+            //         break;
+            //     }
+            // }
+
+            return p;
+        }
+
+        void deallocate() {
+            /// TODO: not sure how to do this yet
+
+
+            release();  // attempt to unmap if in teardown state
+        }
+
+    public:
+        [[nodiscard]] address_space() noexcept {};
         address_space(const address_space&) = delete;
         address_space(address_space&&) = delete;
         address_space& operator=(const address_space&) = delete;
         address_space& operator=(address_space&&) = delete;
-
         ~address_space() noexcept (false) {
-            if (id >= NTHREADS) {
-                if (!unmap_address_space(
-                    ptr - ADDRESS_SPACE_PARTITION,
-                    ARENA_SIZE
-                )) {
-                    throw MemoryError(std::format(
-                        "failed to unmap local address space for thread {} "
-                        "starting at address {:#x} and ending at address {:#x} "
-                        "({:.2e} MiB) - {}",
-                        id,
-                        reinterpret_cast<uintptr_t>(ptr - ADDRESS_SPACE_PARTITION),
-                        reinterpret_cast<uintptr_t>(ptr - ADDRESS_SPACE_PARTITION + ARENA_SIZE),
-                        double(ARENA_SIZE) / double(1_MiB),
-                        system_err_msg()
-                    ));
-                };
-            }
+            flags |= TEARDOWN;
+            release();
         }
+
+        /* The size of the local address space is always set by the build
+        configuration. */
+        [[nodiscard]] constexpr size_t capacity() const noexcept { return committed; }
+        [[nodiscard]] constexpr size_t size() const noexcept { return occupied; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(occupied); }
+        [[nodiscard]] constexpr bool empty() const noexcept { return occupied == 0; }
+        [[nodiscard]] constexpr void* data() noexcept { return ptr; }
+        [[nodiscard]] constexpr const void* data() const noexcept { return ptr; }
+
 
     } local_address_space {};
 
@@ -662,7 +780,7 @@ namespace impl {
                 if (!push(m_public, capacity())) {
                     throw MemoryError(std::format(
                         "failed to initialize freelist for arena {} starting "
-                        "at address {:#x} and ending at address {:#x} ({:.2e} "
+                        "at address {:#x} and ending at address {:#x} ({:.3e} "
                         "MiB) - {}",
                         m_id,
                         reinterpret_cast<uintptr_t>(m_public),
@@ -823,7 +941,7 @@ namespace impl {
                                     throw MemoryError(std::format(
                                         "failed to decommit unused pages for "
                                         "freelist in arena {} starting at address "
-                                        "{:#x} and ending at address {:#x} ({:.2e} "
+                                        "{:#x} and ending at address {:#x} ({:.3e} "
                                         "MiB) - {}",
                                         m_id,
                                         reinterpret_cast<uintptr_t>(m_private),
@@ -922,7 +1040,7 @@ namespace impl {
                         throw MemoryError(std::format(
                             "failed to locate an unoccupied region of size {} in "
                             "arena {} starting at address {:#x} and ending at address "
-                            "{:#x} ({:.2e} MiB)",
+                            "{:#x} ({:.3e} MiB)",
                             length,
                             m_id,
                             reinterpret_cast<uintptr_t>(m_public),
@@ -1026,7 +1144,7 @@ namespace impl {
             if (!ptr) {
                 throw MemoryError(std::format(
                     "Failed to map address space for {} arenas starting at "
-                    "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
+                    "address {:#x} and ending at address {:#x} ({:.3e} MiB) - {}",
                     ARENA_SIZE * NTHREADS,
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(ptr) + ARENA_SIZE * NTHREADS,
@@ -1134,7 +1252,7 @@ namespace impl {
 
             throw MemoryError(std::format(
                 "not enough virtual memory for new address space of size "
-                "{:.2e} MiB",
+                "{:.3e} MiB",
                 double(capacity) / double(1_MiB)
             ));
         }
@@ -1324,7 +1442,11 @@ public:
                 throw MemoryError("failed to allocate memory for arena");
             }
         } else {
-            /// TODO: allocate from virtual memory
+            impl::local_address_space.acquire();  // initialize thread-local arena
+            ptr = reinterpret_cast<type*>(
+                /// TODO: align to nearest page boundary?
+                impl::local_address_space.allocate(len * sizeof(type))
+            );
         }
     }
 
@@ -1346,7 +1468,10 @@ public:
                 if consteval {
                     Alloc{}.deallocate(ptr, len);
                 } else {
-                    /// TODO: deallocate virtual memory
+                    impl::local_address_space.deallocate(
+                        reinterpret_cast<std::byte*>(ptr),
+                        len * sizeof(type)
+                    );
                 }
             }
             ptr = other.ptr;
@@ -1363,11 +1488,15 @@ public:
         if (ptr != nullptr) {
             if consteval {
                 Alloc{}.deallocate(ptr, len);
-                ptr = nullptr;
-                len = 0;
             } else {
-                /// TODO: deallocate virtual memory
+                impl::local_address_space.deallocate(
+                    reinterpret_cast<std::byte*>(ptr),
+                    len * sizeof(type)
+                );
+                impl::local_address_space.release();
             }
+            ptr = nullptr;
+            len = 0;
         }
     }
 
@@ -1757,7 +1886,7 @@ static_assert([] {
 //                 if (!impl::purge_address_space(p, nbytes())) {
 //                     throw MemoryError(std::format(
 //                         "failed to decommit pages from virtual address space starting "
-//                         "at address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
+//                         "at address {:#x} and ending at address {:#x} ({:.3e} MiB) - {}",
 //                         reinterpret_cast<uintptr_t>(m_data),
 //                         reinterpret_cast<uintptr_t>(m_data) + nbytes(),
 //                         double(nbytes()) / double(1_MiB),
@@ -1768,7 +1897,7 @@ static_assert([] {
 //                     throw MemoryError(std::format(
 //                         "failed to commit additional pages to freelist for arena {} "
 //                         "starting at address {:#x} and ending at address {:#x} "
-//                         "({:.2e} MiB) - {}",
+//                         "({:.3e} MiB) - {}",
 //                         m_arena->id(),
 //                         reinterpret_cast<uintptr_t>(m_data),
 //                         reinterpret_cast<uintptr_t>(m_data) + nbytes(),
@@ -1795,7 +1924,7 @@ static_assert([] {
 //             if (!impl::purge_address_space(p, nbytes())) {
 //                 throw MemoryError(std::format(
 //                     "failed to decommit pages from virtual address space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
+//                     "at address {:#x} and ending at address {:#x} ({:.3e} MiB) - {}",
 //                     reinterpret_cast<uintptr_t>(m_data),
 //                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
 //                     double(nbytes()) / double(1_MiB),
@@ -1806,7 +1935,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "failed to commit additional pages to freelist for arena {} "
 //                     "starting at address {:#x} and ending at address {:#x} "
-//                     "({:.2e} MiB) - {}",
+//                     "({:.3e} MiB) - {}",
 //                     m_arena->id(),
 //                     reinterpret_cast<uintptr_t>(m_data),
 //                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
@@ -1877,7 +2006,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "attempted to commit memory at offset {} with length {}, "
 //                     "which exceeds the size of the virtual address space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+//                     "at address {:#x} and ending at address {:#x} ({:.3e} MiB)",
 //                     offset,
 //                     length,
 //                     reinterpret_cast<uintptr_t>(m_data),
@@ -1897,7 +2026,7 @@ static_assert([] {
 //         if (result == nullptr) {
 //             throw MemoryError(std::format(
 //                 "failed to commit pages to virtual address space starting at "
-//                 "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
+//                 "address {:#x} and ending at address {:#x} ({:.3e} MiB) - {}",
 //                 reinterpret_cast<uintptr_t>(m_data),
 //                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
 //                 double(nbytes()) / double(1_MiB),
@@ -1924,7 +2053,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "attempted to decommit memory at offset {} with length {}, "
 //                     "which exceeds the size of the virtual address space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+//                     "at address {:#x} and ending at address {:#x} ({:.3e} MiB)",
 //                     offset,
 //                     length,
 //                     reinterpret_cast<uintptr_t>(m_data),
@@ -1943,7 +2072,7 @@ static_assert([] {
 //         )) {
 //             throw MemoryError(std::format(
 //                 "failed to decommit pages from virtual address space starting at "
-//                 "address {:#x} and ending at address {:#x} ({:.2e} MiB) - {}",
+//                 "address {:#x} and ending at address {:#x} ({:.3e} MiB) - {}",
 //                 reinterpret_cast<uintptr_t>(m_data),
 //                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
 //                 double(nbytes()) / double(1_MiB),
@@ -1964,7 +2093,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "pointer at address {:#x} was not allocated from the virtual "
 //                     "address space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.2e} MiB)",
+//                     "address {:#x} ({:.3e} MiB)",
 //                     reinterpret_cast<uintptr_t>(p),
 //                     reinterpret_cast<uintptr_t>(m_data),
 //                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
@@ -1986,7 +2115,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "pointer at address {:#x} was not allocated from the virtual "
 //                     "address space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.2e} MiB)",
+//                     "address {:#x} ({:.3e} MiB)",
 //                     reinterpret_cast<uintptr_t>(p),
 //                     reinterpret_cast<uintptr_t>(m_data),
 //                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
@@ -2045,7 +2174,7 @@ static_assert([] {
 //         if (!m_data) {
 //             throw MemoryError(std::format(
 //                 "failed to allocate {} bytes for address space starting at "
-//                 "address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+//                 "address {:#x} and ending at address {:#x} ({:.3e} MiB)",
 //                 nbytes(),
 //                 reinterpret_cast<uintptr_t>(m_data),
 //                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
@@ -2132,7 +2261,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "attempted to commit memory at offset {} with length {}, "
 //                     "which exceeds the size of the physical space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+//                     "at address {:#x} and ending at address {:#x} ({:.3e} MiB)",
 //                     offset,
 //                     length,
 //                     reinterpret_cast<uintptr_t>(m_data),
@@ -2153,7 +2282,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "attempted to decommit memory at offset {} with length {}, "
 //                     "which exceeds the size of the physical space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.2e} MiB)",
+//                     "at address {:#x} and ending at address {:#x} ({:.3e} MiB)",
 //                     offset,
 //                     length,
 //                     reinterpret_cast<uintptr_t>(m_data),
@@ -2176,7 +2305,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "pointer at address {:#x} was not allocated from the physical "
 //                     "space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.2e} MiB)",
+//                     "address {:#x} ({:.3e} MiB)",
 //                     reinterpret_cast<uintptr_t>(p),
 //                     reinterpret_cast<uintptr_t>(m_data),
 //                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
@@ -2197,7 +2326,7 @@ static_assert([] {
 //                 throw MemoryError(std::format(
 //                     "pointer at address {:#x} was not allocated from the physical "
 //                     "space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.2e} MiB)",
+//                     "address {:#x} ({:.3e} MiB)",
 //                     reinterpret_cast<uintptr_t>(p),
 //                     reinterpret_cast<uintptr_t>(m_data),
 //                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
