@@ -45,17 +45,23 @@
 #endif
 
 
-// required for virtual memory management
+// required for virtual memory management + platform detection
 #ifdef _WIN32
     #include <windows.h>
     #include <errhandlingapi.h>
     #include <intrin.h>
+    #define APPLE 0
+    #define WINDOWS 1
+    #define UNIX 0
 #elifdef __unix__
     #include <sys/mman.h>
     #include <unistd.h>
     #ifdef __APPLE__
         #include <sys/sysctl.h>
+        #define APPLE 1
     #endif
+    #define WINDOWS 0
+    #define UNIX 1
 #endif
 
 
@@ -71,28 +77,6 @@
 
 
 namespace bertrand {
-
-
-/* Bertrand exposes as much information about the target platform and compiler as
-possible so that downstream code can access it in a standardized, constexpr-friendly
-manner. */
-#ifdef _WIN32
-    constexpr bool WINDOWS = true;
-    constexpr bool UNIX = false;
-    constexpr bool APPLE = false;
-#elifdef __unix__
-    constexpr bool WINDOWS = false;
-    constexpr bool UNIX = true;
-    #ifdef __APPLE__
-        constexpr bool APPLE = true;
-    #else
-        constexpr bool APPLE = false;
-    #endif
-#else
-    constexpr bool WINDOWS = false;
-    constexpr bool UNIX = false;
-    constexpr bool APPLE = false;
-#endif
 
 
 /* The version specifier for the C++ standard library. */
