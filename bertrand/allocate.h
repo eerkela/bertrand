@@ -94,6 +94,13 @@ static_assert(
 );
 
 
+#ifdef BERTRAND_COALESCE_THRESHOLD
+    constexpr size_t COALESCE_THRESHOLD = BERTRAND_COALESCE_THRESHOLD;
+#else
+    constexpr size_t COALESCE_THRESHOLD = 16_MiB;
+#endif
+
+
 namespace impl {
 
     template <typename U>
@@ -438,9 +445,14 @@ namespace impl {
     /* Round an allocation size (in bytes) up to the nearest full page, and then return
     it as a 32-bit page count.  Multiplying the result by the page size gives the
     total size in bytes. */
-    [[nodiscard]] constexpr uint32_t page_align(size_t size) noexcept {
+    [[nodiscard]] constexpr uint32_t page_count(size_t size) noexcept {
         return size / PAGE_SIZE + (size % PAGE_SIZE != 0);
     }
+
+    /// TODO: long-term, what I should do is add a couple slab allocators within the
+    /// public partition to handle small allocations up to a couple pages in size
+    /// immediately, without TLB pressure or fragmentation
+
 
     /* Each hardware thread has its own local address space, which it can access
     globally, without locking.  Because the address space is virtual memory, there are
@@ -469,12 +481,35 @@ namespace impl {
         can safely reuse the maximum 32-bit unsigned integer as a sentinel value. */
         static constexpr uint32_t NIL = std::numeric_limits<uint32_t>::max();
 
+        /* Due to the windows commit limit, care must be taken not to commit too much
+        virtual memory at once (not a problem on unix).  In order to address this, each
+        address space will include a ledger tracking chunks of 255 pages at a time
+        (~1 MiB on most systems), where the numeric value indicates how many pages of
+        that chunk have been allocated to the user.  When the value drops to zero, the
+        entire chunk will be decommitted as part of the coalesce step.  This marginally
+        increases syscall overhead during allocation, but is the only realistic way to
+        work around windows commit costs while maintaining the benefits of virtual
+        memory.  Note that the ledger spans the entire address space, including the
+        private partition, so that the node storage may be chunked on the same basis. */
+        static constexpr uint32_t CHUNK_LEDGER = !WINDOWS ? 0 :
+            ARENA_SIZE / (PAGE_SIZE * std::numeric_limits<uint8_t>::max()) +
+            (ARENA_SIZE % (PAGE_SIZE * std::numeric_limits<uint8_t>::max()) != 0);
+
+        /* In order to reduce syscall overhead, empty nodes are not immediately
+        decommitted and returned to the free list.  Instead, they are added to a batch
+        array that grows until a certain threshold is reached, after which the batched
+        nodes are sorted by offset, coalesced with adjacent free blocks, and
+        decommitted en masse.  Only after this are the batched nodes moved back into
+        the free list. */
+        static constexpr uint32_t COALESCE_BUFFER = page_count(COALESCE_THRESHOLD);
+
         /* Nodes use an intrusive heap + treap data structure that compresses to just
-        24 bytes.  The nodes are stored in a stable array beginning at the start of the
-        private partition, which overlaps with the max heap used to track the largest
-        free region (consisting of the first `count` entries), and both the free and
-        batch lists, which reuse the `right` member as a pointer to the next node in
-        the singly-linked list. */
+        24 bytes.  The nodes are stored in a stable, private partition array starting
+        at a byte offset equal to `BASE_SIZE`.  In order to save space and promote
+        cache locality, the max-heap heap is stored as an overlapping array using the
+        `heap_array` member, which should only ever be accessed by the `heap()` helper
+        method for clarity.  Lastly, the free list reuses the `right` member on
+        uninitialized nodes as a pointer to the next node in the singly-linked list. */
         struct node {
             uint32_t offset;  // start of memory region, as a page offset from base ptr
             uint32_t size;  // number of pages in memory region
@@ -485,7 +520,7 @@ namespace impl {
 
             /* Deterministically compute a priority value for this node using its
             offset.  Getting this on-demand means it doesn't need to be stored. */
-            constexpr uint32_t priority() const noexcept {
+            [[nodiscard]] constexpr uint32_t priority() const noexcept {
                 uint64_t x = offset;
                 x += 0x9E3779B97F4A7C15ull;
                 x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
@@ -493,13 +528,21 @@ namespace impl {
                 x = x ^ (x >> 31);
                 return uint32_t(x) ^ uint32_t(x >> 32);
             }
+
+            /* Get an offset to the end of the memory region, for merging purposes. */
+            [[nodiscard]] constexpr uint32_t end() const noexcept {
+                return offset + size;
+            }
         };
 
-        /// TODO: it may be better to have the chunk ledger cover the entire arena,
-        /// since that would allow me to chunk the contents of the private partition,
-        /// and pretty much eliminate commit/decommit overhead entirely.  I should
-        /// address this later, when I start implementing the windows-specific
-        /// optimizations and engaging the chunk ledger.
+        /* Look up an index in the overlapping heap array without the confusing
+        `nodes[pos].heap` syntax. */
+        [[nodiscard]] constexpr uint32_t& heap(uint32_t pos) noexcept {
+            return nodes[pos].heap_array;
+        }
+        [[nodiscard]] constexpr const uint32_t& heap(uint32_t pos) const noexcept {
+            return nodes[pos].heap_array;
+        }
 
         /* The node list and max heap are stored contiguously in a region large enough
         to hold one page per node in the worst case.  Allocations will never be more
@@ -511,24 +554,20 @@ namespace impl {
         able to represent up to 16 TiB of address space per thread.  This becomes more
         efficient as the page size increases. */
         static constexpr struct Size {
+            static constexpr size_t BASE = 
+                CHUNK_LEDGER * sizeof(uint8_t) + 2 * COALESCE_BUFFER * sizeof(uint32_t);
             uint32_t partition;
             uint32_t pub;
         } SIZE = [] -> Size {
-            // initial upper bound -> x * (p + n) <= ARENA_SIZE
+            // initial upper bound -> x * (page + node) <= ARENA_SIZE
             uint32_t lo = 0;
             uint32_t hi = ARENA_SIZE / (PAGE_SIZE + sizeof(node));
 
-            // binary search for maximum N where partition(N) + (N * p) <= ARENA_SIZE
+            // binary search for maximum N where partition(N) + (N * page) <= ARENA_SIZE
             uint32_t partition = 0;
             while (lo < hi) {
                 uint32_t mid = (hi + lo + 1) / 2;
-                partition = mid * sizeof(node);
-                if constexpr (WINDOWS) {  // account for chunk ledger
-                    partition +=
-                        mid / std::numeric_limits<uint8_t>::max() +
-                        (mid % std::numeric_limits<uint8_t>::max() != 0);
-                }
-                partition = page_align(partition);  // page align to uint32_t
+                partition = page_count(Size::BASE + mid * sizeof(node));
                 if (
                     partition <= ARENA_SIZE / PAGE_SIZE &&
                     mid <= ARENA_SIZE / PAGE_SIZE - partition
@@ -541,64 +580,20 @@ namespace impl {
             return {partition, lo};
         }();
 
-        /* Look up an index of the overlapping heap array without the confusing
-        `nodes[pos].heap` syntax. */
-        constexpr uint32_t& heap(uint32_t pos) noexcept {
-            return nodes[pos].heap_array;
-        }
-        constexpr const uint32_t& heap(uint32_t pos) const noexcept {
-            return nodes[pos].heap_array;
-        }
-
         bool initialized = false;  // whether the address space has been initialized
         bool teardown = false;  // whether the address space's destructor has been called
         uint32_t next_id = 0;  // high-water mark for node indices with empty free list
+        uint32_t occupied = 0;  // number of pages currently allocated to the user
         uint32_t heap_size = 0;  // number of active nodes (excluding batch and free list)
         uint32_t root = NIL;  // index to root of coalesce tree
-        uint32_t batch = NIL;  // index of first batched node in storage or NIL
-        uint32_t free = NIL;  // index of first empty node in storage or NIL
-        uint32_t batch_size = 0;  // number of pages stored in batch list
-        uint32_t occupied = 0;  // number of pages currently allocated to the user
-        node* nodes = nullptr;  // start of node storage + overlapping heap
+        uint32_t free = NIL;  // index to first uninitialized node in storage or NIL
+        uint32_t batch_count = 0;  // number of nodes in batch list
+        uint32_t batched = 0;  // total number of pages stored in batch list
         uint8_t* chunks = nullptr;  // windows commit chunk ledger
+        uint32_t* batch = nullptr;  // batch list
+        uint32_t* batch_sort = nullptr;  // temporary array for radix-sorting batch list
+        node* nodes = nullptr;  // node storage + overlapping heap
         void* ptr = nullptr;  // start of this thread's local address space
-
-        /* Return a pointer to the beginning of the private partition, for diagnostic
-        purposes. */
-        constexpr void* start_address() const noexcept {
-            return static_cast<std::byte*>(ptr) - SIZE.partition * PAGE_SIZE;
-        }
-
-        /* Return a pointer to the end of the public partition, for diagnostic
-        purposes. */
-        constexpr void* end_address() const noexcept {
-            return static_cast<std::byte*>(ptr) + SIZE.pub * PAGE_SIZE;
-        }
-
-        /* Report the total size of the private partition specifically, in MiB, for
-        diagnostic purposes. */
-        constexpr double private_size_in_mib() const noexcept {
-            return double(SIZE.partition * PAGE_SIZE) / double(1_MiB);
-        }
-
-        /* Report the total size of the address space in MiB, for diagnostic
-        purposes. */
-        constexpr double size_in_mib() const noexcept {
-            return double((SIZE.partition + SIZE.pub) * PAGE_SIZE) / double(1_MiB);
-        }
-
-        /* Report the current utilization of the address space as a percentage, for
-        diagnostic purposes. */
-        constexpr double percentage_utilization() const noexcept {
-            return double(occupied) / (double(SIZE.pub) * 100.0);
-        }
-
-        /* Report the current utilization of the address space in MiB, for diagnostic
-        purposes.  Note that this does not count the physical ram consumed by the
-        allocations, just their overall footprint in virtual address space. */
-        constexpr double utilization_in_mib() const noexcept {
-            return double(occupied * PAGE_SIZE) / double(1_MiB);
-        }
 
         /* Initialize the address space on first use.  This is called in the
         constructor for `arena<T, N>`, ensuring proper initialization order, even for
@@ -619,65 +614,124 @@ namespace impl {
                 ));
             }
 
-            // set up chunk ledger for windows commit tracking
-            if constexpr (WINDOWS) {
-                constexpr size_t chunk_size =
-                    ((SIZE.partition + SIZE.pub) / std::numeric_limits<uint8_t>::max()) +
-                    ((SIZE.partition + SIZE.pub) % std::numeric_limits<uint8_t>::max() != 0);
-                if (!commit_address_space(ptr, page_align(chunk_size) * PAGE_SIZE)) {
-                    teardown = true;
-                    release();
-                    throw MemoryError(std::format(
-                        "failed to commit private partition for local address space "
-                        "starting at address {:#x} and ending at address {:#x} "
-                        "({:.3e} MiB) -> {}",
-                        reinterpret_cast<uintptr_t>(ptr),
-                        reinterpret_cast<uintptr_t>(ptr) + chunk_size,
-                        double(chunk_size) / double(1_MiB),
-                        system_err_msg()
-                    ));
-                }
-                chunks = static_cast<uint8_t*>(ptr);
-                chunks[0] = page_align(chunk_size);
-                nodes = reinterpret_cast<node*>(chunks + chunk_size);
-            } else {
-                nodes = static_cast<node*>(ptr);
+            // commit windows chunk ledger, batch array, and batch sort array
+            size_t commit = page_count(Size::BASE);
+            if (!commit_address_space(ptr, commit * PAGE_SIZE)) {
+                teardown = true;
+                release();
+                throw MemoryError(std::format(
+                    "failed to commit chunk ledger for local address space "
+                    "starting at address {:#x} and ending at address {:#x} "
+                    "({:.3e} MiB) -> {}",
+                    reinterpret_cast<uintptr_t>(ptr),
+                    reinterpret_cast<uintptr_t>(ptr) + commit * PAGE_SIZE,
+                    double(commit * PAGE_SIZE) / double(1_MiB),
+                    system_err_msg()
+                ));
             }
 
+            // calculate pointers to private data structures
+            chunks = static_cast<uint8_t*>(ptr);
+            batch = reinterpret_cast<uint32_t*>(
+                reinterpret_cast<std::byte*>(chunks) + CHUNK_LEDGER * sizeof(uint8_t)
+            );
+            batch_sort = reinterpret_cast<uint32_t*>(
+                reinterpret_cast<std::byte*>(batch) + COALESCE_BUFFER * sizeof(uint32_t)
+            );
+            nodes = reinterpret_cast<node*>(
+                reinterpret_cast<std::byte*>(batch_sort) + COALESCE_BUFFER * sizeof(uint32_t)
+            );
+            ptr = static_cast<std::byte*>(ptr) + SIZE.partition * PAGE_SIZE;  // public partition
+
+            // initialize chunk ledger if present
+            if constexpr (WINDOWS) {
+                for (uint32_t i = 0; commit > 0; ++i) {
+                    if (commit > std::numeric_limits<uint8_t>::max()) {
+                        chunks[i] = std::numeric_limits<uint8_t>::max();
+                        commit -= std::numeric_limits<uint8_t>::max();
+                    } else {
+                        chunks[i] = static_cast<uint8_t>(commit);
+                        break;
+                    }
+                }
+            }
+
+            // initialize single free node covering entire public partition
             nodes->offset = 0;  // start of public partition
             nodes->size = SIZE.pub;  // whole public partition
             nodes->left = NIL;  // no children
             nodes->right = NIL;  // no children
             nodes->heap = 0;  // only node in heap
             heap(0) = 0;  // only heap entry
-            next_id = 1;  // next node index
             heap_size = 1;  // only active node
             root = 0;  // root of coalesce tree
-            ptr = static_cast<std::byte*>(ptr) + SIZE.partition * PAGE_SIZE;  // public partition
+            next_id = 1;  // node index high-water mark
             initialized = true;  // set initialized signal
         }
 
         /* Release the address space on last use.  This is a no-op unless `teardown` is
-        set to `true`, indicating that the address space's destructor has been called,
-        and the address space is empty.  It will be called in the destructor for
-        `arena<T, N>` to ensure proper destruction order, even for objects with static
-        storage duration. */
+        set to `true` (indicating that the address space's destructor has been called)
+        and the address space is empty.  It will be called in the destructor for the
+        address space itself as well as `arena<T, N>` to ensure proper destruction
+        order, even for objects with static storage duration, where destructor order is
+        not guaranteed. */
         void release() {
             if (teardown && occupied == 0) {
                 if (!unmap_address_space(
-                    start_address(),
+                    start_ptr(),
                     (SIZE.partition + SIZE.pub) * PAGE_SIZE
                 )) {
                     throw MemoryError(std::format(
                         "failed to unmap local address space starting at address "
                         "{:#x} and ending at address {:#x} ({:.3e} MiB) -> {}",
-                        reinterpret_cast<uintptr_t>(start_address()),
-                        reinterpret_cast<uintptr_t>(end_address()),
+                        reinterpret_cast<uintptr_t>(start_ptr()),
+                        reinterpret_cast<uintptr_t>(end_ptr()),
                         size_in_mib(),
                         system_err_msg()
                     ));
                 }
             }
+        }
+
+        /* Return a pointer to the beginning of the private partition. */
+        [[nodiscard]] constexpr void* start_ptr() const noexcept {
+            return static_cast<std::byte*>(ptr) - SIZE.partition * PAGE_SIZE;
+        }
+
+        /* Return a pointer to the end of the public partition. */
+        [[nodiscard]] constexpr void* end_ptr() const noexcept {
+            return static_cast<std::byte*>(ptr) + SIZE.pub * PAGE_SIZE;
+        }
+
+        /* Report the total size of the private partition specifically, in MiB, for
+        diagnostic purposes. */
+        [[nodiscard]] constexpr double private_size_in_mib() const noexcept {
+            return double(SIZE.partition * PAGE_SIZE) / double(1_MiB);
+        }
+
+        /* Report the total size of the public partition specifically, in MiB, for
+        diagnostic purposes. */
+        [[nodiscard]] constexpr double public_size_in_mib() const noexcept {
+            return double(SIZE.pub * PAGE_SIZE) / double(1_MiB);
+        }
+
+        /* Report the total size of the address space in MiB, for diagnostic
+        purposes. */
+        [[nodiscard]] constexpr double size_in_mib() const noexcept {
+            return double((SIZE.partition + SIZE.pub) * PAGE_SIZE) / double(1_MiB);
+        }
+
+        /* Report the current utilization of the address space in MiB, for diagnostic
+        purposes.  Note that this does not count the physical ram consumed by the
+        allocations, just their overall footprint in virtual address space. */
+        [[nodiscard]] constexpr double utilization_in_mib() const noexcept {
+            return double(occupied * PAGE_SIZE) / double(1_MiB);
+        }
+
+        /* Report the current utilization of the address space as a percentage, for
+        diagnostic purposes. */
+        [[nodiscard]] constexpr double percent_utilization() const noexcept {
+            return (double(occupied) / double(SIZE.pub)) * 100.0;
         }
 
         /* Swap two heap indices, accounting for intrusive indices into the node
@@ -727,22 +781,22 @@ namespace impl {
 
         /* Insert the current node into the heap, maintaining the max heap
         invariant. */
-        constexpr void heap_insert(uint32_t curr) noexcept {
-            heap(heap_size) = curr;
-            nodes[curr].heap = heap_size;
+        constexpr void heap_insert(uint32_t id) noexcept {
+            heap(heap_size) = id;
+            nodes[id].heap = heap_size;
             heapify_up(heap_size);
             ++heap_size;
         }
 
         /* Remove the current node from the heap, maintaining the max heap
         invariant. */
-        constexpr void heap_remove(uint32_t curr) noexcept {
-            uint32_t pos = nodes[curr].heap;
+        constexpr void heap_erase(uint32_t id) noexcept {
+            uint32_t pos = nodes[id].heap;
             uint32_t last = heap(heap_size - 1);
             heap(pos) = last;
             nodes[last].heap = pos;
             --heap_size;
-            nodes[curr].heap = NIL;  // mark as removed
+            nodes[id].heap = NIL;  // mark as removed
             if (pos < heap_size) {  // fix heap if not removing last node
                 heapify_down(pos);
                 heapify_up(pos);
@@ -751,8 +805,8 @@ namespace impl {
 
         /* Restore the heap invariant for the current node, assuming it is still in
         the heap. */
-        constexpr void heap_fix(uint32_t curr) noexcept {
-            uint32_t pos = nodes[curr].heap;
+        constexpr void heap_fix(uint32_t id) noexcept {
+            uint32_t pos = nodes[id].heap;
             heapify_down(pos);
             heapify_up(pos);
         }
@@ -782,11 +836,11 @@ namespace impl {
 
         /* Insert a node into the treap, sorting by pointer address.  The return value
         is the new root of the treap, and may be identical to the previous root. */
-        constexpr uint32_t treap_insert(uint32_t root, uint32_t index) noexcept {
+        [[nodiscard]] constexpr uint32_t treap_insert(uint32_t root, uint32_t id) noexcept {
             if (root == NIL) {
-                return index;
+                return id;
             }
-            node& n = nodes[index];
+            node& n = nodes[id];
             node& r = nodes[root];
             if (uint32_t i = n.priority(), j = r.priority();
                 i < j || (i == j && n.offset < r.offset)
@@ -797,19 +851,19 @@ namespace impl {
                     n.left,
                     n.right
                 );
-                return index;
+                return id;
             }
             if (n.offset < r.offset) {
-                r.left = treap_insert(r.left, index);
+                r.left = treap_insert(r.left, id);
             } else {
-                r.right = treap_insert(r.right, index);
+                r.right = treap_insert(r.right, id);
             }
             return root;
         }
 
         /* Merge two child treaps and return the new root between them.  The result
         will always be identical to one of the inputs. */
-        constexpr uint32_t treap_merge(uint32_t left, uint32_t right) noexcept {
+        [[nodiscard]] constexpr uint32_t treap_merge(uint32_t left, uint32_t right) noexcept {
             if (left == NIL) return right;
             if (right == NIL) return left;
             node& l = nodes[left];
@@ -828,27 +882,27 @@ namespace impl {
         Note that the key must compare equal to exactly one entry in the treap.  The
         return value is the new root of the treap, and may be identical to the previous
         root. */
-        constexpr uint32_t treap_erase(uint32_t root, uint32_t key) noexcept {
+        [[nodiscard]] constexpr uint32_t treap_erase(uint32_t root, uint32_t id) noexcept {
             if (root == NIL) {
                 return NIL;
             }
             node& n = nodes[root];
-            if (key == n.offset) {
+            if (nodes[id].offset == n.offset) {
                 uint32_t merged = treap_merge(n.left, n.right);
                 n.left = NIL;
                 n.right = NIL;
                 return merged;
             }
-            if (key < n.offset) {
-                n.left = treap_erase(n.left, key);
+            if (nodes[id].offset < n.offset) {
+                n.left = treap_erase(n.left, id);
             } else {
-                n.right = treap_erase(n.right, key);
+                n.right = treap_erase(n.right, id);
             }
             return root;
         }
 
         /* Find the free block immediately preceding the given key in the treap. */
-        constexpr uint32_t treap_prev(uint32_t root, uint32_t key) const noexcept {
+        [[nodiscard]] constexpr uint32_t treap_prev(uint32_t root, uint32_t key) const noexcept {
             uint32_t best = NIL;
             while (root != NIL) {
                 node& n = nodes[root];
@@ -863,11 +917,11 @@ namespace impl {
         }
 
         /* Find the free block immediately following the given key in the treap. */
-        constexpr uint32_t treap_next(uint32_t root, uint32_t key) const noexcept {
+        [[nodiscard]] constexpr uint32_t treap_next(uint32_t root, uint32_t key) const noexcept {
             uint32_t best = NIL;
             while (root != NIL) {
                 node& n = nodes[root];
-                if (n.offset > key) {
+                if (n.offset >= key) {
                     best = root;
                     root = n.left;
                 } else {
@@ -877,15 +931,9 @@ namespace impl {
             return best;
         }
 
-        /* Purge the batch buffer and coalesce adjacent free blocks, informing the
-        operating system that the physical memory backing them can be reclaimed. */
-        constexpr void coalesce() {
-            /// TODO: not really sure how to do this.  I think I need to coalesce
-            /// first, and then call decommit for every region that was freed.
-        }
-
-        /* Get a node id from the free list or end of storage and increment count. */
-        constexpr uint32_t get_node() noexcept {
+        /* Get a node id from the free list or end of storage.  Note that this does
+        not insert the node into either the heap or treap. */
+        [[nodiscard]] constexpr uint32_t get_node() noexcept {
             if (free != NIL) {
                 uint32_t n = free;
                 free = nodes[n].right;  // advance free list (possibly NIL)
@@ -894,89 +942,246 @@ namespace impl {
             return next_id++;
         }
 
-        /* Append a node id to the batch list and decrement count.  If the batch list
-        exceeds a certain size or total memory threshold, then purge the batch list
-        and coalesce adjacent free blocks. */
-        constexpr void put_node(uint32_t index) noexcept {
-            /// TODO: insert into batch list, then check thresholds and coalesce if
-            /// they exceed limits.  Only the coalesce step should modify the free list.
+        /* Radix sort the batch list by offset, updating it in-place. */
+        constexpr void radix_sort() noexcept {
+            if (batch_count <= 1) {
+                return;
+            }
 
-            nodes[index].right = free;
-            free = index;
+            uint32_t* in = batch;
+            uint32_t* out = batch_sort;
+
+            for (uint32_t shift = 0; shift < 32; shift += 8) {
+                uint32_t count[256] {};
+
+                // histogram
+                for (uint32_t i = 0; i < batch_count; ++i) {
+                    ++count[(nodes[in[i]].offset >> shift) & uint32_t(0xFF)];
+                }
+
+                // prefix sum : starting index
+                uint32_t sum = 0;
+                for (uint32_t i = 0; i < 256; ++i) {
+                    uint32_t n = count[i];
+                    count[i] = sum;
+                    sum += n;
+                }
+
+                // scatter
+                for (uint32_t i = 0; i < batch_count; ++i) {
+                    uint32_t key = nodes[in[i]].offset;
+                    out[count[(key >> shift) & uint32_t(0xFF)]++] = in[i];
+                }
+
+                // swap buffers
+                std::swap(in, out);
+            }
+
+            // if we ended in the temporary buffer, copy back to batch
+            if (in != batch) {
+                std::memcpy(batch, in, batch_count * sizeof(uint32_t));
+            }
         }
 
-        /* Request `size` pages of memory from the arena, returning a void pointer to
-        the allocated region.  Note that `size` must be aligned to the nearest page,
-        and the same value must always be passed to the `deallocate()` method along
-        with the result of this function in order to free the allocated memory. */
-        [[nodiscard]] void* allocate(uint32_t size) {
+        /* Extend an initial run to the right, merging with adjacent nodes from either
+        the batch or the treap.  Any merged nodes will be appended to the free list,
+        and those that originate from the treap will be removed from both the heap and
+        treap.  If no adjacent nodes are found, then the run is complete. */
+        [[nodiscard]] constexpr bool cascade(uint32_t run, uint32_t& i) {
+            uint32_t n;
+
+            // prefer merging with batch nodes first, pushing them to the free list
+            if (i < batch_count) {
+                n = batch[i];
+                if (nodes[run].end() == nodes[n].offset) {
+                    nodes[run].size += nodes[n].size;
+                    nodes[n].right = free;
+                    free = n;
+                    ++i;
+                    return true;
+                }
+            }
+
+            // fall back to treap nodes if possible, removing from heap + treap and
+            // pushing to free list
+            n = treap_next(root, nodes[run].end());
+            if (n != NIL && nodes[run].end() == nodes[n].offset) {
+                nodes[run].size += nodes[n].size;
+                heap_erase(n);
+                root = treap_erase(root, n);
+                nodes[n].right = free;
+                free = n;
+                return true;
+            }
+
+            // run is complete
+            return false;
+        }
+
+        /* Purge the `batch` array and coalesce adjacent free blocks, informing the
+        operating system that the physical memory backing them can be reclaimed. */
+        constexpr void coalesce() {
+            radix_sort();
+
+            // process each run in the sorted batch list, assuming there is at least one
+            uint32_t i = 0;
+            do {
+                uint32_t run = batch[i++];
+                bool insert = false;
+
+                // for the first node in each run, check for an adjacent predecessor
+                // that's already in the treap or remember to insert if not
+                uint32_t n = treap_prev(root, nodes[run].offset);
+                if (n != NIL && nodes[n].end() == nodes[run].offset) {
+                    nodes[n].size += nodes[run].size;
+                    nodes[run].right = free;
+                    free = run;
+                    run = n;
+                } else {
+                    insert = true;
+                }
+
+                /// TODO: windows commit chunk updates would go here
+
+                // cascade to the right, merging with adjacent nodes from the batch
+                // list or treap until no more adjacent nodes are found
+                while (cascade(run, i));
+
+                // decommit the merged block
+                if (!decommit_address_space(
+                    static_cast<std::byte*>(ptr) + (nodes[run].offset * PAGE_SIZE),
+                    nodes[run].size * PAGE_SIZE
+                )) {
+                    throw MemoryError(std::format(
+                        "failed to decommit {:.3e} MiB from local address space "
+                        "starting at address {:#x} and ending at address {:#x} -> {}",
+                        double(nodes[run].size * PAGE_SIZE) / double(1_MiB),
+                        reinterpret_cast<uintptr_t>(ptr) + (nodes[run].offset * PAGE_SIZE),
+                        reinterpret_cast<uintptr_t>(ptr) +
+                            ((nodes[run].offset + nodes[run].size) * PAGE_SIZE),
+                        system_err_msg()
+                    ));
+                };
+
+                // reinsert the merged block into the treap and/or heap if needed
+                if (insert) {
+                    root = treap_insert(root, run);
+                    heap_insert(run);
+                } else {
+                    heap_fix(run);
+                }
+            } while (i < batch_count);
+
+            // reset batch sizes, but don't bother zeroing out the arrays
+            batch_count = 0;
+            batched = 0;
+        }
+
+        /* Append a node id to the batch list.  If the batch list exceeds a memory
+        threshold, then purge the batch list and coalesce adjacent free blocks.  Note
+        that this method assumes the node has already been removed from both the heap
+        and treap. */
+        constexpr void put_node(uint32_t id) noexcept {
+            batch[batch_count++] = id;
+            batched += nodes[id].size;
+            if (batched >= COALESCE_BUFFER) {
+                coalesce();
+            }
+        }
+
+        /* Request `size` pages of memory from the address space, returning a void
+        pointer to the allocated region.  Note that `size` is always aligned to the
+        nearest page, and the same value must always be passed to the `deallocate()`
+        method along with the result of this function in order to free the allocated
+        memory.  This will be called in the constructor for `arena<T, N>`. */
+        [[nodiscard]] void* allocate(uint32_t pages) {
             acquire();  // ensure mapping/partition ready
 
-            /// TODO: allocate() still has some pointer-era concepts that need to be
-            /// updated
-
             // check if there is enough space available
-            node& largest = nodes[heap(0)];
-            if (size > largest.size) {
-                /// TODO: this is where I would try to coalesce or expand the committed
-                /// section
+            uint32_t largest = heap(0);
+            if (pages > nodes[largest].size) {
+                if (batch_count > 0) {
+                    coalesce();
+                    return allocate(pages);  // try again
+                }
                 throw MemoryError(std::format(
                     "failed to allocate {:.3e} MiB from local address space ({:.3e} "
                     "MiB / {:.3e} MiB - {}%) -> insufficient space available",
-                    double(size * PAGE_SIZE) / double(1_MiB),
+                    double(pages * PAGE_SIZE) / double(1_MiB),
                     utilization_in_mib(),
                     size_in_mib(),
-                    percentage_utilization()
+                    percent_utilization()
                 ));
             }
 
-            // bisect the largest available region
-            largest.size -= size;
-            uint32_t left = largest.size / 2;
-            uint32_t right = largest.size - left;
-            uint32_t offset = largest.offset + left;
-            occupied += size;
+            // remove from heap and bisect
+            heap_erase(largest);
+            uint32_t remaining = nodes[largest].size - pages;
+            uint32_t left_size = remaining / 2;
+            uint32_t right_size = remaining - left_size;
+            uint32_t offset = nodes[largest].offset + left_size;
 
-            /// TODO: note that whenever a node's offset is modified, it requires a
-            /// removal and reinsertion into the treap to maintain sorted order
+            /// TODO: windows commit chunking would go here
 
-
-            // If there is one remaining half, reuse the existing node without
-            // allocating a new one.  Otherwise, grab a new node from the free list
-            // or push the current node onto the free list as needed.
-            if (left) {
-                largest.size = left;
-                if (right) {
+            // if there is one remaining half, reuse the existing node without
+            // allocating a new one; otherwise, get a new node or push the current node
+            // onto the free list
+            if (left_size) {
+                // no need to fix treap, since the left half never moved
+                nodes[largest].size = left_size;
+                heap_insert(largest);
+                if (right_size) {
                     uint32_t child = get_node();
                     node& c = nodes[child];
-                    c.offset = offset + size;
-                    c.size = right;
+                    c.offset = offset + pages;
+                    c.size = right_size;
                     c.left = NIL;
                     c.right = NIL;
                     c.heap = NIL;
-                    /// TODO: insert into treap + heap
+                    root = treap_insert(root, child);
+                    heap_insert(child);
                 }
-                /// TODO: fix heap
-            } else if (right) {
-                largest.offset = offset + size;
-                largest.size = right;
-                /// TODO: fix heap
+            } else if (right_size) {
+                root = treap_erase(root, largest);
+                nodes[largest].offset = offset + pages;
+                nodes[largest].size = right_size;
+                root = treap_insert(root, largest);
+                heap_insert(largest);
             } else {
-                put_node(static_cast<uint32_t>(&largest - nodes));
+                root = treap_erase(root, largest);
+                nodes[largest].right = free;
+                free = largest;
             }
 
-            /// TODO: rebalance the heap and coalesce tree
-
-
+            occupied += pages;
             return static_cast<std::byte*>(ptr) + (offset * PAGE_SIZE);
         }
 
-        void deallocate(void* p, size_t size) {
-            /// TODO: not sure how to do this yet
+        /* Return `size` pages of memory back to the address space.  Note that both
+        `p` and `size` must match a previous call to `allocate()`, which allows this
+        method to avoid validating the arguments.  This will be called in the
+        destructor for `arena<T, N>`. */
+        void deallocate(void* p, uint32_t pages) {
+            uint32_t offset =
+                (static_cast<std::byte*>(p) - static_cast<std::byte*>(ptr)) / PAGE_SIZE;
 
+            // get a quarantined node and add it to the batch list
+            uint32_t id = get_node();
+            nodes[id].offset = offset;
+            nodes[id].size = pages;
+            nodes[id].left = NIL;
+            nodes[id].right = NIL;
+            nodes[id].heap = NIL;
+            occupied -= pages;
+            put_node(id);  // may trigger coalesce()
 
             release();  // attempt to unmap if in teardown state
         }
+
+        /// TODO: these methods would allow for resizing existing allocations
+
+        /// TODO: extend(void* p, uint32_t pages)
+        /// TODO: shrink(void* p, uint32_t pages)
 
     public:
         [[nodiscard]] address_space() noexcept {};
@@ -990,12 +1195,17 @@ namespace impl {
         }
 
         /* The size of the local address space reflects the current amount of virtual
-        memory that has been allocated from it (which is not necessarily equal to the
-        amount of physical ram being consumed). */
-        [[nodiscard]] constexpr size_t size() const noexcept { return occupied; }
-        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(occupied); }
+        memory that has been allocated from it in bytes (which is not necessarily equal
+        to the amount of physical ram being consumed). */
+        [[nodiscard]] constexpr size_t size() const noexcept { return occupied * PAGE_SIZE; }
+        [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
         [[nodiscard]] constexpr bool empty() const noexcept { return occupied == 0; }
+
+        /// TODO: some more diagnostic methods here?
+
     } local_address_space {};
+
+
 
 
 
