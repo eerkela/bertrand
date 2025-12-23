@@ -449,14 +449,20 @@ namespace impl {
         return size / PAGE_SIZE + (size % PAGE_SIZE != 0);
     }
 
+    /* Round an allocation size (in bytes) up to the nearest multiple of the system's
+    pointer alignment (usually 8 bytes).  Returns the rounded size in bytes. */
+    [[nodiscard]] constexpr size_t align_native(size_t nbytes) {
+        return nbytes / alignof(void*) + (nbytes % alignof(void*) != 0);
+    }
+
     /// TODO: long-term, what I should do is add a couple slab allocators within the
     /// public partition to handle small allocations up to a couple pages in size
     /// immediately, without TLB pressure or fragmentation
 
 
     /* Each hardware thread has its own local address space, which it can access
-    globally, without locking.  Because the address space is virtual memory, there are
-    some differences from a traditional allocator.
+    globally, without locking.  Because the address space hands out virtual memory,
+    there are some differences from traditional allocators.
 
     First, because virtual memory is decoupled from physical memory, fragmentation is
     much less of a concern, since unoccupied regions will take up zero physical space.
@@ -500,8 +506,28 @@ namespace impl {
         array that grows until a certain threshold is reached, after which the batched
         nodes are sorted by offset, coalesced with adjacent free blocks, and
         decommitted en masse.  Only after this are the batched nodes moved back into
-        the free list. */
+        the free list.
+
+        The sorting algorithm is an LSD radix sort with 8-bit digits and OneSweep-style
+        loop fusion, which requires two temporary buffers to store the digit counts and
+        prefix sums.  Additionally, insertion sort will be used as an optimization if 
+        the batch size is below a (tunable) threshold.  */
         static constexpr uint32_t COALESCE_BUFFER = page_count(COALESCE_THRESHOLD);
+        static constexpr uint32_t RADIX_POWER = 256;
+        static constexpr uint32_t RADIX_LOG2 = 8;
+        static constexpr uint32_t RADIX_MASK = RADIX_POWER - 1;
+        static constexpr uint32_t RADIX_LAST = std::numeric_limits<uint32_t>::digits - RADIX_LOG2;
+        static constexpr uint32_t INSERTION_THRESHOLD = 64;
+
+        /* Because the radix sort buffers are persistent, they must be zeroed before
+        every invocation. */
+        constexpr void reset_radix_counts() noexcept {
+            if consteval {
+                for (uint32_t i = 0; i < RADIX_POWER; ++i) radix_count[i] = 0;
+            } else {
+                std::memset(radix_count, 0, RADIX_POWER * sizeof(uint32_t));
+            }
+        }
 
         /* Nodes use an intrusive heap + treap data structure that compresses to just
         24 bytes.  The nodes are stored in a stable, private partition array starting
@@ -517,6 +543,9 @@ namespace impl {
             uint32_t right;  // right BST child index or index of next node in singly-linked list
             uint32_t heap;  // index into the heap array for this node
             uint32_t heap_array;  // overlapping heap array
+
+            /// TODO: use a simpler Murmur/wyhash-style 32-bit finalizer instead, to
+            /// reduce overhead
 
             /* Deterministically compute a priority value for this node using its
             offset.  Getting this on-demand means it doesn't need to be stored. */
@@ -544,6 +573,9 @@ namespace impl {
             return nodes[pos].heap_array;
         }
 
+        /// TODO: I need to take 8-byte alignment into consideration for each structure
+        /// in the private partition.
+
         /* The node list and max heap are stored contiguously in a region large enough
         to hold one page per node in the worst case.  Allocations will never be more
         fine-grained than this due to strict page alignment, so we will never run out
@@ -555,7 +587,9 @@ namespace impl {
         efficient as the page size increases. */
         static constexpr struct Size {
             static constexpr size_t BASE = 
-                CHUNK_LEDGER * sizeof(uint8_t) + 2 * COALESCE_BUFFER * sizeof(uint32_t);
+                align_native(CHUNK_LEDGER * sizeof(uint8_t)) +
+                2 * align_native(COALESCE_BUFFER * sizeof(uint32_t)) +
+                2 * align_native(RADIX_POWER * sizeof(uint32_t));
             uint32_t partition;
             uint32_t pub;
         } SIZE = [] -> Size {
@@ -590,6 +624,8 @@ namespace impl {
         uint32_t batch_count = 0;  // number of nodes in batch list
         uint32_t batched = 0;  // total number of pages stored in batch list
         uint8_t* chunks = nullptr;  // windows commit chunk ledger
+        uint32_t* radix_count = nullptr;  // temporary array for radix sort counts
+        uint32_t* radix_sum = nullptr;  // temporary array for radix sort prefix sums
         uint32_t* batch = nullptr;  // batch list
         uint32_t* batch_sort = nullptr;  // temporary array for radix-sorting batch list
         node* nodes = nullptr;  // node storage + overlapping heap
@@ -631,16 +667,18 @@ namespace impl {
             }
 
             // calculate pointers to private data structures
-            chunks = static_cast<uint8_t*>(ptr);
-            batch = reinterpret_cast<uint32_t*>(
-                reinterpret_cast<std::byte*>(chunks) + CHUNK_LEDGER * sizeof(uint8_t)
-            );
-            batch_sort = reinterpret_cast<uint32_t*>(
-                reinterpret_cast<std::byte*>(batch) + COALESCE_BUFFER * sizeof(uint32_t)
-            );
-            nodes = reinterpret_cast<node*>(
-                reinterpret_cast<std::byte*>(batch_sort) + COALESCE_BUFFER * sizeof(uint32_t)
-            );
+            size_t i = 0;
+            chunks = reinterpret_cast<uint8_t*>(static_cast<std::byte*>(ptr) + i);
+            i += align_native(CHUNK_LEDGER * sizeof(uint8_t));
+            radix_count = reinterpret_cast<uint32_t*>(static_cast<std::byte*>(ptr) + i);
+            i += align_native(RADIX_POWER * sizeof(uint32_t));
+            radix_sum = reinterpret_cast<uint32_t*>(static_cast<std::byte*>(ptr) + i);
+            i += align_native(RADIX_POWER * sizeof(uint32_t));
+            batch = reinterpret_cast<uint32_t*>(static_cast<std::byte*>(ptr) + i);
+            i += align_native(COALESCE_BUFFER * sizeof(uint32_t));
+            batch_sort = reinterpret_cast<uint32_t*>(static_cast<std::byte*>(ptr) + i);
+            i += align_native(COALESCE_BUFFER * sizeof(uint32_t));
+            nodes = reinterpret_cast<node*>(static_cast<std::byte*>(ptr) + i);
             ptr = static_cast<std::byte*>(ptr) + SIZE.partition * PAGE_SIZE;  // public partition
 
             // initialize chunk ledger if present
@@ -811,6 +849,9 @@ namespace impl {
             heapify_up(pos);
         }
 
+        /// TODO: I should consider moving over to explicit stack treap implementations
+        /// to avoid the cost of recursion.
+
         /* Update the links of `root` to insert a node with a given `key`, then set
         that node's children to maintain sorted order. */
         constexpr void treap_split(
@@ -942,45 +983,88 @@ namespace impl {
             return next_id++;
         }
 
-        /* Radix sort the batch list by offset, updating it in-place. */
+        /* Apply insertion sort to sub-arrays with size less than `INSERTION_THRESHOLD`
+        to avoid constant factors in radix sort. */
+        constexpr void insertion_sort() noexcept {
+            for (uint32_t i = 1; i < batch_count; ++i) {
+                if (nodes[batch[i]].offset < nodes[batch[i - 1]].offset) {
+                    uint32_t tmp = batch[i];
+                    batch[i] = batch[i - 1];
+                    uint32_t j = i - 1;
+                    while (j > 0 && nodes[tmp].offset < nodes[batch[j - 1]].offset) {
+                        batch[j] = batch[j - 1];
+                        --j;
+                    }
+                    batch[j] = tmp;
+                }
+            }
+        }
+
+        /* Radix sort the batch list by offset, updating it in-place.  This algorithm
+        incorporates an innovation from OneSweep: A Faster Least Significant Digit
+        Radix Sort for GPUs (Andy Adinets and Duane Merrill, 2022).
+
+            https://arxiv.org/abs/2206.01784
+
+        This effectively combines counting for the next pass with scatter for the
+        current pass, reducing the total number of iterations from `O(2d(n + k))` to
+        `O((d + 1)(n + k))`, where `d` is the number of digits per key (4 in this
+        case), `n` is the number of elements, and `k` is the number of bins (256 for
+        8-bit digits). */
         constexpr void radix_sort() noexcept {
-            if (batch_count <= 1) {
+            if (batch_count < 2) {
                 return;
             }
+            if (batch_count <= INSERTION_THRESHOLD) {
+                insertion_sort();
+                return;
+            }
+            reset_radix_counts();
 
-            uint32_t* in = batch;
-            uint32_t* out = batch_sort;
+            // initial counting to determine bin sizes/offsets for first digit
+            for (uint32_t i = 0; i < batch_count; ++i) {
+                ++radix_count[nodes[batch[i]].offset & RADIX_MASK];
+            }
 
-            for (uint32_t shift = 0; shift < 32; shift += 8) {
-                uint32_t count[256] {};
+            // compute prefix sums
+            uint32_t prefix = 0;
+            for (uint32_t i = 0; i < RADIX_POWER; ++i) {
+                uint32_t n = radix_count[i];
+                radix_sum[i] = prefix;  // starting index for this bin
+                prefix += n;
+            }
 
-                // histogram
+            // sort ids into bins by offset digit value, least significant first
+            for (uint32_t shift = 0; shift < RADIX_LAST; shift += RADIX_LOG2) {
+                reset_radix_counts();
+
+                // scatter combined with counting for next pass
                 for (uint32_t i = 0; i < batch_count; ++i) {
-                    ++count[(nodes[in[i]].offset >> shift) & uint32_t(0xFF)];
+                    uint32_t key = nodes[batch[i]].offset >> shift;
+                    batch_sort[radix_sum[key & RADIX_MASK]++] = batch[i];
+                    ++radix_count[(key >> RADIX_LOG2) & RADIX_MASK];
                 }
 
-                // prefix sum : starting index
-                uint32_t sum = 0;
-                for (uint32_t i = 0; i < 256; ++i) {
-                    uint32_t n = count[i];
-                    count[i] = sum;
-                    sum += n;
-                }
-
-                // scatter
-                for (uint32_t i = 0; i < batch_count; ++i) {
-                    uint32_t key = nodes[in[i]].offset;
-                    out[count[(key >> shift) & uint32_t(0xFF)]++] = in[i];
+                // recompute prefix sums for next pass
+                prefix = 0;
+                for (uint32_t i = 0; i < RADIX_POWER; ++i) {
+                    uint32_t n = radix_count[i];
+                    radix_sum[i] = prefix;  // starting index for next pass
+                    prefix += n;
                 }
 
                 // swap buffers
-                std::swap(in, out);
+                std::swap(batch, batch_sort);
             }
 
-            // if we ended in the temporary buffer, copy back to batch
-            if (in != batch) {
-                std::memcpy(batch, in, batch_count * sizeof(uint32_t));
+            // final pass can avoid simultaneous counting
+            for (uint32_t i = 0; i < batch_count; ++i) {
+                uint32_t key = nodes[batch[i]].offset;
+                batch_sort[radix_sum[(key >> RADIX_LAST) & RADIX_MASK]++] = batch[i];
             }
+
+            // ensure the sorted data is kept in the original batch array
+            std::swap(batch, batch_sort);
         }
 
         /* Extend an initial run to the right, merging with adjacent nodes from either
@@ -1180,7 +1264,7 @@ namespace impl {
 
         /// TODO: these methods would allow for resizing existing allocations
 
-        /// TODO: extend(void* p, uint32_t pages)
+        /// TODO: grow(void* p, uint32_t pages)
         /// TODO: shrink(void* p, uint32_t pages)
 
     public:
