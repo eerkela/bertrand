@@ -63,6 +63,10 @@ constexpr impl::nbytes operator""_TiB(unsigned long long size) noexcept {
 }
 
 
+/// TODO: document these flags, and possibly come up with better names, like
+/// BERTRAND_VMEM_PER_THREAD, BERTRAND_COALESCE_AFTER, 
+
+
 #ifdef BERTRAND_PAGE_SIZE
     constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
 #else
@@ -94,10 +98,24 @@ static_assert(
 );
 
 
-#ifdef BERTRAND_COALESCE_THRESHOLD
-    constexpr size_t COALESCE_THRESHOLD = BERTRAND_COALESCE_THRESHOLD;
+#ifdef BERTRAND_ALLOCATE_COALESCE_AFTER
+    constexpr size_t COALESCE_THRESHOLD = BERTRAND_ALLOCATE_COALESCE_AFTER;
 #else
     constexpr size_t COALESCE_THRESHOLD = 16_MiB;
+#endif
+
+
+#ifdef BERTRAND_ALLOCATE_RADIX_AFTER
+    constexpr size_t INSERTION_THRESHOLD = BERTRAND_ALLOCATE_RADIX_AFTER;
+#else
+    constexpr size_t INSERTION_THRESHOLD = 64;
+#endif
+
+
+#ifdef BERTRAND_ALLOCATE_DEBUG
+    constexpr bool DEBUG_ALLOCATOR = true;
+#else
+    constexpr bool DEBUG_ALLOCATOR = false;
 #endif
 
 
@@ -517,7 +535,6 @@ namespace impl {
         static constexpr uint32_t RADIX_LOG2 = 8;
         static constexpr uint32_t RADIX_MASK = RADIX_POWER - 1;
         static constexpr uint32_t RADIX_LAST = std::numeric_limits<uint32_t>::digits - RADIX_LOG2;
-        static constexpr uint32_t INSERTION_THRESHOLD = 64;
 
         /* Because the radix sort buffers are persistent, they must be zeroed before
         every invocation. */
@@ -544,18 +561,20 @@ namespace impl {
             uint32_t heap;  // index into the heap array for this node
             uint32_t heap_array;  // overlapping heap array
 
-            /// TODO: use a simpler Murmur/wyhash-style 32-bit finalizer instead, to
-            /// reduce overhead
-
-            /* Deterministically compute a priority value for this node using its
-            offset.  Getting this on-demand means it doesn't need to be stored. */
+            /* Deterministically compute a priority value for this node by passing its
+            offset into a splitmix32-style finalizer.  The current implementation is
+            bijective, meaning that it returns perfect hashes for every possible
+            input, allowing us to drop collision pathways in treap rotations.  If this
+            ever changes in the future, then the collision pathway will need to be
+            restored. */
             [[nodiscard]] constexpr uint32_t priority() const noexcept {
-                uint64_t x = offset;
-                x += 0x9E3779B97F4A7C15ull;
-                x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
-                x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
-                x = x ^ (x >> 31);
-                return uint32_t(x) ^ uint32_t(x >> 32);
+                uint32_t x = offset;
+                x ^= x >> 16;
+                x *= 0x7feb352dU;  // odd => invertible mod 2^32
+                x ^= x >> 15;
+                x *= 0x846ca68bU;  // odd => invertible mod 2^32
+                x ^= x >> 16;
+                return x;
             }
 
             /* Get an offset to the end of the memory region, for merging purposes. */
@@ -572,9 +591,6 @@ namespace impl {
         [[nodiscard]] constexpr const uint32_t& heap(uint32_t pos) const noexcept {
             return nodes[pos].heap_array;
         }
-
-        /// TODO: I need to take 8-byte alignment into consideration for each structure
-        /// in the private partition.
 
         /* The node list and max heap are stored contiguously in a region large enough
         to hold one page per node in the worst case.  Allocations will never be more
@@ -772,6 +788,10 @@ namespace impl {
             return (double(occupied) / double(SIZE.pub)) * 100.0;
         }
 
+        /// TODO: if BERTRAND_DEBUG_ALLOCATOR is set, add extra assertions to
+        /// validate the heap and treap invariants after every modification, and
+        /// whatever other consistency checks the coalesce step might need.
+
         /* Swap two heap indices, accounting for intrusive indices into the node
         array. */
         constexpr void heap_swap(uint32_t lhs, uint32_t rhs) noexcept {
@@ -789,10 +809,16 @@ namespace impl {
             while (true) {
                 uint32_t left = (pos * 2) + 1;
                 uint32_t right = left + 1;
-                if (left < heap_size && nodes[heap(left)].size > nodes[heap(pos)].size) {
+                if (
+                    left < heap_size &&
+                    nodes[heap(left)].size > nodes[heap(pos)].size
+                ) {
                     heap_swap(pos, left);
                     pos = left;
-                } else if (right < heap_size && nodes[heap(right)].size > nodes[heap(pos)].size) {
+                } else if (
+                    right < heap_size &&
+                    nodes[heap(right)].size > nodes[heap(pos)].size
+                ) {
                     heap_swap(pos, right);
                     pos = right;
                 } else {
@@ -849,97 +875,168 @@ namespace impl {
             heapify_up(pos);
         }
 
-        /// TODO: I should consider moving over to explicit stack treap implementations
-        /// to avoid the cost of recursion.
-
-        /* Update the links of `root` to insert a node with a given `key`, then set
-        that node's children to maintain sorted order. */
+        /* Iteratively update the links of `root` to insert a node with a given `key`,
+        then set that node's children to maintain sorted order.  This is done without
+        an explicit stack, by modifying the links in-place. */
         constexpr void treap_split(
             uint32_t root,
             uint32_t key,
             uint32_t& left,
             uint32_t& right
         ) noexcept {
-            if (root == NIL) {
-                left = NIL;
-                right = NIL;
-            } else {
-                node& n = nodes[root];
-                if (n.offset < key) {
-                    treap_split(n.right, key, n.right, right);
-                    left = root;
+            left = NIL;
+            right = NIL;
+            uint32_t left_tail = NIL;
+            uint32_t right_tail = NIL;
+
+            // split using in-place tree rotations
+            while (root != NIL) {
+                if (nodes[root].offset < key) {
+                    // append root to the right spine of left subtree
+                    uint32_t next = nodes[root].right;
+                    if (left_tail == NIL) {
+                        left = root;
+                    } else {
+                        nodes[left_tail].right = root;
+                    }
+                    left_tail = root;
+                    root = next;
                 } else {
-                    treap_split(n.left, key, left, n.left);
-                    right = root;
+                    // append root to the left spine of right subtree
+                    uint32_t next = nodes[root].left;
+                    if (right_tail == NIL) {
+                        right = root;
+                    } else {
+                        nodes[right_tail].left = root;
+                    }
+                    right_tail = root;
+                    root = next;
                 }
             }
+
+            // terminate spines
+            if (left_tail != NIL) {
+                nodes[left_tail].right = NIL;
+            }
+            if (right_tail != NIL) {
+                nodes[right_tail].left = NIL;
+            }
         }
 
-        /* Insert a node into the treap, sorting by pointer address.  The return value
-        is the new root of the treap, and may be identical to the previous root. */
+        /* Iteratively insert a node into the treap, sorting by offset.  The return
+        value is the new root of the treap, and may be identical to the previous root.
+        This is done without an explicit stack via a simple pointer, which modifies
+        links in-place. */
         [[nodiscard]] constexpr uint32_t treap_insert(uint32_t root, uint32_t id) noexcept {
-            if (root == NIL) {
-                return id;
+            uint32_t key = nodes[id].offset;
+            uint32_t priority = nodes[id].priority();
+
+            nodes[id].left = NIL;
+            nodes[id].right = NIL;
+
+            // walk using a pointer-to-link so subtree roots can be replaced in-place
+            uint32_t* link = &root;
+            while (*link != NIL) {
+                uint32_t curr = *link;
+
+                // min-heap by priority.  Note that since the priority function is
+                // bijective modulo 2^32 (and therefore produces perfect hashes), we
+                // can remove the collision path here as a micro-optimization.  If the
+                // priority function ever loses the bijective property, then this must
+                // be restored.
+                if (uint32_t p = nodes[curr].priority(); priority < p
+                    // || (priority == p && nodes[curr].offset < key)
+                ) {
+                    treap_split(
+                        curr,
+                        key,
+                        nodes[id].left,
+                        nodes[id].right
+                    );
+                    *link = id;
+                    return root;
+                }
+
+                // otherwise, descend by BST key
+                if (key < nodes[curr].offset) {
+                    link = &nodes[curr].left;
+                } else {
+                    link = &nodes[curr].right;
+                }
             }
-            node& n = nodes[id];
-            node& r = nodes[root];
-            if (uint32_t i = n.priority(), j = r.priority();
-                i < j || (i == j && n.offset < r.offset)
-            ) {
-                treap_split(
-                    root,
-                    n.offset,
-                    n.left,
-                    n.right
-                );
-                return id;
-            }
-            if (n.offset < r.offset) {
-                r.left = treap_insert(r.left, id);
-            } else {
-                r.right = treap_insert(r.right, id);
-            }
+
+            // fell off the tree - insert as leaf
+            *link = id;
             return root;
         }
 
-        /* Merge two child treaps and return the new root between them.  The result
-        will always be identical to one of the inputs. */
-        [[nodiscard]] constexpr uint32_t treap_merge(uint32_t left, uint32_t right) noexcept {
-            if (left == NIL) return right;
-            if (right == NIL) return left;
-            node& l = nodes[left];
-            node& r = nodes[right];
-            if (uint32_t i = l.priority(), j = r.priority();
-                i < j || (i == j && l.offset < r.offset)
-            ) {
-                l.right = treap_merge(l.right, right);
-                return left;
-            }
-            r.left = treap_merge(left, r.left);
-            return right;
-        }
-
-        /* Search for a key in the treap and remove it, while maintaining sorted order.
-        Note that the key must compare equal to exactly one entry in the treap.  The
-        return value is the new root of the treap, and may be identical to the previous
-        root. */
+        /* Iteratively search for a key in the treap and remove it while maintaining
+        sorted order.  Note that the key must compare equal to exactly one entry in the
+        treap.  The return value is the new root of the treap, and may be identical to
+        the previous root.  Note this is done without an explicit stack via a simple
+        pointer, which modifies links in-place by rotating down the tree. */
         [[nodiscard]] constexpr uint32_t treap_erase(uint32_t root, uint32_t id) noexcept {
-            if (root == NIL) {
-                return NIL;
+            uint32_t key = nodes[id].offset;
+
+            // find node by key
+            uint32_t* link = &root;
+            while (true) {
+                if (*link == NIL) {
+                    return root;
+                }
+                uint32_t curr = *link;
+                if (nodes[curr].offset == key) {
+                    break;
+                }
+                link = (key < nodes[curr].offset) ? &nodes[curr].left : &nodes[curr].right;
             }
-            node& n = nodes[root];
-            if (nodes[id].offset == n.offset) {
-                uint32_t merged = treap_merge(n.left, n.right);
-                n.left = NIL;
-                n.right = NIL;
-                return merged;
+
+            // iteratively rotate down until node has <= 1 child, then splice
+            while (true) {
+                uint32_t curr = *link;
+                uint32_t left = nodes[curr].left;
+                uint32_t right = nodes[curr].right;
+                if (left == NIL) {
+                    *link = right;
+                    nodes[curr].left = NIL;
+                    nodes[curr].right = NIL;
+                    return root;
+                } else if (right == NIL) {
+                    *link = left;
+                    nodes[curr].left = NIL;
+                    nodes[curr].right = NIL;
+                    return root;
+                }
+
+                // bubble up the child with smaller priority (min heap).  Note that
+                // just like `treap_insert()`, we can remove the collision path here as
+                // a micro-optimization due to the bijective property of the priority
+                // function.  If this ever changes, the collision path must be restored.
+                if (uint32_t p_left = nodes[left].priority(), p_right = nodes[right].priority();
+                    p_left < p_right
+                    // || (p_left == p_right && nodes[left].offset < nodes[right].offset
+                ) {
+                    // rotate right at *link
+                    uint32_t x = *link;
+                    uint32_t y = nodes[x].left;
+                    nodes[x].left = nodes[y].right;
+                    nodes[y].right = x;
+                    *link = y;
+
+                    // target moved to right child
+                    link = &nodes[y].right;
+                } else {
+                    // rotate left at *link
+                    uint32_t x = *link;
+                    uint32_t y = nodes[x].right;
+                    nodes[x].right = nodes[y].left;
+                    nodes[y].left = x;
+                    *link = y;
+
+                    // target moved to left child
+                    link = &nodes[y].left;
+                }
             }
-            if (nodes[id].offset < n.offset) {
-                n.left = treap_erase(n.left, id);
-            } else {
-                n.right = treap_erase(n.right, id);
-            }
-            return root;
         }
 
         /* Find the free block immediately preceding the given key in the treap. */
@@ -1288,640 +1385,6 @@ namespace impl {
         /// TODO: some more diagnostic methods here?
 
     } local_address_space {};
-
-
-
-
-
-    /* A pool of virtual arenas backing the `arena<T, N>` class.  These arenas
-    are allocated upfront at program startup and reused in a manner similar to
-    `malloc()`/`free()`, minimizing syscall overhead when apportioning spaces in
-    downstream code.  Provides thread-safe access to each arena, and implements a
-    simple load-balancing algorithm to ensure that the arenas are evenly utilized. */
-    struct address_space {
-
-        /* An individual arena, representing a contiguous virtual address space of
-        length `ARENA_SIZE` with a private partition to store an allocator freelist. */
-        struct arena {
-        private:
-            template <meta::unqualified T, impl::capacity<T> N>
-            friend struct bertrand::arena;
-            friend address_space;
-
-            /* Freelist is held contiguously in the first 1/1024th of the arena.  If
-            filled to capacity, this yields an average unoccupied block length of
-            ~20 KiB per node in the worst case, which is more than enough capacity for
-            general use.  For a 1 GiB arena, assuming 1 page allocations between nodes:
-
-                1 GiB / 1024 = 1 MiB private partition
-                1 MiB / sizeof(node) = 1 MiB / 24 B = 43690 node capacity
-                1023 MiB - 43690 * 4 KiB = 852.3 MiB empty space
-                852.3 MiB / 43690 = ~20.0 KiB average unoccupied block length
-
-            This assumes maximum theoretical fragmentation, which is extremely unlikely
-            under ordinary usage, and should never be a problem in practice. */
-            static constexpr size_t PARTITION =
-                std::min(((ARENA_SIZE + 1023) / 1024), PAGE_SIZE);
-
-            struct node {
-                std::byte* ptr;  // start of unoccupied memory region
-                size_t length;  // length of unoccupied memory region
-                node* next = nullptr;  // next node in the freelist
-            };
-
-            node* m_private;  // beginning of private partition
-            size_t m_id;  // arena ID in range [0, NTHREADS)
-            node* m_head = nullptr;  // proper head of freelist
-            node* m_highest = nullptr;  // node with largest address in freelist
-            size_t m_size = 0;  // number of nodes in freelist
-            size_t m_capacity = 0;  // number of bytes reserved for freelist
-            node* m_reuse = nullptr;  // tracks gaps in the node store for reuse
-            mutable std::mutex m_mutex;  // mutex for thread-safe access
-            std::byte* m_public;  // pointer to the start of public partition
-            size_t m_occupied = 0;  // number of bytes used in public partition
-
-            arena(size_t id, std::byte* data) :
-                m_id(id),
-                m_private(reinterpret_cast<node*>(data)),
-                m_public(data + PARTITION)
-            {
-                std::unique_lock lock(m_mutex);
-                if (!push(m_public, capacity())) {
-                    throw MemoryError(std::format(
-                        "failed to initialize freelist for arena {} starting "
-                        "at address {:#x} and ending at address {:#x} ({:.3e} "
-                        "MiB) - {}",
-                        m_id,
-                        reinterpret_cast<uintptr_t>(m_public),
-                        reinterpret_cast<uintptr_t>(m_public) + capacity(),
-                        double(PAGE_SIZE) / double(1_MiB),
-                        system_err_msg()
-                    ));
-                }
-            }
-
-            /* Insert a node into the freelist representing an unoccupied memory
-            region starting at `ptr` and continuing for `length` bytes.  This
-            will attempt to merge with the previous and next nodes if possible.
-            Returns the node that was inserted or merged into, or nullptr if
-            an error occurred.  The mutex must be locked for the duration of this
-            method. */
-            [[nodiscard]] node* push(std::byte* ptr, size_t length) noexcept {
-                // find the insertion point for the new node
-                node* prev = nullptr;
-                node* next = m_head;
-                while (next) {
-                    if (next->ptr > ptr) {
-                        break;
-                    }
-                    prev = next;
-                    next = next->next;
-                }
-
-                // check if the new node can be merged with the neighboring nodes
-                if (prev && prev->ptr + prev->length == ptr) {
-                    prev->length += length;
-                    if (next && next->ptr == ptr + length) {
-                        prev->length += next->length;
-                        prev->next = next->next;
-                        next->ptr = nullptr;
-                        next->length = 0;
-                        next->next = m_reuse;
-                        m_reuse = next;
-                        --m_size;
-                    }
-                    return prev;
-                } else if (next && next->ptr == ptr + length) {
-                    next->ptr = ptr;
-                    next->length += length;
-                    return next;
-                }
-
-                // if the node cannot be merged, we need to allocate a new node
-                // and insert it between `prev` and `next`.  Start by checking the
-                // `reuse` list to see if we can fill a previously-opened gap in
-                // the contiguous region.
-                if (m_reuse) {
-                    node* curr = m_reuse;
-                    m_reuse = m_reuse->next;
-                    curr->ptr = ptr;
-                    curr->length = length;
-                    curr->next = next;
-                    if (prev) {
-                        prev->next = curr;
-                    } else {
-                        m_head = curr;
-                    }
-                    ++m_size;
-                    if (curr > m_highest || !m_highest) {
-                        m_highest = curr;
-                    }
-                    return curr;
-                }
-
-                // otherwise, all nodes are consolidated, and we may need to
-                // allocate additional pages
-                if (((m_size + 1) * sizeof(node)) >= m_capacity) {
-                    std::byte* pos = reinterpret_cast<std::byte*>(m_private) + m_capacity;
-                    if (pos + PAGE_SIZE >= m_public || !commit_address_space(
-                        pos,
-                        PAGE_SIZE
-                    )) {
-                        return nullptr;
-                    }
-                    m_capacity += PAGE_SIZE;
-                }
-
-                // allocate from the end of the contiguous region
-                node* curr = m_private + m_size;
-                curr->ptr = ptr;
-                curr->length = length;
-                curr->next = next;
-                if (prev) {
-                    prev->next = curr;
-                } else {
-                    m_head = curr;
-                }
-                ++m_size;
-                m_highest = curr;  // guaranteed to be highest
-                return curr;
-            }
-
-            /* Scan the freelist to identify an unoccupied region that can store
-            at least `length` bytes, and then adjust the neighboring nodes to
-            consider that region occupied.  Returns a pointer to the start of the
-            unoccupied region, or nullptr if no such region exists.  The mutex
-            must be locked for the duration of this method. */
-            [[nodiscard]] std::byte* pop(size_t length) {
-                // find the first node large enough to store the requested length
-                node* prev = nullptr;
-                node* curr = m_head;
-                while (curr) {
-                    if (curr->length >= length) {
-                        std::byte* ptr = curr->ptr;
-
-                        // decrement the node's capacity and increment its pointer
-                        // by the requested length
-                        curr->length -= length;
-                        if (curr->length) {
-                            curr->ptr += length;
-
-                        // if the node has no remaining capacity, unlink it from
-                        // the freelist and add it to the reuse list
-                        } else {
-                            if (prev) {
-                                prev->next = curr->next;
-                            } else {
-                                m_head = curr->next;
-                            }
-                            curr->ptr = nullptr;
-                            curr->length = 0;
-                            curr->next = m_reuse;
-                            m_reuse = curr;
-                            --m_size;
-
-                            // if the node was the highest-addressed, then we need
-                            // to find the next highest node.  This can be done
-                            // quickly by iterating over all addresses to the left
-                            // of the node, which are guaranteed to be part of
-                            // either the freelist or the reuse list.  We skip over
-                            // members of the reuse list, potentially allowing them
-                            // to be freed immediately after.
-                            if (curr == m_highest) {
-                                while (m_highest > m_private && m_highest->ptr == nullptr) {
-                                    --m_highest;
-                                }
-
-                                // if an error occurs while shrinking the list,
-                                // then we need to restore the freelist to its
-                                // original state
-                                if (!shrink()) {
-                                    ++m_size;
-                                    curr->ptr = ptr;
-                                    curr->length = length;
-                                    m_reuse = curr->next;
-                                    if (prev) {
-                                        curr->next = prev->next;
-                                        prev->next = curr;
-                                    } else {
-                                        curr->next = m_head;
-                                        m_head = curr;
-                                    }
-                                    throw MemoryError(std::format(
-                                        "failed to decommit unused pages for "
-                                        "freelist in arena {} starting at address "
-                                        "{:#x} and ending at address {:#x} ({:.3e} "
-                                        "MiB) - {}",
-                                        m_id,
-                                        reinterpret_cast<uintptr_t>(m_private),
-                                        reinterpret_cast<uintptr_t>(m_highest),
-                                        double(PAGE_SIZE) / double(1_MiB),
-                                        system_err_msg()
-                                    ));
-                                }
-                            }
-                        }
-                        return ptr;
-                    }
-
-                    // advance to next node
-                    prev = curr;
-                    curr = curr->next;
-                }
-
-                // no suitable node was found, so return a null pointer
-                return nullptr;
-            }
-
-            /* Attempt to decommit unused pages if the load factor drops below a
-            given threshold.  A best-faith effort is made to recover from errors
-            should the decommit somehow fail. */
-            [[nodiscard]] bool shrink() noexcept {
-                // if the highest-addressed node is less than 3/4 the allocated
-                // capacity, then we can decommit pages to free up physical memory
-                size_t span = (m_highest - m_private) * sizeof(node);
-                if (m_capacity > (PAGE_SIZE * 4) && span < (m_capacity - m_capacity / 4)) {
-                    size_t new_capacity = span + PAGE_SIZE - 1;
-                    new_capacity /= PAGE_SIZE;
-                    new_capacity *= PAGE_SIZE;
-
-                    // purge the reuse list of any nodes above the new capacity
-                    node* prev = nullptr;
-                    node* curr = m_reuse;
-                    node* limit = m_private + (new_capacity / sizeof(node));
-                    node* removed = nullptr;
-                    size_t n_removed = 0;
-                    while (curr) {
-                        if (curr >= limit) {
-                            if (prev) {
-                                prev->next = curr->next;
-                            } else {
-                                m_reuse = curr->next;
-                            }
-                            curr->next = removed;
-                            removed = curr;
-                            ++n_removed;
-                        } else {
-                            prev = curr;
-                        }
-                        curr = curr->next;
-                    }
-
-                    // decommit the pages above the new capacity.  If an error
-                    // somehow occurs, then make a best-faith effort to restore the
-                    // freelist to its original state.  This starts by adding the
-                    // removed nodes to the tail of the reuse list (not head), so
-                    // that they are not immediately reused, and can potentially
-                    // be purged again in the future
-                    if (!decommit_address_space(
-                        reinterpret_cast<std::byte*>(m_private) + new_capacity,
-                        m_capacity - new_capacity
-                    )) {
-                        prev = nullptr;
-                        curr = m_reuse;
-                        while (curr) {
-                            prev = curr;
-                            curr = curr->next;
-                        }
-                        if (prev) {
-                            prev->next = removed;
-                        } else {
-                            m_reuse = removed;
-                        }
-                        return false;
-                    }
-                    m_size -= n_removed;
-                    m_capacity = new_capacity;
-                }
-                return true;
-            }
-
-            /* Search for an unoccupied region capable of storing at least `length`
-            bytes, and return a pointer to the start of that region.  Adjusts the
-            freelist to consider the region occupied, and returns a null pointer if
-            no such region exists.  The mutex must be locked when this method is
-            called, and will be unlocked when it returns.  Typically, this method is
-            invoked immediately after `address_space.acquire()`. */
-            [[nodiscard]] std::byte* reserve(size_t length) {
-                try {
-                    std::byte* ptr = pop(length);
-                    if (!ptr) {
-                        throw MemoryError(std::format(
-                            "failed to locate an unoccupied region of size {} in "
-                            "arena {} starting at address {:#x} and ending at address "
-                            "{:#x} ({:.3e} MiB)",
-                            length,
-                            m_id,
-                            reinterpret_cast<uintptr_t>(m_public),
-                            reinterpret_cast<uintptr_t>(m_public) + capacity(),
-                            double(ARENA_SIZE) / double(1_MiB)
-                        ));
-                    }
-                    m_occupied += length;
-                    m_mutex.unlock();
-                    return ptr;
-                } catch (...) {
-                    m_mutex.unlock();
-                    throw;
-                }
-            }
-
-            /* Given a pointer to an unoccupied region starting at `ptr` consisting of
-            `length` bytes, register the region with the arena's free list so that it
-            can be used for future allocations.  Returns false if the freelist could
-            not be updated. */
-            [[nodiscard]] bool recycle(std::byte* ptr, size_t length) noexcept {
-                m_mutex.lock();
-                node* chunk = push(ptr, length);
-                if (chunk) {
-                    m_occupied -= length;
-                }
-                m_mutex.unlock();
-                return chunk;
-            }
-
-        public:
-            arena(const arena&) = delete;
-            arena(arena&&) = delete;
-            arena& operator=(const arena&) = delete;
-            arena& operator=(arena&&) = delete;
-
-            /* The ID of this arena, which is always an integer in the range
-            [0, NTHREADS). */
-            [[nodiscard]] size_t id() const noexcept {
-                return m_id;
-            }
-
-            /* The number of bytes that have been reserved from this arena.  This is
-            always less than or equal to `capacity()`. */
-            [[nodiscard]] size_t size() const noexcept {
-                return m_occupied;
-            }
-
-            /* The total amount of virtual memory held by this arena.  This is a
-            compile-time constant set by the `BERTRAND_ARENA_SIZE` build flag minus a
-            constant amount reserved for the arena's private partition.  More capacity
-            allows for a greater number and size of child address spaces, but can
-            compete with the rest of the program's virtual address space if set too
-            high.  Note that this does not refer to actual physical memory, just a
-            range of pointers that are reserved for each arena. */
-            [[nodiscard]] static constexpr size_t capacity() noexcept {
-                return ARENA_SIZE - PARTITION;
-            }
-
-            /* Manually lock the arena's mutex, blocking until it is available and
-            returning an RAII lock guard that automatically unlocks it upon
-            destruction.  This can potentially deadlock if the mutex is already locked
-            by this thread.  As long as the arena is locked, it cannot be used for
-            allocation. */
-            [[nodiscard]] std::unique_lock<std::mutex> lock() const noexcept {
-                return std::unique_lock(m_mutex);
-            }
-
-            /* Attempt to lock the arena's mutex without blocking.  If the lock was
-            acquired, returns an RAII lock guard that automatically unlocks it upon
-            destruction.  Otherwise, returns an empty guard that can later be used for
-            deferred locking.  As long as the arena is locked, it cannot be used for
-            allocation. */
-            [[nodiscard]] std::unique_lock<std::mutex> try_lock() const noexcept {
-                return std::unique_lock(m_mutex, std::try_to_lock);
-            }
-        };
-
-    private:
-        template <meta::unqualified T, capacity<T> N>
-        friend struct bertrand::arena;
-
-        struct storage;
-        friend storage;
-
-        address_space() = default;
-        ~address_space() noexcept {
-            if (!unmap_address_space(m_data, ARENA_SIZE * NTHREADS)) {
-                /// NOTE: destructor is only called at program termination, so
-                /// errors here are not critical.  The OS will reclaim memory
-                /// anyways unless something is really wrong, so we just log it and
-                /// continue.
-                std::cerr << system_err_msg() << std::endl;
-            }
-        }
-
-        /* All arenas are mapped to a single contiguous address range to minimize
-        syscall overhead and maximize performance for downstream `mprotect()` calls. */
-        std::byte* m_data = [] {
-            std::byte* ptr = map_address_space(ARENA_SIZE * NTHREADS);
-            if (!ptr) {
-                throw MemoryError(std::format(
-                    "Failed to map address space for {} arenas starting at "
-                    "address {:#x} and ending at address {:#x} ({:.3e} MiB) - {}",
-                    ARENA_SIZE * NTHREADS,
-                    reinterpret_cast<uintptr_t>(ptr),
-                    reinterpret_cast<uintptr_t>(ptr) + ARENA_SIZE * NTHREADS,
-                    double(ARENA_SIZE * NTHREADS) / double(1_MiB),
-                    system_err_msg()
-                ));
-            }
-            return ptr;
-        }();
-
-        /* Arenas are stored in an array where each index is equal to the arena ID. */
-        std::array<arena, NTHREADS> m_arenas = []<size_t... Is>(
-            std::index_sequence<Is...>,
-            std::byte* data
-        ) {
-            return std::array<arena, NTHREADS>{arena{
-                Is,
-                data + ARENA_SIZE * Is
-            }...};
-        }(std::make_index_sequence<NTHREADS>{}, m_data);
-
-        /* Search for an available arena for a requested address space of size
-        `capacity`.  A null pointer will be returned if all arenas are full.
-        Otherwise, the arena will be returned in a locked state, requiring the caller
-        to manually unlock its mutex. */
-        [[nodiscard]] arena* acquire(size_t capacity) {
-            static thread_local std::mt19937 rng{std::random_device()()};
-            static thread_local std::uniform_int_distribution<size_t> dist{
-                0,
-                NTHREADS - 1
-            };
-
-            constexpr size_t max_neighbors = 4;
-            constexpr size_t neighbors =
-                max_neighbors < NTHREADS ? max_neighbors : NTHREADS;
-
-            // concurrent load balancing is performed stochastically by generating
-            // a random index into the arena array and building a neighborhood of
-            // the next 4 arenas as a ring buffer sorted by utilization.
-            size_t index = 0;
-            if constexpr (NTHREADS > max_neighbors) {
-                index = dist(rng) % NTHREADS;
-            }
-
-            struct ring {
-                arena* ptr;
-                ring* next = nullptr;
-                bool full = false;
-            };
-
-            auto ring_store = []<size_t... Is>(
-                std::index_sequence<Is...>,
-                size_t index,
-                arena* arenas
-            ) {
-                return std::array<ring, neighbors>{
-                    ring{&arenas[(index + Is) % NTHREADS]}...
-                };
-            }(
-                std::make_index_sequence<neighbors>{},
-                index,
-                m_arenas.data()
-            );
-
-            ring* head = &ring_store[0];
-            ring* tail = &ring_store[0];
-            for (size_t i = 1; i < neighbors; ++i) {
-                ring& node = ring_store[i];
-                if (node.ptr->size() < head->ptr->size()) {
-                    node.next = head;
-                    head = &node;
-                } else if (node.ptr->size() >= tail->ptr->size()) {
-                    tail->next = &node;
-                    tail = &node;
-                } else {
-                    ring* prev = head;
-                    ring* curr = head->next;
-                    while (curr) {
-                        if (node.ptr->size() < curr->ptr->size()) {
-                            node.next = curr;
-                            prev->next = &node;
-                            break;
-                        }
-                        prev = curr;
-                        curr = curr->next;
-                    }
-                }
-            }
-            tail->next = head;
-
-            // spin around the ring buffer until we find an available arena or
-            // all arenas are full
-            size_t full_count = 0;
-            while (full_count < neighbors) {
-                if (!head->full) {
-                    if (head->ptr->size() + capacity > ARENA_SIZE) {
-                        head->full = true;
-                        ++full_count;
-                    } else if (head->ptr->m_mutex.try_lock()) {
-                        return head->ptr;
-                    }
-                }
-                head = head->next;
-            }
-
-            throw MemoryError(std::format(
-                "not enough virtual memory for new address space of size "
-                "{:.3e} MiB",
-                double(capacity) / double(1_MiB)
-            ));
-        }
-
-    public:
-        address_space(const address_space&) = delete;
-        address_space(address_space&&) = delete;
-        address_space& operator=(const address_space&) = delete;
-        address_space& operator=(address_space&&) = delete;
-
-        /* Get a reference to the global address space singleton. */
-        [[nodiscard]] static address_space& get() noexcept;
-
-        /* The number of arenas in the global address space.  This is a compile-time
-        constant that is set by the `BERTRAND_NTHREADS` build flag, and defaults to 8
-        if not specified.  More arenas may reduce contention in multithreaded
-        environments. */
-        [[nodiscard]] static constexpr size_t size() noexcept {
-            return NTHREADS;
-        }
-
-        /* Access a specific arena by its ID, which is a sequential integer from 0 to
-        `size()`. */
-        [[nodiscard]] const arena& operator[](size_t id) const {
-            if (id >= NTHREADS) {
-                throw IndexError(std::format(
-                    "Arena ID {} is out of bounds for global address space with {} "
-                    "arenas.",
-                    id,
-                    NTHREADS
-                ));
-            }
-            return m_arenas[id];
-        }
-
-        /* Iterate over the arenas one-by-one to collect usage statistics. */
-        [[nodiscard]] const arena* begin() const noexcept {
-            if constexpr (NTHREADS == 0) {
-                return nullptr;
-            } else {
-                return &m_arenas[0];
-            }
-        }
-
-        [[nodiscard]] const arena* end() const noexcept {
-            if constexpr (NTHREADS == 0) {
-                return nullptr;
-            } else {
-                return &m_arenas[NTHREADS];
-            }
-        }
-    };
-
-    /* The global address space singleton is stored in an uninitialized private buffer
-    that gets initialized first thing before any other global or static constructors
-    are run, and last thing after any destructors that may need it.  The
-    `address_space::get()` method is the only way to access this instance, and
-    another instance cannot be created, destroyed, or unsafely modified in any other
-    context. */
-    struct address_space::storage {
-    private:
-        friend address_space;
-
-        inline static bool initialized = false;
-        alignas(address_space) inline static unsigned char buffer[
-            sizeof(address_space)
-        ];
-
-        [[gnu::constructor(101)]] static void init() {
-            if constexpr (ARENA_SIZE > 0) {
-                if (!initialized) {
-                    new (buffer) address_space();
-                    initialized = true;
-                }
-            }
-        }
-
-        [[gnu::destructor(65535)]] static void finalize() {
-            if constexpr (ARENA_SIZE > 0) {
-                if (initialized) {
-                    reinterpret_cast<address_space*>(
-                        buffer
-                    )->~address_space();
-                    initialized = false;
-                }
-            }
-        }
-    };
-
-    [[nodiscard]] inline address_space& address_space::get() noexcept {
-        static_assert(
-            ARENA_SIZE > 0,
-            "The current system does not support virtual address spaces.  Please set "
-            "the `BERTRAND_ARENA_SIZE`, `BERTRAND_NTHREADS`, and `BERTRAND_PAGE_SIZE` "
-            "build flags to positive values to enable this feature, or condition this "
-            "code path on the state of the constexpr `ARENA_SIZE` variable to provide "
-            "an alternative."
-        );
-        return *reinterpret_cast<address_space*>(storage::buffer);
-    }
 
 }
 
