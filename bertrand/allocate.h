@@ -651,8 +651,10 @@ namespace impl {
         uint32_t heap_size = 0;  // number of active nodes (excluding batch and free list)
         uint32_t root = NIL;  // index to root of coalesce treap
         uint32_t free = NIL;  // index to first uninitialized node in storage or NIL
-        uint32_t batch_count = 0;  // number of nodes in batch list
         uint32_t batched = 0;  // total number of pages stored in batch list
+        uint32_t batch_count = 0;  // number of nodes in batch list
+        uint32_t batch_min = NIL;  // min node offset present in batch list
+        uint32_t batch_max = NIL;  // max node offset present in batch list
         uint32_t* radix_count = nullptr;  // temporary array for radix counts
         uint32_t* radix_sum = nullptr;  // temporary array for radix prefix sums
         uint32_t* batch = nullptr;  // batch list of staged (but not yet freed) deallocations
@@ -1123,10 +1125,9 @@ namespace impl {
         constexpr void put_node(uint32_t id) noexcept {
             batch[batch_count++] = id;
             batched += nodes[id].size;
-            if (batched >= COALESCE_BUFFER) {
-                radix_sort();
-                coalesce();
-            }
+            if (batch_min == NIL || nodes[id].offset < batch_min) batch_min = nodes[id].offset;
+            if (batch_max == NIL || nodes[id].offset > batch_max) batch_max = nodes[id].offset;
+            if (batched >= COALESCE_BUFFER) coalesce();
         }
 
         /* Register a committed region starting at the public `offset` and continuing
@@ -1171,6 +1172,68 @@ namespace impl {
                 size -= CHUNK_WIDTH;
             }
         }
+
+        /* Given an offset and a number of pages, get a [start, stop) interval over
+        the non-partially allocated chunks between them, for commit/decommit
+        purposes. */
+        [[nodiscard]] constexpr auto chunk_interval(uint32_t offset, uint32_t size) noexcept
+            -> std::pair<uint32_t, uint32_t>
+        {
+            uint32_t from = offset / CHUNK_WIDTH;
+            from += chunks[from] > 0;
+            from *= CHUNK_WIDTH;
+            uint32_t s = offset + size;
+            uint32_t to = s / CHUNK_WIDTH;
+            to += (s % CHUNK_WIDTH) != 0 && chunks[to] == 0;
+            to = std::min(to * CHUNK_WIDTH, SIZE.pub);
+            return {from, to};
+        }
+
+        /* Commit the chunks necessary to store a public allocation starting at
+        `offset` and continuing for `size` pages.  Note that this is separate from
+        `chunk_increment()`, which must be called after this to ensure correct interval
+        calculations. */
+        constexpr void chunk_commit(uint32_t offset, uint32_t size) {
+            auto [from, to] = chunk_interval(offset, size);
+            if (to > from && !commit_address_space(
+                static_cast<std::byte*>(ptr) + (from * PAGE_SIZE),
+                (to - from) * PAGE_SIZE
+            )) {
+                throw MemoryError(std::format(
+                    "failed to commit {:.3e} MiB from local address space "
+                    "starting at address {:#x} and ending at address {:#x} -> {}",
+                    double((to - from) * PAGE_SIZE) / double(1_MiB),
+                    reinterpret_cast<uintptr_t>(ptr) + (from * PAGE_SIZE),
+                    reinterpret_cast<uintptr_t>(ptr) + (to * PAGE_SIZE),
+                    system_err_msg()
+                ));
+            }
+        }
+
+        /* Decommit the chunks necessary to free a public allocation starting at
+        `offset` and continuing for `size` pages.  Note that this is separate from
+        `chunk_decrement()`, which must be called before this to ensure correct
+        interval calculations. */
+        constexpr void chunk_decommit(uint32_t offset, uint32_t size) {
+            auto [from, to] = chunk_interval(offset, size);
+            if (to > from && !decommit_address_space(
+                static_cast<std::byte*>(ptr) + (from * PAGE_SIZE),
+                (to - from) * PAGE_SIZE
+            )) {
+                throw MemoryError(std::format(
+                    "failed to decommit {:.3e} MiB from local address space "
+                    "starting at address {:#x} and ending at address {:#x} -> {}",
+                    double((to - from) * PAGE_SIZE) / double(1_MiB),
+                    reinterpret_cast<uintptr_t>(ptr) + (from * PAGE_SIZE),
+                    reinterpret_cast<uintptr_t>(ptr) + (to * PAGE_SIZE),
+                    system_err_msg()
+                ));
+            };
+        }
+
+        ////////////////////////
+        ////    COALESCE    ////
+        ////////////////////////
 
         /* Apply insertion sort to batches with size less than `INSERTION_THRESHOLD` to
         mitigate constant factors in radix sort. */
@@ -1303,9 +1366,10 @@ namespace impl {
         }
 
         /* Purge a sorted `batch` array and coalesce adjacent free blocks, informing
-        the operating system that the physical memory backing them can be reclaimed.
-        Note that `radix_sort()` should always be called before this method. */
+        the operating system that the physical memory backing them can be reclaimed. */
         constexpr void coalesce() {
+            radix_sort();
+
             // process each run in the sorted batch list, assuming there is at least one
             uint32_t i = 0;
             do {
@@ -1331,33 +1395,12 @@ namespace impl {
                 // list or treap until no more adjacent nodes are found
                 while (cascade(run, i));
 
-                // decommit the merged block
+                // decommit the merged block, aligning to chunk boundaries on windows.
+                // Note that the chunk values have already been updated by this point,
+                // which is crucial to the interval calculation
                 if constexpr (WINDOWS) {
-                    // if on windows, align decommits to chunk boundaries.  Note that
-                    // the chunk values have already been updated by this point, so
-                    // we can just check for zero/non-zero to detect partial chunks
-                    uint32_t from = nodes[run].offset / CHUNK_WIDTH;
-                    from += chunks[from] > 0;
-                    from *= CHUNK_WIDTH;
-                    uint32_t s = nodes[run].offset + nodes[run].size;
-                    uint32_t to = s / CHUNK_WIDTH;
-                    to += (s % CHUNK_WIDTH) != 0 && chunks[to] == 0;
-                    to = std::min(to * CHUNK_WIDTH, SIZE.pub);
-                    if (to > from && !decommit_address_space(
-                        static_cast<std::byte*>(ptr) + (from * PAGE_SIZE),
-                        (to - from) * PAGE_SIZE
-                    )) {
-                        throw MemoryError(std::format(
-                            "failed to decommit {:.3e} MiB from local address space "
-                            "starting at address {:#x} and ending at address {:#x} -> {}",
-                            double((to - from) * PAGE_SIZE) / double(1_MiB),
-                            reinterpret_cast<uintptr_t>(ptr) + (from * PAGE_SIZE),
-                            reinterpret_cast<uintptr_t>(ptr) + (to * PAGE_SIZE),
-                            system_err_msg()
-                        ));
-                    };
-                } else {
-                    // on unix, just decommit the whole block
+                    chunk_decommit(nodes[run].offset, nodes[run].size);
+                } else {  // on unix, just decommit the whole block
                     if (!decommit_address_space(
                         static_cast<std::byte*>(ptr) + (nodes[run].offset * PAGE_SIZE),
                         nodes[run].size * PAGE_SIZE
@@ -1384,14 +1427,24 @@ namespace impl {
                 }
             } while (i < batch_count);
 
-            // reset batch sizes, but don't bother zeroing out the arrays
+            // reset batch sizes + min/max, but don't bother zeroing out the arrays
             batch_count = 0;
             batched = 0;
+            batch_min = NIL;
+            batch_max = NIL;
         }
 
         ///////////////////////////////
         ////    ARENA INTERFACE    ////
         ///////////////////////////////
+
+        /// TODO: if these methods accept 32-bit integers, then all arenas can pack to
+        /// just 8 bytes, consisting of an offset and a size in pages.  It may not work
+        /// for slabs, though, which require sub-page addresses.  Perhaps in that case
+        /// I can just store the pointer address directly as a 64-bit value without a
+        /// size, which can be inferred from the slab size class.  Or the offset can
+        /// indicate the size class, and the size can indicate the current block
+        /// within that slab.
 
         /* Request `size` pages of memory from the address space, returning a void
         pointer to the allocated region.  Note that `size` is always aligned to the
@@ -1405,7 +1458,6 @@ namespace impl {
             uint32_t largest = heap(0);
             if (pages > nodes[largest].size) {
                 if (batch_count > 0) {
-                    radix_sort();
                     coalesce();
                     return allocate(pages);  // try again
                 }
@@ -1425,32 +1477,12 @@ namespace impl {
             uint32_t right_size = remaining - left_size;
             uint32_t offset = nodes[largest].offset + left_size;
 
-            // commit the allocated region on windows (unnecessary for unix systems,
-            // since they lack a hard commit limit)
-            if constexpr (WINDOWS) {
-                // if on windows, align decommits to chunk boundaries.  Note that
-                // the chunk values have not been updated at this point, so we can just
-                // check for zero/non-zero to detect partial chunks
-                uint32_t from = offset / CHUNK_WIDTH;
-                from += chunks[from] > 0;
-                from *= CHUNK_WIDTH;
-                uint32_t s = offset + pages;
-                uint32_t to = s / CHUNK_WIDTH;
-                to += (s % CHUNK_WIDTH) != 0 && chunks[to] == 0;
-                to = std::min(to * CHUNK_WIDTH, SIZE.pub);
-                if (to > from && !commit_address_space(
-                    static_cast<std::byte*>(ptr) + (from * PAGE_SIZE),
-                    (to - from) * PAGE_SIZE
-                )) {
-                    throw MemoryError(std::format(
-                        "failed to commit {:.3e} MiB from local address space "
-                        "starting at address {:#x} and ending at address {:#x} -> {}",
-                        double((to - from) * PAGE_SIZE) / double(1_MiB),
-                        reinterpret_cast<uintptr_t>(ptr) + (from * PAGE_SIZE),
-                        reinterpret_cast<uintptr_t>(ptr) + (to * PAGE_SIZE),
-                        system_err_msg()
-                    ));
-                }
+            // commit the allocated region on windows, aligning to chunk boundaries
+            // (unnecessary for unix systems, since they lack a hard commit limit).
+            // Note that the chunk values have not been updated yet, which is crucial
+            // to the interval calculation
+            if constexpr (WINDOWS) {  
+                chunk_commit(offset, pages);
                 chunk_increment(offset, pages);
             }
 
@@ -1488,10 +1520,10 @@ namespace impl {
             return static_cast<std::byte*>(ptr) + (offset * PAGE_SIZE);
         }
 
-        /* Return `size` pages of memory back to the address space.  Note that both
-        `p` and `size` must match a previous call to `allocate()`, which allows this
-        method to avoid validating the arguments.  This will be called in the
-        destructor for `arena<T, N>`. */
+        /* Return `pages` pages of memory back to the address space.  Note that both
+        `p` and `pages` must be in the region of a previous call to `allocate()`, which
+        allows this method to avoid validating the arguments.  This will be called in
+        the destructor for `arena<T, N>`, as well as shrink operations. */
         void deallocate(void* p, uint32_t pages) {
             uint32_t offset = static_cast<uint32_t>(
                 (static_cast<std::byte*>(p) - static_cast<std::byte*>(ptr)) / PAGE_SIZE
@@ -1505,14 +1537,86 @@ namespace impl {
             nodes[id].right = NIL;
             nodes[id].heap = NIL;
             occupied -= pages;
-            put_node(id);  // may trigger radix_sort()/coalesce()
+            put_node(id);  // may trigger coalesce()
             release();  // attempt to unmap if in teardown state
         }
 
-        /// TODO: these methods would allow for resizing existing allocations
+        /* Extend an allocation to the right by the specified number of `pages`.
+        Returns true if the allocation was able to be extended in-place, or false if it
+        requires relocation (in which case no changes will be made to the allocator).
+        Note that `p` must point to the end of a region previously returned by
+        `allocate()`, and `pages` indicates how many additional pages should be
+        allocated.  This will be called in `arena.reserve()`, and subsequently by any
+        container reserve methods that may call it in turn. */
+        [[nodiscard]] bool reserve(void* p, uint32_t pages) {
+            // search the treap for an adjacent free block
+            uint32_t offset = static_cast<uint32_t>(
+                (static_cast<std::byte*>(p) - static_cast<std::byte*>(ptr)) / PAGE_SIZE
+            );
+            uint32_t id = treap_next(root, offset);
+            if (id != NIL && nodes[id].offset == offset && nodes[id].size >= pages) {
+                if constexpr (WINDOWS) {
+                    chunk_commit(offset, pages);
+                    chunk_increment(offset, pages);
+                }
+                root = treap_erase(root, id);
+                nodes[id].size -= pages;
+                if (nodes[id].size == 0) {
+                    heap_erase(id);
+                    nodes[id].right = free;
+                    free = id;
+                } else {
+                    nodes[id].offset += pages;
+                    root = treap_insert(root, id);
+                    heap_fix(id);
+                }
+                occupied += pages;
+                return true;
+            }
 
-        /// TODO: grow(void* p, uint32_t pages)
-        /// TODO: shrink(void* p, uint32_t pages) -> unnecessary, just use deallocate?
+            // no adjacent free block of appropriate size was found.  It's possible
+            // that the requested section is present in the batch list, in which case
+            // we can coalesce and retry.
+            if (batch_count > 0 && offset >= batch_min && offset <= batch_max) {
+                coalesce();
+                return reserve(p, pages);
+            }
+            return false;
+        }
+
+        /* Extend an allocation to the right until it encounters an allocated block or
+        covers the specified number of `pages`.  This is conceptually similar to
+        `reserve()`, but may update the allocator even if the region cannot be extended
+        to the requested size in-place.  The return value indicates how many pages were
+        added to the allocation, which may be less than `pages`.  This will be called
+        in `arena.grow()`, and subsequently by any dynamic container growth strategies
+        that call it in turn. */
+        [[nodiscard]] uint32_t grow(void* p, uint32_t pages) {
+            // attempt to reserve like normal, possibly coalescing
+            if (reserve(p, pages)) {
+                return pages;
+            }
+
+            // search the treap for an adjacent free block, and then fully consume it
+            uint32_t offset = static_cast<uint32_t>(
+                (static_cast<std::byte*>(p) - static_cast<std::byte*>(ptr)) / PAGE_SIZE
+            );
+            uint32_t id = treap_next(root, offset);
+            if (id != NIL && nodes[id].offset == offset) {
+                pages = nodes[id].size;
+                if constexpr (WINDOWS) {
+                    chunk_commit(offset, pages);
+                    chunk_increment(offset, pages);
+                }
+                root = treap_erase(root, id);
+                heap_erase(id);
+                nodes[id].right = free;
+                free = id;
+                occupied += pages;
+                return pages;
+            }
+            return 0;
+        }
 
     public:
         [[nodiscard]] address_space() noexcept {};
