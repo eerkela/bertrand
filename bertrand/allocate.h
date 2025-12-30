@@ -473,6 +473,20 @@ namespace impl {
         return (nbytes / alignof(void*) + (nbytes % alignof(void*) != 0)) * alignof(void*);
     }
 
+    /* Clear a region of memory by setting all bits to zero.  This is equivalent to a
+    `memset()` call, except that during constant evaluation it uses an explicit loop
+    without any undefined behavior. */
+    constexpr void* zero(void* ptr, size_t size) noexcept {
+        if consteval {
+            for (size_t i = 0; i < size; ++i) {
+                static_cast<std::byte*>(ptr)[i] = std::byte{0};
+            }
+        } else {
+            std::memset(ptr, 0, size);
+        }
+        return ptr;
+    }
+
     /* Each hardware thread has its own local address space, which it can access
     globally, without locking.  Because the address space hands out virtual memory,
     there are some differences from traditional allocators.
@@ -537,16 +551,6 @@ namespace impl {
         static constexpr uint32_t RADIX_MASK = RADIX - 1;
         static constexpr uint32_t RADIX_LAST = std::numeric_limits<uint32_t>::digits - RADIX_LOG2;
 
-        /* Because the radix sort buffers are persistent, they must be zeroed before
-        every invocation. */
-        constexpr void reset_radix_counts() noexcept {
-            if consteval {
-                for (uint32_t i = 0; i < RADIX; ++i) radix_count[i] = 0;
-            } else {
-                std::memset(radix_count, 0, RADIX * sizeof(uint32_t));
-            }
-        }
-
         /* Nodes use an intrusive heap + treap data structure that compresses to just
         24 bytes.  In order to save space and promote cache locality, the max-heap heap
         is stored as an overlapping array using the `heap_array` member, which should
@@ -609,21 +613,31 @@ namespace impl {
 
         The data layout for each slab is as follows:
 
-            [blocks...][free list...][...][slab header]
+            [blocks...][...][...free][slab header]
 
-        The blocks and free list are stored first, in order to allow smooth growth by a
-        constant step size with perfect alignment.  The free list is stored after the
-        blocks in order to prevent relocation of block data during growth, which will
-        simply overwrite the previous free list and/or slab header.  Padding is placed
-        after the free list to (if necessary) to ensure that the free list remains
-        aligned to the system's native pointer size.  Finally, the slab header is
-        anchored to the end of the allocated region, so that it can be easily located
-        without complicated arithmetic.  Growth mitigates overwrites by copying the
-        previous free list and slab header to the end of the newly allocated region. */
+        The blocks are stored first in order to prevent relocation of block data
+        during growth.  The slab header is anchored to the end of the allocated region,
+        and is immediately preceded by the free list, which grows to the left.  Growing
+        a slab will commit additional pages at the end of the region and copy over the
+        header and old free list to the new location.  The blocks may then overwrite
+        the previous free list and slab header without issue.  This arrangement also
+        avoids the need to store a block count in the header, since all elements are
+        anchored to one end of the region, and padding is placed in the middle to
+        ensure proper alignment. */
         struct slab {
             uint32_t id;  // node index for this slab
             uint16_t size_class;  // index into SIZE_CLASS and slab_head
             uint16_t free = 0;  // effective size of free list
+
+            /* Push a block onto the slab's free list. */
+            void push(uint16_t block) noexcept {
+                *(reinterpret_cast<uint16_t*>(this) - (++free)) = block;
+            }
+
+            /* Remove a block from the slab's free list and return its index. */
+            [[nodiscard]] uint16_t pop() noexcept {
+                return *(reinterpret_cast<uint16_t*>(this) - (free--));
+            }
         };
         static constexpr size_t SLAB_MIN = sizeof(void*);  // min slab size in bytes
         static constexpr auto _SLABS = [] -> std::pair<size_t, uint16_t> {
@@ -647,24 +661,26 @@ namespace impl {
                 std::array<uint32_t, SLABS>,
                 std::array<uint32_t, SLABS>
             > result;
-            size_t n = SLAB_MIN;
+            size_t size_class = SLAB_MIN;
             for (size_t i = 0; i < SLABS; ++i) {
-                std::get<0>(result)[i] = n;
+                std::get<0>(result)[i] = size_class;
 
                 // get max size of slab in bytes, then align down to page boundary
-                size_t size = sizeof(slab) + align_native(
-                    (n + sizeof(uint16_t)) * std::numeric_limits<uint16_t>::max()
-                );
+                size_t size =
+                    sizeof(slab) +
+                    (size_class + sizeof(uint16_t)) * std::numeric_limits<uint16_t>::max();
                 std::get<1>(result)[i] = uint32_t(size / PAGE_SIZE);
 
                 // growth step for each slab is equal to the least common multiple of
                 // the page size and block + free list size, in units of pages
                 std::get<2>(result)[i] = uint16_t(
-                    std::lcm(PAGE_SIZE, n + sizeof(uint16_t)
+                    std::lcm(PAGE_SIZE, size_class + sizeof(uint16_t)
                 ) / PAGE_SIZE);
 
                 // advance to next size class
-                n = ((n * 5) / (4 * SLAB_MIN) + ((n * 5) % (4 * SLAB_MIN) != 0)) * SLAB_MIN;
+                size_class = (
+                    (size_class * 5) / (4 * SLAB_MIN) + ((size_class * 5) % (4 * SLAB_MIN) != 0)
+                ) * SLAB_MIN;
             }
             return result;
         }();
@@ -681,7 +697,8 @@ namespace impl {
         }
 
         /* Get the total number of blocks that a slab can hold with its current
-        footprint. */
+        footprint.  Due to slab layout, this never needs to be stored, and is only
+        necessary during initialization/growth. */
         [[nodiscard]] constexpr uint16_t slab_count(slab* s) noexcept {
             return
                 ((nodes[s->id].size * PAGE_SIZE) - sizeof(slab)) /
@@ -704,20 +721,10 @@ namespace impl {
             );
         }
 
-        /* Remove a block from the slab's free list and return its index. */
-        [[nodiscard]] uint16_t slab_pop(slab* s) noexcept {
-            return reinterpret_cast<uint16_t*>(slab_data(s, slab_count(s)))[--(s->free)];
-        }
-
-        /* Push a block onto the slab's free list. */
-        void slab_push(slab* s, uint16_t block) noexcept {
-            reinterpret_cast<uint16_t*>(slab_data(s, slab_count(s)))[(s->free)++] = block;
-        }
-
         /* Get the node index of the next partial slab of the same size class.  If this
         returns `NIL`, then it means all other slabs of this size class are full, and a
-        new one must be allocated to satisfy an allocation request.  Note that full
-        slabs will always be excluded from this list as an optimization. */
+        new one must be allocated to satisfy a future allocation request.  Note that
+        full slabs will always be excluded from this list as an optimization. */
         [[nodiscard]] constexpr uint32_t& slab_next(slab* s) noexcept {
             return nodes[s->id].heap;
         }
@@ -1458,9 +1465,9 @@ namespace impl {
                 insertion_sort();
                 return;
             }
-            reset_radix_counts();
 
             // initial counting to determine bin sizes/offsets for first digit
+            zero(radix_count, RADIX * sizeof(uint32_t));
             for (uint32_t i = 0; i < batch_count; ++i) {
                 ++radix_count[nodes[batch[i]].offset & RADIX_MASK];
             }
@@ -1475,7 +1482,7 @@ namespace impl {
 
             // sort ids into bins by offset digit, least significant first
             for (uint32_t shift = 0; shift < RADIX_LAST; shift += RADIX_LOG2) {
-                reset_radix_counts();
+                zero(radix_count, RADIX * sizeof(uint32_t));
 
                 // scatter combined with counting for next pass
                 for (uint32_t i = 0; i < batch_count; ++i) {
@@ -1690,6 +1697,9 @@ namespace impl {
             return lo;
         }
 
+        /// TODO: slab growth also needs to account for the end of the address space,
+        /// which might be a more general problem across the allocator as a whole.
+
         /* Attempt to grow a slab in-place by committing additional pages. Returns true
         if the slab was successfully grown (in which case its metadata will be updated
         accordingly), or false if it could not be grown. */
@@ -1714,28 +1724,24 @@ namespace impl {
                     nodes[s->id].offset + nodes[s->id].size,
                     commit
                 )) {
+                    // pop last free list entry
+                    uint16_t tmp = s->pop();
                     uint16_t old_count = slab_count(s);
-                    uint16_t* old_free = reinterpret_cast<uint16_t*>(
-                        slab_data(s, old_count)
-                    );
 
-                    // copy the slab header to the back of the new region
+                    // extend slab size
                     nodes[s->id].size += commit;
+                    uint16_t new_count = slab_count(s);
+
+                    // copy slab header to the back of the new region
                     s = std::construct_at(slab_get(s->id), *s);
 
-                    // add new blocks to the free list in reverse order, so they are
-                    // allocated sequentially from the tail
-                    uint16_t new_count = slab_count(s);
-                    uint16_t* new_free = reinterpret_cast<uint16_t*>(
-                        slab_data(s, new_count)
-                    );
-                    s->free = new_count - old_count;
-                    for (uint16_t i = 0; i < s->free; ++i) {
-                        new_free[i] = new_count - 1 - i;
+                    // push new entries onto free list in reverse, so that `pop()`
+                    // returns them in increasing order
+                    uint16_t delta = new_count - old_count;
+                    while (s->free < delta) {
+                        s->push(uint16_t(new_count - 1 - s->free));
                     }
-
-                    // copy old free list entry to the back of the new free list
-                    new_free[(s->free)++] = old_free[0];
+                    s->push(tmp);  // push the previous tail onto the new list
                     return true;
                 }
             }
@@ -1768,16 +1774,12 @@ namespace impl {
                 nodes[id].right = NIL;
                 nodes[id].heap = NIL;
 
-                // initialize slab header
-                slab* s = slab_get(id);
-                std::construct_at(s, id, size_class);
-
-                // initialize free list in reverse order, so blocks are allocated
-                // sequentially from the tail
-                s->free = slab_count(s);
-                uint16_t* free_list = reinterpret_cast<uint16_t*>(slab_data(s, s->free));
-                for (uint16_t i = 0; i < s->free; ++i) {
-                    free_list[i] = s->free - 1 - i;
+                // initialize slab header + reverse free list, so that `pop()` returns
+                // blocks in increasing order
+                slab* s = std::construct_at(slab_get(id), id, size_class);
+                uint16_t count = slab_count(s);
+                while (s->free < count) {
+                    s->push(uint16_t(count - 1 - s->free));
                 }
 
                 // insert slab into treap and partial list
@@ -1800,13 +1802,7 @@ namespace impl {
             }
 
             // pop a block from the slab's free list and zero-initialize its data
-            std::byte* ptr = slab_data(s, slab_pop(s));
-            if consteval {
-                for (size_t j = 0; j < s->size_class; ++j) ptr[j] = std::byte(0);
-            } else {
-                std::memset(ptr, 0, s->size_class);
-            }
-            return ptr;
+            return zero(slab_data(s, s->pop()), s->size_class);
         }
 
         /* Given an allocation beginning at `p` and continuing for `size` bytes, where
@@ -1835,8 +1831,7 @@ namespace impl {
 
             // detect block id within slab and push it to the free list
             slab* s = slab_get(id);
-            uint16_t block = slab_block(s, p);
-            slab_push(s, block);
+            s->push(slab_block(s, p));
 
             // if the slab was previously full, reinsert it into `slab_head`
             if (s->free == 1) {
