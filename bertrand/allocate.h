@@ -63,19 +63,23 @@ constexpr impl::nbytes operator""_TiB(unsigned long long size) noexcept {
 }
 
 
-/// TODO: document these flags, and possibly come up with better names, like
-/// BERTRAND_VMEM_PER_THREAD, BERTRAND_COALESCE_AFTER, 
-
-
+/* The system's page size in bytes.  This must be a nonzero power of two, which is
+controlled by the `BERTRAND_PAGE_SIZE` compilation flag. */
 #ifdef BERTRAND_PAGE_SIZE
     constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
 #else
     constexpr size_t PAGE_SIZE = 4_KiB;
 #endif
 static_assert(
-    PAGE_SIZE > 0,
-    "page size must be a positive number of bytes"
+    std::popcount(PAGE_SIZE) == 1,
+    "page size must be a nonzero power of two"
 );
+constexpr size_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE);
+constexpr size_t PAGE_MASK = PAGE_SIZE - 1;
+
+
+/// TODO: document these flags, and possibly come up with better names, like
+/// BERTRAND_VMEM_PER_THREAD, BERTRAND_COALESCE_AFTER, 
 
 
 #ifdef BERTRAND_ARENA_SIZE
@@ -1608,39 +1612,103 @@ namespace impl {
         ////    PAGES    ////
         /////////////////////
 
-        /// TODO: I should add an `alignment` paremter to `page_allocate()` to
-        /// guarantee that the returned offset is aligned to a multiple of that value.
-        /// That can possibly also be exposed to the user by some mechanism, so that
-        /// you can reliably allocate memory with a particular alignment requirement.
+        /* Find the largest free region in the allocator that can accomodate an
+        allocation of `pages` with the given `alignment`.  Returns a pair where the
+        first element is the bisected node id, and the second element is the distance
+        from that node's offset to the start of the allocated region, in pages.  If
+        no suitable region could be found, then the node id will be equal to `NIL`. */
+        [[nodiscard]] constexpr std::pair<uint32_t, uint32_t> page_bisect(
+            uint64_t pos,
+            uint32_t pages,
+            size_t alignment,
+            size_t base_mod
+        ) const noexcept {
+            // if current heap entry doesn't have enough space to fit the allocation,
+            // then none of its children will either, and we can terminate recursion
+            if (pos >= heap_size) return {NIL, 0};
+            uint32_t id = heap(static_cast<uint32_t>(pos));
+            if (nodes[id].size < pages) return {NIL, 0};
+
+            // calculate initial left boundary, then adjust to account for alignment
+            uint32_t left = (nodes[id].size - pages) >> 1;
+            if (alignment > 1) {
+                // round downward to nearest aligned address
+                size_t tmp = base_mod + nodes[id].offset + left;
+                tmp &= ~(alignment - 1);  // alignment is still a power of two, but in pages
+                tmp -= base_mod;
+
+                // if aligned address is before start of block, increment by alignment
+                if (tmp < nodes[id].offset) tmp += alignment;
+
+                // if aligned address is still outside of block, search children
+                if (tmp < nodes[id].offset || tmp + pages > nodes[id].end()) {
+                    pos = (pos << 1) + 1;
+
+                    // return larger of two results or NIL if both failed
+                    auto r1 =
+                        page_bisect(pos, pages, alignment, base_mod);
+                    auto r2 =
+                        page_bisect(pos + 1, pages, alignment, base_mod);
+                    return (r2.first == NIL || (
+                        r1.first != NIL && nodes[r1.first].size >= nodes[r2.first].size
+                    )) ? r1 : r2;
+                }
+
+                // update left offset to aligned address
+                if constexpr (DEBUG_ALLOCATOR) {
+                    if (tmp > std::numeric_limits<uint32_t>::max()) {
+                        throw MemoryError("aligned allocation offset overflows uint32_t");
+                    }
+                }
+                left = static_cast<uint32_t>(tmp) - nodes[id].offset;
+            }
+
+            return {id, left};
+        }
 
         /* Request `pages` worth of memory from the address space, returning an offset
         to the start of the allocated region of the public partition, and updating the
         internal data structures to reflect the allocation.  Note that the result of
         this method must eventually be passed to `deallocate()` along with its current
         length in pages in order to release memory back to the address space. */
-        [[nodiscard]] uint32_t page_allocate(uint32_t pages) {
-            // check if there is enough space available
-            uint32_t largest = heap(0);
-            if (pages > nodes[largest].size) {
+        [[nodiscard]] uint32_t page_allocate(uint32_t pages, size_t alignment) {
+            if constexpr (DEBUG_ALLOCATOR) {
+                if (pages == 0) {
+                    throw MemoryError("attempted to allocate zero pages from address space");
+                }
+                if (std::popcount(alignment) != 1) {
+                    throw MemoryError("alignment must be a power of two");
+                }
+            }
+
+            // find largest free region that can accomodate aligned allocation
+            auto [id, left] = page_bisect(
+                0,
+                pages,
+                alignment >> PAGE_SHIFT,
+                (reinterpret_cast<uintptr_t>(ptr) & (alignment - 1)) >> PAGE_SHIFT
+            );
+            if (id == NIL) {
                 if (batch_size > 0) {
                     coalesce();
-                    return page_allocate(pages);  // try again
+                    return page_allocate(pages, alignment);  // try again
                 }
                 throw MemoryError(std::format(
                     "failed to allocate {:.3f} MiB from local address space ({:.3f} "
                     "MiB / {:.3f} MiB - {:.3f}%) -> insufficient space available",
-                    double(pages * PAGE_SIZE) / double(1_MiB),
+                    double(pages << PAGE_SHIFT) / double(1_MiB),
                     double(total) / double(1_MiB),
                     double(SIZE.total()) / double(1_MiB),
-                    (double(total) / double(SIZE.pub * PAGE_SIZE)) * 100.0
+                    (double(total) / double(SIZE.pub << PAGE_SHIFT)) * 100.0
                 ));
             }
-
-            // bisect largest block
-            uint32_t remaining = nodes[largest].size - pages;
-            uint32_t left_size = remaining / 2;
-            uint32_t right_size = remaining - left_size;
-            uint32_t offset = nodes[largest].offset + left_size;
+            uint32_t right = nodes[id].size - pages - left;
+            uint32_t offset = nodes[id].offset + left;
+            if constexpr (DEBUG_ALLOCATOR) {
+                if ((reinterpret_cast<uintptr_t>(ptr) + (offset << PAGE_SHIFT)) % alignment != 0) {
+                    throw MemoryError("allocated region is not properly aligned");
+                }
+            }
 
             // commit the allocated region on windows, aligning to chunk boundaries
             // (unnecessary for unix systems, since they lack a hard commit limit).
@@ -1651,38 +1719,38 @@ namespace impl {
                 chunk_increment(offset, pages);
             }
 
-            // if there is one remaining half, reuse the existing node without
-            // allocating a new one; otherwise, get a new node or push the current node
-            // onto the free list
-            if (left_size) {
+            // if there is one remaining half, reuse the existing node without creating
+            // a new one; otherwise, get a new node or push the current node onto the
+            // free list
+            if (left) {
                 // no need to fix treap, since the left half never moved
-                nodes[largest].size = left_size;
-                heap_fix(largest);
-                if (right_size) {
+                nodes[id].size = left;
+                heap_fix(id);
+                if (right) {
                     uint32_t child = get_node();
                     node& c = nodes[child];
                     c.offset = offset + pages;
-                    c.size = right_size;
+                    c.size = right;
                     c.left = NIL;
                     c.right = NIL;
                     c.heap = NIL;
                     treap_root = treap_insert(treap_root, child);
                     heap_insert(child);
                 }
-            } else if (right_size) {
-                treap_root = treap_erase(treap_root, largest);
-                nodes[largest].offset = offset + pages;
-                nodes[largest].size = right_size;
-                treap_root = treap_insert(treap_root, largest);
-                heap_fix(largest);
+            } else if (right) {
+                treap_root = treap_erase(treap_root, id);
+                nodes[id].offset = offset + pages;
+                nodes[id].size = right;
+                treap_root = treap_insert(treap_root, id);
+                heap_fix(id);
             } else {
-                heap_erase(largest);
-                treap_root = treap_erase(treap_root, largest);
-                put_node(largest);
+                heap_erase(id);
+                treap_root = treap_erase(treap_root, id);
+                put_node(id);
             }
 
-            // return pointer to allocated region
-            size_t delta = pages * PAGE_SIZE;
+            // return offset to allocated region
+            size_t delta = pages << PAGE_SHIFT;
             occupied += delta;
             total += delta;
             return offset;
@@ -2468,7 +2536,7 @@ namespace impl {
             // fall back to page allocation
             return
                 static_cast<std::byte*>(data->ptr) +
-                (data->page_allocate(page_count(bytes)) * PAGE_SIZE);
+                (data->page_allocate(page_count(bytes), alignment) * PAGE_SIZE);
         }
 
         /// TODO: arena<T, N>::shrink() must ensure that the shrink does not result in
