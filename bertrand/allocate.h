@@ -74,36 +74,16 @@ static_assert(
     std::popcount(PAGE_SIZE) == 1,
     "page size must be a nonzero power of two"
 );
+static_assert(
+    PAGE_SIZE <= 1_GiB,
+    "Bertrand only supports page sizes up to 1 GiB"
+);
 constexpr size_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE);
 constexpr size_t PAGE_MASK = PAGE_SIZE - 1;
 
 
 /// TODO: document these flags, and possibly come up with better names, like
-/// BERTRAND_VMEM_PER_THREAD, BERTRAND_COALESCE_AFTER, 
-
-
-#ifdef BERTRAND_ARENA_SIZE
-    constexpr size_t ARENA_SIZE = BERTRAND_ARENA_SIZE;
-#else
-    constexpr size_t ARENA_SIZE = 32_GiB;
-#endif
-static_assert(
-    std::popcount(ARENA_SIZE) == 1,
-    "arena size must be a power of two"
-);
-static_assert(
-    ARENA_SIZE % PAGE_SIZE == 0,
-    "arena size must be a multiple of the page size"
-);
-static_assert(
-    ARENA_SIZE == 0 || ARENA_SIZE >= (PAGE_SIZE * 2),
-    "arena must contain at least two pages of memory to store a private and "
-    "public partition"
-);
-static_assert(
-    ARENA_SIZE / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
-    "arena size too large to fully index using 32-bit integers"
-);
+/// BERTRAND_COALESCE_AFTER, 
 
 
 #ifdef BERTRAND_ALLOCATE_COALESCE_AFTER
@@ -120,6 +100,10 @@ static_assert(
 #endif
 
 
+/* Allocators include a large number of debug assertions to ensure correctness during
+testing, but due to their high performance impact, these checks are disabled unless a
+dedicated debug flag is set.  As the allocator is internal to Bertrand, these
+assertions will only be enabled when testing Bertrand itself. */
 #ifdef BERTRAND_ALLOCATE_DEBUG
     constexpr bool DEBUG_ALLOCATOR = true;
 #else
@@ -127,7 +111,87 @@ static_assert(
 #endif
 
 
+/* The amount of virtual memory allocated per thread.  An allocator with this amount of
+memory will be initialized in thread-local storage upon first use, and deallocated on
+thread shutdown.  This must be either zero (which disables virtual memory entirely) or
+a power of two, which is controlled by the `BERTRAND_VMEM_PER_THREAD` compilation
+flag. */
+#ifdef BERTRAND_VMEM_PER_THREAD
+    constexpr size_t VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
+#else
+    constexpr size_t VMEM_PER_THREAD = 32_GiB;
+#endif
+static_assert(
+    std::popcount(VMEM_PER_THREAD) <= 1,
+    "arena size must be a power of two"
+);
+static_assert(
+    VMEM_PER_THREAD % PAGE_SIZE == 0,
+    "arena size must be a multiple of the page size"
+);
+static_assert(
+    VMEM_PER_THREAD / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
+    "arena size too large to fully index using 32-bit integers"
+);
+
+
 namespace impl {
+
+    static NoneType check_page_size = [] {
+        #if WINDOWS
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            if (si.dwPageSize != PAGE_SIZE) {
+                throw MemoryError(std::format(
+                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
+                    "size ({} bytes).  This may cause misaligned virtual address "
+                    "spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "error",
+                    PAGE_SIZE,
+                    si.dwPageSize
+                ));
+            }
+        #elif UNIX
+            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
+                throw MemoryError(std::format(
+                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
+                    "size ({} bytes).  This may cause misaligned virtual address "
+                    "spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "error",
+                    PAGE_SIZE,
+                    sysconf(_SC_PAGESIZE)
+                ));
+            }
+        #endif
+        return None;
+    }();
+
+    /* Round an allocation size in bytes up to the nearest full page, and then return
+    it as a 32-bit page count.  Multiplying the result by `PAGE_SIZE` gives the total
+    size in bytes. */
+    [[nodiscard]] constexpr uint32_t page_count(size_t bytes) noexcept {
+        return (bytes >> PAGE_SHIFT) + ((bytes & PAGE_MASK) != 0);
+    }
+
+    /* Round an allocation size in bytes up to the nearest multiple of the system's
+    native pointer alignment.  Returns the rounded size in bytes. */
+    [[nodiscard]] constexpr size_t pointer_align(size_t bytes) {
+        return (bytes / alignof(void*) + (bytes % alignof(void*) != 0)) * alignof(void*);
+    }
+
+    /* Clear a region of memory by setting all bits to zero.  This is equivalent to a
+    `memset()` call, except that during constant evaluation it uses an explicit loop
+    to avoid undefined behavior. */
+    constexpr void* zero(void* ptr, size_t bytes) noexcept {
+        if consteval {
+            for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
+        } else {
+            std::memset(ptr, 0, bytes);
+        }
+        return ptr;
+    }
 
     template <typename U>
     static constexpr size_t capacity_size = sizeof(U);  // never returns 0
@@ -177,8 +241,7 @@ namespace impl {
         of the `PAGE_SIZE`, and then adjusting it downwards to account for the
         alignment of `T`. */
         [[nodiscard]] constexpr capacity page_align() const noexcept {
-            size_t pages = ((value * aligned_size + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE;
-            return pages / aligned_size;
+            return (size_t(page_count(value * aligned_size)) << PAGE_SHIFT) / aligned_size;
         }
 
         [[nodiscard]] constexpr size_t operator*() const noexcept {
@@ -344,62 +407,6 @@ struct arena;
 
 namespace impl {
 
-    static NoneType check_page_size = [] {
-        #if WINDOWS
-            SYSTEM_INFO si;
-            GetSystemInfo(&si);
-            if (si.dwPageSize != PAGE_SIZE) {
-                throw MemoryError(std::format(
-                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
-                    "size ({} bytes).  This may cause misaligned virtual address "
-                    "spaces and undefined behavior.  Please recompile with "
-                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
-                    "error",
-                    PAGE_SIZE,
-                    si.dwPageSize
-                ));
-            }
-        #elif UNIX
-            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
-                throw MemoryError(std::format(
-                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
-                    "size ({} bytes).  This may cause misaligned virtual address "
-                    "spaces and undefined behavior.  Please recompile with "
-                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
-                    "error",
-                    PAGE_SIZE,
-                    sysconf(_SC_PAGESIZE)
-                ));
-            }
-        #endif
-        return None;
-    }();
-
-    /* Round an allocation size in bytes up to the nearest full page, and then return
-    it as a 32-bit page count.  Multiplying the result by `PAGE_SIZE` gives the total
-    size in bytes. */
-    [[nodiscard]] constexpr uint32_t page_count(size_t bytes) noexcept {
-        return bytes / PAGE_SIZE + (bytes % PAGE_SIZE != 0);
-    }
-
-    /* Round an allocation size in bytes up to the nearest multiple of the system's
-    native pointer alignment.  Returns the rounded size in bytes. */
-    [[nodiscard]] constexpr size_t pointer_align(size_t bytes) {
-        return (bytes / alignof(void*) + (bytes % alignof(void*) != 0)) * alignof(void*);
-    }
-
-    /* Clear a region of memory by setting all bits to zero.  This is equivalent to a
-    `memset()` call, except that during constant evaluation it uses an explicit loop
-    to avoid undefined behavior. */
-    constexpr void* zero(void* ptr, size_t bytes) noexcept {
-        if consteval {
-            for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
-        } else {
-            std::memset(ptr, 0, bytes);
-        }
-        return ptr;
-    }
-
     /* Reserve a range of virtual addresses with the given number of bytes, aligned to
     the specified alignment (which must be a power of two).  Returns a void pointer to
     the start of the address range, where all bits that are less significant than the
@@ -412,7 +419,7 @@ namespace impl {
     privileges, and memory must be explicitly committed before use. */
     [[nodiscard]] inline void* map_address_space(size_t bytes, size_t alignment = PAGE_SIZE) {
         if constexpr (DEBUG_ALLOCATOR) {
-            if (bytes == 0 || bytes % PAGE_SIZE != 0) {
+            if (bytes == 0 || (bytes & PAGE_MASK) != 0) {
                 throw MemoryError("bytes must be a nonzero multiple of the page size");
             }
             if (std::popcount(alignment) != 1) {
@@ -587,7 +594,7 @@ namespace impl {
         #else
             throw MemoryError(
                 "Virtual memory is only supported on Windows and Unix systems.  "
-                "Please recompile with `ARENA_SIZE` set to zero to disable this "
+                "Please recompile with `VMEM_PER_THREAD` set to zero to disable this "
                 "feature."
             );
         #endif
@@ -598,10 +605,10 @@ namespace impl {
     `map_address_space()`.  A MemoryError may be thrown if the unmapping fails. */
     inline void unmap_address_space(void* ptr, size_t bytes) {
         if constexpr (DEBUG_ALLOCATOR) {
-            if (reinterpret_cast<uintptr_t>(ptr) % PAGE_SIZE != 0) {
+            if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
-            if (bytes % PAGE_SIZE != 0) {
+            if ((bytes & PAGE_MASK) != 0) {
                 throw MemoryError("size must be a nonzero multiple of the page size");
             }
         }
@@ -631,7 +638,7 @@ namespace impl {
         #else
             throw MemoryError(
                 "Virtual memory is only supported on Windows and Unix systems.  "
-                "Please recompile with `ARENA_SIZE` set to zero to disable this "
+                "Please recompile with `VMEM_PER_THREAD` set to zero to disable this "
                 "feature."
             );
         #endif
@@ -649,10 +656,10 @@ namespace impl {
     with other processes on the system. */
     inline void commit_address_space(void* ptr, size_t bytes) {
         if constexpr (DEBUG_ALLOCATOR) {
-            if (reinterpret_cast<uintptr_t>(ptr) % PAGE_SIZE != 0) {
+            if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
-            if (bytes % PAGE_SIZE != 0) {
+            if ((bytes & PAGE_MASK) != 0) {
                 throw MemoryError("size must be a nonzero multiple of the page size");
             }
         }
@@ -678,7 +685,7 @@ namespace impl {
         #else
             throw MemoryError(
                 "Virtual memory is only supported on Windows and Unix systems.  "
-                "Please recompile with `ARENA_SIZE` set to zero to disable this "
+                "Please recompile with `VMEM_PER_THREAD` set to zero to disable this "
                 "feature."
             );
         #endif
@@ -696,10 +703,10 @@ namespace impl {
     interfere with other processes on the system. */
     inline void decommit_address_space(void* ptr, size_t bytes) {
         if constexpr (DEBUG_ALLOCATOR) {
-            if (reinterpret_cast<uintptr_t>(ptr) % PAGE_SIZE != 0) {
+            if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
-            if (bytes % PAGE_SIZE != 0) {
+            if ((bytes & PAGE_MASK) != 0) {
                 throw MemoryError("size must be a nonzero multiple of the page size");
             }
         }
@@ -729,7 +736,7 @@ namespace impl {
         #else
             throw MemoryError(
                 "Virtual memory is only supported on Windows and Unix systems.  "
-                "Please recompile with `ARENA_SIZE` set to zero to disable this "
+                "Please recompile with `VMEM_PER_THREAD` set to zero to disable this "
                 "feature."
             );
         #endif
@@ -777,107 +784,76 @@ namespace impl {
 
         /* Slabs are used to speed up small allocations up to a couple of pages in
         length.  These are placed in the public partition just like any other
-        allocation, and will be grown in-place where possible.  The size classes begin
-        at just a single pointer, and go up to a multiple of the page size, increasing
-        by 1.25x each time (before pointer alignment).
+        allocation, and will always have a fixed size of 32 pages (128 KiB on most
+        systems).  They will also be aligned to that same size, meaning their starting
+        addresses will always end with zeroes in the lower bits, which enables reverse
+        lookup from arbitrary pointers just by applying a bitmask.  The size classes
+        begin at just a single pointer, and go up to a multiple of the page size,
+        increasing by 1.25x each time (before pointer alignment).
 
         Similar to the batch list, slabs reuse nodes to identify themselves and avoid
         reimplementing extra data structures.  Just like regular nodes, the `offset`
-        indicates the beginning of the slab relative to the public partition, and the
-        `size` indicates the current size of the slab in pages.  The `left` and `right`
-        children are used to implement a slab treap that allows inverse lookup from
-        pointers to their originating slabs, if any.  The `heap` member is unused.
+        indicates the beginning of the slab relative to the public partition, but the
+        size is fixed to `SIZE_PAGES` at compile time, and the `size` member will
+        instead be used to store the slab's current size class.  The `left` and `right`
+        children are reused to store a doubly-linked list of partial slabs for each
+        size class, and `heap` holds the effective size of the slab's free list.
 
         The data layout for each slab is as follows:
 
-            [blocks...][...][...free][slab header]
+            [blocks...][...][...free][node id]
 
-        The blocks are stored first in order to prevent relocation of block data
-        during growth.  The slab header is anchored to the end of the allocated region,
-        and is immediately preceded by the free list, which grows to the left.  Growing
-        a slab will commit additional pages at the end of the region and copy over the
-        header and old free list to the new location.  The blocks may then overwrite
-        the previous free list and slab header without issue.  This arrangement also
-        avoids the need to store a block count in the header, since all elements are
-        anchored to one end of the region, and padding is placed in the middle to
-        ensure proper alignment. */
-        struct slab {
-            uint32_t id;  // node index for this slab
-            uint16_t size_class;  // index into SIZE_CLASS and slabs
-            uint16_t free = 0;  // effective size of free list
-            uint32_t next = NIL;  // next partial slab of same size class
-            uint32_t prev = NIL;  // previous partial slab of same size class
-
-            /* Push a block onto the slab's free list. */
-            constexpr void push(uint16_t block) noexcept {
-                *(static_cast<uint16_t*>(static_cast<void*>(this)) - (++free)) = block;
-            }
-
-            /* Remove a block from the slab's free list and return its index. */
-            [[nodiscard]] constexpr uint16_t pop() noexcept {
-                return *(static_cast<uint16_t*>(static_cast<void*>(this)) - (free--));
-            }
-        };
-        static constexpr size_t SLAB_MIN = sizeof(void*);  // min slab size in bytes
+        The blocks are stored first in order to prevent any alignment issues, and will
+        consist of contiguous regions of memory of the appropriate `SLAB_CLASS[i]`,
+        whose number will never exceed `SLAB_BLOCKS[i]` for a given `i < SLABS`.  The
+        slab's node id is anchored to the end of the allocated region, and is easily
+        recoverable during reverse lookups thanks to the fixed size of each slab.  It
+        is immediately preceded by the free list, which is an array of integers whose
+        bit widths are determined by the `block_id` type alias, and whose size is
+        bounded by `SLAB_BLOCKS[i]`, growing to the left. */
+        static constexpr uint32_t SLAB_PAGES = 32;  // pages per slab (indexable by 32-bit ints)
+        static constexpr size_t SLAB_MIN = sizeof(void*);  // min block size in bytes
         static constexpr auto _SLABS = [] -> std::pair<size_t, uint16_t> {
             size_t n = SLAB_MIN;
             size_t p = n;
             uint16_t i = 0;
-            while (n < 2 * PAGE_SIZE) {
+            while (n < (PAGE_SIZE << 1)) {
                 p = n;
                 n = ((n * 5) / (4 * SLAB_MIN) + ((n * 5) % (4 * SLAB_MIN) != 0)) * SLAB_MIN;
                 ++i;
             }
             return {p, i};
         }();
-        static constexpr size_t SLAB_MAX = _SLABS.first;  // max slab size in bytes
+        static constexpr size_t SLAB_MAX = _SLABS.first;  // max block size in bytes
         static constexpr uint16_t SLABS = _SLABS.second;  // total number of size classes
-        static constexpr auto _SLAB_SIZES = [] -> std::tuple<
-            std::array<size_t, SLABS>,  // size class in bytes
-            std::array<uint32_t, SLABS>,  // max pages per slab in each class
-            std::array<uint32_t, SLABS>  // pages to allocate during growth for each class
-        > {
-            std::tuple<
-                std::array<size_t, SLABS>,
-                std::array<uint32_t, SLABS>,
-                std::array<uint32_t, SLABS>
+        static constexpr uintptr_t SLAB_MASK =  // bitmask for reverse lookup
+            ~static_cast<uintptr_t>((size_t(SLAB_PAGES) << PAGE_SHIFT) - 1);
+        static constexpr uintptr_t SLAB_OFFSET =  // offset from slab start to node index
+            static_cast<uintptr_t>((size_t(SLAB_PAGES) << PAGE_SHIFT) - sizeof(uint32_t));
+        using block_id = std::conditional_t<  // type for slab free list entries
+            SLAB_OFFSET == sizeof(uint8_t),
+            uint8_t,
+            std::conditional_t<
+                SLAB_OFFSET == sizeof(uint16_t),
+                uint16_t,
+                uint32_t
+            >
+        >;
+        static constexpr auto _BLOCKS = [] {
+            std::pair<
+                std::array<size_t, SLABS>,  // size class in bytes
+                std::array<block_id, SLABS>  // max number of blocks per slab
             > result;
             size_t n = SLAB_MIN;
             for (size_t i = 0; i < SLABS; ++i) {
-                std::get<0>(result)[i] = n;
-
-                // get max size of slab in bytes, then align down to page boundary
-                std::get<1>(result)[i] = std::min(
-                    uint32_t((
-                        sizeof(slab) +
-                        (n + sizeof(uint16_t)) * std::numeric_limits<uint16_t>::max()
-                    ) / PAGE_SIZE),
-                    uint32_t(512)  // cap at 512 pages
-                );
-
-                // growth step for each slab is enough for ~512 blocks, capped between
-                // 4 and 32 pages to prevent extremely 
-                std::get<2>(result)[i] = std::min(
-                    std::max(
-                        uint32_t(4),  // minimum growth of 4 pages
-                        std::min(
-                            uint32_t(32),  // maximum growth of 32 pages
-                            page_count((n + sizeof(uint16_t)) * 512)
-                        )
-                    ),
-                    std::get<1>(result)[i]  // never grow beyond max size
-                );
-
-                // advance to next size class
+                result.first[i] = n;
+                result.second[i] = SLAB_OFFSET / (n + sizeof(block_id));
                 n = ((n * 5) / (4 * SLAB_MIN) + ((n * 5) % (4 * SLAB_MIN) != 0)) * SLAB_MIN;
             }
             return result;
         }();
-        static constexpr const std::array<size_t, SLABS>& SIZE_CLASS = std::get<0>(_SLAB_SIZES);
-        static constexpr const std::array<uint32_t, SLABS>& SLAB_MAX_PAGES =
-            std::get<1>(_SLAB_SIZES);
-        static constexpr const std::array<uint32_t, SLABS>& SLAB_GROW_PAGES =
-            std::get<2>(_SLAB_SIZES);
+        static constexpr const std::array<size_t, SLABS>& SLAB_CLASS = _BLOCKS.first;
+        static constexpr const std::array<block_id, SLABS>& SLAB_BLOCKS = _BLOCKS.second;
 
         /* Pointer back to the thread-local object that spawned this address space. */
         space* owner;
@@ -886,9 +862,8 @@ namespace impl {
         uint32_t next_node = 0;
         uint32_t next_chunk = 0;
 
-        /* Node index to roots of page and slab treap */
+        /* Node index to root of page treap. */
         uint32_t treap_root = NIL;
-        uint32_t slab_root = NIL;
 
         /* Number of active nodes (excluding batch/free list and slabs). */
         uint32_t heap_size = 0;
@@ -932,10 +907,10 @@ namespace impl {
         remote free in each stack.  If the sum of these counters equals `occupied`
         while in the teardown state, then the entire address space will be unmapped
         without leaving any orphaned memory. */
-        struct slab_defer { slab_defer* next; };
-        struct page_defer { page_defer* next; uint32_t pages; };
-        std::atomic<slab_defer*> remote_slab = nullptr;
-        std::atomic<page_defer*> remote_page = nullptr;
+        struct defer_slab { defer_slab* next; };
+        struct defer_page { defer_page* next; uint32_t pages; };
+        std::atomic<defer_slab*> remote_slab = nullptr;
+        std::atomic<defer_page*> remote_page = nullptr;
         std::atomic<size_t> remote_slabs = 0;
         std::atomic<size_t> remote_pages = 0;
 
@@ -1031,12 +1006,8 @@ namespace impl {
     lack a hard commit limit, and only fail when the system runs out of physical
     memory. */
     struct address_space : _address_space {
-        /// TODO: place the static assertion for minimum ARENA_SIZE here, and don't
-        /// assume that a single public partition page results in just one page's
-        /// worth of private partition.
-
         /* The address space is separated into a private and public partition, with
-        the size of each determined by the total `ARENA_SIZE` specified at compile
+        the size of each determined by the total `VMEM_PER_THREAD` specified at compile
         time.  The private partition begins with the `address_space` header itself,
         followed by the heads of each of the slab size class lists, two small buffers
         to hold the radix counts and prefix sums for coalesce sorting, and then the
@@ -1068,13 +1039,13 @@ namespace impl {
             /* The total amount of virtual memory consumed by the private and public
             partitions combined. */
             [[nodiscard]] constexpr size_t total() const noexcept {
-                return (partition + pub) * PAGE_SIZE;
+                return size_t(partition + pub) << PAGE_SHIFT;
             }
 
             /* Size of the initial commit necessary to set up the private partition
             data structures, excluding node storage. */
             [[nodiscard]] constexpr size_t commit() const noexcept {
-                return page_count(
+                return size_t(page_count(
                     HEADER +
                     SLABS +
                     RADIX_COUNT +
@@ -1082,16 +1053,25 @@ namespace impl {
                     BATCH +
                     BATCH_SORT +
                     pointer_align(chunks * sizeof(uint8_t))
-                ) * PAGE_SIZE;
+                )) << PAGE_SHIFT;
             }
         } SIZE = [] -> _SIZE {
-            // initial upper bound -> x * (page + node) <= ARENA_SIZE
-            uint32_t lo = 0;
-            uint32_t hi = ARENA_SIZE / (PAGE_SIZE + sizeof(node));
+            // initial upper bound -> x * (page + node) <= VMEM_PER_THREAD
+            uint32_t lo = 1;
+            uint32_t hi = VMEM_PER_THREAD / (PAGE_SIZE + sizeof(node));
 
-            // binary search for maximum N where partition(N) + (N * page) <= ARENA_SIZE
-            uint32_t chunks = 0;
-            uint32_t partition = 0;
+            // binary search for maximum N where partition(N) + (N * page) <= VMEM_PER_THREAD
+            uint32_t chunks = WINDOWS;  // 1 if on windows
+            uint32_t partition = page_count(
+                _SIZE::HEADER +
+                _SIZE::SLABS +
+                _SIZE::RADIX_COUNT +
+                _SIZE::RADIX_SUM +
+                _SIZE::BATCH +
+                _SIZE::BATCH_SORT +
+                chunks +
+                sizeof(node)
+            );
             while (lo < hi) {
                 uint32_t mid = (hi + lo + 1) / 2;
                 if constexpr (WINDOWS) {  // account for chunk ledger
@@ -1110,8 +1090,8 @@ namespace impl {
                     )  // page-align node storage
                 );
                 if (
-                    partition <= ARENA_SIZE / PAGE_SIZE &&
-                    mid <= ARENA_SIZE / PAGE_SIZE - partition
+                    partition <= (VMEM_PER_THREAD >> PAGE_SHIFT) &&
+                    mid <= (VMEM_PER_THREAD >> PAGE_SHIFT) - partition
                 ) {
                     lo = mid;
                 } else {
@@ -1120,6 +1100,14 @@ namespace impl {
             }
             return {chunks, partition, lo};
         }();
+        static_assert(
+            VMEM_PER_THREAD == 0 ||
+            VMEM_PER_THREAD >= (size_t(SIZE.partition + SIZE.pub) << PAGE_SHIFT),
+            "VMEM_PER_THREAD is too small to hold internal data structures.  Either "
+            "recompile with a larger `VMEM_PER_THREAD`, set it to zero to disable "
+            "virtual memory, or reduce `COALESCE_AFTER` to force more frequent "
+            "decommits."
+        );
 
         /* Initialize a single free node covering the entire public partition on
         construction. */
@@ -1178,7 +1166,7 @@ namespace impl {
                 pointer_align(SIZE.chunks * sizeof(uint8_t))
             ),
             .ptr = reinterpret_cast<void*>(
-                reinterpret_cast<std::byte*>(this) + (SIZE.partition * PAGE_SIZE)
+                reinterpret_cast<std::byte*>(this) + (size_t(SIZE.partition) << PAGE_SHIFT)
             )
         } {
             uint32_t id = get_node();  // always zero on first init, commits storage on windows
@@ -1504,7 +1492,7 @@ namespace impl {
             if constexpr (WINDOWS) {
                 constexpr size_t lcm = std::lcm(sizeof(node), PAGE_SIZE);
                 if (next_node >= next_chunk) {
-                    size_t commit = std::min(lcm, (SIZE.pub - next_node) * PAGE_SIZE);
+                    size_t commit = std::min(lcm, size_t(SIZE.pub - next_node) << PAGE_SHIFT);
                     commit_address_space(nodes + next_node, commit);
                     next_chunk += commit / sizeof(node);
                 }
@@ -1586,8 +1574,8 @@ namespace impl {
                 to > from
             ) {
                 commit_address_space(
-                    static_cast<std::byte*>(ptr) + (from * PAGE_SIZE),
-                    (to - from) * PAGE_SIZE
+                    static_cast<std::byte*>(ptr) + (size_t(from) << PAGE_SHIFT),
+                    size_t(to - from) << PAGE_SHIFT
                 );
             }
         }
@@ -1602,8 +1590,8 @@ namespace impl {
                 to > from
             ) {
                 decommit_address_space(
-                    static_cast<std::byte*>(ptr) + (from * PAGE_SIZE),
-                    (to - from) * PAGE_SIZE
+                    static_cast<std::byte*>(ptr) + (size_t(from) << PAGE_SHIFT),
+                    size_t(to - from) << PAGE_SHIFT
                 );
             };
         }
@@ -1696,16 +1684,18 @@ namespace impl {
                 throw MemoryError(std::format(
                     "failed to allocate {:.3f} MiB from local address space ({:.3f} "
                     "MiB / {:.3f} MiB - {:.3f}%) -> insufficient space available",
-                    double(pages << PAGE_SHIFT) / double(1_MiB),
+                    double(size_t(pages) << PAGE_SHIFT) / double(1_MiB),
                     double(total) / double(1_MiB),
                     double(SIZE.total()) / double(1_MiB),
-                    (double(total) / double(SIZE.pub << PAGE_SHIFT)) * 100.0
+                    (double(total) / double(size_t(SIZE.pub) << PAGE_SHIFT)) * 100.0
                 ));
             }
             uint32_t right = nodes[id].size - pages - left;
             uint32_t offset = nodes[id].offset + left;
             if constexpr (DEBUG_ALLOCATOR) {
-                if ((reinterpret_cast<uintptr_t>(ptr) + (offset << PAGE_SHIFT)) % alignment != 0) {
+                if ((
+                    reinterpret_cast<uintptr_t>(ptr) + (size_t(offset) << PAGE_SHIFT)
+                ) % alignment != 0) {
                     throw MemoryError("allocated region is not properly aligned");
                 }
             }
@@ -1750,7 +1740,7 @@ namespace impl {
             }
 
             // return offset to allocated region
-            size_t delta = pages << PAGE_SHIFT;
+            size_t delta = size_t(pages) << PAGE_SHIFT;
             occupied += delta;
             total += delta;
             return offset;
@@ -1921,11 +1911,11 @@ namespace impl {
                     chunk_decommit(nodes[run].offset, nodes[run].size);
                 } else {  // on unix, just decommit the whole block
                     decommit_address_space(
-                        static_cast<std::byte*>(ptr) + (nodes[run].offset * PAGE_SIZE),
-                        nodes[run].size * PAGE_SIZE
+                        static_cast<std::byte*>(ptr) + (size_t(nodes[run].offset) << PAGE_SHIFT),
+                        size_t(nodes[run].size) << PAGE_SHIFT
                     );
                 }
-                total -= nodes[run].size * PAGE_SIZE;  // update total only after decommit
+                total -= size_t(nodes[run].size) << PAGE_SHIFT;  // update total only after decommit
 
                 // reinsert the merged block into the treap and/or heap if needed
                 if (insert) {
@@ -1955,7 +1945,7 @@ namespace impl {
             nodes[id].left = NIL;
             nodes[id].right = NIL;
             nodes[id].heap = NIL;
-            occupied -= pages * PAGE_SIZE;  // update occupied immediately
+            occupied -= size_t(pages) << PAGE_SHIFT;  // update occupied immediately
             batch_list[batch_size++] = id;
             batch_pages += nodes[id].size;
             if (batch_min == NIL || nodes[id].offset < batch_min) batch_min = nodes[id].offset;
@@ -1987,7 +1977,7 @@ namespace impl {
                     treap_root = treap_insert(treap_root, id);
                     heap_fix(id);
                 }
-                size_t result = pages * PAGE_SIZE;
+                size_t result = size_t(pages) << PAGE_SHIFT;
                 occupied += result;
                 total += result;
                 return result;
@@ -2007,42 +1997,10 @@ namespace impl {
         ////    SLABS    ////
         /////////////////////
 
-        /* Convert a node id into a slab pointer, accounting for layout. */
-        [[nodiscard]] constexpr slab* slab_get(uint32_t id) noexcept {
-            return static_cast<slab*>(static_cast<void*>(
-                static_cast<std::byte*>(ptr) +
-                ((nodes[id].offset + nodes[id].size) * PAGE_SIZE)
-            )) - 1;
-        }
-
-        /* Get the total number of blocks that a slab can hold with its current
-        footprint.  Due to slab layout, this never needs to be stored, and is only
-        necessary during initialization/growth. */
-        [[nodiscard]] constexpr uint16_t slab_count(slab* s) noexcept {
-            return
-                ((nodes[s->id].size * PAGE_SIZE) - sizeof(slab)) /
-                (SIZE_CLASS[s->size_class] + sizeof(uint16_t));
-        }
-
-        /* Convert a block index within a slab into a pointer to the start of that
-        block's memory, accounting for layout. */
-        [[nodiscard]] constexpr std::byte* slab_data(slab* s, uint16_t block = 0) noexcept {
-            return
-                static_cast<std::byte*>(ptr) + (nodes[s->id].offset * PAGE_SIZE) +
-                (size_t(block) * SIZE_CLASS[s->size_class]);
-        }
-
-        /* Convert a pointer to a block's memory into its index within a slab,
-        accounting for layout. */
-        [[nodiscard]] constexpr uint16_t slab_block(slab* s, void* p) noexcept {
-            return uint16_t(
-                (static_cast<std::byte*>(p) - slab_data(s)) / SIZE_CLASS[s->size_class]
-            );
-        }
-
         /* Binary search for the best size class to represent an allocation of `size`
         bytes.  Note that the size must be less than or equal to `SLAB_MAX`, and the
-        return value is an index into both the `SIZE_CLASSES` and `slabs` arrays. */
+        return value is an index into the `SLAB_CLASS`, `SLAB_BLOCKS`, and `slabs`
+        arrays. */
         [[nodiscard]] static constexpr uint16_t slab_class(
             size_t bytes,
             size_t alignment
@@ -2057,8 +2015,8 @@ namespace impl {
             uint16_t lo = 0;
             uint16_t hi = SLABS;
             while (lo < hi) {
-                uint16_t mid = (hi + lo) / 2;
-                if (SIZE_CLASS[mid] < bytes) {
+                uint16_t mid = (hi + lo) >> 1;
+                if (SLAB_CLASS[mid] < bytes) {
                     lo = mid + 1;
                 } else {
                     hi = mid;
@@ -2067,49 +2025,55 @@ namespace impl {
 
             // ensure alignment
             --alignment;
-            while (lo < SLABS && (SIZE_CLASS[lo] & alignment) != 0) ++lo;
+            while (lo < SLABS && (SLAB_CLASS[lo] & alignment) != 0) ++lo;
             return lo;
         }
 
-        /* Attempt to grow a slab in-place by committing additional pages. Returns true
-        if the slab was successfully grown (in which case its metadata will be updated
-        accordingly), or false if it could not be grown. */
-        [[nodiscard]] bool slab_grow(slab*& s) {
-            if (nodes[s->id].size < SLAB_MAX_PAGES[s->size_class]) {  // room to grow
-                uint32_t commit = std::min(
-                    SLAB_GROW_PAGES[s->size_class],
-                    SLAB_MAX_PAGES[s->size_class] - nodes[s->id].size
-                );
-                if (auto reserved = page_reserve(
-                    nodes[s->id].offset + nodes[s->id].size,
-                    commit
-                ) > 0) {
-                    // don't count empty slab space as occupied
-                    occupied -= reserved;
+        /* Recover the enclosing slab's node id from an arbitrary pointer, accounting
+        for slab layout. */
+        [[nodiscard]] static uint32_t slab(void* p) noexcept {
+            return *reinterpret_cast<uint32_t*>(
+                (reinterpret_cast<uintptr_t>(p) & SLAB_MASK) + SLAB_OFFSET
+            );
+        }
 
-                    // extend slab and remember how many blocks were added
-                    uint16_t old_count = slab_count(s);
-                    nodes[s->id].size += commit;
-                    uint16_t new_count = slab_count(s);
+        /* Push a block onto a slab's free list. */
+        void slab_push(uint32_t slab, block_id block) noexcept {
+            std::construct_at(
+                reinterpret_cast<block_id*>(
+                    static_cast<std::byte*>(ptr) +
+                    (size_t(nodes[slab].offset) << PAGE_SHIFT) +
+                    SLAB_OFFSET
+                ) - (++nodes[slab].heap),
+                block
+            );
+        }
 
-                    // copy slab header + free list to the back of the new region
-                    uint16_t* old_free = reinterpret_cast<uint16_t*>(s);
-                    s = std::construct_at(slab_get(s->id), *s);
-                    uint16_t* new_free = reinterpret_cast<uint16_t*>(s);
-                    for (uint16_t i = 0; i < s->free; ++i) {
-                        *--new_free = *--old_free;
-                    }
+        /* Remove a block from a slab's free list and return its index. */
+        [[nodiscard]] block_id slab_pop(uint32_t slab) noexcept {
+            return *reinterpret_cast<block_id*>(
+                static_cast<std::byte*>(ptr) +
+                (size_t(nodes[slab].offset) << PAGE_SHIFT) +
+                SLAB_OFFSET
+            ) - (nodes[slab].heap--);
+        }
 
-                    // push new entries onto free list in reverse, so that `pop()`
-                    // returns them in increasing order
-                    uint16_t delta = new_count - old_count;
-                    for (uint16_t i = 0; i < delta; ++i) {
-                        s->push(new_count - 1 - i);
-                    }
-                    return true;
-                }
-            }
-            return false;
+        /* Convert a block index within a slab into a pointer to the start of that
+        block's memory, accounting for layout. */
+        [[nodiscard]] std::byte* slab_data(uint32_t slab, block_id block) noexcept {
+            return
+                static_cast<std::byte*>(ptr) +
+                (size_t(nodes[slab].offset) << PAGE_SHIFT) +
+                (block * SLAB_CLASS[nodes[slab].size]);
+        }
+
+        /* Convert a pointer to a block's memory into its index within a slab,
+        accounting for layout. */
+        [[nodiscard]] block_id slab_block(uint32_t slab, void* p) noexcept {
+            return static_cast<block_id>(
+                (static_cast<std::byte*>(p) - slab_data(slab, 0)) /
+                SLAB_CLASS[nodes[slab].size]
+            );
         }
 
         /* Given an allocation of `size` bytes, where `size <= SLAB_MAX`, obtain a
@@ -2117,109 +2081,101 @@ namespace impl {
         attempt to grow an existing slab in-place (up to a maximum size), or allocate a
         new slab if none are available. */
         [[nodiscard]] void* slab_allocate(size_t bytes, uint16_t size_class) {
-            // if there are no partial slabs for the detected size class, allocate a
-            // new slab at its minimum size
-            if (slabs[size_class] == NIL) {
-                uint32_t offset = page_allocate(SLAB_GROW_PAGES[size_class]);
+            // if there are no partial slabs for the given size class, allocate a
+            // new one
+            uint32_t s = slabs[size_class];
+            if (s == NIL) {
+                // slabs are always aligned such that their starting address ends with all zeroes
+                uint32_t offset = page_allocate(
+                    SLAB_PAGES,
+                    size_t(SLAB_PAGES) << PAGE_SHIFT
+                );
 
                 // don't count empty slab space as occupied
-                occupied -= SLAB_GROW_PAGES[size_class] * PAGE_SIZE;
+                occupied -= size_t(SLAB_PAGES) << PAGE_SHIFT;
 
                 // allocate tracking node
                 uint32_t id = get_node();
-                nodes[id].offset = offset;
-                nodes[id].size = SLAB_GROW_PAGES[size_class];
-                nodes[id].left = NIL;
-                nodes[id].right = NIL;
-                nodes[id].heap = NIL;
+                nodes[id].offset = offset;  // starting page offset
+                nodes[id].size = size_class;  // size class index
+                nodes[id].left = NIL;  // previous partial slab
+                nodes[id].right = s;  // next partial slab
+                nodes[id].heap = SLAB_BLOCKS[size_class];  // effective free list size
 
-                // initialize slab header + reverse free list, so that `pop()` returns
+                // initialize node id and free list such that `slab_pop()` returns
                 // blocks in increasing order
-                slab* s = std::construct_at(slab_get(id), id, size_class);
-                uint16_t count = slab_count(s);
-                while (s->free < count) {
-                    s->push(uint16_t(count - 1 - s->free));
+                block_id* free_list = reinterpret_cast<block_id*>(std::construct_at(
+                    reinterpret_cast<uint32_t*>(
+                        static_cast<std::byte*>(ptr) +
+                        (size_t(offset) << PAGE_SHIFT) +
+                        SLAB_OFFSET
+                    ),
+                    id
+                )) - SLAB_BLOCKS[size_class];
+                for (block_id i = 0; i < SLAB_BLOCKS[size_class]; ++i) {
+                    std::construct_at(free_list + i, i);
                 }
 
-                // insert slab into treap and partial list
-                slab_root = treap_insert(slab_root, id);
+                // insert into partial list
+                nodes[s].left = id;
                 slabs[size_class] = id;
+                s = id;
             }
 
             // follow link to first partial slab for this size class
-            slab* s = slab_get(slabs[size_class]);
             if constexpr (DEBUG_ALLOCATOR) {
-                if (s->free == 0) {
+                if (nodes[s].heap == 0) {
                     throw MemoryError("attempted to allocate from a fully-occupied slab");
                 }
             }
 
-            // if the slab would be empty after this allocation, attempt to grow it
-            // in-place; otherwise, pop it from the partial list
-            if (s->free == 1 && !slab_grow(s)) {
-                if (s->next != NIL) {
-                    slab_get(s->next)->prev = s->prev;
+            // if the slab would be empty after this allocation, pop it from the
+            // partial list
+            if (nodes[s].heap == 1) {
+                if (nodes[s].right != NIL) {
+                    nodes[nodes[s].right].left = nodes[s].left;
                 }
-                slabs[size_class] = s->next;
-                s->next = NIL;
-                s->prev = NIL;
+                slabs[size_class] = nodes[s].right;
+                nodes[s].right = NIL;
+                nodes[s].left = NIL;
             }
 
             // pop a block from the slab's free list and return a tagged pointer to
             // uninitialized data
-            occupied += SIZE_CLASS[size_class];  // increment occupied by 1 block
-            return slab_data(s, s->pop());
-        }
-
-        /// TODO: slab_find() may be unnecessary if I align all slabs to a consistent
-        /// size, then mask the pointer and cast to retrieve the slab header directly.
-        /// This requires not growing slabs in-place (so the size can be known ahead
-        /// of time), and some robust way of aligning the slabs during allocation, so
-        /// that I can mask off the required bits, then add the size to recover the
-        /// header pointer, and therefore the id.
-
-        /* Map a deallocation pointer to its originating slab if it originates from
-        one.  Returns `NIL` otherwise. */
-        [[nodiscard]] uint32_t slab_find(void* p) {
-            uint32_t offset = static_cast<uint32_t>(
-                (static_cast<std::byte*>(p) - static_cast<std::byte*>(ptr)) / PAGE_SIZE
-            );
-            uint32_t id = treap_prev(slab_root, offset + 1);
-            return id == NIL || offset >= nodes[id].end() ? NIL : id;
+            occupied += SLAB_CLASS[size_class];  // increment occupied by 1 block
+            return slab_data(s, slab_pop(s));
         }
 
         /* Given an allocation beginning at `p` and continuing for `bytes`, where
         `bytes <= SLAB_MAX` and `p` originates from a slab in this allocator, return it
         to the appropriate slab's free list.  If this renders a slab empty, then it may
-        be deallocated to save memory, unless it is the only entry of its size class,
-        in which case it will be reduced to its minimum size and kept hot for future
-        allocations.  Note that `bytes` is only used for debugging purposes, since the
-        proper size is always determined by the slab's detected size class. */
+        be deallocated to save memory unless it is the only entry of its size class.  
+        Note that `bytes` is only used for debugging purposes, since the proper size is
+        always determined by the slab's detected size class. */
         void slab_deallocate(void* p, size_t bytes = 0) {
             // search for a slab containing `p` via the slab treap
-            uint32_t id = slab_find(p);
+            uint32_t s = slab(p);
             if constexpr (DEBUG_ALLOCATOR) {
-                if (id == NIL) {
+                if (s == NIL) {
                     throw MemoryError("no slab found for deallocation pointer");
                 }
             }
 
             // follow link to detected non-empty slab
-            slab* s = slab_get(id);
             if constexpr (DEBUG_ALLOCATOR) {
-                if (s->free == slab_count(s)) {
+                if (nodes[s].heap == SLAB_BLOCKS[nodes[s].size]) {
                     throw MemoryError("attempted to deallocate from an empty slab");
                 }
                 if (
                     static_cast<std::byte*>(p) < slab_data(s, 0) ||
-                    static_cast<std::byte*>(p) >= slab_data(s, slab_count(s))
+                    static_cast<std::byte*>(p) >= slab_data(s, SLAB_BLOCKS[nodes[s].size])
                 ) {
                     throw MemoryError("block pointer is out of bounds");
                 }
                 if (static_cast<std::byte*>(p) != slab_data(s, slab_block(s, p))) {
                     throw MemoryError("pointer does not align with slab block boundary");
                 }
-                if (bytes > SIZE_CLASS[s->size_class]) {
+                if (bytes > SLAB_CLASS[nodes[s].size]) {
                     throw MemoryError(
                         "attempted to deallocate more than 1 block's worth of bytes from slab"
                     );
@@ -2227,67 +2183,37 @@ namespace impl {
             }
 
             // detect block id within slab and push it to the free list
-            s->push(slab_block(s, p));
-            occupied -= SIZE_CLASS[s->size_class];  // decrement occupied by 1 block
+            slab_push(s, slab_block(s, p));
+            occupied -= SLAB_CLASS[nodes[s].size];  // decrement occupied by 1 block
 
             // if the slab was previously full, reinsert it into `slabs`
-            if (s->free == 1) {
-                s->next = slabs[s->size_class];
-                if (s->next != NIL) {
-                    slab_get(s->next)->prev = s->id;
+            if (nodes[s].heap == 1) {
+                nodes[s].right = slabs[nodes[s].size];
+                if (nodes[s].right != NIL) {
+                    nodes[nodes[s].right].left = s;
                 }
-                s->prev = NIL;
-                slabs[s->size_class] = s->id;
+                nodes[s].left = NIL;
+                slabs[nodes[s].size] = s;
 
-            // if the slab is now empty, reclaim it to save memory
-            } else if (uint16_t count = slab_count(s); s->free == count) {
-                // if the slab is not the only entry in the partial list, fully
-                // deallocate it
-                if (s->prev != NIL || s->next != NIL) {
-                    if (s->prev != NIL) {
-                        slab_get(s->prev)->next = s->next;
-                    } else {
-                        slabs[s->size_class] = s->next;
-                    }
-                    if (s->next != NIL) {
-                        slab_get(s->next)->prev = s->prev;
-                    }
-                    s->next = NIL;
-                    s->prev = NIL;
-                    slab_root = treap_erase(slab_root, id);
-                    occupied += nodes[id].size * PAGE_SIZE;  // do not count empty slab space
-                    page_deallocate(nodes[id].offset, nodes[id].size);
-                    put_node(id);
-
-                // otherwise, shrink it to the minimum size
-                } else if (nodes[id].size > SLAB_GROW_PAGES[s->size_class]) {
-                    // copy slab header to new location
-                    s = std::construct_at(
-                        reinterpret_cast<slab*>(
-                            static_cast<std::byte*>(ptr) +
-                            ((nodes[id].offset + SLAB_GROW_PAGES[s->size_class]) * PAGE_SIZE)
-                        ) - 1,
-                        id,
-                        s->size_class
-                    );
-
-                    // do not count empty slab space
-                    uint32_t delta = (nodes[id].size - SLAB_GROW_PAGES[s->size_class]);
-                    occupied += delta * PAGE_SIZE;
-
-                    // deallocate excess pages back to address space
-                    page_deallocate(
-                        nodes[id].offset + SLAB_GROW_PAGES[s->size_class],
-                        delta
-                    );
-                    nodes[id].size = SLAB_GROW_PAGES[s->size_class];
-
-                    // reinitialize free list in sequential order
-                    count = slab_count(s);
-                    while (s->free < count) {
-                        s->push(uint16_t(count - 1 - s->free));
-                    }
+            // if the slab is now empty and is not the only partial slab, reclaim it to
+            // save memory
+            } else if (
+                nodes[s].heap == SLAB_BLOCKS[nodes[s].size] &&
+                (nodes[s].left != NIL || nodes[s].right != NIL)
+            ) {
+                if (nodes[s].left != NIL) {
+                    nodes[nodes[s].left].right = nodes[s].right;
+                } else {
+                    slabs[nodes[s].size] = nodes[s].right;
                 }
+                if (nodes[s].right != NIL) {
+                    nodes[nodes[s].right].left = nodes[s].left;
+                }
+                nodes[s].right = NIL;
+                nodes[s].left = NIL;
+                occupied += SLAB_CLASS[nodes[s].size];  // do not count empty slab space
+                page_deallocate(nodes[s].offset, SLAB_PAGES);
+                put_node(s);
             }
         }
 
@@ -2295,27 +2221,17 @@ namespace impl {
         ////    REMOTE FREE    ////
         ///////////////////////////
 
-        /// TODO: free_slab calls `slab_find()`, which is not thread-safe.  The
-        /// solution here is to align the slabs and mask the pointer to retrieve the
-        /// slab header directly, which is lock-free and more efficient anyways.
-
-        /// TODO: so that's the next step.  Delete the slab treap entirely, reuse
-        /// the left and right pointers for the doubly-linked list of partial slabs,
-        /// and align all slabs to a fixed size (e.g. 64 pages).  Then I can mask the
-        /// address to recover the slab header quickly and atomically.
-
-
         /* Push a remote free request for a slab deallocation onto this address space's
         lock-free stack.  This must be called from another thread after mapping the
         pointer to this address space, in order to properly deallocate memory
         originating from it. */
         void free_slab(void* p) {
-            slab_defer* req = std::construct_at(static_cast<slab_defer*>(p));
+            defer_slab* req = std::construct_at(static_cast<defer_slab*>(p));
             remote_slabs.fetch_add(
-                SIZE_CLASS[slab_get(slab_find(p))->size_class],
+                SLAB_CLASS[nodes[slab(p)].size],
                 std::memory_order_relaxed
             );
-            slab_defer* old = remote_slab.load(std::memory_order_relaxed);
+            defer_slab* old = remote_slab.load(std::memory_order_relaxed);
             do {
                 req->next = old;
             } while (!remote_slab.compare_exchange_weak(
@@ -2331,13 +2247,13 @@ namespace impl {
         pointer to this address space, in order to properly deallocate memory
         originating from it. */
         void free_page(void* p, size_t bytes) noexcept {
-            page_defer* req = std::construct_at(static_cast<page_defer*>(p));
+            defer_page* req = std::construct_at(static_cast<defer_page*>(p));
             req->pages = page_count(bytes);
             remote_pages.fetch_add(
-                req->pages * PAGE_SIZE,
+                size_t(req->pages) << PAGE_SHIFT,
                 std::memory_order_relaxed
             );
-            page_defer* old = remote_page.load(std::memory_order_relaxed);
+            defer_page* old = remote_page.load(std::memory_order_relaxed);
             do {
                 req->next = old;
             } while (!remote_page.compare_exchange_weak(
@@ -2351,7 +2267,7 @@ namespace impl {
         /* Process all of the remote free requests, if there are any. */
         void drain_remote() noexcept {
             if (remote_slab.load(std::memory_order_relaxed) != nullptr) {
-                slab_defer* list = remote_slab.exchange(nullptr, std::memory_order_acquire);
+                defer_slab* list = remote_slab.exchange(nullptr, std::memory_order_acquire);
                 remote_slabs.exchange(0, std::memory_order_acq_rel);
                 while (list != nullptr) {
                     auto* next = list->next;
@@ -2360,7 +2276,7 @@ namespace impl {
                 }
             }
             if (remote_page.load(std::memory_order_relaxed) != nullptr) {
-                page_defer* list = remote_page.exchange(nullptr, std::memory_order_acquire);
+                defer_page* list = remote_page.exchange(nullptr, std::memory_order_acquire);
                 remote_pages.exchange(0, std::memory_order_acq_rel);
                 while (list != nullptr) {
                     auto* next = list->next;
@@ -2368,12 +2284,12 @@ namespace impl {
                         reinterpret_cast<std::byte*>(list) - static_cast<std::byte*>(ptr)
                     );
                     if constexpr (DEBUG_ALLOCATOR) {
-                        if (offset % PAGE_SIZE != 0) {
+                        if ((offset & PAGE_MASK) != 0) {
                             throw MemoryError("page deallocation pointer is not page-aligned");
                         }
                     }
                     page_deallocate(
-                        static_cast<uint32_t>(offset / PAGE_SIZE),
+                        static_cast<uint32_t>(offset >> PAGE_SHIFT),
                         list->pages
                     );
                     list = next;
@@ -2386,7 +2302,7 @@ namespace impl {
     of virtual memory beginning with a header that stores all the relevant
     metadata.  When the `address_space` is first accessed, the underlying memory
     will be lazily mapped and initialized, transitioning this pointer away from
-    null to an address aligned to `ARENA_SIZE`.  This alignment is exploited to
+    null to an address aligned to `VMEM_PER_THREAD`.  This alignment is exploited to
     quickly map an allocated pointer back to its parent address space during
     remote free operations, and placing the header at the start of the region
     allows for direct casting without any extra pointer indirection.
@@ -2403,17 +2319,17 @@ namespace impl {
         friend struct bertrand::arena;
 
         /* Map a pointer to its containing address space by exploiting alignment by
-        `ARENA_SIZE`, assuming the pointer originates from an address space. */
+        `VMEM_PER_THREAD`, assuming the pointer originates from an address space. */
         [[nodiscard]] static address_space* find(void* p) noexcept {
             return reinterpret_cast<address_space*>(
-                reinterpret_cast<uintptr_t>(p) & ~(ARENA_SIZE - 1)
+                reinterpret_cast<uintptr_t>(p) & ~(VMEM_PER_THREAD - 1)
             );
         }
 
-        /* Since the address space pointer is always aligned to `ARENA_SIZE`, we can
-        reuse bits of its address for bookkeeping purposes.  If the lowest bit is set,
-        then it means the address space has entered the teardown phase, and will no
-        longer accept allocation requests. */
+        /* Since the address space pointer is always aligned to `VMEM_PER_THREAD`, we
+        can reuse bits of its address for bookkeeping purposes.  If the lowest bit is
+        set, then it means the address space has entered the teardown phase, and will
+        no longer accept allocation requests. */
         static constexpr uintptr_t TEARDOWN_MASK = uintptr_t(0b1);
         [[nodiscard]] static bool teardown(address_space* p) noexcept {
             return (reinterpret_cast<uintptr_t>(p) & TEARDOWN_MASK) != 0;
@@ -2456,10 +2372,10 @@ namespace impl {
         void acquire() {
             if (data != nullptr) return;
 
-            // map address space, aligning to `ARENA_SIZE` in order to enable fast
+            // map address space, aligning to `VMEM_PER_THREAD` in order to enable fast
             // back-referencing from allocated pointers
             data = static_cast<address_space*>(
-                map_address_space(address_space::SIZE.total(), ARENA_SIZE)
+                map_address_space(address_space::SIZE.total(), VMEM_PER_THREAD)
             );
 
             // commit base private partition size
@@ -2526,7 +2442,7 @@ namespace impl {
             data->drain_remote();
 
             // attempt slab allocation first and tag result
-            if (bytes <= address_space::SLAB_MAX) {
+            if (bytes <= address_space::SLAB_MAX && alignment <= address_space::SLAB_MIN) {
                 uint16_t size_class = address_space::slab_class(bytes, alignment);
                 if (size_class < address_space::SLABS) {
                     return set_slab(data->slab_allocate(bytes, size_class));
@@ -2536,7 +2452,7 @@ namespace impl {
             // fall back to page allocation
             return
                 static_cast<std::byte*>(data->ptr) +
-                (data->page_allocate(page_count(bytes), alignment) * PAGE_SIZE);
+                (size_t(data->page_allocate(page_count(bytes), alignment)) << PAGE_SHIFT);
         }
 
         /// TODO: arena<T, N>::shrink() must ensure that the shrink does not result in
@@ -2576,12 +2492,12 @@ namespace impl {
                     size_t offset =
                         static_cast<std::byte*>(norm) - static_cast<std::byte*>(d->ptr);
                     if constexpr (DEBUG_ALLOCATOR) {
-                        if (offset % PAGE_SIZE != 0) {
+                        if ((offset & PAGE_MASK) != 0) {
                             throw MemoryError("page deallocation pointer is not page-aligned");
                         }
                     }
                     d->page_deallocate(
-                        static_cast<uint32_t>(offset / PAGE_SIZE),
+                        static_cast<uint32_t>(offset >> PAGE_SHIFT),
                         page_count(bytes)
                     );
                 }
@@ -2633,12 +2549,12 @@ namespace impl {
             size_t offset =
                 size_t(static_cast<std::byte*>(p) - static_cast<std::byte*>(data->ptr));
             if constexpr (DEBUG_ALLOCATOR) {
-                if (offset % PAGE_SIZE != 0) {
+                if ((offset & PAGE_MASK) != 0) {
                     throw MemoryError("reserve() pointer is not page-aligned");
                 }
             }
             return data->page_reserve(
-                static_cast<uint32_t>(offset / PAGE_SIZE),
+                static_cast<uint32_t>(offset >> PAGE_SHIFT),
                 page_count(bytes)
             );
         }
