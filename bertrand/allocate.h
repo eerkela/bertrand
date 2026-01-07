@@ -10,158 +10,6 @@ namespace bertrand {
 
 namespace impl {
 
-    /* A raw number of bytes.  Interconvertible with `size_t`, and usually produced
-    through an integer literal of the form `94_B`, `42_KiB`, `27_MiB`, etc. */
-    struct nbytes {
-        unsigned long long value;
-        [[nodiscard]] constexpr nbytes(unsigned long long value = 0) noexcept : value(value) {}
-        [[nodiscard]] constexpr operator unsigned long long() const noexcept { return value; }
-    };
-
-}
-
-
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of bytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::nbytes operator""_B(unsigned long long size) noexcept {
-    return {size};
-}
-
-
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of kilobytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::nbytes operator""_KiB(unsigned long long size) noexcept {
-    return {size * 1024_B};
-}
-
-
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of megabytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::nbytes operator""_MiB(unsigned long long size) noexcept {
-    return {size * 1024_KiB};
-}
-
-
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of gigabytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::nbytes operator""_GiB(unsigned long long size) noexcept {
-    return {size * 1024_MiB};
-}
-
-
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of terabytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::nbytes operator""_TiB(unsigned long long size) noexcept {
-    return {size * 1024_GiB};
-}
-
-
-/* The system's page size in bytes.  This must be a nonzero power of two, which is
-controlled by the `BERTRAND_PAGE_SIZE` compilation flag. */
-#ifdef BERTRAND_PAGE_SIZE
-    constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
-#else
-    constexpr size_t PAGE_SIZE = 4_KiB;
-#endif
-static_assert(
-    std::popcount(PAGE_SIZE) == 1,
-    "page size must be a nonzero power of two"
-);
-static_assert(
-    PAGE_SIZE <= 1_GiB,
-    "Bertrand only supports page sizes up to 1 GiB"
-);
-constexpr size_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE);
-constexpr size_t PAGE_MASK = PAGE_SIZE - 1;
-
-
-/* The amount of virtual memory allocated per thread.  An allocator with this amount of
-memory will be initialized in thread-local storage upon first use, and deallocated on
-thread shutdown.  This must be either zero (which disables virtual memory entirely) or
-a power of two, which is controlled by the `BERTRAND_VMEM_PER_THREAD` compilation
-flag. */
-#ifdef BERTRAND_VMEM_PER_THREAD
-    constexpr size_t VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
-#else
-    constexpr size_t VMEM_PER_THREAD = 32_GiB;
-#endif
-static_assert(
-    std::popcount(VMEM_PER_THREAD) <= 1,
-    "`VMEM_PER_THREAD` must be a power of two"
-);
-static_assert(
-    VMEM_PER_THREAD % PAGE_SIZE == 0,
-    "`VMEM_PER_THREAD` must be a multiple of the page size"
-);
-static_assert(
-    VMEM_PER_THREAD / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
-    "`VMEM_PER_THREAD` is too large to fully index using 32-bit integers"
-);
-
-
-/// TODO: document these flags, and possibly come up with better names, like
-/// BERTRAND_COALESCE_AFTER, 
-
-
-#ifdef BERTRAND_ALLOCATE_COALESCE_AFTER
-    constexpr size_t COALESCE_THRESHOLD = BERTRAND_ALLOCATE_COALESCE_AFTER;
-#else
-    constexpr size_t COALESCE_THRESHOLD = 16_MiB;
-#endif
-
-
-#ifdef BERTRAND_ALLOCATE_RADIX_AFTER
-    constexpr size_t INSERTION_THRESHOLD = BERTRAND_ALLOCATE_RADIX_AFTER;
-#else
-    constexpr size_t INSERTION_THRESHOLD = 64;
-#endif
-
-
-/* Allocators include a large number of debug assertions to ensure correctness during
-testing, but due to their high performance impact, these checks are disabled unless a
-dedicated debug flag is set.  As the allocator is internal to Bertrand, these
-assertions will only be enabled when testing Bertrand itself. */
-#ifdef BERTRAND_ALLOCATE_DEBUG
-    constexpr bool DEBUG_ALLOCATOR = true;
-#else
-    constexpr bool DEBUG_ALLOCATOR = false;
-#endif
-
-
-namespace impl {
-
-    /// TODO: page_count() should return a size_t, not uint32_t
-
-    /* Round an allocation size in bytes up to the nearest full page, and then return
-    it as a 32-bit page count.  Multiplying the result by `PAGE_SIZE` gives the total
-    size in bytes. */
-    [[nodiscard]] constexpr uint32_t page_count(size_t bytes) noexcept {
-        return (bytes >> PAGE_SHIFT) + ((bytes & PAGE_MASK) != 0);
-    }
-
-    /* Round an allocation size in bytes up to the nearest multiple of the system's
-    native pointer alignment.  Returns the rounded size in bytes. */
-    [[nodiscard]] constexpr size_t pointer_align(size_t bytes) {
-        return (bytes / alignof(void*) + (bytes % alignof(void*) != 0)) * alignof(void*);
-    }
-
-    /* Clear a region of memory by setting all bits to zero.  This is equivalent to a
-    `memset()` call, except that during constant evaluation it uses an explicit loop
-    to avoid undefined behavior. */
-    constexpr void* zero(void* ptr, size_t bytes) noexcept {
-        if consteval {
-            for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
-        } else {
-            std::memset(ptr, 0, bytes);
-        }
-        return ptr;
-    }
-
     template <typename U>
     static constexpr size_t capacity_size = sizeof(U);  // never returns 0
     template <meta::is_void U>
@@ -172,9 +20,9 @@ namespace impl {
     template <meta::is_void U>
     static constexpr size_t capacity_alignment<U> = 1;
 
-    /* A self-aligning helper for defining the capacity of a fixed-size container using
-    either explicit unit literals or raw integers, which are interpreted in units of
-    `T`.  Can also be in an empty state, which indicates a dynamic capacity.
+    /* A self-aligning helper for defining the capacity of a container using either
+    explicit unit literals or raw integers, which are interpreted in units of `T`.
+    A capacity of zero may indicate a dynamic size that is specified at runtime.
 
     Usually, this class is used in a template signature or constructor like so:
 
@@ -187,51 +35,90 @@ namespace impl {
         using Bar = Foo<int, 1024>;  // static capacity
         Foo<double> baz{2048};  // dynamic capacity
         ```
-    */
-    template <typename T>
+
+    Instances of this type are also be created by the integer literal suffixes
+    `_B`, `_KiB`, `_MiB`, `_GiB`, or `_TiB`, all of which return `capacity<void>`,
+    indicating a raw byte count.
+
+    Capacity objects are explicitly convertible to `size_t`, which always returns the
+    number of instances of `T` that can be stored, or raw bytes if `T` is `void` (the
+    default).  They are also implicitly convertible to any other specialization of
+    `capacity`, maintaining proper alignment for the target type (and possibly reducing
+    the byte count from this capacity). */
+    template <typename T = void>
     struct capacity {
         static constexpr size_t aligned_size =
             capacity_size<T> + (capacity_alignment<T> - 1) / capacity_alignment<T>;
 
-        size_t value;
+        unsigned long long value;
 
-        [[nodiscard]] constexpr capacity(NoneType = {}) noexcept : value(0) {}
-        [[nodiscard]] constexpr capacity(size_t size) noexcept : value(size) {}
-        [[nodiscard]] constexpr capacity(impl::nbytes size) noexcept :
-            value((size.value / aligned_size))
+        /* Implicitly convert from `unsigned long long`. */
+        [[nodiscard]] constexpr capacity(unsigned long long size = 0) noexcept : value(size) {}
+
+        /* Implicitly convert from any other capacity, accounting for proper
+        alignment. */
+        template <typename V> requires (!std::same_as<T, V>)
+        [[nodiscard]] constexpr capacity(impl::capacity<V> size) noexcept :
+            value(((size.value * size.aligned_size) / aligned_size))
         {}
 
         /* The total number of bytes needed to represent the given number of instances
         of type `T`. */
         [[nodiscard]] constexpr size_t bytes() const noexcept {
-            return value * aligned_size;
+            return static_cast<size_t>(value * aligned_size);
         }
 
         /* The total number of pages needed to represent the given number of instances
         of type `T`, rounded up to the nearest full page. */
-        [[nodiscard]] constexpr size_t pages() const noexcept {
-            return impl::page_count(bytes());
+        [[nodiscard]] constexpr size_t pages() const noexcept;
+
+        /* Align the capacity up to the nearest multiple of `alignment`, which must be
+        specified in bytes.  The result will be returned as a `capacity<void>` object;
+        converting it back to `capacity<T>` will yield the maximum number of instances
+        of `T` that fit within that byte count.
+
+        For example, if the current capacity is 1 instance of `int32_t` (4 bytes) and
+        the alignment is set to 10 bytes, then the new capacity will be 10 bytes, and
+        converting back to `capacity<int32_t>` will yield a value of 2, since 2
+        instances of `int32_t` (8 bytes) is the largest multiple that is less than or
+        equal to the new capacity. */
+        [[nodiscard]] constexpr capacity<> align_up(capacity<> alignment) noexcept {
+            unsigned long long result = value * aligned_size;
+            result = (result / alignment.value) + ((result % alignment.value) != 0);
+            result *= alignment.value;
+            return result;
         }
 
-        [[nodiscard]] constexpr size_t operator*() const noexcept {
-            return value;
+        /* Align the capacity down to the nearest multiple of `alignment`, which must
+        be specified in bytes.  The result will be returned as a `capacity<void>`
+        object; converting it back to `capacity<T>` will yield the maximum number of
+        of `T` that fit within that byte count.
+
+        For example, if the current capacity is 3 instances of `int32_t` (12 bytes) and
+        the alignment is set to 10 bytes, then the new capacity will be 10 bytes,
+        and converting back to `capacity<int32_t>` will yield a value of 2, since 2
+        instances of `int32_t` (8 bytes) is the largest multiple that is less than or
+        equal to the new capacity. */
+        [[nodiscard]] constexpr capacity<> align_down(capacity<> alignment) noexcept {
+            unsigned long long result = value * aligned_size;
+            result /= alignment.value;
+            result *= alignment.value;
+            return result;
+        }
+
+        [[nodiscard]] constexpr explicit operator size_t() const noexcept {
+            return static_cast<size_t>(value);
         }
 
         [[nodiscard]] constexpr explicit operator bool() const noexcept {
             return value != 0;
         }
 
-        [[nodiscard]] friend constexpr bool operator==(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr bool operator==(capacity lhs, capacity rhs) noexcept {
             return lhs.value == rhs.value;
         }
 
-        [[nodiscard]] friend constexpr auto operator<=>(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr auto operator<=>(capacity lhs, capacity rhs) noexcept {
             return lhs.value <=> rhs.value;
         }
 
@@ -246,14 +133,11 @@ namespace impl {
             return tmp;
         }
 
-        [[nodiscard]] friend constexpr capacity operator+(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr capacity operator+(capacity lhs, capacity rhs) noexcept {
             return capacity(lhs.value + rhs.value);
         }
 
-        constexpr capacity& operator+=(const capacity& other) noexcept {
+        constexpr capacity& operator+=(capacity other) noexcept {
             value += other.value;
             return *this;
         }
@@ -269,50 +153,38 @@ namespace impl {
             return tmp;
         }
 
-        [[nodiscard]] friend constexpr capacity operator-(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr capacity operator-(capacity lhs, capacity rhs) noexcept {
             return capacity(lhs.value - rhs.value);
         }
 
-        constexpr capacity& operator-=(const capacity& other) noexcept {
+        constexpr capacity& operator-=(capacity other) noexcept {
             value -= other.value;
             return *this;
         }
 
-        [[nodiscard]] friend constexpr capacity operator*(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr capacity operator*(capacity lhs, capacity rhs) noexcept {
             return capacity(lhs.value * rhs.value);
         }
 
-        constexpr capacity& operator*=(const capacity& other) noexcept {
+        constexpr capacity& operator*=(capacity other) noexcept {
             value *= other.value;
             return *this;
         }
 
-        [[nodiscard]] friend constexpr capacity operator/(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr capacity operator/(capacity lhs, capacity rhs) noexcept {
             return capacity(lhs.value / rhs.value);
         }
 
-        constexpr capacity& operator/=(const capacity& other) noexcept {
+        constexpr capacity& operator/=(capacity other) noexcept {
             value /= other.value;
             return *this;
         }
 
-        [[nodiscard]] friend constexpr capacity operator%(
-            const capacity& lhs,
-            const capacity& rhs
-        ) noexcept {
+        [[nodiscard]] friend constexpr capacity operator%(capacity lhs, capacity rhs) noexcept {
             return capacity(lhs.value % rhs.value);
         }
 
-        constexpr capacity& operator%=(const capacity& other) noexcept {
+        constexpr capacity& operator%=(capacity other) noexcept {
             value %= other.value;
             return *this;
         }
@@ -339,29 +211,29 @@ namespace impl {
             return capacity(~value);
         }
 
-        [[nodiscard]] constexpr capacity operator&(const capacity& other) const noexcept {
+        [[nodiscard]] constexpr capacity operator&(capacity other) const noexcept {
             return capacity(value & other.value);
         }
 
-        constexpr capacity& operator&=(const capacity& other) noexcept {
+        constexpr capacity& operator&=(capacity other) noexcept {
             value &= other.value;
             return *this;
         }
 
-        [[nodiscard]] constexpr capacity operator|(const capacity& other) const noexcept {
+        [[nodiscard]] constexpr capacity operator|(capacity other) const noexcept {
             return capacity(value | other.value);
         }
 
-        constexpr capacity& operator|=(const capacity& other) noexcept {
+        constexpr capacity& operator|=(capacity other) noexcept {
             value |= other.value;
             return *this;
         }
 
-        [[nodiscard]] constexpr capacity operator^(const capacity& other) const noexcept {
+        [[nodiscard]] constexpr capacity operator^(capacity other) const noexcept {
             return capacity(value ^ other.value);
         }
 
-        constexpr capacity& operator^=(const capacity& other) noexcept {
+        constexpr capacity& operator^=(capacity other) noexcept {
             value ^= other.value;
             return *this;
         }
@@ -370,31 +242,220 @@ namespace impl {
 }
 
 
-/// TODO: once P3074 becomes available, stack-based arenas should just work as
-/// expected.
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of bytes, for use in defining fixed-size containers.  The result is
+inter-convertible with `unsigned long long`. */
+constexpr impl::capacity<> operator""_B(unsigned long long size) noexcept {
+    return {size};
+}
 
 
-/* A static arena that allocates a fixed-size array on the stack.
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of kilobytes, for use in defining fixed-size containers.  The result is
+inter-convertible with `unsigned long long`. */
+constexpr impl::capacity<> operator""_KiB(unsigned long long size) noexcept {
+    return {size * 1024_B};
+}
 
-This specialization is chosen when the templated capacity is greater than zero, in
-which case an uninitialized array of that size is allocated as a member of the struct.
-Note that such arenas are not copy or move constructible/assignable, since the arena is
-not aware of which elements have been initialized or not.  It is the user's
-responsibility to manage the lifetime of the elements stored within the arena, and if
-copies or moves are required, they must be performed by requesting another arena and
-filling it manually. */
-template <meta::unqualified T, impl::capacity<T> N = None>
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of megabytes, for use in defining fixed-size containers.  The result is
+inter-convertible with `unsigned long long`. */
+constexpr impl::capacity<> operator""_MiB(unsigned long long size) noexcept {
+    return {size * 1024_KiB};
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of gigabytes, for use in defining fixed-size containers.  The result is
+inter-convertible with `unsigned long long`. */
+constexpr impl::capacity<> operator""_GiB(unsigned long long size) noexcept {
+    return {size * 1024_MiB};
+}
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw
+number of terabytes, for use in defining fixed-size containers.  The result is
+inter-convertible with `unsigned long long`. */
+constexpr impl::capacity<> operator""_TiB(unsigned long long size) noexcept {
+    return {size * 1024_GiB};
+}
+
+
+/* The system's page size in bytes.  This must be a nonzero power of two, which is
+controlled by the `BERTRAND_PAGE_SIZE` compilation flag.  It will be checked for
+correctness at program startup by querying the OS for the actual page size, which can
+be up to 1 GiB.  If not specified, it defaults to 4 KiB, which is the default for most
+systems. */
+#ifdef BERTRAND_PAGE_SIZE
+    constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
+#else
+    constexpr size_t PAGE_SIZE = (4_KiB).bytes();
+#endif
+static_assert(
+    std::popcount(PAGE_SIZE) == 1,
+    "page size must be a nonzero power of two"
+);
+static_assert(
+    PAGE_SIZE <= (1_GiB).bytes(),
+    "Bertrand only supports page sizes up to 1 GiB"
+);
+
+
+/* The position of the active bit in `PAGE_SIZE`.  Left-shifting 1 by this amount
+recovers the page size in bytes. */
+constexpr uintptr_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE);
+
+
+/* A bitmask with 1s for each bit below `PAGE_SHIFT` and 0s elsewhere, with the same
+length as a typical pointer. */
+constexpr uintptr_t PAGE_MASK = PAGE_SIZE - 1;
+
+
+/* The amount of virtual memory allocated per thread.  An allocator with this amount of
+memory will be initialized using thread-local storage on first use, and deallocated on
+thread shutdown.  This must be either zero (which disables virtual memory entirely) or
+a power of two, which is controlled by the `BERTRAND_VMEM_PER_THREAD` compilation
+flag. */
+#ifdef BERTRAND_VMEM_PER_THREAD
+    constexpr size_t VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
+#else
+    constexpr size_t VMEM_PER_THREAD = (32_GiB).bytes();
+#endif
+static_assert(
+    std::popcount(VMEM_PER_THREAD) <= 1,
+    "`VMEM_PER_THREAD` must be a power of two"
+);
+static_assert(
+    VMEM_PER_THREAD % PAGE_SIZE == 0,
+    "`VMEM_PER_THREAD` must be a multiple of the page size"
+);
+static_assert(
+    VMEM_PER_THREAD / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
+    "`VMEM_PER_THREAD` is too large to fully index using 32-bit integers"
+);
+
+
+/* Bertrand's thread-local virtual allocators use batched decommit calls in order to
+reduce kernel transition overhead when freeing memory.  The size of each batch is
+controlled by the `BERTRAND_VMEM_COALESCE_AFTER` compilation flag, which must be
+a multiple of `PAGE_SIZE` specifying the number of bytes that must be pending decommit
+before a batch is triggered.  If not specified, it defaults to 16 MiB. */
+#ifdef BERTRAND_VMEM_COALESCE_AFTER
+    constexpr size_t VMEM_COALESCE_AFTER = BERTRAND_ALLOCATE_COALESCE_AFTER;
+#else
+    constexpr size_t VMEM_COALESCE_AFTER = (16_MiB).bytes();
+#endif
+static_assert(
+    VMEM_COALESCE_AFTER % PAGE_SIZE == 0,
+    "`COALESCE_AFTER` must be a multiple of the page size"
+);
+
+
+/* When issuing batched decommit calls, Bertrand's thread-local virtual allocators must
+sort the list of pending decommits in order to coalesce adjacent pages into single
+decommit requests.  The general sorting algorithm is an optimized radix sort, but for
+small batches, insertion sort may be faster due to lower constant overhead.  The
+`BERTRAND_VMEM_INSERTION_THRESHOLD` compilation flag controls the maximum batch size
+(in allocations) for which this optimization will be applied.  If not specified, it
+defaults to 64 allocations. */
+#ifdef BERTRAND_VMEM_INSERTION_THRESHOLD
+    constexpr size_t VMEM_INSERTION_THRESHOLD = BERTRAND_VMEM_INSERTION_THRESHOLD;
+#else
+    constexpr size_t VMEM_INSERTION_THRESHOLD = 64;
+#endif
+
+
+/* Bertrand's thread-local virtual allocators include a comprehensive set of debug
+assertions to ensure correctness during testing, but due to their high performance
+impact, they will be disabled unless `BERTRAND_VMEM_DEBUG` is defined at compile time.
+Since the allocator is internal to Bertrand, these assertions will only be enabled when
+testing Bertrand itself. */
+#ifdef BERTRAND_VMEM_DEBUG
+    constexpr bool VMEM_DEBUG = true;
+#else
+    constexpr bool VMEM_DEBUG = false;
+#endif
+
+
+/* A contiguous region of reserved addresses holding uninitialized instances of type
+`T`, which will be freed when the `Space` object is destroyed.  If `T` is `void`, then
+the space will be interpreted as raw bytes, which can be used to store arbitrary data.
+
+Spaces of this form come in 3 flavors, depending on the source of their backing memory:
+
+    1.  Static (stack-based) spaces, where `N` is a compile-time constant indicating
+        either the maximum number of instances of `T` that can be stored if it is an
+        integer, or the total number of bytes if it uses one of the literal suffixes
+        (`_B`, `_KiB`, `_MiB`, `_GiB`, `_TiB`).  These spaces cannot grow, shrink, be
+        copied, or moved, and their contents remain uninitialized until explicitly
+        constructed by the user.  This is the fastest and most efficient type of space,
+        and does not require any dynamic memory allocation whatsoever, but is limited
+        to fixed sizes known at compile time, and is therefore less flexible than the
+        other options.  These are typically used for in-place vector types as well as
+        buffers for string or integer literals, where the size can be detected via
+        CTAD and is guaranteed not to grow beyond a maximum limit.
+    2.  Dynamic (heap-based) spaces, where `N` is zero (the default), and the size is
+        supplied as a constructor argument instead.  These spaces allocate memory using
+        `std::allocator<T>`, which is constexpr-capable, and equivalent to traditional
+        `new`/`delete` calls under the hood.  These spaces can grow and shrink as
+        needed, and may be trivially moved, but not copied.  They suffer from all the
+        usual downsides of heap allocation, including fragmentation, relocation of
+        existing elements, contention between threads, and unpredictable performance.
+        These are typically used as an alternative to (3) below when either virtual
+        memory is disabled or the space is constructed at compile time, where heap
+        allocation is the only available option.
+    3.  Virtual (page-based) spaces, where `N` is again zero, and the size is supplied
+        as a constructor argument similar to (2) above.  This type of space will be
+        automatically chosen instead of (2) as long as virtual memory is enabled and
+        the space is constructed at runtime.  The backing memory will be allocated from
+        Bertrand's thread-local virtual address space, which is decoupled from physical
+        memory, and supports features like overcommitment, where large regions can be
+        reserved without immediately consuming physical RAM.  Instead, physical pages
+        will be committed into the virtual address space on first access, which
+        generates a page fault that will be handled transparently by the OS.  Upon
+        deallocation, the physical pages will be decommitted and returned to the OS
+        using a batched syscall, which amortizes its cost.  If the requested size falls
+        below a handful of pages, then the space will be obtained from a slab allocator
+        within the thread-local pool instead, which reduces both wastage and TLB
+        pressure for small allocations.  Such spaces can also be grown, shrunk, or
+        moved (but not copied), and are much more likely to avoid relocation compared
+        to (2) above, since fragmentation in the virtual address space does not
+        necessarily correlate to fragmentation of physical memory, unlike traditional
+        heap allocators.  This yields consistent growth performance for dynamic data
+        structures, although relocations may still occur during the transition between
+        slab size classes or at high load factors.  Additionally, since each address
+        space is thread-local, allocations and deallocations are lock-free and
+        uncontended, even when deallocating from other threads, which can be done via
+        remote free requests that will be processed later by the owning thread without
+        blocking.
+
+In all 3 cases, the reserved memory will be deallocated when the space is destroyed,
+according to RAII principles.  Note that no destructors will be invoked for any
+constructed elements - it is the user's responsibility to manage the lifetime of the
+objects stored within the space, and ensure they are properly destroyed before the
+space itself.
+
+This class is generally used as a helper to implement higher-level data structures like
+`List`, `Str`, and various type-erasure mechanisms, where uninitialized, possibly
+dynamic storage is required.  Users may instantiate it directly in order to implement
+arena allocators or custom data structures of their own, as long as they properly
+manage the construction and destruction of each element.  Note that physical memory
+will never leak due to RAII-based cleanup, but logical leaks may still occur if
+destructors are used to manage external resources like file handles or network
+connections. */
+template <meta::unqualified T, impl::capacity<T> N = 0>
 struct Space {
     using type = T;
 
     /* Identifies static (stack-based) vs dynamic (heap or virtual memory-based)
-    arenas. */
+    spaces.  If true, then the space may be grown, shrunk, or moved, but not copied. */
     [[nodiscard]] static constexpr bool dynamic() noexcept { return false; }
 
     /* Differentiates heap-based and virtual memory-based spaces.  These have identical
     interfaces, but may exhibit different performance characteristics subject to this
     class's documentation. */
-    [[nodiscard]] static constexpr bool heap() noexcept { return false; }
+    [[nodiscard]] constexpr bool heap() const noexcept { return false; }
 
     /* Detect whether a virtual memory-based space is backed by a slab allocator or
     page allocations.  Slab allocations are used for small sizes to reduce memory
@@ -405,24 +466,30 @@ struct Space {
     requirement greater than a single pointer during construction. */
     [[nodiscard]] constexpr bool slab() const noexcept { return false; }
 
-    /* Returns true if the arena owns at least one element. */
+    /* Returns true if the space owns at least one element. */
     [[nodiscard]] constexpr explicit operator bool() const noexcept { return true; }
 
-    /* Returns true if the arena is empty, meaning it does not own any memory. */
+    /* Returns true if the space is empty, meaning it does not own any memory. */
     [[nodiscard]] static constexpr bool empty() noexcept { return false; }
 
-    /* Returns the number of elements in the arena as an unsigned integer. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return *N; }
+    /* Returns the number of elements in the space as an unsigned integer. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return N; }
 
-    /* Returns the number of elements in the arena as a signed integer. */
+    /* Returns the number of elements in the space as a signed integer. */
     [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(*N); }
 
-    /* Return the current footprint of the space in bytes. */
+    /* Return the current footprint of the space in bytes.  Note that the actual memory
+    usage may be higher than indicated here due to memory owned by the space's
+    contents, so the result only reflects the memory consumption of the storage buffer
+    itself. */
     [[nodiscard]] static constexpr size_t bytes() noexcept { return N.bytes(); }
 
 private:
     union storage {
         T data[size()];
+        /// TODO: once P3074 becomes available, these constructors/destructors can be
+        /// safely deleted, allowing elements to be constructed and destroyed at
+        /// compile time.
         constexpr storage() noexcept requires (meta::trivially_constructible<T>) = default;
         constexpr storage() noexcept requires (!meta::trivially_constructible<T>) {}
         constexpr ~storage() noexcept requires (meta::trivially_destructible<T>) = default;
@@ -432,16 +499,24 @@ private:
 public:
     storage m_storage;
 
-    /* Default-constructing a static arena reserves stack space, but does not
+    /* Default-constructing a static space reserves stack space, but does not
     initialize any of the elements. */
     [[nodiscard]] constexpr Space() noexcept = default;
 
-    /* Static arenas cannot be copied or moved, since they are not aware of which
+    /* Static spaces cannot be copied or moved, since they are not aware of which
     elements are constructed and which are not. */
     constexpr Space(const Space&) = delete;
     constexpr Space(Space&&) = delete;
     constexpr Space& operator=(const Space&) = delete;
     constexpr Space& operator=(Space&&) = delete;
+
+    /* Spaces can be used as pointers similar to C-style arrays. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
+        return std::forward<Self>(self).front();
+    }
+    [[nodiscard]] constexpr T* operator->() noexcept { return data(); }
+    [[nodiscard]] constexpr const T* operator->() const noexcept { return data(); }
 
     /* Retrieve a pointer to the beginning of the underlying memory. */
     [[nodiscard]] constexpr type* data() noexcept {
@@ -451,25 +526,25 @@ public:
         return static_cast<const type*>(m_storage.data);
     }
 
-    /* Perfectly forward the first element of the arena. */
+    /* Perfectly forward the first element of the space. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
         return (std::forward<Self>(self).m_storage.data[0]);
     }
 
-    /* Perfectly forward the last element of the arena. */
+    /* Perfectly forward the last element of the space. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
         return (std::forward<Self>(self).m_storage.data[ssize() - 1]);
     }
 
-    /* Perfectly forward an element of the arena identified by index. */
+    /* Perfectly forward an element of the space identified by index. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t index) noexcept {
         return (std::forward<Self>(self).m_storage.data[index]);
     }
 
-    /* Get an iterator to the beginning of the arena. */
+    /* Get a forward iterator over the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
         if constexpr (meta::lvalue<Self>) {
@@ -479,7 +554,7 @@ public:
         }
     }
 
-    /* Get an iterator to the end of the arena. */
+    /* Get a forward sentinel for the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
         if constexpr (meta::lvalue<Self>) {
@@ -489,19 +564,19 @@ public:
         }
     }
 
-    /* Get a reverse iterator to the beginning of the arena. */
+    /* Get a reverse iterator over the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
         return std::make_reverse_iterator(std::forward<Self>(self).end());
     }
 
-    /* Get a reverse iterator to the end of the arena. */
+    /* Get a reverse sentinel for the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
         return std::make_reverse_iterator(std::forward<Self>(self).begin());
     }
 
-    /* Construct the element at the specified index of the arena using the remaining
+    /* Construct the element at the specified index of the space using the remaining
     arguments and return a reference to the newly constructed instance.  A different
     type may be provided as a template parameter, in which case the element will be
     reinterpreted as that type before constructing it.  The type may also be provided
@@ -588,27 +663,28 @@ public:
     }
 
     /* Attempt to reserve additional memory for the space without relocating existing
-    elements.  The `size` argument indicates the desired capacity of the space after
-    growth, and the result indicates the number of additional elements that were
-    allocated to reach that capacity.  Adding the result to the previous capacity
-    yields the new capacity of the space after reservation, which may be greater than
-    requested due to page-aligned growth, or less than requested if the space could not
-    be extended in-place.  In the latter case, the user may choose to relocate the
-    contents by allocating a new space of the desired size and moving them manually. */
-    [[nodiscard]] static constexpr size_t reserve(size_t size) noexcept { return 0; }
+    elements.  The `size` argument indicates the desired minimum capacity of the space
+    after growth.  If the current capacity is greater than or equal to the requested
+    size, or if the space does not support in-place resizing, or originates from
+    another thread, then no action is taken.  These cases can be detected by checking
+    the capacity before and after calling this method, and handled by relocating its
+    contents to another space if necessary. */
+    constexpr void reserve(impl::capacity<type> size) noexcept {}
 
     /* Attempt to partially release memory back to the originating allocator, shrinking
-    the space to the requested `size`.  The result indicates the number of elements
-    from the end of the space that were successfully released.  Subtracting the result
-    from the previous capacity yields the new capacity of the space after shrinking,
-    which may be greater (but never less) than requested due to page-aligned
-    shrinkage. */
-    [[nodiscard]] static constexpr size_t shrink(size_t size) noexcept { return 0; }
+    the space to the requested `size`.  If the current capacity is less than or equal
+    to the requested size, or if the space does not support in-place resizing, or
+    originates from another thread, then no action is taken.  These cases can be
+    detected by checking the capacity before and after calling this method, and handled
+    by relocating its contents to another space if necessary. */
+    constexpr void shrink(impl::capacity<type> size) noexcept {}
 };
 
 
 namespace impl {
 
+    /* Verify that the system's page size matches the configured `PAGE_SIZE` at
+    startup. */
     static NoneType check_page_size = [] {
         #if WINDOWS
             SYSTEM_INFO si;
@@ -640,6 +716,48 @@ namespace impl {
         return None;
     }();
 
+    /// TODO: page_count() should return a size_t, not uint32_t
+
+    /* Round an allocation size in bytes up to the nearest full page, and then return
+    it as a 32-bit page count.  Multiplying the result by `PAGE_SIZE` gives the total
+    size in bytes. */
+    [[nodiscard]] constexpr uint32_t page_count(size_t bytes) noexcept {
+        return (bytes >> PAGE_SHIFT) + ((bytes & PAGE_MASK) != 0);
+    }
+
+    /* Round an allocation size in bytes up to the nearest multiple of the system's
+    native pointer alignment.  Returns the rounded size in bytes. */
+    [[nodiscard]] constexpr size_t pointer_align(size_t bytes) {
+        return (bytes / alignof(void*) + (bytes % alignof(void*) != 0)) * alignof(void*);
+    }
+
+    /* Clear a region of memory by setting all bits to zero.  This is equivalent to a
+    `memset()` call, except that during constant evaluation it uses an explicit loop
+    to avoid undefined behavior. */
+    constexpr void* zero(void* ptr, size_t bytes) noexcept {
+        if consteval {
+            for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
+        } else {
+            std::memset(ptr, 0, bytes);
+        }
+        return ptr;
+    }
+
+    template <typename T>
+    [[nodiscard]] constexpr size_t capacity<T>::pages() const noexcept {
+        return impl::page_count(bytes());
+    }
+
+
+    /// TODO: anything using size_t as a byte count should use impl::capacity<void>
+    /// instead, so that I can eliminate the `page_count()` and `pointer_align()`
+    /// helpers, as well as possibly `zero()`.
+
+
+    /// TODO: I also need to be clear and consistent about the allocate() and
+    /// deallocate() methods accepting the sizes as out parameters.
+
+
     /* Reserve a range of virtual addresses with the given number of bytes, aligned to
     the specified alignment (which must be a power of two).  Returns a void pointer to
     the start of the address range, where all bits that are less significant than the
@@ -651,7 +769,7 @@ namespace impl {
     are first accessed.  On windows systems, the address space is reserved without any
     privileges, and memory must be explicitly committed before use. */
     [[nodiscard]] inline void* map_address_space(size_t bytes, size_t alignment = PAGE_SIZE) {
-        if constexpr (DEBUG_ALLOCATOR) {
+        if constexpr (VMEM_DEBUG) {
             if (bytes == 0 || (bytes & PAGE_MASK) != 0) {
                 throw MemoryError("bytes must be a nonzero multiple of the page size");
             }
@@ -666,7 +784,7 @@ namespace impl {
             SYSTEM_INFO si {};
             GetSystemInfo(&si);
             size_t granularity = si.dwAllocationGranularity;
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (alignment > granularity && alignment % granularity != 0) {
                     throw MemoryError(std::format(
                         "alignment must be either less than or a multiple of the "
@@ -687,7 +805,7 @@ namespace impl {
                 if (ptr == nullptr) {
                     throw MemoryError(std::format(
                         "failed to map virtual address space ({:.3f} MiB) -> {}",
-                        double(bytes) / double(1_MiB),
+                        double(bytes) / double((1_MiB).bytes()),
                         system_err_msg()
                     ));
                 }
@@ -733,7 +851,7 @@ namespace impl {
 
                 // if VirtualAlloc2 exists but failed, fall through to probe/retry
                 if (ptr != nullptr) {
-                    if constexpr (DEBUG_ALLOCATOR) {
+                    if constexpr (VMEM_DEBUG) {
                         if (reinterpret_cast<uintptr_t>(ptr) % alignment != 0) {
                             VirtualFree(ptr, 0, MEM_RELEASE);
                             throw MemoryError(
@@ -759,7 +877,7 @@ namespace impl {
                 if (probe == nullptr) {
                     throw MemoryError(std::format(
                         "failed to map virtual address space ({:.3f} MiB) -> {}",
-                        double(bytes) / double(1_MiB),
+                        double(bytes) / double((1_MiB).bytes()),
                         system_err_msg()
                     ));
                 }
@@ -783,7 +901,7 @@ namespace impl {
             // all attempts failed
             throw MemoryError(std::format(
                 "failed to map virtual address space ({:.3f} MiB) after {} attempts -> {}",
-                double(bytes) / double(1_MiB),
+                double(bytes) / double((1_MiB).bytes()),
                 MAX_ATTEMPTS,
                 system_err_msg()
             ));
@@ -807,7 +925,7 @@ namespace impl {
             if (ptr == MAP_FAILED) {
                 throw MemoryError(std::format(
                     "failed to map virtual address space ({:.3f} MiB) -> {}",
-                    double(bytes) / double(1_MiB),
+                    double(bytes) / double((1_MiB).bytes()),
                     system_err_msg()
                 ));
             }
@@ -837,7 +955,7 @@ namespace impl {
     specified number of bytes, returning them to the OS.  This is the inverse of
     `map_address_space()`.  A MemoryError may be thrown if the unmapping fails. */
     inline void unmap_address_space(void* ptr, size_t bytes) {
-        if constexpr (DEBUG_ALLOCATOR) {
+        if constexpr (VMEM_DEBUG) {
             if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
@@ -853,7 +971,7 @@ namespace impl {
                     "{:#x} and ending at address {:#x} ({:.3f} MiB) -> {}",
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + bytes),
-                    double(bytes) / double(1_MiB),
+                    double(bytes) / double((1_MiB).bytes()),
                     system_err_msg()
                 ));
             }
@@ -864,7 +982,7 @@ namespace impl {
                     "{:#x} and ending at address {:#x} ({:.3f} MiB) -> {}",
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + bytes),
-                    double(bytes) / double(1_MiB),
+                    double(bytes) / double((1_MiB).bytes()),
                     system_err_msg()
                 ));
             }
@@ -888,7 +1006,7 @@ namespace impl {
     increasing syscall overhead, but minimizing commit charge so as not to interfere
     with other processes on the system. */
     inline void commit_address_space(void* ptr, size_t bytes) {
-        if constexpr (DEBUG_ALLOCATOR) {
+        if constexpr (VMEM_DEBUG) {
             if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
@@ -907,7 +1025,7 @@ namespace impl {
                 throw MemoryError(std::format(
                     "failed to commit {:.3f} MiB of virtual address space "
                     "starting at address {:#x} and ending at address {:#x} -> {}",
-                    double(bytes) / double(1_MiB),
+                    double(bytes) / double((1_MiB).bytes()),
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(ptr) + bytes,
                     system_err_msg()
@@ -935,7 +1053,7 @@ namespace impl {
     needed, increasing syscall overhead, but minimizing commit charge so as not to
     interfere with other processes on the system. */
     inline void decommit_address_space(void* ptr, size_t bytes) {
-        if constexpr (DEBUG_ALLOCATOR) {
+        if constexpr (VMEM_DEBUG) {
             if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
@@ -949,7 +1067,7 @@ namespace impl {
                 throw MemoryError(std::format(
                     "failed to decommit {:.3f} MiB of virtual address space "
                     "starting at address {:#x} and ending at address {:#x} -> {}",
-                    double(bytes) / double(1_MiB),
+                    double(bytes) / double((1_MiB).bytes()),
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(ptr) + bytes,
                     system_err_msg()
@@ -960,7 +1078,7 @@ namespace impl {
                 throw MemoryError(std::format(
                     "failed to decommit {:.3f} MiB of virtual address space "
                     "starting at address {:#x} and ending at address {:#x} -> {}",
-                    double(bytes) / double(1_MiB),
+                    double(bytes) / double((1_MiB).bytes()),
                     reinterpret_cast<uintptr_t>(ptr),
                     reinterpret_cast<uintptr_t>(ptr) + bytes,
                     system_err_msg()
@@ -1009,7 +1127,7 @@ namespace impl {
         loop fusion, which requires two temporary buffers to store the digit counts and
         prefix sums.  Additionally, insertion sort will be used as an optimization if 
         the batch size is below a (tunable) threshold.  */
-        static constexpr uint32_t COALESCE_BUFFER = page_count(COALESCE_THRESHOLD);
+        static constexpr uint32_t COALESCE_BUFFER = page_count(VMEM_COALESCE_AFTER);
         static constexpr uint32_t RADIX = 256;
         static constexpr uint32_t RADIX_LOG2 = 8;
         static constexpr uint32_t RADIX_MASK = RADIX - 1;
@@ -1887,7 +2005,7 @@ namespace impl {
                 }
 
                 // update left offset to aligned address
-                if constexpr (DEBUG_ALLOCATOR) {
+                if constexpr (VMEM_DEBUG) {
                     if (tmp > std::numeric_limits<uint32_t>::max()) {
                         throw MemoryError("aligned allocation offset overflows uint32_t");
                     }
@@ -1904,7 +2022,7 @@ namespace impl {
         this method must eventually be passed to `deallocate()` along with its current
         length in pages in order to release memory back to the address space. */
         [[nodiscard]] uint32_t page_allocate(uint32_t pages, size_t alignment) {
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (pages == 0) {
                     throw MemoryError("attempted to allocate zero pages from address space");
                 }
@@ -1928,15 +2046,15 @@ namespace impl {
                 throw MemoryError(std::format(
                     "failed to allocate {:.3f} MiB from local address space ({:.3f} "
                     "MiB / {:.3f} MiB - {:.3f}%) -> insufficient space available",
-                    double(size_t(pages) << PAGE_SHIFT) / double(1_MiB),
-                    double(total) / double(1_MiB),
-                    double(SIZE.total()) / double(1_MiB),
+                    double(size_t(pages) << PAGE_SHIFT) / double((1_MiB).bytes()),
+                    double(total) / double((1_MiB).bytes()),
+                    double(SIZE.total()) / double((1_MiB).bytes()),
                     (double(total) / double(size_t(SIZE.pub) << PAGE_SHIFT)) * 100.0
                 ));
             }
             uint32_t right = nodes[id].size - pages - left;
             uint32_t offset = nodes[id].offset + left;
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if ((
                     reinterpret_cast<uintptr_t>(ptr) + (size_t(offset) << PAGE_SHIFT)
                 ) % alignment != 0) {
@@ -2031,7 +2149,7 @@ namespace impl {
             if (batch_size < 2) {
                 return;
             }
-            if (batch_size <= INSERTION_THRESHOLD) {
+            if (batch_size <= VMEM_INSERTION_THRESHOLD) {
                 insertion_sort();
                 return;
             }
@@ -2249,7 +2367,7 @@ namespace impl {
             size_t bytes,
             size_t alignment
         ) noexcept {
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (std::popcount(alignment) != 1) {
                     throw MemoryError("alignment must be a power of two");
                 }
@@ -2362,7 +2480,7 @@ namespace impl {
             }
 
             // follow link to first partial slab for this size class
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (nodes[s].heap == 0) {
                     throw MemoryError("attempted to allocate from a fully-occupied slab");
                 }
@@ -2391,17 +2509,17 @@ namespace impl {
         be deallocated to save memory unless it is the only entry of its size class.  
         Note that `bytes` is only used for debugging purposes, since the proper size is
         always determined by the slab's detected size class. */
-        void slab_deallocate(void* p, size_t bytes = 0) {
+        void slab_deallocate(void* p, size_t& bytes) {
             // search for a slab containing `p` via the slab treap
             uint32_t s = slab(p);
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (s == NIL) {
                     throw MemoryError("no slab found for deallocation pointer");
                 }
             }
 
             // follow link to detected non-empty slab
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (nodes[s].heap == SLAB_BLOCKS[nodes[s].size]) {
                     throw MemoryError("attempted to deallocate from an empty slab");
                 }
@@ -2423,7 +2541,8 @@ namespace impl {
 
             // detect block id within slab and push it to the free list
             slab_push(s, slab_block(s, p));
-            occupied -= SLAB_CLASS[nodes[s].size];  // decrement occupied by 1 block
+            bytes = SLAB_CLASS[nodes[s].size];  // update bytes to reflect actual block size
+            occupied -= bytes;  // decrement occupied by 1 block
 
             // if the slab was previously full, reinsert it into `slabs`
             if (nodes[s].heap == 1) {
@@ -2509,11 +2628,9 @@ namespace impl {
                 defer_slab* list = remote_slab.exchange(nullptr, std::memory_order_acquire);
                 while (list != nullptr) {
                     auto* next = list->next;
-                    slab_deallocate(list);
-                    remote_slabs.fetch_sub(
-                        SLAB_CLASS[nodes[slab(list)].size],
-                        std::memory_order_relaxed
-                    );
+                    size_t bytes = 0;
+                    slab_deallocate(list, bytes);
+                    remote_slabs.fetch_sub(bytes, std::memory_order_relaxed);
                     list = next;
                 }
             }
@@ -2524,7 +2641,7 @@ namespace impl {
                     size_t offset = static_cast<size_t>(
                         reinterpret_cast<std::byte*>(list) - static_cast<std::byte*>(ptr)
                     );
-                    if constexpr (DEBUG_ALLOCATOR) {
+                    if constexpr (VMEM_DEBUG) {
                         if ((offset & PAGE_MASK) != 0) {
                             throw MemoryError("page deallocation pointer is not page-aligned");
                         }
@@ -2627,7 +2744,7 @@ namespace impl {
         [[nodiscard]] void* allocate(size_t& bytes, size_t alignment) {
             // ensure mapping/partition ready
             acquire();
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (data->owner == nullptr) {
                     throw MemoryError(
                         "attempted allocation from address space in teardown phase"
@@ -2655,13 +2772,6 @@ namespace impl {
                 (size_t(data->page_allocate(pages, alignment)) << PAGE_SHIFT);
         }
 
-        /// TODO: Space<T, N>::shrink() must ensure that the shrink does not result in
-        /// a remote free, since that could lead to a race condition if the remote
-        /// free isn't processed immediately, and the memory is reused in the meantime.
-        /// Thankfully, this should be pretty simple, and decoupling that check from
-        /// `deallocate()` itself means that it can continue to serve the sequential
-        /// `shrink()` case without any complications.
-
         /* Release `bytes` worth of memory back to the address space, starting at the
         given pointer `p`.  If `bytes` is less than or equal to `SLAB_MAX`, then the
         pointer will be searched against the slab treap to find an enclosing slab.  If
@@ -2672,8 +2782,8 @@ namespace impl {
         internal data structures accordingly and advising the OS to reclaim physical
         pages.  The OS hook will be invoked in batches, amortizing its cost.  This will
         be called in the destructor for `Space<T, N>` to recycle backing memory. */
-        void deallocate(void* p, size_t bytes) {
-            if constexpr (DEBUG_ALLOCATOR) {
+        void deallocate(void* p, size_t& bytes) {
+            if constexpr (VMEM_DEBUG) {
                 if (data == nullptr) {
                     throw MemoryError(
                         "attempted deallocation from uninitialized address space"
@@ -2690,15 +2800,17 @@ namespace impl {
                 } else {
                     size_t offset =
                         static_cast<std::byte*>(norm) - static_cast<std::byte*>(data->ptr);
-                    if constexpr (DEBUG_ALLOCATOR) {
+                    if constexpr (VMEM_DEBUG) {
                         if ((offset & PAGE_MASK) != 0) {
                             throw MemoryError("page deallocation pointer is not page-aligned");
                         }
                     }
+                    bytes = page_count(bytes);
                     data->page_deallocate(
                         static_cast<uint32_t>(offset >> PAGE_SHIFT),
-                        page_count(bytes)
+                        static_cast<uint32_t>(bytes)
                     );
+                    bytes <<= PAGE_SHIFT;
                 }
                 data->release();  // unmap if in teardown phase
 
@@ -2706,9 +2818,11 @@ namespace impl {
             } else {
                 address_space* d = find(norm);
                 if (slab(p)) {
-                    d->free_slab(norm);  // drop bytes
+                    d->free_slab(norm);
                 } else {
-                    d->free_page(norm, page_count(bytes));  // retain bytes
+                    bytes = page_count(bytes);
+                    d->free_page(norm, static_cast<uint32_t>(bytes));
+                    bytes <<= PAGE_SHIFT;
                 }
                 d->release();  // unmap if in teardown phase
             }
@@ -2725,7 +2839,7 @@ namespace impl {
         in `Space<T, N>::reserve()`, and subsequently by any container methods or
         growth operations that call it in turn. */
         [[nodiscard]] size_t reserve(void* p, size_t bytes) {
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if (data == nullptr) {
                     throw MemoryError(
                         "attempted reservation from uninitialized address space"
@@ -2736,10 +2850,15 @@ namespace impl {
                         "attempted reservation from address space in teardown phase"
                     );
                 }
+                if (slab(p)) {
+                    throw MemoryError("attempted reservation on slab allocation");
+                }
+                if (!contains(p)) {
+                    throw MemoryError(
+                        "reserved pointer does not originate from this address space"
+                    );
+                }
             }
-
-            // slab blocks and foreign pointers must always be relocated instead of grown
-            if (slab(p) || !contains(p)) return 0;
 
             // process any remote frees first
             data->drain_remote();
@@ -2747,7 +2866,7 @@ namespace impl {
             // attempt to grow in-place to page boundary
             size_t offset =
                 size_t(static_cast<std::byte*>(p) - static_cast<std::byte*>(data->ptr));
-            if constexpr (DEBUG_ALLOCATOR) {
+            if constexpr (VMEM_DEBUG) {
                 if ((offset & PAGE_MASK) != 0) {
                     throw MemoryError("reserve() pointer is not page-aligned");
                 }
@@ -2803,80 +2922,12 @@ namespace impl {
 }
 
 
-/// TODO: remove all mention of arenas from docs and replace them with `Space` instead.
-
-
-/* A contiguous region of reserved addresses holding uninitialized instances of type
-`T`, which will be freed when the `Space` object is destroyed.  If `T` is `void`, then
-the space will be interpreted as raw bytes, which can be used to store arbitrary data.
-
-Spaces of this form come in 3 flavors, depending on the source of their backing memory:
-
-    1.  Static (stack-based) spaces, where `N` is a compile-time constant indicating
-        either the maximum number of instances of `T` that can be stored if it is an
-        integer, or the total number of bytes if it uses one of the literal suffixes
-        (`_B`, `_KiB`, `_MiB`, `_GiB`, `_TiB`).  These spaces cannot grow, shrink, be
-        copied, or moved, and their contents remain uninitialized until explicitly
-        constructed by the user.  This is the fastest and most efficient type of space,
-        and does not require any dynamic memory allocation whatsoever, but is limited
-        to fixed sizes known at compile time, and is therefore less flexible than the
-        other options.  These are typically used for in-place vector types as well as
-        buffers for string or integer literals, where the size can be detected via
-        CTAD and is guaranteed not to grow beyond a maximum limit.
-    2.  Dynamic (heap-based) spaces, where `N` is zero (the default), and the size is
-        supplied as a constructor argument instead.  These spaces allocate memory using
-        `std::allocator<T>`, which is constexpr-capable, and equivalent to traditional
-        `new`/`delete` calls under the hood.  These spaces can grow and shrink as
-        needed, and may be trivially moved, but not copied.  They suffer from all the
-        usual downsides of heap allocation, including fragmentation, relocation of
-        existing elements, contention between threads, and unpredictable performance.
-        These are typically used as an alternative to (3) below when either virtual
-        memory is disabled or the space is constructed at compile time, where heap
-        allocation is the only available option.
-    3.  Virtual (page-based) spaces, where `N` is again zero, and the size is supplied
-        as a constructor argument similar to (2) above.  This type of space will be
-        automatically chosen instead of (2) as long as virtual memory is enabled and
-        the space is constructed at runtime.  The backing memory will be allocated from
-        Bertrand's thread-local virtual address space, which is decoupled from physical
-        memory, and supports features like overcommitment, where large regions can be
-        reserved without immediately consuming physical RAM.  Instead, physical pages
-        will be committed into the virtual address space on first access, which
-        generates a page fault that will be handled transparently by the OS.  Upon
-        deallocation, the physical pages will be decommitted and returned to the OS
-        using a batched syscall, which amortizes its cost.  If the requested size falls
-        below a handful of pages, then the space will be obtained from a slab allocator
-        within the thread-local pool instead, which reduces both wastage and TLB
-        pressure for small allocations.  Such spaces can also be grown, shrunk, or
-        moved (but not copied), and are much more likely to avoid relocation compared
-        to (2) above, since fragmentation in the virtual address space does not
-        necessarily correlate to fragmentation of physical memory, unlike traditional
-        heap allocators.  This yields consistent growth performance for dynamic data
-        structures, although relocations may still occur during the transition between
-        slab size classes or at high load factors.  Additionally, since each address
-        space is thread-local, allocations and deallocations are lock-free and
-        uncontended, even when deallocating from other threads, which can be done via
-        remote free requests that will be processed later by the owning thread without
-        blocking.
-
-In all 3 cases, the reserved memory will be deallocated when the space is destroyed,
-according to RAII principles.  Note that no destructors will be invoked for any
-constructed elements - it is the user's responsibility to manage the lifetime of the
-objects stored within the space, and ensure they are properly destroyed before the
-space itself.
-
-This class is generally used as a helper to implement higher-level data structures like
-`List`, `Str`, and various type-erasure mechanisms, where uninitialized, possibly
-dynamic storage is required.  Users may instantiate it directly in order to implement
-arena allocators or custom data structures of their own, as long as they properly
-manage the construction and destruction of each element.  Note that physical memory
-will never leak due to RAII-based cleanup, but logical leaks may still occur if
-destructors are used to manage external resources like file handles or network
-connections. */
-template <meta::unqualified T, impl::capacity<T> N> requires (N == None)
+/* A special case of `Space<T, N>` for dynamic (heap or virtual memory-based) spaces,
+where `N` is not known until run time.  See the primary template for full more
+details. */
+template <meta::unqualified T, impl::capacity<T> N> requires (N == 0)
 struct Space<T, N> {
     using type = T;
-    using capacity = impl::capacity<type>;
-    using alignment = impl::capacity<void>;
 
     /* Identifies static (stack-based) vs dynamic (heap or virtual memory-based)
     spaces.  If true, then the space may be grown, shrunk, or moved, but not copied. */
@@ -2885,7 +2936,7 @@ struct Space<T, N> {
     /* Differentiates heap-based and virtual memory-based spaces.  These have identical
     interfaces, but may exhibit different performance characteristics subject to this
     class's documentation. */
-    [[nodiscard]] static constexpr bool heap() noexcept {
+    [[nodiscard]] constexpr bool heap() const noexcept {
         if consteval {
             return true;
         } else {
@@ -2913,94 +2964,87 @@ struct Space<T, N> {
     }
 
     /* Returns true if the space owns at least one element. */
-    [[nodiscard]] constexpr explicit operator bool() const noexcept { return m_capacity > 0; }
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return m_bytes > 0; }
 
     /* Returns true if the space is empty, meaning it does not own any memory. */
-    [[nodiscard]] constexpr bool empty() const noexcept { return m_capacity == 0; }
+    [[nodiscard]] constexpr bool empty() const noexcept { return m_bytes == 0; }
 
     /* Returns the number of elements in the space as an unsigned integer. */
-    [[nodiscard]] constexpr size_t size() const noexcept { return *m_capacity; }
+    [[nodiscard]] constexpr size_t size() const noexcept { return m_bytes / N.aligned_size; }
 
     /* Returns the number of elements in the space as a signed integer. */
-    [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(*m_capacity); }
+    [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
 
     /* Returns the current footprint of the space in bytes.  Note that the actual
-    memory usage may be slightly higher than indicated here due to alignment and
-    allocator overhead, so the result reflects only the useful memory exposed to the
-    user. */
-    [[nodiscard]] constexpr size_t bytes() const noexcept { return m_capacity.bytes(); }
+    memory usage may be higher than indicated here due to allocator overhead or memory
+    owned by the space's contents, so the result only reflects the memory consumption
+    of the storage buffer itself. */
+    [[nodiscard]] constexpr size_t bytes() const noexcept { return m_bytes; }
 
     type* m_ptr = nullptr;
-    capacity m_capacity = 0;
+    size_t m_bytes = 0;
 
     /* Default-constructing a dynamic space does not allocate any memory and sets the
     capacity to zero. */
     [[nodiscard]] constexpr Space() noexcept = default;
 
-    /// TODO: alignment requirements should be extracted to a different constructor and
-    /// asserted against to prevent nonzero, non-power-of-two alignments without slowing
-    /// down the unaligned case.  This will require some thought.
-
-    /* Passing a capacity to the constructor allocates the indicated amount of memory
-    from either the heap or a virtual memory.  An additional alignment requirement
-    
-    
-    A `MemoryError` may be thrown if the
+    /* Passing a size as a constructor argument will dynamically allocate at least that
+    many elements of type `T` from either the heap or a virtual memory.  If the size is
+    zero, then no allocation will be performed.  Explicit units may be used to specify
+    a size in bytes instead of number of elements, in which case it will be rounded
+    to the nearest multiple of `sizeof(T)`.  A `MemoryError` may be thrown if the
     allocation fails. */
-    [[nodiscard]] constexpr Space(capacity n, alignment align = 1) : m_capacity(n) {
-        if (m_capacity > 0) {
+    [[nodiscard]] constexpr Space(impl::capacity<type> size) : m_bytes(size.bytes()) {
+        if (m_bytes > 0) {
             if consteval {
-                m_ptr = std::allocator<type>{}.allocate(*m_capacity);
+                m_ptr = std::allocator<type>{}.allocate(this->size());
                 if (m_ptr == nullptr) {
                     throw MemoryError("failed to allocate memory for Space");
                 }
             } else {
                 if constexpr (VMEM_PER_THREAD == 0) {
-                    m_ptr = std::allocator<type>{}.allocate(*m_capacity);
+                    m_ptr = std::allocator<type>{}.allocate(this->size());
                     if (m_ptr == nullptr) {
                         throw MemoryError("failed to allocate memory for Space");
                     }
                 } else {
-                    size_t bytes = m_capacity.bytes();
-                    m_ptr = static_cast<type*>(impl::local_address_space.allocate(
-                        bytes,
-                        *align
-                    ));
-                    m_capacity = bytes / capacity::aligned_size;
+                    m_ptr = static_cast<type*>(
+                        impl::local_address_space.allocate(m_bytes, 1)
+                    );
                 }
             }
         }
     }
 
-    /* Arenas are never copyable. */
+    /* Spaces are never copyable. */
     [[nodiscard]] constexpr Space(const Space&) = delete;
     constexpr Space& operator=(const Space&) = delete;
 
     /* Dynamic spaces are movable, transferring ownership of the underlying memory. */
     [[nodiscard]] constexpr Space(Space&& other) noexcept :
         m_ptr(other.m_ptr),
-        m_capacity(other.m_capacity)
+        m_bytes(other.m_bytes)
     {
         other.m_ptr = nullptr;
-        other.m_capacity = 0;
+        other.m_bytes = 0;
     }
     constexpr Space& operator=(Space&& other) noexcept {
         if (this != &other) {
             if (m_ptr != nullptr) {
                 if consteval {
-                    std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
+                    std::allocator<type>{}.deallocate(m_ptr, size());
                 } else {
                     if constexpr (VMEM_PER_THREAD) {
-                        std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
+                        std::allocator<type>{}.deallocate(m_ptr, size());
                     } else {
-                        impl::local_address_space.deallocate(m_ptr, m_capacity.bytes());
+                        impl::local_address_space.deallocate(m_ptr, m_bytes);
                     }
                 }
             }
             m_ptr = other.m_ptr;
-            m_capacity = other.m_capacity;
+            m_bytes = other.m_bytes;
             other.m_ptr = nullptr;
-            other.m_capacity = 0;
+            other.m_bytes = 0;
         }
         return *this;
     }
@@ -3010,18 +3054,26 @@ struct Space<T, N> {
     constexpr ~Space() noexcept {
         if (m_ptr != nullptr) {
             if consteval {
-                std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
+                std::allocator<type>{}.deallocate(m_ptr, size());
             } else {
                 if constexpr (VMEM_PER_THREAD == 0) {
-                    std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
+                    std::allocator<type>{}.deallocate(m_ptr, size());
                 } else {
-                    impl::local_address_space.deallocate(m_ptr, m_capacity.bytes());
+                    impl::local_address_space.deallocate(m_ptr, m_bytes);
                 }
             }
             m_ptr = nullptr;
-            m_capacity = 0;
+            m_bytes = 0;
         }
     }
+
+    /* Spaces can be used as pointers similar to C-style arrays. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
+        return std::forward<Self>(self).front();
+    }
+    [[nodiscard]] constexpr T* operator->() noexcept { return data(); }
+    [[nodiscard]] constexpr const T* operator->() const noexcept { return data(); }
 
     /* Retrieve a pointer to the beginning of the underlying memory. */
     [[nodiscard]] constexpr type* data() noexcept {
@@ -3037,10 +3089,10 @@ struct Space<T, N> {
     }
     [[nodiscard]] constexpr const type* data() const noexcept {
         if consteval {
-            return m_ptr;
+            return static_cast<const type*>(m_ptr);
         } else {
             if constexpr (VMEM_PER_THREAD == 0) {
-                return m_ptr;
+                return static_cast<const type*>(m_ptr);
             } else {
                 return static_cast<const type*>(impl::local_address_space.clear_slab(m_ptr));
             }
@@ -3077,7 +3129,7 @@ struct Space<T, N> {
         }
     }
 
-    /* Get an iterator to the beginning of the space. */
+    /* Get a forward iterator over the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
         if constexpr (meta::lvalue<Self>) {
@@ -3087,7 +3139,7 @@ struct Space<T, N> {
         }
     }
 
-    /* Get an iterator to the end of the space. */
+    /* Get a forward sentinel for the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
         if constexpr (meta::lvalue<Self>) {
@@ -3097,13 +3149,13 @@ struct Space<T, N> {
         }
     }
 
-    /* Get a reverse iterator to the beginning of the space. */
+    /* Get a reverse iterator over the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
         return std::make_reverse_iterator(std::forward<Self>(self).end());
     }
 
-    /* Get a reverse iterator to the end of the space. */
+    /* Get a reverse sentinel for the space. */
     template <typename Self>
     [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
         return std::make_reverse_iterator(std::forward<Self>(self).begin());
@@ -3197,59 +3249,55 @@ struct Space<T, N> {
     }
 
     /* Attempt to reserve additional memory for the space without relocating existing
-    elements.  The `size` argument indicates the desired capacity of the space after
-    growth, and the result indicates the number of additional elements that were
-    allocated to reach that capacity.  Adding the result to the previous capacity
-    yields the new capacity of the space after reservation, which may be greater than
-    requested due to page-aligned growth, or less than requested if the space could not
-    be extended in-place.  In the latter case, the user may choose to relocate the
-    contents by allocating a new space of the desired size and moving them manually. */
-    [[nodiscard]] constexpr capacity reserve(capacity size) noexcept {
-        if consteval {
-            return 0;
-        } else {
-            if constexpr (VMEM_PER_THREAD == 0) {
-                return 0;
-            } else {
-                if (size <= m_capacity || slab()) {
-                    return 0;
+    elements.  The `size` argument indicates the desired minimum capacity of the space
+    after growth.  If the current capacity is greater than or equal to the requested
+    size, or if the space does not support in-place resizing, or originates from
+    another thread, then no action is taken.  These cases can be detected by checking
+    the capacity before and after calling this method, and handled by relocating its
+    contents to another space if necessary. */
+    constexpr void reserve(impl::capacity<type> size) {
+        if !consteval {
+            if constexpr (VMEM_PER_THREAD > 0) {
+                if (
+                    !slab() &&
+                    impl::local_address_space.contains(m_ptr) &&
+                    size.bytes() > m_bytes
+                ) {
+                    m_bytes += impl::local_address_space.reserve(
+                        static_cast<std::byte*>(
+                            impl::local_address_space.clear_slab(m_ptr)
+                        ) + m_bytes,
+                        size.bytes() - m_bytes
+                    );
                 }
-                capacity cap = m_capacity;
-                m_capacity += impl::local_address_space.reserve(
-                    static_cast<std::byte*>(
-                        impl::local_address_space.clear_slab(m_ptr)
-                    ) + (cap.pages() << PAGE_SHIFT),
-                    (size - cap).bytes()
-                ) / capacity::aligned_size;
-                return m_capacity - cap;
             }
         }
     }
 
     /* Attempt to partially release memory back to the originating allocator, shrinking
-    the space to the requested `size`.  The result indicates the number of elements
-    from the end of the space that were successfully released.  Subtracting the result
-    from the previous capacity yields the new capacity of the space after shrinking,
-    which may be greater (but never less) than requested due to page-aligned
-    shrinkage. */
-    [[nodiscard]] constexpr capacity shrink(capacity size) noexcept {
-        if consteval {
-            return 0;
-        } else {
-            if constexpr (VMEM_PER_THREAD == 0) {
-                return 0;
-            } else {
-                if (size >= m_capacity || slab()) {
-                    return 0;
+    the space to the requested `size`.  If the current capacity is less than or equal
+    to the requested size, or if the space does not support in-place resizing, or
+    originates from another thread, then no action is taken.  These cases can be
+    detected by checking the capacity before and after calling this method, and handled
+    by relocating its contents to another space if necessary. */
+    constexpr void shrink(impl::capacity<type> size) {
+        if !consteval {
+            if constexpr (VMEM_PER_THREAD > 0) {
+                size_t bytes = size.pages() << PAGE_SHIFT;
+                if (
+                    !slab() &&
+                    impl::local_address_space.contains(m_ptr) &&
+                    bytes < m_bytes
+                ) {
+                    bytes = m_bytes - bytes;
+                    impl::local_address_space.deallocate(
+                        static_cast<std::byte*>(
+                            impl::local_address_space.clear_slab(m_ptr)
+                        ) + m_bytes,
+                        bytes  // updated in-place
+                    );
+                    m_bytes -= bytes;
                 }
-                size_t cap = size.pages() << PAGE_SHIFT;
-                impl::local_address_space.deallocate(
-                    impl::local_address_space.clear_slab(m_ptr) + cap,
-                    (m_capacity.pages() << PAGE_SHIFT) - cap
-                );
-                size = cap / capacity::aligned_size;
-                std::swap(size, m_capacity);
-                return size - m_capacity;
             }
         }
     }
@@ -3263,10 +3311,11 @@ static_assert([] {
     if (arr[0] != 10) return false;
     arr.destroy(0);
 
-
-    impl::capacity<int> x = 2;
-    impl::capacity<int> y = 3;
-    auto z = x - y;
+    impl::capacity<int> cap{3};
+    auto x = cap.align_up(10);
+    cap = cap.align_down(10);
+    if (x != 20) return false;
+    if (cap != 2) return false;
 
     return true;
 }());
