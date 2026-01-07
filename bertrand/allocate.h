@@ -3,21 +3,19 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
-#include "bertrand/union.h"
 
 
 namespace bertrand {
 
 
 namespace impl {
-    struct arena_tag {};
 
     /* A raw number of bytes.  Interconvertible with `size_t`, and usually produced
     through an integer literal of the form `94_B`, `42_KiB`, `27_MiB`, etc. */
     struct nbytes {
-        size_t value;
-        constexpr nbytes(size_t value = 0) noexcept : value(value) {}
-        constexpr operator size_t() const noexcept { return value; }
+        unsigned long long value;
+        [[nodiscard]] constexpr nbytes(unsigned long long value = 0) noexcept : value(value) {}
+        [[nodiscard]] constexpr operator unsigned long long() const noexcept { return value; }
     };
 
 }
@@ -25,7 +23,7 @@ namespace impl {
 
 /* User-defined literal returning an integer-like value corresponding to a raw
 number of bytes, for use in defining fixed-size containers.  The result is
-implicitly convertible to `unsigned long long`. */
+inter-convertible with `unsigned long long`. */
 constexpr impl::nbytes operator""_B(unsigned long long size) noexcept {
     return {size};
 }
@@ -33,7 +31,7 @@ constexpr impl::nbytes operator""_B(unsigned long long size) noexcept {
 
 /* User-defined literal returning an integer-like value corresponding to a raw
 number of kilobytes, for use in defining fixed-size containers.  The result is
-implicitly convertible to `unsigned long long`. */
+inter-convertible with `unsigned long long`. */
 constexpr impl::nbytes operator""_KiB(unsigned long long size) noexcept {
     return {size * 1024_B};
 }
@@ -41,7 +39,7 @@ constexpr impl::nbytes operator""_KiB(unsigned long long size) noexcept {
 
 /* User-defined literal returning an integer-like value corresponding to a raw
 number of megabytes, for use in defining fixed-size containers.  The result is
-implicitly convertible to `unsigned long long`. */
+inter-convertible with `unsigned long long`. */
 constexpr impl::nbytes operator""_MiB(unsigned long long size) noexcept {
     return {size * 1024_KiB};
 }
@@ -49,7 +47,7 @@ constexpr impl::nbytes operator""_MiB(unsigned long long size) noexcept {
 
 /* User-defined literal returning an integer-like value corresponding to a raw
 number of gigabytes, for use in defining fixed-size containers.  The result is
-implicitly convertible to `unsigned long long`. */
+inter-convertible with `unsigned long long`. */
 constexpr impl::nbytes operator""_GiB(unsigned long long size) noexcept {
     return {size * 1024_MiB};
 }
@@ -57,7 +55,7 @@ constexpr impl::nbytes operator""_GiB(unsigned long long size) noexcept {
 
 /* User-defined literal returning an integer-like value corresponding to a raw
 number of terabytes, for use in defining fixed-size containers.  The result is
-implicitly convertible to `unsigned long long`. */
+inter-convertible with `unsigned long long`. */
 constexpr impl::nbytes operator""_TiB(unsigned long long size) noexcept {
     return {size * 1024_GiB};
 }
@@ -80,6 +78,30 @@ static_assert(
 );
 constexpr size_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE);
 constexpr size_t PAGE_MASK = PAGE_SIZE - 1;
+
+
+/* The amount of virtual memory allocated per thread.  An allocator with this amount of
+memory will be initialized in thread-local storage upon first use, and deallocated on
+thread shutdown.  This must be either zero (which disables virtual memory entirely) or
+a power of two, which is controlled by the `BERTRAND_VMEM_PER_THREAD` compilation
+flag. */
+#ifdef BERTRAND_VMEM_PER_THREAD
+    constexpr size_t VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
+#else
+    constexpr size_t VMEM_PER_THREAD = 32_GiB;
+#endif
+static_assert(
+    std::popcount(VMEM_PER_THREAD) <= 1,
+    "`VMEM_PER_THREAD` must be a power of two"
+);
+static_assert(
+    VMEM_PER_THREAD % PAGE_SIZE == 0,
+    "`VMEM_PER_THREAD` must be a multiple of the page size"
+);
+static_assert(
+    VMEM_PER_THREAD / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
+    "`VMEM_PER_THREAD` is too large to fully index using 32-bit integers"
+);
 
 
 /// TODO: document these flags, and possibly come up with better names, like
@@ -111,62 +133,9 @@ assertions will only be enabled when testing Bertrand itself. */
 #endif
 
 
-/* The amount of virtual memory allocated per thread.  An allocator with this amount of
-memory will be initialized in thread-local storage upon first use, and deallocated on
-thread shutdown.  This must be either zero (which disables virtual memory entirely) or
-a power of two, which is controlled by the `BERTRAND_VMEM_PER_THREAD` compilation
-flag. */
-#ifdef BERTRAND_VMEM_PER_THREAD
-    constexpr size_t VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
-#else
-    constexpr size_t VMEM_PER_THREAD = 32_GiB;
-#endif
-static_assert(
-    std::popcount(VMEM_PER_THREAD) <= 1,
-    "arena size must be a power of two"
-);
-static_assert(
-    VMEM_PER_THREAD % PAGE_SIZE == 0,
-    "arena size must be a multiple of the page size"
-);
-static_assert(
-    VMEM_PER_THREAD / PAGE_SIZE <= std::numeric_limits<uint32_t>::max(),
-    "arena size too large to fully index using 32-bit integers"
-);
-
-
 namespace impl {
 
-    static NoneType check_page_size = [] {
-        #if WINDOWS
-            SYSTEM_INFO si;
-            GetSystemInfo(&si);
-            if (si.dwPageSize != PAGE_SIZE) {
-                throw MemoryError(std::format(
-                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
-                    "size ({} bytes).  This may cause misaligned virtual address "
-                    "spaces and undefined behavior.  Please recompile with "
-                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
-                    "error",
-                    PAGE_SIZE,
-                    si.dwPageSize
-                ));
-            }
-        #elif UNIX
-            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
-                throw MemoryError(std::format(
-                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
-                    "size ({} bytes).  This may cause misaligned virtual address "
-                    "spaces and undefined behavior.  Please recompile with "
-                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
-                    "error",
-                    PAGE_SIZE,
-                    sysconf(_SC_PAGESIZE)
-                ));
-            }
-        #endif
-        return None;
-    }();
+    /// TODO: page_count() should return a size_t, not uint32_t
 
     /* Round an allocation size in bytes up to the nearest full page, and then return
     it as a 32-bit page count.  Multiplying the result by `PAGE_SIZE` gives the total
@@ -204,8 +173,8 @@ namespace impl {
     static constexpr size_t capacity_alignment<U> = 1;
 
     /* A self-aligning helper for defining the capacity of a fixed-size container using
-    either explicit units or raw integers, which are interpreted in units of `T`.  Can
-    also be in an empty state, which indicates a dynamic capacity.
+    either explicit unit literals or raw integers, which are interpreted in units of
+    `T`.  Can also be in an empty state, which indicates a dynamic capacity.
 
     Usually, this class is used in a template signature or constructor like so:
 
@@ -226,7 +195,8 @@ namespace impl {
 
         size_t value;
 
-        [[nodiscard]] constexpr capacity(size_t size = 0) noexcept : value(size) {}
+        [[nodiscard]] constexpr capacity(NoneType = {}) noexcept : value(0) {}
+        [[nodiscard]] constexpr capacity(size_t size) noexcept : value(size) {}
         [[nodiscard]] constexpr capacity(impl::nbytes size) noexcept :
             value((size.value / aligned_size))
         {}
@@ -237,11 +207,10 @@ namespace impl {
             return value * aligned_size;
         }
 
-        /* Align the capacity to the nearest physical page, increasing it to a multiple
-        of the `PAGE_SIZE`, and then adjusting it downwards to account for the
-        alignment of `T`. */
-        [[nodiscard]] constexpr capacity page_align() const noexcept {
-            return (size_t(page_count(value * aligned_size)) << PAGE_SHIFT) / aligned_size;
+        /* The total number of pages needed to represent the given number of instances
+        of type `T`, rounded up to the nearest full page. */
+        [[nodiscard]] constexpr size_t pages() const noexcept {
+            return impl::page_count(bytes());
         }
 
         [[nodiscard]] constexpr size_t operator*() const noexcept {
@@ -401,11 +370,275 @@ namespace impl {
 }
 
 
-template <meta::unqualified T, impl::capacity<T> N = 0>
-struct arena;
+/// TODO: once P3074 becomes available, stack-based arenas should just work as
+/// expected.
+
+
+/* A static arena that allocates a fixed-size array on the stack.
+
+This specialization is chosen when the templated capacity is greater than zero, in
+which case an uninitialized array of that size is allocated as a member of the struct.
+Note that such arenas are not copy or move constructible/assignable, since the arena is
+not aware of which elements have been initialized or not.  It is the user's
+responsibility to manage the lifetime of the elements stored within the arena, and if
+copies or moves are required, they must be performed by requesting another arena and
+filling it manually. */
+template <meta::unqualified T, impl::capacity<T> N = None>
+struct Space {
+    using type = T;
+
+    /* Identifies static (stack-based) vs dynamic (heap or virtual memory-based)
+    arenas. */
+    [[nodiscard]] static constexpr bool dynamic() noexcept { return false; }
+
+    /* Differentiates heap-based and virtual memory-based spaces.  These have identical
+    interfaces, but may exhibit different performance characteristics subject to this
+    class's documentation. */
+    [[nodiscard]] static constexpr bool heap() noexcept { return false; }
+
+    /* Detect whether a virtual memory-based space is backed by a slab allocator or
+    page allocations.  Slab allocations are used for small sizes to reduce memory
+    overhead and TLB pressure, but cannot be arbitrarily grown or shrunk in-place like
+    page allocations can.  Normally, this is not something the user needs to be
+    concerned about, but it may be useful for debugging or performance analysis.  Note
+    that it is possible to avoid slab allocations entirely by providing an alignment
+    requirement greater than a single pointer during construction. */
+    [[nodiscard]] constexpr bool slab() const noexcept { return false; }
+
+    /* Returns true if the arena owns at least one element. */
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return true; }
+
+    /* Returns true if the arena is empty, meaning it does not own any memory. */
+    [[nodiscard]] static constexpr bool empty() noexcept { return false; }
+
+    /* Returns the number of elements in the arena as an unsigned integer. */
+    [[nodiscard]] static constexpr size_t size() noexcept { return *N; }
+
+    /* Returns the number of elements in the arena as a signed integer. */
+    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(*N); }
+
+    /* Return the current footprint of the space in bytes. */
+    [[nodiscard]] static constexpr size_t bytes() noexcept { return N.bytes(); }
+
+private:
+    union storage {
+        T data[size()];
+        constexpr storage() noexcept requires (meta::trivially_constructible<T>) = default;
+        constexpr storage() noexcept requires (!meta::trivially_constructible<T>) {}
+        constexpr ~storage() noexcept requires (meta::trivially_destructible<T>) = default;
+        constexpr ~storage() noexcept requires (!meta::trivially_destructible<T>) {};
+    };
+
+public:
+    storage m_storage;
+
+    /* Default-constructing a static arena reserves stack space, but does not
+    initialize any of the elements. */
+    [[nodiscard]] constexpr Space() noexcept = default;
+
+    /* Static arenas cannot be copied or moved, since they are not aware of which
+    elements are constructed and which are not. */
+    constexpr Space(const Space&) = delete;
+    constexpr Space(Space&&) = delete;
+    constexpr Space& operator=(const Space&) = delete;
+    constexpr Space& operator=(Space&&) = delete;
+
+    /* Retrieve a pointer to the beginning of the underlying memory. */
+    [[nodiscard]] constexpr type* data() noexcept {
+        return m_storage.data;
+    }
+    [[nodiscard]] constexpr const type* data() const noexcept {
+        return static_cast<const type*>(m_storage.data);
+    }
+
+    /* Perfectly forward the first element of the arena. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
+        return (std::forward<Self>(self).m_storage.data[0]);
+    }
+
+    /* Perfectly forward the last element of the arena. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
+        return (std::forward<Self>(self).m_storage.data[ssize() - 1]);
+    }
+
+    /* Perfectly forward an element of the arena identified by index. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t index) noexcept {
+        return (std::forward<Self>(self).m_storage.data[index]);
+    }
+
+    /* Get an iterator to the beginning of the arena. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return self.data();
+        } else {
+            return std::move_iterator(self.data());
+        }
+    }
+
+    /* Get an iterator to the end of the arena. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return self.data() + size();
+        } else {
+            return std::move_iterator(self.data() + size());
+        }
+    }
+
+    /* Get a reverse iterator to the beginning of the arena. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
+        return std::make_reverse_iterator(std::forward<Self>(self).end());
+    }
+
+    /* Get a reverse iterator to the end of the arena. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
+        return std::make_reverse_iterator(std::forward<Self>(self).begin());
+    }
+
+    /* Construct the element at the specified index of the arena using the remaining
+    arguments and return a reference to the newly constructed instance.  A different
+    type may be provided as a template parameter, in which case the element will be
+    reinterpreted as that type before constructing it.  The type may also be provided
+    as a template, in which case CTAD will be applied to deduce the actual type to
+    construct.  Note that it is up to the user to ensure that this does not lead to
+    undefined behavior. */
+    template <meta::unqualified V = type, typename... A>
+    constexpr V& construct(size_t i, A&&... args) &
+        noexcept (meta::nothrow::constructible_from<V, A...>)
+        requires (meta::constructible_from<V, A...>)
+    {
+        if constexpr (meta::explicitly_convertible_to<type*, V*>) {
+            return *std::construct_at(
+                static_cast<V*>(data() + i),
+                std::forward<A>(args)...
+            );
+        } else {
+            return *std::construct_at(
+                reinterpret_cast<V*>(data() + i),
+                std::forward<A>(args)...
+            );
+        }
+    }
+    template <meta::unqualified V = type, typename... A>
+    constexpr V&& construct(size_t i, A&&... args) &&
+        noexcept (meta::nothrow::constructible_from<V, A...>)
+        requires (meta::constructible_from<V, A...>)
+    {
+        if constexpr (meta::explicitly_convertible_to<type*, V*>) {
+            return std::move(*std::construct_at(
+                static_cast<V*>(data() + i),
+                std::forward<A>(args)...
+            ));
+        } else {
+            return std::move(*std::construct_at(
+                reinterpret_cast<V*>(data() + i),
+                std::forward<A>(args)...
+            ));
+        }
+    }
+    template <template <typename...> class V, typename... A>
+    constexpr decltype(auto) construct(size_t i, A&&... args) &
+        noexcept (requires{{V{std::forward<A>(args)...}} noexcept;})
+        requires (requires{{V{std::forward<A>(args)...}};})
+    {
+        using to = decltype(V<type>(std::forward<A>(args)...));
+        if constexpr (meta::explicitly_convertible_to<type*, to*>) {
+            return (*std::construct_at(
+                static_cast<to*>(data() + i),
+                std::forward<A>(args)...
+            ));
+        } else {
+            return (*std::construct_at(
+                reinterpret_cast<to*>(data() + i),
+                std::forward<A>(args)...
+            ));
+        }
+    }
+    template <template <typename...> class V, typename... A>
+    constexpr decltype(auto) construct(size_t i, A&&... args) &&
+        noexcept (requires{{V{std::forward<A>(args)...}} noexcept;})
+        requires (requires{{V{std::forward<A>(args)...}};})
+    {
+        using to = decltype(V{std::forward<A>(args)...});
+        if constexpr (meta::explicitly_convertible_to<type*, to*>) {
+            return (std::move(*std::construct_at(
+                static_cast<to*>(data() + i),
+                std::forward<A>(args)...
+            )));
+        } else {
+            return (std::move(*std::construct_at(
+                reinterpret_cast<to*>(data() + i),
+                std::forward<A>(args)...
+            )));
+        }
+    }
+
+    /* Destroy the element at the specified index of the space. */
+    constexpr void destroy(size_t i)
+        noexcept (meta::nothrow::destructible<T>)
+        requires (meta::destructible<T>)
+    {
+        std::destroy_at(data() + i);
+    }
+
+    /* Attempt to reserve additional memory for the space without relocating existing
+    elements.  The `size` argument indicates the desired capacity of the space after
+    growth, and the result indicates the number of additional elements that were
+    allocated to reach that capacity.  Adding the result to the previous capacity
+    yields the new capacity of the space after reservation, which may be greater than
+    requested due to page-aligned growth, or less than requested if the space could not
+    be extended in-place.  In the latter case, the user may choose to relocate the
+    contents by allocating a new space of the desired size and moving them manually. */
+    [[nodiscard]] static constexpr size_t reserve(size_t size) noexcept { return 0; }
+
+    /* Attempt to partially release memory back to the originating allocator, shrinking
+    the space to the requested `size`.  The result indicates the number of elements
+    from the end of the space that were successfully released.  Subtracting the result
+    from the previous capacity yields the new capacity of the space after shrinking,
+    which may be greater (but never less) than requested due to page-aligned
+    shrinkage. */
+    [[nodiscard]] static constexpr size_t shrink(size_t size) noexcept { return 0; }
+};
 
 
 namespace impl {
+
+    static NoneType check_page_size = [] {
+        #if WINDOWS
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            if (si.dwPageSize != PAGE_SIZE) {
+                throw MemoryError(std::format(
+                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
+                    "size ({} bytes).  This may cause misaligned virtual address "
+                    "spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "error",
+                    PAGE_SIZE,
+                    si.dwPageSize
+                ));
+            }
+        #elif UNIX
+            if (sysconf(_SC_PAGESIZE) != PAGE_SIZE) {
+                throw MemoryError(std::format(
+                    "`BERTRAND_PAGE_SIZE` ({} bytes) does not match system page "
+                    "size ({} bytes).  This may cause misaligned virtual address "
+                    "spaces and undefined behavior.  Please recompile with "
+                    "`BERTRAND_PAGE_SIZE` set to the correct value to silence this "
+                    "error",
+                    PAGE_SIZE,
+                    sysconf(_SC_PAGESIZE)
+                ));
+            }
+        #endif
+        return None;
+    }();
 
     /* Reserve a range of virtual addresses with the given number of bytes, aligned to
     the specified alignment (which must be a power of two).  Returns a void pointer to
@@ -742,11 +975,11 @@ namespace impl {
         #endif
     }
 
-    struct space;
+    struct address_space_handle;
 
     /* Address spaces are split into a base class with all the member variables in
     order to reliably detect its size in later partition calculations. */
-    struct _address_space {
+    struct address_space_base {
         /* Because we asserted that the address space can be fully indexed using 32-bit
         integers, and we always reserve at least one page as a private partition, we
         can safely reuse the maximum 32-bit unsigned integer as a sentinel value. */
@@ -855,8 +1088,9 @@ namespace impl {
         static constexpr const std::array<size_t, SLABS>& SLAB_CLASS = _BLOCKS.first;
         static constexpr const std::array<block_id, SLABS>& SLAB_BLOCKS = _BLOCKS.second;
 
-        /* Pointer back to the thread-local object that spawned this address space. */
-        space* owner;
+        /* Pointer back to the thread-local object that spawned this address space, or
+        null if the thread is in a teardown state. */
+        address_space_handle* owner;
 
         /* High-water mark for node indices + chunks on windows. */
         uint32_t next_node = 0;
@@ -1005,7 +1239,7 @@ namespace impl {
     occupied count falls to zero.  This process can be avoided on unix because they
     lack a hard commit limit, and only fail when the system runs out of physical
     memory. */
-    struct address_space : _address_space {
+    struct address_space : address_space_base {
         /* The address space is separated into a private and public partition, with
         the size of each determined by the total `VMEM_PER_THREAD` specified at compile
         time.  The private partition begins with the `address_space` header itself,
@@ -1022,7 +1256,7 @@ namespace impl {
         to ~16 TiB of address space per thread.  This becomes more efficient as the
         page size increases. */
         static constexpr struct _SIZE {
-            static constexpr size_t HEADER = sizeof(_address_space);
+            static constexpr size_t HEADER = sizeof(address_space_base);
             static constexpr size_t SLABS =
                 pointer_align(address_space::SLABS * sizeof(uint32_t));
             static constexpr size_t RADIX_COUNT =
@@ -1111,7 +1345,7 @@ namespace impl {
 
         /* Initialize a single free node covering the entire public partition on
         construction. */
-        [[nodiscard]] address_space(space* owner) noexcept : _address_space{
+        [[nodiscard]] address_space(address_space_handle* owner) noexcept : address_space_base{
             .owner = owner,
             .slabs = std::fill_n(
                 reinterpret_cast<uint32_t*>(
@@ -1180,10 +1414,20 @@ namespace impl {
             treap_root = id;  // root of coalesce tree
         }
 
-        /// TODO: if BERTRAND_DEBUG_ALLOCATOR is set, add extra assertions to
-        /// validate the heap and treap invariants after every modification, and
-        /// whatever other consistency checks the coalesce step might need.
-        /// -> Ask ChatGPT where I should put these
+        /* Release the address space on last use.  This is a no-op unless `initialized`
+        is set to `false` (indicating that the address space's destructor has been
+        called) and the address space is empty or all remaining bytes are pending a
+        remote free.  It will be called in the destructor for the address space itself
+        as well as `Space<T, N>` to ensure proper destruction order, even for objects
+        with static storage duration, where destructor order is not guaranteed. */
+        void release() {
+            if (owner == nullptr && occupied == (
+                remote_slabs.load(std::memory_order_relaxed) +
+                remote_pages.load(std::memory_order_relaxed)
+            )) {
+                unmap_address_space(this, address_space::SIZE.total());
+            }
+        }
 
         ////////////////////
         ////    HEAP    ////
@@ -2051,11 +2295,11 @@ namespace impl {
 
         /* Remove a block from a slab's free list and return its index. */
         [[nodiscard]] block_id slab_pop(uint32_t slab) noexcept {
-            return *reinterpret_cast<block_id*>(
+            return *(reinterpret_cast<block_id*>(
                 static_cast<std::byte*>(ptr) +
                 (size_t(nodes[slab].offset) << PAGE_SHIFT) +
                 SLAB_OFFSET
-            ) - (nodes[slab].heap--);
+            ) - (nodes[slab].heap--));
         }
 
         /* Convert a block index within a slab into a pointer to the start of that
@@ -2076,10 +2320,9 @@ namespace impl {
             );
         }
 
-        /* Given an allocation of `size` bytes, where `size <= SLAB_MAX`, obtain a
-        void pointer to an uninitialized block within a corresponding slab.  This may
-        attempt to grow an existing slab in-place (up to a maximum size), or allocate a
-        new slab if none are available. */
+        /* Allocate a block from a slab with the given size class index, returning a
+        pointer to an uninitialized block within a corresponding slab.  This may
+        attempt to allocate a new slab if none are available. */
         [[nodiscard]] void* slab_allocate(size_t bytes, uint16_t size_class) {
             // if there are no partial slabs for the given size class, allocate a
             // new one
@@ -2090,17 +2333,15 @@ namespace impl {
                     SLAB_PAGES,
                     size_t(SLAB_PAGES) << PAGE_SHIFT
                 );
-
-                // don't count empty slab space as occupied
-                occupied -= size_t(SLAB_PAGES) << PAGE_SHIFT;
+                occupied -= size_t(SLAB_PAGES) << PAGE_SHIFT;  // don't count empty slab space
 
                 // allocate tracking node
-                uint32_t id = get_node();
-                nodes[id].offset = offset;  // starting page offset
-                nodes[id].size = size_class;  // size class index
-                nodes[id].left = NIL;  // previous partial slab
-                nodes[id].right = s;  // next partial slab
-                nodes[id].heap = SLAB_BLOCKS[size_class];  // effective free list size
+                s = get_node();
+                nodes[s].offset = offset;  // starting page offset
+                nodes[s].size = size_class;  // size class index
+                nodes[s].left = NIL;  // previous partial slab
+                nodes[s].right = NIL;  // next partial slab
+                nodes[s].heap = SLAB_BLOCKS[size_class];  // effective free list size
 
                 // initialize node id and free list such that `slab_pop()` returns
                 // blocks in increasing order
@@ -2110,16 +2351,14 @@ namespace impl {
                         (size_t(offset) << PAGE_SHIFT) +
                         SLAB_OFFSET
                     ),
-                    id
+                    s
                 )) - SLAB_BLOCKS[size_class];
                 for (block_id i = 0; i < SLAB_BLOCKS[size_class]; ++i) {
                     std::construct_at(free_list + i, i);
                 }
 
                 // insert into partial list
-                nodes[s].left = id;
-                slabs[size_class] = id;
-                s = id;
+                slabs[size_class] = s;
             }
 
             // follow link to first partial slab for this size class
@@ -2142,7 +2381,7 @@ namespace impl {
 
             // pop a block from the slab's free list and return a tagged pointer to
             // uninitialized data
-            occupied += SLAB_CLASS[size_class];  // increment occupied by 1 block
+            occupied += SLAB_CLASS[size_class];
             return slab_data(s, slab_pop(s));
         }
 
@@ -2211,7 +2450,7 @@ namespace impl {
                 }
                 nodes[s].right = NIL;
                 nodes[s].left = NIL;
-                occupied += SLAB_CLASS[nodes[s].size];  // do not count empty slab space
+                occupied += size_t(SLAB_PAGES) << PAGE_SHIFT;  // don't count empty slab space
                 page_deallocate(nodes[s].offset, SLAB_PAGES);
                 put_node(s);
             }
@@ -2246,11 +2485,11 @@ namespace impl {
         lock-free stack.  This must be called from another thread after mapping the
         pointer to this address space, in order to properly deallocate memory
         originating from it. */
-        void free_page(void* p, size_t bytes) noexcept {
+        void free_page(void* p, uint32_t pages) noexcept {
             defer_page* req = std::construct_at(static_cast<defer_page*>(p));
-            req->pages = page_count(bytes);
+            req->pages = pages;
             remote_pages.fetch_add(
-                size_t(req->pages) << PAGE_SHIFT,
+                size_t(pages) << PAGE_SHIFT,
                 std::memory_order_relaxed
             );
             defer_page* old = remote_page.load(std::memory_order_relaxed);
@@ -2268,16 +2507,18 @@ namespace impl {
         void drain_remote() noexcept {
             if (remote_slab.load(std::memory_order_relaxed) != nullptr) {
                 defer_slab* list = remote_slab.exchange(nullptr, std::memory_order_acquire);
-                remote_slabs.exchange(0, std::memory_order_acq_rel);
                 while (list != nullptr) {
                     auto* next = list->next;
                     slab_deallocate(list);
+                    remote_slabs.fetch_sub(
+                        SLAB_CLASS[nodes[slab(list)].size],
+                        std::memory_order_relaxed
+                    );
                     list = next;
                 }
             }
             if (remote_page.load(std::memory_order_relaxed) != nullptr) {
                 defer_page* list = remote_page.exchange(nullptr, std::memory_order_acquire);
-                remote_pages.exchange(0, std::memory_order_acq_rel);
                 while (list != nullptr) {
                     auto* next = list->next;
                     size_t offset = static_cast<size_t>(
@@ -2291,6 +2532,10 @@ namespace impl {
                     page_deallocate(
                         static_cast<uint32_t>(offset >> PAGE_SHIFT),
                         list->pages
+                    );
+                    remote_pages.fetch_sub(
+                        size_t(list->pages) << PAGE_SHIFT,
+                        std::memory_order_relaxed
                     );
                     list = next;
                 }
@@ -2313,10 +2558,12 @@ namespace impl {
     accepted, but existing allocations may still be freed.  Finally, when the last
     allocations is freed, the entire address space will be unmapped and returned
     to the OS, without leaving any orphaned memory. */
-    inline constinit thread_local struct space {
+    inline constinit thread_local struct address_space_handle {
     private:
         template <meta::unqualified T, impl::capacity<T> N>
-        friend struct bertrand::arena;
+        friend struct bertrand::Space;
+
+        address_space* data = nullptr;
 
         /* Map a pointer to its containing address space by exploiting alignment by
         `VMEM_PER_THREAD`, assuming the pointer originates from an address space. */
@@ -2326,34 +2573,13 @@ namespace impl {
             );
         }
 
-        /* Since the address space pointer is always aligned to `VMEM_PER_THREAD`, we
-        can reuse bits of its address for bookkeeping purposes.  If the lowest bit is
-        set, then it means the address space has entered the teardown phase, and will
-        no longer accept allocation requests. */
-        static constexpr uintptr_t TEARDOWN_MASK = uintptr_t(0b1);
-        [[nodiscard]] static bool teardown(address_space* p) noexcept {
-            return (reinterpret_cast<uintptr_t>(p) & TEARDOWN_MASK) != 0;
-        }
-        [[nodiscard]] static address_space* set_teardown(address_space* p) noexcept {
-            return reinterpret_cast<address_space*>(
-                reinterpret_cast<uintptr_t>(p) | TEARDOWN_MASK
-            );
-        }
-        [[nodiscard]] static address_space* clear_teardown(address_space* p) noexcept {
-            return reinterpret_cast<address_space*>(
-                reinterpret_cast<uintptr_t>(p) & ~TEARDOWN_MASK
-            );
-        }
-
-        address_space* data = nullptr;
-
         /* Because slab allocations are always aligned to the system's native pointer
         width, the lowest 2-3 bits will always be clear, meaning we can use one of them
         to tag slab allocations without affecting user code, as long as we remember to
         always clear that bit when we need the actual address.  Note that only the
         outermost `allocate()`, `deallocate()`, and `reserve()` methods ever need to
         check for this, and all other helpers will instead receive a properly-aligned
-        pointer.  `arena<T, N>::data()` will also strip this bit automatically so as
+        pointer.  `Space<T, N>::data()` will also strip this bit automatically so as
         not to interfere with normal usage. */
         static constexpr uintptr_t SLAB_MASK = uintptr_t(0b1);
         [[nodiscard]] static bool slab(void* p) noexcept {
@@ -2367,7 +2593,7 @@ namespace impl {
         }
 
         /* Initialize the address space on first use.  This is called in the
-        constructor for `arena<T, N>`, ensuring proper initialization order, even for
+        constructor for `Space<T, N>`, ensuring proper initialization order, even for
         objects with static storage duration. */
         void acquire() {
             if (data != nullptr) return;
@@ -2382,7 +2608,7 @@ namespace impl {
             try {
                 commit_address_space(data, address_space::SIZE.commit());
             } catch (...) {
-                release();
+                data->release();
                 data = nullptr;
                 throw;
             }
@@ -2391,47 +2617,18 @@ namespace impl {
             std::construct_at(data, this);
         }
 
-        /* Release the address space on last use.  This is a no-op unless `initialized`
-        is set to `false` (indicating that the address space's destructor has been
-        called) and the address space is empty or all remaining bytes are pending a
-        remote free.  It will be called in the destructor for the address space itself
-        as well as `arena<T, N>` to ensure proper destruction order, even for objects
-        with static storage duration, where destructor order is not guaranteed. */
-        void release() {
+        /* Request `bytes` worth of memory from the address space, returning a pointer
+        to the allocated region and updating `bytes` to the actual allocated size.  If
+        `bytes <= SLAB_MAX`, then the allocation will be served from a slab allocator
+        using pre-touched memory, where the block stride is guaranteed to be a multiple
+        of `alignment`.  Otherwise, an uncommitted region of pages will be reserved
+        from the address space and committed as needed.  This will be called in the
+        constructor for `Space<T, N>` to acquire backing memory. */
+        [[nodiscard]] void* allocate(size_t& bytes, size_t alignment) {
+            // ensure mapping/partition ready
+            acquire();
             if constexpr (DEBUG_ALLOCATOR) {
-                if (data == nullptr) {
-                    throw MemoryError("attempted release of uninitialized address space");
-                }
-            }
-            address_space* d = clear_teardown(data);
-            if (
-                d != data &&  // teardown phase
-                d->occupied == (
-                    d->remote_slabs.load(std::memory_order_relaxed) +
-                    d->remote_pages.load(std::memory_order_relaxed)
-                )
-            ) {
-                unmap_address_space(d, address_space::SIZE.total());
-                data = nullptr;
-            }
-        }
-
-        /* Request `bytes` worth of memory from the address space, returning a void
-        pointer to the allocated region.  If `bytes <= SLAB_MAX`, then the allocation
-        will be served from a slab allocator using pre-touched memory, where the block
-        stride is guaranteed to be a multiple of `alignment`.  Otherwise, an
-        uncommitted region of pages will be reserved from the address space and
-        committed as needed.  This will be called in the constructor for `arena<T, N>`
-        to acquire backing memory. */
-        [[nodiscard]] void* allocate(size_t bytes, size_t alignment) {
-            acquire();  // ensure mapping/partition ready
-            if constexpr (DEBUG_ALLOCATOR) {
-                if (data == nullptr) {
-                    throw MemoryError(
-                        "attempted allocation from uninitialized address space"
-                    );
-                }
-                if (teardown(data)) {
+                if (data->owner == nullptr) {
                     throw MemoryError(
                         "attempted allocation from address space in teardown phase"
                     );
@@ -2445,17 +2642,20 @@ namespace impl {
             if (bytes <= address_space::SLAB_MAX && alignment <= address_space::SLAB_MIN) {
                 uint16_t size_class = address_space::slab_class(bytes, alignment);
                 if (size_class < address_space::SLABS) {
+                    bytes = address_space::SLAB_CLASS[size_class];
                     return set_slab(data->slab_allocate(bytes, size_class));
                 }
             }
 
             // fall back to page allocation
+            uint32_t pages = page_count(bytes);
+            bytes = size_t(pages) << PAGE_SHIFT;
             return
                 static_cast<std::byte*>(data->ptr) +
-                (size_t(data->page_allocate(page_count(bytes), alignment)) << PAGE_SHIFT);
+                (size_t(data->page_allocate(pages, alignment)) << PAGE_SHIFT);
         }
 
-        /// TODO: arena<T, N>::shrink() must ensure that the shrink does not result in
+        /// TODO: Space<T, N>::shrink() must ensure that the shrink does not result in
         /// a remote free, since that could lead to a race condition if the remote
         /// free isn't processed immediately, and the memory is reused in the meantime.
         /// Thankfully, this should be pretty simple, and decoupling that check from
@@ -2471,7 +2671,7 @@ namespace impl {
         nearest page and released back to the address space, updating the allocator's
         internal data structures accordingly and advising the OS to reclaim physical
         pages.  The OS hook will be invoked in batches, amortizing its cost.  This will
-        be called in the destructor for `arena<T, N>` to recycle backing memory. */
+        be called in the destructor for `Space<T, N>` to recycle backing memory. */
         void deallocate(void* p, size_t bytes) {
             if constexpr (DEBUG_ALLOCATOR) {
                 if (data == nullptr) {
@@ -2484,24 +2684,23 @@ namespace impl {
             // local deallocation
             void* norm = clear_slab(p);
             if (contains(norm)) {
-                address_space* d = clear_teardown(data);
-                d->drain_remote();  // process any remote frees first
+                data->drain_remote();  // process any remote frees first
                 if (slab(p)) {
-                    d->slab_deallocate(norm, bytes);
+                    data->slab_deallocate(norm, bytes);
                 } else {
                     size_t offset =
-                        static_cast<std::byte*>(norm) - static_cast<std::byte*>(d->ptr);
+                        static_cast<std::byte*>(norm) - static_cast<std::byte*>(data->ptr);
                     if constexpr (DEBUG_ALLOCATOR) {
                         if ((offset & PAGE_MASK) != 0) {
                             throw MemoryError("page deallocation pointer is not page-aligned");
                         }
                     }
-                    d->page_deallocate(
+                    data->page_deallocate(
                         static_cast<uint32_t>(offset >> PAGE_SHIFT),
                         page_count(bytes)
                     );
                 }
-                release();  // unmap if in teardown phase
+                data->release();  // unmap if in teardown phase
 
             // remote deallocation
             } else {
@@ -2509,9 +2708,9 @@ namespace impl {
                 if (slab(p)) {
                     d->free_slab(norm);  // drop bytes
                 } else {
-                    d->free_page(norm, bytes);  // retain bytes
+                    d->free_page(norm, page_count(bytes));  // retain bytes
                 }
-                d->owner->release();  // unmap if in teardown phase
+                d->release();  // unmap if in teardown phase
             }
         }
 
@@ -2523,8 +2722,8 @@ namespace impl {
         order to force relocation to a larger slab or page allocation instead.
         Attempting to extend an allocation from another thread will also return zero,
         which may force relocation to the current thread as well.  This will be called
-        in `arena.reserve()`, and subsequently by any container methods or growth
-        operations that call it in turn. */
+        in `Space<T, N>::reserve()`, and subsequently by any container methods or
+        growth operations that call it in turn. */
         [[nodiscard]] size_t reserve(void* p, size_t bytes) {
             if constexpr (DEBUG_ALLOCATOR) {
                 if (data == nullptr) {
@@ -2532,7 +2731,7 @@ namespace impl {
                         "attempted reservation from uninitialized address space"
                     );
                 }
-                if (teardown(data)) {
+                if (data->owner == nullptr) {
                     throw MemoryError(
                         "attempted reservation from address space in teardown phase"
                     );
@@ -2560,15 +2759,16 @@ namespace impl {
         }
 
     public:
-        [[nodiscard]] constexpr space() noexcept = default;
-        constexpr space(const space&) = delete;
-        constexpr space(space&&) = delete;
-        constexpr space& operator=(const space&) = delete;
-        constexpr space& operator=(space&&) = delete;
-        ~space() noexcept (false) {
+        [[nodiscard]] constexpr address_space_handle() noexcept = default;
+        constexpr address_space_handle(const address_space_handle&) = delete;
+        constexpr address_space_handle(address_space_handle&&) = delete;
+        constexpr address_space_handle& operator=(const address_space_handle&) = delete;
+        constexpr address_space_handle& operator=(address_space_handle&&) = delete;
+        ~address_space_handle() noexcept (false) {
             if (data != nullptr) {
-                data = set_teardown(data);
-                release();
+                data->owner = nullptr;  // signal teardown phase
+                data->release();
+                data = nullptr;
             }
         }
 
@@ -2576,11 +2776,11 @@ namespace impl {
         memory that has been allocated from it in bytes (which is not necessarily equal
         to the amount of physical ram being consumed). */
         [[nodiscard]] constexpr size_t size() const noexcept {
-            return data == nullptr ? 0 : clear_teardown(data)->occupied;
+            return data == nullptr ? 0 : data->occupied;
         }
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
         [[nodiscard]] constexpr bool empty() const noexcept {
-            return data == nullptr || clear_teardown(data)->occupied == 0;
+            return data == nullptr || data->occupied == 0;
         }
 
         /* Check whether an arbitrary pointer maps to a region within this address
@@ -2588,14 +2788,14 @@ namespace impl {
         [[nodiscard]] constexpr bool contains(void* p) const noexcept {
             if (data == nullptr) return false;
             uintptr_t x = reinterpret_cast<uintptr_t>(p);
-            uintptr_t y = reinterpret_cast<uintptr_t>(clear_teardown(data));
+            uintptr_t y = reinterpret_cast<uintptr_t>(data);
             return x >= y && x < y + address_space::SIZE.total();
         }
 
         /* Map a pointer to its originating address space, assuming it was allocated
         from one.  May result in undefined behavior if `p` is not associated with any
         address space. */
-        [[nodiscard]] space& origin(void* p) noexcept {
+        [[nodiscard]] address_space_handle& origin(void* p) noexcept {
             return *find(p)->owner;
         }
     } local_address_space {};
@@ -2603,213 +2803,391 @@ namespace impl {
 }
 
 
-namespace meta {
-
-    template <typename Alloc>
-    concept arena = inherits<Alloc, impl::arena_tag>;
-
-    template <typename Alloc, typename T>
-    concept arena_for = arena<Alloc> && ::std::same_as<typename unqualify<Alloc>::type, T>;
-
-}
-
-
-/// TODO: once P3074 becomes available, stack-based arenas should just work as
-/// expected.
+/// TODO: remove all mention of arenas from docs and replace them with `Space` instead.
 
 
 /* A contiguous region of reserved addresses holding uninitialized instances of type
-`T`.  If `T` is `void`, then the arena will be interpreted as raw bytes, which can be
-used to store arbitrary data.
+`T`, which will be freed when the `Space` object is destroyed.  If `T` is `void`, then
+the space will be interpreted as raw bytes, which can be used to store arbitrary data.
 
-This specialization refers to a dynamic arena whose size is given as a constructor
-argument (as either a raw number of instances or a number of bytes with an appropriate
-unit suffix), which is backed by either the heap or a virtual memory allocator
-depending on whether it is used at compile time or runtime.  If used at compile time,
-then the arena will act like a normal dynamic array of a certain size.  If used at
-runtime, then the arena will reserve virtual addresses from Bertrand's built-in
-allocators, but not commit physical memory until it is needed.  If the current system
-(such as an embedded platform without a MMU) does not support virtual memory, then the
-heap will be used at runtime instead, and a compilation warning will be issued
-directing the user to disable virtual memory in their build configuration.
+Spaces of this form come in 3 flavors, depending on the source of their backing memory:
 
-Virtual memory arenas are always preferred over heap-based alternatives due to their
-stability, laziness, and integration with Bertrand's threading model.  Because they
-map physical memory to addresses only as needed, users can safely request more memory
-than they actually need (possibly even more than is physically present on the system)
-without incurring an immediate cost.  This also means that existing elements are
-guaranteed not to be relocated as the arena grows until it reaches its maximum reserved
-size.  Even then, there is a high likelihood that the region can simply be extended
-in-place, since fragmentation is much less of a concern compared to traditional heap
-allocation.  Finally, since a thread-local virtual memory allocator is built into all
-of Bertrand's core hardware threads, they may be accessed lock-free without contention,
-using a large global allocator as a fallback if the thread-local pool is unavailable or
-exhausted.
+    1.  Static (stack-based) spaces, where `N` is a compile-time constant indicating
+        either the maximum number of instances of `T` that can be stored if it is an
+        integer, or the total number of bytes if it uses one of the literal suffixes
+        (`_B`, `_KiB`, `_MiB`, `_GiB`, `_TiB`).  These spaces cannot grow, shrink, be
+        copied, or moved, and their contents remain uninitialized until explicitly
+        constructed by the user.  This is the fastest and most efficient type of space,
+        and does not require any dynamic memory allocation whatsoever, but is limited
+        to fixed sizes known at compile time, and is therefore less flexible than the
+        other options.  These are typically used for in-place vector types as well as
+        buffers for string or integer literals, where the size can be detected via
+        CTAD and is guaranteed not to grow beyond a maximum limit.
+    2.  Dynamic (heap-based) spaces, where `N` is zero (the default), and the size is
+        supplied as a constructor argument instead.  These spaces allocate memory using
+        `std::allocator<T>`, which is constexpr-capable, and equivalent to traditional
+        `new`/`delete` calls under the hood.  These spaces can grow and shrink as
+        needed, and may be trivially moved, but not copied.  They suffer from all the
+        usual downsides of heap allocation, including fragmentation, relocation of
+        existing elements, contention between threads, and unpredictable performance.
+        These are typically used as an alternative to (3) below when either virtual
+        memory is disabled or the space is constructed at compile time, where heap
+        allocation is the only available option.
+    3.  Virtual (page-based) spaces, where `N` is again zero, and the size is supplied
+        as a constructor argument similar to (2) above.  This type of space will be
+        automatically chosen instead of (2) as long as virtual memory is enabled and
+        the space is constructed at runtime.  The backing memory will be allocated from
+        Bertrand's thread-local virtual address space, which is decoupled from physical
+        memory, and supports features like overcommitment, where large regions can be
+        reserved without immediately consuming physical RAM.  Instead, physical pages
+        will be committed into the virtual address space on first access, which
+        generates a page fault that will be handled transparently by the OS.  Upon
+        deallocation, the physical pages will be decommitted and returned to the OS
+        using a batched syscall, which amortizes its cost.  If the requested size falls
+        below a handful of pages, then the space will be obtained from a slab allocator
+        within the thread-local pool instead, which reduces both wastage and TLB
+        pressure for small allocations.  Such spaces can also be grown, shrunk, or
+        moved (but not copied), and are much more likely to avoid relocation compared
+        to (2) above, since fragmentation in the virtual address space does not
+        necessarily correlate to fragmentation of physical memory, unlike traditional
+        heap allocators.  This yields consistent growth performance for dynamic data
+        structures, although relocations may still occur during the transition between
+        slab size classes or at high load factors.  Additionally, since each address
+        space is thread-local, allocations and deallocations are lock-free and
+        uncontended, even when deallocating from other threads, which can be done via
+        remote free requests that will be processed later by the owning thread without
+        blocking.
 
-The only downsides of virtual memory arenas are that they cannot be `constexpr`, and
-always allocate memory in page-aligned chunks (usually 4 KiB or larger), which can
-lead to wasted space if many small allocations are made.  Bertrand mitigates these by
-falling back to traditional heap arrays as noted above, as well as special-casing most
-container literals to use stack-based arenas where appropriate.
+In all 3 cases, the reserved memory will be deallocated when the space is destroyed,
+according to RAII principles.  Note that no destructors will be invoked for any
+constructed elements - it is the user's responsibility to manage the lifetime of the
+objects stored within the space, and ensure they are properly destroyed before the
+space itself.
 
-In both the heap and virtual memory cases, the reserved memory will be deallocated when
-the arena is destroyed, following RAII principles.  Note that no destructors will be
-called for any constructed elements; it is the user's responsibility to manage the
-lifetime of the objects stored within the arena, and ensure they are properly destroyed
-before the arena itself. */
-template <meta::unqualified T, impl::capacity<T> N>
-struct arena {
+This class is generally used as a helper to implement higher-level data structures like
+`List`, `Str`, and various type-erasure mechanisms, where uninitialized, possibly
+dynamic storage is required.  Users may instantiate it directly in order to implement
+arena allocators or custom data structures of their own, as long as they properly
+manage the construction and destruction of each element.  Note that physical memory
+will never leak due to RAII-based cleanup, but logical leaks may still occur if
+destructors are used to manage external resources like file handles or network
+connections. */
+template <meta::unqualified T, impl::capacity<T> N> requires (N == None)
+struct Space<T, N> {
     using type = T;
+    using capacity = impl::capacity<type>;
+    using alignment = impl::capacity<void>;
 
     /* Identifies static (stack-based) vs dynamic (heap or virtual memory-based)
-    arenas. */
+    spaces.  If true, then the space may be grown, shrunk, or moved, but not copied. */
     [[nodiscard]] static constexpr bool dynamic() noexcept { return true; }
 
-private:
-    using Alloc = std::allocator<type>;
+    /* Differentiates heap-based and virtual memory-based spaces.  These have identical
+    interfaces, but may exhibit different performance characteristics subject to this
+    class's documentation. */
+    [[nodiscard]] static constexpr bool heap() noexcept {
+        if consteval {
+            return true;
+        } else {
+            return VMEM_PER_THREAD == 0;
+        }
+    }
 
-public:
-    type* ptr = nullptr;
-    size_t len = 0;
-    /// TODO: add a pointer to the virtual memory allocator this was allocated from,
-    /// or just always use the thread-local address space (which may be global)?
+    /* Detect whether a virtual memory-based space is backed by a slab allocator or
+    page allocations.  Slab allocations are used for small sizes to reduce memory
+    overhead and TLB pressure, but cannot be arbitrarily grown or shrunk in-place like
+    page allocations can.  Normally, this is not something the user needs to be
+    concerned about, but it may be useful for debugging or performance analysis.  Note
+    that it is possible to avoid slab allocations entirely by providing an alignment
+    requirement greater than a single pointer during construction. */
+    [[nodiscard]] constexpr bool slab() const noexcept {
+        if consteval {
+            return false;
+        } else {
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return false;
+            } else {
+                return impl::local_address_space.slab(m_ptr);
+            }
+        }
+    }
 
-    /* Default-constructing a dynamic arena does not allocate any memory and sets the
-    size to zero. */
-    [[nodiscard]] constexpr arena() noexcept = default;
+    /* Returns true if the space owns at least one element. */
+    [[nodiscard]] constexpr explicit operator bool() const noexcept { return m_capacity > 0; }
+
+    /* Returns true if the space is empty, meaning it does not own any memory. */
+    [[nodiscard]] constexpr bool empty() const noexcept { return m_capacity == 0; }
+
+    /* Returns the number of elements in the space as an unsigned integer. */
+    [[nodiscard]] constexpr size_t size() const noexcept { return *m_capacity; }
+
+    /* Returns the number of elements in the space as a signed integer. */
+    [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(*m_capacity); }
+
+    /* Returns the current footprint of the space in bytes.  Note that the actual
+    memory usage may be slightly higher than indicated here due to alignment and
+    allocator overhead, so the result reflects only the useful memory exposed to the
+    user. */
+    [[nodiscard]] constexpr size_t bytes() const noexcept { return m_capacity.bytes(); }
+
+    type* m_ptr = nullptr;
+    capacity m_capacity = 0;
+
+    /* Default-constructing a dynamic space does not allocate any memory and sets the
+    capacity to zero. */
+    [[nodiscard]] constexpr Space() noexcept = default;
+
+    /// TODO: alignment requirements should be extracted to a different constructor and
+    /// asserted against to prevent nonzero, non-power-of-two alignments without slowing
+    /// down the unaligned case.  This will require some thought.
 
     /* Passing a capacity to the constructor allocates the indicated amount of memory
-    from either the heap (at compile time) or a virtual memory arena (at runtime).  A
-    `MemoryError` may be thrown if the allocation fails. */
-    [[nodiscard]] constexpr arena(impl::capacity<type> n) : len(n.value) {
-        if consteval {
-            ptr = Alloc{}.allocate(len);
-            if (ptr == nullptr) {
-                throw MemoryError("failed to allocate memory for arena");
+    from either the heap or a virtual memory.  An additional alignment requirement
+    
+    
+    A `MemoryError` may be thrown if the
+    allocation fails. */
+    [[nodiscard]] constexpr Space(capacity n, alignment align = 1) : m_capacity(n) {
+        if (m_capacity > 0) {
+            if consteval {
+                m_ptr = std::allocator<type>{}.allocate(*m_capacity);
+                if (m_ptr == nullptr) {
+                    throw MemoryError("failed to allocate memory for Space");
+                }
+            } else {
+                if constexpr (VMEM_PER_THREAD == 0) {
+                    m_ptr = std::allocator<type>{}.allocate(*m_capacity);
+                    if (m_ptr == nullptr) {
+                        throw MemoryError("failed to allocate memory for Space");
+                    }
+                } else {
+                    size_t bytes = m_capacity.bytes();
+                    m_ptr = static_cast<type*>(impl::local_address_space.allocate(
+                        bytes,
+                        *align
+                    ));
+                    m_capacity = bytes / capacity::aligned_size;
+                }
             }
-        } else {
-            impl::local_address_space.acquire();  // initialize thread-local arena
-            ptr = reinterpret_cast<type*>(
-                /// TODO: align to nearest page boundary?
-                impl::local_address_space.allocate(
-                    len * sizeof(type),
-                    alignof(type)
-                )
-            );
         }
     }
 
     /* Arenas are never copyable. */
-    [[nodiscard]] constexpr arena(const arena&) = delete;
-    constexpr arena& operator=(const arena&) = delete;
+    [[nodiscard]] constexpr Space(const Space&) = delete;
+    constexpr Space& operator=(const Space&) = delete;
 
-    /* Dynamic arenas are movable, transferring ownership of the underlying memory. */
-    [[nodiscard]] constexpr arena(arena&& other) noexcept :
-        ptr(other.ptr),
-        len(other.len)
+    /* Dynamic spaces are movable, transferring ownership of the underlying memory. */
+    [[nodiscard]] constexpr Space(Space&& other) noexcept :
+        m_ptr(other.m_ptr),
+        m_capacity(other.m_capacity)
     {
-        other.ptr = nullptr;
-        other.len = 0;
+        other.m_ptr = nullptr;
+        other.m_capacity = 0;
     }
-    constexpr arena& operator=(arena&& other) noexcept {
+    constexpr Space& operator=(Space&& other) noexcept {
         if (this != &other) {
-            if (ptr != nullptr) {
+            if (m_ptr != nullptr) {
                 if consteval {
-                    Alloc{}.deallocate(ptr, len);
+                    std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
                 } else {
-                    impl::local_address_space.deallocate(
-                        reinterpret_cast<std::byte*>(ptr),
-                        len * sizeof(type)
-                    );
+                    if constexpr (VMEM_PER_THREAD) {
+                        std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
+                    } else {
+                        impl::local_address_space.deallocate(m_ptr, m_capacity.bytes());
+                    }
                 }
             }
-            ptr = other.ptr;
-            len = other.len;
-            other.ptr = nullptr;
-            other.len = 0;
+            m_ptr = other.m_ptr;
+            m_capacity = other.m_capacity;
+            other.m_ptr = nullptr;
+            other.m_capacity = 0;
         }
         return *this;
     }
 
-    /* Destroying a dynamic arena deallocates the underlying memory according to
+    /* Destroying a dynamic space deallocates the underlying memory according to
     RAII. */
-    constexpr ~arena() noexcept {
-        if (ptr != nullptr) {
+    constexpr ~Space() noexcept {
+        if (m_ptr != nullptr) {
             if consteval {
-                Alloc{}.deallocate(ptr, len);
+                std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
             } else {
-                impl::local_address_space.deallocate(
-                    reinterpret_cast<std::byte*>(ptr),
-                    len * sizeof(type)
-                );
-                impl::local_address_space.release();
+                if constexpr (VMEM_PER_THREAD == 0) {
+                    std::allocator<type>{}.deallocate(m_ptr, *m_capacity);
+                } else {
+                    impl::local_address_space.deallocate(m_ptr, m_capacity.bytes());
+                }
             }
-            ptr = nullptr;
-            len = 0;
+            m_ptr = nullptr;
+            m_capacity = 0;
         }
     }
 
-    /* Returns true if the arena owns at least one element. */
-    [[nodiscard]] constexpr explicit operator bool() const noexcept { return len > 0; }
-
-    /* Returns true if the arena is empty, meaning it does not own any memory. */
-    [[nodiscard]] constexpr bool empty() const noexcept { return len == 0; }
-
-    /* Returns the number of elements in the arena as an unsigned integer. */
-    [[nodiscard]] constexpr size_t size() const noexcept { return len; }
-
-    /* Returns the number of elements in the arena as a signed integer. */
-    [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(len); }
-
-    /* Retrieve a mutable pointer to the beginning of the underlying memory. */
-    [[nodiscard]] constexpr type* data() noexcept { return ptr; }
-
-    /* Retrieve a read-only pointer to the beginning of the underlying memory. */
+    /* Retrieve a pointer to the beginning of the underlying memory. */
+    [[nodiscard]] constexpr type* data() noexcept {
+        if consteval {
+            return m_ptr;
+        } else {
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return m_ptr;
+            } else {
+                return static_cast<type*>(impl::local_address_space.clear_slab(m_ptr));
+            }
+        }
+    }
     [[nodiscard]] constexpr const type* data() const noexcept {
-        return static_cast<const type*>(ptr);
+        if consteval {
+            return m_ptr;
+        } else {
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return m_ptr;
+            } else {
+                return static_cast<const type*>(impl::local_address_space.clear_slab(m_ptr));
+            }
+        }
     }
 
-    /* Construct the element at the specified index of the arena and return a reference
-    to the newly constructed instance.  A different type may be provided as a template
-    parameter, in which case the element will be reinterpreted as that type before
-    constructing it.  It is up to the user to ensure that this does not lead to
+    /* Perfectly forward the first element of the space. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return (*self.data());
+        } else {
+            return (std::move(*self.data()));
+        }
+    }
+
+    /* Perfectly forward the last element of the space. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return (self.data()[self.ssize() - 1]);
+        } else {
+            return (std::move(self.data()[self.ssize() - 1]));
+        }
+    }
+
+    /* Perfectly forward an element of the space identified by index. */
+    template <typename Self>
+    [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t index) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return (self.data()[index]);
+        } else {
+            return (std::move(self.data()[index]));
+        }
+    }
+
+    /* Get an iterator to the beginning of the space. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return self.data();
+        } else {
+            return std::move_iterator(self.data());
+        }
+    }
+
+    /* Get an iterator to the end of the space. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
+        if constexpr (meta::lvalue<Self>) {
+            return self.data() + self.size();
+        } else {
+            return std::move_iterator(self.data() + self.size());
+        }
+    }
+
+    /* Get a reverse iterator to the beginning of the space. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
+        return std::make_reverse_iterator(std::forward<Self>(self).end());
+    }
+
+    /* Get a reverse iterator to the end of the space. */
+    template <typename Self>
+    [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
+        return std::make_reverse_iterator(std::forward<Self>(self).begin());
+    }
+
+    /* Construct the element at the specified index of the space using the remaining
+    arguments and return a reference to the newly constructed instance.  A different
+    type may be provided as a template parameter, in which case the element will be
+    reinterpreted as that type before constructing it.  The type may also be provided
+    as a template, in which case CTAD will be applied to deduce the actual type to
+    construct.  Note that it is up to the user to ensure that this does not lead to
     undefined behavior. */
     template <meta::unqualified V = type, typename... A>
-    constexpr V& construct(size_t i, A&&... args) &
+    constexpr decltype(auto) construct(size_t i, A&&... args) &
         noexcept (meta::nothrow::constructible_from<V, A...>)
         requires (meta::constructible_from<V, A...>)
     {
         if constexpr (meta::explicitly_convertible_to<type*, V*>) {
-            return *std::construct_at(
+            return (*std::construct_at(
                 static_cast<V*>(data() + i),
                 std::forward<A>(args)...
-            );
+            ));
         } else {
-            return *std::construct_at(
+            return (*std::construct_at(
                 reinterpret_cast<V*>(data() + i),
                 std::forward<A>(args)...
-            );
+            ));
         }
     }
     template <meta::unqualified V = type, typename... A>
-    constexpr V&& construct(size_t i, A&&... args) &&
+    constexpr decltype(auto) construct(size_t i, A&&... args) &&
         noexcept (meta::nothrow::constructible_from<V, A...>)
         requires (meta::constructible_from<V, A...>)
     {
         if constexpr (meta::explicitly_convertible_to<type*, V*>) {
-            return std::move(*std::construct_at(
+            return (std::move(*std::construct_at(
                 static_cast<V*>(data() + i),
+                std::forward<A>(args)...
+            )));
+        } else {
+            return (std::move(*std::construct_at(
+                reinterpret_cast<V*>(data() + i),
+                std::forward<A>(args)...
+            )));
+        }
+    }
+    template <template <typename...> class V, typename... A>
+    constexpr decltype(auto) construct(size_t i, A&&... args) &
+        noexcept (requires{{V{std::forward<A>(args)...}} noexcept;})
+        requires (requires{{V{std::forward<A>(args)...}};})
+    {
+        using to = decltype(V{std::forward<A>(args)...});
+        if constexpr (meta::explicitly_convertible_to<type*, to*>) {
+            return (*std::construct_at(
+                static_cast<to*>(data() + i),
                 std::forward<A>(args)...
             ));
         } else {
-            return std::move(*std::construct_at(
-                reinterpret_cast<V*>(data() + i),
+            return (*std::construct_at(
+                reinterpret_cast<to*>(data() + i),
                 std::forward<A>(args)...
             ));
         }
     }
+    template <template <typename...> class V, typename... A>
+    constexpr decltype(auto) construct(size_t i, A&&... args) &&
+        noexcept (requires{{V{std::forward<A>(args)...}} noexcept;})
+        requires (requires{{V{std::forward<A>(args)...}};})
+    {
+        using to = decltype(V{std::forward<A>(args)...});
+        if constexpr (meta::explicitly_convertible_to<type*, to*>) {
+            return (std::move(*std::construct_at(
+                static_cast<to*>(data() + i),
+                std::forward<A>(args)...
+            )));
+        } else {
+            return (std::move(*std::construct_at(
+                reinterpret_cast<to*>(data() + i),
+                std::forward<A>(args)...
+            )));
+        }
+    }
 
-    /* Destroy the element at the specified index of the arena. */
+    /* Destroy the element at the specified index of the space. */
     template <meta::unqualified V = type>
     constexpr void destroy(size_t i)
         noexcept (meta::nothrow::destructible<V>)
@@ -2818,783 +3196,83 @@ public:
         std::destroy_at(data() + i);
     }
 
-    /* Attempt to reserve additional memory for the arena without reallocating.  The
-    argument `n` indicates the new desired size of the arena (independent of the
-    current size).  Returns `true` if the requested memory was successfully reserved
-    (meaning no current elements need to be relocated), or `false` if it requires
-    the allocation of a new arena and the relocation of existing elements, which is up
-    to the user to handle. */
-    [[nodiscard]] constexpr bool reserve(size_t n) noexcept {
+    /* Attempt to reserve additional memory for the space without relocating existing
+    elements.  The `size` argument indicates the desired capacity of the space after
+    growth, and the result indicates the number of additional elements that were
+    allocated to reach that capacity.  Adding the result to the previous capacity
+    yields the new capacity of the space after reservation, which may be greater than
+    requested due to page-aligned growth, or less than requested if the space could not
+    be extended in-place.  In the latter case, the user may choose to relocate the
+    contents by allocating a new space of the desired size and moving them manually. */
+    [[nodiscard]] constexpr capacity reserve(capacity size) noexcept {
         if consteval {
-            return n <= size();
+            return 0;
         } else {
-            /// TODO: attempt to extend current region without reallocating
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return 0;
+            } else {
+                if (size <= m_capacity || slab()) {
+                    return 0;
+                }
+                capacity cap = m_capacity;
+                m_capacity += impl::local_address_space.reserve(
+                    static_cast<std::byte*>(
+                        impl::local_address_space.clear_slab(m_ptr)
+                    ) + (cap.pages() << PAGE_SHIFT),
+                    (size - cap).bytes()
+                ) / capacity::aligned_size;
+                return m_capacity - cap;
+            }
         }
     }
 
-    /* Perfectly forward the first element of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return (self.ptr[0]);
+    /* Attempt to partially release memory back to the originating allocator, shrinking
+    the space to the requested `size`.  The result indicates the number of elements
+    from the end of the space that were successfully released.  Subtracting the result
+    from the previous capacity yields the new capacity of the space after shrinking,
+    which may be greater (but never less) than requested due to page-aligned
+    shrinkage. */
+    [[nodiscard]] constexpr capacity shrink(capacity size) noexcept {
+        if consteval {
+            return 0;
         } else {
-            return (std::move(self.ptr[0]));
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return 0;
+            } else {
+                if (size >= m_capacity || slab()) {
+                    return 0;
+                }
+                size_t cap = size.pages() << PAGE_SHIFT;
+                impl::local_address_space.deallocate(
+                    impl::local_address_space.clear_slab(m_ptr) + cap,
+                    (m_capacity.pages() << PAGE_SHIFT) - cap
+                );
+                size = cap / capacity::aligned_size;
+                std::swap(size, m_capacity);
+                return size - m_capacity;
+            }
         }
-    }
-
-    /* Perfectly forward the last element of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return (self.ptr[self.len - 1]);
-        } else {
-            return (std::move(self.ptr[self.len - 1]));
-        }
-    }
-
-    /* Perfectly forward an element of the arena identified by index. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t index) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return (self.ptr[index]);
-        } else {
-            return (std::move(self.ptr[index]));
-        }
-    }
-
-    /* Get an iterator to the beginning of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return self.data();
-        } else {
-            return std::move_iterator(self.data());
-        }
-    }
-
-    /* Get an iterator to the end of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return self.data() + self.len;
-        } else {
-            return std::move_iterator(self.data() + self.len);
-        }
-    }
-
-    /* Get a reverse iterator to the beginning of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
-        return std::make_reverse_iterator(std::forward<Self>(self).end());
-    }
-
-    /* Get a reverse iterator to the end of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
-        return std::make_reverse_iterator(std::forward<Self>(self).begin());
     }
 };
-
-
-/* A static arena that allocates a fixed-size array on the stack.
-
-This specialization is chosen when the templated capacity is greater than zero, in
-which case an uninitialized array of that size is allocated as a member of the struct.
-Note that such arenas are not copy or move constructible/assignable, since the arena is
-not aware of which elements have been initialized or not.  It is the user's
-responsibility to manage the lifetime of the elements stored within the arena, and if
-copies or moves are required, they must be performed by requesting another arena and
-filling it manually. */
-template <meta::unqualified T, impl::capacity<T> N> requires (N > 0)
-struct arena<T, N> {
-    using type = T;
-
-    /* Identifies static (stack-based) vs dynamic (heap or virtual memory-based)
-    arenas. */
-    [[nodiscard]] static constexpr bool dynamic() noexcept { return false; }
-
-    /* Returns true if the arena owns at least one element. */
-    [[nodiscard]] constexpr explicit operator bool() const noexcept { return true; }
-
-    /* Returns true if the arena is empty, meaning it does not own any memory. */
-    [[nodiscard]] static constexpr bool empty() noexcept { return false; }
-
-    /* Returns the number of elements in the arena as an unsigned integer. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return N.value; }
-
-    /* Returns the number of elements in the arena as a signed integer. */
-    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(N.value); }
-
-private:
-    union storage {
-        T data[size()];
-        constexpr storage() noexcept requires (meta::trivially_constructible<T>) = default;
-        constexpr storage() noexcept requires (!meta::trivially_constructible<T>) {}
-        constexpr ~storage() noexcept requires (meta::trivially_destructible<T>) = default;
-        constexpr ~storage() noexcept requires (!meta::trivially_destructible<T>) {};
-    };
-
-public:
-    storage m_storage;
-
-    /* Default-constructing a static arena reserves stack space, but does not
-    initialize any of the elements. */
-    [[nodiscard]] constexpr arena() noexcept = default;
-
-    /* Static arenas cannot be copied or moved, since they are not aware of which
-    elements are constructed and which are not. */
-    constexpr arena(const arena&) = delete;
-    constexpr arena(arena&&) = delete;
-    constexpr arena& operator=(const arena&) = delete;
-    constexpr arena& operator=(arena&&) = delete;
-
-    /* Retrieve a mutable pointer to the beginning of the underlying memory. */
-    [[nodiscard]] constexpr type* data() noexcept { return m_storage.data; }
-
-    /* Retrieve a read-only pointer to the beginning of the underlying memory. */
-    [[nodiscard]] constexpr const type* data() const noexcept {
-        return static_cast<const type*>(m_storage.data);
-    }
-
-    /* Construct the element at the specified index of the arena and return a reference
-    to it. */
-    template <meta::unqualified V = type, typename... A>
-    constexpr V& construct(size_t i, A&&... args) &
-        noexcept (meta::nothrow::constructible_from<V, A...>)
-        requires (meta::constructible_from<V, A...>)
-    {
-        if constexpr (meta::explicitly_convertible_to<type*, V*>) {
-            return *std::construct_at(
-                static_cast<V*>(data() + i),
-                std::forward<A>(args)...
-            );
-        } else {
-            return *std::construct_at(
-                reinterpret_cast<V*>(data() + i),
-                std::forward<A>(args)...
-            );
-        }
-    }
-    template <meta::unqualified V = type, typename... A>
-    constexpr V&& construct(size_t i, A&&... args) &&
-        noexcept (meta::nothrow::constructible_from<V, A...>)
-        requires (meta::constructible_from<V, A...>)
-    {
-        if constexpr (meta::explicitly_convertible_to<type*, V*>) {
-            return std::move(*std::construct_at(
-                static_cast<V*>(data() + i),
-                std::forward<A>(args)...
-            ));
-        } else {
-            return std::move(*std::construct_at(
-                reinterpret_cast<V*>(data() + i),
-                std::forward<A>(args)...
-            ));
-        }
-    }
-
-    /* Destroy the element at the specified index of the arena. */
-    constexpr void destroy(size_t i)
-        noexcept (meta::nothrow::destructible<T>)
-        requires (meta::destructible<T>)
-    {
-        std::destroy_at(data() + i);
-    }
-
-    /* Attempt to reserve additional memory for the arena without reallocating.  The
-    argument `n` indicates the new desired size of the arena (independent of the
-    current size).  Returns `true` if the requested memory was successfully reserved,
-    or `false` if it requires relocation, which is up to the user to handle. */
-    [[nodiscard]] static constexpr bool reserve(size_t n) noexcept {
-        return n <= size();
-    }
-
-    /* Perfectly forward the first element of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
-        return (std::forward<Self>(self).m_storage.data[0]);
-    }
-
-    /* Perfectly forward the last element of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
-        return (std::forward<Self>(self).m_storage.data[size() - 1]);
-    }
-
-    /* Perfectly forward an element of the arena identified by index. */
-    template <typename Self>
-    [[nodiscard]] constexpr decltype(auto) operator[](this Self&& self, size_t index) noexcept {
-        return (std::forward<Self>(self).m_storage.data[index]);
-    }
-
-    /* Get an iterator to the beginning of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return self.data();
-        } else {
-            return std::move_iterator(self.data());
-        }
-    }
-
-    /* Get an iterator to the end of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return self.data() + size();
-        } else {
-            return std::move_iterator(self.data() + size());
-        }
-    }
-
-    /* Get a reverse iterator to the beginning of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
-        return std::make_reverse_iterator(std::forward<Self>(self).end());
-    }
-
-    /* Get a reverse iterator to the end of the arena. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
-        return std::make_reverse_iterator(std::forward<Self>(self).begin());
-    }
-};
-
-
-
 
 
 static_assert([] {
-    arena<int> arr{5};
+    Space<int> arr{5};
     if (arr.size() != 5) return false;
     arr.construct(0, 10);
     if (arr[0] != 10) return false;
     arr.destroy(0);
 
+
+    impl::capacity<int> x = 2;
+    impl::capacity<int> y = 3;
+    auto z = x - y;
+
     return true;
 }());
 
 
-
-
-
-
-
-
-
-
-// template <meta::unqualified T, impl::capacity<T> N>
-// struct arena : impl::arena_tag {
-//     using size_type = size_t;
-//     using capacity_type = impl::capacity<T>;
-//     using difference_type = ptrdiff_t;
-//     using type = T;
-//     using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
-//     using reference = value_type&;
-//     using const_reference = const value_type&;
-//     using pointer = value_type*;
-//     using const_pointer = const value_type*;
-//     using iterator = pointer;
-//     using const_iterator = const_pointer;
-//     using reverse_iterator = std::reverse_iterator<iterator>;
-//     using const_reverse_iterator = std::reverse_iterator<const_iterator>;
-
-//     /* Indicates whether this address space falls into the small space optimization.
-//     Such spaces are allocated on the heap rather than using page-aligned virtual
-//     memory. */
-//     static constexpr bool SMALL = false;
-
-// private:
-
-//     static constexpr capacity_type GUARD_SIZE =
-//         (N.item_size + PAGE_SIZE - 1) / PAGE_SIZE * PAGE_SIZE;
-//     static constexpr capacity_type TOTAL_SIZE = GUARD_SIZE + N.page_align() + GUARD_SIZE;
-
-// public:
-
-//     /* Default constructor.  Reserves address space, but does not commit any memory. */
-//     [[nodiscard]] arena() :
-//         m_arena(impl::address_space::get().acquire(TOTAL_SIZE)),
-//         m_data(m_arena->reserve(TOTAL_SIZE) + GUARD_SIZE)
-//     {}
-
-//     arena(const arena&) = delete;
-//     arena& operator=(const arena&) = delete;
-
-//     [[nodiscard]] arena(arena&& other) noexcept :
-//         m_arena(other.m_arena), m_data(other.m_data)
-//     {
-//         other.m_arena = nullptr;
-//         other.m_data = nullptr;
-//     }
-
-//     [[maybe_unused]] arena& operator=(arena&& other) noexcept(!DEBUG) {
-//         if (this != &other) {
-//             if (m_data) {
-//                 std::byte* p = m_data;
-//                 if (!impl::purge_address_space(p, nbytes())) {
-//                     throw MemoryError(std::format(
-//                         "failed to decommit pages from virtual address space starting "
-//                         "at address {:#x} and ending at address {:#x} ({:.3f} MiB) - {}",
-//                         reinterpret_cast<uintptr_t>(m_data),
-//                         reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                         double(nbytes()) / double(1_MiB),
-//                         impl::system_err_msg()
-//                     ));
-//                 }
-//                 if (!m_arena->recycle(p - GUARD_SIZE, TOTAL_SIZE)) {
-//                     throw MemoryError(std::format(
-//                         "failed to commit additional pages to freelist for arena {} "
-//                         "starting at address {:#x} and ending at address {:#x} "
-//                         "({:.3f} MiB) - {}",
-//                         m_arena->id(),
-//                         reinterpret_cast<uintptr_t>(m_data),
-//                         reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                         double(nbytes()) / double(1_MiB),
-//                         impl::system_err_msg()
-//                     ));
-//                 }
-//             }
-//             m_arena = other.m_arena;
-//             m_data = other.m_data;
-//             other.m_arena = nullptr;
-//             other.m_data = nullptr;
-//         }
-//         return *this;
-//     }
-
-//     /* Unreserve the address space upon destruction, returning the virtual capacity to
-//     the arena's freelist and allowing the operating system to reclaim physical pages
-//     for future allocations. */
-//     ~arena() noexcept(false) {
-//         m_arena = nullptr;
-//         if (m_data) {
-//             std::byte* p = m_data;
-//             if (!impl::purge_address_space(p, nbytes())) {
-//                 throw MemoryError(std::format(
-//                     "failed to decommit pages from virtual address space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.3f} MiB) - {}",
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB),
-//                     impl::system_err_msg()
-//                 ));
-//             }
-//             if (!m_arena->recycle(p - GUARD_SIZE, TOTAL_SIZE)) {
-//                 throw MemoryError(std::format(
-//                     "failed to commit additional pages to freelist for arena {} "
-//                     "starting at address {:#x} and ending at address {:#x} "
-//                     "({:.3f} MiB) - {}",
-//                     m_arena->id(),
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB),
-//                     impl::system_err_msg()
-//                 ));
-//             }
-//             m_data = nullptr;
-//         }
-//     }
-
-//     /* True if the address space owns a virtual memory handle.  False otherwise.
-//     Currently, this only occurs after an address space has been moved from, leaving it
-//     in an empty state. */
-//     [[nodiscard]] explicit operator bool() const noexcept { return m_data; }
-
-//     /* Return the maximum size of the virtual address space in units of `T`.  If `T` is
-//     void, then this refers to the total size (in bytes) of the address space itself.
-//     Otherwise, it is equivalent to `nbytes()` divided by the aligned size of `T`. */
-//     [[nodiscard]] static constexpr size_type size() noexcept { return N.count(); }
-
-//     /* Return the maximum size of the address space in bytes.  If `T` is void, then
-//     this is always equivalent to `N`.  Otherwise, the result is adjusted downwards to
-//     be a multiple of the aligned size of type `T`. */
-//     [[nodiscard]] static constexpr size_type nbytes() noexcept { return N; }
-
-//     /* Get a pointer to the beginning of the reserved address space.  If `T` is void,
-//     then the pointer will be returned as `std::byte*`. */
-//     [[nodiscard]] pointer data() noexcept {
-//         return reinterpret_cast<pointer>(m_data);
-//     }
-//     [[nodiscard]] const_pointer data() const noexcept {
-//         return reinterpret_cast<const_pointer>(m_data);
-//     }
-
-//     /* Iterate over the reserved addresses.  If `T` is void, then each element is
-//     represented as a `std::byte`. */
-//     [[nodiscard]] iterator begin() noexcept { return data(); }
-//     [[nodiscard]] const_iterator begin() const noexcept { return data(); }
-//     [[nodiscard]] const_iterator cbegin() const noexcept { return data();}
-//     [[nodiscard]] iterator end() noexcept { return begin() + size(); }
-//     [[nodiscard]] const_iterator end() const noexcept { return begin() + size(); }
-//     [[nodiscard]] const_iterator cend() const noexcept { return begin() + size(); }
-//     [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
-//     [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
-//     [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
-//     [[nodiscard]] reverse_iterator rend() noexcept { return {begin()}; }
-//     [[nodiscard]] const_reverse_iterator rend() const noexcept { return {begin()}; }
-//     [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
-
-//     /* Manually commit physical memory to the address space.  If `T` is not void and
-//     the offset and/or length have no units, then they will be multiplied by the aligned
-//     size of `T` to determine the actual offsets for the relevant syscall.  If the
-//     length is empty, then no memory will be committed.  The result is a pointer to the
-//     start of the committed region, and a `MemoryError` may be thrown if committing the
-//     memory resulted in an OS error, with the original message being forwarded to the
-//     user.
-
-//     Individual arena implementations are expected to wrap this method to make the
-//     interface more convenient.  This simply abstracts the low-level OS hooks to make
-//     them cross-platform. */
-//     [[maybe_unused, gnu::malloc]] pointer allocate(
-//         capacity_type offset,
-//         capacity_type length
-//     ) {
-//         if constexpr (DEBUG) {
-//             if (offset + length > nbytes()) {
-//                 throw MemoryError(std::format(
-//                     "attempted to commit memory at offset {} with length {}, "
-//                     "which exceeds the size of the virtual address space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.3f} MiB)",
-//                     offset,
-//                     length,
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         if (!length) {
-//             return reinterpret_cast<pointer>(m_data + offset);
-//         }
-//         pointer result = reinterpret_cast<pointer>(impl::commit_address_space(
-//             m_data,
-//             offset,
-//             length
-//         ));
-//         if (result == nullptr) {
-//             throw MemoryError(std::format(
-//                 "failed to commit pages to virtual address space starting at "
-//                 "address {:#x} and ending at address {:#x} ({:.3f} MiB) - {}",
-//                 reinterpret_cast<uintptr_t>(m_data),
-//                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                 double(nbytes()) / double(1_MiB),
-//                 impl::system_err_msg()
-//             ));
-//         }
-//         return result;
-//     }
-
-//     /* Manually release physical memory from the address space.  If `T` is not void and
-//     the offset and/or length have no units, then they will be multiplied by the aligned
-//     size of `T` to determine the actual offsets for the relevant syscall.  If the
-//     length is empty, then no memory will be decommitted.  A `MemoryError` may be thrown
-//     if decommitting the memory resulted in an OS error, with the original message being
-//     forwarded to the user.
-
-//     Individual arena implementations are expected to wrap this method to make the
-//     interface more convenient.  This simply abstracts the low-level OS hooks to make
-//     them cross-platform.  Note that this does not remove addresses from the space
-//     itself, which is always handled automatically by the destructor. */
-//     void deallocate(capacity_type offset, capacity_type length) {
-//         if constexpr (DEBUG) {
-//             if (offset + length > N) {
-//                 throw MemoryError(std::format(
-//                     "attempted to decommit memory at offset {} with length {}, "
-//                     "which exceeds the size of the virtual address space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.3f} MiB)",
-//                     offset,
-//                     length,
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         if (!length) {
-//             return;
-//         }
-//         if (!impl::decommit_address_space(
-//             m_data,
-//             offset,
-//             length
-//         )) {
-//             throw MemoryError(std::format(
-//                 "failed to decommit pages from virtual address space starting at "
-//                 "address {:#x} and ending at address {:#x} ({:.3f} MiB) - {}",
-//                 reinterpret_cast<uintptr_t>(m_data),
-//                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                 double(nbytes()) / double(1_MiB),
-//                 impl::system_err_msg()
-//             ));
-//         };
-//     }
-
-//     /* Construct a value that was allocated from this address space using placement
-//     new.  Propagates any errors that emanate from the constructor for `T`. */
-//     template <typename... Args>
-//         requires (meta::not_void<T> && meta::constructible_from<T, Args...>)
-//     void construct(pointer p, Args&&... args)
-//         noexcept(!DEBUG && noexcept(new (p) T(std::forward<Args>(args)...)))
-//     {
-//         if constexpr (DEBUG) {
-//             if (p < begin() || p >= end()) {
-//                 throw MemoryError(std::format(
-//                     "pointer at address {:#x} was not allocated from the virtual "
-//                     "address space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.3f} MiB)",
-//                     reinterpret_cast<uintptr_t>(p),
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         new (p) T(std::forward<Args>(args)...);
-//     }
-
-//     /* Destroy a value that was allocated from this address space by calling its
-//     destructor in-place.  Note that this does not deallocate the underlying memory,
-//     which only occurs when the address space is destroyed, or when memory is explicitly
-//     decommitted using the `deallocate()` method.  Any errors emanating from the
-//     destructor for `T` will be propagated. */
-//     void destroy(pointer p) noexcept(!DEBUG && meta::nothrow::destructible<T>) {
-//         if constexpr (DEBUG) {
-//             if (p < begin() || p >= end()) {
-//                 throw MemoryError(std::format(
-//                     "pointer at address {:#x} was not allocated from the virtual "
-//                     "address space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.3f} MiB)",
-//                     reinterpret_cast<uintptr_t>(p),
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         if constexpr (!meta::trivially_destructible<T>) {
-//             p->~T();
-//         }
-//         std::memset(p, 0, N.item_size);
-//     }
-
-// private:
-//     typename impl::address_space::arena* m_arena;
-//     std::byte* m_data;
-// };
-
-
-// /* Small space optimization for `arena<T, N>`, where `N * sizeof(T)` is less than one
-// full page in memory.
-
-// This bypasses the virtual memory arenas and allocates the address space on the heap
-// using the system's `calloc()` and `free()`.  Since virtual address spaces are always
-// aligned to the nearest page boundary, spaces smaller than that can use the heap to
-// avoid wasting memory and reduce contention on the global arenas, which are only used
-// for multi-page allocations.  This tends to reduce the total number of syscalls and
-// improve performance for small, transient data structures, without compromising any of
-// the pointer stability guarantees of the larger address spaces.  Both cases expose the
-// same interface, so the user does not need to worry about which one is being used. */
-// template <meta::unqualified T, impl::capacity<T> N>
-//     requires (N.page_align() <= PAGE_SIZE)
-// struct arena<T, N> : impl::arena_tag {
-//     using size_type = size_t;
-//     using capacity_type = impl::capacity<T>;
-//     using difference_type = ptrdiff_t;
-//     using type = T;
-//     using value_type = std::conditional_t<meta::is_void<T>, std::byte, T>;
-//     using reference = value_type&;
-//     using const_reference = const value_type&;
-//     using pointer = value_type*;
-//     using const_pointer = const value_type*;
-//     using iterator = pointer;
-//     using const_iterator = const_pointer;
-//     using reverse_iterator = std::reverse_iterator<iterator>;
-//     using const_reverse_iterator = const std::reverse_iterator<const_iterator>;
-
-//     /* Indicates whether this address space falls into the small space optimization.
-//     Such spaces cannot be copied or moved without downstream, implementation-defined
-//     logic. */
-//     static constexpr bool SMALL = true;
-
-//     /* Default constructor.  `calloc()`s uninitialized storage equal to the size of the
-//     space, initialized to zero. */
-//     [[nodiscard]] arena() : m_data(calloc(N)) {
-//         if (!m_data) {
-//             throw MemoryError(std::format(
-//                 "failed to allocate {} bytes for address space starting at "
-//                 "address {:#x} and ending at address {:#x} ({:.3f} MiB)",
-//                 nbytes(),
-//                 reinterpret_cast<uintptr_t>(m_data),
-//                 reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                 double(nbytes()) / double(1_MiB)
-//             ));
-//         }
-//     }
-
-//     arena(const arena& other) = delete;
-//     arena& operator=(const arena& other) = delete;
-
-//     [[nodiscard]] arena(arena&& other) noexcept :
-//         m_data(other.m_data)
-//     {
-//         other.m_data = nullptr;
-//     }
-
-//     [[maybe_unused]] arena& operator=(arena&& other) noexcept {
-//         if (this != &other) {
-//             if (m_data) {
-//                 free(m_data);
-//             }
-//             m_data = other.m_data;
-//             other.m_data = nullptr;
-//         }
-//         return *this;
-//     }
-
-//     /* `free()` the address space upon destruction. */
-//     ~arena() {
-//         if (m_data) {
-//             free(m_data);
-//             m_data = nullptr;
-//         }
-//     }
-
-//     /* True if the address space owns a virtual memory handle.  False otherwise.
-//     Currently, this only occurs after an address space has been moved from, leaving it
-//     in an empty state. */
-//     [[nodiscard]] explicit operator bool() const noexcept { return m_data; }
-
-//     /* Return the maximum size of the physical space in units of `T`.  If `T` is void,
-//     then this refers to the total size (in bytes) of the physical space itself. */
-//     [[nodiscard]] static constexpr size_type size() noexcept { return N.count(); }
-
-//     /* Return the maximum size of the physical space in bytes.  If `T` is void, then
-//     this is equivalent to `size()`. */
-//     [[nodiscard]] static constexpr size_type nbytes() noexcept { return N; }
-
-//     /* Get a pointer to the beginning of the reserved physical space.  If `T` is void,
-//     then the pointer will be returned as `std::byte*`. */
-//     [[nodiscard]] pointer data() noexcept {
-//         return reinterpret_cast<pointer>(m_data);
-//     }
-//     [[nodiscard]] const_pointer data() const noexcept {
-//         return reinterpret_cast<const_pointer>(m_data);
-//     }
-
-//     /* Iterate over the reserved addresses.  If `T` is void, then each element is
-//     represented as a `std::byte`. */
-//     [[nodiscard]] iterator begin() noexcept { return data(); }
-//     [[nodiscard]] const_iterator begin() const noexcept { return data(); }
-//     [[nodiscard]] const_iterator cbegin() const noexcept { return data(); }
-//     [[nodiscard]] iterator end() noexcept { return begin() + size(); }
-//     [[nodiscard]] const_iterator end() const noexcept { return begin() + size(); }
-//     [[nodiscard]] const_iterator cend() const noexcept { return begin() + size(); }
-//     [[nodiscard]] reverse_iterator rbegin() noexcept { return {end()}; }
-//     [[nodiscard]] const_reverse_iterator rbegin() const noexcept { return {end()}; }
-//     [[nodiscard]] const_reverse_iterator crbegin() const noexcept { return {end()}; }
-//     [[nodiscard]] reverse_iterator rend() noexcept { return {begin()}; }
-//     [[nodiscard]] const_reverse_iterator rend() const noexcept { return {begin()}; }
-//     [[nodiscard]] const_reverse_iterator crend() const noexcept { return {begin()}; }
-
-//     /* Return a pointer to the beginning of a contiguous region of the physical space.
-//     If `T` is not void and the offset and/or length have no units, then they will be
-//     multiplied by the aligned size of `T` to determine the actual offsets.  The result
-//     is a pointer to the start of the allocated region. */
-//     [[maybe_unused, gnu::malloc]] pointer allocate(
-//         capacity_type offset,
-//         capacity_type length
-//     ) noexcept(!DEBUG) {
-//         if constexpr (DEBUG) {
-//             if (offset + length > nbytes()) {
-//                 throw MemoryError(std::format(
-//                     "attempted to commit memory at offset {} with length {}, "
-//                     "which exceeds the size of the physical space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.3f} MiB)",
-//                     offset,
-//                     length,
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         return reinterpret_cast<pointer>(m_data + offset);
-//     }
-
-//     /* Zero out the physical memory associated with the given range.  If `T` is not void and
-//     the offset and/or length have no units, then they will be multiplied by the aligned
-//     size of `T` to determine the actual offsets. */
-//     void deallocate(size_type offset, size_type length) noexcept(!DEBUG) {
-//         if constexpr (DEBUG) {
-//             if (offset + length > N) {
-//                 throw MemoryError(std::format(
-//                     "attempted to decommit memory at offset {} with length {}, "
-//                     "which exceeds the size of the physical space starting "
-//                     "at address {:#x} and ending at address {:#x} ({:.3f} MiB)",
-//                     offset,
-//                     length,
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//     }
-
-//     /* Construct a value that was allocated from this physical space using placement
-//     new.  Propagates any errors that emanate from the constructor for `T`. */
-//     template <typename... Args>
-//         requires (meta::not_void<T> && meta::constructible_from<T, Args...>)
-//     void construct(pointer p, Args&&... args)
-//         noexcept(!DEBUG && noexcept(new (p) T(std::forward<Args>(args)...)))
-//     {
-//         if constexpr (DEBUG) {
-//             if (p < begin() || p >= end()) {
-//                 throw MemoryError(std::format(
-//                     "pointer at address {:#x} was not allocated from the physical "
-//                     "space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.3f} MiB)",
-//                     reinterpret_cast<uintptr_t>(p),
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         new (p) T(std::forward<Args>(args)...);
-//     }
-
-//     /* Destroy a value that was allocated from this physical space by calling its
-//     destructor in-place.  Note that this does not deallocate the memory itself, which
-//     only occurs when the physical space is destroyed.  Any errors emanating from the
-//     destructor for `T` will be propagated. */
-//     void destroy(pointer p) noexcept(!DEBUG && meta::nothrow::destructible<T>) {
-//         if constexpr (DEBUG) {
-//             if (p < begin() || p >= end()) {
-//                 throw MemoryError(std::format(
-//                     "pointer at address {:#x} was not allocated from the physical "
-//                     "space starting at address {:#x} and ending at "
-//                     "address {:#x} ({:.3f} MiB)",
-//                     reinterpret_cast<uintptr_t>(p),
-//                     reinterpret_cast<uintptr_t>(m_data),
-//                     reinterpret_cast<uintptr_t>(m_data) + nbytes(),
-//                     double(nbytes()) / double(1_MiB)
-//                 ));
-//             }
-//         }
-//         if constexpr (!meta::trivially_destructible<T>) {
-//             p->~T();
-//         }
-//         std::memset(p, 0, N.item_size);
-//     }
-
-// private:
-//     std::byte* m_data;
-// };
-
-
-}  // namespace bertrand
+}
 
 
 #endif  // BERTRAND_ALLOCATE_H
