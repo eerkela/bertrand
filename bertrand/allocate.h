@@ -3,6 +3,7 @@
 
 #include "bertrand/common.h"
 #include "bertrand/except.h"
+#include <atomic>
 
 
 namespace bertrand {
@@ -16,9 +17,9 @@ namespace impl {
     static constexpr size_t capacity_size<U> = 1;
 
     template <typename U>
-    static constexpr size_t capacity_alignment = alignof(U);  // never returns 0
+    static constexpr size_t capacity_align = alignof(U);  // never returns 0
     template <meta::is_void U>
-    static constexpr size_t capacity_alignment<U> = 1;
+    static constexpr size_t capacity_align<U> = 1;
 
     /* A self-aligning helper for defining the capacity of a container using either
     explicit unit literals or raw integers, which are interpreted in units of `T`.
@@ -27,7 +28,7 @@ namespace impl {
     Usually, this class is used in a template signature or constructor like so:
 
         ```
-        template <typename T, impl::capacity<T> N = None>
+        template <typename T, impl::capacity<T> N = 0>
         struct Foo {
             Foo(impl::capacity<T> n) requires (!N) { ... }
         };
@@ -37,40 +38,40 @@ namespace impl {
         ```
 
     Instances of this type are also be created by the integer literal suffixes
-    `_B`, `_KiB`, `_MiB`, `_GiB`, or `_TiB`, all of which return `capacity<void>`,
-    indicating a raw byte count.
+    `_B`, `_KiB`, `_MiB`, `_GiB`, or `_TiB`, all of which return `capacity<void>`
+    (the default), indicating a raw byte count.
 
     Capacity objects are explicitly convertible to `size_t`, which always returns the
-    number of instances of `T` that can be stored, or raw bytes if `T` is `void` (the
-    default).  They are also implicitly convertible to any other specialization of
-    `capacity`, maintaining proper alignment for the target type (and possibly reducing
-    the byte count from this capacity). */
+    number of instances of `T` that can be stored, or raw bytes if `T` is `void`.  They
+    are also implicitly convertible to any other specialization of `capacity`,
+    maintaining proper alignment for the target type (and possibly reducing the byte
+    count from this capacity). */
     template <typename T = void>
     struct capacity {
-        static constexpr size_t aligned_size =
-            capacity_size<T> + (capacity_alignment<T> - 1) / capacity_alignment<T>;
+        static constexpr size_t aligned_size = (
+            (capacity_size<T> / capacity_align<T>) + ((capacity_size<T> % capacity_align<T>) != 0)
+        ) * capacity_align<T>;
 
-        unsigned long long value;
+        size_t value;
 
-        /* Implicitly convert from `unsigned long long`. */
-        [[nodiscard]] constexpr capacity(unsigned long long size = 0) noexcept : value(size) {}
+        /* Implicitly convert from `size_t`. */
+        [[nodiscard, gnu::always_inline]] constexpr capacity(size_t n = 0) noexcept : value(n) {}
 
-        /* Implicitly convert from any other capacity, accounting for proper
-        alignment. */
+        /* Implicitly convert from any other capacity, adjusting for alignment. */
         template <typename V> requires (!std::same_as<T, V>)
-        [[nodiscard]] constexpr capacity(impl::capacity<V> size) noexcept :
-            value(((size.value * size.aligned_size) / aligned_size))
+        [[nodiscard, gnu::always_inline]] constexpr capacity(impl::capacity<V> n) noexcept :
+            value((n.bytes() / aligned_size))
         {}
 
         /* The total number of bytes needed to represent the given number of instances
         of type `T`. */
-        [[nodiscard]] constexpr size_t bytes() const noexcept {
-            return static_cast<size_t>(value * aligned_size);
+        [[nodiscard, gnu::always_inline]] constexpr size_t bytes() const noexcept {
+            return value * aligned_size;
         }
 
         /* The total number of pages needed to represent the given number of instances
         of type `T`, rounded up to the nearest full page. */
-        [[nodiscard]] constexpr size_t pages() const noexcept;
+        [[nodiscard, gnu::always_inline]] constexpr size_t pages() const noexcept;
 
         /* Align the capacity up to the nearest multiple of `alignment`, which must be
         specified in bytes.  The result will be returned as a `capacity<void>` object;
@@ -82,10 +83,10 @@ namespace impl {
         converting back to `capacity<int32_t>` will yield a value of 2, since 2
         instances of `int32_t` (8 bytes) is the largest multiple that is less than or
         equal to the new capacity. */
-        [[nodiscard]] constexpr capacity<> align_up(capacity<> alignment) noexcept {
-            unsigned long long result = value * aligned_size;
-            result = (result / alignment.value) + ((result % alignment.value) != 0);
-            result *= alignment.value;
+        [[nodiscard]] constexpr capacity<> align_up(capacity<> align) noexcept {
+            size_t result = value * aligned_size;
+            result = (result / align.value) + ((result % align.value) != 0);
+            result *= align.value;
             return result;
         }
 
@@ -99,20 +100,30 @@ namespace impl {
         and converting back to `capacity<int32_t>` will yield a value of 2, since 2
         instances of `int32_t` (8 bytes) is the largest multiple that is less than or
         equal to the new capacity. */
-        [[nodiscard]] constexpr capacity<> align_down(capacity<> alignment) noexcept {
-            unsigned long long result = value * aligned_size;
-            result /= alignment.value;
-            result *= alignment.value;
+        [[nodiscard]] constexpr capacity<> align_down(capacity<> align) noexcept {
+            size_t result = value * aligned_size;
+            result /= align.value;
+            result *= align.value;
             return result;
         }
 
-        [[nodiscard]] constexpr explicit operator size_t() const noexcept {
-            return static_cast<size_t>(value);
+        /* Given a pointer to memory, zero out the bytes corresponding to this
+        capacity.  This is equivalent to a `memset()` call, except that during constant
+        evaluation, it will compile to an explicit loop to avoid undefined behavior. */
+        constexpr void* clear(void* ptr) const noexcept {
+            if consteval {
+                size_t bytes = this->bytes();
+                for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
+            } else {
+                std::memset(ptr, 0, bytes());
+            }
+            return ptr;
         }
 
-        [[nodiscard]] constexpr explicit operator bool() const noexcept {
-            return value != 0;
-        }
+        [[nodiscard]] constexpr size_t& operator*() noexcept { return value; }
+        [[nodiscard]] constexpr const size_t& operator*() const noexcept { return value; }
+        [[nodiscard]] constexpr explicit operator size_t() const noexcept { return value; }
+        [[nodiscard]] constexpr explicit operator bool() const noexcept { return value != 0; }
 
         [[nodiscard]] friend constexpr bool operator==(capacity lhs, capacity rhs) noexcept {
             return lhs.value == rhs.value;
@@ -128,9 +139,7 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr capacity operator++(int) noexcept {
-            capacity tmp = *this;
-            ++value;
-            return tmp;
+            return value++;
         }
 
         [[nodiscard]] friend constexpr capacity operator+(capacity lhs, capacity rhs) noexcept {
@@ -148,9 +157,7 @@ namespace impl {
         }
 
         [[nodiscard]] constexpr capacity operator--(int) noexcept {
-            capacity tmp = *this;
-            --value;
-            return tmp;
+            return value--;
         }
 
         [[nodiscard]] friend constexpr capacity operator-(capacity lhs, capacity rhs) noexcept {
@@ -242,43 +249,70 @@ namespace impl {
 }
 
 
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of bytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::capacity<> operator""_B(unsigned long long size) noexcept {
+}
+
+
+namespace std {
+
+    template <typename T>
+    struct hash<bertrand::impl::capacity<T>> {
+        [[nodiscard]] static constexpr size_t operator()(
+            bertrand::impl::capacity<T> value
+        ) noexcept {
+            return std::hash<size_t>{}(value.value);
+        }
+    };
+
+    template <typename T, typename Char>
+    struct formatter<bertrand::impl::capacity<T>, Char> : public formatter<size_t, Char> {
+        constexpr auto format(bertrand::impl::capacity<T> value, auto& ctx) const {
+            return formatter<size_t, Char>::format(value.value, ctx);
+        }
+    };
+
+}
+
+
+namespace bertrand {
+
+
+/* User-defined literal returning an integer-like value corresponding to a raw number
+of bytes, for use in defining sized containers.  The result is explicitly convertible
+to `size_t`. */
+[[nodiscard]] constexpr impl::capacity<> operator""_B(unsigned long long size) noexcept {
     return {size};
 }
 
 
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of kilobytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::capacity<> operator""_KiB(unsigned long long size) noexcept {
-    return {size * 1024_B};
+/* User-defined literal returning an integer-like value corresponding to a raw number
+of kilobytes, for use in defining sized containers.  The result is explicitly
+convertible to `size_t`. */
+[[nodiscard]] constexpr impl::capacity<> operator""_KiB(unsigned long long size) noexcept {
+    return {size << 10};
 }
 
 
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of megabytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::capacity<> operator""_MiB(unsigned long long size) noexcept {
-    return {size * 1024_KiB};
+/* User-defined literal returning an integer-like value corresponding to a raw number
+of megabytes, for use in defining sized containers.  The result is explicitly
+convertible to `size_t`. */
+[[nodiscard]] constexpr impl::capacity<> operator""_MiB(unsigned long long size) noexcept {
+    return {size << 20};
 }
 
 
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of gigabytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::capacity<> operator""_GiB(unsigned long long size) noexcept {
-    return {size * 1024_MiB};
+/* User-defined literal returning an integer-like value corresponding to a raw number
+of gigabytes, for use in defining sized containers.  The result is explicitly
+convertible to `size_t`. */
+[[nodiscard]] constexpr impl::capacity<> operator""_GiB(unsigned long long size) noexcept {
+    return {size << 30};
 }
 
 
-/* User-defined literal returning an integer-like value corresponding to a raw
-number of terabytes, for use in defining fixed-size containers.  The result is
-inter-convertible with `unsigned long long`. */
-constexpr impl::capacity<> operator""_TiB(unsigned long long size) noexcept {
-    return {size * 1024_GiB};
+/* User-defined literal returning an integer-like value corresponding to a raw number
+of terabytes, for use in defining sized containers.  The result is explicitly
+convertible to `size_t`. */
+[[nodiscard]] constexpr impl::capacity<> operator""_TiB(unsigned long long size) noexcept {
+    return {size << 40};
 }
 
 
@@ -288,28 +322,27 @@ correctness at program startup by querying the OS for the actual page size, whic
 be up to 1 GiB.  If not specified, it defaults to 4 KiB, which is the default for most
 systems. */
 #ifdef BERTRAND_PAGE_SIZE
-    constexpr size_t PAGE_SIZE = BERTRAND_PAGE_SIZE;
+    constexpr impl::capacity<> PAGE_SIZE = BERTRAND_PAGE_SIZE;
 #else
-    constexpr size_t PAGE_SIZE = (4_KiB).bytes();
+    constexpr impl::capacity<> PAGE_SIZE = 4_KiB;
 #endif
 static_assert(
-    std::popcount(PAGE_SIZE) == 1,
+    std::popcount(PAGE_SIZE.value) == 1,
     "page size must be a nonzero power of two"
 );
 static_assert(
-    PAGE_SIZE <= (1_GiB).bytes(),
+    PAGE_SIZE <= 1_GiB,
     "Bertrand only supports page sizes up to 1 GiB"
 );
 
 
 /* The position of the active bit in `PAGE_SIZE`.  Left-shifting 1 by this amount
 recovers the page size in bytes. */
-constexpr uintptr_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE);
+constexpr uint8_t PAGE_SHIFT = std::countr_zero(PAGE_SIZE.value);
 
 
-/* A bitmask with 1s for each bit below `PAGE_SHIFT` and 0s elsewhere, with the same
-length as a typical pointer. */
-constexpr uintptr_t PAGE_MASK = PAGE_SIZE - 1;
+/* A bitmask with 1s for each bit below `PAGE_SHIFT` and 0s elsewhere. */
+constexpr size_t PAGE_MASK = PAGE_SIZE.value - 1;
 
 
 /* The amount of virtual memory allocated per thread.  An allocator with this amount of
@@ -318,12 +351,12 @@ thread shutdown.  This must be either zero (which disables virtual memory entire
 a power of two, which is controlled by the `BERTRAND_VMEM_PER_THREAD` compilation
 flag. */
 #ifdef BERTRAND_VMEM_PER_THREAD
-    constexpr size_t VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
+    constexpr impl::capacity<> VMEM_PER_THREAD = BERTRAND_VMEM_PER_THREAD;
 #else
-    constexpr size_t VMEM_PER_THREAD = (32_GiB).bytes();
+    constexpr impl::capacity<> VMEM_PER_THREAD = 8_GiB;
 #endif
 static_assert(
-    std::popcount(VMEM_PER_THREAD) <= 1,
+    std::popcount(VMEM_PER_THREAD.value) <= 1,
     "`VMEM_PER_THREAD` must be a power of two"
 );
 static_assert(
@@ -342,9 +375,9 @@ controlled by the `BERTRAND_VMEM_COALESCE_AFTER` compilation flag, which must be
 a multiple of `PAGE_SIZE` specifying the number of bytes that must be pending decommit
 before a batch is triggered.  If not specified, it defaults to 16 MiB. */
 #ifdef BERTRAND_VMEM_COALESCE_AFTER
-    constexpr size_t VMEM_COALESCE_AFTER = BERTRAND_ALLOCATE_COALESCE_AFTER;
+    constexpr impl::capacity<> VMEM_COALESCE_AFTER = BERTRAND_VMEM_COALESCE_AFTER;
 #else
-    constexpr size_t VMEM_COALESCE_AFTER = (16_MiB).bytes();
+    constexpr impl::capacity<> VMEM_COALESCE_AFTER = 16_MiB;
 #endif
 static_assert(
     VMEM_COALESCE_AFTER % PAGE_SIZE == 0,
@@ -473,16 +506,17 @@ struct Space {
     [[nodiscard]] static constexpr bool empty() noexcept { return false; }
 
     /* Returns the number of elements in the space as an unsigned integer. */
-    [[nodiscard]] static constexpr size_t size() noexcept { return N; }
+    [[nodiscard]] static constexpr size_t size() noexcept { return N.value; }
 
     /* Returns the number of elements in the space as a signed integer. */
-    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(*N); }
+    [[nodiscard]] static constexpr ssize_t ssize() noexcept { return ssize_t(N.value); }
 
-    /* Return the current footprint of the space in bytes.  Note that the actual memory
-    usage may be higher than indicated here due to memory owned by the space's
-    contents, so the result only reflects the memory consumption of the storage buffer
-    itself. */
-    [[nodiscard]] static constexpr size_t bytes() noexcept { return N.bytes(); }
+    /* Returns the space's current capacity in bytes as an `impl::capacity<void>`
+    object.  Such capacities can be explicitly converted to `size_t`, dereferenced, or
+    accessed via `.value` or `.bytes()`, all of which do the same thing.  Converting
+    the result to another non-void capacity will maintain proper alignment for the
+    target type, changing units but not the overall memory footprint. */
+    [[nodiscard]] static constexpr impl::capacity<> capacity() noexcept { return N; }
 
 private:
     union storage {
@@ -716,64 +750,31 @@ namespace impl {
         return None;
     }();
 
-    /// TODO: page_count() should return a size_t, not uint32_t
-
-    /* Round an allocation size in bytes up to the nearest full page, and then return
-    it as a 32-bit page count.  Multiplying the result by `PAGE_SIZE` gives the total
-    size in bytes. */
-    [[nodiscard]] constexpr uint32_t page_count(size_t bytes) noexcept {
+    template <typename T>
+    [[nodiscard, gnu::always_inline]] constexpr size_t capacity<T>::pages() const noexcept {
+        size_t bytes = this->bytes();
         return (bytes >> PAGE_SHIFT) + ((bytes & PAGE_MASK) != 0);
     }
-
-    /* Round an allocation size in bytes up to the nearest multiple of the system's
-    native pointer alignment.  Returns the rounded size in bytes. */
-    [[nodiscard]] constexpr size_t pointer_align(size_t bytes) {
-        return (bytes / alignof(void*) + (bytes % alignof(void*) != 0)) * alignof(void*);
-    }
-
-    /* Clear a region of memory by setting all bits to zero.  This is equivalent to a
-    `memset()` call, except that during constant evaluation it uses an explicit loop
-    to avoid undefined behavior. */
-    constexpr void* zero(void* ptr, size_t bytes) noexcept {
-        if consteval {
-            for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
-        } else {
-            std::memset(ptr, 0, bytes);
-        }
-        return ptr;
-    }
-
-    template <typename T>
-    [[nodiscard]] constexpr size_t capacity<T>::pages() const noexcept {
-        return impl::page_count(bytes());
-    }
-
-
-    /// TODO: anything using size_t as a byte count should use impl::capacity<void>
-    /// instead, so that I can eliminate the `page_count()` and `pointer_align()`
-    /// helpers, as well as possibly `zero()`.
-
-
-    /// TODO: I also need to be clear and consistent about the allocate() and
-    /// deallocate() methods accepting the sizes as out parameters.
-
 
     /* Reserve a range of virtual addresses with the given number of bytes, aligned to
     the specified alignment (which must be a power of two).  Returns a void pointer to
     the start of the address range, where all bits that are less significant than the
     alignment bit are set to zero.  A MemoryError may be thrown if the reservation
-    fails, but the result will never be null.
+    fails, and the result will never be null.
 
     On unix systems, this will reserve the address space with full read/write
     privileges, and physical pages will be mapped into the region by the OS when they
     are first accessed.  On windows systems, the address space is reserved without any
     privileges, and memory must be explicitly committed before use. */
-    [[nodiscard]] inline void* map_address_space(size_t bytes, size_t alignment = PAGE_SIZE) {
+    [[nodiscard]] inline void* map_address_space(
+        capacity<> bytes,
+        capacity<> alignment = PAGE_SIZE
+    ) {
         if constexpr (VMEM_DEBUG) {
-            if (bytes == 0 || (bytes & PAGE_MASK) != 0) {
+            if (bytes.value == 0 || (bytes.value & PAGE_MASK) != 0) {
                 throw MemoryError("bytes must be a nonzero multiple of the page size");
             }
-            if (std::popcount(alignment) != 1) {
+            if (std::popcount(alignment.value) != 1) {
                 throw MemoryError("alignment must be a power of two");
             }
         }
@@ -785,7 +786,7 @@ namespace impl {
             GetSystemInfo(&si);
             size_t granularity = si.dwAllocationGranularity;
             if constexpr (VMEM_DEBUG) {
-                if (alignment > granularity && alignment % granularity != 0) {
+                if (alignment.value > granularity && alignment.value % granularity != 0) {
                     throw MemoryError(std::format(
                         "alignment must be either less than or a multiple of the "
                         "Windows allocation granularity ({} bytes)",
@@ -795,17 +796,17 @@ namespace impl {
             }
 
             // fast path for alignments below allocation granularity
-            if (alignment <= granularity) {
+            if (alignment.value <= granularity) {
                 void* ptr = VirtualAlloc(
                     nullptr,
-                    bytes,
+                    bytes.value,
                     MEM_RESERVE,  // reserve only (does not charge against commit limit)
                     PAGE_NOACCESS
                 );
                 if (ptr == nullptr) {
                     throw MemoryError(std::format(
                         "failed to map virtual address space ({:.3f} MiB) -> {}",
-                        double(bytes) / double((1_MiB).bytes()),
+                        double(bytes.value) / double((1_MiB).value),
                         system_err_msg()
                     ));
                 }
@@ -833,7 +834,7 @@ namespace impl {
                 MEM_ADDRESS_REQUIREMENTS req {};
                 req.LowestStartingAddress = nullptr;
                 req.HighestEndingAddress = nullptr;
-                req.Alignment = alignment;
+                req.Alignment = alignment.value;
 
                 MEM_EXTENDED_PARAMETER param {};
                 param.Type = MemExtendedParameterAddressRequirements;
@@ -842,7 +843,7 @@ namespace impl {
                 void* ptr = VirtualAlloc2_ptr(
                     GetCurrentProcess(),
                     nullptr,
-                    bytes,
+                    bytes.value,
                     MEM_RESERVE,
                     PAGE_NOACCESS,
                     &param,
@@ -852,7 +853,7 @@ namespace impl {
                 // if VirtualAlloc2 exists but failed, fall through to probe/retry
                 if (ptr != nullptr) {
                     if constexpr (VMEM_DEBUG) {
-                        if (reinterpret_cast<uintptr_t>(ptr) % alignment != 0) {
+                        if (reinterpret_cast<uintptr_t>(ptr) % alignment.value != 0) {
                             VirtualFree(ptr, 0, MEM_RELEASE);
                             throw MemoryError(
                                 "VirtualAlloc2 returned misaligned address despite "
@@ -871,25 +872,25 @@ namespace impl {
 
             // Reserve enough space that there is guaranteed to be an aligned subrange
             // of length `bytes`
-            size_t probe_size = bytes + alignment;
+            size_t probe_size = bytes.value + alignment.value;
             for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt) {
                 void* probe = VirtualAlloc(nullptr, probe_size, MEM_RESERVE, PAGE_NOACCESS);
                 if (probe == nullptr) {
                     throw MemoryError(std::format(
                         "failed to map virtual address space ({:.3f} MiB) -> {}",
-                        double(bytes) / double((1_MiB).bytes()),
+                        double(bytes.value) / double((1_MiB).value),
                         system_err_msg()
                     ));
                 }
 
                 // align, then release the probe reservation
                 void* aligned = reinterpret_cast<void*>(
-                    (reinterpret_cast<uintptr_t>(probe) + alignment - 1) & ~(alignment - 1)
+                    (reinterpret_cast<uintptr_t>(probe) + alignment.value - 1) & ~(alignment.value - 1)
                 );
                 VirtualFree(probe, 0, MEM_RELEASE);
 
                 // attempt to reserve at the aligned address
-                probe = VirtualAlloc(aligned, bytes, MEM_RESERVE, PAGE_NOACCESS);
+                probe = VirtualAlloc(aligned, bytes.value, MEM_RESERVE, PAGE_NOACCESS);
                 if (probe == aligned) {
                     return probe;  // success
                 }
@@ -901,7 +902,7 @@ namespace impl {
             // all attempts failed
             throw MemoryError(std::format(
                 "failed to map virtual address space ({:.3f} MiB) after {} attempts -> {}",
-                double(bytes) / double((1_MiB).bytes()),
+                double(bytes.value) / double((1_MiB).value),
                 MAX_ATTEMPTS,
                 system_err_msg()
             ));
@@ -909,7 +910,7 @@ namespace impl {
         #elif UNIX
             // the result from mmap() is always page-aligned, so any alignment below
             // that is automatically satisfied
-            size_t total = bytes + alignment * (alignment > PAGE_SIZE);
+            size_t total = bytes.value + alignment.value * (alignment.value > PAGE_SIZE);
             void* ptr = mmap(
                 nullptr,
                 total,
@@ -925,7 +926,7 @@ namespace impl {
             if (ptr == MAP_FAILED) {
                 throw MemoryError(std::format(
                     "failed to map virtual address space ({:.3f} MiB) -> {}",
-                    double(bytes) / double((1_MiB).bytes()),
+                    double(bytes.value) / double((1_MiB).value),
                     system_err_msg()
                 ));
             }
@@ -935,12 +936,12 @@ namespace impl {
 
             // align and unmap excess memory
             std::byte* aligned = reinterpret_cast<std::byte*>(
-                (reinterpret_cast<uintptr_t>(ptr) + alignment - 1) & ~(alignment - 1)
+                (reinterpret_cast<uintptr_t>(ptr) + alignment.value - 1) & ~(alignment.value - 1)
             );
             std::ptrdiff_t left = aligned - static_cast<std::byte*>(ptr);
             if (left > 0) munmap(ptr, left);
-            std::ptrdiff_t right = (static_cast<std::byte*>(ptr) + total) - (aligned + bytes);
-            if (right > 0) munmap(aligned + bytes, right);
+            std::ptrdiff_t right = (static_cast<std::byte*>(ptr) + total) - (aligned + bytes.value);
+            if (right > 0) munmap(aligned + bytes.value, right);
             return aligned;
         #else
             throw MemoryError(
@@ -954,12 +955,12 @@ namespace impl {
     /* Release a range of virtual addresses starting at the given pointer with the
     specified number of bytes, returning them to the OS.  This is the inverse of
     `map_address_space()`.  A MemoryError may be thrown if the unmapping fails. */
-    inline void unmap_address_space(void* ptr, size_t bytes) {
+    inline void unmap_address_space(void* ptr, capacity<> bytes) {
         if constexpr (VMEM_DEBUG) {
             if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
-            if ((bytes & PAGE_MASK) != 0) {
+            if ((bytes.value & PAGE_MASK) != 0) {
                 throw MemoryError("size must be a nonzero multiple of the page size");
             }
         }
@@ -970,19 +971,19 @@ namespace impl {
                     "failed to unmap virtual address space starting at address "
                     "{:#x} and ending at address {:#x} ({:.3f} MiB) -> {}",
                     reinterpret_cast<uintptr_t>(ptr),
-                    reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + bytes),
-                    double(bytes) / double((1_MiB).bytes()),
+                    reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + bytes.value),
+                    double(bytes.value) / double((1_MiB).value),
                     system_err_msg()
                 ));
             }
         #elif UNIX
-            if (munmap(ptr, bytes) != 0) {
+            if (munmap(ptr, bytes.value) != 0) {
                 throw MemoryError(std::format(
                     "failed to unmap virtual address space starting at address "
                     "{:#x} and ending at address {:#x} ({:.3f} MiB) -> {}",
                     reinterpret_cast<uintptr_t>(ptr),
-                    reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + bytes),
-                    double(bytes) / double((1_MiB).bytes()),
+                    reinterpret_cast<uintptr_t>(static_cast<std::byte*>(ptr) + bytes.value),
+                    double(bytes.value) / double((1_MiB).value),
                     system_err_msg()
                 ));
             }
@@ -1005,12 +1006,12 @@ namespace impl {
     systems, this will be called in order to expand the committed region as needed,
     increasing syscall overhead, but minimizing commit charge so as not to interfere
     with other processes on the system. */
-    inline void commit_address_space(void* ptr, size_t bytes) {
+    inline void commit_address_space(void* ptr, capacity<> bytes) {
         if constexpr (VMEM_DEBUG) {
             if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
-            if ((bytes & PAGE_MASK) != 0) {
+            if ((bytes.value & PAGE_MASK) != 0) {
                 throw MemoryError("size must be a nonzero multiple of the page size");
             }
         }
@@ -1018,16 +1019,16 @@ namespace impl {
         #if WINDOWS
             if (VirtualAlloc(
                 reinterpret_cast<LPVOID>(ptr),
-                bytes,
+                bytes.value,
                 MEM_COMMIT,
                 PAGE_READWRITE
             ) == nullptr) {
                 throw MemoryError(std::format(
                     "failed to commit {:.3f} MiB of virtual address space "
                     "starting at address {:#x} and ending at address {:#x} -> {}",
-                    double(bytes) / double((1_MiB).bytes()),
+                    double(bytes.value) / double((1_MiB).value),
                     reinterpret_cast<uintptr_t>(ptr),
-                    reinterpret_cast<uintptr_t>(ptr) + bytes,
+                    reinterpret_cast<uintptr_t>(ptr) + bytes.value,
                     system_err_msg()
                 ));
             }
@@ -1052,35 +1053,35 @@ namespace impl {
     On windows systems, this will be called in order to shrink the committed region as
     needed, increasing syscall overhead, but minimizing commit charge so as not to
     interfere with other processes on the system. */
-    inline void decommit_address_space(void* ptr, size_t bytes) {
+    inline void decommit_address_space(void* ptr, capacity<> bytes) {
         if constexpr (VMEM_DEBUG) {
             if ((reinterpret_cast<uintptr_t>(ptr) & PAGE_MASK) != 0) {
                 throw MemoryError("ptr must be aligned to the page size");
             }
-            if ((bytes & PAGE_MASK) != 0) {
+            if ((bytes.value & PAGE_MASK) != 0) {
                 throw MemoryError("size must be a nonzero multiple of the page size");
             }
         }
 
         #if WINDOWS
-            if (VirtualFree(reinterpret_cast<LPVOID>(ptr), bytes, MEM_DECOMMIT) == 0) {
+            if (VirtualFree(reinterpret_cast<LPVOID>(ptr), bytes.value, MEM_DECOMMIT) == 0) {
                 throw MemoryError(std::format(
                     "failed to decommit {:.3f} MiB of virtual address space "
                     "starting at address {:#x} and ending at address {:#x} -> {}",
-                    double(bytes) / double((1_MiB).bytes()),
+                    double(bytes.value) / double((1_MiB).value),
                     reinterpret_cast<uintptr_t>(ptr),
-                    reinterpret_cast<uintptr_t>(ptr) + bytes,
+                    reinterpret_cast<uintptr_t>(ptr) + bytes.value,
                     system_err_msg()
                 ));
             }
         #elif UNIX
-            if (madvise(ptr, bytes, MADV_DONTNEED) != 0) {
+            if (madvise(ptr, bytes.value, MADV_DONTNEED) != 0) {
                 throw MemoryError(std::format(
                     "failed to decommit {:.3f} MiB of virtual address space "
                     "starting at address {:#x} and ending at address {:#x} -> {}",
-                    double(bytes) / double((1_MiB).bytes()),
+                    double(bytes.value) / double((1_MiB).value),
                     reinterpret_cast<uintptr_t>(ptr),
-                    reinterpret_cast<uintptr_t>(ptr) + bytes,
+                    reinterpret_cast<uintptr_t>(ptr) + bytes.value,
                     system_err_msg()
                 ));
             }
@@ -1092,6 +1093,22 @@ namespace impl {
             );
         #endif
     }
+
+    /// TODO: it may be possible to have the allocator grow over time by mapping
+    /// additional regions at the front and end of the existing space, which shouldn't
+    /// require relocating existing allocations, but does require the header and
+    /// internal data structures to be copied over, and for node indices to remain
+    /// stable, which implies that the node storage needs to grow from right to left,
+    /// such that the first node that is allocated is the one with the highest index,
+    /// rather than the lowest.  Then, upon growth, the new nodes will simply overwrite
+    /// the old header/slabs/batch/chunks, etc.
+
+    /// TODO: it should also be possible for `drain_remote()` to aggressively dump to
+    /// the batch list, rather than possibly clearing it multiple times during the
+    /// remote free and possible subsequent deallocation.
+
+    /// TODO: I may also want to add a debug self-check that asserts each entry in the
+    /// heap is also present in the treap and vice versa.
 
     struct address_space_handle;
 
@@ -1127,10 +1144,10 @@ namespace impl {
         loop fusion, which requires two temporary buffers to store the digit counts and
         prefix sums.  Additionally, insertion sort will be used as an optimization if 
         the batch size is below a (tunable) threshold.  */
-        static constexpr uint32_t COALESCE_BUFFER = page_count(VMEM_COALESCE_AFTER);
-        static constexpr uint32_t RADIX = 256;
-        static constexpr uint32_t RADIX_LOG2 = 8;
-        static constexpr uint32_t RADIX_MASK = RADIX - 1;
+        static constexpr uint32_t COALESCE_BUFFER = VMEM_COALESCE_AFTER.pages();
+        static constexpr uint32_t RADIX = 256;  // 256 bins
+        static constexpr uint32_t RADIX_LOG2 = 8;  // 8-bit digits
+        static constexpr uint32_t RADIX_MASK = RADIX - 1;  // for digit extraction
         static constexpr uint32_t RADIX_LAST = std::numeric_limits<uint32_t>::digits - RADIX_LOG2;
 
         /* Slabs are used to speed up small allocations up to a couple of pages in
@@ -1163,10 +1180,10 @@ namespace impl {
         bit widths are determined by the `block_id` type alias, and whose size is
         bounded by `SLAB_BLOCKS[i]`, growing to the left. */
         static constexpr uint32_t SLAB_PAGES = 32;  // pages per slab (indexable by 32-bit ints)
-        static constexpr size_t SLAB_MIN = sizeof(void*);  // min block size in bytes
-        static constexpr auto _SLABS = [] -> std::pair<size_t, uint16_t> {
-            size_t n = SLAB_MIN;
-            size_t p = n;
+        static constexpr capacity<> SLAB_MIN = sizeof(void*);  // min block size in bytes
+        static constexpr auto _SLABS = [] -> std::pair<capacity<>, uint16_t> {
+            capacity<> n = SLAB_MIN;
+            capacity<> p = n;
             uint16_t i = 0;
             while (n < (PAGE_SIZE << 1)) {
                 p = n;
@@ -1175,40 +1192,40 @@ namespace impl {
             }
             return {p, i};
         }();
-        static constexpr size_t SLAB_MAX = _SLABS.first;  // max block size in bytes
+        static constexpr capacity<> SLAB_MAX = _SLABS.first;  // max block size in bytes
         static constexpr uint16_t SLABS = _SLABS.second;  // total number of size classes
         static constexpr uintptr_t SLAB_MASK =  // bitmask for reverse lookup
             ~static_cast<uintptr_t>((size_t(SLAB_PAGES) << PAGE_SHIFT) - 1);
-        static constexpr uintptr_t SLAB_OFFSET =  // offset from slab start to node index
+        static constexpr uintptr_t SLAB_OFFSET =  // offset from slab start to node id
             static_cast<uintptr_t>((size_t(SLAB_PAGES) << PAGE_SHIFT) - sizeof(uint32_t));
         using block_id = std::conditional_t<  // type for slab free list entries
-            SLAB_OFFSET == sizeof(uint8_t),
+            SLAB_OFFSET / (SLAB_MIN + sizeof(uint8_t)) <= std::numeric_limits<uint8_t>::max(),
             uint8_t,
             std::conditional_t<
-                SLAB_OFFSET == sizeof(uint16_t),
+                SLAB_OFFSET / (SLAB_MIN + sizeof(uint16_t)) <= std::numeric_limits<uint16_t>::max(),
                 uint16_t,
                 uint32_t
             >
         >;
         static constexpr auto _BLOCKS = [] {
             std::pair<
-                std::array<size_t, SLABS>,  // size class in bytes
+                std::array<capacity<>, SLABS>,  // size class in bytes
                 std::array<block_id, SLABS>  // max number of blocks per slab
             > result;
-            size_t n = SLAB_MIN;
+            capacity<> n = SLAB_MIN;
             for (size_t i = 0; i < SLABS; ++i) {
                 result.first[i] = n;
-                result.second[i] = SLAB_OFFSET / (n + sizeof(block_id));
+                result.second[i] = (SLAB_OFFSET / (n + sizeof(block_id))).value;
                 n = ((n * 5) / (4 * SLAB_MIN) + ((n * 5) % (4 * SLAB_MIN) != 0)) * SLAB_MIN;
             }
             return result;
         }();
-        static constexpr const std::array<size_t, SLABS>& SLAB_CLASS = _BLOCKS.first;
+        static constexpr const std::array<capacity<>, SLABS>& SLAB_CLASS = _BLOCKS.first;
         static constexpr const std::array<block_id, SLABS>& SLAB_BLOCKS = _BLOCKS.second;
 
-        /* Pointer back to the thread-local object that spawned this address space, or
-        null if the thread is in a teardown state. */
-        address_space_handle* owner;
+        /* Atomic pointer back to the thread-local object that spawned this address
+        space, or null if the thread is in a teardown state. */
+        std::atomic<address_space_handle*> owner;
 
         /* High-water mark for node indices + chunks on windows. */
         uint32_t next_node = 0;
@@ -1232,16 +1249,16 @@ namespace impl {
 
         /* Total number of bytes allocated to the user, both excluding batch list and
         empty slab blocks as well as including them. */
-        size_t occupied = 0;
+        std::atomic<size_t> occupied = 0;
         size_t total = 0;
 
         /* Remote free requests are stored in two separate lock-free MPSC stacks, one
         for slab deallocations and another for page-run deallocations.  Both stacks
         will be drained at the beginning of local `allocate()`, `deallocate()`, and
-        `reserve()` operations, requiring only a single, relaxed atomic load in the
-        empty case for each stack.  This ensures that remote frees are always handled
-        on their originating thread, without interrupting either that thread or the
-        sending thread.
+        `reserve()` operations, requiring only a single atomic load in the empty case
+        for each stack.  This ensures that remote frees are always handled on their
+        originating thread, without interrupting either that thread or the sending
+        thread.
 
         Note that this implementation is optimized in 2 important ways:
 
@@ -1255,16 +1272,17 @@ namespace impl {
                 with `nullptr` during processing, ensuring that concurrent drains will
                 simply see an empty stack and return immediately.
 
-        Additionally, two atomic counters track the total number of bytes pending a
-        remote free in each stack.  If the sum of these counters equals `occupied`
-        while in the teardown state, then the entire address space will be unmapped
-        without leaving any orphaned memory. */
+        Additionally, an in-flight counter is used to detect quiescence during the
+        final teardown sequence for the address space, ensuring that all remote free
+        requests have been fully processed before unmapping the address space.  This
+        counter is incremented/decremented at the start/end of every allocator
+        interaction, and if it drops to zero while `owner == nullptr` and
+        `occupied == 0`, then it is safe to unmap. */
         struct defer_slab { defer_slab* next; };
         struct defer_page { defer_page* next; uint32_t pages; };
         std::atomic<defer_slab*> remote_slab = nullptr;
         std::atomic<defer_page*> remote_page = nullptr;
-        std::atomic<size_t> remote_slabs = 0;
-        std::atomic<size_t> remote_pages = 0;
+        std::atomic<size_t> in_flight = 0;
 
         /* An array of node ids to partial slabs (or NIL) by size class. */
         uint32_t* slabs;
@@ -1374,15 +1392,15 @@ namespace impl {
         to ~16 TiB of address space per thread.  This becomes more efficient as the
         page size increases. */
         static constexpr struct _SIZE {
-            static constexpr size_t HEADER = sizeof(address_space_base);
-            static constexpr size_t SLABS =
-                pointer_align(address_space::SLABS * sizeof(uint32_t));
-            static constexpr size_t RADIX_COUNT =
-                pointer_align(address_space::RADIX * sizeof(uint32_t));
-            static constexpr size_t RADIX_SUM = RADIX_COUNT;
-            static constexpr size_t BATCH =
-                pointer_align(COALESCE_BUFFER * sizeof(uint32_t));
-            static constexpr size_t BATCH_SORT = BATCH;
+            static constexpr capacity<> HEADER = sizeof(address_space_base);
+            static constexpr capacity<> SLABS =
+                capacity(address_space::SLABS * sizeof(uint32_t)).align_up(sizeof(void*));
+            static constexpr capacity<> RADIX_COUNT =
+                capacity(address_space::RADIX * sizeof(uint32_t)).align_up(sizeof(void*));
+            static constexpr capacity<> RADIX_SUM = RADIX_COUNT;
+            static constexpr capacity<> BATCH =
+                capacity(COALESCE_BUFFER * sizeof(uint32_t)).align_up(sizeof(void*));
+            static constexpr capacity<> BATCH_SORT = BATCH;
 
             uint32_t chunks;  // size of chunk ledger in 1 byte entries, which represent 255 pages
             uint32_t partition;  // total size of private partition in pages
@@ -1390,57 +1408,57 @@ namespace impl {
 
             /* The total amount of virtual memory consumed by the private and public
             partitions combined. */
-            [[nodiscard]] constexpr size_t total() const noexcept {
+            [[nodiscard]] constexpr capacity<> total() const noexcept {
                 return size_t(partition + pub) << PAGE_SHIFT;
             }
 
             /* Size of the initial commit necessary to set up the private partition
             data structures, excluding node storage. */
-            [[nodiscard]] constexpr size_t commit() const noexcept {
-                return size_t(page_count(
+            [[nodiscard]] constexpr capacity<> commit() const noexcept {
+                return (
                     HEADER +
                     SLABS +
                     RADIX_COUNT +
                     RADIX_SUM +
                     BATCH +
                     BATCH_SORT +
-                    pointer_align(chunks * sizeof(uint8_t))
-                )) << PAGE_SHIFT;
+                    capacity(chunks * sizeof(uint8_t)).align_up(sizeof(void*))
+                ).pages() << PAGE_SHIFT;
             }
         } SIZE = [] -> _SIZE {
             // initial upper bound -> x * (page + node) <= VMEM_PER_THREAD
             uint32_t lo = 1;
-            uint32_t hi = VMEM_PER_THREAD / (PAGE_SIZE + sizeof(node));
+            uint32_t hi = (VMEM_PER_THREAD / (PAGE_SIZE + sizeof(node))).value;
 
             // binary search for maximum N where partition(N) + (N * page) <= VMEM_PER_THREAD
             uint32_t chunks = WINDOWS;  // 1 if on windows
-            uint32_t partition = page_count(
+            uint32_t partition = (
                 _SIZE::HEADER +
                 _SIZE::SLABS +
                 _SIZE::RADIX_COUNT +
                 _SIZE::RADIX_SUM +
                 _SIZE::BATCH +
                 _SIZE::BATCH_SORT +
-                chunks +
+                capacity(chunks * sizeof(uint8_t)).align_up(sizeof(void*)) +
                 sizeof(node)
-            );
+            ).pages();
             while (lo < hi) {
                 uint32_t mid = (hi + lo + 1) / 2;
                 if constexpr (WINDOWS) {  // account for chunk ledger
                     chunks = mid / CHUNK_WIDTH + (mid % CHUNK_WIDTH != 0);
                 }
-                partition = page_count(
-                    (mid * sizeof(node)) +
-                    page_count(
+                partition = capacity<>(
+                    (
                         _SIZE::HEADER +
                         _SIZE::SLABS +
                         _SIZE::RADIX_COUNT +
                         _SIZE::RADIX_SUM +
                         _SIZE::BATCH +
                         _SIZE::BATCH_SORT +
-                        chunks
-                    )  // page-align node storage
-                );
+                        capacity(chunks * sizeof(uint8_t)).align_up(sizeof(void*))
+                    ) +
+                    (mid * sizeof(node))
+                ).pages();
                 if (
                     partition <= (VMEM_PER_THREAD >> PAGE_SHIFT) &&
                     mid <= (VMEM_PER_THREAD >> PAGE_SHIFT) - partition
@@ -1465,63 +1483,62 @@ namespace impl {
         construction. */
         [[nodiscard]] address_space(address_space_handle* owner) noexcept : address_space_base{
             .owner = owner,
-            .slabs = std::fill_n(
-                reinterpret_cast<uint32_t*>(
-                    reinterpret_cast<std::byte*>(this) + _SIZE::HEADER
-                ),
-                SLABS,
-                NIL
+            .slabs = reinterpret_cast<uint32_t*>(
+                reinterpret_cast<std::byte*>(this) +
+                _SIZE::HEADER.bytes()
             ),
             .radix_count = reinterpret_cast<uint32_t*>(
                 reinterpret_cast<std::byte*>(this) +
-                _SIZE::HEADER +
-                _SIZE::SLABS
+                _SIZE::HEADER.bytes() +
+                _SIZE::SLABS.bytes()
             ),
             .radix_sum = reinterpret_cast<uint32_t*>(
                 reinterpret_cast<std::byte*>(this) +
-                _SIZE::HEADER +
-                _SIZE::SLABS +
-                _SIZE::RADIX_COUNT
+                _SIZE::HEADER.bytes() +
+                _SIZE::SLABS.bytes() +
+                _SIZE::RADIX_COUNT.bytes()
             ),
             .batch_list = reinterpret_cast<uint32_t*>(
                 reinterpret_cast<std::byte*>(this) +
-                _SIZE::HEADER +
-                _SIZE::SLABS +
-                _SIZE::RADIX_COUNT +
-                _SIZE::RADIX_SUM
+                _SIZE::HEADER.bytes() +
+                _SIZE::SLABS.bytes() +
+                _SIZE::RADIX_COUNT.bytes() +
+                _SIZE::RADIX_SUM.bytes()
             ),
             .batch_sort = reinterpret_cast<uint32_t*>(
                 reinterpret_cast<std::byte*>(this) +
-                _SIZE::HEADER +
-                _SIZE::SLABS +
-                _SIZE::RADIX_COUNT +
-                _SIZE::RADIX_SUM +
-                _SIZE::BATCH
+                _SIZE::HEADER.bytes() +
+                _SIZE::SLABS.bytes() +
+                _SIZE::RADIX_COUNT.bytes() +
+                _SIZE::RADIX_SUM.bytes() +
+                _SIZE::BATCH.bytes()
             ),
             .chunks = reinterpret_cast<uint8_t*>(
                 reinterpret_cast<std::byte*>(this) +
-                _SIZE::HEADER +
-                _SIZE::SLABS +
-                _SIZE::RADIX_COUNT +
-                _SIZE::RADIX_SUM +
-                _SIZE::BATCH +
-                _SIZE::BATCH_SORT
+                _SIZE::HEADER.bytes() +
+                _SIZE::SLABS.bytes() +
+                _SIZE::RADIX_COUNT.bytes() +
+                _SIZE::RADIX_SUM.bytes() +
+                _SIZE::BATCH.bytes() +
+                _SIZE::BATCH_SORT.bytes()
             ),
             .nodes = reinterpret_cast<node*>(
                 reinterpret_cast<std::byte*>(this) +
-                _SIZE::HEADER +
-                _SIZE::SLABS +
-                _SIZE::RADIX_COUNT +
-                _SIZE::RADIX_SUM +
-                _SIZE::BATCH +
-                _SIZE::BATCH_SORT +
-                pointer_align(SIZE.chunks * sizeof(uint8_t))
+                _SIZE::HEADER.bytes() +
+                _SIZE::SLABS.bytes() +
+                _SIZE::RADIX_COUNT.bytes() +
+                _SIZE::RADIX_SUM.bytes() +
+                _SIZE::BATCH.bytes() +
+                _SIZE::BATCH_SORT.bytes() +
+                capacity(SIZE.chunks * sizeof(uint8_t)).align_up(sizeof(void*)).bytes()
             ),
             .ptr = reinterpret_cast<void*>(
-                reinterpret_cast<std::byte*>(this) + (size_t(SIZE.partition) << PAGE_SHIFT)
+                reinterpret_cast<std::byte*>(this) +
+                (size_t(SIZE.partition) << PAGE_SHIFT)
             )
         } {
-            uint32_t id = get_node();  // always zero on first init, commits storage on windows
+            std::fill_n(slabs, SLABS, NIL);
+            uint32_t id = get_node();  // always zero on first init, commits node storage on windows
             nodes[id].offset = 0;  // start of public partition
             nodes[id].size = SIZE.pub;  // whole public partition
             nodes[id].left = NIL;  // no children
@@ -1532,24 +1549,28 @@ namespace impl {
             treap_root = id;  // root of coalesce tree
         }
 
-        /* Release the address space on last use.  This is a no-op unless `initialized`
-        is set to `false` (indicating that the address space's destructor has been
-        called) and the address space is empty or all remaining bytes are pending a
-        remote free.  It will be called in the destructor for the address space itself
-        as well as `Space<T, N>` to ensure proper destruction order, even for objects
-        with static storage duration, where destructor order is not guaranteed. */
-        void release() {
-            if (owner == nullptr && occupied == (
-                remote_slabs.load(std::memory_order_relaxed) +
-                remote_pages.load(std::memory_order_relaxed)
-            )) {
-                unmap_address_space(this, address_space::SIZE.total());
-            }
-        }
-
         ////////////////////
         ////    HEAP    ////
         ////////////////////
+
+        /* Ensure that the heap invariant is fulfilled during debug builds. */
+        constexpr void heap_validate() const {
+            for (uint32_t i = 0; i < heap_size; ++i) {
+                uint32_t id = heap(i);
+                uint32_t left = (i * 2) + 1;
+                uint32_t right = left + 1;
+                if (left < heap_size && nodes[heap(left)].size > nodes[id].size) {
+                    throw MemoryError(
+                        "heap invariant violated: left child larger than parent"
+                    );
+                }
+                if (right < heap_size && nodes[heap(right)].size > nodes[id].size) {
+                    throw MemoryError(
+                        "heap invariant violated: right child larger than parent"
+                    );
+                }
+            }
+        }
 
         /* Swap two heap indices, accounting for intrusive indices into the node
         array. */
@@ -1604,16 +1625,19 @@ namespace impl {
 
         /* Insert the current node into the heap, maintaining the max heap
         invariant. */
-        constexpr void heap_insert(uint32_t id) noexcept {
+        constexpr void heap_insert(uint32_t id) noexcept (!VMEM_DEBUG) {
             heap(heap_size) = id;
             nodes[id].heap = heap_size;
             heapify_up(heap_size);
             ++heap_size;
+            if constexpr (VMEM_DEBUG) {
+                heap_validate();
+            }
         }
 
         /* Remove the current node from the heap, maintaining the max heap
         invariant. */
-        constexpr void heap_erase(uint32_t id) noexcept {
+        constexpr void heap_erase(uint32_t id) noexcept (!VMEM_DEBUG) {
             uint32_t pos = nodes[id].heap;
             uint32_t last = heap(heap_size - 1);
             heap(pos) = last;
@@ -1624,19 +1648,61 @@ namespace impl {
                 heapify_down(pos);
                 heapify_up(pos);
             }
+            if constexpr (VMEM_DEBUG) {
+                heap_validate();
+            }
         }
 
         /* Restore the heap invariant for the current node, assuming it is still in
         the heap. */
-        constexpr void heap_fix(uint32_t id) noexcept {
+        constexpr void heap_fix(uint32_t id) noexcept (!VMEM_DEBUG) {
             uint32_t pos = nodes[id].heap;
             heapify_down(pos);
             heapify_up(pos);
+            if constexpr (VMEM_DEBUG) {
+                heap_validate();
+            }
         }
 
         /////////////////////
         ////    TREAP    ////
         /////////////////////
+
+        /* Ensure that the treap invariant is fulfilled during debug builds. */
+        constexpr void treap_validate(uint32_t root) const {
+            if (root == NIL) {
+                return;
+            }
+            uint32_t left = nodes[root].left;
+            uint32_t right = nodes[root].right;
+            if (left != NIL) {
+                if (nodes[left].offset >= nodes[root].offset) {
+                    throw MemoryError(
+                        "treap invariant violated: left child not less than parent"
+                    );
+                }
+                if (nodes[left].priority() < nodes[root].priority()) {
+                    throw MemoryError(
+                        "treap invariant violated: left child priority less than parent"
+                    );
+                }
+                treap_validate(left);
+            }
+            if (right != NIL) {
+                if (nodes[right].offset < nodes[root].offset) {
+                    throw MemoryError(
+                        "treap invariant violated: right child not greater than or "
+                        "equal to parent"
+                    );
+                }
+                if (nodes[right].priority() < nodes[root].priority()) {
+                    throw MemoryError(
+                        "treap invariant violated: right child priority less than parent"
+                    );
+                }
+                treap_validate(right);
+            }
+        }
 
         /* Iteratively update the links of `root` to insert a node with a given `key`,
         then set that node's children to maintain sorted order.  This is done without
@@ -1690,7 +1756,9 @@ namespace impl {
         value is the new root of the treap, and may be identical to the previous root.
         This is done without an explicit stack via a simple pointer, which modifies
         links in-place. */
-        [[nodiscard]] constexpr uint32_t treap_insert(uint32_t root, uint32_t id) noexcept {
+        [[nodiscard]] constexpr uint32_t treap_insert(uint32_t root, uint32_t id)
+            noexcept (!VMEM_DEBUG)
+        {
             uint32_t key = nodes[id].offset;
             uint32_t priority = nodes[id].priority();
 
@@ -1730,6 +1798,9 @@ namespace impl {
 
             // fell off the tree - insert as leaf
             *link = id;
+            if constexpr (VMEM_DEBUG) {
+                treap_validate(root);
+            }
             return root;
         }
 
@@ -1738,7 +1809,9 @@ namespace impl {
         treap.  The return value is the new root of the treap, and may be identical to
         the previous root.  Note this is done without an explicit stack via a simple
         pointer, which modifies links in-place by rotating down the tree. */
-        [[nodiscard]] constexpr uint32_t treap_erase(uint32_t root, uint32_t id) noexcept {
+        [[nodiscard]] constexpr uint32_t treap_erase(uint32_t root, uint32_t id)
+            noexcept (!VMEM_DEBUG)
+        {
             uint32_t key = nodes[id].offset;
 
             // find node by key
@@ -1800,6 +1873,9 @@ namespace impl {
                     link = &nodes[y].left;
                 }
             }
+            if constexpr (VMEM_DEBUG) {
+                treap_validate(root);
+            }
         }
 
         /* Find the free block immediately preceding the given key in the treap. */
@@ -1852,7 +1928,7 @@ namespace impl {
             // time to ensure that we always end at a page boundary or the end of the
             // node storage
             if constexpr (WINDOWS) {
-                constexpr size_t lcm = std::lcm(sizeof(node), PAGE_SIZE);
+                constexpr size_t lcm = std::lcm(sizeof(node), PAGE_SIZE.value);
                 if (next_node >= next_chunk) {
                     size_t commit = std::min(lcm, size_t(SIZE.pub - next_node) << PAGE_SHIFT);
                     commit_address_space(nodes + next_node, commit);
@@ -1931,10 +2007,8 @@ namespace impl {
         `chunk_increment()`, which must be called after this to ensure correct interval
         calculations. */
         constexpr void chunk_commit(uint32_t offset, uint32_t size) {
-            if (
-                auto [from, to] = chunk_interval(offset, size);
-                to > from
-            ) {
+            auto [from, to] = chunk_interval(offset, size);
+            if (to > from) {
                 commit_address_space(
                     static_cast<std::byte*>(ptr) + (size_t(from) << PAGE_SHIFT),
                     size_t(to - from) << PAGE_SHIFT
@@ -1947,10 +2021,8 @@ namespace impl {
         `chunk_decrement()`, which must be called before this to ensure correct
         interval calculations. */
         constexpr void chunk_decommit(uint32_t offset, uint32_t size) {
-            if (
-                auto [from, to] = chunk_interval(offset, size);
-                to > from
-            ) {
+            auto [from, to] = chunk_interval(offset, size);
+            if (to > from) {
                 decommit_address_space(
                     static_cast<std::byte*>(ptr) + (size_t(from) << PAGE_SHIFT),
                     size_t(to - from) << PAGE_SHIFT
@@ -1970,8 +2042,8 @@ namespace impl {
         [[nodiscard]] constexpr std::pair<uint32_t, uint32_t> page_bisect(
             uint64_t pos,
             uint32_t pages,
-            size_t alignment,
-            size_t base_mod
+            capacity<> alignment,
+            capacity<> base_mod
         ) const noexcept {
             // if current heap entry doesn't have enough space to fit the allocation,
             // then none of its children will either, and we can terminate recursion
@@ -1983,12 +2055,12 @@ namespace impl {
             uint32_t left = (nodes[id].size - pages) >> 1;
             if (alignment > 1) {
                 // round downward to nearest aligned address
-                size_t tmp = base_mod + nodes[id].offset + left;
-                tmp &= ~(alignment - 1);  // alignment is still a power of two, but in pages
-                tmp -= base_mod;
+                size_t tmp = base_mod.value + nodes[id].offset + left;
+                tmp &= ~(alignment.value - 1);  // alignment is still a power of two, but in pages
+                tmp -= base_mod.value;
 
                 // if aligned address is before start of block, increment by alignment
-                if (tmp < nodes[id].offset) tmp += alignment;
+                if (tmp < nodes[id].offset) tmp += alignment.value;
 
                 // if aligned address is still outside of block, search children
                 if (tmp < nodes[id].offset || tmp + pages > nodes[id].end()) {
@@ -2021,12 +2093,12 @@ namespace impl {
         internal data structures to reflect the allocation.  Note that the result of
         this method must eventually be passed to `deallocate()` along with its current
         length in pages in order to release memory back to the address space. */
-        [[nodiscard]] uint32_t page_allocate(uint32_t pages, size_t alignment) {
+        [[nodiscard]] uint32_t page_allocate(uint32_t pages, capacity<> alignment) {
             if constexpr (VMEM_DEBUG) {
                 if (pages == 0) {
                     throw MemoryError("attempted to allocate zero pages from address space");
                 }
-                if (std::popcount(alignment) != 1) {
+                if (std::popcount(alignment.value) != 1) {
                     throw MemoryError("alignment must be a power of two");
                 }
             }
@@ -2036,7 +2108,7 @@ namespace impl {
                 0,
                 pages,
                 alignment >> PAGE_SHIFT,
-                (reinterpret_cast<uintptr_t>(ptr) & (alignment - 1)) >> PAGE_SHIFT
+                (reinterpret_cast<uintptr_t>(ptr) & (alignment.value - 1)) >> PAGE_SHIFT
             );
             if (id == NIL) {
                 if (batch_size > 0) {
@@ -2046,9 +2118,9 @@ namespace impl {
                 throw MemoryError(std::format(
                     "failed to allocate {:.3f} MiB from local address space ({:.3f} "
                     "MiB / {:.3f} MiB - {:.3f}%) -> insufficient space available",
-                    double(size_t(pages) << PAGE_SHIFT) / double((1_MiB).bytes()),
-                    double(total) / double((1_MiB).bytes()),
-                    double(SIZE.total()) / double((1_MiB).bytes()),
+                    double(size_t(pages) << PAGE_SHIFT) / double((1_MiB).value),
+                    double(total) / double((1_MiB).value),
+                    double(SIZE.total().value) / double((1_MiB).value),
                     (double(total) / double(size_t(SIZE.pub) << PAGE_SHIFT)) * 100.0
                 ));
             }
@@ -2103,7 +2175,7 @@ namespace impl {
 
             // return offset to allocated region
             size_t delta = size_t(pages) << PAGE_SHIFT;
-            occupied += delta;
+            occupied.fetch_add(delta, std::memory_order_relaxed);
             total += delta;
             return offset;
         }
@@ -2155,7 +2227,7 @@ namespace impl {
             }
 
             // initial counting to determine bin sizes/offsets for first digit
-            zero(radix_count, RADIX * sizeof(uint32_t));
+            capacity(RADIX * sizeof(uint32_t)).clear(radix_count);
             for (uint32_t i = 0; i < batch_size; ++i) {
                 ++radix_count[nodes[batch_list[i]].offset & RADIX_MASK];
             }
@@ -2170,7 +2242,7 @@ namespace impl {
 
             // sort ids into bins by offset digit, least significant first
             for (uint32_t shift = 0; shift < RADIX_LAST; shift += RADIX_LOG2) {
-                zero(radix_count, RADIX * sizeof(uint32_t));
+                capacity(RADIX * sizeof(uint32_t)).clear(radix_count);
 
                 // scatter combined with counting for next pass
                 for (uint32_t i = 0; i < batch_size; ++i) {
@@ -2307,7 +2379,7 @@ namespace impl {
             nodes[id].left = NIL;
             nodes[id].right = NIL;
             nodes[id].heap = NIL;
-            occupied -= size_t(pages) << PAGE_SHIFT;  // update occupied immediately
+            occupied.fetch_sub(size_t(pages) << PAGE_SHIFT, std::memory_order_relaxed);
             batch_list[batch_size++] = id;
             batch_pages += nodes[id].size;
             if (batch_min == NIL || nodes[id].offset < batch_min) batch_min = nodes[id].offset;
@@ -2321,7 +2393,7 @@ namespace impl {
         allocator and a future call to `page_allocate()` is necessary).  Note that
         `offset` must point to the end of an allocated region, and `pages` indicates
         how many additional pages should be allocated. */
-        [[nodiscard]] size_t page_reserve(uint32_t offset, uint32_t pages) {
+        [[nodiscard]] capacity<> page_reserve(uint32_t offset, uint32_t pages) {
             // search the treap for an adjacent free block
             uint32_t id = treap_next(treap_root, offset);
             if (id != NIL && nodes[id].offset == offset && nodes[id].size >= pages) {
@@ -2340,7 +2412,7 @@ namespace impl {
                     heap_fix(id);
                 }
                 size_t result = size_t(pages) << PAGE_SHIFT;
-                occupied += result;
+                occupied.fetch_add(result, std::memory_order_relaxed);
                 total += result;
                 return result;
             }
@@ -2364,11 +2436,11 @@ namespace impl {
         return value is an index into the `SLAB_CLASS`, `SLAB_BLOCKS`, and `slabs`
         arrays. */
         [[nodiscard]] static constexpr uint16_t slab_class(
-            size_t bytes,
-            size_t alignment
+            capacity<> bytes,
+            capacity<> alignment
         ) noexcept {
             if constexpr (VMEM_DEBUG) {
-                if (std::popcount(alignment) != 1) {
+                if (std::popcount(alignment.value) != 1) {
                     throw MemoryError("alignment must be a power of two");
                 }
             }
@@ -2426,7 +2498,7 @@ namespace impl {
             return
                 static_cast<std::byte*>(ptr) +
                 (size_t(nodes[slab].offset) << PAGE_SHIFT) +
-                (block * SLAB_CLASS[nodes[slab].size]);
+                (block * SLAB_CLASS[nodes[slab].size].value);
         }
 
         /* Convert a pointer to a block's memory into its index within a slab,
@@ -2434,14 +2506,14 @@ namespace impl {
         [[nodiscard]] block_id slab_block(uint32_t slab, void* p) noexcept {
             return static_cast<block_id>(
                 (static_cast<std::byte*>(p) - slab_data(slab, 0)) /
-                SLAB_CLASS[nodes[slab].size]
+                SLAB_CLASS[nodes[slab].size].value
             );
         }
 
         /* Allocate a block from a slab with the given size class index, returning a
         pointer to an uninitialized block within a corresponding slab.  This may
         attempt to allocate a new slab if none are available. */
-        [[nodiscard]] void* slab_allocate(size_t bytes, uint16_t size_class) {
+        [[nodiscard]] void* slab_allocate(uint16_t size_class) {
             // if there are no partial slabs for the given size class, allocate a
             // new one
             uint32_t s = slabs[size_class];
@@ -2451,7 +2523,11 @@ namespace impl {
                     SLAB_PAGES,
                     size_t(SLAB_PAGES) << PAGE_SHIFT
                 );
-                occupied -= size_t(SLAB_PAGES) << PAGE_SHIFT;  // don't count empty slab space
+                // don't count empty slab space
+                occupied.fetch_sub(
+                    size_t(SLAB_PAGES) << PAGE_SHIFT,
+                    std::memory_order_relaxed
+                );
 
                 // allocate tracking node
                 s = get_node();
@@ -2499,7 +2575,7 @@ namespace impl {
 
             // pop a block from the slab's free list and return a tagged pointer to
             // uninitialized data
-            occupied += SLAB_CLASS[size_class];
+            occupied.fetch_add(SLAB_CLASS[size_class].value, std::memory_order_relaxed);
             return slab_data(s, slab_pop(s));
         }
 
@@ -2509,7 +2585,7 @@ namespace impl {
         be deallocated to save memory unless it is the only entry of its size class.  
         Note that `bytes` is only used for debugging purposes, since the proper size is
         always determined by the slab's detected size class. */
-        void slab_deallocate(void* p, size_t& bytes) {
+        void slab_deallocate(void* p, capacity<>& bytes) {
             // search for a slab containing `p` via the slab treap
             uint32_t s = slab(p);
             if constexpr (VMEM_DEBUG) {
@@ -2540,9 +2616,14 @@ namespace impl {
             }
 
             // detect block id within slab and push it to the free list
-            slab_push(s, slab_block(s, p));
             bytes = SLAB_CLASS[nodes[s].size];  // update bytes to reflect actual block size
-            occupied -= bytes;  // decrement occupied by 1 block
+            uint16_t block = slab_block(s, p);
+            bytes.clear(slab_data(s, block));  // zero memory for security purposes
+            slab_push(s, block);
+            occupied.fetch_sub(  // decrement occupied by 1 block
+                bytes.value,
+                std::memory_order_relaxed
+            );
 
             // if the slab was previously full, reinsert it into `slabs`
             if (nodes[s].heap == 1) {
@@ -2569,7 +2650,10 @@ namespace impl {
                 }
                 nodes[s].right = NIL;
                 nodes[s].left = NIL;
-                occupied += size_t(SLAB_PAGES) << PAGE_SHIFT;  // don't count empty slab space
+                occupied.fetch_add(  // don't count empty slab space
+                    size_t(SLAB_PAGES) << PAGE_SHIFT,
+                    std::memory_order_relaxed
+                );
                 page_deallocate(nodes[s].offset, SLAB_PAGES);
                 put_node(s);
             }
@@ -2584,20 +2668,44 @@ namespace impl {
         pointer to this address space, in order to properly deallocate memory
         originating from it. */
         void free_slab(void* p) {
-            defer_slab* req = std::construct_at(static_cast<defer_slab*>(p));
-            remote_slabs.fetch_add(
-                SLAB_CLASS[nodes[slab(p)].size],
-                std::memory_order_relaxed
-            );
-            defer_slab* old = remote_slab.load(std::memory_order_relaxed);
-            do {
-                req->next = old;
-            } while (!remote_slab.compare_exchange_weak(
-                old,
-                req,
-                std::memory_order_release,
-                std::memory_order_relaxed
-            ));
+            // if we are issuing a remote free after thread teardown, then just
+            // modify `occupied` directly and leak the memory, since the final unmap
+            // will clean it up anyways and it isn't safe to modify local data
+            // structures remotely
+            if (owner.load(std::memory_order_acquire) == nullptr) {
+                occupied.fetch_sub(
+                    SLAB_CLASS[nodes[slab(p)].size].value,
+                    std::memory_order_relaxed
+                );
+
+            // if the thread is still alive, then just push to its remote free stack
+            // and wait for it to drain locally
+            } else {
+                defer_slab* req = std::construct_at(static_cast<defer_slab*>(p));
+                defer_slab* old = remote_slab.load(std::memory_order_relaxed);
+                do {
+                    req->next = old;
+                } while (!remote_slab.compare_exchange_weak(
+                    old,
+                    req,
+                    std::memory_order_release,
+                    std::memory_order_relaxed
+                ));
+
+                // if the owner shut down while we were pushing, then we need to
+                // decrement occupied as above
+                if (owner.load(std::memory_order_acquire) == nullptr) {
+                    defer_slab* s = remote_slab.exchange(nullptr, std::memory_order_acquire);
+                    while (s != nullptr) {
+                        auto* next = s->next;
+                        occupied.fetch_sub(
+                            SLAB_CLASS[nodes[slab(s)].size].value,
+                            std::memory_order_relaxed
+                        );
+                        s = next;
+                    }
+                }
+            }
         }
 
         /* Push a remote free request for a page deallocation onto this address space's
@@ -2605,57 +2713,75 @@ namespace impl {
         pointer to this address space, in order to properly deallocate memory
         originating from it. */
         void free_page(void* p, uint32_t pages) noexcept {
-            defer_page* req = std::construct_at(static_cast<defer_page*>(p));
-            req->pages = pages;
-            remote_pages.fetch_add(
-                size_t(pages) << PAGE_SHIFT,
-                std::memory_order_relaxed
-            );
-            defer_page* old = remote_page.load(std::memory_order_relaxed);
-            do {
-                req->next = old;
-            } while (!remote_page.compare_exchange_weak(
-                old,
-                req,
-                std::memory_order_release,
-                std::memory_order_relaxed
-            ));
+            // if we are issuing a remote free after thread teardown, then just
+            // modify `occupied` directly and leak the memory, since the final unmap
+            // will clean it up anyways and it isn't safe to modify local data
+            // structures remotely
+            if (owner.load(std::memory_order_acquire) == nullptr) {
+                occupied.fetch_sub(
+                    size_t(pages) << PAGE_SHIFT,
+                    std::memory_order_relaxed
+                );
+
+            // if the thread is still alive, then just push to its remote free stack
+            // and wait for it to drain locally
+            } else {
+                defer_page* req = std::construct_at(static_cast<defer_page*>(p));
+                req->pages = pages;
+                defer_page* old = remote_page.load(std::memory_order_relaxed);
+                do {
+                    req->next = old;
+                } while (!remote_page.compare_exchange_weak(
+                    old,
+                    req,
+                    std::memory_order_release,
+                    std::memory_order_relaxed
+                ));
+
+                // if the owner shut down while we were pushing, then we need to
+                // decrement occupied as above
+                if (owner.load(std::memory_order_acquire) == nullptr) {
+                    defer_page* p = remote_page.exchange(nullptr, std::memory_order_acquire);
+                    while (p != nullptr) {
+                        auto* next = p->next;
+                        occupied.fetch_sub(
+                            size_t(p->pages) << PAGE_SHIFT,
+                            std::memory_order_relaxed
+                        );
+                        p = next;
+                    }
+                }
+            }
         }
 
         /* Process all of the remote free requests, if there are any. */
         void drain_remote() noexcept {
-            if (remote_slab.load(std::memory_order_relaxed) != nullptr) {
-                defer_slab* list = remote_slab.exchange(nullptr, std::memory_order_acquire);
-                while (list != nullptr) {
-                    auto* next = list->next;
-                    size_t bytes = 0;
-                    slab_deallocate(list, bytes);
-                    remote_slabs.fetch_sub(bytes, std::memory_order_relaxed);
-                    list = next;
-                }
+            // drain slab deallocations
+            defer_slab* s = remote_slab.exchange(nullptr, std::memory_order_acquire);
+            while (s != nullptr) {
+                auto* next = s->next;
+                capacity<> bytes = 0;
+                slab_deallocate(s, bytes);
+                s = next;
             }
-            if (remote_page.load(std::memory_order_relaxed) != nullptr) {
-                defer_page* list = remote_page.exchange(nullptr, std::memory_order_acquire);
-                while (list != nullptr) {
-                    auto* next = list->next;
-                    size_t offset = static_cast<size_t>(
-                        reinterpret_cast<std::byte*>(list) - static_cast<std::byte*>(ptr)
-                    );
-                    if constexpr (VMEM_DEBUG) {
-                        if ((offset & PAGE_MASK) != 0) {
-                            throw MemoryError("page deallocation pointer is not page-aligned");
-                        }
+
+            // drain page deallocations
+            defer_page* p = remote_page.exchange(nullptr, std::memory_order_acquire);
+            while (p != nullptr) {
+                auto* next = p->next;
+                size_t offset = static_cast<size_t>(
+                    reinterpret_cast<std::byte*>(p) - static_cast<std::byte*>(ptr)
+                );
+                if constexpr (VMEM_DEBUG) {
+                    if ((offset & PAGE_MASK) != 0) {
+                        throw MemoryError("page deallocation pointer is not page-aligned");
                     }
-                    page_deallocate(
-                        static_cast<uint32_t>(offset >> PAGE_SHIFT),
-                        list->pages
-                    );
-                    remote_pages.fetch_sub(
-                        size_t(list->pages) << PAGE_SHIFT,
-                        std::memory_order_relaxed
-                    );
-                    list = next;
                 }
+                page_deallocate(
+                    static_cast<uint32_t>(offset >> PAGE_SHIFT),
+                    p->pages
+                );
+                p = next;
             }
         }
     };
@@ -2686,7 +2812,7 @@ namespace impl {
         `VMEM_PER_THREAD`, assuming the pointer originates from an address space. */
         [[nodiscard]] static address_space* find(void* p) noexcept {
             return reinterpret_cast<address_space*>(
-                reinterpret_cast<uintptr_t>(p) & ~(VMEM_PER_THREAD - 1)
+                reinterpret_cast<uintptr_t>(p) & ~(VMEM_PER_THREAD.value - 1)
             );
         }
 
@@ -2709,30 +2835,59 @@ namespace impl {
             return reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(p) & ~SLAB_MASK);
         }
 
-        /* Initialize the address space on first use.  This is called in the
-        constructor for `Space<T, N>`, ensuring proper initialization order, even for
-        objects with static storage duration. */
-        void acquire() {
-            if (data != nullptr) return;
+        /* All allocator interactions begin by incrementing a quiescence counter in
+        the address space's header, and end by decrementing it via an RAII guard.
+        Allocations will also map the address space on first use if it is not already
+        initialized, and deallocations (whether local or otherwise) will check to see
+        if the address space can be unmapped during destruction.  This pattern ensures
+        that the address space remains mapped until this handle's destructor has run,
+        there are no concurrent requests touching its data, and we have just
+        deallocated the last occupied region, regardless of initialization order. */
+        struct acquire {
+            address_space_handle* self;
+            constexpr acquire(address_space_handle* self) : self(self) {
+                if (self->data == nullptr) {
+                    // map address space, aligning to `VMEM_PER_THREAD` in order to
+                    // enable fast back-referencing from allocated pointers
+                    self->data = static_cast<address_space*>(map_address_space(
+                        address_space::SIZE.total(),
+                        VMEM_PER_THREAD
+                    ));
 
-            // map address space, aligning to `VMEM_PER_THREAD` in order to enable fast
-            // back-referencing from allocated pointers
-            data = static_cast<address_space*>(
-                map_address_space(address_space::SIZE.total(), VMEM_PER_THREAD)
-            );
+                    // commit base private partition size
+                    try {
+                        commit_address_space(self->data, address_space::SIZE.commit());
+                    } catch (...) {
+                        unmap_address_space(self->data, address_space::SIZE.total());
+                        self->data = nullptr;
+                        throw;
+                    }
 
-            // commit base private partition size
-            try {
-                commit_address_space(data, address_space::SIZE.commit());
-            } catch (...) {
-                data->release();
-                data = nullptr;
-                throw;
+                    // initialize internal data structures
+                    std::construct_at(self->data, self);
+                }
+                self->data->in_flight.fetch_add(1, std::memory_order_acquire);
             }
-
-            // initialize internal data structures
-            std::construct_at(data, this);
-        }
+            constexpr ~acquire() noexcept {
+                self->data->in_flight.fetch_sub(1, std::memory_order_release);
+            }
+        };
+        struct release {
+            address_space* data;
+            constexpr release(address_space* data) noexcept : data(data) {
+                data->in_flight.fetch_add(1, std::memory_order_acquire);
+            }
+            constexpr ~release() noexcept (false) {
+                size_t active = data->in_flight.fetch_sub(1, std::memory_order_acq_rel);
+                if (
+                    active == 1 &&
+                    data->owner.load(std::memory_order_acquire) == nullptr &&
+                    data->occupied.load(std::memory_order_relaxed) == 0
+                ) {
+                    unmap_address_space(data, address_space::SIZE.total());
+                }
+            }
+        };
 
         /* Request `bytes` worth of memory from the address space, returning a pointer
         to the allocated region and updating `bytes` to the actual allocated size.  If
@@ -2741,11 +2896,10 @@ namespace impl {
         of `alignment`.  Otherwise, an uncommitted region of pages will be reserved
         from the address space and committed as needed.  This will be called in the
         constructor for `Space<T, N>` to acquire backing memory. */
-        [[nodiscard]] void* allocate(size_t& bytes, size_t alignment) {
-            // ensure mapping/partition ready
-            acquire();
+        [[nodiscard]] void* allocate(capacity<>& bytes, capacity<> alignment) {
+            acquire guard(this);
             if constexpr (VMEM_DEBUG) {
-                if (data->owner == nullptr) {
+                if (data->owner.load(std::memory_order_acquire) == nullptr) {
                     throw MemoryError(
                         "attempted allocation from address space in teardown phase"
                     );
@@ -2760,12 +2914,12 @@ namespace impl {
                 uint16_t size_class = address_space::slab_class(bytes, alignment);
                 if (size_class < address_space::SLABS) {
                     bytes = address_space::SLAB_CLASS[size_class];
-                    return set_slab(data->slab_allocate(bytes, size_class));
+                    return set_slab(data->slab_allocate(size_class));
                 }
             }
 
             // fall back to page allocation
-            uint32_t pages = page_count(bytes);
+            uint32_t pages = bytes.pages();
             bytes = size_t(pages) << PAGE_SHIFT;
             return
                 static_cast<std::byte*>(data->ptr) +
@@ -2782,7 +2936,7 @@ namespace impl {
         internal data structures accordingly and advising the OS to reclaim physical
         pages.  The OS hook will be invoked in batches, amortizing its cost.  This will
         be called in the destructor for `Space<T, N>` to recycle backing memory. */
-        void deallocate(void* p, size_t& bytes) {
+        void deallocate(void* p, capacity<>& bytes) {
             if constexpr (VMEM_DEBUG) {
                 if (data == nullptr) {
                     throw MemoryError(
@@ -2794,6 +2948,7 @@ namespace impl {
             // local deallocation
             void* norm = clear_slab(p);
             if (contains(norm)) {
+                release guard(data);
                 data->drain_remote();  // process any remote frees first
                 if (slab(p)) {
                     data->slab_deallocate(norm, bytes);
@@ -2805,26 +2960,25 @@ namespace impl {
                             throw MemoryError("page deallocation pointer is not page-aligned");
                         }
                     }
-                    bytes = page_count(bytes);
+                    bytes = bytes.pages();
                     data->page_deallocate(
                         static_cast<uint32_t>(offset >> PAGE_SHIFT),
-                        static_cast<uint32_t>(bytes)
+                        static_cast<uint32_t>(bytes.value)
                     );
                     bytes <<= PAGE_SHIFT;
                 }
-                data->release();  // unmap if in teardown phase
 
             // remote deallocation
             } else {
                 address_space* d = find(norm);
+                release guard(d);
                 if (slab(p)) {
                     d->free_slab(norm);
                 } else {
-                    bytes = page_count(bytes);
-                    d->free_page(norm, static_cast<uint32_t>(bytes));
+                    bytes = bytes.pages();
+                    d->free_page(norm, static_cast<uint32_t>(bytes.value));
                     bytes <<= PAGE_SHIFT;
                 }
-                d->release();  // unmap if in teardown phase
             }
         }
 
@@ -2838,14 +2992,10 @@ namespace impl {
         which may force relocation to the current thread as well.  This will be called
         in `Space<T, N>::reserve()`, and subsequently by any container methods or
         growth operations that call it in turn. */
-        [[nodiscard]] size_t reserve(void* p, size_t bytes) {
+        [[nodiscard]] capacity<> reserve(void* p, capacity<> bytes) {
+            acquire guard(this);
             if constexpr (VMEM_DEBUG) {
-                if (data == nullptr) {
-                    throw MemoryError(
-                        "attempted reservation from uninitialized address space"
-                    );
-                }
-                if (data->owner == nullptr) {
+                if (data->owner.load(std::memory_order_acquire) == nullptr) {
                     throw MemoryError(
                         "attempted reservation from address space in teardown phase"
                     );
@@ -2864,8 +3014,7 @@ namespace impl {
             data->drain_remote();
 
             // attempt to grow in-place to page boundary
-            size_t offset =
-                size_t(static_cast<std::byte*>(p) - static_cast<std::byte*>(data->ptr));
+            size_t offset = size_t(static_cast<std::byte*>(p) - static_cast<std::byte*>(data->ptr));
             if constexpr (VMEM_DEBUG) {
                 if ((offset & PAGE_MASK) != 0) {
                     throw MemoryError("reserve() pointer is not page-aligned");
@@ -2873,7 +3022,7 @@ namespace impl {
             }
             return data->page_reserve(
                 static_cast<uint32_t>(offset >> PAGE_SHIFT),
-                page_count(bytes)
+                bytes.pages()
             );
         }
 
@@ -2885,9 +3034,10 @@ namespace impl {
         constexpr address_space_handle& operator=(address_space_handle&&) = delete;
         ~address_space_handle() noexcept (false) {
             if (data != nullptr) {
-                data->owner = nullptr;  // signal teardown phase
-                data->release();
-                data = nullptr;
+                release guard(data);
+                data->owner.store(nullptr, std::memory_order_release);  // signal teardown
+                data->drain_remote();  // process any remaining remote frees
+                data = nullptr;  // if reawakened later, remap a new address space
             }
         }
 
@@ -2895,11 +3045,11 @@ namespace impl {
         memory that has been allocated from it in bytes (which is not necessarily equal
         to the amount of physical ram being consumed). */
         [[nodiscard]] constexpr size_t size() const noexcept {
-            return data == nullptr ? 0 : data->occupied;
+            return data == nullptr ? 0 : data->occupied.load(std::memory_order_acquire);
         }
         [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
         [[nodiscard]] constexpr bool empty() const noexcept {
-            return data == nullptr || data->occupied == 0;
+            return data == nullptr || data->occupied.load(std::memory_order_acquire) == 0;
         }
 
         /* Check whether an arbitrary pointer maps to a region within this address
@@ -2915,7 +3065,7 @@ namespace impl {
         from one.  May result in undefined behavior if `p` is not associated with any
         address space. */
         [[nodiscard]] address_space_handle& origin(void* p) noexcept {
-            return *find(p)->owner;
+            return *(find(p)->owner.load(std::memory_order_acquire));
         }
     } local_address_space {};
 
@@ -2970,19 +3120,20 @@ struct Space<T, N> {
     [[nodiscard]] constexpr bool empty() const noexcept { return m_bytes == 0; }
 
     /* Returns the number of elements in the space as an unsigned integer. */
-    [[nodiscard]] constexpr size_t size() const noexcept { return m_bytes / N.aligned_size; }
+    [[nodiscard]] constexpr size_t size() const noexcept { return m_bytes.value / N.aligned_size; }
 
     /* Returns the number of elements in the space as a signed integer. */
     [[nodiscard]] constexpr ssize_t ssize() const noexcept { return ssize_t(size()); }
 
-    /* Returns the current footprint of the space in bytes.  Note that the actual
-    memory usage may be higher than indicated here due to allocator overhead or memory
-    owned by the space's contents, so the result only reflects the memory consumption
-    of the storage buffer itself. */
-    [[nodiscard]] constexpr size_t bytes() const noexcept { return m_bytes; }
+    /* Returns the space's current capacity in bytes as an `impl::capacity<void>`
+    object.  Such capacities can be explicitly converted to `size_t`, dereferenced, or
+    accessed via `.value` or `.bytes()`, all of which do the same thing.  Converting
+    the result to another non-void capacity will maintain proper alignment for the
+    target type, changing units but not the overall memory footprint. */
+    [[nodiscard]] constexpr impl::capacity<> capacity() const noexcept { return m_bytes; }
 
-    type* m_ptr = nullptr;
-    size_t m_bytes = 0;
+    void* m_ptr = nullptr;
+    impl::capacity<> m_bytes = 0;
 
     /* Default-constructing a dynamic space does not allocate any memory and sets the
     capacity to zero. */
@@ -3008,9 +3159,13 @@ struct Space<T, N> {
                         throw MemoryError("failed to allocate memory for Space");
                     }
                 } else {
-                    m_ptr = static_cast<type*>(
-                        impl::local_address_space.allocate(m_bytes, 1)
-                    );
+                    /// TODO: this needs to take alignment requirements for `T` into
+                    /// account, and work around slab and page allocations to ensure
+                    /// that it is always respected.  Not totally sure the best way
+                    /// to fix this just yet, although it will require passing (at
+                    /// least) `alignof(T)` through to the allocation mechanism, and
+                    /// somehow respecting it on that end.
+                    m_ptr = impl::local_address_space.allocate(m_bytes, 1);
                 }
             }
         }
@@ -3034,7 +3189,7 @@ struct Space<T, N> {
                 if consteval {
                     std::allocator<type>{}.deallocate(m_ptr, size());
                 } else {
-                    if constexpr (VMEM_PER_THREAD) {
+                    if constexpr (VMEM_PER_THREAD == 0) {
                         std::allocator<type>{}.deallocate(m_ptr, size());
                     } else {
                         impl::local_address_space.deallocate(m_ptr, m_bytes);
@@ -3078,10 +3233,10 @@ struct Space<T, N> {
     /* Retrieve a pointer to the beginning of the underlying memory. */
     [[nodiscard]] constexpr type* data() noexcept {
         if consteval {
-            return m_ptr;
+            return static_cast<type*>(m_ptr);
         } else {
             if constexpr (VMEM_PER_THREAD == 0) {
-                return m_ptr;
+                return static_cast<type*>(m_ptr);
             } else {
                 return static_cast<type*>(impl::local_address_space.clear_slab(m_ptr));
             }
@@ -3266,8 +3421,8 @@ struct Space<T, N> {
                     m_bytes += impl::local_address_space.reserve(
                         static_cast<std::byte*>(
                             impl::local_address_space.clear_slab(m_ptr)
-                        ) + m_bytes,
-                        size.bytes() - m_bytes
+                        ) + m_bytes.value,
+                        size.bytes() - m_bytes.value
                     );
                 }
             }
@@ -3283,7 +3438,7 @@ struct Space<T, N> {
     constexpr void shrink(impl::capacity<type> size) {
         if !consteval {
             if constexpr (VMEM_PER_THREAD > 0) {
-                size_t bytes = size.pages() << PAGE_SHIFT;
+                impl::capacity<> bytes = size.pages() << PAGE_SHIFT;
                 if (
                     !slab() &&
                     impl::local_address_space.contains(m_ptr) &&
@@ -3293,7 +3448,7 @@ struct Space<T, N> {
                     impl::local_address_space.deallocate(
                         static_cast<std::byte*>(
                             impl::local_address_space.clear_slab(m_ptr)
-                        ) + m_bytes,
+                        ) + m_bytes.value,
                         bytes  // updated in-place
                     );
                     m_bytes -= bytes;
@@ -3302,23 +3457,6 @@ struct Space<T, N> {
         }
     }
 };
-
-
-static_assert([] {
-    Space<int> arr{5};
-    if (arr.size() != 5) return false;
-    arr.construct(0, 10);
-    if (arr[0] != 10) return false;
-    arr.destroy(0);
-
-    impl::capacity<int> cap{3};
-    auto x = cap.align_up(10);
-    cap = cap.align_down(10);
-    if (x != 20) return false;
-    if (cap != 2) return false;
-
-    return true;
-}());
 
 
 }
