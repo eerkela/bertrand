@@ -57,7 +57,8 @@ namespace impl {
         /* Implicitly convert from `size_t`. */
         [[nodiscard, gnu::always_inline]] constexpr capacity(size_t n = 0) noexcept : value(n) {}
 
-        /* Implicitly convert from any other capacity, adjusting for alignment. */
+        /* Implicitly convert from any other capacity, rounding down to match this
+        capacity's aligned size. */
         template <typename V> requires (!std::same_as<T, V>)
         [[nodiscard, gnu::always_inline]] constexpr capacity(impl::capacity<V> n) noexcept :
             value((n.bytes() / aligned_size))
@@ -84,6 +85,11 @@ namespace impl {
         instances of `int32_t` (8 bytes) is the largest multiple that is less than or
         equal to the new capacity. */
         [[nodiscard]] constexpr capacity<> align_up(capacity<> align) noexcept {
+            if constexpr (DEBUG) {
+                if (align.value == 0) {
+                    throw ValueError("alignment must be nonzero");
+                }
+            }
             size_t result = value * aligned_size;
             result = (result / align.value) + ((result % align.value) != 0);
             result *= align.value;
@@ -101,6 +107,11 @@ namespace impl {
         instances of `int32_t` (8 bytes) is the largest multiple that is less than or
         equal to the new capacity. */
         [[nodiscard]] constexpr capacity<> align_down(capacity<> align) noexcept {
+            if constexpr (DEBUG) {
+                if (align.value == 0) {
+                    throw ValueError("alignment must be nonzero");
+                }
+            }
             size_t result = value * aligned_size;
             result /= align.value;
             result *= align.value;
@@ -111,6 +122,11 @@ namespace impl {
         capacity.  This is equivalent to a `memset()` call, except that during constant
         evaluation, it will compile to an explicit loop to avoid undefined behavior. */
         constexpr void* clear(void* ptr) const noexcept {
+            if constexpr (DEBUG) {
+                if (ptr == nullptr) {
+                    throw ValueError("cannot clear bytes starting from null pointer");
+                }
+            }
             if consteval {
                 size_t bytes = this->bytes();
                 for (size_t i = 0; i < bytes; ++i) static_cast<std::byte*>(ptr)[i] = std::byte{0};
@@ -369,6 +385,12 @@ static_assert(
 );
 
 
+/* Each thread's total virtual address space must be fully indexable using 32-bit
+integers, and cannot be grown beyond that limit.  This is usually at least 16 TiB on
+most systems, so it's never a real concern. */
+constexpr impl::capacity<> MAX_VMEM_PER_THREAD = (uint64_t(1) << 32) * PAGE_SIZE;
+
+
 /* Bertrand's thread-local virtual allocators use batched decommit calls in order to
 reduce kernel transition overhead when freeing memory.  The size of each batch is
 controlled by the `BERTRAND_VMEM_COALESCE_AFTER` compilation flag, which must be
@@ -519,15 +541,18 @@ struct Space {
     [[nodiscard]] static constexpr impl::capacity<> capacity() noexcept { return N; }
 
 private:
+    using element = std::conditional_t<meta::is_void<type>, std::byte, type>;
+    static constexpr size_t element_align =
+        meta::is_void<type> ? alignof(std::max_align_t) : alignof(type);
     union storage {
-        T data[size()];
+        alignas(element_align) element data[size()];
         /// TODO: once P3074 becomes available, these constructors/destructors can be
         /// safely deleted, allowing elements to be constructed and destroyed at
         /// compile time.
-        constexpr storage() noexcept requires (meta::trivially_constructible<T>) = default;
-        constexpr storage() noexcept requires (!meta::trivially_constructible<T>) {}
-        constexpr ~storage() noexcept requires (meta::trivially_destructible<T>) = default;
-        constexpr ~storage() noexcept requires (!meta::trivially_destructible<T>) {};
+        constexpr storage() noexcept requires (meta::trivially_constructible<element>) = default;
+        constexpr storage() noexcept requires (!meta::trivially_constructible<element>) {}
+        constexpr ~storage() noexcept requires (meta::trivially_destructible<element>) = default;
+        constexpr ~storage() noexcept requires (!meta::trivially_destructible<element>) {};
     };
 
 public:
@@ -549,30 +574,30 @@ public:
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
         return std::forward<Self>(self).front();
     }
-    [[nodiscard]] constexpr T* operator->() noexcept { return data(); }
-    [[nodiscard]] constexpr const T* operator->() const noexcept { return data(); }
+    [[nodiscard]] constexpr type* operator->() noexcept { return data(); }
+    [[nodiscard]] constexpr const type* operator->() const noexcept { return data(); }
 
     /* Retrieve a pointer to a specific element identified by index or memory offset,
     defaulting to the first value in the space.  Similar to `construct()` and
     `destroy()`, an alternate type `V` may be specified as a template parameter, in
     which case the returned pointer will be reinterpreted as that type.  Note that the
-    returned pointer will always be properly aligned for type `T`, and it is up to the
-    user to ensure that neither this nor the reinterpretation leads to undefined
-    behavior. */
+    returned pointer will always be properly aligned for type `T` (or
+    `std::max_align_t` in the case of `void` spaces), and it is up to the user to
+    ensure that neither this nor the reinterpretation leads to undefined behavior. */
     template <meta::unqualified V = type>
-    [[nodiscard]] constexpr type* data(impl::capacity<type> i = 0) noexcept {
-        if constexpr (meta::explicitly_convertible_to<type*, V*>) {
-            return static_cast<type*>(m_storage.data + i.value);
+    [[nodiscard]] constexpr V* data(impl::capacity<type> i = 0) noexcept {
+        if constexpr (meta::explicitly_convertible_to<element*, V*>) {
+            return static_cast<V*>(m_storage.data + i.value);
         } else {
-            return reinterpret_cast<type*>(m_storage.data + i.value);
+            return reinterpret_cast<V*>(m_storage.data + i.value);
         }
     }
     template <meta::unqualified V = type>
-    [[nodiscard]] constexpr const type* data(impl::capacity<type> i = 0) const noexcept {
-        if constexpr (meta::explicitly_convertible_to<type*, V*>) {
-            return static_cast<const type*>(m_storage.data + i.value);
+    [[nodiscard]] constexpr const V* data(impl::capacity<type> i = 0) const noexcept {
+        if constexpr (meta::explicitly_convertible_to<element*, V*>) {
+            return static_cast<const V*>(m_storage.data + i.value);
         } else {
-            return reinterpret_cast<const type*>(m_storage.data + i.value);
+            return reinterpret_cast<const V*>(m_storage.data + i.value);
         }
     }
 
@@ -601,9 +626,9 @@ public:
     template <typename Self>
     [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
         if constexpr (meta::lvalue<Self>) {
-            return self.data();
+            return self.m_storage.data;
         } else {
-            return std::move_iterator(self.data());
+            return std::move_iterator(self.m_storage.data);
         }
     }
 
@@ -611,9 +636,9 @@ public:
     template <typename Self>
     [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
         if constexpr (meta::lvalue<Self>) {
-            return self.data(N);
+            return self.m_storage.data + N.value;
         } else {
-            return std::move_iterator(self.data(N));
+            return std::move_iterator(self.m_storage.data + N.value);
         }
     }
 
@@ -655,7 +680,7 @@ public:
         noexcept (requires{{V{std::forward<A>(args)...}} noexcept;})
         requires (requires{{V{std::forward<A>(args)...}};})
     {
-        using to = decltype(V<type>(std::forward<A>(args)...));
+        using to = decltype(V{std::forward<A>(args)...});
         return (*std::construct_at(data<to>(i), std::forward<A>(args)...));
     }
     template <template <typename...> typename V, typename... A>
@@ -703,7 +728,7 @@ namespace impl {
 
     /* Verify that the system's page size matches the configured `PAGE_SIZE` at
     startup. */
-    static NoneType check_page_size = [] {
+    inline NoneType check_page_size = [] {
         #if WINDOWS
             SYSTEM_INFO si;
             GetSystemInfo(&si);
@@ -1227,10 +1252,11 @@ namespace impl {
         uint32_t batch_min = NIL;
         uint32_t batch_max = NIL;
 
-        /* Total number of bytes allocated to the user, both excluding batch list and
-        empty slab blocks as well as including them. */
+        /* Total number of pages allocated to the user (including batch list and
+        empty slab blocks), as well as the number of bytes accessible by them
+        (excluding batch list and empty slab blocks). */
+        uint32_t total = 0;
         std::atomic<size_t> occupied = 0;
-        size_t total = 0;
 
         /* Remote free requests are stored in two separate lock-free MPSC stacks, one
         for slab deallocations and another for page-run deallocations.  Both stacks
@@ -2097,9 +2123,9 @@ namespace impl {
                     "failed to allocate {:.3f} MiB from local address space ({:.3f} "
                     "MiB / {:.3f} MiB - {:.3f}%) -> insufficient space available",
                     double(size_t(pages) << PAGE_SHIFT) / double((1_MiB).value),
-                    double(total) / double((1_MiB).value),
+                    double(size_t(total) << PAGE_SHIFT) / double((1_MiB).value),
                     double(SIZE.total().value) / double((1_MiB).value),
-                    (double(total) / double(size_t(SIZE.pub) << PAGE_SHIFT)) * 100.0
+                    (double(total) / double(SIZE.pub)) * 100.0
                 ));
             }
             uint32_t right = nodes[id].size - pages - left;
@@ -2152,9 +2178,11 @@ namespace impl {
             }
 
             // return offset to allocated region
-            size_t delta = size_t(pages) << PAGE_SHIFT;
-            occupied.fetch_add(delta, std::memory_order_release);
-            total += delta;
+            total += pages;
+            occupied.fetch_add(
+                size_t(pages) << PAGE_SHIFT,
+                std::memory_order_relaxed
+            );
             return offset;
         }
 
@@ -2327,7 +2355,7 @@ namespace impl {
                         size_t(nodes[run].size) << PAGE_SHIFT
                     );
                 }
-                total -= size_t(nodes[run].size) << PAGE_SHIFT;  // update total only after decommit
+                total -= nodes[run].size;  // update total only after decommit
 
                 // reinsert the merged block into the treap and/or heap if needed
                 if (insert) {
@@ -2363,7 +2391,12 @@ namespace impl {
             nodes[id].left = NIL;
             nodes[id].right = NIL;
             nodes[id].heap = NIL;
-            occupied.fetch_sub(size_t(pages) << PAGE_SHIFT, std::memory_order_release);
+            occupied.fetch_sub(size_t(pages) << PAGE_SHIFT, std::memory_order_relaxed);
+            if constexpr (VMEM_DEBUG) {
+                if (batch_size >= COALESCE_BUFFER) {
+                    throw MemoryError("batch deallocation buffer overflow");
+                }
+            }
             batch_list[batch_size++] = id;
             batch_pages += nodes[id].size;
             if (batch_min == NIL || nodes[id].offset < batch_min) batch_min = nodes[id].offset;
@@ -2394,9 +2427,9 @@ namespace impl {
                     treap_root = treap_insert(treap_root, id);
                     heap_fix(id);
                 }
+                total += pages;
                 size_t result = size_t(pages) << PAGE_SHIFT;
-                occupied.fetch_add(result, std::memory_order_release);
-                total += result;
+                occupied.fetch_add(result, std::memory_order_relaxed);
                 return result;
             }
 
@@ -2502,6 +2535,12 @@ namespace impl {
             // new one
             uint32_t s = slabs[size_class];
             if (s == NIL) {
+                // opportunistically drain remote frees to prevent slabs from never
+                // being released during pathological slab allocation producers and
+                // remote freeing consumers
+                drain_remote();
+                if (batch_pages >= COALESCE_BUFFER) coalesce();
+
                 // slabs are always aligned such that their starting address ends with all zeroes
                 uint32_t offset = page_allocate(
                     SLAB_PAGES,
@@ -2510,7 +2549,7 @@ namespace impl {
                 // don't count empty slab space
                 occupied.fetch_sub(
                     size_t(SLAB_PAGES) << PAGE_SHIFT,
-                    std::memory_order_release
+                    std::memory_order_relaxed
                 );
 
                 // allocate tracking node
@@ -2559,7 +2598,7 @@ namespace impl {
 
             // pop a block from the slab's free list and return a tagged pointer to
             // uninitialized data
-            occupied.fetch_add(SLAB_CLASS[size_class].value, std::memory_order_release);
+            occupied.fetch_add(SLAB_CLASS[size_class].value, std::memory_order_relaxed);
             return slab_data(s, slab_pop(s));
         }
 
@@ -2606,7 +2645,7 @@ namespace impl {
             slab_push(s, block);
             occupied.fetch_sub(  // decrement occupied by 1 block
                 bytes.value,
-                std::memory_order_release
+                std::memory_order_relaxed
             );
 
             // if the slab was previously full, reinsert it into `slabs`
@@ -2636,7 +2675,7 @@ namespace impl {
                 nodes[s].left = NIL;
                 occupied.fetch_add(  // don't count empty slab space
                     size_t(SLAB_PAGES) << PAGE_SHIFT,
-                    std::memory_order_release
+                    std::memory_order_relaxed
                 );
 
                 // batch the slab for deallocation, but do not immediately coalesce
@@ -2662,7 +2701,7 @@ namespace impl {
             if (owner.load(std::memory_order_acquire) == nullptr) {
                 occupied.fetch_sub(
                     SLAB_CLASS[nodes[slab(p)].size].value,
-                    std::memory_order_release
+                    std::memory_order_relaxed
                 );
 
             // if the thread is still alive, then just push to its remote free stack
@@ -2687,7 +2726,7 @@ namespace impl {
                         auto* next = s->next;
                         occupied.fetch_sub(
                             SLAB_CLASS[nodes[slab(s)].size].value,
-                            std::memory_order_release
+                            std::memory_order_relaxed
                         );
                         s = next;
                     }
@@ -2707,7 +2746,7 @@ namespace impl {
             if (owner.load(std::memory_order_acquire) == nullptr) {
                 occupied.fetch_sub(
                     size_t(pages) << PAGE_SHIFT,
-                    std::memory_order_release
+                    std::memory_order_relaxed
                 );
 
             // if the thread is still alive, then just push to its remote free stack
@@ -2733,7 +2772,7 @@ namespace impl {
                         auto* next = p->next;
                         occupied.fetch_sub(
                             size_t(p->pages) << PAGE_SHIFT,
-                            std::memory_order_release
+                            std::memory_order_relaxed
                         );
                         p = next;
                     }
@@ -3062,10 +3101,14 @@ namespace impl {
 
         /* Map a pointer to its originating address space, assuming it was allocated
         from one.  May result in undefined behavior if `p` is not associated with any
-        address space, and may return null if the originating address space is
-        currently in the shutdown process. */
+        address space, and may return null if virtual memory is disabled or the
+        originating address space is currently in the shutdown process. */
         [[nodiscard]] address_space_handle* origin(void* p) noexcept {
-            return find(p)->owner.load(std::memory_order_acquire);
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return nullptr;
+            } else {
+                return find(p)->owner.load(std::memory_order_acquire);
+            }
         }
     } local_address_space {};
 
@@ -3079,6 +3122,23 @@ template <meta::unqualified T, impl::capacity<T> N> requires (N == 0)
 struct Space<T, N> {
     using type = T;
 
+private:
+    using element = std::conditional_t<meta::is_void<type>, std::byte, type>;
+
+    [[nodiscard]] constexpr element& deref(element* ptr) & noexcept {
+        return *ptr;
+    }
+    [[nodiscard]] constexpr const element& deref(const element* ptr) const & noexcept {
+        return *ptr;
+    }
+    [[nodiscard]] constexpr element&& deref(element* ptr) && noexcept {
+        return std::move(*ptr);
+    }
+    [[nodiscard]] constexpr const element&& deref(const element* ptr) const && noexcept {
+        return std::move(*ptr);
+    }
+
+public:
     /* Identifies static (stack-based) vs dynamic (heap or virtual memory-based)
     spaces.  If true, then the space may be grown, shrunk, or moved, but not copied. */
     [[nodiscard]] static constexpr bool dynamic() noexcept { return true; }
@@ -3132,7 +3192,7 @@ struct Space<T, N> {
     target type, changing units but not the overall memory footprint. */
     [[nodiscard]] constexpr impl::capacity<> capacity() const noexcept { return m_bytes; }
 
-    void* m_ptr = nullptr;
+    element* m_ptr = nullptr;
     impl::capacity<> m_bytes = 0;
 
     /* Default-constructing a dynamic space does not allocate any memory and sets the
@@ -3143,26 +3203,26 @@ struct Space<T, N> {
     many elements of type `T` from either the heap or a virtual memory.  If the size is
     zero, then no allocation will be performed.  Explicit units may be used to specify
     a size in bytes instead of number of elements, in which case it will be rounded
-    to the nearest multiple of `sizeof(T)`.  A `MemoryError` may be thrown if the
-    allocation fails. */
+    to the nearest aligned multiple of `sizeof(T)`.  A `MemoryError` may be thrown if
+    the allocation fails. */
     [[nodiscard]] constexpr Space(impl::capacity<type> size) : m_bytes(size.bytes()) {
         if (m_bytes > 0) {
             if consteval {
-                m_ptr = std::allocator<type>{}.allocate(this->size());
+                m_ptr = std::allocator<element>{}.allocate(this->size());
                 if (m_ptr == nullptr) {
                     throw MemoryError("failed to allocate memory for Space");
                 }
             } else {
                 if constexpr (VMEM_PER_THREAD == 0) {
-                    m_ptr = std::allocator<type>{}.allocate(this->size());
+                    m_ptr = std::allocator<element>{}.allocate(this->size());
                     if (m_ptr == nullptr) {
                         throw MemoryError("failed to allocate memory for Space");
                     }
                 } else {
-                    m_ptr = impl::local_address_space.allocate(
+                    m_ptr = static_cast<element*>(impl::local_address_space.allocate(
                         m_bytes,
-                        alignof(type)  // always a power of 2
-                    );
+                        alignof(element)  // always a power of 2
+                    ));
                 }
             }
         }
@@ -3184,10 +3244,10 @@ struct Space<T, N> {
         if (this != &other) {
             if (m_ptr != nullptr) {
                 if consteval {
-                    std::allocator<type>{}.deallocate(static_cast<type*>(m_ptr), size());
+                    std::allocator<element>{}.deallocate(m_ptr, size());
                 } else {
                     if constexpr (VMEM_PER_THREAD == 0) {
-                        std::allocator<type>{}.deallocate(static_cast<type*>(m_ptr), size());
+                        std::allocator<element>{}.deallocate(m_ptr, size());
                     } else {
                         impl::local_address_space.deallocate(m_ptr, m_bytes);
                     }
@@ -3206,10 +3266,10 @@ struct Space<T, N> {
     constexpr ~Space() noexcept {
         if (m_ptr != nullptr) {
             if consteval {
-                std::allocator<type>{}.deallocate(static_cast<type*>(m_ptr), size());
+                std::allocator<element>{}.deallocate(m_ptr, size());
             } else {
                 if constexpr (VMEM_PER_THREAD == 0) {
-                    std::allocator<type>{}.deallocate(static_cast<type*>(m_ptr), size());
+                    std::allocator<element>{}.deallocate(m_ptr, size());
                 } else {
                     impl::local_address_space.deallocate(m_ptr, m_bytes);
                 }
@@ -3224,39 +3284,38 @@ struct Space<T, N> {
     [[nodiscard]] constexpr decltype(auto) operator*(this Self&& self) noexcept {
         return std::forward<Self>(self).front();
     }
-    [[nodiscard]] constexpr T* operator->() noexcept { return data(); }
-    [[nodiscard]] constexpr const T* operator->() const noexcept { return data(); }
+    [[nodiscard]] constexpr type* operator->() noexcept { return data(); }
+    [[nodiscard]] constexpr const type* operator->() const noexcept { return data(); }
 
     /* Retrieve a pointer to a specific element identified by index or memory offset,
     defaulting to the first value in the space.  Similar to `construct()` and
     `destroy()`, an alternate type `V` may be specified as a template parameter, in
     which case the returned pointer will be reinterpreted as that type.  Note that the
-    returned pointer will always be properly aligned for type `T`, and it is up to the
-    user to ensure that neither this nor the reinterpretation leads to undefined
-    behavior. */
+    returned pointer will always be properly aligned for type `T` (or
+    `std::max_align_t` in the case of `void` spaces), and it is up to the user to
+    ensure that neither this nor the reinterpretation leads to undefined behavior. */
     template <meta::unqualified V = type>
     [[nodiscard]] constexpr V* data(impl::capacity<type> i = 0) noexcept {
-        using from = std::conditional_t<meta::is_void<type>, std::byte, type>;
         if consteval {
-            if constexpr (meta::explicitly_convertible_to<from*, V*>) {
-                return static_cast<V*>(static_cast<from*>(m_ptr) + i.value);
+            if constexpr (meta::explicitly_convertible_to<element*, V*>) {
+                return static_cast<V*>(m_ptr + i.value);
             } else {
-                return reinterpret_cast<V*>(static_cast<from*>(m_ptr) + i.value);
+                return reinterpret_cast<V*>(m_ptr + i.value);
             }
         } else {
             if constexpr (VMEM_PER_THREAD == 0) {
-                if constexpr (meta::explicitly_convertible_to<from*, V*>) {
-                    return static_cast<V*>(static_cast<from*>(m_ptr) + i.value);
+                if constexpr (meta::explicitly_convertible_to<element*, V*>) {
+                    return static_cast<V*>(m_ptr + i.value);
                 } else {
-                    return reinterpret_cast<V*>(static_cast<from*>(m_ptr) + i.value);
+                    return reinterpret_cast<V*>(m_ptr + i.value);
                 }
             } else {
-                if constexpr (meta::explicitly_convertible_to<from*, V*>) {
-                    return static_cast<V*>(static_cast<from*>(
+                if constexpr (meta::explicitly_convertible_to<element*, V*>) {
+                    return static_cast<V*>(static_cast<element*>(
                         impl::local_address_space.clear_slab(m_ptr)
                     ) + i.value);
                 } else {
-                    return reinterpret_cast<V*>(static_cast<from*>(
+                    return reinterpret_cast<V*>(static_cast<element*>(
                         impl::local_address_space.clear_slab(m_ptr)
                     ) + i.value);
                 }
@@ -3265,27 +3324,26 @@ struct Space<T, N> {
     }
     template <meta::unqualified V = type>
     [[nodiscard]] constexpr const V* data(impl::capacity<type> i = 0) const noexcept {
-        using from = std::conditional_t<meta::is_void<type>, std::byte, type>;
         if consteval {
-            if constexpr (meta::explicitly_convertible_to<const from*, const V*>) {
-                return static_cast<const V*>(static_cast<const from*>(m_ptr) + i.value);
+            if constexpr (meta::explicitly_convertible_to<const element*, const V*>) {
+                return static_cast<const V*>(static_cast<const element*>(m_ptr) + i.value);
             } else {
-                return reinterpret_cast<const V*>(static_cast<const from*>(m_ptr) + i.value);
+                return reinterpret_cast<const V*>(static_cast<const element*>(m_ptr) + i.value);
             }
         } else {
             if constexpr (VMEM_PER_THREAD == 0) {
-                if constexpr (meta::explicitly_convertible_to<const from*, const V*>) {
-                    return static_cast<const V*>(static_cast<const from*>(m_ptr) + i.value);
+                if constexpr (meta::explicitly_convertible_to<const element*, const V*>) {
+                    return static_cast<const V*>(static_cast<const element*>(m_ptr) + i.value);
                 } else {
-                    return reinterpret_cast<const V*>(static_cast<const from*>(m_ptr) + i.value);
+                    return reinterpret_cast<const V*>(static_cast<const element*>(m_ptr) + i.value);
                 }
             } else {
-                if constexpr (meta::explicitly_convertible_to<const from*, const V*>) {
-                    return static_cast<const V*>(static_cast<const from*>(
+                if constexpr (meta::explicitly_convertible_to<const element*, const V*>) {
+                    return static_cast<const V*>(static_cast<const element*>(
                         impl::local_address_space.clear_slab(m_ptr)
                     ) + i.value);
                 } else {
-                    return reinterpret_cast<const V*>(static_cast<const from*>(
+                    return reinterpret_cast<const V*>(static_cast<const element*>(
                         impl::local_address_space.clear_slab(m_ptr)
                     ) + i.value);
                 }
@@ -3296,20 +3354,32 @@ struct Space<T, N> {
     /* Perfectly forward the first element of the space. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) front(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return (*self.data());
+        if consteval {
+            return (std::forward<Self>(self).deref(self.m_ptr));
         } else {
-            return (std::move(*self.data()));
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return (std::forward<Self>(self).deref(self.m_ptr));
+            } else {
+                return (std::forward<Self>(self).deref(static_cast<element*>(
+                    impl::local_address_space.clear_slab(self.m_ptr)
+                )));
+            }
         }
     }
 
     /* Perfectly forward the last element of the space. */
     template <typename Self>
     [[nodiscard]] constexpr decltype(auto) back(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return (*(self.data(self.m_bytes) - 1));
+        if consteval {
+            return (std::forward<Self>(self).deref(self.m_ptr + self.ssize() - 1));
         } else {
-            return (std::move(*(self.data(self.m_bytes) - 1)));
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return (std::forward<Self>(self).deref(self.m_ptr + self.ssize() - 1));
+            } else {
+                return (std::forward<Self>(self).deref(static_cast<element*>(
+                    impl::local_address_space.clear_slab(self.m_ptr)
+                ) + self.ssize() - 1));
+            }
         }
     }
 
@@ -3319,43 +3389,73 @@ struct Space<T, N> {
         this Self&& self,
         impl::capacity<type> i
     ) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return (*self.data(i));
+        if consteval {
+            return (std::forward<Self>(self).deref(self.m_ptr + i.value));
         } else {
-            return (std::move(*self.data(i)));
+            if constexpr (VMEM_PER_THREAD == 0) {
+                return (std::forward<Self>(self).deref(self.m_ptr + i.value));
+            } else {
+                return (std::forward<Self>(self).deref(static_cast<element*>(
+                    impl::local_address_space.clear_slab(self.m_ptr)
+                ) + i.value));
+            }
         }
     }
 
     /* Get a forward iterator over the space. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto begin(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return self.data();
-        } else {
-            return std::move_iterator(self.data());
-        }
+    [[nodiscard]] constexpr auto begin() & noexcept {
+        return m_ptr;
+    }
+    [[nodiscard]] constexpr auto begin() const & noexcept {
+        return static_cast<const element*>(m_ptr);
+    }
+    [[nodiscard]] constexpr auto begin() && noexcept {
+        return std::move_iterator(m_ptr);
+    }
+    [[nodiscard]] constexpr auto begin() const && noexcept {
+        return std::move_iterator(static_cast<const element*>(m_ptr));
     }
 
     /* Get a forward sentinel for the space. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto end(this Self&& self) noexcept {
-        if constexpr (meta::lvalue<Self>) {
-            return self.data(self.m_bytes);
-        } else {
-            return std::move_iterator(self.data(self.m_bytes));
-        }
+    [[nodiscard]] constexpr auto end() & noexcept {
+        return m_ptr + size();
+    }
+    [[nodiscard]] constexpr auto end() const & noexcept {
+        return static_cast<const element*>(m_ptr) + size();
+    }
+    [[nodiscard]] constexpr auto end() && noexcept {
+        return std::move_iterator(m_ptr + size());
+    }
+    [[nodiscard]] constexpr auto end() const && noexcept {
+        return std::move_iterator(static_cast<const element*>(m_ptr) + size());
     }
 
     /* Get a reverse iterator over the space. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rbegin(this Self&& self) noexcept {
-        return std::make_reverse_iterator(std::forward<Self>(self).end());
+    [[nodiscard]] constexpr auto rbegin() & noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] constexpr auto rbegin() const & noexcept {
+        return std::make_reverse_iterator(end());
+    }
+    [[nodiscard]] constexpr auto rbegin() && noexcept {
+        return std::make_reverse_iterator(std::move(*this).end());
+    }
+    [[nodiscard]] constexpr auto rbegin() const && noexcept {
+        return std::make_reverse_iterator(std::move(*this).end());
     }
 
     /* Get a reverse sentinel for the space. */
-    template <typename Self>
-    [[nodiscard]] constexpr auto rend(this Self&& self) noexcept {
-        return std::make_reverse_iterator(std::forward<Self>(self).begin());
+    [[nodiscard]] constexpr auto rend() & noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] constexpr auto rend() const & noexcept {
+        return std::make_reverse_iterator(begin());
+    }
+    [[nodiscard]] constexpr auto rend() && noexcept {
+        return std::make_reverse_iterator(std::move(*this).begin());
+    }
+    [[nodiscard]] constexpr auto rend() const && noexcept {
+        return std::make_reverse_iterator(std::move(*this).begin());
     }
 
     /* Construct the element at the specified index of the space using the remaining
