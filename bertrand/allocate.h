@@ -1087,10 +1087,6 @@ namespace impl {
     /// rather than the lowest.  Then, upon growth, the new nodes will simply overwrite
     /// the old header/slabs/batch/chunks, etc.
 
-    /// TODO: it should also be possible for `drain_remote()` to aggressively dump to
-    /// the batch list, rather than possibly clearing it multiple times during the
-    /// remote free and possible subsequent deallocation.
-
     /// TODO: I may also want to add a debug self-check that asserts each entry in the
     /// heap is also present in the treap and vice versa.
 
@@ -1222,7 +1218,7 @@ namespace impl {
         uint32_t heap_size = 0;
 
         /* Index of first unused node in storage or NIL. */
-        uint32_t free = NIL;
+        uint32_t free_list = NIL;
 
         /* Effective size, total number of pages, min, and max offsets stored in batch
         list. */
@@ -1898,9 +1894,9 @@ namespace impl {
         not insert the node into either the heap or treap, or allocate any memory. */
         [[nodiscard]] constexpr uint32_t get_node() noexcept {
             // pop from free list if possible
-            if (free != NIL) {
-                uint32_t id = free;
-                free = nodes[id].heap;  // next free node or NIL
+            if (free_list != NIL) {
+                uint32_t id = free_list;
+                free_list = nodes[id].heap;  // next free node or NIL
                 return id;
             }
 
@@ -1922,8 +1918,8 @@ namespace impl {
         /* Push a node onto the free list.  Note that this does not remove the node
         from either the heap or treap, or deallocate any memory. */
         constexpr void put_node(uint32_t id) noexcept {
-            nodes[id].heap = free;
-            free = id;
+            nodes[id].heap = free_list;
+            free_list = id;
         }
 
         /* Register a committed region starting at the public `offset` and continuing
@@ -2092,8 +2088,9 @@ namespace impl {
                 (reinterpret_cast<uintptr_t>(ptr) & (alignment.value - 1)) >> PAGE_SHIFT
             );
             if (id == NIL) {
+                drain_remote();  // batch any remote frees at this point
                 if (batch_size > 0) {
-                    coalesce();
+                    coalesce();  // free all batched regions to maximize space
                     return page_allocate(pages, alignment);  // try again
                 }
                 throw MemoryError(std::format(
@@ -2352,7 +2349,13 @@ namespace impl {
         given `offset` from the public partition.  Note that `offset` and `pages` must
         correspond to a previous call to `allocate()`, but may refer to only a subset
         of the originally allocated region, effectively shrinking an existing
-        allocation.  No validation is performed to ensure this, however. */
+        allocation.  No validation is performed to ensure this, however.
+
+        Because address spaces batch deallocations where possible, the memory passed to
+        this function may not be immediately freed, and must be followed by a call to
+        `coalesce()` to actually decommit resources.  This method does not call
+        `coalesce()` itself, so that it can be used to enqueue mass deallocations that
+        are then handled all at once. */
         void page_deallocate(uint32_t offset, uint32_t pages) {
             uint32_t id = get_node();
             nodes[id].offset = offset;
@@ -2365,7 +2368,6 @@ namespace impl {
             batch_pages += nodes[id].size;
             if (batch_min == NIL || nodes[id].offset < batch_min) batch_min = nodes[id].offset;
             if (batch_max == NIL || nodes[id].offset > batch_max) batch_max = nodes[id].offset;
-            if (batch_pages >= COALESCE_BUFFER) coalesce();
         }
 
         /* Extend an allocation to the right by the specified number of `pages`.
@@ -2401,8 +2403,9 @@ namespace impl {
             // no adjacent free block of appropriate size was found.  It's possible
             // that the requested section is present in the batch list, in which case
             // we can attempt to coalesce and retry.
+            drain_remote();  // batch any remote frees at this point
             if (batch_size > 0 && offset >= batch_min && offset <= batch_max) {
-                coalesce();
+                coalesce();  // free all batched regions to maximize space
                 return page_reserve(offset, pages);
             }
             return 0;
@@ -2520,7 +2523,7 @@ namespace impl {
 
                 // initialize node id and free list such that `slab_pop()` returns
                 // blocks in increasing order
-                block_id* free_list = reinterpret_cast<block_id*>(std::construct_at(
+                block_id* free = reinterpret_cast<block_id*>(std::construct_at(
                     reinterpret_cast<uint32_t*>(
                         static_cast<std::byte*>(ptr) +
                         (size_t(offset) << PAGE_SHIFT) +
@@ -2529,7 +2532,7 @@ namespace impl {
                     s
                 )) - SLAB_BLOCKS[size_class];
                 for (block_id i = 0; i < SLAB_BLOCKS[size_class]; ++i) {
-                    std::construct_at(free_list + i, i);
+                    std::construct_at(free + i, i);
                 }
 
                 // insert into partial list
@@ -2635,6 +2638,9 @@ namespace impl {
                     size_t(SLAB_PAGES) << PAGE_SHIFT,
                     std::memory_order_release
                 );
+
+                // batch the slab for deallocation, but do not immediately coalesce
+                // in order to avoid redundant syscalls
                 page_deallocate(nodes[s].offset, SLAB_PAGES);
                 put_node(s);
             }
@@ -2735,14 +2741,22 @@ namespace impl {
             }
         }
 
-        /* Process all of the remote free requests, if there are any. */
+        /* Batch all of the remote free requests, if there are any.  Note that this
+        does not immediately coalesce the deallocations (unless they cause the buffer
+        to overflow), in order to avoid redundant syscalls.  Since this method is only
+        called on deallocation paths, it is always followed by a final, local
+        deallocation, which will perform the necessary coalescing if the batch exceeds
+        its threshold capacity. */
         void drain_remote() noexcept {
             // drain slab deallocations
             defer_slab* s = remote_slab.exchange(nullptr, std::memory_order_acquire);
             while (s != nullptr) {
                 auto* next = s->next;
                 capacity<> bytes = 0;
+                // execute the remote slab deallocation, but only push the slab itself
+                // to the batch list and coalesce if the buffer is full
                 slab_deallocate(s, bytes);
+                if (batch_size >= COALESCE_BUFFER) coalesce();
                 s = next;
             }
 
@@ -2758,10 +2772,13 @@ namespace impl {
                         throw MemoryError("page deallocation pointer is not page-aligned");
                     }
                 }
+                // push the remote free to the batch list, but only coalesce if the
+                // buffer is full
                 page_deallocate(
                     static_cast<uint32_t>(offset >> PAGE_SHIFT),
                     p->pages
                 );
+                if (batch_size >= COALESCE_BUFFER) coalesce();
                 p = next;
             }
         }
@@ -2887,9 +2904,6 @@ namespace impl {
                 }
             }
 
-            // process any remote frees first
-            data->drain_remote();
-
             // attempt slab allocation first and tag result
             if (bytes <= address_space::SLAB_MAX && alignment <= address_space::SLAB_MIN) {
                 uint16_t size_class = address_space::slab_class(bytes, alignment);
@@ -2930,9 +2944,9 @@ namespace impl {
             void* norm = clear_slab(p);
             if (contains(norm)) {
                 release guard(data);
-                data->drain_remote();  // process any remote frees first
+                data->drain_remote();  // batch any remote frees first
                 if (slab(p)) {
-                    data->slab_deallocate(norm, bytes);
+                    data->slab_deallocate(norm, bytes);  // free from and possibly batch slab
                 } else {
                     size_t offset =
                         static_cast<std::byte*>(norm) - static_cast<std::byte*>(data->ptr);
@@ -2942,11 +2956,16 @@ namespace impl {
                         }
                     }
                     bytes = bytes.pages();
-                    data->page_deallocate(
+                    data->page_deallocate(  // batch page free
                         static_cast<uint32_t>(offset >> PAGE_SHIFT),
                         static_cast<uint32_t>(bytes.value)
                     );
                     bytes <<= PAGE_SHIFT;
+                }
+
+                // coalesce if the batch buffer exceeds the threshold size
+                if (data->batch_pages >= address_space::COALESCE_BUFFER) {
+                    data->coalesce();
                 }
 
             // remote deallocation
@@ -2991,9 +3010,6 @@ namespace impl {
                 }
             }
 
-            // process any remote frees first
-            data->drain_remote();
-
             // attempt to grow in-place to page boundary
             size_t offset = size_t(static_cast<std::byte*>(p) - static_cast<std::byte*>(data->ptr));
             if constexpr (VMEM_DEBUG) {
@@ -3017,7 +3033,9 @@ namespace impl {
             if (data != nullptr) {
                 release guard(data);
                 data->owner.store(nullptr, std::memory_order_release);  // signal teardown
-                data->drain_remote();  // process any remaining remote frees
+                data->drain_remote();  // batch any remaining remote frees
+                /// NOTE: no need to coalesce here, since the batched frees will be
+                /// unmapped along with the address space on last use
                 data = nullptr;  // if reawakened later, remap a new address space
             }
         }
