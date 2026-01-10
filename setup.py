@@ -78,17 +78,17 @@ class BuildSourcesHeadless(BuildSources):
 
 
 setup(
-    cpp_deps=[
-        Package("nlohmann_json", "3.11.3", "nlohmann_json", "nlohmann_json::nlohmann_json"),
-        Package("pcre2", "10.43", "PCRE2", "pcre2::pcre2"),
-        Package("cpptrace", "0.6.1", "cpptrace", "cpptrace::cpptrace"),
-    ],
-    sources=[
-        Source("bertrand/example_module.cpp"),
-        Source("bertrand/executable.cpp"),
-        # # TODO: if I comment this out and try to use the bertrand.python module stored
-        # # in the environment, it fails due to the symlink not being respected.
-        *(Source(p) for p in Path("bertrand/python").rglob("*.cpp")),
-    ],
-    cmdclass={"build_ext": BuildSourcesHeadless},
+    # cpp_deps=[
+    #     Package("nlohmann_json", "3.11.3", "nlohmann_json", "nlohmann_json::nlohmann_json"),
+    #     Package("pcre2", "10.43", "PCRE2", "pcre2::pcre2"),
+    #     Package("cpptrace", "0.6.1", "cpptrace", "cpptrace::cpptrace"),
+    # ],
+    # sources=[
+    #     # Source("bertrand/example_module.cpp"),
+    #     # Source("bertrand/executable.cpp"),
+    #     # # TODO: if I comment this out and try to use the bertrand.python module stored
+    #     # # in the environment, it fails due to the symlink not being respected.
+    #     # *(Source(p) for p in Path("bertrand/python").rglob("*.cpp")),
+    # ],
+    # cmdclass={"build_ext": BuildSourcesHeadless},
 )
