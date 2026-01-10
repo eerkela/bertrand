@@ -3,6 +3,7 @@ from .docker import (
     install_docker,
     uninstall_docker,
     add_to_docker_group,
+    remove_from_docker_group,
     create_environment,
     enter_environment,
     in_environment,

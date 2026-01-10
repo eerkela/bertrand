@@ -4,14 +4,34 @@ import hashlib
 import os
 import platform
 import shutil
+import shlex
 import subprocess
+import time
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypedDict, List, Literal
 
-#pylint: disable=redefined-builtin
+#pylint: disable=redefined-builtin, global-statement
+
+
+class MountInfo(TypedDict, total=False):
+    """Type hint for docker container mount information."""
+    Type: Literal["bind", "volume", "tmpfs", "npipe"]
+    Destination: str
+    Source: str
+
+
+class ContainerState(TypedDict, total=False):
+    """Type hint for docker container state information."""
+    Running: bool
+
+
+class ContainerInspect(TypedDict, total=False):
+    """Type hint for docker container inspect output."""
+    Mounts: List[MountInfo]
+    State: ContainerState
 
 
 #######################
@@ -19,35 +39,7 @@ from typing import Callable
 #######################
 
 
-DOCKER_NEEDS_SUDO: bool = False
-
-
-def is_root() -> bool:
-    """Detects whether the current user is the root user.
-    
-    Returns
-    -------
-    bool
-        True if the user has root privileges, false otherwise
-    """
-    if os.name != "posix":
-        return False
-    return os.geteuid() == 0
-
-
-def sudo_prefix() -> list[str]:
-    """Return a base command prefix that uses `sudo` if the current user is not already
-    root.
-
-    Returns
-    -------
-    list[str]
-        An empty list or a list containing the super-user command for the current OS.
-    """
-    # Prefer no sudo if already root.
-    if is_root():
-        return []
-    return ["sudo"]
+DOCKER_NEEDS_SUDO: bool | None = None
 
 
 def confirm(prompt: str, *, assume_yes: bool) -> bool:
@@ -75,22 +67,25 @@ def confirm(prompt: str, *, assume_yes: bool) -> bool:
 
 
 def run(
-    cmd: list[str],
+    argv: list[str],
     *,
     check: bool = True,
     capture_output: bool = False,
+    capture_err: bool = False,
     input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """A wrapper around `subprocess.run` that defaults to text mode and checks output.
 
     Parameters
     ----------
-    cmd : list[str]
+    argv : list[str]
         The command and its arguments to run.
     check : bool, optional
         Whether to raise an exception if the command fails (default is True).
     capture_output : bool, optional
         Whether to capture stdout and stderr (default is False).
+    capture_err : bool, optional
+        Whether to capture stderr only (default is False).
     input : str | None, optional
         Input to send to the command's stdin (default is None).
 
@@ -99,13 +94,108 @@ def run(
     subprocess.CompletedProcess[str]
         The completed process result.
     """
+    # capture both stdout and stderr
+    if capture_output:
+        return subprocess.run(
+            argv,
+            check=check,
+            capture_output=True,
+            text=True,
+            input=input,
+        )
+
+    # inherit stdout, but capture stderr for diagnostics
+    if capture_err:
+        return subprocess.run(
+            argv,
+            check=check,
+            stdout=None,
+            stderr=subprocess.PIPE,
+            text=True,
+            input=input,
+        )
+
+    # inherit both stdout and stderr
     return subprocess.run(
-        cmd,
+        argv,
         check=check,
-        capture_output=capture_output,
         text=True,
         input=input,
     )
+
+
+def sudo_prefix() -> list[str]:
+    """Return a base command prefix that uses `sudo` if the current user is not already
+    root.
+
+    Returns
+    -------
+    list[str]
+        An empty list or a list containing the super-user command for the current OS.
+    """
+    if os.name != "posix" or os.geteuid() == 0 or not shutil.which("sudo"):
+        return []
+    preserve = "DOCKER_HOST,DOCKER_CONTEXT,DOCKER_CONFIG"
+    return ["sudo", f"--preserve-env={preserve}"]
+
+
+def _sudo_fallback_is_sane() -> bool:
+    ctx = os.environ.get("DOCKER_CONTEXT") or ""
+    if ctx and ctx != "default":
+        return False  # custom context: do not attempt sudo
+
+    host = os.environ.get("DOCKER_HOST") or ""
+    if not host:
+        return True  # default: local docker CLI uses its normal defaults
+
+    # Rootless default sockets often look like unix:///run/user/<uid>/docker.sock
+    if host.startswith("unix:///run/user/"):
+        return False
+
+    # For other DOCKER_HOST values (tcp://, ssh://, unix://custom), sudo is not
+    # reliably helpful.  We will only sudo on strong evidence of local socket permissions
+    return True
+
+
+def _looks_like_socket_permission_denied(stderr: str) -> bool:
+    s = (stderr or "").lower()
+
+    # Common variants:
+    # - "permission denied while trying to connect to the docker daemon socket"
+    # - "got permission denied while trying to connect to the docker daemon socket"
+    # - "dial unix /var/run/docker.sock: connect: permission denied"
+    # - "connect: permission denied"
+    if "permission denied" not in s:
+        return False
+
+    # Strong indicator it is the local socket permission case
+    return any(m in s for m in (
+        "docker daemon socket",
+        "docker.sock",
+        "/var/run/docker.sock",
+        "dial unix",
+        "unix:///var/run/docker.sock",
+    ))
+
+
+def _probe_sudo() -> bool | None:
+    # rootless / custom host: do not attempt sudo-based probing.
+    if not _sudo_fallback_is_sane():
+        return False
+    try:
+        run(["docker", "info"], capture_output=True)
+        return False
+    except subprocess.CalledProcessError as err:
+        stderr = (err.stderr or "") + "\n" + (err.stdout or "")
+        if _looks_like_socket_permission_denied(stderr):
+            return True
+        return None
+
+
+def _init_sudo() -> None:
+    global DOCKER_NEEDS_SUDO
+    if DOCKER_NEEDS_SUDO is None:
+        DOCKER_NEEDS_SUDO = _probe_sudo() is True
 
 
 def docker_cmd(
@@ -135,31 +225,57 @@ def docker_cmd(
     subprocess.CalledProcessError
         If the docker command fails.
     """
-    if DOCKER_NEEDS_SUDO:
+    global DOCKER_NEEDS_SUDO
+    _init_sudo()
+    cmd = ["docker", *args]
+
+    # first attempt: use cached state (or optimistic non-sudo if unknown)
+    if DOCKER_NEEDS_SUDO is True:
         sudo = sudo_prefix()
-        return run([*sudo, "docker", *args], capture_output=capture_output, check=check)
+        if sudo:
+            return run([*sudo, *cmd], check=check, capture_output=capture_output)
+        # if we think sudo is needed but can't use it, just run and fail
+        return run(cmd, check=check, capture_output=capture_output)
 
     try:
-        return run(["docker", *args], capture_output=capture_output, check=check)
-
-    # fall back to sudo if `DOCKER_NEEDS_SUDO` is incorrect
+        #inherit stdout and capture stderr so we can classify permission errors
+        return run(
+            cmd,
+            check=check,
+            capture_output=capture_output,
+            capture_err=not capture_output,
+        )
     except subprocess.CalledProcessError as err:
-        # re-run once with captured output to inspect the real message
-        try:
-            err2 = run(["docker", *args], capture_output=True)
-            return err2  # unlikely - succeeded on second try
-        except subprocess.CalledProcessError as err2:
-            msg = ((err.stdout or "") + "\n" + (err.stderr or "")).lower()
+        stderr = (err.stderr or "") + "\n" + (err.stdout or "")
+        if _sudo_fallback_is_sane() and _looks_like_socket_permission_denied(stderr):
             sudo = sudo_prefix()
-            if (
-                ("permission denied" in msg) and
-                ("docker.sock" in msg or "/var/run/docker.sock" in msg) and
-                sudo and shutil.which(sudo[0])
-            ):
-                return run([*sudo, "docker", *args], capture_output=capture_output, check=check)
+            if sudo:  # retry once with sudo and cache
+                result = run([*sudo, *cmd], check=check, capture_output=capture_output)
+                DOCKER_NEEDS_SUDO = True
+                return result
+        raise
 
-            # Fall back to original error (preserve semantics)
-            raise err2
+
+def docker_argv(args: list[str]) -> list[str]:
+    """Build argv for exec-style docker calls, honoring sudo policy.
+
+    Parameters
+    ----------
+    args : list[str]
+        The docker command arguments, excluding 'docker' itself.
+
+    Returns
+    -------
+    list[str]
+        The full argv to use for `os.exec*` calls.
+    """
+    _init_sudo()
+    argv = ["docker", *args]
+    if DOCKER_NEEDS_SUDO is True:
+        sudo = sudo_prefix()
+        if sudo:
+            argv = [*sudo, *argv]
+    return argv
 
 
 ############################
@@ -176,17 +292,7 @@ class DockerStatus:
     detail: str
 
 
-def docker_status() -> DockerStatus:
-    """Check whether docker is installed and whether the docker daemon is reachable.
-
-    Returns
-    -------
-    DockerStatus
-        A data struct with 3 fields:
-            `docker_cli_found`: True if the docker CLI is found in PATH.
-            `dockerd_reachable`: True if the docker daemon is reachable.
-            `detail`: A human-readable string describing the failure mode, if any.
-    """
+def _docker_status() -> DockerStatus:
     if not shutil.which("docker"):
         return DockerStatus(
             docker_cli_found=False,
@@ -217,6 +323,7 @@ def docker_status() -> DockerStatus:
         # Permission-denied implies Engine exists but user lacks access - try again
         # with sudo
         if (
+            _sudo_fallback_is_sane() and
             "permission denied" in lower and
             ("docker.sock" in lower or "/var/run/docker.sock" in lower) and
             sudo and shutil.which(sudo[0])
@@ -257,14 +364,7 @@ def docker_status() -> DockerStatus:
         )
 
 
-def read_os_release() -> dict[str, str]:
-    """Parse /etc/os-release to find OS codename and version information.
-
-    Returns
-    -------
-    dict[str, str]
-        A dictionary mapping keys to values from /etc/os-release.
-    """
+def _read_os_release() -> dict[str, str]:
     path = Path("/etc/os-release")
     data: dict[str, str] = {}
     if not path.exists():
@@ -281,21 +381,8 @@ def read_os_release() -> dict[str, str]:
     return data
 
 
-def install_docker_apt(*, distro: str) -> None:
-    """Install Docker engine using the `apt` package manager.
-
-    Parameters
-    ----------
-    distro : str
-        The Linux distribution to install Docker for (e.g., "ubuntu", "debian").
-
-    Raises
-    ------
-    ValueError
-        If VERSION_CODENAME could not be read from /etc/os-release
-
-    """
-    os_info = read_os_release()
+def _install_docker_apt(*, distro: str) -> None:
+    os_info = _read_os_release()
     codename = os_info.get("UBUNTU_CODENAME") or os_info.get("VERSION_CODENAME")
     if not codename:
         raise ValueError("Could not determine VERSION_CODENAME from /etc/os-release")
@@ -368,8 +455,7 @@ def install_docker_apt(*, distro: str) -> None:
         run([*sudo, "systemctl", "enable", "--now", "docker"], check=False)
 
 
-def install_docker_dnf() -> None:
-    """Install Docker engine using the `dnf` package manager."""
+def _install_docker_dnf() -> None:
     sudo = sudo_prefix()
 
     # ensure config-manager is available
@@ -421,28 +507,26 @@ def install_docker(*, assume_yes: bool = False) -> DockerStatus:
     ValueError
         If automatic installation is not supported for the host OS.
     """
-    global DOCKER_NEEDS_SUDO  # pylint: disable=global-statement
-    status = docker_status()
-    DOCKER_NEEDS_SUDO = status.sudo_required
+    status = _docker_status()
     if status.docker_cli_found and status.dockerd_reachable:
         return status
 
     system = platform.system().lower()
     if system != "linux":
         raise ValueError(
-            "Atomatic Docker installation is currently implemented only for Linux "
+            "Automatic Docker installation is currently implemented only for Linux "
             "hosts (apt/dnf).  Please install Docker for your platform, then rerun "
             "`bertrand_init`"
         )
 
-    os_info = read_os_release()
+    os_info = _read_os_release()
     distro = (os_info.get("ID") or "").lower()
 
     # if CLI exists but daemon isn't reachable, try starting it first
     if status.docker_cli_found and not status.dockerd_reachable and shutil.which("systemctl"):
         sudo = sudo_prefix()
         run([*sudo, "systemctl", "start", "docker"], check=False)
-        status2 = docker_status()
+        status2 = _docker_status()
         if status2.dockerd_reachable:
             return status2
 
@@ -450,19 +534,19 @@ def install_docker(*, assume_yes: bool = False) -> DockerStatus:
     # permission or service state.  We already tried starting, so return status so that
     # caller can surface actionable diagnostics
     if status.docker_cli_found:
-        return docker_status()
+        return _docker_status()
 
     # pylint: disable=unnecessary-lambda-assignment
     installer: Callable[[], None] | None = None
     installer_name = "unknown"
     if distro in {"ubuntu"}:
-        installer = lambda: install_docker_apt(distro="ubuntu")
+        installer = lambda: _install_docker_apt(distro="ubuntu")
         installer_name = "apt (Ubuntu)"
     elif distro in {"debian"}:
-        installer = lambda: install_docker_apt(distro="debian")
+        installer = lambda: _install_docker_apt(distro="debian")
         installer_name = "apt (Debian)"
     elif distro in {"fedora"}:
-        installer = install_docker_dnf
+        installer = _install_docker_dnf
         installer_name = "dnf (Fedora)"
     else:
         # best-effort - detect package manager even if distro unknown
@@ -474,7 +558,7 @@ def install_docker(*, assume_yes: bool = False) -> DockerStatus:
                 "manually, or extend install_docker() to handle this distro."
             )
         if shutil.which("dnf"):
-            installer = install_docker_dnf
+            installer = _install_docker_dnf
             installer_name = "dnf (unknown distro)"
         else:
             raise ValueError(
@@ -497,13 +581,12 @@ def install_docker(*, assume_yes: bool = False) -> DockerStatus:
     assert installer is not None
     installer()
 
-    final_status = docker_status()
+    final_status = _docker_status()
     if not final_status.docker_cli_found:
         raise ValueError(
             "Docker Engine installation failed - Docker CLI not found after "
             "installation script execution."
         )
-    DOCKER_NEEDS_SUDO = final_status.sudo_required
     return final_status
 
 
@@ -526,11 +609,11 @@ def uninstall_docker(*, assume_yes: bool = False, remove_data: bool = True) -> N
     system = platform.system().lower()
     if system != "linux":
         raise ValueError(
-            "Atomatic Docker uninstallation is currently implemented only for Linux "
+            "Automatic Docker uninstallation is currently implemented only for Linux "
             "hosts (apt/dnf).  Please uninstall Docker for your platform manually."
         )
 
-    os_info = read_os_release()
+    os_info = _read_os_release()
     distro = (os_info.get("ID") or "").lower()
     sudo = sudo_prefix()
 
@@ -657,8 +740,41 @@ def add_to_docker_group(*, assume_yes: bool = False) -> bool:
     sudo = sudo_prefix()
     run([*sudo, "groupadd", "docker"], check=False)
     run([*sudo, "usermod", "-aG", "docker", user])
-    global DOCKER_NEEDS_SUDO  # pylint: disable=global-statement
+    global DOCKER_NEEDS_SUDO
     DOCKER_NEEDS_SUDO = True
+    return True
+
+
+def remove_from_docker_group(*, assume_yes: bool = False) -> bool:
+    """Offer to remove the current user from the 'docker' group.
+
+    Parameters
+    ----------
+    assume_yes : bool
+        If True, automatically attempt to remove the user without prompting.
+
+    Returns
+    -------
+    bool
+        True if the user was removed from the docker group, false otherwise.
+    """
+    if os.name != "posix":
+        return False
+
+    user = os.environ.get("SUDO_USER") or os.environ.get("USER") or ""
+    if not user:
+        return False
+
+    prompt = (
+        f"Do you want to remove your user '{user}' from the 'docker' group? [y/N] "
+    )
+    if not confirm(prompt, assume_yes=assume_yes):
+        return False
+
+    sudo = sudo_prefix()
+    run([*sudo, "gpasswd", "-d", user, "docker"], check=False)
+    global DOCKER_NEEDS_SUDO
+    DOCKER_NEEDS_SUDO = None  # re-probe on next docker command
     return True
 
 
@@ -677,22 +793,10 @@ class DockerEnvironment:
     container: str  # stable docker container name
     workspace: str  # e.g. "workspace"
     created: str  # ISO timestamp
+    shell: list[str]  # shell command to execute upon `bertrand enter`
 
 
-def sanitize_name(name: str) -> str:
-    """Ensure that a given string is a valid Docker container name.
-
-    Parameters
-    ----------
-    name : str
-        The desired name.  This is usually the last component of the environment path.
-
-    Returns
-    -------
-    str
-        A sanitized version of the name that is valid for Docker container naming.
-        Possibly an empty string if the input name had no valid characters.
-    """
+def _sanitize_name(name: str) -> str:
     # Docker container names allow [a-zA-Z0-9][a-zA-Z0-9_.-]
     out = []
     for char in name:
@@ -703,139 +807,264 @@ def sanitize_name(name: str) -> str:
     return "".join(out).strip("-")
 
 
-def container_name(path: Path) -> str:
-    """Generate a stable Docker container name for a given environment path.
-
-    Parameters
-    ----------
-    path : Path
-        The path to the environment.
-
-    Returns
-    -------
-    str
-        A stable Docker container name with a hash derived from the environment path.
-    """
+def _container_name(path: Path) -> str:
     # include a short hash of the absolute path to avoid collisions
-    env_name = sanitize_name(path.name)
+    env_name = _sanitize_name(path.name)
     h = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:10]
     return f"bertrand-{env_name}-{h}"
 
 
-def write_environment(spec: DockerEnvironment) -> Path:
-    """Write the metadata file for a Docker-based Bertrand environment.
+def _workspace_dest(workspace: str) -> str:
+    ws = (workspace or "").strip().strip("/")
+    if not ws:
+        raise ValueError("Invalid workspace path: must be a non-empty path component")
+    return f"/{ws}"
 
-    Parameters
-    ----------
-    spec : DockerEnvironment
-        The environment specification to write.
 
-    Returns
-    -------
-    Path
-        The path to the environment directory where the metadata file was written.
-    """
+def _normalize_shell(value: object) -> list[str]:
+    if isinstance(value, list) and all(isinstance(x, str) and x for x in value):
+        return value
+    if isinstance(value, str):
+        argv = shlex.split(value.strip())
+        if argv:
+            return argv
+        raise ValueError("shell must not be empty")
+    raise ValueError("shell must be a string or list[str]")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        with tmp.open("r+", encoding="utf-8") as f:
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+    tmp.replace(path)
+
+
+def _write_environment(spec: DockerEnvironment) -> Path:
     path = Path(spec.path)
     path.mkdir(parents=True, exist_ok=True)
-    path /= ".bertrand.json"
-    path.write_text(json.dumps(asdict(spec), indent=2) + "\n", encoding="utf-8")
-    return path.parent
+    _atomic_write_text(path / ".bertrand.json", json.dumps(asdict(spec), indent=2) + "\n")
+    return path
 
 
-def read_environment(path: Path) -> DockerEnvironment | None:
-    """Read the metadata file for a Docker-based Bertrand environment.
-
-    Parameters
-    ----------
-    path : Path
-        The path to the environment.
-
-    Returns
-    -------
-    DockerEnvironment | None
-        The corresponding environment specification, or None if the metadata file does
-        not exist.
-    """
+def _read_environment(path: Path) -> DockerEnvironment | None:
     path /= ".bertrand.json"
     if not path.exists():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return DockerEnvironment(**data)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("environment metadata must be a JSON object")
+
+        ws = (data.get("workspace") or "").strip().strip("/")
+        if not ws:
+            raise ValueError("workspace must be a non-empty path component")
+        data["workspace"] = ws
+
+        if "shell" not in data:
+            raise ValueError("missing required field: shell")
+        data["shell"] = _normalize_shell(data["shell"])
+
+        return DockerEnvironment(**data)
+    except Exception as err:
+        raise ValueError(f"Invalid environment metadata at {path}: {err}") from err
 
 
-def pull_image(image: str) -> None:
-    """Pull a given Docker image from the remote registry if it is not already present
-    locally.
-
-    Parameters
-    ----------
-    image : str
-        The Docker image name (e.g., "ubuntu:24.04").
-
-    Raises
-    ------
-    subprocess.CalledProcessError
-        If the docker pull command fails.
-    """
+def _pull_image(image: str) -> None:
     try:
         docker_cmd(["image", "inspect", image], capture_output=True)
     except subprocess.CalledProcessError:
         docker_cmd(["pull", image])
 
 
-def build_container(spec: DockerEnvironment) -> None:
-    """Build and/or start a persistent Docker container for the given environment.
-
-    Parameters
-    ----------
-    spec : DockerEnvironment
-        The environment specification to access or build if absent.
-
-    Raises
-    ------
-    subprocess.CalledProcessError
-        If any docker command fails.
-    """
-    path = Path(spec.path)
-    workspace = spec.workspace
-
-    # create container if absent
+def _container_inspect(name: str) -> ContainerInspect | None:
     try:
-        docker_cmd(["container", "inspect", spec.container], capture_output=True)
-    except subprocess.CalledProcessError:
-        # Create a persistent container whose filesystem layer persists.
-        # Keep it alive with `sleep infinity` so `docker exec` works.
-        docker_cmd([
-            "create",
-            "--name", spec.container,
-            "--hostname", spec.name,
-            "--workdir", f"/{workspace}",
-            "-v", f"{str(path)}:/{workspace}",
+        result = docker_cmd(["container", "inspect", name], capture_output=True)
+        data = json.loads(result.stdout)
+        return data[0] if data else None
+    except (subprocess.CalledProcessError, json.JSONDecodeError, IndexError, TypeError):
+        return None
 
-            # Persistent Bertrand identity (available to all exec'd shells)
-            "-e", f"BERTRAND_ENV={spec.path}",
-            "-e", f"BERTRAND_ENV_NAME={spec.name}",
-            "-e", f"BERTRAND_ENV_CONTAINER={spec.container}",
-            "-e", f"BERTRAND_ENV_WORKSPACE=/{workspace}",
 
-            spec.image,
-            "sleep", "infinity",
-        ])
+def _container_build_args(spec: DockerEnvironment, *, image: str) -> list[str]:
+    path = Path(spec.path).expanduser().resolve()
+    dest = _workspace_dest(spec.workspace)
+    return [
+        "create",
+        "--init",
+        "--name", spec.container,
+        "--hostname", spec.name,
+        "--workdir", dest,
+        "-v", f"{str(path)}:{dest}",
+        "-e", f"BERTRAND_ENV={spec.path}",
+        "-e", f"BERTRAND_ENV_NAME={spec.name}",
+        "-e", f"BERTRAND_ENV_CONTAINER={spec.container}",
+        "-e", f"BERTRAND_ENV_WORKSPACE={dest}",
+        image,
+        "sleep", "infinity",
+    ]
 
-    # start container if not running
-    container = docker_cmd(
-        ["container", "inspect", "-f", "{{.State.Running}}", spec.container],
-        capture_output=True,
-    )
-    if not container.stdout.strip().lower() == "true":
+
+def _build_container_from_image(
+    spec: DockerEnvironment,
+    *,
+    image_override: str | None = None,
+) -> None:
+    image = image_override or spec.image
+    docker_cmd(_container_build_args(spec, image=image))
+    docker_cmd(["start", spec.container])
+
+
+def _build_container(spec: DockerEnvironment) -> None:
+    # create if absent
+    info = _container_inspect(spec.container)
+    if info is None:
+        docker_cmd(_container_build_args(spec, image=spec.image))
+        info = _container_inspect(spec.container)
+
+    # start if not running
+    running = bool(((info or {}).get("State") or {}).get("Running"))
+    if not running:
         docker_cmd(["start", spec.container])
+
+
+def _remove_container(name: str, *, force: bool = False) -> None:
+    if force:
+        docker_cmd(["rm", "-f", name], check=False, capture_output=True)
+    else:
+        docker_cmd(["rm", name], check=False, capture_output=True)
+
+
+def _get_mount_source(container_info: ContainerInspect, *, destination: str) -> Path | None:
+    mounts = container_info.get("Mounts") or []
+    for m in mounts:
+        if m.get("Type") == "bind" and m.get("Destination") == destination:
+            src = m.get("Source")
+            if src:
+                return Path(src).expanduser()
+    return None
+
+
+def _snapshot_container(name: str) -> str:
+    timestamp = int(time.time())
+    repo = "bertrand-snapshot"
+    tag = f"{name.lower()}-{timestamp}-{os.getpid()}"
+    ref = f"{repo}:{tag}"
+    docker_cmd(["commit", name, ref])
+    return ref
+
+
+def _reconcile_location(path: Path, spec: DockerEnvironment) -> DockerEnvironment:
+    actual = path.expanduser().resolve()
+    desired_container = _container_name(actual)
+    desired_dest = _workspace_dest(spec.workspace)
+
+    # inspect existing container once (if any)
+    info = _container_inspect(spec.container)
+    old_exists = info is not None
+
+    # determine current container mount source (if container exists)
+    mount_src = _get_mount_source(info, destination=desired_dest) if info else None
+    recorded = Path(spec.path).expanduser().resolve()
+    metadata_drift = recorded != actual
+    name_drift = spec.container != desired_container
+    if old_exists and mount_src is None:
+        mount_drift = True
+    elif mount_src is not None:
+        try:
+            mount_drift = mount_src.resolve() != actual
+        except OSError:
+            mount_drift = True  # treat unresolvable as drift
+    else:
+        mount_drift = False
+
+    # if no drift, nothing to do
+    if not (metadata_drift or name_drift or mount_drift):
+        return spec
+
+    # build the desired spec (what we want to converge to)
+    new_spec = replace(
+        spec,
+        path=str(actual),
+        name=actual.name,
+        container=desired_container,
+        workspace=spec.workspace,
+    )
+
+    # if no old container doesn exists, just correct the metadata
+    if not old_exists:
+        _write_environment(new_spec)
+        return new_spec
+
+    old_container = spec.container
+    new_container = new_spec.container
+
+    # if the desired container already exists (retry/partial state), prefer to keep it
+    existing_new = _container_inspect(new_container)
+    if existing_new is not None:
+        # verify its mount actually points to actual.  If not, rebuild it
+        new_mount_src = _get_mount_source(existing_new, destination=desired_dest)
+        ok = False
+        if new_mount_src is not None:
+            try:
+                ok = new_mount_src.resolve() == actual
+            except OSError:
+                ok = False
+
+        if ok:
+            docker_cmd(["start", new_container], check=False, capture_output=True)
+            _write_environment(new_spec)
+            docker_cmd(["stop", old_container], check=False, capture_output=True)
+            _remove_container(old_container, force=True)
+            return new_spec
+
+        # if it's not ok, do not clobber blindly; remove and rebuild
+        docker_cmd(["stop", new_container], check=False, capture_output=True)
+        _remove_container(new_container, force=True)
+
+    # transactional migration: snapshot -> create -> start -> write -> remove
+    docker_cmd(["stop", old_container], check=False, capture_output=True)
+    snapshot = ""
+    try:
+        snapshot = _snapshot_container(old_container)
+
+        # create/start new container first; keep old for rollback
+        _build_container_from_image(new_spec, image_override=snapshot)
+
+        # only now commit metadata for new container
+        _write_environment(new_spec)
+
+        # remove old container
+        _remove_container(old_container, force=True)
+        return new_spec
+
+    finally:
+        if snapshot:
+            docker_cmd(["image", "rm", snapshot], check=False, capture_output=True)
+
+
+def _candidate_container_names(path: Path, spec: DockerEnvironment) -> list[str]:
+    actual = path.expanduser().resolve()
+    names = [spec.container, _container_name(actual)]
+    out: list[str] = []
+    seen: set[str] = set()
+    for n in names:
+        if n and n not in seen:
+            out.append(n)
+            seen.add(n)
+    return out
 
 
 def create_environment(
     path: Path,
     *,
-    image: str = "ubuntu:latest",
-    workspace: str = "workspace",
+    image: str,
+    workspace: str,
+    shell: str | list[str],
 ) -> DockerEnvironment:
     """Create (or load) a local Bertrand Docker environment at the given path.
 
@@ -843,11 +1072,12 @@ def create_environment(
     ----------
     path : Path
         The path at which to create the environment.
-    image : str, optional
-        The Docker image to use for the environment (default is "ubuntu:latest").
-    workspace : str, optional
-        The path within the container to mount the environment workspace (default is
-        "workspace").
+    image : str
+        The Docker image to use for the environment.
+    workspace : str
+        The path within the container to mount the environment workspace.
+    shell : str | list[str]
+        The shell command to execute when entering the environment
 
     Returns
     -------
@@ -858,25 +1088,27 @@ def create_environment(
     path.mkdir(parents=True, exist_ok=True)
 
     # check for existing environment
-    spec = read_environment(path)
+    spec = _read_environment(path)
     if spec is not None:
-        pull_image(spec.image)
-        build_container(spec)
+        spec = _reconcile_location(path, spec)
+        _pull_image(spec.image)
+        _build_container(spec)
         return spec
 
     # create new environment
-    pull_image(image)
+    _pull_image(image)
     spec = DockerEnvironment(
         version=1,
         path=str(path),
         name=path.name,
         image=image,
-        container=container_name(path),
+        container=_container_name(path),
         workspace=workspace,
         created=datetime.now(timezone.utc).isoformat(),
+        shell=_normalize_shell(shell),
     )
-    write_environment(spec)
-    build_container(spec)
+    _write_environment(spec)
+    _build_container(spec)
     return spec
 
 
@@ -897,28 +1129,22 @@ def enter_environment(path: Path) -> None:
         If any docker command fails.
     """
     path = path.expanduser().resolve()
-    spec = read_environment(path)
+    spec = _read_environment(path)
     if spec is None:
         raise ValueError(
             f"No docker environment found at: {path} (missing .bertrand.json)"
         )
 
-    pull_image(spec.image)
-    build_container(spec)
+    spec = _reconcile_location(path, spec)
+    _pull_image(spec.image)
+    _build_container(spec)
 
-    # Prefer bash if present, else sh.  Using exec rather than start -ai avoids needing
-    # the container's main process to be a shell, and using `os.execvp` causes the
-    # current process to be replaced by the shell, rather than spawning a new one
-    cmd = [
-        "docker", "exec", "-it",
-        "-w", f"/{spec.workspace}",
+    cmd = docker_argv([
+        "exec", "-it",
+        "-w", _workspace_dest(spec.workspace),
         spec.container,
-        "bash", "-l"
-    ]
-    if DOCKER_NEEDS_SUDO:
-        sudo = sudo_prefix()
-        if sudo and shutil.which(sudo[0]):
-            cmd = [*sudo, *cmd]
+        *spec.shell
+    ])
     os.execvp(cmd[0], cmd)
 
 
@@ -934,7 +1160,7 @@ def in_environment() -> bool:
     return bool(os.environ.get("BERTRAND_ENV"))
 
 
-def stop_environment(path: Path, *, force: bool = False) -> None:
+def stop_environment(path: Path, *, force: bool) -> None:
     """Stop an environment container, but leave files and container intact.
 
     Parameters
@@ -957,27 +1183,20 @@ def stop_environment(path: Path, *, force: bool = False) -> None:
         raise RuntimeError("Cannot stop an environment from inside a Bertrand environment.")
 
     path = path.expanduser().resolve()
-    spec = read_environment(path)
+    spec = _read_environment(path)
     if spec is None:
         raise ValueError(f"No docker environment found at: {path} (missing .bertrand.json)")
 
-    # If container doesn't exist, treat as already-stopped
-    try:
-        docker_cmd(["container", "inspect", spec.container], capture_output=True, check=True)
-    except subprocess.CalledProcessError:
-        return
-
-    if force:
-        docker_cmd(["stop", "-t", "0", spec.container], check=False)
-    else:
-        docker_cmd(["stop", spec.container], check=False)
+    timeout = "0" if force else "10"
+    for name in _candidate_container_names(path, spec):
+        docker_cmd(["stop", "-t", timeout, name], check=False, capture_output=True)
 
 
 def delete_environment(
     path: Path,
     *,
-    assume_yes: bool = False,
-    force: bool = False
+    assume_yes: bool,
+    force: bool
 ) -> None:
     """Delete a Bertrand Docker environment at the given path.
 
@@ -1003,7 +1222,7 @@ def delete_environment(
         )
 
     path = path.expanduser().resolve()
-    spec = read_environment(path)
+    spec = _read_environment(path)
     if spec is None:
         raise ValueError(f"No docker environment found at: {path} (missing .bertrand.json)")
 
@@ -1015,27 +1234,11 @@ def delete_environment(
     if not confirm(prompt, assume_yes=assume_yes):
         raise ValueError("Environment deletion declined by user.")
 
-    # Remove container if it exists
-    try:
-        docker_cmd(["container", "inspect", spec.container], capture_output=True)
-        try:
-            if force:
-                docker_cmd(["rm", "-f", spec.container])
-            else:
-                # rm will fail if running; give a helpful error
-                docker_cmd(["rm", spec.container])
-        except subprocess.CalledProcessError as err:
-            # If inspect failed, container already gone; if rm failed, surface guidance
-            msg = ((err.stdout or "") + "\n" + (err.stderr or "")).strip()
-            if msg:
-                raise ValueError(
-                    "Failed to remove docker container. If it's running, rerun with --force.\n"
-                    f"detail:\n{msg}"
-                ) from err
-    except subprocess.CalledProcessError:
-        pass  # container does not exist; nothing to do
+    # remove container (best-effort)
+    for name in _candidate_container_names(path, spec):
+        _remove_container(name, force=force)
 
-    # Remove the directory on disk
+    # remove environment directory
     try:
         shutil.rmtree(path)
     except OSError as err:

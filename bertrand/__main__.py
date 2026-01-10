@@ -10,6 +10,7 @@ from .env import (
     install_docker,
     uninstall_docker,
     add_to_docker_group,
+    remove_from_docker_group,
     create_environment,
     enter_environment,
     in_environment,
@@ -148,6 +149,21 @@ class Parser:
                 "container's root level.  This directory is where users should place "
                 "their project files and source code.",
         )
+        # TODO: attempt to install the given shell when I start writing dockerfiles
+        command.add_argument(
+            "--shell",
+            nargs=1,
+            default=["bash -l"],
+            help=
+                "The shell command to execute when entering the environment.  "
+                "Defaults to 'bash -l', which starts a login shell using Bash.  This "
+                "can be changed to any other shell available within the container, "
+                "such as 'zsh -l' or 'fish -l'.  The indicated shell will be "
+                "installed if possible, if it is not already present in the container "
+                "image.",
+        )
+
+        # TODO: figure out toolchain using dockerfiles
         command.add_argument(
             "--ninja",
             nargs=1,
@@ -313,6 +329,35 @@ class Parser:
                 "other Docker images, containers, volumes, and networks from the host "
                 "system as well.",
         )
+
+    # TODO: status <env> / ls   -> display:
+    # - env path
+    # - container name
+    # - running/stopped
+    # - image + digest
+    # - last start time (from inspect)
+    # - mount correctness
+
+    # TODO: bertrand doctor   -> check:
+    # - docker CLI found
+    # - daemon reachable
+    # - permission mode (group vs sudo vs rootless)
+    # - context/DOCKER_HOST
+    # - minimal version check
+    # - ability to docker pull a tiny test image (optional)
+
+    # TODO: there are race conditions under concurrent `bertrand init` or `enter`
+    # -> add a lock file in the environment directory
+
+    # TODO: set retry/timeout policies for network ops
+
+    # TODO: think about how workspaces are managed, and see if I can reuse the
+    # container name, or something.  This may also need to be subject to drift
+    # detection during relocation
+
+    # TODO: think about bind mount UX, root ownership on host files, etc.  The real
+    # way to do this is to match UIDs/GIDs between host and container
+
 
     # TODO: conan has different syntax for install and uninstall compared to pip, so
     # I'll have to think about how best to handle it.
@@ -522,6 +567,7 @@ def init(args: argparse.Namespace) -> None:
                 path,
                 image=args.image[0],
                 workspace=args.workspace[0],
+                shell=args.shell[0],
             )
         except ValueError as err:
             print(f"bertrand: {err}")
@@ -641,6 +687,11 @@ def delete(args: argparse.Namespace) -> None:
             raise SystemExit(1)
         try:
             uninstall_docker(assume_yes=args.yes)
+        except ValueError as err:
+            print(f"bertrand: {err}")
+            raise SystemExit(1) from err
+        try:
+            remove_from_docker_group()
         except ValueError as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
