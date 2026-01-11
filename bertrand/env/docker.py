@@ -1,17 +1,20 @@
 """Install Docker Engine and pull container images."""
 import json
+import hashlib
 import os
 import platform
 import shutil
 import shlex
 import subprocess
+import sys
+import threading
 import time
 import uuid
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, TypedDict, List, Literal
+from typing import Callable, List, Literal, TextIO, TypedDict
 
 #pylint: disable=redefined-builtin, global-statement
 
@@ -42,6 +45,23 @@ class ContainerInspect(TypedDict, total=False):
 DOCKER_NEEDS_SUDO: bool | None = None
 
 
+class CommandError(subprocess.CalledProcessError):
+    """A custom exception for command-line and docker errors, which captures the
+    output of stdout/stderr and prints it when converted to a string.
+    """
+    def __init__(self, returncode: int, cmd: list[str], stdout: str, stderr: str) -> None:
+        super().__init__(returncode, cmd, stdout, stderr)
+
+    def __str__(self) -> str:
+        out = [
+            f"Exit code {self.returncode} from command:\n\n"
+            f"    {' '.join(shlex.quote(a) for a in self.cmd)}"
+        ]
+        if self.stderr:
+            out.append(self.stderr.strip())
+        return "\n\n".join(out)
+
+
 def confirm(prompt: str, *, assume_yes: bool) -> bool:
     """Ask the user for a yes/no confirmation for a given prompt.
 
@@ -66,26 +86,44 @@ def confirm(prompt: str, *, assume_yes: bool) -> bool:
     return response in {"y", "yes"}
 
 
+def _pump_output(src: TextIO, sink: TextIO, buf_list: list[str]) -> None:
+    for line in src:
+        buf_list.append(line)
+        sink.write(line)
+        sink.flush()
+    src.close()
+
+
 def run(
     argv: list[str],
     *,
     check: bool = True,
     capture_output: bool = False,
-    capture_err: bool = False,
+    tee: bool = True,
     input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """A wrapper around `subprocess.run` that defaults to text mode and checks output.
+    """A wrapper around `subprocess.run` that defaults to text mode and properly
+    formats errors.
 
     Parameters
     ----------
     argv : list[str]
         The command and its arguments to run.
     check : bool, optional
-        Whether to raise an exception if the command fails (default is True).
+        Whether to raise a `CommandError` if the command fails (default is True).  If
+        false, then any errors will be ignored.
     capture_output : bool, optional
-        Whether to capture stdout and stderr (default is False).
-    capture_err : bool, optional
-        Whether to capture stderr only (default is False).
+        If true, or if `tee` is true (the default), then include both stdout and
+        stderr in the returned `CompletedProcess` or `CommandError`.  If false, then
+        the command's stdout and stderr will be inherited from the parent process,
+        and if `tee` is also false, they will not be captured in the resulting objects.
+    tee : bool, optional
+        If true (the default), and `capture_output` is false (the default), then stdout
+        and stderr will be printed to the console while also being captured in the
+        returned `CompletedProcess` or `CommandError`.  If false, then stdout and
+        stderr will either be captured (if `capture_output` is true) or inherited
+        from the parent process and not recorded in the resulting objects (if
+        `capture_output` is false).
     input : str | None, optional
         Input to send to the command's stdin (default is None).
 
@@ -93,35 +131,70 @@ def run(
     -------
     subprocess.CompletedProcess[str]
         The completed process result.
-    """
-    # capture both stdout and stderr
-    if capture_output:
-        return subprocess.run(
-            argv,
-            check=check,
-            capture_output=True,
-            text=True,
-            input=input,
-        )
 
-    # inherit stdout, but capture stderr for diagnostics
-    if capture_err:
-        return subprocess.run(
+    Raises
+    ------
+    CommandError
+        If the command fails and `check` is True.  The text of the error reflects
+        the error code, original command, and captured output from stderr and stdout.
+    """
+    try:
+        if capture_output or not tee:
+            return subprocess.run(
+                argv,
+                check=check,
+                capture_output=capture_output,
+                text=True,
+                input=input,
+            )
+
+        # tee stdout/stderr to console while capturing both for error reporting
+        with subprocess.Popen(
             argv,
-            check=check,
-            stdout=None,
+            stdin=subprocess.PIPE if input is not None else None,
+            stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            input=input,
-        )
+            errors="replace",
+            bufsize=1,  # line-buffered in text mode
+        ) as p:
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+            if input is not None and p.stdin is not None:
+                try:
+                    p.stdin.write(input)
+                finally:
+                    p.stdin.close()
 
-    # inherit both stdout and stderr
-    return subprocess.run(
-        argv,
-        check=check,
-        text=True,
-        input=input,
-    )
+            # read both streams without deadlock
+            t_out = threading.Thread(
+                target=_pump_output,
+                args=(p.stdout, sys.stdout, stdout_lines),
+                daemon=True
+            )
+            t_err = threading.Thread(
+                target=_pump_output,
+                args=(p.stderr, sys.stderr, stderr_lines),
+                daemon=True
+            )
+            t_out.start()
+            t_err.start()
+            rc = p.wait()
+            t_out.join()
+            t_err.join()
+
+            result = subprocess.CompletedProcess(
+                argv,
+                rc,
+                "".join(stdout_lines),
+                "".join(stderr_lines),
+            )
+    except subprocess.CalledProcessError as err:
+        raise CommandError(err.returncode, argv, err.stdout or "", err.stderr or "") from err
+
+    if check and rc != 0:
+        raise CommandError(rc, argv, result.stdout, result.stderr)
+    return result
 
 
 def sudo_prefix() -> list[str]:
@@ -137,6 +210,19 @@ def sudo_prefix() -> list[str]:
         return []
     preserve = "DOCKER_HOST,DOCKER_CONTEXT,DOCKER_CONFIG"
     return ["sudo", f"--preserve-env={preserve}"]
+
+
+def host_user_ids() -> tuple[int, int] | None:
+    """Return a (uid, gid) tuple for the current host user, if one can be determined.
+
+    Returns
+    -------
+    tuple[int, int] | None
+        A tuple containing the user ID and group ID, or None if not determinable.
+    """
+    if os.name != "posix":
+        return None
+    return (os.getuid(), os.getgid())
 
 
 def _sudo_fallback_is_sane() -> bool:
@@ -185,7 +271,7 @@ def _probe_sudo() -> bool | None:
     try:
         run(["docker", "info"], capture_output=True)
         return False
-    except subprocess.CalledProcessError as err:
+    except CommandError as err:
         stderr = (err.stderr or "") + "\n" + (err.stdout or "")
         if _looks_like_socket_permission_denied(stderr):
             return True
@@ -222,8 +308,10 @@ def docker_cmd(
 
     Raises
     ------
-    subprocess.CalledProcessError
-        If the docker command fails.
+    CommandError
+        If the docker command fails and `check` is True.  The text of the error
+        reflects the error code, original command, and captured output from stderr and
+        stdout.
     """
     global DOCKER_NEEDS_SUDO
     _init_sudo()
@@ -243,10 +331,9 @@ def docker_cmd(
             cmd,
             check=check,
             capture_output=capture_output,
-            capture_err=not capture_output,
         )
-    except subprocess.CalledProcessError as err:
-        stderr = (err.stderr or "") + "\n" + (err.stdout or "")
+    except CommandError as err:
+        stderr = f"{err.stderr}\n{err.stdout}"
         if _sudo_fallback_is_sane() and _looks_like_socket_permission_denied(stderr):
             sudo = sudo_prefix()
             if sudo:  # retry once with sudo and cache
@@ -315,8 +402,8 @@ def _docker_status() -> DockerStatus:
             sudo_required=False,
             detail="docker info succeeded",
         )
-    except subprocess.CalledProcessError as err:
-        out = (err.stdout or "") + "\n" + (err.stderr or "")
+    except CommandError as err:
+        out = f"{err.stdout}\n{err.stderr}"
         out = out.strip()
         lower = out.lower()
 
@@ -336,8 +423,8 @@ def _docker_status() -> DockerStatus:
                     sudo_required=True,
                     detail="docker daemon reachable via sudo (user lacks docker socket permission)",
                 )
-            except subprocess.CalledProcessError as err2:
-                out2 = ((err2.stdout or "") + "\n" + (err2.stderr or "")).strip()
+            except CommandError as err2:
+                out2 = f"{err2.stdout}\n{err2.stderr}".strip()
                 return DockerStatus(
                     docker_cli_found=True,
                     dockerd_reachable=False,
@@ -407,7 +494,7 @@ def _install_docker_apt(*, distro: str) -> None:
         try:
             run(["dpkg", "-s", pkg], capture_output=True)
             installed.append(pkg)
-        except subprocess.CalledProcessError:
+        except CommandError:
             pass
     if installed:
         run([*sudo, "apt", "remove", "-y", *installed], check=False)
@@ -460,7 +547,6 @@ def _install_docker_dnf() -> None:
 
     # ensure config-manager is available
     run([*sudo, "dnf", "install", "-y", "dnf-plugins-core"], check=False)
-
     run([
         *sudo,
         "dnf",
@@ -469,7 +555,6 @@ def _install_docker_dnf() -> None:
         "--from-repofile",
         "https://download.docker.com/linux/fedora/docker-ce.repo",
     ])
-
     run([
         *sudo,
         "dnf",
@@ -723,7 +808,7 @@ def add_to_docker_group(*, assume_yes: bool = False) -> bool:
         groups = set(cp.stdout.strip().split())
         if "docker" in groups:
             return True
-    except subprocess.CalledProcessError:
+    except CommandError:
         pass
 
     prompt = (
@@ -783,6 +868,15 @@ def remove_from_docker_group(*, assume_yes: bool = False) -> bool:
 ###################
 
 
+# TODO: rather than give every image a unique tag, I should use a tag that reflects
+# the build configuration (e.g. the dockerfile digest).  This should allow me to
+# distribute multiple environments that share a common configuration without
+# requiring redundant storage or builds for each one.
+
+
+BERTRAND_DIR: str = ".bertrand"
+ENV_FILE: str = "env.json"
+DOCKER_FILE: str = "Dockerfile"
 WORKSPACE: str = "/env"
 
 
@@ -794,9 +888,32 @@ class DockerEnvironment:
     """
     version: int
     env_id: str  # UUID used to derive the container name ('bertrand-{env_id}')
+    dockerfile_digest: str  # SHA256 digest of the Dockerfile to detect changes
     created: str  # ISO timestamp
     image: str  # e.g. "ubuntu:24.04"
     shell: list[str]  # shell command to execute during `bertrand enter`
+
+
+def _bertrand_dir(env_root: Path) -> Path:
+    return env_root / BERTRAND_DIR
+
+
+def _env_file(env_root: Path) -> Path:
+    return _bertrand_dir(env_root) / ENV_FILE
+
+
+def _docker_file(env_root: Path) -> Path:
+    return _bertrand_dir(env_root) / DOCKER_FILE
+
+
+def _image_tag(spec: DockerEnvironment) -> str:
+    return f"bertrand-env:{spec.env_id}"
+
+
+def _docker_digest(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
 
 
 def _sanitize_environment_name(name: str) -> str:
@@ -825,6 +942,7 @@ def _normalize_shell(value: object) -> list[str]:
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
     tmp.write_text(text, encoding="utf-8")
     try:
@@ -836,13 +954,24 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _ensure_dockerfile(env_root: Path, spec: DockerEnvironment) -> None:
+    path = _docker_file(env_root)
+    if path.exists():
+        return
+    _atomic_write_text(path, docker_content(spec))
+
+
 def _write_environment(env_root: Path, spec: DockerEnvironment) -> None:
     env_root.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(env_root / ".bertrand.json", json.dumps(asdict(spec), indent=2) + "\n")
+    _atomic_write_text(
+        _env_file(env_root),
+        json.dumps(asdict(spec), indent=2) + "\n"
+    )
+    _ensure_dockerfile(env_root, spec)
 
 
 def _read_environment(env_root: Path) -> DockerEnvironment | None:
-    meta = env_root / ".bertrand.json"
+    meta = _env_file(env_root)
     if not meta.exists():
         return None
 
@@ -856,15 +985,6 @@ def _read_environment(env_root: Path) -> DockerEnvironment | None:
         if not isinstance(version, int) or version <= 0:
             raise ValueError(f"missing or invalid 'version' field: {version}")
 
-        # validate created timestamp
-        created = data.get("created")
-        if not isinstance(created, str) or not created.strip():
-            raise ValueError(f"missing or invalid 'created' field: {created}")
-        try:
-            datetime.fromisoformat(created)
-        except Exception as err:
-            raise ValueError(f"created must be a valid ISO timestamp: {created}") from err
-
         # validate environment id
         env_id = data.get("env_id")
         if not isinstance(env_id, str) or not env_id.strip():
@@ -873,6 +993,26 @@ def _read_environment(env_root: Path) -> DockerEnvironment | None:
             uuid.UUID(env_id)
         except Exception as err:
             raise ValueError(f"env_id must be a valid UUID string: {env_id}") from err
+
+        # validate dockerfile digest
+        dockerfile_digest = data.get("dockerfile_digest")
+        if not isinstance(dockerfile_digest, str):
+            raise ValueError(
+                f"missing or invalid 'dockerfile_digest' field: {dockerfile_digest}"
+            )
+        if not all(c in "0123456789abcdef" for c in dockerfile_digest.lower()):
+            raise ValueError(
+                f"dockerfile_digest must be a valid SHA256 hex digest: {dockerfile_digest}"
+            )
+
+        # validate created timestamp
+        created = data.get("created")
+        if not isinstance(created, str) or not created.strip():
+            raise ValueError(f"missing or invalid 'created' field: {created}")
+        try:
+            datetime.fromisoformat(created)
+        except Exception as err:
+            raise ValueError(f"created must be a valid ISO timestamp: {created}") from err
 
         # validate image
         image = data.get("image")
@@ -891,11 +1031,48 @@ def _read_environment(env_root: Path) -> DockerEnvironment | None:
         raise ValueError(f"Invalid environment metadata at {meta}: {err}") from err
 
 
+def _image_exists(tag: str) -> bool:
+    try:
+        docker_cmd(["image", "inspect", tag], capture_output=True)
+        return True
+    except CommandError:
+        return False
+
+
 def _pull_image(image: str) -> None:
     try:
         docker_cmd(["image", "inspect", image], capture_output=True)
-    except subprocess.CalledProcessError:
+    except CommandError:
         docker_cmd(["pull", image])
+
+
+def _ensure_image_built(env_root: Path, spec: DockerEnvironment) -> DockerEnvironment:
+    env_root = env_root.expanduser().resolve()
+
+    # make sure dockerfile is present
+    _ensure_dockerfile(env_root, spec)
+    dockerfile = _docker_file(env_root)
+    digest = _docker_digest(dockerfile)
+    tag = _image_tag(spec)
+
+    needs_build = not _image_exists(tag) or spec.dockerfile_digest != digest
+    if needs_build:
+        _pull_image(spec.image)
+        docker_cmd([
+            "build",
+            "-t", tag,
+            "-f", str(dockerfile),
+            "--label", f"bertrand.env_id={spec.env_id}",
+            str(_bertrand_dir(env_root)),
+        ])
+
+    # persist digest in metadata
+    if spec.dockerfile_digest != digest:
+        spec2 = replace(spec, dockerfile_digest=digest)
+        _write_environment(env_root, spec2)
+        return spec2
+
+    return spec
 
 
 def _container_inspect(name: str) -> ContainerInspect | None:
@@ -903,7 +1080,7 @@ def _container_inspect(name: str) -> ContainerInspect | None:
         result = docker_cmd(["container", "inspect", name], capture_output=True)
         data = json.loads(result.stdout)
         return data[0] if data else None
-    except (subprocess.CalledProcessError, json.JSONDecodeError, IndexError, TypeError):
+    except (CommandError, json.JSONDecodeError, IndexError, TypeError):
         return None
 
 
@@ -927,17 +1104,31 @@ def _get_mount_source(container_info: ContainerInspect) -> Path | None:
 def _container_build_args(env_root: Path, spec: DockerEnvironment) -> list[str]:
     env_root = env_root.expanduser().resolve()
     container = _container_name(spec)
-    return [
+    args = [
         "create",
         "--init",
-        "--name", container,
-        "--hostname", _sanitize_environment_name(env_root.name),
-        "--workdir", WORKSPACE,
+        f"--name={container}",
+        f"--hostname={_sanitize_environment_name(env_root.name)}",
+        f"--workdir={WORKSPACE}",
+        "--security-opt=no-new-privileges",
+    ]
+
+    ids = host_user_ids()
+    if ids is not None:
+        uid, gid = ids
+        args.extend([
+            "--user", f"{uid}:{gid}",
+            "--cap-drop=ALL",
+            "--cap-add=SYS_PTRACE",
+        ])
+
+    args.extend([
         "-v", f"{str(env_root)}:{WORKSPACE}",
         "-e", f"BERTRAND_ENV={spec.env_id}",
-        spec.image,
+        _image_tag(spec),
         "sleep", "infinity",
-    ]
+    ])
+    return args
 
 
 def _ensure_container(env_root: Path, spec: DockerEnvironment) -> str:
@@ -967,6 +1158,7 @@ def _ensure_container(env_root: Path, spec: DockerEnvironment) -> str:
             info = None
 
     if info is None:
+        spec = _ensure_image_built(env_root, spec)
         docker_cmd(_container_build_args(env_root, spec))
         info = _container_inspect(container)
 
@@ -975,6 +1167,66 @@ def _ensure_container(env_root: Path, spec: DockerEnvironment) -> str:
         docker_cmd(["start", container])
 
     return container
+
+
+def _nss_wrapper_script(*, uid: int, gid: int) -> str:
+    # home should exist and be writable by uid:gid; WORKSPACE (/env) is a safe default.
+    home_dir = shlex.quote(WORKSPACE)
+
+    # Notes:
+    # - We do NOT chmod/chown /etc/passwd or /etc/group.
+    # - We only enable nss_wrapper if getent can't resolve uid or gid.
+    # - We generate wrapper files in /tmp to avoid polluting the bind mount.
+    # - If libnss_wrapper.so is not found, we fall back to default behavior.
+    return f"""
+set -eu
+
+UID="{uid}"
+GID="{gid}"
+USER_NAME="bertrand"
+GROUP_NAME="bertrand"
+HOME_DIR={home_dir}
+
+# If NSS can already resolve the uid/gid, do nothing.
+if command -v getent >/dev/null 2>&1; then
+  if getent passwd "$UID" >/dev/null 2>&1 && getent group "$GID" >/dev/null 2>&1; then
+    export HOME="$HOME_DIR" USER="$USER_NAME" LOGNAME="$USER_NAME"
+    exec "$@"
+  fi
+fi
+
+# Dockerfile guarantees libnss-wrapper is installed. Use ldconfig to find it.
+if ! command -v ldconfig >/dev/null 2>&1; then
+  echo "bertrand: ldconfig not found; cannot locate libnss_wrapper.so" >&2
+  exit 127
+fi
+
+NSS_SO="$(ldconfig -p 2>/dev/null | awk '/libnss_wrapper\\.so/ {{print $NF; exit}}')"
+if [ -z "$NSS_SO" ] || [ ! -r "$NSS_SO" ]; then
+  echo "bertrand: libnss_wrapper.so not found via ldconfig (expected installed)." >&2
+  exit 127
+fi
+
+TMP_DIR="/tmp/bertrand-nss-$UID"
+mkdir -p "$TMP_DIR"
+PASSWD_FILE="$TMP_DIR/passwd"
+GROUP_FILE="$TMP_DIR/group"
+
+cp /etc/passwd "$PASSWD_FILE"
+cp /etc/group "$GROUP_FILE"
+
+echo "$USER_NAME:x:$UID:$GID:Bertrand User:$HOME_DIR:/bin/bash" >> "$PASSWD_FILE"
+echo "$GROUP_NAME:x:$GID:" >> "$GROUP_FILE"
+
+export NSS_WRAPPER_PASSWD="$PASSWD_FILE"
+export NSS_WRAPPER_GROUP="$GROUP_FILE"
+
+# Prepend nss_wrapper while preserving any existing LD_PRELOAD.
+export LD_PRELOAD="$NSS_SO${{LD_PRELOAD:+:$LD_PRELOAD}}"
+
+export HOME="$HOME_DIR" USER="$USER_NAME" LOGNAME="$USER_NAME"
+exec "$@"
+""".strip()
 
 
 def create_environment(
@@ -1008,6 +1260,7 @@ def create_environment(
         spec = DockerEnvironment(
             version=1,
             env_id=str(uuid.uuid4()),
+            dockerfile_digest="",  # filled in during image build
             created=datetime.now(timezone.utc).isoformat(),
             image=image,
             shell=_normalize_shell(shell),
@@ -1015,12 +1268,12 @@ def create_environment(
         _write_environment(env_root, spec)
 
     # ensure image and container
-    _pull_image(spec.image)
+    spec = _ensure_image_built(env_root, spec)
     _ensure_container(env_root, spec)
     return spec
 
 
-def enter_environment(env_root: Path) -> None:
+def enter_environment(env_root: Path, *, as_root: bool = False) -> None:
     """Start and/or attach to a Bertrand Docker environment, dropping into an
     interactive shell.
 
@@ -1028,31 +1281,51 @@ def enter_environment(env_root: Path) -> None:
     ----------
     env_root : Path
         The path to the environment directory.
+    as_root : bool
+        If True, enter the environment as the root user rather than preserving UID/GID
+        permissions from the host system.
 
     Raises
     ------
     ValueError
         If no environment is found at the given path.
-    subprocess.CalledProcessError
+    CommandError
         If any docker command fails.
     """
     env_root = env_root.expanduser().resolve()
     spec = _read_environment(env_root)
     if spec is None:
         raise ValueError(
-            f"No docker environment found at: {env_root} (missing .bertrand.json)"
+            f"No docker environment found at: {env_root} (missing .bertrand/env.json)"
         )
 
-    _pull_image(spec.image)
+    spec = _ensure_image_built(env_root, spec)
     container = _ensure_container(env_root, spec)
 
     cmd = docker_argv([
         "exec", "-it",
         "-w", WORKSPACE,
-        container,
-        *spec.shell
     ])
-    os.execvp(cmd[0], cmd)
+
+    ids = host_user_ids()
+    if as_root or ids is None:
+        if as_root:
+            cmd.extend(["-u", "0:0"])
+        cmd.extend([container, *spec.shell])
+        os.execvp(cmd[0], cmd)
+
+    # wrap the resulting shell with nss_wrapper to ensure uid/gid resolution works
+    else:
+        uid, gid = ids
+        register_ids = _nss_wrapper_script(uid=uid, gid=gid)
+        cmd.extend([
+            "-u", f"{uid}:{gid}",
+            container,
+            "/bin/sh", "-lc", register_ids,
+            "--",
+            *spec.shell
+        ])
+        os.execvp(cmd[0], cmd)
 
 
 def in_environment() -> bool:
@@ -1083,7 +1356,7 @@ def find_environment(start: Path) -> Path:
     Raises
     ------
     FileNotFoundError
-        If no .bertrand.json file is found in any parent directory, indicating that
+        If no .bertrand/env.json file is found in any parent directory, indicating that
         `start` does not lie within a Bertrand environment.
     """
     start = start.expanduser().resolve()
@@ -1091,11 +1364,11 @@ def find_environment(start: Path) -> Path:
         start = start.parent
 
     for p in (start, *start.parents):
-        if (p / ".bertrand.json").exists():
+        if _env_file(p).exists():
             return p
 
     raise FileNotFoundError(
-        f"No .bertrand.json found in any parent directory starting from {start}"
+        f"No .bertrand/env.json found in any parent directory starting from {start}"
     )
 
 
@@ -1115,7 +1388,7 @@ def stop_environment(env_root: Path, *, force: bool) -> None:
         If called from inside a Bertrand Docker environment.
     ValueError
         If no environment is found at the given path.
-    subprocess.CalledProcessError
+    CommandError
         If any docker command fails.
     """
     if in_environment():
@@ -1124,7 +1397,9 @@ def stop_environment(env_root: Path, *, force: bool) -> None:
     env_root = env_root.expanduser().resolve()
     spec = _read_environment(env_root)
     if spec is None:
-        raise ValueError(f"No docker environment found at: {env_root} (missing .bertrand.json)")
+        raise ValueError(
+            f"No docker environment found at: {env_root} (missing .bertrand/env.json)"
+        )
 
     container = f"bertrand-{spec.env_id}"
     timeout = "0" if force else "10"
@@ -1163,7 +1438,9 @@ def delete_environment(
     env_root = env_root.expanduser().resolve()
     spec = _read_environment(env_root)
     if spec is None:
-        raise ValueError(f"No docker environment found at: {env_root} (missing .bertrand.json)")
+        raise ValueError(
+            f"No docker environment found at: {env_root} (missing .bertrand/env.json)"
+        )
 
     container = f"bertrand-{spec.env_id}"
     prompt = (
@@ -1174,11 +1451,44 @@ def delete_environment(
     if not confirm(prompt, assume_yes=assume_yes):
         raise ValueError("Environment deletion declined by user.")
 
-    # remove container (best-effort)
+    # remove container + built image (best-effort)
     _remove_container(container, force=force)
+    docker_cmd(["image", "rm", "-f", _image_tag(spec)], check=False, capture_output=True)
 
     # remove environment directory
     try:
         shutil.rmtree(env_root)
     except OSError as err:
         raise ValueError(f"Failed to remove environment directory: {env_root}\n{err}") from err
+
+
+##########################
+####    DOCKERFILE    ####
+##########################
+
+
+
+
+
+
+
+def docker_content(spec: DockerEnvironment) -> str:
+    """Generate the contents of a Dockerfile for a given DockerEnvironment spec.
+
+    Parameters
+    ----------
+    spec : DockerEnvironment
+        The environment specification.
+
+    Returns
+    -------
+    str
+        The contents to be written to the Dockerfile.
+    """
+    return rf"""
+FROM {spec.image}
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libnss-wrapper \
+    && ldconfig \
+    && rm -rf /var/lib/apt/lists/*
+"""

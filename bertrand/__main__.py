@@ -58,7 +58,7 @@ class Parser:
                 "which invoke the toolchain to build C/C++ extensions on-demand.  It "
                 "may also contain preinstalled developer tools, like language servers, "
                 "package managers, sanitizers, and AI assistants, depending on build "
-                "flags.  Advanced users may also choose to swap out toolchain "
+                "configuration.  Advanced users may also choose to swap out toolchain "
                 "components, such as linkers, build systems, the base container "
                 "image, compiler/Python versions, and more.",
         )
@@ -86,9 +86,12 @@ class Parser:
             action="store_true",
             help=
                 "Force the Docker container to be rebuilt from the ground up.  This "
-                "deletes the existing environment and all files contained within "
-                "and then reinstalls the container from scratch.",
+                "stops and deletes the existing environment, as well as all files "
+                "contained within it, and then reinstalls the container from scratch, "
+                "starting with a fresh base image.",
         )
+        # TODO: jobs should not affect the build, but should instead set the default
+        # number of Bertrand hardware threads inside the container?
         command.add_argument(
             "-j", "--jobs",
             type=int,
@@ -99,19 +102,6 @@ class Parser:
                 "environment.  Defaults to 0, which uses all available CPUs.  Must be "
                 "a positive integer.",
             metavar="N",
-        )
-        command.add_argument(
-            "--swap",
-            type=int,
-            nargs=1,
-            default=[0],
-            help=
-                "Allocate a temporary swap file with the specified size in GB.  This "
-                "is commonly used when bootstrapping a local environment from source, "
-                "as doing so is very resource intensive.  Allocating a large enough "
-                "swap file can allow environments to be built on systems with limited "
-                "RAM.  Defaults to 0, which disables swap file creation.  Requires "
-                "root privileges if set to a non-zero value.",
         )
         command.add_argument(
             "--bootstrap",
@@ -128,6 +118,31 @@ class Parser:
                 "Note that bootstrapping requires the host system to have a working "
                 "C/C++ compiler, Python, Make, and CMake preinstalled, which can be "
                 "done through the system's package manager.",
+        )
+        command.add_argument(
+            "--swap",
+            type=int,
+            nargs=1,
+            default=[0],
+            help=
+                "Allocate a temporary swap file with the specified size in GB.  This "
+                "is commonly used when bootstrapping a local environment from source, "
+                "as doing so is very resource intensive.  Allocating a large enough "
+                "swap file can allow environments to be built on systems with limited "
+                "RAM.  Defaults to 0, which disables swap file creation.  Requires "
+                "root privileges if set to a non-zero value.",
+        )
+        # TODO: implement hardening options during container build
+        command.add_argument(
+            "--harden",
+            nargs=1,
+            default=["basic"],
+            help=
+                "Apply security hardening to the generated Docker container.  Options "
+                "are 'none' (no hardening), and 'basic' (drop most nonessential "
+                "capabilities and use no-new-privileges).  More restrictive hardening "
+                "modes may be added in the future.  Note that this may impact "
+                "compatibility with some software.",
         )
         command.add_argument(
             "--image",
@@ -232,6 +247,17 @@ class Parser:
             type=Path,
             nargs=1,
             help="The path to the environment directory to activate."
+        )
+        command.add_argument(
+            "--root",
+            action="store_true",
+            help=
+                "Enter the environment as the root user, rather than preserving "
+                "UID/GID permissions from the host system.  Use with caution, as "
+                "leaving a container running with root privileges can possibly leak "
+                "those privileges to the host filesystem.  Bertrand ordinarily "
+                "preserves user IDs to prevent users from escalating privileges "
+                "unintentionally.",
         )
 
     def enabled(self) -> None:
@@ -339,9 +365,6 @@ class Parser:
     # -> add a lock file in the environment directory
 
     # TODO: set retry/timeout policies for network ops
-
-    # TODO: think about bind mount UX, root ownership on host files, etc.  The real
-    # way to do this is to match UIDs/GIDs between host and container
 
     # TODO: conan has different syntax for install and uninstall compared to pip, so
     # I'll have to think about how best to handle it.
@@ -577,7 +600,7 @@ def enter(args: argparse.Namespace) -> None:
     """
     path = (Path.cwd() / args.path[0]).resolve()
     try:
-        enter_environment(path)
+        enter_environment(path, as_root=args.root)
     except ValueError as err:
         print(f"bertrand: {err}")
         raise SystemExit(1) from err
@@ -652,7 +675,9 @@ def delete(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
     # if a specific path is given, delete the environment at that path
+    no_args = True
     if args.path is not None:
+        no_args = False
         path = (Path.cwd() / args.path).resolve()
         try:
             delete_environment(path, assume_yes=args.yes, force=args.force)
@@ -662,6 +687,7 @@ def delete(args: argparse.Namespace) -> None:
 
     # delete Docker altogether from the host system
     if args.docker:
+        no_args = False
         if args.path is not None:
             print(
                 "bertrand: cannot specify both an environment path to delete and a "
@@ -678,6 +704,13 @@ def delete(args: argparse.Namespace) -> None:
         except ValueError as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
+
+    if no_args:
+        print(
+            "bertrand: must specify either an environment path to delete, or a "
+            "Bertrand component to uninstall from the host system."
+        )
+        raise SystemExit(1)
 
 
 def build(args: argparse.Namespace) -> None:
