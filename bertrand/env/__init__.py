@@ -7,6 +7,7 @@ from .docker import (
     create_environment,
     enter_environment,
     in_environment,
+    find_environment,
     stop_environment,
     delete_environment,
 )

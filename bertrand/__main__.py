@@ -139,16 +139,6 @@ class Parser:
                 "hosted elsewhere.  Defaults to 'ubuntu:latest', which provides a "
                 "stable and widely compatible base for most development tasks.",
         )
-        command.add_argument(
-            "--workspace",
-            nargs=1,
-            default=["workspace"],
-            help=
-                "The path within the container to mount the environment workspace.  "
-                "Defaults to 'workspace', which creates a directory at the "
-                "container's root level.  This directory is where users should place "
-                "their project files and source code.",
-        )
         # TODO: attempt to install the given shell when I start writing dockerfiles
         command.add_argument(
             "--shell",
@@ -162,7 +152,6 @@ class Parser:
                 "installed if possible, if it is not already present in the container "
                 "image.",
         )
-
         # TODO: figure out toolchain using dockerfiles
         command.add_argument(
             "--ninja",
@@ -351,13 +340,8 @@ class Parser:
 
     # TODO: set retry/timeout policies for network ops
 
-    # TODO: think about how workspaces are managed, and see if I can reuse the
-    # container name, or something.  This may also need to be subject to drift
-    # detection during relocation
-
     # TODO: think about bind mount UX, root ownership on host files, etc.  The real
     # way to do this is to match UIDs/GIDs between host and container
-
 
     # TODO: conan has different syntax for install and uninstall compared to pip, so
     # I'll have to think about how best to handle it.
@@ -566,7 +550,6 @@ def init(args: argparse.Namespace) -> None:
             spec = create_environment(
                 path,
                 image=args.image[0],
-                workspace=args.workspace[0],
                 shell=args.shell[0],
             )
         except ValueError as err:
@@ -575,7 +558,7 @@ def init(args: argparse.Namespace) -> None:
         print(
             f"bertrand: initialized docker env at {path}\n"
             f"bertrand: image={spec.image}\n"
-            f"bertrand: container={spec.container}"
+            f"bertrand: container={path.name}-{spec.env_id}"
         )
 
 

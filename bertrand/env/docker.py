@@ -1,14 +1,14 @@
 """Install Docker Engine and pull container images."""
 import json
-import hashlib
 import os
 import platform
 import shutil
 import shlex
 import subprocess
 import time
+import uuid
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypedDict, List, Literal
@@ -783,21 +783,23 @@ def remove_from_docker_group(*, assume_yes: bool = False) -> bool:
 ###################
 
 
+WORKSPACE: str = "/env"
+
+
 @dataclass(frozen=True)
 class DockerEnvironment:
-    """On-disk metadata representing a local Bertrand environment."""
+    """On-disk metadata representing a local Bertrand environment.  Specific care is
+    taken not to store anything that references the host filesystem, in order to allow
+    renaming/relocation of the environment directory.
+    """
     version: int
-    path: str  # absolute path
-    name: str  # final path component (user-facing)
-    image: str  # e.g. "ubuntu:24.04"
-    container: str  # stable docker container name
-    workspace: str  # e.g. "workspace"
+    env_id: str  # UUID used to derive the container name ('bertrand-{env_id}')
     created: str  # ISO timestamp
-    shell: list[str]  # shell command to execute upon `bertrand enter`
+    image: str  # e.g. "ubuntu:24.04"
+    shell: list[str]  # shell command to execute during `bertrand enter`
 
 
-def _sanitize_name(name: str) -> str:
-    # Docker container names allow [a-zA-Z0-9][a-zA-Z0-9_.-]
+def _sanitize_environment_name(name: str) -> str:
     out = []
     for char in name:
         if char.isalnum() or char in "._-":
@@ -807,18 +809,8 @@ def _sanitize_name(name: str) -> str:
     return "".join(out).strip("-")
 
 
-def _container_name(path: Path) -> str:
-    # include a short hash of the absolute path to avoid collisions
-    env_name = _sanitize_name(path.name)
-    h = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:10]
-    return f"bertrand-{env_name}-{h}"
-
-
-def _workspace_dest(workspace: str) -> str:
-    ws = (workspace or "").strip().strip("/")
-    if not ws:
-        raise ValueError("Invalid workspace path: must be a non-empty path component")
-    return f"/{ws}"
+def _container_name(spec: DockerEnvironment) -> str:
+    return f"bertrand-{spec.env_id}"
 
 
 def _normalize_shell(value: object) -> list[str]:
@@ -844,34 +836,59 @@ def _atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _write_environment(spec: DockerEnvironment) -> Path:
-    path = Path(spec.path)
-    path.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(path / ".bertrand.json", json.dumps(asdict(spec), indent=2) + "\n")
-    return path
+def _write_environment(env_root: Path, spec: DockerEnvironment) -> None:
+    env_root.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(env_root / ".bertrand.json", json.dumps(asdict(spec), indent=2) + "\n")
 
 
-def _read_environment(path: Path) -> DockerEnvironment | None:
-    path /= ".bertrand.json"
-    if not path.exists():
+def _read_environment(env_root: Path) -> DockerEnvironment | None:
+    meta = env_root / ".bertrand.json"
+    if not meta.exists():
         return None
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(meta.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("environment metadata must be a JSON object")
 
-        ws = (data.get("workspace") or "").strip().strip("/")
-        if not ws:
-            raise ValueError("workspace must be a non-empty path component")
-        data["workspace"] = ws
+        # validate version
+        version = data.get("version")
+        if not isinstance(version, int) or version <= 0:
+            raise ValueError(f"missing or invalid 'version' field: {version}")
 
-        if "shell" not in data:
+        # validate created timestamp
+        created = data.get("created")
+        if not isinstance(created, str) or not created.strip():
+            raise ValueError(f"missing or invalid 'created' field: {created}")
+        try:
+            datetime.fromisoformat(created)
+        except Exception as err:
+            raise ValueError(f"created must be a valid ISO timestamp: {created}") from err
+
+        # validate environment id
+        env_id = data.get("env_id")
+        if not isinstance(env_id, str) or not env_id.strip():
+            raise ValueError(f"missing or invalid 'env_id' field: {env_id}")
+        try:
+            uuid.UUID(env_id)
+        except Exception as err:
+            raise ValueError(f"env_id must be a valid UUID string: {env_id}") from err
+
+        # validate image
+        image = data.get("image")
+        if not isinstance(image, str) or not image.strip():
+            raise ValueError(f"missing or invalid 'image' field: {image}")
+
+        # validate shell command
+        shell = data.get("shell")
+        if not isinstance(shell, (str, list)) or not shell:
             raise ValueError("missing required field: shell")
-        data["shell"] = _normalize_shell(data["shell"])
+        data["shell"] = _normalize_shell(shell)
 
         return DockerEnvironment(**data)
+
     except Exception as err:
-        raise ValueError(f"Invalid environment metadata at {path}: {err}") from err
+        raise ValueError(f"Invalid environment metadata at {meta}: {err}") from err
 
 
 def _pull_image(image: str) -> None:
@@ -890,48 +907,6 @@ def _container_inspect(name: str) -> ContainerInspect | None:
         return None
 
 
-def _container_build_args(spec: DockerEnvironment, *, image: str) -> list[str]:
-    path = Path(spec.path).expanduser().resolve()
-    dest = _workspace_dest(spec.workspace)
-    return [
-        "create",
-        "--init",
-        "--name", spec.container,
-        "--hostname", spec.name,
-        "--workdir", dest,
-        "-v", f"{str(path)}:{dest}",
-        "-e", f"BERTRAND_ENV={spec.path}",
-        "-e", f"BERTRAND_ENV_NAME={spec.name}",
-        "-e", f"BERTRAND_ENV_CONTAINER={spec.container}",
-        "-e", f"BERTRAND_ENV_WORKSPACE={dest}",
-        image,
-        "sleep", "infinity",
-    ]
-
-
-def _build_container_from_image(
-    spec: DockerEnvironment,
-    *,
-    image_override: str | None = None,
-) -> None:
-    image = image_override or spec.image
-    docker_cmd(_container_build_args(spec, image=image))
-    docker_cmd(["start", spec.container])
-
-
-def _build_container(spec: DockerEnvironment) -> None:
-    # create if absent
-    info = _container_inspect(spec.container)
-    if info is None:
-        docker_cmd(_container_build_args(spec, image=spec.image))
-        info = _container_inspect(spec.container)
-
-    # start if not running
-    running = bool(((info or {}).get("State") or {}).get("Running"))
-    if not running:
-        docker_cmd(["start", spec.container])
-
-
 def _remove_container(name: str, *, force: bool = False) -> None:
     if force:
         docker_cmd(["rm", "-f", name], check=False, capture_output=True)
@@ -939,143 +914,83 @@ def _remove_container(name: str, *, force: bool = False) -> None:
         docker_cmd(["rm", name], check=False, capture_output=True)
 
 
-def _get_mount_source(container_info: ContainerInspect, *, destination: str) -> Path | None:
+def _get_mount_source(container_info: ContainerInspect) -> Path | None:
     mounts = container_info.get("Mounts") or []
     for m in mounts:
-        if m.get("Type") == "bind" and m.get("Destination") == destination:
+        if m.get("Type") == "bind" and m.get("Destination") == WORKSPACE:
             src = m.get("Source")
             if src:
                 return Path(src).expanduser()
     return None
 
 
-def _snapshot_container(name: str) -> str:
-    timestamp = int(time.time())
-    repo = "bertrand-snapshot"
-    tag = f"{name.lower()}-{timestamp}-{os.getpid()}"
-    ref = f"{repo}:{tag}"
-    docker_cmd(["commit", name, ref])
-    return ref
+def _container_build_args(env_root: Path, spec: DockerEnvironment) -> list[str]:
+    env_root = env_root.expanduser().resolve()
+    container = _container_name(spec)
+    return [
+        "create",
+        "--init",
+        "--name", container,
+        "--hostname", _sanitize_environment_name(env_root.name),
+        "--workdir", WORKSPACE,
+        "-v", f"{str(env_root)}:{WORKSPACE}",
+        "-e", f"BERTRAND_ENV={spec.env_id}",
+        spec.image,
+        "sleep", "infinity",
+    ]
 
 
-def _reconcile_location(path: Path, spec: DockerEnvironment) -> DockerEnvironment:
-    actual = path.expanduser().resolve()
-    desired_container = _container_name(actual)
-    desired_dest = _workspace_dest(spec.workspace)
+def _ensure_container(env_root: Path, spec: DockerEnvironment) -> str:
+    env_root = env_root.expanduser().resolve()
+    container = _container_name(spec)
 
-    # inspect existing container once (if any)
-    info = _container_inspect(spec.container)
-    old_exists = info is not None
-
-    # determine current container mount source (if container exists)
-    mount_src = _get_mount_source(info, destination=desired_dest) if info else None
-    recorded = Path(spec.path).expanduser().resolve()
-    metadata_drift = recorded != actual
-    name_drift = spec.container != desired_container
-    if old_exists and mount_src is None:
-        mount_drift = True
-    elif mount_src is not None:
-        try:
-            mount_drift = mount_src.resolve() != actual
-        except OSError:
-            mount_drift = True  # treat unresolvable as drift
-    else:
-        mount_drift = False
-
-    # if no drift, nothing to do
-    if not (metadata_drift or name_drift or mount_drift):
-        return spec
-
-    # build the desired spec (what we want to converge to)
-    new_spec = replace(
-        spec,
-        path=str(actual),
-        name=actual.name,
-        container=desired_container,
-        workspace=spec.workspace,
-    )
-
-    # if no old container doesn exists, just correct the metadata
-    if not old_exists:
-        _write_environment(new_spec)
-        return new_spec
-
-    old_container = spec.container
-    new_container = new_spec.container
-
-    # if the desired container already exists (retry/partial state), prefer to keep it
-    existing_new = _container_inspect(new_container)
-    if existing_new is not None:
-        # verify its mount actually points to actual.  If not, rebuild it
-        new_mount_src = _get_mount_source(existing_new, destination=desired_dest)
-        ok = False
-        if new_mount_src is not None:
+    # if the environment directory moved, the existing container's bind mount may be
+    # stale.  Docker does not support editing mounts in-place, but we can stop, rm,
+    # and recreate the container if needed.  Note that this will remove any data that
+    # is not stored in the bind mount (i.e., in the container's root filesystem), but
+    # those can be recovered by refreshing the container's image and/or re-installing
+    # the contents of the bind mount.
+    info = _container_inspect(container)
+    if info is not None:
+        mount_src = _get_mount_source(info)
+        mount_ok = False
+        if mount_src is not None:
             try:
-                ok = new_mount_src.resolve() == actual
+                mount_ok = mount_src.resolve() == env_root
             except OSError:
-                ok = False
+                mount_ok = False
 
-        if ok:
-            docker_cmd(["start", new_container], check=False, capture_output=True)
-            _write_environment(new_spec)
-            docker_cmd(["stop", old_container], check=False, capture_output=True)
-            _remove_container(old_container, force=True)
-            return new_spec
+        # if mount is missing or points somewhere else, rebuild
+        if not mount_ok:
+            docker_cmd(["stop", container], check=False, capture_output=True)
+            _remove_container(container, force=True)
+            info = None
 
-        # if it's not ok, do not clobber blindly; remove and rebuild
-        docker_cmd(["stop", new_container], check=False, capture_output=True)
-        _remove_container(new_container, force=True)
+    if info is None:
+        docker_cmd(_container_build_args(env_root, spec))
+        info = _container_inspect(container)
 
-    # transactional migration: snapshot -> create -> start -> write -> remove
-    docker_cmd(["stop", old_container], check=False, capture_output=True)
-    snapshot = ""
-    try:
-        snapshot = _snapshot_container(old_container)
+    running = bool(((info or {}).get("State") or {}).get("Running"))
+    if not running:
+        docker_cmd(["start", container])
 
-        # create/start new container first; keep old for rollback
-        _build_container_from_image(new_spec, image_override=snapshot)
-
-        # only now commit metadata for new container
-        _write_environment(new_spec)
-
-        # remove old container
-        _remove_container(old_container, force=True)
-        return new_spec
-
-    finally:
-        if snapshot:
-            docker_cmd(["image", "rm", snapshot], check=False, capture_output=True)
-
-
-def _candidate_container_names(path: Path, spec: DockerEnvironment) -> list[str]:
-    actual = path.expanduser().resolve()
-    names = [spec.container, _container_name(actual)]
-    out: list[str] = []
-    seen: set[str] = set()
-    for n in names:
-        if n and n not in seen:
-            out.append(n)
-            seen.add(n)
-    return out
+    return container
 
 
 def create_environment(
-    path: Path,
+    env_root: Path,
     *,
     image: str,
-    workspace: str,
     shell: str | list[str],
 ) -> DockerEnvironment:
     """Create (or load) a local Bertrand Docker environment at the given path.
 
     Parameters
     ----------
-    path : Path
-        The path at which to create the environment.
+    env_root : Path
+        The path at which to create the environment directory.
     image : str
         The Docker image to use for the environment.
-    workspace : str
-        The path within the container to mount the environment workspace.
     shell : str | list[str]
         The shell command to execute when entering the environment
 
@@ -1084,42 +999,35 @@ def create_environment(
     DockerEnvironment
         The created or loaded environment specification.
     """
-    path = path.expanduser().resolve()
-    path.mkdir(parents=True, exist_ok=True)
+    env_root = env_root.expanduser().resolve()
+    env_root.mkdir(parents=True, exist_ok=True)
 
     # check for existing environment
-    spec = _read_environment(path)
-    if spec is not None:
-        spec = _reconcile_location(path, spec)
-        _pull_image(spec.image)
-        _build_container(spec)
-        return spec
+    spec = _read_environment(env_root)
+    if spec is None:
+        spec = DockerEnvironment(
+            version=1,
+            env_id=str(uuid.uuid4()),
+            created=datetime.now(timezone.utc).isoformat(),
+            image=image,
+            shell=_normalize_shell(shell),
+        )
+        _write_environment(env_root, spec)
 
-    # create new environment
-    _pull_image(image)
-    spec = DockerEnvironment(
-        version=1,
-        path=str(path),
-        name=path.name,
-        image=image,
-        container=_container_name(path),
-        workspace=workspace,
-        created=datetime.now(timezone.utc).isoformat(),
-        shell=_normalize_shell(shell),
-    )
-    _write_environment(spec)
-    _build_container(spec)
+    # ensure image and container
+    _pull_image(spec.image)
+    _ensure_container(env_root, spec)
     return spec
 
 
-def enter_environment(path: Path) -> None:
+def enter_environment(env_root: Path) -> None:
     """Start and/or attach to a Bertrand Docker environment, dropping into an
     interactive shell.
 
     Parameters
     ----------
-    path : Path
-        The path to the environment.
+    env_root : Path
+        The path to the environment directory.
 
     Raises
     ------
@@ -1128,21 +1036,20 @@ def enter_environment(path: Path) -> None:
     subprocess.CalledProcessError
         If any docker command fails.
     """
-    path = path.expanduser().resolve()
-    spec = _read_environment(path)
+    env_root = env_root.expanduser().resolve()
+    spec = _read_environment(env_root)
     if spec is None:
         raise ValueError(
-            f"No docker environment found at: {path} (missing .bertrand.json)"
+            f"No docker environment found at: {env_root} (missing .bertrand.json)"
         )
 
-    spec = _reconcile_location(path, spec)
     _pull_image(spec.image)
-    _build_container(spec)
+    container = _ensure_container(env_root, spec)
 
     cmd = docker_argv([
         "exec", "-it",
-        "-w", _workspace_dest(spec.workspace),
-        spec.container,
+        "-w", WORKSPACE,
+        container,
         *spec.shell
     ])
     os.execvp(cmd[0], cmd)
@@ -1160,13 +1067,45 @@ def in_environment() -> bool:
     return bool(os.environ.get("BERTRAND_ENV"))
 
 
-def stop_environment(path: Path, *, force: bool) -> None:
+def find_environment(start: Path) -> Path:
+    """Navigate to the root of the Bertrand environment containing the given path.
+
+    Parameters
+    ----------
+    start : Path
+        The starting path to search from.
+
+    Returns
+    -------
+    Path
+        The path to the root of the Bertrand environment's mount directory.
+
+    Raises
+    ------
+    FileNotFoundError
+        If no .bertrand.json file is found in any parent directory, indicating that
+        `start` does not lie within a Bertrand environment.
+    """
+    start = start.expanduser().resolve()
+    if start.is_file():
+        start = start.parent
+
+    for p in (start, *start.parents):
+        if (p / ".bertrand.json").exists():
+            return p
+
+    raise FileNotFoundError(
+        f"No .bertrand.json found in any parent directory starting from {start}"
+    )
+
+
+def stop_environment(env_root: Path, *, force: bool) -> None:
     """Stop an environment container, but leave files and container intact.
 
     Parameters
     ----------
-    path : Path
-        The path to the environment.
+    env_root : Path
+        The path to the environment directory.
     force : bool
         If True, forcibly stop the docker container without waiting.
 
@@ -1182,18 +1121,18 @@ def stop_environment(path: Path, *, force: bool) -> None:
     if in_environment():
         raise RuntimeError("Cannot stop an environment from inside a Bertrand environment.")
 
-    path = path.expanduser().resolve()
-    spec = _read_environment(path)
+    env_root = env_root.expanduser().resolve()
+    spec = _read_environment(env_root)
     if spec is None:
-        raise ValueError(f"No docker environment found at: {path} (missing .bertrand.json)")
+        raise ValueError(f"No docker environment found at: {env_root} (missing .bertrand.json)")
 
+    container = f"bertrand-{spec.env_id}"
     timeout = "0" if force else "10"
-    for name in _candidate_container_names(path, spec):
-        docker_cmd(["stop", "-t", timeout, name], check=False, capture_output=True)
+    docker_cmd(["stop", "-t", timeout, container], check=False, capture_output=True)
 
 
 def delete_environment(
-    path: Path,
+    env_root: Path,
     *,
     assume_yes: bool,
     force: bool
@@ -1202,8 +1141,8 @@ def delete_environment(
 
     Parameters
     ----------
-    path : Path
-        The path to the environment.
+    env_root : Path
+        The path to the environment directory.
     assume_yes : bool
         If True, automatically confirm deletion without prompting the user.
     force : bool
@@ -1221,25 +1160,25 @@ def delete_environment(
             "Cannot delete an environment from inside a Bertrand environment."
         )
 
-    path = path.expanduser().resolve()
-    spec = _read_environment(path)
+    env_root = env_root.expanduser().resolve()
+    spec = _read_environment(env_root)
     if spec is None:
-        raise ValueError(f"No docker environment found at: {path} (missing .bertrand.json)")
+        raise ValueError(f"No docker environment found at: {env_root} (missing .bertrand.json)")
 
+    container = f"bertrand-{spec.env_id}"
     prompt = (
-        f"This will permanently delete the environment at:\n  {path}\n"
-        f"And remove the docker container:\n  {spec.container}\n"
+        f"This will permanently delete the environment at:\n  {env_root}\n"
+        f"And remove the docker container:\n  {container}\n"
         "Proceed? [y/N] "
     )
     if not confirm(prompt, assume_yes=assume_yes):
         raise ValueError("Environment deletion declined by user.")
 
     # remove container (best-effort)
-    for name in _candidate_container_names(path, spec):
-        _remove_container(name, force=force)
+    _remove_container(container, force=force)
 
     # remove environment directory
     try:
-        shutil.rmtree(path)
+        shutil.rmtree(env_root)
     except OSError as err:
-        raise ValueError(f"Failed to remove environment directory: {path}\n{err}") from err
+        raise ValueError(f"Failed to remove environment directory: {env_root}\n{err}") from err
