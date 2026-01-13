@@ -675,14 +675,14 @@ def install_docker(*, assume_yes: bool = False) -> DockerStatus:
     return final_status
 
 
-def uninstall_docker(*, assume_yes: bool = False, remove_data: bool = True) -> None:
+def uninstall_docker(*, assume_yes: bool = False, remove: bool = True) -> None:
     """Uninstall Docker Engine from the host system.
 
     Parameters
     ----------
     assume_yes : bool
         If True, automatically attempt to uninstall Docker without prompting the user.
-    remove_data : bool
+    remove : bool
         If True, also delete /var/lib/docker and /var/lib/containerd to remove all
         Docker images, containers, volumes, and networks.
 
@@ -706,7 +706,7 @@ def uninstall_docker(*, assume_yes: bool = False, remove_data: bool = True) -> N
         "This will uninstall Docker Engine from this machine.\n" + (
             "It will ALSO delete /var/lib/docker and /var/lib/containerd, removing "
             "existing images, containers, volumes, and networks.\n"
-            if remove_data else
+            if remove else
             "It will NOT delete /var/lib/docker or /var/lib/containerd, so existing "
             "images, containers, volumes, and networks will be preserved.\n"
         ) +
@@ -774,7 +774,7 @@ def uninstall_docker(*, assume_yes: bool = False, remove_data: bool = True) -> N
             f"Unsupported Linux distro ID '{distro}', and no supported package manager found."
         )
 
-    if remove_data:
+    if remove:
         # Docker docs: these paths contain images/containers/volumes and are not
         # removed automatically
         run([*sudo, "rm", "-rf", "/var/lib/docker"], check=False)
@@ -958,28 +958,29 @@ def _ensure_dockerfile(env_root: Path, spec: DockerEnvironment) -> None:
     path = _docker_file(env_root)
     if path.exists():
         return
-#     _atomic_write_text(path, rf"""FROM {spec.image}
 
-# # you can extend this file in order to create a reproducible image that others can pull
-# # from using '$ bertrand init --from=<your_project>'.  For example:
+    # # TODO: for now, just copy my own Dockerfile for testing, so that I can edit it
+    # # locally
+    # _atomic_write_text(
+    #     path,
+    #     Path("/home/eerkela/data/bertrand/Dockerfile").read_text(encoding="utf-8")
+    # )
 
-# # RUN pip install .
+    _atomic_write_text(path, rf"""FROM {spec.image}
 
-# # This would compile the contents of the local environment directory and install it
-# # into the base image as an executable binary, Python package, and/or importable C++
-# # module.  When downstream users pull your project as a base image, they will get a
-# # clean environment directory with your additions pre-installed.
+# you can extend this file in order to create a reproducible image that others can pull
+# from using '$ bertrand init --from=<your_project>'.  For example:
 
-# # See the official DockerFile documentation for a comprehensive reference of all the
-# # commands that can be used here, which Bertrand does not alter in any way.
-# """)
+# RUN pip install .
 
-    # TODO: for now, just copy my own Dockerfile for testing, so that I can edit it
-    # locally
-    _atomic_write_text(
-        path,
-        Path("/home/eerkela/data/bertrand/Dockerfile").read_text(encoding="utf-8")
-    )
+# This would compile the contents of the local environment directory and install it
+# into the base image as an executable binary, Python package, and/or importable C++
+# module.  When downstream users pull your project as a base image, they will get a
+# clean environment directory with your additions pre-installed.
+
+# See the official DockerFile documentation for a comprehensive reference of all the
+# commands that can be used here, which Bertrand does not alter in any way.
+""")
 
 
 
@@ -1085,7 +1086,7 @@ def _ensure_image_built(env_root: Path, spec: DockerEnvironment) -> DockerEnviro
             "-t", tag,
             "-f", str(dockerfile),
             "--label", f"bertrand.env_id={spec.env_id}",
-            str(_bertrand_dir(env_root)),
+            str(env_root),
         ])
 
     # persist digest in metadata
@@ -1272,6 +1273,81 @@ exec "$@"
 """.strip()
 
 
+def _copy_editor_hooks(env_root: Path) -> None:
+    env_root = env_root.expanduser().resolve()
+    spec = _read_environment(env_root)
+    if spec is None:
+        return
+
+    container = _container_name(spec)
+    info = _container_inspect(container)
+    if info is None:
+        # environment container not created yet (or deleted); Nothing to copy.
+        return
+
+    # ensure container is running (docker exec requires it)
+    running = bool(((info.get("State") or {}).get("Running")))
+    if not running:
+        docker_cmd(["start", container], check=False, capture_output=True)
+
+    # copy templates into bind mount (/env) without overwriting existing files.
+    # We run inside the container as host UID/GID so created files are owned correctly.
+    ids = host_user_ids()
+    if ids is None:
+        uid, gid = (0, 0)
+    else:
+        uid, gid = ids
+
+    script = r"""
+set -euo pipefail
+
+SRC="/opt/bertrand/templates/devcontainer"
+DST="/env"
+
+# nothing to do if templates are missing in the image
+if [ ! -d "$SRC" ]; then
+  exit 0
+fi
+
+# Create target dirs
+install -d "$DST/.devcontainer" "$DST/.vscode"
+
+copy_if_missing() {
+  local rel="$1"
+  local mode="$2"
+  if [ ! -e "$DST/$rel" ]; then
+    install -m "$mode" "$SRC/$rel" "$DST/$rel"
+  fi
+}
+
+copy_if_missing ".devcontainer/devcontainer.json" "0644"
+copy_if_missing ".devcontainer/postCreate.sh" "0755"
+copy_if_missing ".vscode/tasks.json" "0644"
+copy_if_missing ".vscode/settings.json" "0644"
+""".strip()
+
+    docker_cmd(
+        ["exec", "-u", f"{uid}:{gid}", container, "/bin/sh", "-lc", script],
+        capture_output=True,
+        check=False,  # best-effort; we patch below even if copy partially fails
+    )
+
+    # Patch the devcontainer.json to reference the *actual* image tag for this env.
+    # We only patch if the file exists and parses as JSON.
+    devcontainer_path = env_root / ".devcontainer" / "devcontainer.json"
+    if devcontainer_path.exists():
+        try:
+            data = json.loads(devcontainer_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                desired = _image_tag(spec)  # e.g. bertrand-env:<uuid>
+                if data.get("image") != desired:
+                    data["image"] = desired
+                    _atomic_write_text(devcontainer_path, json.dumps(data, indent=2) + "\n")
+        except json.JSONDecodeError:
+            # if user edited it into invalid JSON, do not clobber their file
+            pass
+
+
 def create_environment(
     env_root: Path,
     *,
@@ -1326,6 +1402,10 @@ def create_environment(
         # ensure image and container are built
         spec = _ensure_image_built(env_root, spec)
         _ensure_container(env_root, spec)
+
+        # copy text editor integrations into environment directory
+        _copy_editor_hooks(env_root)
+
         return spec
 
     # clear swap memory
@@ -1472,7 +1552,8 @@ def delete_environment(
     env_root: Path,
     *,
     assume_yes: bool,
-    force: bool
+    force: bool,
+    remove: bool
 ) -> None:
     """Delete a Bertrand Docker environment at the given path.
 
@@ -1484,6 +1565,10 @@ def delete_environment(
         If True, automatically confirm deletion without prompting the user.
     force : bool
         If True, forcibly remove the docker container even if it is running.
+    remove : bool
+        If True, also delete all files in the environment directory.  If False,
+        only the docker container and image are removed, leaving the environment
+        directory intact.
 
     Raises
     ------
@@ -1505,11 +1590,18 @@ def delete_environment(
         )
 
     container = f"bertrand-{spec.env_id}"
-    prompt = (
-        f"This will permanently delete the environment at:\n  {env_root}\n"
-        f"And remove the docker container:\n  {container}\n"
-        "Proceed? [y/N] "
-    )
+    if remove:
+        prompt = (
+            f"This will permanently delete the environment at:\n  {env_root}\n"
+            "Nothing will survive this operation.\n"
+            "Proceed? [y/N] "
+        )
+    else:
+        prompt = (
+            f"This will delete the docker container for the environment at:\n  {container}\n"
+            "The environment directory will be preserved, along with its contents.\n"
+            "Proceed? [y/N] "
+        )
     if not confirm(prompt, assume_yes=assume_yes):
         raise ValueError("Environment deletion declined by user.")
 
@@ -1518,7 +1610,8 @@ def delete_environment(
     docker_cmd(["image", "rm", "-f", _image_tag(spec)], check=False, capture_output=True)
 
     # remove environment directory
-    try:
-        shutil.rmtree(env_root)
-    except OSError as err:
-        raise ValueError(f"Failed to remove environment directory: {env_root}\n{err}") from err
+    if remove:
+        try:
+            shutil.rmtree(env_root)
+        except OSError as err:
+            raise ValueError(f"Failed to remove environment directory: {env_root}\n{err}") from err

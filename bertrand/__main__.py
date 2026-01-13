@@ -243,6 +243,15 @@ class Parser:
                 "deleting it.",
         )
         command.add_argument(
+            "-rm", "--remove",
+            action="store_true",
+            help=
+                "Also delete all files in the environment directory.  If not set, "
+                "only the docker container and image are removed, leaving the "
+                "environment directory intact.  Note that the contents of the "
+                "directory will be permanently lost if this flag is set.",
+        )
+        command.add_argument(
             "--docker",
             action="store_true",
             help=
@@ -590,7 +599,12 @@ def delete(args: argparse.Namespace) -> None:
         no_args = False
         path = (Path.cwd() / args.path).resolve()
         try:
-            delete_environment(path, assume_yes=args.yes, force=args.force)
+            delete_environment(
+                path,
+                assume_yes=args.yes,
+                force=args.force,
+                remove=args.remove
+            )
         except ValueError as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err

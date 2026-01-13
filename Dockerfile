@@ -366,6 +366,32 @@ RUN set -eux; \
     /opt/claude/bin/claude --version || true
 
 
+#################################
+####    Stage 6: Bertrand    ####
+#################################
+FROM ai AS bertrand_install
+USER root
+ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:${PATH}"
+
+# Make user-installs impossible/ignored during image build
+ENV HOME=/root \
+    PYTHONNOUSERSITE=1 \
+    PIP_USER=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /src
+COPY pyproject.toml /src/
+COPY bertrand /src/bertrand
+
+RUN set -eux; \
+    /opt/python/bin/python -m pip install --no-cache-dir --upgrade pip setuptools wheel; \
+    # Hard force: no user scheme, install into /opt/python
+    /opt/python/bin/python -m pip install --no-cache-dir --no-user /src; \
+    # Verify: console script must exist in the image
+    test -x /opt/python/bin/bertrand; \
+    /opt/python/bin/bertrand --help >/dev/null
+
+
 ###########################
 ####    Final Image    ####
 ###########################
@@ -403,12 +429,13 @@ RUN apt-get update \
 COPY --from=llvm /usr/bin/ninja /usr/bin/ninja
 COPY --from=llvm /opt/llvm /opt/llvm
 COPY --from=cmake /opt/cmake /opt/cmake
-COPY --from=pkg /opt/python /opt/python
+COPY --from=bertrand_install /opt/python /opt/python
 COPY --from=pkg /opt/conan /opt/conan
 COPY --from=ai  /opt/claude /opt/claude
 ENV CONAN_HOME=/opt/conan
 ENV CONAN_USER_HOME=/opt/conan
 ENV DISABLE_AUTOUPDATER=1
+ENV PATH="/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:/opt/claude/bin:${PATH}"
 
 # Symlink tools into container filesystem and configure dynamic linker
 RUN set -eux; \
@@ -449,7 +476,88 @@ RUN set -eux; \
     ln -sf /opt/python/bin/conan /usr/bin/conan; \
     \
     # Claude Code entrypoint
-    ln -sf /opt/claude/bin/claude /usr/bin/claude
+    ln -sf /opt/claude/bin/claude /usr/bin/claude; \
+    \
+    # Bertrand entrypoint
+    ln -sf /opt/python/bin/bertrand /usr/bin/bertrand
+
+# Configure text editor integrations
+RUN set -eux; \
+    install -d /opt/bertrand/templates/devcontainer/.devcontainer; \
+    install -d /opt/bertrand/templates/devcontainer/.vscode; \
+    \
+    cat >/opt/bertrand/templates/devcontainer/.devcontainer/devcontainer.json <<'JSON'
+{
+  "name": "Bertrand",
+  "image": "bertrand:latest",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
+  ],
+  "remoteUser": "root",
+  "containerEnv": {
+    "PATH": "/opt/llvm/bin:/opt/cmake/bin:/opt/python/bin:/opt/claude/bin:${containerEnv:PATH}",
+    "CONAN_HOME": "/opt/conan",
+    "CONAN_USER_HOME": "/opt/conan",
+    "DISABLE_AUTOUPDATER": "1"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode-remote.remote-containers",
+        "llvm-vs-code-extensions.vscode-clangd",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "ms-python.python"
+      ],
+      "settings": {
+        "clangd.path": "/opt/llvm/bin/clangd",
+        "clangd.arguments": [
+          "--background-index",
+          "--clang-tidy",
+          "--completion-style=detailed",
+          "--header-insertion=iwyu"
+        ],
+        "cmake.generator": "Ninja",
+        "cmake.configureOnOpen": true,
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/postCreate.sh"
+}
+JSON \
+    cat >/opt/bertrand/templates/devcontainer/.devcontainer/postCreate.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -f "CMakeLists.txt" ]]; then
+  cmake -S . -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+  ln -sf build/compile_commands.json compile_commands.json
+fi
+clang --version | head -n 1 || true
+clangd --version || true
+cmake --version | head -n 1 || true
+python --version || true
+claude --version || true
+SH
+    \
+    chmod +x /opt/bertrand/templates/devcontainer/.devcontainer/postCreate.sh; \
+    \
+    cat >/opt/bertrand/templates/devcontainer/.vscode/tasks.json <<'JSON'
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Claude: Open (interactive)", "type": "shell", "command": "claude", "problemMatcher": [] }
+  ]
+}
+JSON \
+    cat >/opt/bertrand/templates/devcontainer/.vscode/settings.json <<'JSON'
+{
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "clangd.path": "/opt/llvm/bin/clangd",
+  "cmake.generator": "Ninja"
+}
+JSON
 
 # Sanity check
 RUN clang --version \
