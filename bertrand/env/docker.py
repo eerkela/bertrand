@@ -903,7 +903,7 @@ def _env_file(env_root: Path) -> Path:
 
 
 def _docker_file(env_root: Path) -> Path:
-    return _bertrand_dir(env_root) / DOCKER_FILE
+    return env_root / DOCKER_FILE
 
 
 def _image_tag(spec: DockerEnvironment) -> str:
@@ -958,7 +958,29 @@ def _ensure_dockerfile(env_root: Path, spec: DockerEnvironment) -> None:
     path = _docker_file(env_root)
     if path.exists():
         return
-    _atomic_write_text(path, docker_content(spec))
+#     _atomic_write_text(path, rf"""FROM {spec.image}
+
+# # you can extend this file in order to create a reproducible image that others can pull
+# # from using '$ bertrand init --from=<your_project>'.  For example:
+
+# # RUN pip install .
+
+# # This would compile the contents of the local environment directory and install it
+# # into the base image as an executable binary, Python package, and/or importable C++
+# # module.  When downstream users pull your project as a base image, they will get a
+# # clean environment directory with your additions pre-installed.
+
+# # See the official DockerFile documentation for a comprehensive reference of all the
+# # commands that can be used here, which Bertrand does not alter in any way.
+# """)
+
+    # TODO: for now, just copy my own Dockerfile for testing, so that I can edit it
+    # locally
+    _atomic_write_text(
+        path,
+        Path("/home/eerkela/data/bertrand/Dockerfile").read_text(encoding="utf-8")
+    )
+
 
 
 def _write_environment(env_root: Path, spec: DockerEnvironment) -> None:
@@ -1187,31 +1209,52 @@ USER_NAME="bertrand"
 GROUP_NAME="bertrand"
 HOME_DIR={home_dir}
 
-# If NSS can already resolve the uid/gid, do nothing.
+need_wrap=0
+
+# Determine whether uid/gid are resolvable.
 if command -v getent >/dev/null 2>&1; then
   if getent passwd "$UID" >/dev/null 2>&1 && getent group "$GID" >/dev/null 2>&1; then
     export HOME="$HOME_DIR" USER="$USER_NAME" LOGNAME="$USER_NAME"
     exec "$@"
+  else
+    need_wrap=1
   fi
+else
+  # No getent; assume we may need wrapper, but we can still proceed if unavailable.
+  need_wrap=1
 fi
 
-# Dockerfile guarantees libnss-wrapper is installed. Use ldconfig to find it.
-if ! command -v ldconfig >/dev/null 2>&1; then
-  echo "bertrand: ldconfig not found; cannot locate libnss_wrapper.so" >&2
-  exit 127
+if [ "$need_wrap" -eq 0 ]; then
+  export HOME="$HOME_DIR" USER="$USER_NAME" LOGNAME="$USER_NAME"
+  exec "$@"
 fi
 
-NSS_SO="$(ldconfig -p 2>/dev/null | awk '/libnss_wrapper\\.so/ {{print $NF; exit}}')"
+# Transitional behavior:
+# Prefer ldconfig-based lookup (image-agnostic when configured),
+# but do NOT fail hard if ldconfig or libnss_wrapper is absent yet.
+NSS_SO=""
+
+if command -v ldconfig >/dev/null 2>&1; then
+  NSS_SO="$(ldconfig -p 2>/dev/null | awk '/libnss_wrapper\\.so/ {{print $NF; exit}}' || true)"
+fi
+
 if [ -z "$NSS_SO" ] || [ ! -r "$NSS_SO" ]; then
-  echo "bertrand: libnss_wrapper.so not found via ldconfig (expected installed)." >&2
-  exit 127
+  echo "bertrand: warning: NSS wrapper requested but libnss_wrapper.so not available/configured yet." >&2
+  echo "bertrand: warning: continuing without NSS wrapper; UID/GID may not resolve inside container." >&2
+  export HOME="$HOME_DIR" USER="$USER_NAME" LOGNAME="$USER_NAME"
+  exec "$@"
 fi
 
 TMP_DIR="/tmp/bertrand-nss-$UID"
-mkdir -p "$TMP_DIR"
 PASSWD_FILE="$TMP_DIR/passwd"
 GROUP_FILE="$TMP_DIR/group"
 
+cleanup() {{
+  rm -rf "$TMP_DIR" >/dev/null 2>&1 || true
+}}
+trap cleanup EXIT INT TERM
+
+mkdir -p "$TMP_DIR"
 cp /etc/passwd "$PASSWD_FILE"
 cp /etc/group "$GROUP_FILE"
 
@@ -1233,6 +1276,7 @@ def create_environment(
     env_root: Path,
     *,
     image: str,
+    swap: int,
     shell: str | list[str],
 ) -> DockerEnvironment:
     """Create (or load) a local Bertrand Docker environment at the given path.
@@ -1243,6 +1287,8 @@ def create_environment(
         The path at which to create the environment directory.
     image : str
         The Docker image to use for the environment.
+    swap : int
+        The amount of swap space (in GiB) to allocate during the container build.
     shell : str | list[str]
         The shell command to execute when entering the environment
 
@@ -1254,23 +1300,39 @@ def create_environment(
     env_root = env_root.expanduser().resolve()
     env_root.mkdir(parents=True, exist_ok=True)
 
-    # check for existing environment
-    spec = _read_environment(env_root)
-    if spec is None:
-        spec = DockerEnvironment(
-            version=1,
-            env_id=str(uuid.uuid4()),
-            dockerfile_digest="",  # filled in during image build
-            created=datetime.now(timezone.utc).isoformat(),
-            image=image,
-            shell=_normalize_shell(shell),
-        )
-        _write_environment(env_root, spec)
+    # create swap memory for large builds
+    swapfile = env_root / "swapfile"
+    sudo = sudo_prefix()
+    if swap:
+        run([*sudo, "fallocate", "-l", f"{swap}G", str(swapfile)])
+        run([*sudo, "chmod", "600", str(swapfile)])
+        run([*sudo, "mkswap", str(swapfile)])
+        run([*sudo, "swapon", str(swapfile)])
 
-    # ensure image and container
-    spec = _ensure_image_built(env_root, spec)
-    _ensure_container(env_root, spec)
-    return spec
+    try:
+        # check for existing environment
+        spec = _read_environment(env_root)
+        if spec is None:
+            spec = DockerEnvironment(
+                version=1,
+                env_id=str(uuid.uuid4()),
+                dockerfile_digest="",  # filled in during image build
+                created=datetime.now(timezone.utc).isoformat(),
+                image=image,
+                shell=_normalize_shell(shell),
+            )
+            _write_environment(env_root, spec)
+
+        # ensure image and container are built
+        spec = _ensure_image_built(env_root, spec)
+        _ensure_container(env_root, spec)
+        return spec
+
+    # clear swap memory
+    finally:
+        if swapfile.exists():
+            run([*sudo, "swapoff", str(swapfile)], check=False)
+            swapfile.unlink(missing_ok=True)
 
 
 def enter_environment(env_root: Path, *, as_root: bool = False) -> None:
@@ -1460,35 +1522,3 @@ def delete_environment(
         shutil.rmtree(env_root)
     except OSError as err:
         raise ValueError(f"Failed to remove environment directory: {env_root}\n{err}") from err
-
-
-##########################
-####    DOCKERFILE    ####
-##########################
-
-
-
-
-
-
-
-def docker_content(spec: DockerEnvironment) -> str:
-    """Generate the contents of a Dockerfile for a given DockerEnvironment spec.
-
-    Parameters
-    ----------
-    spec : DockerEnvironment
-        The environment specification.
-
-    Returns
-    -------
-    str
-        The contents to be written to the Dockerfile.
-    """
-    return rf"""
-FROM {spec.image}
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libnss-wrapper \
-    && ldconfig \
-    && rm -rf /var/lib/apt/lists/*
-"""

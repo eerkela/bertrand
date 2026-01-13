@@ -4,6 +4,7 @@
 
 # except for these files...
 !/.gitignore
+!/Dockerfile
 !/CHANGELOG.rst
 !/LICENSE
 !/Makefile

@@ -90,8 +90,6 @@ class Parser:
                 "contained within it, and then reinstalls the container from scratch, "
                 "starting with a fresh base image.",
         )
-        # TODO: jobs should not affect the build, but should instead set the default
-        # number of Bertrand hardware threads inside the container?
         command.add_argument(
             "-j", "--jobs",
             type=int,
@@ -100,24 +98,19 @@ class Parser:
             help=
                 "The number of parallel workers to run when building the "
                 "environment.  Defaults to 0, which uses all available CPUs.  Must be "
-                "a positive integer.",
+                "a positive integer otherwise.",
             metavar="N",
         )
         command.add_argument(
-            "--bootstrap",
-            action="store_true",
+            "--from",
+            nargs=1,
+            default=["ubuntu:latest"],
             help=
-                "Bootstrap a virtual environment from source, rather than downloading "
-                "a precompiled image.  This is the default behavior if no image can "
-                "be found for the current system, or if manually forced through the "
-                "use of this flag.  Most of the time, there's no benefit to building "
-                "this way, and doing so can be time-consuming and brittle, so it's "
-                "not recommended in general.  It can potentially lead to faster "
-                "binaries, however, as the compiler will be built in situ and "
-                "optimized for the host architecture, rather than a generic one.  "
-                "Note that bootstrapping requires the host system to have a working "
-                "C/C++ compiler, Python, Make, and CMake preinstalled, which can be "
-                "done through the system's package manager.",
+                "The base Docker image to use for the virtual environment.  This can "
+                "be any valid Docker image available on Docker Hub or a custom image "
+                "hosted elsewhere, as long as it derives from a Bertrand base image.  "
+                "Defaults to 'bertrand:latest', which provides a stable and widely "
+                "compatible base for most development tasks.",
         )
         command.add_argument(
             "--swap",
@@ -125,14 +118,13 @@ class Parser:
             nargs=1,
             default=[0],
             help=
-                "Allocate a temporary swap file with the specified size in GB.  This "
+                "Allocate a temporary swap file with the specified size in GiB.  This "
                 "is commonly used when bootstrapping a local environment from source, "
-                "as doing so is very resource intensive.  Allocating a large enough "
-                "swap file can allow environments to be built on systems with limited "
-                "RAM.  Defaults to 0, which disables swap file creation.  Requires "
-                "root privileges if set to a non-zero value.",
+                "as doing so can be very resource intensive.  Allocating a large "
+                "enough swap file can allow environments to be built on systems with "
+                "limited RAM.  Defaults to 0, which disables swap file creation.  "
+                "Requires root privileges if set to a non-zero value.",
         )
-        # TODO: implement hardening options during container build
         command.add_argument(
             "--harden",
             nargs=1,
@@ -143,89 +135,6 @@ class Parser:
                 "capabilities and use no-new-privileges).  More restrictive hardening "
                 "modes may be added in the future.  Note that this may impact "
                 "compatibility with some software.",
-        )
-        command.add_argument(
-            "--image",
-            nargs=1,
-            default=["ubuntu:latest"],
-            help=
-                "The base Docker image to use for the virtual environment.  This can "
-                "be any valid Docker image available on Docker Hub or a custom image "
-                "hosted elsewhere.  Defaults to 'ubuntu:latest', which provides a "
-                "stable and widely compatible base for most development tasks.",
-        )
-        # TODO: attempt to install the given shell when I start writing dockerfiles
-        command.add_argument(
-            "--shell",
-            nargs=1,
-            default=["bash -l"],
-            help=
-                "The shell command to execute when entering the environment.  "
-                "Defaults to 'bash -l', which starts a login shell using Bash.  This "
-                "can be changed to any other shell available within the container, "
-                "such as 'zsh -l' or 'fish -l'.  The indicated shell will be "
-                "installed if possible, if it is not already present in the container "
-                "image.",
-        )
-        # TODO: figure out toolchain using dockerfiles
-        command.add_argument(
-            "--ninja",
-            nargs=1,
-            default=["latest"],
-            help=
-                "Set the ninja version to use within the virtual environment.  Uses "
-                "the same version scheme as the compiler, and must be >=1.11.",
-            metavar="X.Y.Z",
-        )
-        command.add_argument(
-            "--clang",
-            nargs=1,
-            default=["latest"],
-            help=
-                "Use the specified Clang version as the environment's compiler.  The "
-                "version must be >=18.0.0.  If set to 'latest', then the most recent "
-                "release will be used.",
-            metavar="X.Y.Z",
-        )
-        command.add_argument(
-            "--cmake",
-            nargs=1,
-            default=["latest"],
-            help=
-                "Set the CMake version to use within the virtual environment.  Uses "
-                "the same version scheme as the compiler, and must be >=3.28.",
-            metavar="X.Y.Z",
-        )
-        command.add_argument(
-            "--mold",
-            nargs=1,
-            default=["latest"],
-            help=
-                "Set the default linker within the virtual environment to mold.  Uses "
-                "the same version scheme as the compiler.  This is the most efficient "
-                "linker for C++ projects, and is recommended for most use cases.",
-            metavar="X.Y.Z",
-        )
-        command.add_argument(
-            "--python",
-            nargs=1,
-            default=["latest"],
-            help=
-                "Set the Python version to use within the virtual environment.  Uses "
-                "the same version scheme as the compiler, and must be >=3.9.",
-            metavar="X.Y.Z",
-        )
-        command.add_argument(
-            "--conan",
-            nargs=1,
-            default=["latest"],
-            help=
-                "Install the Conan package manager within the virtual environment.  "
-                "This is necessary for installing C++ dependencies into the "
-                "environment, and will be installed by default.  Setting this option "
-                "allows users to choose a specific version of Conan to install, which "
-                "must be >=2.0.0.  Defaults to 'latest'.",
-            metavar="X.Y.Z",
         )
 
     def enter(self) -> None:
@@ -572,15 +481,16 @@ def init(args: argparse.Namespace) -> None:
         try:
             spec = create_environment(
                 path,
-                image=args.image[0],
-                shell=args.shell[0],
+                image=getattr(args, "from")[0],
+                swap=args.swap[0],
+                shell=["bash", "-l"],
             )
         except ValueError as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
         print(
             f"bertrand: initialized docker env at {path}\n"
-            f"bertrand: image={spec.image}\n"
+            f"bertrand: image={getattr(spec, 'image')}\n"
             f"bertrand: container={path.name}-{spec.env_id}"
         )
 
