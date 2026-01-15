@@ -489,7 +489,7 @@ RUN set -eux; \
     cat >/opt/bertrand/templates/devcontainer/.devcontainer/devcontainer.json <<'JSON'
 {
   "name": "Bertrand",
-  "image": "bertrand:latest",
+  "image": "${BASE_IMAGE}",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "mounts": [
     "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=cached"
@@ -547,7 +547,12 @@ SH
 {
   "version": "2.0.0",
   "tasks": [
-    { "label": "Claude: Open (interactive)", "type": "shell", "command": "claude", "problemMatcher": [] }
+    {
+        "label": "Claude: Open (interactive)",
+        "type": "shell",
+        "command": "claude",
+        "problemMatcher": []
+    }
   ]
 }
 JSON \

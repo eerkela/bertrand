@@ -1,12 +1,15 @@
 """Run Bertrand from the command line to get include directory, version number, etc.
 """
 import argparse
+import subprocess
 
 from pathlib import Path
 from typing import Callable
 
 # from .env import activate, clean, deactivate, init
 from .env import (
+    CommandError,
+    run,
     install_docker,
     uninstall_docker,
     add_to_docker_group,
@@ -14,10 +17,18 @@ from .env import (
     create_environment,
     enter_environment,
     in_environment,
+    find_environment,
+    monitor_environment,
+    start_environment,
     stop_environment,
+    pause_environment,
+    resume_environment,
     delete_environment,
 )
 from . import __version__
+
+# pylint: disable=unused-argument
+
 
 
 class Parser:
@@ -42,6 +53,27 @@ class Parser:
         """Add the 'version' query to the parser."""
         self.root.add_argument("-v", "--version", action="version", version=__version__)
 
+    # TODO: status <env> / ls   -> display:
+    # - env path
+    # - container name
+    # - running/stopped
+    # - image + digest
+    # - last start time (from inspect)
+    # - mount correctness
+
+    # TODO: bertrand doctor   -> check:
+    # - docker CLI found
+    # - daemon reachable
+    # - permission mode (group vs sudo vs rootless)
+    # - context/DOCKER_HOST
+    # - minimal version check
+    # - ability to docker pull a tiny test image (optional)
+
+    # TODO: there are race conditions under concurrent `bertrand init` or `enter`
+    # -> add a lock file in the environment directory
+
+    # TODO: set retry/timeout policies for network ops
+
     def init(self) -> None:
         """Add the 'init' command to the parser."""
         command = self.commands.add_parser(
@@ -49,26 +81,38 @@ class Parser:
             help=
                 "Install and run Docker Engine if it is not already present.  If a "
                 "path (relative or absolute) is provided as the next argument, then "
-                "pull a Bertrand Docker image to that path in order to create a new "
-                "virtual environment.  A directory will be created at the specified "
-                "path, with a .bertrand.json file that links it to a corresponding "
-                "Docker container managed by the activated Docker Engine daemon.  At "
-                "minimum, the container will hold a full C/C++ compiler toolchain, "
+                "pull a Bertrand-enabled Docker image to that path in order to create "
+                "a new virtual environment.  A directory will be created at the "
+                "specified path, with a .bertrand/env.json file that links it to a "
+                "corresponding Docker container managed by the Docker Engine daemon.  "
+                "At minimum, the container will hold a full C/C++ compiler toolchain, "
                 "bootstrapped Python distribution, and Bertrand's compiler plugins, "
                 "which invoke the toolchain to build C/C++ extensions on-demand.  It "
-                "may also contain preinstalled developer tools, like language servers, "
-                "package managers, sanitizers, and AI assistants, depending on build "
-                "configuration.  Advanced users may also choose to swap out toolchain "
-                "components, such as linkers, build systems, the base container "
-                "image, compiler/Python versions, and more.",
+                "may also contain preinstalled developer tools, like language "
+                "servers, package managers, sanitizers, and AI assistants, unless it "
+                "is built from a release image that omits these in order to reduce "
+                "container size.",
         )
         command.add_argument(
             "path",
             nargs="?",
             help=
-                "The relative path to the virtual environment to create, starting "
-                "from the current working directory.  The path must include at least "
-                "one component, which is the name of the environment to create.",
+                "The path to the virtual environment directory to create, if any.  "
+                "This may be an absolute or relative path starting from the current "
+                "working directory, and the last component will be used as the "
+                "environment name.",
+        )
+        command.add_argument(
+            "--from",
+            nargs=1,
+            # TODO: replace this with `bertrand:latest` once that becomes available
+            default=["ubuntu:latest"],
+            help=
+                "The base Docker image to use for the virtual environment.  This can "
+                "be any valid Docker image available on Docker Hub or a custom image "
+                "hosted elsewhere, as long as it derives from a Bertrand base image.  "
+                "Defaults to 'bertrand:latest', which provides a stable and widely "
+                "compatible base for most development tasks.",
         )
         command.add_argument(
             "-y", "--yes",
@@ -86,31 +130,9 @@ class Parser:
             action="store_true",
             help=
                 "Force the Docker container to be rebuilt from the ground up.  This "
-                "stops and deletes the existing environment, as well as all files "
-                "contained within it, and then reinstalls the container from scratch, "
-                "starting with a fresh base image.",
-        )
-        command.add_argument(
-            "-j", "--jobs",
-            type=int,
-            nargs=1,
-            default=[0],
-            help=
-                "The number of parallel workers to run when building the "
-                "environment.  Defaults to 0, which uses all available CPUs.  Must be "
-                "a positive integer otherwise.",
-            metavar="N",
-        )
-        command.add_argument(
-            "--from",
-            nargs=1,
-            default=["ubuntu:latest"],
-            help=
-                "The base Docker image to use for the virtual environment.  This can "
-                "be any valid Docker image available on Docker Hub or a custom image "
-                "hosted elsewhere, as long as it derives from a Bertrand base image.  "
-                "Defaults to 'bertrand:latest', which provides a stable and widely "
-                "compatible base for most development tasks.",
+                "stops and deletes the existing container while preserving all files "
+                "within the environment directory, and then reinstalls the container "
+                "from scratch, starting from a fresh base image.",
         )
         command.add_argument(
             "--swap",
@@ -126,15 +148,15 @@ class Parser:
                 "Requires root privileges if set to a non-zero value.",
         )
         command.add_argument(
-            "--harden",
-            nargs=1,
-            default=["basic"],
+            "build_args",
+            nargs=argparse.REMAINDER,
             help=
-                "Apply security hardening to the generated Docker container.  Options "
-                "are 'none' (no hardening), and 'basic' (drop most nonessential "
-                "capabilities and use no-new-privileges).  More restrictive hardening "
-                "modes may be added in the future.  Note that this may impact "
-                "compatibility with some software.",
+                "Additional arguments to pass to the 'docker build' command when "
+                "building the environment's Docker image.  These are passed directly "
+                "to the user's Dockerfile, and can be used to specify build-time "
+                "variables, proxy settings, or other customizations.  For more "
+                "information, see the Docker documentation for 'docker build', as "
+                "well as Dockerfile configuration more generally.",
         )
 
     def enter(self) -> None:
@@ -158,6 +180,17 @@ class Parser:
             help="The path to the environment directory to activate."
         )
         command.add_argument(
+            "-y", "--yes",
+            action="store_true",
+            help=
+                "Automatically answer 'yes' to all prompts during environment "
+                "entry.  This is useful for scripting and automation, where user "
+                "interaction is not possible or desired.  Note that some steps (such "
+                "as installing Docker if it is not already present, or using it "
+                "without sudo or docker group privileges) may still prompt the user "
+                "for elevated permissions, and will not be affected by this flag.",
+        )
+        command.add_argument(
             "--root",
             action="store_true",
             help=
@@ -174,11 +207,117 @@ class Parser:
         self.commands.add_parser(
             "enabled",
             help=
-                "Check if the current shell session is running within a Bertrand "
-                "virtual environment.  If so, the command exits with a status code of "
-                "0; otherwise, it exits with a status code of 1.  This can be useful "
-                "for scripts and automation that need to verify whether they are "
-                "operating within an isolated environment or on the host system.",
+                "Print the path to the current Bertrand virtual environment, or an "
+                "empty string if no environment is currently active.  This can be "
+                "used by scripts and automation to determine whether they are "
+                "running within a Bertrand environment or on the host system.",
+        )
+
+    def ls(self) -> None:
+        """Add the 'ls' command to the parser."""
+        command = self.commands.add_parser(
+            "ls",
+            help=
+                "List the Bertrand environments installed on the host system, as well "
+                "as their current status (running/stopped), image, size, and other "
+                "useful information."
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs="?",
+            help=
+                "The path to the environment directory to check.  If omitted, all "
+                "Bertrand environments on the host system will be listed.",
+        )
+        command.add_argument(
+            "--name",
+            type=str,
+            nargs="*",
+            help=
+                "Filter the list of environments by their names.  Multiple names can "
+                "be specified, and only environments matching one or more of the "
+                "given names will be shown.  Partial matches are supported.",
+        )
+        command.add_argument(
+            "--running",
+            action="store_true",
+            help=
+                "Show only running Bertrand environments.  By default, all "
+                "environments are displayed, regardless of their status.  In this "
+                "context, 'running' covers the 'running' and 'restarting' states.",
+        )
+        command.add_argument(
+            "--stopped",
+            action="store_true",
+            help=
+                "Show only stopped Bertrand environments.  By default, all "
+                "environments are displayed, regardless of their status.  In this "
+                "context, 'stopped' covers the 'created', 'removing', 'paused', "
+                "'exited', and 'dead' states.",
+        )
+        command.add_argument(
+            "--healthy",
+            action="store_true",
+            help=
+                "Show only environments whose Docker containers are currently "
+                "healthy, according to their configured health checks.",
+        )
+        command.add_argument(
+            "--unhealthy",
+            action="store_true",
+            help=
+                "Show only environments whose Docker containers are currently "
+                "unhealthy, according to their configured health checks.",
+        )
+
+    def top(self) -> None:
+        """Add the 'top' command to the parser."""
+        command = self.commands.add_parser(
+            "top",
+            help=
+                "Display the running containers and their resource utilization "
+                "statistics, or those of the processes within a specific Bertrand "
+                "environment, depending on whether a path is provided."
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs="?",
+            help=
+                "The path to the environment directory to inspect.  If omitted, all "
+                "running Bertrand environments on the host system will be shown.",
+        )
+
+    # TODO: logging is not well-supported atm
+    def log(self) -> None:
+        """Add the 'log' command to the parser."""
+        command = self.commands.add_parser(
+            "log",
+            help=
+                "Display the Docker logs for a Bertrand environment at the specified "
+                "path."
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs=1,
+            help="The path to the environment directory to view logs for."
+        )
+
+    def start(self) -> None:
+        """Add the 'start' command to the parser."""
+        command = self.commands.add_parser(
+            "start",
+            help=
+                # TODO
+                "Start"
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs=1,
+            help="The path to the environment directory to start."
         )
 
     def stop(self) -> None:
@@ -205,7 +344,75 @@ class Parser:
                 "Force stop the environment, even if there are active processes "
                 "running within the container.  This will terminate all processes "
                 "immediately, which may lead to data loss or corruption if they are "
-                "in the middle of writing to files.",
+                "in the middle of writing to a file or network connection.",
+        )
+        command.add_argument(
+            "-t", "--timeout",
+            type=int,
+            default=30,
+            help=
+                "Timeout duration in seconds to wait for the environment to stop "
+                "gracefully before killing the container.",
+        )
+
+    def pause(self) -> None:
+        """"Add the 'pause' command to the parser."""
+        command = self.commands.add_parser(
+            "pause",
+            help=
+                "Pause a running Bertrand virtual environment at the specified path, "
+                "suspending all processes within the container without terminating "
+                "them.  This is weaker than 'stop', as it allows the environment to "
+                "be resumed later without a full restart, preserving its state in "
+                "memory.",
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs=1,
+            help="The path to the environment directory to pause."
+        )
+
+    def resume(self) -> None:
+        """Add the 'resume' command to the parser."""
+        command = self.commands.add_parser(
+            "resume",
+            help=
+                "Resume a paused Bertrand virtual environment at the specified path, "
+                "restoring all processes within the container to their previous state.  "
+                "This allows users to continue working from where they left off "
+                "without having to restart the environment from scratch.",
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs=1,
+            help="The path to the environment directory to resume."
+        )
+
+    def restart(self) -> None:
+        """Add the 'restart' command to the parser."""
+        command = self.commands.add_parser(
+            "restart",
+            help=
+                "Restart a running Bertrand virtual environment at the specified path.  "
+                "This stops the environment if it is running, then starts it again, "
+                "allowing users to apply configuration changes or recover from errors "
+                "without having to manually stop and start the environment.",
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs=1,
+            help="The path to the environment directory to restart."
+        )
+        command.add_argument(
+            "-t", "--timeout",
+            type=int,
+            default=30,
+            help=
+                "Timeout duration in seconds to wait for the environment to stop "
+                "before killing the container."
         )
 
     def delete(self) -> None:
@@ -213,18 +420,16 @@ class Parser:
         command = self.commands.add_parser(
             "delete",
             help=
-                "Delete a Bertrand virtual environment at the specified path.  This "
-                "removes the environment directory and all files contained within, as "
-                "well as deleting the associated Docker container managed by Docker "
-                "Engine.  Use this command with caution, as it permanently deletes "
-                "all data within the environment.  Cannot be run while inside a "
-                "virtual environment shell.",
+                "Delete a Bertrand environment at the specified path.  This preserves "
+                "the environment directory and its contents by default, but removes "
+                "the underlying Docker container, forcing it to be rebuilt in the "
+                "future.",
         )
         command.add_argument(
             "path",
             type=Path,
             nargs="?",
-            help="The path to the environment directory to delete."
+            help="The path to the environment that will be deleted."
         )
         command.add_argument(
             "-y", "--yes",
@@ -240,16 +445,16 @@ class Parser:
             help=
                 "Force deletion of the environment, even if the Docker container is "
                 "currently running.  This will stop the container if necessary before "
-                "deleting it.",
+                "deleting it, which may lead to data loss or corruption if it is in "
+                "the middle of writing to a file or network connection",
         )
         command.add_argument(
             "-rm", "--remove",
             action="store_true",
             help=
-                "Also delete all files in the environment directory.  If not set, "
-                "only the docker container and image are removed, leaving the "
-                "environment directory intact.  Note that the contents of the "
-                "directory will be permanently lost if this flag is set.",
+                "Also delete the environment directory.  If not set, only the Docker "
+                "container is removed, leaving the environment directory intact.  "
+                "Note that the contents of the directory will be permanently lost.",
         )
         command.add_argument(
             "--docker",
@@ -263,92 +468,55 @@ class Parser:
                 "system as well.",
         )
 
-    # TODO: status <env> / ls   -> display:
-    # - env path
-    # - container name
-    # - running/stopped
-    # - image + digest
-    # - last start time (from inspect)
-    # - mount correctness
-
-    # TODO: bertrand doctor   -> check:
-    # - docker CLI found
-    # - daemon reachable
-    # - permission mode (group vs sudo vs rootless)
-    # - context/DOCKER_HOST
-    # - minimal version check
-    # - ability to docker pull a tiny test image (optional)
-
-    # TODO: there are race conditions under concurrent `bertrand init` or `enter`
-    # -> add a lock file in the environment directory
-
-    # TODO: set retry/timeout policies for network ops
-
-    # TODO: conan has different syntax for install and uninstall compared to pip, so
-    # I'll have to think about how best to handle it.
-
-    def install(self) -> None:
-        """Add the 'install' command to the parser."""
+    def pack(self) -> None:
+        """Add the 'pack' command to the parser."""
         command = self.commands.add_parser(
-            "install",
+            "pack",
             help=
-                "Install a C++ dependency into the virtual environment using the "
-                "Conan package manager.  This command will download the specified "
-                "package from the Conan repository and then install it into the "
-                "virtual environment similar to pip.",
+                # TODO: expand docs?
+                "Compress a Bertrand environment into a tar archive.  "
+                "`$ bertrand unpack <archive>` can be used to rebuild the environment "
+                "on another machine."
         )
         command.add_argument(
-            "package",
+            "path",
+            type=Path,
             nargs=1,
-            help=
-                "Specifies the package to install.  Must be provided in the format: "
-                "`package/version@find/link`, where the 'package/version' fragment is "
-                "identical to a normal `conan install` command, and the 'find/link' "
-                "fragment tells CMake how to locate the package's headers and "
-                "libraries.  The `find` and `link` symbols can typically be found on "
-                "the package's conan.io page under the CMake `find_package` and "
-                "`target_link_libraries` examples.  After installing, this "
-                "information will be saved to the environment's [[packages]] array, "
-                "and will be automatically inserted whenever C/C++ code is compiled "
-                "within it.",
-        )
-        command.add_argument(
-            "options",
-            nargs="*",
-            help=
-                "Additional options to pass to the Conan install command.  These are "
-                "passed directly to Conan, and can be used to specify build options, "
-                "compiler flags, or other package-specific settings.  For more "
-                "information, see the Conan documentation.",
+            help="The path to the environment directory to compress."
         )
 
-    def uninstall(self) -> None:
-        """Add the 'uninstall' command to the parser."""
+    def unpack(self) -> None:
+        """Add the 'unpack' command to the parser."""
         command = self.commands.add_parser(
-            "uninstall",
+            "unpack",
             help=
-                "Uninstall a C++ dependency from the virtual environment using the "
-                "Conan package manager.  Identical to the `conan remove` command, "
-                "except that it also updates the environment's [[packages]] array to "
-                "reflect the new state.",
+                # TODO: expand docs?
+                "Extract a compressed Bertrand environment into a full container, "
+                "rebuilding it from scratch using the contents of the extracted "
+                "environment directory."
         )
         command.add_argument(
-            "package",
+            "path",
+            type=Path,
             nargs=1,
-            help=
-                "Specifies the package to uninstall.  Must be provided in the format: "
-                "`package/version`, where the 'package/version' fragment is "
-                "identical to a normal `conan install` command, and the 'find/link' "
-                "fragment tells CMake how to locate the package's headers and "
-                "libraries.  The `find` and `link` symbols can typically be found on "
-                "the package's conan.io page under the CMake `find_package` and "
-                "`target_link_libraries` examples.  After uninstalling, this "
-                "information will be removed from the environment's [[packages]] array, "
-                "and will no longer be inserted whenever C/C++ code is compiled within "
-                "it.",
+            help="The path to the environment directory to extract."
         )
 
-    # TODO: update command
+    def publish(self) -> None:
+        """Add the 'publish' command to the parser."""
+        command = self.commands.add_parser(
+            "publish",
+            help=
+                # TODO: expand docs?
+                "Push a Bertrand environment to Docker Hub or a custom repository "
+                "of Docker images."
+        )
+        command.add_argument(
+            "path",
+            type=Path,
+            nargs=1,
+            help="The path to the environment directory to publish."
+        )
 
     def build(self) -> None:
         """Add the 'build' command to the parser."""
@@ -418,18 +586,30 @@ class Parser:
         self.init()
         self.enter()
         self.enabled()
+        self.ls()
+        self.start()
         self.stop()
+        self.pause()
+        self.resume()
+        self.restart()
         self.delete()
-        # self.install()
-        # self.build()
-        # self.clean()
+        self.pack()
+        self.unpack()
+        self.build()
+        self.clean()
 
         return self.root.parse_args()
 
 
-def init_docker() -> None:
+def init_docker(*, assume_yes: bool = False) -> None:
     """Ensure Docker is installed and ready to use.  This is invoked at the beginning
     of nearly every other bertrand command.
+
+    Parameters
+    ----------
+    assume_yes : bool, optional
+        Whether to automatically answer 'yes' to all prompts during Docker
+        installation and configuration.  Defaults to False.
 
     Raises
     ------
@@ -439,8 +619,8 @@ def init_docker() -> None:
     """
     # ensure Docker is installed, or attempt to install it automatically
     try:
-        status = install_docker(assume_yes=False)
-    except ValueError as err:
+        status = install_docker(assume_yes=assume_yes)
+    except Exception as err:
         print(f"bertrand: {err}")
         raise SystemExit(1) from err
 
@@ -459,7 +639,7 @@ def init_docker() -> None:
     # if the user is not in the docker group, forcing them to use sudo to run
     # docker commands, offer to add them to the group now
     if status.sudo_required:
-        added = add_to_docker_group(assume_yes=False)
+        added = add_to_docker_group(assume_yes=assume_yes)
         if added:
             print(
                 "bertrand: Added you to the docker group.\n"
@@ -482,24 +662,50 @@ def init(args: argparse.Namespace) -> None:
     SystemExit
         If an error occurs during environment initialization.
     """
-    init_docker()
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand init' from inside a Bertrand "
+            "environment.  Please exit the current environment before initializing a "
+            "new one."
+        )
+        raise SystemExit(1)
+
+    # ensure Docker is installed and ready to use
+    init_docker(assume_yes=args.yes)
 
     # create an environment at the specified path
     if args.path is not None:
         path = (Path.cwd() / args.path).resolve()
+
+        # if --force is set, delete any existing environment at that path first, but
+        # retain user files
+        if args.force:
+            try:
+                delete_environment(
+                    path,
+                    assume_yes=args.yes,
+                    force=args.force,
+                    remove=False
+                )
+            except Exception as err:
+                print(f"bertrand: {err}")
+                raise SystemExit(1) from err
+
+        # build the container
         try:
             spec = create_environment(
                 path,
                 image=getattr(args, "from")[0],
                 swap=args.swap[0],
                 shell=["bash", "-l"],
+                docker_build_args=args.docker_build_args,
             )
-        except ValueError as err:
+        except Exception as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
         print(
             f"bertrand: initialized docker env at {path}\n"
-            f"bertrand: image={getattr(spec, 'image')}\n"
+            f"bertrand: image={spec.image}\n"
             f"bertrand: container={path.name}-{spec.env_id}"
         )
 
@@ -517,12 +723,32 @@ def enter(args: argparse.Namespace) -> None:
     SystemExit
         If an error occurs during environment entry.
     """
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand enter' from inside a Bertrand "
+            "environment.  Please exit the current environment before entering "
+            "another one."
+        )
+        raise SystemExit(1)
+
+    # ensure Docker is installed and ready to use
+    init_docker(assume_yes=args.yes)
+
+    # get a shell within the specified environment
     path = (Path.cwd() / args.path[0]).resolve()
     try:
         enter_environment(path, as_root=args.root)
-    except ValueError as err:
+    except Exception as err:
         print(f"bertrand: {err}")
         raise SystemExit(1) from err
+
+
+# TODO: there might be a more robust version of `enabled` that checks the environment
+# variable directly, and maps it back to a path, rather than relying on the current
+# working directory being within the environment, especially since `bertrand enter`
+# will drop us into a shell where the cwd might change.
+# -> Doing this is tied to refactoring environment ids and how environments are
+# linked together.
 
 
 def enabled(args: argparse.Namespace) -> None:
@@ -532,14 +758,135 @@ def enabled(args: argparse.Namespace) -> None:
     ----------
     args : argparse.Namespace
         The parsed command-line arguments.
+    """
+    if in_environment():
+        print(str(find_environment(Path.cwd())))
+    else:
+        print("")
+
+
+def ls(args: argparse.Namespace) -> None:
+    """Execute the `bertrand ls` CLI command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command-line arguments.
 
     Raises
     ------
     SystemExit
-        With a status code of 0 if in a Bertrand environment, or 1 otherwise, for
-        inter-process communication.
+        If an error occurs during environment listing.
     """
-    raise SystemExit(not in_environment())
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand ls' from inside a Bertrand "
+            "environment.  Please exit the current environment before listing "
+            "available environments and their statuses."
+        )
+        raise SystemExit(1)
+
+    try:
+        cmd = [
+            "docker", "ps",
+            "--filter", "label=bertrand",
+        ]
+        if args.path is not None:
+            cmd.extend(["--filter", f"volume={args.path.expanduser().resolve()}"])
+        if args.running:
+            cmd.extend([
+                "--filter", "status=running",
+                "--filter", "status=restarting",
+            ])
+        if args.stopped:
+            cmd.extend([
+                "--filter", "status=created",
+                "--filter", "status=removing",
+                "--filter", "status=paused",
+                "--filter", "status=exited",
+                "--filter", "status=dead",
+            ])
+        if args.name is not None:
+            for name in args.name:
+                cmd.extend(["--filter", f"name={name}"])
+        if args.healthy:
+            cmd.extend(["--filter", "health=healthy"])
+        if args.unhealthy:
+            cmd.extend(["--filter", "health=unhealthy"])
+        cmd.extend(["--size", "--no-trunc"])
+        run(cmd)
+
+    except CommandError as err:
+        if err.stdout:
+            print(f"bertrand: {err.stdout}")
+        if err.stderr:
+            print(f"bertrand: {err.stderr}")
+        raise SystemExit(1) from err
+
+
+def top(args: argparse.Namespace) -> None:
+    """Execute the `bertrand top` CLI command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command-line arguments.
+
+    Raises
+    ------
+    SystemExit
+        If an error occurs during environment process listing.
+    """
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand top' from inside a Bertrand "
+            "environment.  Please exit the current environment before listing "
+            "processes."
+        )
+        raise SystemExit(1)
+
+    try:
+        if args.path is None:
+            subprocess.check_call(["docker", "stats"])
+        else:
+            path = (Path.cwd() / args.path).resolve()
+            monitor_environment(path)
+
+    except subprocess.CalledProcessError as err:
+        if err.stdout:
+            print(f"bertrand: {err.stdout}")
+        if err.stderr:
+            print(f"bertrand: {err.stderr}")
+        raise SystemExit(1) from err
+
+
+def start(args: argparse.Namespace) -> None:
+    """Execute the `bertrand start` CLI command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command-line arguments.
+
+    Raises
+    ------
+    SystemExit
+        If an error occurs during environment start.
+    """
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand start' from inside a Bertrand "
+            "environment.  Please exit the current environment before starting a "
+            "new one."
+        )
+        raise SystemExit(1)
+
+    path = (Path.cwd() / args.path[0]).resolve()
+    try:
+        start_environment(path)
+    except Exception as err:
+        print(f"bertrand: {err}")
+        raise SystemExit(1) from err
 
 
 def stop(args: argparse.Namespace) -> None:
@@ -553,22 +900,75 @@ def stop(args: argparse.Namespace) -> None:
     Raises
     ------
     SystemExit
-        If an error occurs during environment stoppage.
+        If an error occurs during environment stop.
     """
     if in_environment():
         print(
             "bertrand: cannot invoke 'bertrand stop' from inside a Bertrand "
-            "environment."
+            "environment.  Please exit the current environment before stopping one."
         )
         raise SystemExit(1)
 
     path = (Path.cwd() / args.path[0]).resolve()
     try:
-        stop_environment(
-            path,
-            force=args.force,
+        stop_environment(path, force=args.force,)
+    except Exception as err:
+        print(f"bertrand: {err}")
+        raise SystemExit(1) from err
+
+
+def pause(args: argparse.Namespace) -> None:
+    """Execute the `bertrand pause` CLI command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command-line arguments.
+
+    Raises
+    ------
+    SystemExit
+        If an error occurs during environment pause.
+    """
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand pause' from inside a Bertrand "
+            "environment.  Please exit the current environment before pausing one."
         )
-    except ValueError as err:
+        raise SystemExit(1)
+
+    path = (Path.cwd() / args.path[0]).resolve()
+    try:
+        pause_environment(path)
+    except Exception as err:
+        print(f"bertrand: {err}")
+        raise SystemExit(1) from err
+
+
+def resume(args: argparse.Namespace) -> None:
+    """Execute the `bertrand resume` CLI command.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+        The parsed command-line arguments.
+
+    Raises
+    ------
+    SystemExit
+        If an error occurs during environment resume.
+    """
+    if in_environment():
+        print(
+            "bertrand: cannot invoke 'bertrand resume' from inside a Bertrand "
+            "environment.  Please exit the current environment before resuming one."
+        )
+        raise SystemExit(1)
+
+    path = (Path.cwd() / args.path[0]).resolve()
+    try:
+        resume_environment(path)
+    except Exception as err:
         print(f"bertrand: {err}")
         raise SystemExit(1) from err
 
@@ -589,7 +989,7 @@ def delete(args: argparse.Namespace) -> None:
     if in_environment():
         print(
             "bertrand: cannot invoke 'bertrand delete' from inside a Bertrand "
-            "environment."
+            "environment.  Please exit the current environment before deleting one."
         )
         raise SystemExit(1)
 
@@ -605,7 +1005,7 @@ def delete(args: argparse.Namespace) -> None:
                 force=args.force,
                 remove=args.remove
             )
-        except ValueError as err:
+        except Exception as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
 
@@ -620,12 +1020,12 @@ def delete(args: argparse.Namespace) -> None:
             raise SystemExit(1)
         try:
             uninstall_docker(assume_yes=args.yes)
-        except ValueError as err:
+        except Exception as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
         try:
             remove_from_docker_group()
-        except ValueError as err:
+        except Exception as err:
             print(f"bertrand: {err}")
             raise SystemExit(1) from err
 
@@ -694,7 +1094,11 @@ commands: dict[str, Callable[[argparse.Namespace], None]] = {
     "init": init,
     "enter": enter,
     "enabled": enabled,
+    "ls": ls,
+    "start": start,
     "stop": stop,
+    "pause": pause,
+    "resume": resume,
     "delete": delete,
     "build": build,
     "clean": clean,
