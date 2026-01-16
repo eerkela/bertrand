@@ -10,15 +10,14 @@ from typing import Callable
 from .env import (
     CommandError,
     run,
-    install_docker,
-    uninstall_docker,
-    add_to_docker_group,
-    remove_from_docker_group,
+    ensure_docker,
+    clean_docker,
     create_environment,
-    enter_environment,
     in_environment,
+    list_environments,
     find_environment,
     monitor_environment,
+    enter_environment,
     start_environment,
     stop_environment,
     pause_environment,
@@ -202,15 +201,29 @@ class Parser:
                 "unintentionally.",
         )
 
-    def enabled(self) -> None:
-        """Add the 'enabled' query to the parser."""
-        self.commands.add_parser(
-            "enabled",
+    def find(self) -> None:
+        """Add the 'find' query to the parser."""
+        command = self.commands.add_parser(
+            "find",
             help=
-                "Print the path to the current Bertrand virtual environment, or an "
-                "empty string if no environment is currently active.  This can be "
-                "used by scripts and automation to determine whether they are "
-                "running within a Bertrand environment or on the host system.",
+                "Print the path(s) to all Bertrand virtual environment directories "
+                "that match a given ID or name fragment.  If no argument is provided, "
+                "then the current environment (if any) will be reported instead.  If "
+                "multiple environments match the given name fragment, then they will "
+                "be printed one per line.  This can be used by scripts and automation "
+                "tools to locate specific environments on the host system, or to "
+                "detect whether they are running within a Bertrand environment.",
+        )
+        command.add_argument(
+            "container",
+            type=str,
+            nargs="?",
+            help=
+                "The name or ID of the Docker container to look up.  If omitted, "
+                "the current environment (if any) will be looked up instead.  If a "
+                "name is given, then it may be a partial match for one or more "
+                "containers, in which case all matching containers will be printed "
+                "one per line.",
         )
 
     def ls(self) -> None:
@@ -585,7 +598,7 @@ class Parser:
         # commands
         self.init()
         self.enter()
-        self.enabled()
+        self.find()
         self.ls()
         self.start()
         self.stop()
@@ -698,7 +711,7 @@ def init(args: argparse.Namespace) -> None:
                 image=getattr(args, "from")[0],
                 swap=args.swap[0],
                 shell=["bash", "-l"],
-                docker_build_args=args.docker_build_args,
+                docker_build_args=args.build_args,
             )
         except Exception as err:
             print(f"bertrand: {err}")
@@ -743,26 +756,21 @@ def enter(args: argparse.Namespace) -> None:
         raise SystemExit(1) from err
 
 
-# TODO: there might be a more robust version of `enabled` that checks the environment
-# variable directly, and maps it back to a path, rather than relying on the current
-# working directory being within the environment, especially since `bertrand enter`
-# will drop us into a shell where the cwd might change.
-# -> Doing this is tied to refactoring environment ids and how environments are
-# linked together.
-
-
-def enabled(args: argparse.Namespace) -> None:
-    """Execute the `bertrand enabled` CLI command.
+def find(args: argparse.Namespace) -> None:
+    """Execute the `bertrand find` CLI command.
 
     Parameters
     ----------
     args : argparse.Namespace
         The parsed command-line arguments.
     """
-    if in_environment():
-        print(str(find_environment(Path.cwd())))
+    if args.container is None:
+        path = find_environment()  # from environment variables
+        if path is not None:
+            print(str(path))
     else:
-        print("")
+        for container_id in list_environments(args.container):
+            print(str(find_environment(container_id)))
 
 
 def ls(args: argparse.Namespace) -> None:
@@ -789,7 +797,7 @@ def ls(args: argparse.Namespace) -> None:
     try:
         cmd = [
             "docker", "ps",
-            "--filter", "label=bertrand",
+            "--filter", "label=bertrand=1",
         ]
         if args.path is not None:
             cmd.extend(["--filter", f"volume={args.path.expanduser().resolve()}"])
@@ -1093,7 +1101,7 @@ def clean(args: argparse.Namespace) -> None:
 commands: dict[str, Callable[[argparse.Namespace], None]] = {
     "init": init,
     "enter": enter,
-    "enabled": enabled,
+    "find": find,
     "ls": ls,
     "start": start,
     "stop": stop,

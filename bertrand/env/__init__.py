@@ -1,10 +1,11 @@
 """Command Line Interface for Bertrand."""
 from .docker import (
     create_environment,
-    enter_environment,
     in_environment,
+    list_environments,
     find_environment,
     monitor_environment,
+    enter_environment,
     start_environment,
     stop_environment,
     pause_environment,
@@ -12,10 +13,8 @@ from .docker import (
     delete_environment,
 )
 from .docker_engine import (
-    install_docker,
-    uninstall_docker,
-    add_to_docker_group,
-    remove_from_docker_group,
+    ensure_docker,
+    clean_docker
 )
 # from .environment import activate, deactivate, env
 # from .init import init
