@@ -86,12 +86,50 @@ def _tag_dir(env_root: Path) -> Path:
     return _bertrand_dir(env_root) / "tag"
 
 
+def _tag_file(env_root: Path, digest: str) -> Path:
+    return _tag_dir(env_root) / f"{digest}.json"
+
+
+def _ipc_dir(env_root: Path) -> Path:
+    return _bertrand_dir(env_root) / "ipc"
+
+
+def _ipc_requests(env_root: Path) -> Path:
+    return _ipc_dir(env_root) / "requests"
+
+
+def _ipc_processing(env_root: Path) -> Path:
+    return _ipc_dir(env_root) / "processing"
+
+
+def _ipc_done(env_root: Path) -> Path:
+    return _ipc_dir(env_root) / "done"
+
+
+def _ipc_failed(env_root: Path) -> Path:
+    return _ipc_dir(env_root) / "failed"
+
+
 def _docker_file(env_root: Path) -> Path:
     return env_root / "Dockerfile"
 
 
 def _docker_ignore(env_root: Path) -> Path:
     return env_root / ".dockerignore"
+
+
+def _normalize_shell(value: object) -> list[str]:
+    if isinstance(value, list) and all(isinstance(x, str) and x for x in value):
+        out = []
+        for s in value:
+            out.extend(shlex.split(s))
+        return out
+    if isinstance(value, str):
+        argv = shlex.split(value.strip())
+        if argv:
+            return argv
+        raise ValueError("shell must not be empty")
+    raise ValueError("shell must be a string or list of strings")
 
 
 # TODO: the environment file may need to be protected by a lock for proper
@@ -104,12 +142,15 @@ class DockerEnvironment:
     human-readable tags to build argument hashes, and then to unique image digests,
     which represent individual Docker containers.
     """
-    tags: dict[str, str]  # human-readable tag -> build arg hash
-    builds: dict[str, str]  # build arg hash -> digest
+    root: Path  # absolute path to env root on host system, for reference when inside the container
+    tags: dict[str, list[str]]  # human-readable tag -> parsed argv
+    builds: dict[str, str]  # argv hash -> digest
     ids: dict[str, str]  # container id -> digest
+    shell: list[str]  # shell command to execute during `bertrand enter`
+    code: list[str]  # default host command invoked by `code` within the container
 
 
-def _write_environment(env_root: Path, env: DockerEnvironment | None) -> None:
+def _write_environment(env_root: Path, env: DockerEnvironment | None = None) -> None:
     env_root.mkdir(parents=True, exist_ok=True)
 
     # if an environment file is given, write it to disk
@@ -155,12 +196,14 @@ RUN pip install .
         atomic_write_text(
             env_file,
             json.dumps({
-                "tags": {},  # human-readable tag -> build arg hash
-                "builds": {},  # build arg hash -> digest
-                "ids": {},  # container id -> digest
+                "root": str(env_root),
+                "tags": {},
+                "builds": {},
+                "ids": {},
             }, indent=2) + "\n"
         )
 
+    # TODO: init IPC directories?
 
 def _read_environment(env_root: Path) -> DockerEnvironment | None:
     env_file = _env_file(env_root)
@@ -172,10 +215,18 @@ def _read_environment(env_root: Path) -> DockerEnvironment | None:
         if not isinstance(data, dict):
             raise ValueError("environment metadata must be a JSON mapping")
 
+        # validate root
+        root = data.get("root")
+        if not isinstance(root, str) or not root.strip():
+            raise ValueError(f"missing or invalid 'root' field: {root}")
+        data["root"] = Path(root).expanduser().resolve()
+
         # validate tags
         tags = data.get("tags")
         if not isinstance(tags, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) for k, v in tags.items()
+            isinstance(k, str) and
+            isinstance(v, list) and
+            all(isinstance(x, str) for x in v) for k, v in tags.items()
         ):
             raise ValueError(f"missing or invalid 'tags' field: {tags}")
 
@@ -193,7 +244,26 @@ def _read_environment(env_root: Path) -> DockerEnvironment | None:
         ):
             raise ValueError(f"missing or invalid 'ids' field: {ids}")
 
-        return DockerEnvironment(tags=tags, builds=builds, ids=ids)
+        # validate + normalize shell command
+        shell = data.get("shell")
+        if not isinstance(shell, (str, list)) or not shell:
+            raise ValueError("missing required field: shell")
+        data["shell"] = _normalize_shell(shell)
+
+        # validate + normalize code command
+        code = data.get("code")
+        if not isinstance(code, (str, list)) or not code:
+            raise ValueError("missing required field: code")
+        data["code"] = _normalize_shell(code)
+
+        return DockerEnvironment(
+            root=data["root"],
+            tags=tags,
+            builds=builds,
+            ids=ids,
+            shell=data["shell"],
+            code=data["code"],
+        )
 
     except Exception as err:
         raise ValueError(f"Invalid environment metadata at {env_file}: {err}") from err
@@ -209,25 +279,40 @@ class DockerContainer:
     container name, in order to allow renaming/relocation of the environment directory.
     """
     version: int  # version number for backwards compatibility
+    argv: list[str]  # Docker build arguments used to create this container
     digest: str  # SHA256 of Dockerfile content + args to detect incremental rebuilds
     image: str  # UUID tag for the built image
     container: str  # Unique container ID linking this environment back to its Docker host
     created: str  # ISO timestamp
-    shell: list[str]  # shell command to execute during `bertrand enter`
 
 
-def _arg_bytes(build_args: Iterable[str]) -> bytes:
+def _normalize_argv(argv: Iterable[str]) -> list[str]:
+    out: list[str] = []
+    for s in argv:
+        if any(c.isspace() for c in s):
+            out.extend(shlex.split(s))
+        else:
+            out.append(s)
+    return out
+
+
+def _arg_bytes(argv: Iterable[str]) -> bytes:
     out = bytearray()
-    for s in build_args:
-        for s2 in shlex.split(s):
-            out.extend(len(s2).to_bytes(8, "big"))  # length prefix to avoid ambiguity
-            out.extend(s2.encode("utf-8", "surrogateescape"))
+    for s in argv:
+        out.extend(len(s).to_bytes(8, "big"))  # length prefix to avoid ambiguity
+        out.extend(s.encode("utf-8", "surrogateescape"))
     return bytes(out)
 
 
-def _docker_digest(env_root: Path, build_args: Iterable[str]) -> str:
+def _arg_hash(argv: Iterable[str]) -> str:
     h = hashlib.sha256()
-    h.update(_arg_bytes(build_args))
+    h.update(_arg_bytes(argv))
+    return h.hexdigest()
+
+
+def _docker_digest(env_root: Path, argv: Iterable[str]) -> str:
+    h = hashlib.sha256()
+    h.update(_arg_bytes(argv))
     h.update(b"\0")
     h.update(_docker_file(env_root).read_bytes())
     return h.hexdigest()
@@ -243,23 +328,16 @@ def _sanitize_container_name(name: str) -> str:
     return "".join(out).strip("_")
 
 
-def _container_name(env_root: Path, tag: str | None, build_args: Iterable[str]) -> str:
+def _container_name(env_root: Path, tag: str | None, container: DockerContainer) -> str:
+    # e.g. <myproject>.<tag>.<uuid> or <myproject>.<uuid>
     env_root = env_root.expanduser().resolve()
-    if tag is None:
-        arg_hash = hashlib.sha256(_arg_bytes(build_args)).hexdigest()[:12]
-        return f"{_sanitize_container_name(env_root.name)}.{arg_hash}"
-    return f"{_sanitize_container_name(env_root.name)}.{_sanitize_container_name(tag)}"
-
-
-def _normalize_shell(value: object) -> list[str]:
-    if isinstance(value, list) and all(isinstance(x, str) and x for x in value):
-        return value
-    if isinstance(value, str):
-        argv = shlex.split(value.strip())
-        if argv:
-            return argv
-        raise ValueError("shell must not be empty")
-    raise ValueError("shell must be a string or list[str]")
+    parts = [_sanitize_container_name(env_root.name)]
+    if tag is not None:
+        tag = tag.strip()
+        if tag:
+            parts.append(_sanitize_container_name(tag))
+    parts.append(container.image)
+    return ".".join(parts)
 
 
 def _write_container(env_root: Path, container: DockerContainer) -> None:
@@ -271,13 +349,12 @@ def _write_container(env_root: Path, container: DockerContainer) -> None:
     )
 
 
-def _read_container(env_root: Path, digest: str) -> DockerContainer | None:
-    path = _tag_dir(env_root) / f"{digest}.json"
-    if not path.exists():
+def _read_container(tag_file: Path) -> DockerContainer | None:
+    if not tag_file.exists():
         return None
 
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(tag_file.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("environment metadata must be a JSON object")
 
@@ -286,13 +363,21 @@ def _read_container(env_root: Path, digest: str) -> DockerContainer | None:
         if not isinstance(version, int) or version <= 0:
             raise ValueError(f"missing or invalid 'version' field: {version}")
 
+        # validate + normalize argv
+        argv = data.get("argv")
+        if not isinstance(argv, list) or not all(
+            isinstance(x, str) and x for x in argv
+        ):
+            raise ValueError(f"missing or invalid 'argv' field: {argv}")
+        data["argv"] = _normalize_argv(argv)
+
         # validate digest
         container_digest = data.get("digest")
         if not isinstance(container_digest, str) or not container_digest.strip():
             raise ValueError(f"missing or invalid 'digest' field: {container_digest}")
-        if container_digest != digest:
+        if container_digest != tag_file.name:
             raise ValueError(
-                f"digest field does not match filename: {container_digest} != {digest}"
+                f"digest field does not match filename: {container_digest} != {tag_file.name}"
             )
 
         # validate image id
@@ -319,16 +404,10 @@ def _read_container(env_root: Path, digest: str) -> DockerContainer | None:
         except Exception as err:
             raise ValueError(f"created must be a valid ISO timestamp: {created}") from err
 
-        # validate shell command
-        shell = data.get("shell")
-        if not isinstance(shell, (str, list)) or not shell:
-            raise ValueError("missing required field: shell")
-        data["shell"] = _normalize_shell(shell)
-
         return DockerContainer(**data)
 
     except Exception as err:
-        raise ValueError(f"Invalid environment metadata at {path}: {err}") from err
+        raise ValueError(f"Invalid environment metadata at {tag_file}: {err}") from err
 
 
 class MountInfo(TypedDict, total=False):
@@ -388,17 +467,16 @@ def _remove_container(container: DockerContainer, *, force: bool = False) -> Non
         docker_cmd(["container", "rm", container.container], check=False, capture_output=True)
 
 
-def _ensure_container(
-    env_root: Path,
-    container: DockerContainer,
-    tag: str | None,
-    build_args: list[str]
-) -> None:
-    # NOTE: `container` is guaranteed to be present on disk and match `build_args`.
-    # Digest conflicts are resolved before calling this function, by removing the
-    # previous digest file and container, and then calling this function to recreate
-    # it.
+def _ensure_container(env_root: Path, tag: str | None, container: DockerContainer) -> None:
+    # NOTE: `container` is guaranteed to be present on disk and match `argv`.  Digest
+    # conflicts are resolved before calling this function, by removing the previous
+    # digest file and container, writing a new digest file, and then calling this
+    # function to recreate the container.
     env_root = env_root.expanduser().resolve()
+    env = _read_environment(env_root)
+    if env is None:
+        raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
+    argv = _normalize_argv(container.argv)
 
     # if the environment directory has moved, the existing container's bind mount may
     # be stale.  Docker does not support editing mounts in-place, but we can stop, rm,
@@ -423,13 +501,12 @@ def _ensure_container(
             _remove_container(container, force=True)
 
             # delete from environment metadata
-            env = _read_environment(env_root)
-            if env is None:
-                raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
-            if tag is not None:
-                env.tags.pop(tag, None)
-            env.builds.pop(container.digest, None)
-            env.ids.pop(container.container, None)
+            env = replace(
+                env,
+                tags={k: v for k, v in env.tags.items() if tag is None or k != tag},
+                builds={k: v for k, v in env.builds.items() if k != container.digest},
+                ids={k: v for k, v in env.ids.items() if k != container.container}
+            )
             _write_environment(env_root, env)
 
             inspect = None
@@ -442,7 +519,7 @@ def _ensure_container(
         if image_info.returncode != 0:
             docker_cmd([
                 "build",
-                *build_args,
+                *argv,
                 "-t", image_name,
                 "-f", str(_docker_file(env_root)),
                 "--label", f"{LABEL}=1",
@@ -450,7 +527,7 @@ def _ensure_container(
             ])
 
         # create container from image
-        container_name = _container_name(env_root, tag, build_args)  # human-readable
+        container_name = _container_name(env_root, tag, container)  # human-readable w/ uuid
         docker_cmd([
             "create",
             "--init",
@@ -467,20 +544,28 @@ def _ensure_container(
             raise RuntimeError(f"Failed to create container: {container_name}")
 
         # set final container id in metadata
-        container_id = docker_cmd(["ps", "-aqf", f"name={container_name}"], capture_output=True)
+        container_id = docker_cmd([
+            "inspect",
+            container_name,
+            "--format={{.ID}}"
+        ], capture_output=True)
         if not container_id.stdout:
             raise RuntimeError(f"Failed to get container ID for: {container_name}")
         container = replace(container, container=container_id.stdout.strip())
         _write_container(env_root, container)
 
         # write new container id to environment metadata
-        env = _read_environment(env_root)
-        if env is None:
-            raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
-        if tag is not None:
-            env.tags[tag] = container.digest
-        env.builds[container.digest] = container.digest
-        env.ids[container.container] = container.digest
+        env = replace(
+            env,
+            builds=env.builds | {_arg_hash(argv): container.digest},
+            ids=env.ids | {container.container: container.digest},
+        )
+        _write_environment(env_root, env)
+
+    # tag metadata is updated separately in order to allow assigning or modifying tags
+    # for existing containers
+    if tag is not None:
+        env = replace(env, tags=env.tags | {tag: argv})
         _write_environment(env_root, env)
 
     # start container if not running
@@ -489,10 +574,232 @@ def _ensure_container(
         docker_cmd(["start", container.container])
 
 
+
+# TODO: create_environment() should be placed up here, as should `start_environment`,
+# enter_environment(), run_environment(), the latter 2 of which reuse
+# `start_environment` to create the container and ensure it's running.
+
+
+
+def in_container() -> bool:
+    """Detect whether the current process is running inside a Bertrand Docker
+    container.
+
+    Returns
+    -------
+    bool
+        True if running inside a Bertrand Docker container, false otherwise.
+    """
+    return bool(os.environ.get("BERTRAND_ENV"))
+
+
+def list_containers(key: str | Path | None = None) -> list[str]:
+    """List the ids of all Bertrand Docker containers that match a given id or name
+    fragment, an environment root path, or the id of the current container if no key
+    is given.
+
+    Parameters
+    ----------
+    key : str | Path | None, optional
+        An exact id or fragment of the container name to match against, or a path to
+        a root environment directory.  If a name is given, then it may be a partial
+        match for one or more containers.  If a path is given, then all containers
+        associated with that environment directory are matched.  If None (the default),
+        then the container id will be obtained for the active environment (if any) by
+        inspecting the tag registry.
+
+    Returns
+    -------
+    list[str]
+        A list of matching container ids.  Empty if no matches are found, or possibly
+        multiple matches if the key is ambiguous.
+    """
+    # if key is None, then detect the id of the active container, if any
+    if key is None:
+        digest = os.environ.get("BERTRAND_ENV")
+        if digest is None:
+            return []
+        container = _read_container(_tag_file(Path("/env"), digest))
+        if container is None:
+            return []
+        return [container.container]
+
+    # otherwise, try an exact ID match first
+    result = docker_cmd([
+        "ps",
+        "--filter", f"label={LABEL}=1",
+        "--filter", f"id={key}",
+    ], check=False, capture_output=True)
+    if result.returncode == 0 and result.stdout and result.stdout.strip():
+        return [str(key)]
+
+    # fall back to partial name match
+    result = docker_cmd([
+        "ps",
+        "--filter", f"label={LABEL}=1",
+        "--filter", f"name={key}",
+        "--format", "{{.ID}}"
+    ], check=False, capture_output=True)
+    if result.returncode == 0 and result.stdout and result.stdout.strip():
+        return [line.split(None, 1)[0] for line in result.stdout.splitlines()]
+
+    # interpret as environment path
+    try:
+        tag_dir = _tag_dir(Path(key))
+        if not tag_dir.exists():
+            return []
+    except OSError:
+        return []
+
+    # iterate over tag directory to extract container ids
+    out: list[str] = []
+    for tag_file in tag_dir.iterdir():
+        container = _read_container(tag_file)
+        if container is not None:
+            out.append(container.container)
+    return out
+
+
+def find_environment(anchor: str | Path | None = None) -> Path | None:
+    """Find the environment directory corresponding to a Bertrand Docker container id,
+    name, or a subordinate path, assuming one exists.
+
+    Parameters
+    ----------
+    anchor : str | Path | None
+        The container id, name, or path to search from, or None.  If this is a string,
+        then it will first be interpreted as an exact container id or name, and does
+        not permit partial matches.  If a container is found, then its mount path will
+        be obtained via `docker inspect`.  If no container is found, or if `anchor` is
+        a Path, then the path will be searched upwards for a `.bertrand/env.json` file,
+        which defines the root path.  If it is None (the default), then the container
+        will be found using environment variables from the current process.
+
+    Returns
+    -------
+    Path | None
+        A resolved path to the environment directory, or `None` if no environment
+        could be found.
+    """
+    # if None, access via bind mount and read stored path in env.json
+    if anchor is None:
+        if not in_container():
+            return None
+        env = _read_environment(Path("/env/"))
+        if env is None:
+            return None
+        return Path(env.root)
+
+    # try container id or name first
+    if isinstance(anchor, str):
+        result = docker_cmd(["inspect", anchor], check=False, capture_output=True)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            if data:
+                return _get_mount_source(data[0])
+        try:
+            anchor = Path(anchor)
+        except Exception:  # pylint: disable=broad-except
+            return None
+
+    # search upwards from path
+    anchor = anchor.expanduser().resolve()
+    if anchor.is_file():
+        anchor = anchor.parent
+    for p in (anchor, *anchor.parents):
+        if _env_file(p).exists():
+            return p
+    return None
+
+
+def monitor_container(container: DockerContainer) -> None:
+    """Print a container's top processes and their resource utilization to the
+    command line.
+
+    Parameters
+    ----------
+    container: DockerContainer
+        The contents of a tag file representing an active docker container.
+
+    Raises
+    ------
+    CommandError
+        If the `docker top` command fails.
+    """
+    docker_cmd(["top", container.container])
+
+
+
+
+
+# TODO: all this IPC stuff should come at the end of the file, to differentiate it
+# from the basic docker interface, and associate it with a `bertrand code` command
+# inside the container.
+
+
+@dataclass(frozen=True)
+class HostRequest:
+    """A JSON struct representing an IPC request to the host system, which will be
+    caught by a watcher process.  This is used to implement editor hooks without
+    installing full editors into the container image.
+    """
+    version: int  # version number for backwards compatibility
+    created: str  # ISO timestamp of request
+    digest: str  # digest of container issuing the request
+    action: str  # identifies the host action to take without allowing arbitrary code injection
+                 # currently only "code" is supported
+
+
+@dataclass(frozen=True)
+class CodeRequest(HostRequest):
+    """A special case of host request that covers the `code` action within a
+    container.
+    """
+    editor: str  # "vscode"|"nvim"|"vim"|"nano"
+
+
+@dataclass(frozen=True)
+class HostResponse:
+    """A JSON struct representing an IPC response from the host system, which can
+    be post-processed by the container.  This is used to implement editor hooks
+    without installing full editors into the container image.
+    """
+    version: int  # version number for backwards compatibility
+    created: str  # ISO timestamp of response
+    container: str  # id of requesting container
+    action: str  # requested action
+    returncode: int  # return code of host request
+    detail: str  # detail string describing what occurred for debugging purposes
+
+
+@dataclass(frozen=True)
+class CodeResponse(HostResponse):
+    """A special case of host response that covers the `code` action within a container
+    """
+    editor: str  # "vscode"|"nvim"|"vim"|"nano"
+
+
+
+# TODO: I don't know how to write the editor hooks in a way that respects the
+# 1:many relationship between environments and containers.  How would vscode discover
+# the correct container image for a given environment if there are multiple?  The
+# previous solution was to write out the editor hooks to the environment directory when
+# the container gets created, such that `code .` in the environment directory would
+# pick up that image automatically.  But with multiple containers per environment,
+# you'd have to provide some extra mechanism to select which image to use regardless,
+# or figure out a system where you can launch the text editor from inside the container
+# and pass its configuration into the editor explicitly.  That would be best, and
+# would move container selection into the `bertrand enter` command, where it ought to
+# be, and leave the editor invocation alone outside of hooking the container's internal
+# tools that I bootstrapped as part of the Dockerfile.  So really, the only true
+# solution is to launch the editor from inside the container, which probably
+# compromosies the whole idea of using `devcontainer.json` in the first place?
+
+
 def _copy_editor_hooks(env_root: Path) -> None:
     env_root = env_root.expanduser().resolve()
-    spec = _read_environment(env_root)
-    if spec is None:
+    env = _read_environment(env_root)
+    if env is None:
         return
 
     container = _container_name(spec)
@@ -562,135 +869,6 @@ copy_if_missing ".vscode/settings.json" "0644"
         except json.JSONDecodeError:
             # if user edited it into invalid JSON, do not clobber their file
             pass
-
-
-
-
-
-def _image_exists(tag: str) -> bool:
-    try:
-        docker_cmd(["image", "inspect", tag], capture_output=True)
-        return True
-    except CommandError:
-        return False
-
-
-def _ensure_image_built(env_root: Path, container: DockerContainer) -> DockerContainer:
-    env_root = env_root.expanduser().resolve()
-
-    # make sure dockerfile is present
-    docker_file = _docker_file(env_root)
-    if not docker_file.exists():
-        raise FileNotFoundError(f"Missing Dockerfile at: {docker_file}")
-
-    # 
-
-    digest = _docker_digest(dockerfile, spec.docker_build_args)
-    tag = _image_tag(spec)
-
-    needs_build = not _image_exists(tag) or spec.dockerfile_digest != digest
-    if needs_build:
-        docker_cmd(["image", "inspect", image], capture_output=True)
-
-        _pull_image(spec.image)
-        docker_cmd([
-            "build",
-            *spec.docker_build_args,
-            "-t", tag,
-            "-f", str(dockerfile),
-            "--label", f"{LABEL}=1",
-            "--label", f"{LABEL_ENV_ID}={spec.env_id}",
-            str(env_root),
-        ])
-
-    # persist digest in metadata
-    if spec.dockerfile_digest != digest:
-        spec2 = replace(spec, dockerfile_digest=digest)
-        _write_environment(env_root, spec2)
-        return spec2
-
-    return spec
-
-
-
-
-
-
-def _container_build_args(env_root: Path, spec: DockerEnvironment) -> list[str]:
-    env_root = env_root.expanduser().resolve()
-    container = _container_name(spec)
-    args = [
-        "create",
-        "--init",
-        f"--name={container}",
-        f"--hostname={container}",
-        f"--workdir={MOUNT}",
-        "--security-opt=no-new-privileges",
-
-        # Hard-identify this container as Bertrand-managed.
-        "--label", f"{LABEL}=1",
-        "--label", f"{LABEL_ENV_ID}={spec.env_id}",
-        "--label", f"{LABEL_MOUNT}={MOUNT}",
-        "--label", f"{LABEL_VERSION}={spec.version}",
-        "--label", f"{LABEL_CREATED}={spec.created}",
-        "--label", f"{LABEL_IMAGE}={spec.image}",
-    ]
-
-    ids = host_user_ids()
-    if ids is not None:
-        uid, gid = ids
-        args.extend([
-            "--user", f"{uid}:{gid}",
-            "--cap-drop=ALL",
-            "--cap-add=SYS_PTRACE",
-        ])
-
-    args.extend([
-        "-v", f"{str(env_root)}:{MOUNT}",
-        "-e", f"BERTRAND_ENV={spec.env_id}",
-        _image_tag(spec),
-        "sleep", "infinity",
-    ])
-    return args
-
-
-def _ensure_container(env_root: Path, spec: DockerEnvironment) -> str:
-    env_root = env_root.expanduser().resolve()
-    container = _container_name(spec)
-
-    # if the environment directory moved, the existing container's bind mount may be
-    # stale.  Docker does not support editing mounts in-place, but we can stop, rm,
-    # and recreate the container if needed.  Note that this will remove any data that
-    # is not stored in the bind mount (i.e., in the container's root filesystem), but
-    # those can be recovered by refreshing the container's image and/or re-installing
-    # the contents of the bind mount.
-    info = _container_inspect(container)
-    if info is not None:
-        mount_src = _get_mount_source(info)
-        mount_ok = False
-        if mount_src is not None:
-            try:
-                mount_ok = mount_src.resolve() == env_root
-            except OSError:
-                mount_ok = False
-
-        # if mount is missing or points somewhere else, rebuild
-        if not mount_ok:
-            docker_cmd(["stop", container], check=False, capture_output=True)
-            _remove_container(container, force=True)
-            info = None
-
-    if info is None:
-        spec = _ensure_image_built(env_root, spec)
-        docker_cmd(_container_build_args(env_root, spec))
-        info = _container_inspect(container)
-
-    running = bool(((info or {}).get("State") or {}).get("Running"))
-    if not running:
-        docker_cmd(["start", container])
-
-    return container
-
 
 
 def create_environment(
@@ -763,107 +941,13 @@ def create_environment(
             swapfile.unlink(missing_ok=True)
 
 
-def in_environment() -> bool:
-    """Detect whether the current process is running inside a Bertrand Docker
-    container.
-
-    Returns
-    -------
-    bool
-        True if running inside a Bertrand Docker container, false otherwise.
-    """
-    return bool(os.environ.get("BERTRAND_ENV"))
 
 
-def list_environments(key: str) -> list[str]:
-    """List the container ids of all Bertrand Docker environments that match a given id
-    or name fragment.
-
-    Parameters
-    ----------
-    key : str
-        An exact id or fragment of the environment name to match against.  If a name
-        is given, then it may be a partial match for one or more containers.
-
-    Returns
-    -------
-    list[str]
-        A list of matching container ids.  Empty if no matches are found, or possibly
-        multiple matches if the key is ambiguous.
-    """
-    # try an exact ID match first
-    result = docker_cmd([
-        "ps",
-        "--filter", f"label={LABEL}=1",
-        "--filter", f"id={key}",
-    ], check=False, capture_output=True)
-    if result.returncode == 0 and result.stdout and result.stdout.strip():
-        return [key]
-
-    # fall back to partial name match
-    result = docker_cmd([
-        "ps",
-        "--filter", f"label={LABEL}=1",
-        "--filter", f"name={key}",
-        "--format", "{{.ID}}"
-    ], check=False, capture_output=True)
-    if result.returncode == 0 and result.stdout and result.stdout.strip():
-        return [line.split(None, 1)[0] for line in result.stdout.splitlines()]
-
-    # no matches
-    return []
 
 
-def find_environment(anchor: str | Path | None = None) -> Path | None:
-    """Find the environment directory corresponding to a Bertrand Docker environment
-    by container id, name, or subordinate path, assuming one exists.
 
-    Parameters
-    ----------
-    anchor : str | Path | None
-        The container id, name, or path to search from, or None.  If this is a string,
-        then it will first be interpreted as an exact container id or name, and does
-        not permit partial matches.  If a container is found, then its mount path will
-        be obtained via `docker inspect`.  If no container is found, or if `anchor` is
-        a Path, then the path will be searched upwards for a `.bertrand/env.json` file,
-        which defines the root path.  If it is None (the default), then the environment
-        will be found using environment variables from the current process.
-
-    Returns
-    -------
-    Path | None
-        A resolved path to the environment directory, or `None` if no environment
-        could be found.
-    """
-    # if None, map to container name by concatenating environment id from env
-    if anchor is None:
-        anchor = f"bertrand-{os.environ.get("BERTRAND_ENV")}"
-
-    # try container id or name first
-    if isinstance(anchor, str):
-        result = docker_cmd(["inspect", anchor], check=False, capture_output=True)
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            if data:
-                return _get_mount_source(data[0])
-        try:
-            anchor = Path(anchor)
-        except Exception:  # pylint: disable=broad-except
-            return None
-
-    # search upwards from path
-    anchor = anchor.expanduser().resolve()
-    if anchor.is_file():
-        anchor = anchor.parent
-    for p in (anchor, *anchor.parents):
-        if _env_file(p).exists():
-            return p
-    return None
-
-
-def monitor_environment(env_root: Path) -> None:
-    """Print the environment's top processes and their resource utilization to the
-    command line.
+def start_environment(env_root: Path) -> None:
+    """Start an environment container, launching all necessary processes within it.
 
     Parameters
     ----------
@@ -875,7 +959,7 @@ def monitor_environment(env_root: Path) -> None:
     FileNotFoundError
         If no environment is found at the given path.
     CommandError
-        If the `docker top` command fails.
+        If any docker command fails.
     """
     env_root = env_root.expanduser().resolve()
     spec = _read_environment(env_root)
@@ -883,7 +967,11 @@ def monitor_environment(env_root: Path) -> None:
         raise FileNotFoundError(
             f"No docker environment found at: {env_root} (missing .bertrand/env.json)"
         )
-    docker_cmd(["top", _container_name(spec)])
+
+    _ensure_image_built(env_root, spec)
+    _ensure_container(env_root, spec)
+    _copy_editor_hooks(env_root)
+    docker_cmd(["start", _container_name(spec)], check=False, capture_output=True)
 
 
 def enter_environment(env_root: Path) -> None:
@@ -914,32 +1002,9 @@ def enter_environment(env_root: Path) -> None:
     docker_exec(["exec", "-it", "-w", MOUNT])
 
 
-def start_environment(env_root: Path) -> None:
-    """Start an environment container, launching all necessary processes within it.
+def run_environment(env_root: Path) -> None:
+    """TODO: implement `$ bertrand run` using a similar architecture to start/enter."""
 
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    CommandError
-        If any docker command fails.
-    """
-    env_root = env_root.expanduser().resolve()
-    spec = _read_environment(env_root)
-    if spec is None:
-        raise FileNotFoundError(
-            f"No docker environment found at: {env_root} (missing .bertrand/env.json)"
-        )
-
-    _ensure_image_built(env_root, spec)
-    _ensure_container(env_root, spec)
-    _copy_editor_hooks(env_root)
-    docker_cmd(["start", _container_name(spec)], check=False, capture_output=True)
 
 
 def stop_environment(env_root: Path, *, force: bool) -> None:
