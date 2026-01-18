@@ -30,6 +30,29 @@ from . import __version__
 
 
 
+
+
+# # create swap memory for large builds
+# swapfile = env_root / "swapfile"
+# sudo = sudo_prefix()
+# if swap:
+#     run([*sudo, "fallocate", "-l", f"{swap}G", str(swapfile)])
+#     run([*sudo, "chmod", "600", str(swapfile)])
+#     run([*sudo, "mkswap", str(swapfile)])
+#     run([*sudo, "swapon", str(swapfile)])
+
+# try:
+
+# # clear swap memory
+# finally:
+#     if swapfile.exists():
+#         print("Cleaning up swap file...")
+#         run([*sudo, "swapoff", str(swapfile)], check=False)
+#         swapfile.unlink(missing_ok=True)
+
+
+
+
 class Parser:
     """Command-line parser for Bertrand utilities."""
 
