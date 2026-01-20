@@ -1,12 +1,14 @@
 """Utility functions for running subprocesses and handling command-line interactions."""
 import os
 import pwd
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, TextIO
 
@@ -236,3 +238,42 @@ def atomic_write_text(path: Path, text: str) -> None:
     except OSError:
         pass
     tmp.replace(path)
+
+
+def up_to_date(start: Path, timestamp: datetime, exclude: str = r"^\..*") -> bool:
+    """Check whether all files under a given directory are older than the specified
+    timestamp, excluding files that match a given regex pattern.
+
+    Parameters
+    ----------
+    start : Path
+        The path to start checking from.  If this is a directory, then all files
+        under it will be checked recursively.
+    timestamp : datetime
+        The timestamp to compare against.
+    exclude : str, optional
+        A regex pattern for files or directories to exclude from the check.  The
+        default pattern excludes any path that starts with a dot (usually indicating
+        hidden files).
+
+    Returns
+    -------
+    bool
+        True if all relevant files are older than the timestamp, false otherwise.
+
+    Raises
+    ------
+    re.error
+        If the provided regex pattern is invalid.
+    """
+    mtime = timestamp.timestamp()
+    regex = re.compile(exclude)
+    remaining = [start]
+    while remaining:
+        path = remaining.pop()
+        if path.exists() and not regex.match(str(path)):
+            if path.is_dir():  # recursively explore directories
+                remaining.extend(path.iterdir())
+            elif path.stat().st_mtime > mtime:  # found a newer file
+                return False
+    return True
