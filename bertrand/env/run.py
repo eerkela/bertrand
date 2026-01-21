@@ -8,11 +8,14 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping, TextIO
 
 #pylint: disable=redefined-builtin
+
+
+HIDDEN: str = rf"^(?P<prefix>.*{re.escape(os.path.sep)})?(?P<suffix>\..*)"
 
 
 class CommandError(subprocess.CalledProcessError):
@@ -240,7 +243,7 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def up_to_date(start: Path, timestamp: datetime, exclude: str = r"^\..*") -> bool:
+def up_to_date(start: Path, timestamp: datetime, exclude: str = HIDDEN) -> bool:
     """Check whether all files under a given directory are older than the specified
     timestamp, excluding files that match a given regex pattern.
 
@@ -253,8 +256,8 @@ def up_to_date(start: Path, timestamp: datetime, exclude: str = r"^\..*") -> boo
         The timestamp to compare against.
     exclude : str, optional
         A regex pattern for files or directories to exclude from the check.  The
-        default pattern excludes any path that starts with a dot (usually indicating
-        hidden files).
+        default pattern excludes any path component (relative to `start`) that begins
+        with a dot (usually indicating hidden files or directories).
 
     Returns
     -------
@@ -268,10 +271,10 @@ def up_to_date(start: Path, timestamp: datetime, exclude: str = r"^\..*") -> boo
     """
     mtime = timestamp.timestamp()
     regex = re.compile(exclude)
-    remaining = [start]
+    remaining = [start.expanduser().resolve()]
     while remaining:
         path = remaining.pop()
-        if path.exists() and not regex.match(str(path)):
+        if path.exists() and not regex.match(str(path.relative_to(start))):
             if path.is_dir():  # recursively explore directories
                 remaining.extend(path.iterdir())
             elif path.stat().st_mtime > mtime:  # found a newer file
