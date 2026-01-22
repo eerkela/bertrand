@@ -135,11 +135,16 @@ def _validate_created(data: dict[str, object]) -> str:
 
 def _validate_args(data: dict[str, object]) -> list[str]:
     args = data.get("args")
-    if not isinstance(args, list) or not all(
-        isinstance(x, str) and x for x in args
-    ):
+    if not isinstance(args, list) or not all(isinstance(x, str) and x for x in args):
         raise ValueError(f"missing or invalid 'args' field: {args}")
     return _normalize_args(args)
+
+
+def _validate_entrypoint(data: dict[str, object]) -> list[str]:
+    entrypoint = data.get("entrypoint")
+    if not isinstance(entrypoint, list) or not all(isinstance(x, str) and x for x in entrypoint):
+        raise ValueError(f"missing or invalid 'entrypoint' field: {entrypoint}")
+    return _normalize_args(entrypoint)
 
 
 class Image:
@@ -310,25 +315,29 @@ class Container:
     args : list[str]
         The original `docker create` arguments used to create the container.
     """
-    class Mount(TypedDict, total=False):
-        """Type hint for docker container mount information."""
-        Type: Literal["bind", "volume", "tmpfs", "npipe"]
-        Destination: str
-        Source: str
-
     class State(TypedDict, total=False):
         """Type hint for docker container state information."""
         Running: bool
         Paused: bool
         Restarting: bool
+        OOMKilled: bool
         Dead: bool
+
+    class Mounts(TypedDict, total=False):
+        """Type hint for docker container mount information."""
+        Type: Literal["bind", "volume", "tmpfs", "npipe"]
+        Source: str
+        Destination: str
+        RW: bool
+        Propagation: Literal["shared", "slave", "private", "rshared", "rslave", "rprivate"]
 
     class Inspect(TypedDict, total=False):
         """Type hint for docker container inspect output."""
         Id: str
         Created: str
-        Mounts: List[Container.Mount]
         State: Container.State
+        Image: str
+        Mounts: List[Container.Mounts]
 
     root: Path
     uuid: str
@@ -338,6 +347,7 @@ class Container:
     id: str
     created: str
     args: list[str]
+    entrypoint: list[str]
 
     def __init__(self, root: Path, uuid: str) -> None:
         self.root = root.expanduser().resolve()
@@ -355,6 +365,7 @@ class Container:
             self.id = _validate_id(data)
             self.created = _validate_created(data)
             self.args = _validate_args(data)
+            self.entrypoint = _validate_entrypoint(data)
         except Exception as err:
             raise ValueError(f"Invalid container metadata at {path}: {err}") from err
 
@@ -474,7 +485,7 @@ class Container:
             docker_cmd(["container", "stop", inspect["Id"]])
 
 
-class DockerEnvironment:
+class Environment:
     """On-disk metadata representing environment-level data structures, which map from
     human-readable tags to argument hashes, and then to unique IDs for Docker images
     and containers.
@@ -519,7 +530,7 @@ class DockerEnvironment:
         Not stored in the on-disk JSON.
     version : int
         The version number for backwards compatibility.
-    tags : dict[str, DockerEnvironment.Tag]
+    tags : dict[str, Environment.Tag]
         A mapping from image tags to dictionaries containing the corresponding file
         name in `image_dir`, as well as a nested dictionary mapping container tags to
         their file names in `container_dir`.  This is the main data structure used to
@@ -539,7 +550,7 @@ class DockerEnvironment:
     timeout: int
     depth: int
     version: int
-    tags: dict[str, DockerEnvironment.Tag]
+    tags: dict[str, Environment.Tag]
     exclude: str
     shell: list[str]
     code: list[str]
@@ -567,7 +578,7 @@ class DockerEnvironment:
             raise ValueError(f"missing or invalid 'tags' field: {tags}")
 
         # validate each tag entry
-        out: dict[str, DockerEnvironment.Tag] = {}
+        out: dict[str, Environment.Tag] = {}
         for image_tag, image in tags.items():
             if not isinstance(image_tag, str):
                 raise ValueError(f"invalid image tag: {image_tag}")
@@ -641,7 +652,7 @@ class DockerEnvironment:
             raise ValueError("missing required field: code")
         self.code = _normalize_shell(code)
 
-    def __enter__(self) -> DockerEnvironment:
+    def __enter__(self) -> Environment:
         # allow nested context managers without deadlocking
         self.depth += 1
         if self.depth > 1:
@@ -770,7 +781,7 @@ RUN pip install .
         return hash(self.root)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, DockerEnvironment):
+        if not isinstance(other, Environment):
             return NotImplemented
         return self.root == other.root
 
@@ -885,21 +896,21 @@ RUN pip install .
         return self.root / ".dockerignore"
 
     @staticmethod
-    def current() -> DockerEnvironment | None:
+    def current() -> Environment | None:
         """Detect whether the current process is running inside a Bertrand Docker
         container.
 
         Returns
         -------
-        DockerEnvironment | None
-            A DockerEnvironment metadata object with the proper mount path if invoked
+        Environment | None
+            An `Environment` metadata object with the proper mount path if invoked
             within a Bertrand Docker container, or None otherwise.  Note that the
             result is disengaged, and must be acquired as a context manager before it
             can be used to access or modify the environment.
         """
         if "BERTRAND_CONTAINER" not in os.environ or "BERTRAND_IMAGE" not in os.environ:
             return None
-        return DockerEnvironment(root=Path(MOUNT))
+        return Environment(root=Path(MOUNT))
 
     @staticmethod
     def parse(spec: str) -> tuple[Path, str, str]:
@@ -967,7 +978,9 @@ RUN pip install .
         Returns
         -------
         list[str]
-            A list of image or container tags within this environment.
+            A list of image or container tags within this environment, depending on the
+            provided arguments.  An empty list will be returned if no matching tags
+            could be found.
 
         Raises
         ------
@@ -997,96 +1010,6 @@ RUN pip install .
         if container in containers:
             return [container]
         return []
-
-    def _rm_all(self) -> int:
-        total = 0
-        for image in self.tags.values():
-            image_id = image["uuid"]
-            containers = image["containers"]
-            for container_id in containers.values():
-                docker_cmd(
-                    ["container", "rm", "-f", container_id],
-                    check=False,
-                    capture_output=True
-                )
-                _container_file(self.root, container_id).unlink(missing_ok=True)
-            total += len(containers)
-            docker_cmd(["image", "rm", "-f", image_id], check=False, capture_output=True)
-            _image_file(self.root, image_id).unlink(missing_ok=True)
-        total += len(self.tags)
-        self.tags.clear()
-        return total
-
-    def _rm_image(self, image: str) -> int:
-        tag = self.tags.get(image)
-        if tag is None:
-            return 0
-        image_id = tag["uuid"]
-        containers = tag["containers"]
-        for container_id in containers.values():
-            docker_cmd(
-                ["container", "rm", "-f", container_id],
-                check=False,
-                capture_output=True
-            )
-            _container_file(self.root, container_id).unlink(missing_ok=True)
-        docker_cmd(["image", "rm", "-f", image_id], check=False, capture_output=True)
-        _image_file(self.root, image_id).unlink(missing_ok=True)
-        self.tags.pop(image)
-        return len(containers) + 1
-
-    def rm(self, image: str | None = None, container: str | None = None) -> int:
-        """Delete images and/or containers from this environment.
-
-        Parameters
-        ----------
-        image : str | None, optional
-            An optional image tag to remove.  If None (the default), all images and
-            containers in this environment will be removed.
-        container : str | None, optional
-            An optional container tag to remove.  If None (the default), all containers
-            in the indicated image (or whole environment if `image` is None) will be
-            removed.
-
-        Returns
-        -------
-        int
-            The number of images and containers that were removed, for posterity.
-
-        Raises
-        ------
-        OSError
-            If the environment has not been acquired as a context manager.
-        TypeError
-            If `image` is None but `container` is not.
-        """
-        if self.depth < 1:
-            raise OSError("environment must be acquired as a context manager before accessing")
-        if DockerEnvironment.current() is not None:
-            raise OSError("cannot modify an environment from within a Bertrand container")
-
-        # delete all images
-        if image is None:
-            if container is not None:
-                raise TypeError("cannot specify a container when removing all images")
-            return self._rm_all()
-
-        # delete all containers in an image
-        if container is None:
-            return self._rm_image(image)
-
-        # delete specific container in an image
-        tag = self.tags.get(image)
-        if tag is None:
-            return 0
-        containers = tag["containers"]
-        container_id = containers.get(container)
-        if container_id is None:
-            return 0
-        docker_cmd(["container", "rm", "-f", container_id], check=False, capture_output=True)
-        _container_file(self.root, container_id).unlink(missing_ok=True)
-        containers.pop(container, None)
-        return 1
 
     @overload
     def __getitem__(self, args: tuple[str, str]) -> Container | None: ...
@@ -1304,7 +1227,7 @@ RUN pip install .
         """
         if self.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
-        if DockerEnvironment.current() is not None:
+        if Environment.current() is not None:
             raise OSError("cannot modify an environment from within a Bertrand container")
 
         # attempt to load existing image metadata and Docker image
@@ -1335,7 +1258,7 @@ RUN pip install .
         # verify mount point hasn't drifted
         return self._relocate_container(container, container_inspect, containers)
 
-    def _build_image(self, image_tag: str) -> tuple[Image | None, list[str] | None]:
+    def _build(self, image_tag: str) -> tuple[Image | None, list[str] | None]:
         # search for image
         tag = self.tags.get(image_tag)
         if tag is None:
@@ -1361,7 +1284,7 @@ RUN pip install .
 
         return image, args
 
-    def build_image(self, image_tag: str, image_args: list[str]) -> Image:
+    def build(self, image_tag: str, image_args: list[str]) -> Image:
         """Incrementally build a Docker image with the given tag and arguments, or load
         an existing one if it is already up-to-date.
 
@@ -1375,9 +1298,9 @@ RUN pip install .
         image_args : list[str]
             The `docker build` arguments to use when building the image if no existing
             image could be found.  If an existing image is found with the same tag, but
-            different arguments, then it will be removed and replaced with a new image
-            built with these arguments.  If a non-empty list of arguments is provided,
-            then `image_tag` must also be non-empty.
+            different arguments, then it will be removed and rebuilt with these
+            arguments.  If a non-empty list of arguments is provided, then `image_tag`
+            must also be non-empty.
 
         Returns
         -------
@@ -1397,7 +1320,7 @@ RUN pip install .
         # pylint: disable=missing-raises-doc
         if self.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
-        if DockerEnvironment.current() is not None:
+        if Environment.current() is not None:
             raise OSError("cannot modify an environment from within a Bertrand container")
         if image_args and not image_tag:
             raise OSError("images with non-default arguments must have a tag")
@@ -1406,7 +1329,7 @@ RUN pip install .
 
         # search for up-to-date image with identical args
         image_args = _normalize_args(image_args)
-        image, _ = self._build_image(image_tag)
+        image, _ = self._build(image_tag)
         if image is not None:
             if image.args == image_args:
                 return image
@@ -1470,7 +1393,7 @@ RUN pip install .
         self.tags |= {image_tag: {"uuid": image.uuid, "containers": {}}}
         return image
 
-    def _build_container(self, image_tag: str, container_tag: str) -> Container | None:
+    def _start(self, image_tag: str, container_tag: str) -> Container | None:
         # search for image
         tag = self.tags.get(image_tag)
         if tag is None:
@@ -1478,13 +1401,13 @@ RUN pip install .
         containers = tag["containers"]
 
         # attempt to load existing image metadata and rebuild using original args if needed
-        image, image_args = self._build_image(image_tag)
+        image, image_args = self._build(image_tag)
         if image is None:
             if image_args is None:
                 if image_tag:
                     raise KeyError(f"no image found for tag: '{image_tag}'")
                 image_args = []  # empty tag implies empty args
-            image = self.build_image(image_tag, image_args)
+            image = self.build(image_tag, image_args)
             image_args = image.args
 
         # attempt to load existing container metadata
@@ -1506,16 +1429,23 @@ RUN pip install .
         # needed.  Note that this will remove any data that is not stored in the
         # environment directory (i.e., in the container's root filesystem), but those
         # can be recovered by rebuilding the container in reproducible fashion.
-        return self._relocate_container(container, inspect, containers)
+        container = self._relocate_container(container, inspect, containers)
+        if container is None:
+            return None
 
-    def build_container(
+        # start the container
+        docker_cmd(["container", "start", container.id])
+        return container
+
+    def start(
         self,
         image_tag: str,
         container_tag: str,
         container_args: list[str]
     ) -> Container:
         """Incrementally build a Docker container with the given image, tag, and
-        arguments, or load an existing one if it is already up-to-date.
+        arguments, or load an existing one if it is already up-to-date, and then start
+        it.
 
         Parameters
         ----------
@@ -1533,9 +1463,9 @@ RUN pip install .
         container_args : list[str]
             The `docker create` arguments to use when creating the container if no
             existing container could be found.  If an existing container is found with
-            the same tag, but different arguments, then it will be removed and replaced
-            with a new container created with these arguments.  If a non-empty list of
-            arguments is provided, then `container_tag` must also be non-empty.
+            the same tag, but different arguments, then it will be removed and rebuilt
+            with these arguments.  If a non-empty list of arguments is provided, then
+            `container_tag` must also be non-empty.
 
         Returns
         -------
@@ -1552,12 +1482,13 @@ RUN pip install .
             method is invoked from within a Bertrand container, or if non-empty
             `container_args` are provided with an empty `container_tag`, or vice versa.
         CommandError
-            If a `docker create` or `docker container inspect` command fails.
+            If a `docker build`, `docker image inspect`, `docker create`,
+            `docker container inspect`, or `docker start` command fails.
         """
         # pylint: disable=missing-raises-doc
         if self.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
-        if DockerEnvironment.current() is not None:
+        if Environment.current() is not None:
             raise OSError("cannot modify an environment from within a Bertrand container")
         if container_args and not container_tag:
             raise OSError("containers with non-default arguments must have a tag")
@@ -1566,7 +1497,7 @@ RUN pip install .
 
         # search for up-to-date container with identical args
         container_args = _normalize_args(container_args)
-        container = self._build_container(image_tag, container_tag)
+        container = self._start(image_tag, container_tag)
         tag = self.tags[image_tag]
         image_id = tag["uuid"]
         containers = tag["containers"]
@@ -1593,6 +1524,7 @@ RUN pip install .
         container.id = ""  # corrected after create
         container.created = ""  # corrected after create
         container.args = container_args
+        container.entrypoint = []  # default entrypoint
 
         # invoke docker create
         container_name = container.name
@@ -1630,8 +1562,13 @@ RUN pip install .
                     "id": container.id,
                     "created": container.created,
                     "args": container.args,
+                    "entrypoint": container.entrypoint,
                 }, indent=2) + "\n"
             )
+
+            # start the container
+            docker_cmd(["container", "start", container.id])
+
         except Exception as err:
             docker_cmd(["container", "rm", "-f", container_name], check=False, capture_output=True)
             raise err
@@ -1640,264 +1577,661 @@ RUN pip install .
         containers |= {container_tag: container.uuid}
         return container
 
+    # TODO: should I modify `enter` to use `docker debug` instead of `docker exec`?
+    # This would allow me to drop any complicated shell replacement, and possibly
+    # also make it easier to do the editor integrations without bloating the
+    # container itself or implementing any complicated IPC system.  It should be
+    # possible to get any editor working this way, but passing the right configuration
+    # to use the bootstrapped toolchain might be tricky.
 
-def start_container(env_root: Path, tag: str, *, argv: list[str]) -> DockerContainer:
-    """Start an existing container with the given tag or build arguments, or create a
-    new one by running the user's Dockerfile with the specified build arguments.
+    # TODO: it might also be possible to use `docker debug` to implement `run` as well,
+    # by running a command non-interactively within the container context.
 
-    Parameters
-    ----------
-    env_root : Path
-        A path to the root environment directory.
-    tag : str
-        An optional, human-readable tag to assign to the container.  If `argv` is empty
-        and this tag is not, then it will be searched in the environment metadata in
-        order to replace `argv`.  Otherwise, `argv` will be used directly, and the tag
-        will be associated with them, making the container accessible via
-        `<env_root>:<tag>` in the future.
-    argv : list[str]
-        An arbitrary number of command-line arguments to pass to the Dockerfile build
-        process.  These must match the expected `ARG` directives in the environment's
-        Dockerfile.
+    def enter(
+        self,
+        image_tag: str,
+        container_tag: str,
+        container_args: list[str]
+    ) -> Container:
+        """Replace the current process with an interactive shell inside the specified
+        Docker container, starting or rebuilding it as necessary.
 
-    Returns
-    -------
-    DockerContainer
-        The created or loaded container metadata.
+        Parameters
+        ----------
+        image_tag : str
+            The image tag to search for.  If no existing image with the same tag is
+            found, and the tag is not empty, then an error will be raised.  Otherwise
+            if the tagged image is out of date, it will be rebuilt using its original
+            arguments.
+        container_tag : str
+            The container tag to search for.  If no existing container with the same
+            tag is found, or the existing container is out of date, or its arguments
+            differ from `container_args`, then a new container will be created and
+            associated with this tag.  If a non-empty tag is provided, then
+            `container_args` must also be non-empty.
+        container_args : list[str]
+            The `docker create` arguments to use when creating the container if no
+            existing container could be found.  If an existing container is found with
+            the same tag, but different arguments, then it will be removed and rebuilt
+            with these arguments.  If a non-empty list of arguments is provided, then
+            `container_tag` must also be non-empty.
 
-    Raises
-    ------
-    FileNotFoundError
-        If the environment metadata could not be found at the given path.
-    KeyError
-        If a tag was provided without arguments, but the tag could not be found in the
-        environment metadata.
-    CommandError
-        If a Docker command fails or the container could not be created.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
+        Returns
+        -------
+        Container
+            The resulting container metadata, which may be a reference to an existing
+            container or a newly created one.
 
-    # resolve tag or normalize argv
-    argv = _normalize_argv(argv)
-    if tag and not argv:
-        argv = env.tags.get(tag, [])
-        if not argv:
-            raise KeyError(f"Environment tag not found: {tag}")
+        Raises
+        ------
+        KeyError
+            If an image tag is provided but could not be found.
+        OSError
+            If the environment has not been acquired as a context manager, or if this
+            method is invoked from within a Bertrand container, or if non-empty
+            `container_args` are provided with an empty `container_tag`, or vice versa.
+        CommandError
+            If a `docker build`, `docker image inspect`, `docker create`,
+            `docker container inspect`, or `docker exec` command fails.
+        """
+        # start or rebuild the container, then replace current process with an inner shell
+        container = self.start(image_tag, container_tag, container_args)
+        docker_exec([
+            "exec",
+            "-it",
+            "-w", MOUNT,
+            container.id,
+            *self.shell
+        ])
+        return container
 
-    # load or create container
-    arg_hash = _arg_hash(argv)
-    digest = _docker_digest(env_root, argv)
-    container, inspect = _ensure_container(
-        env_root,
-        tag,
-        argv,
-        env=env,
-        arg_hash=arg_hash,
-        digest=digest
-    )
+    def run(
+        self,
+        image_tag: str,
+        container_tag: str,
+        argv: list[str]
+    ) -> Container:
+        """Run a command inside the specified Docker container, starting or rebuilding
+        it as necessary.
 
-    # start container if not already running
-    _start_container(inspect)
-    return container
+        Parameters
+        ----------
+        image_tag : str
+            The image tag to search for.  If no existing image with the same tag is
+            found, and the tag is not empty, then an error will be raised.  Otherwise,
+            if the tagged image is out of date, it will be rebuilt using its original
+            arguments.
+        container_tag : str
+            The container tag to search for.  If no existing container with the same
+            tag is found, and the tag is not empty, then an error will be raised.
+            Otherwise, if the tagged container is out of date, it will be rebuilt using
+            its original arguments.
+        argv : list[str]
+            The arguments to pass to the container's entrypoint when running the
+            command.  The entrypoint itself is prepended automatically, and if no
+            entrypoint is defined, then the command will be run directly.
+
+        Returns
+        -------
+        Container
+            The resulting container metadata, which may be a reference to an existing
+            container or a newly created one.
+
+        Raises
+        ------
+        KeyError
+            If an image or container tag is provided but could not be found.
+        OSError
+            If the environment has not been acquired as a context manager, or if this
+            method is invoked from within a Bertrand container.
+        CommandError
+            If a `docker build`, `docker image inspect`, `docker create`,
+            `docker container inspect`, or `docker exec` command fails, or if the
+            container does not have a valid entrypoint.
+        """
+        if self.depth < 1:
+            raise OSError("environment must be acquired as a context manager before accessing")
+        if Environment.current() is not None:
+            raise OSError("cannot modify an environment from within a Bertrand container")
+
+        # search for up-to-date container or start a new one if the container tag is empty
+        container = self._start(image_tag, container_tag)
+        if container is None:
+            if container_tag:
+                raise KeyError(f"no container found for tag: '{container_tag}'")
+            container = self.start(image_tag, container_tag, [])  # empty tag implies empty args
+
+        # ensure container has a valid entrypoint
+        if not container.entrypoint:
+            raise CommandError(
+                returncode=1,
+                cmd=["bertrand", "run", f"{self.root}:{image_tag}:{container_tag}", *argv],
+                stdout="",
+                stderr=
+                    "Cannot run command: container has no entrypoint defined.  Either "
+                    "write a '__main__.py' file or include a C++ source file that "
+                    "implements an 'int main()' function."
+            )
+
+        # run the command within the container context
+        docker_cmd([
+            "exec",
+            "-it",
+            "-w", MOUNT,
+            container.id,
+            *container.entrypoint,
+            *argv
+        ])
+        return container
+
+    @overload
+    def stop(self, image_tag: str, container_tag: str) -> Container | None: ...
+    @overload
+    def stop(self, image_tag: str, container_tag: None = None) -> Image | None: ...
+    @overload
+    def stop(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
+    def stop(
+        self,
+        image_tag: str | None = None,
+        container_tag: str | None = None
+    ) -> Environment | Image | Container | None:
+        """Stop running containers within this environment.
+
+        Parameters
+        ----------
+        image_tag : str | None, optional
+            An optional image tag to stop containers within.  If None (the default),
+            all containers in this environment will be stopped.
+        container_tag : str | None, optional
+            An optional container tag to stop within the indicated image.  If None (the
+            default), all containers in the indicated image (or whole environment if
+            `image_tag` is None) will be stopped.
+
+        Returns
+        -------
+        Environment | Image | Container | None
+            The top-level environment, image, or container metadata that was stopped,
+            or None if no matching tag could be found.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager.
+        TypeError
+            If `image_tag` is None but `container_tag` is not.
+        """
+        if self.depth < 1:
+            raise OSError("environment must be acquired as a context manager before accessing")
+        if Environment.current() is not None:
+            raise OSError("cannot modify an environment from within a Bertrand container")
+
+        # stop all containers in the environment
+        if image_tag is None:
+            if container_tag is not None:
+                raise TypeError("cannot specify a container when stopping all images")
+            for t in self.tags.values():
+                for c in t["containers"].values():
+                    container = Container(self.root, c)
+                    inspect = Container.inspect(container.id)
+                    if inspect is None:
+                        continue
+                    state = inspect["State"]
+                    if state["Running"] or state["Paused"] or state["Restarting"]:
+                        docker_cmd(
+                            ["container", "stop", container.id, "-t", str(self.timeout)],
+                            check=False,
+                            capture_output=True
+                        )
+            return self
+
+        # stop all containers in an image
+        if container_tag is None:
+            tag = self.tags.get(image_tag)
+            if tag is None:
+                return None
+            image = Image(self.root, tag["uuid"])
+            containers = tag["containers"]
+            for c in containers.values():
+                container = Container(self.root, c)
+                inspect = Container.inspect(container.id)
+                if inspect is None:
+                    continue
+                state = inspect["State"]
+                if state["Running"] or state["Paused"] or state["Restarting"]:
+                    docker_cmd(
+                        ["container", "stop", container.id, "-t", str(self.timeout)],
+                        check=False,
+                        capture_output=True
+                    )
+            return image
+
+        # stop a specific container in an image
+        tag = self.tags.get(image_tag)
+        if tag is None:
+            return None
+        containers = tag["containers"]
+        container_id = containers.get(container_tag)
+        if container_id is None:
+            return None
+        container = Container(self.root, container_id)
+        inspect = Container.inspect(container.id)
+        if inspect is None:
+            return None
+        state = inspect["State"]
+        if state["Running"] or state["Paused"] or state["Restarting"]:
+            docker_cmd(
+                ["container", "stop", container.id, "-t", str(self.timeout)],
+                check=False,
+                capture_output=True
+            )
+        return container
+
+    @overload
+    def pause(self, image_tag: str, container_tag: str) -> Container | None: ...
+    @overload
+    def pause(self, image_tag: str, container_tag: None = None) -> Image | None: ...
+    @overload
+    def pause(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
+    def pause(
+        self,
+        image_tag: str | None = None,
+        container_tag: str | None = None
+    ) -> Environment | Image | Container | None:
+        """Pause running containers within this environment.
+
+        Parameters
+        ----------
+        image_tag : str | None, optional
+            An optional image tag to pause containers within.  If None (the default),
+            all containers in this environment will be paused.
+        container_tag : str | None, optional
+            An optional container tag to pause within the indicated image.  If None (the
+            default), all containers in the indicated image (or whole environment if
+            `image_tag` is None) will be paused.
+
+        Returns
+        -------
+        Environment | Image | Container | None
+            The top-level environment, image, or container metadata that was paused,
+            or None if no matching tag could be found.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager.
+        TypeError
+            If `image_tag` is None but `container_tag` is not.
+        """
+        if self.depth < 1:
+            raise OSError("environment must be acquired as a context manager before accessing")
+        if Environment.current() is not None:
+            raise OSError("cannot modify an environment from within a Bertrand container")
+
+        # pause all containers in the environment
+        if image_tag is None:
+            if container_tag is not None:
+                raise TypeError("cannot specify a container when pausing all images")
+            for t in self.tags.values():
+                for c in t["containers"].values():
+                    container = Container(self.root, c)
+                    inspect = Container.inspect(container.id)
+                    if inspect is None:
+                        continue
+                    state = inspect["State"]
+                    if state["Running"] or state["Restarting"]:
+                        docker_cmd(
+                            ["container", "pause", container.id],
+                            check=False,
+                            capture_output=True
+                        )
+            return self
+
+        # pause all containers in an image
+        if container_tag is None:
+            tag = self.tags.get(image_tag)
+            if tag is None:
+                return None
+            image = Image(self.root, tag["uuid"])
+            containers = tag["containers"]
+            for c in containers.values():
+                container = Container(self.root, c)
+                inspect = Container.inspect(container.id)
+                if inspect is None:
+                    continue
+                state = inspect["State"]
+                if state["Running"] or state["Restarting"]:
+                    docker_cmd(
+                        ["container", "pause", container.id],
+                        check=False,
+                        capture_output=True
+                    )
+            return image
+
+        # pause a specific container in an image
+        tag = self.tags.get(image_tag)
+        if tag is None:
+            return None
+        containers = tag["containers"]
+        container_id = containers.get(container_tag)
+        if container_id is None:
+            return None
+        container = Container(self.root, container_id)
+        inspect = Container.inspect(container.id)
+        if inspect is None:
+            return None
+        state = inspect["State"]
+        if state["Running"] or state["Restarting"]:
+            docker_cmd(
+                ["container", "pause", container.id],
+                check=False,
+                capture_output=True
+            )
+        return container
+
+    @overload
+    def resume(self, image_tag: str, container_tag: str) -> Container | None: ...
+    @overload
+    def resume(self, image_tag: str, container_tag: None = None) -> Image | None: ...
+    @overload
+    def resume(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
+    def resume(
+        self,
+        image_tag: str | None = None,
+        container_tag: str | None = None
+    ) -> Environment | Image | Container | None:
+        """Resume paused containers within this environment.
+
+        Parameters
+        ----------
+        image_tag : str | None, optional
+            An optional image tag to resume containers within.  If None (the default),
+            all paused containers in this environment will be resumed.
+        container_tag : str | None, optional
+            An optional container tag to resume within the indicated image.  If None
+            (the default), all paused containers in the indicated image (or whole
+            environment if `image_tag` is None) will be resumed.
+
+        Returns
+        -------
+        Environment | Image | Container | None
+            The top-level environment, image, or container metadata that was resumed,
+            or None if no matching tag could be found.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager.
+        TypeError
+            If `image_tag` is None but `container_tag` is not.
+        """
+        if self.depth < 1:
+            raise OSError("environment must be acquired as a context manager before accessing")
+        if Environment.current() is not None:
+            raise OSError("cannot modify an environment from within a Bertrand container")
+
+        # resume all paused containers in the environment
+        if image_tag is None:
+            if container_tag is not None:
+                raise TypeError("cannot specify a container when stopping all images")
+            for t in self.tags.values():
+                for c in t["containers"].values():
+                    container = Container(self.root, c)
+                    inspect = Container.inspect(container.id)
+                    if inspect is None:
+                        continue
+                    state = inspect["State"]
+                    if state["Paused"]:
+                        docker_cmd(
+                            ["container", "unpause", container.id],
+                            check=False,
+                            capture_output=True
+                        )
+            return self
+
+        # resume all paused containers in an image
+        if container_tag is None:
+            tag = self.tags.get(image_tag)
+            if tag is None:
+                return None
+            image = Image(self.root, tag["uuid"])
+            containers = tag["containers"]
+            for c in containers.values():
+                container = Container(self.root, c)
+                inspect = Container.inspect(container.id)
+                if inspect is None:
+                    continue
+                state = inspect["State"]
+                if state["Paused"]:
+                    docker_cmd(
+                        ["container", "unpause", container.id],
+                        check=False,
+                        capture_output=True
+                    )
+            return image
+
+        # resume a specific container in an image
+        tag = self.tags.get(image_tag)
+        if tag is None:
+            return None
+        containers = tag["containers"]
+        container_id = containers.get(container_tag)
+        if container_id is None:
+            return None
+        container = Container(self.root, container_id)
+        inspect = Container.inspect(container.id)
+        if inspect is None:
+            return None
+        state = inspect["State"]
+        if state["Paused"]:
+            docker_cmd(
+                ["container", "unpause", container.id],
+                check=False,
+                capture_output=True
+            )
+        return container
+
+    @overload
+    def restart(self, image_tag: str, container_tag: str) -> Container | None: ...
+    @overload
+    def restart(self, image_tag: str, container_tag: None = None) -> Image | None: ...
+    @overload
+    def restart(self, image_tag: None = None, container_tag: None = None) -> Environment | None: ...
+    def restart(
+        self,
+        image_tag: str | None = None,
+        container_tag: str | None = None
+    ) -> Environment | Image | Container | None:
+        """Restart running containers within this environment.
+
+        Parameters
+        ----------
+        image_tag : str | None, optional
+            An optional image tag to restart containers within.  If None (the default),
+            all running containers in this environment will be restarted.
+        container_tag : str | None, optional
+            An optional container tag to restart within the indicated image.  If None
+            (the default), all running containers in the indicated image (or whole
+            environment if `image_tag` is None) will be restarted.
+
+        Returns
+        -------
+        Environment | Image | Container | None
+            The top-level environment, image, or container metadata that was restarted,
+            or None if no matching tag could be found.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager.
+        TypeError
+            If `image_tag` is None but `container_tag` is not.
+        """
+        if self.depth < 1:
+            raise OSError("environment must be acquired as a context manager before accessing")
+        if Environment.current() is not None:
+            raise OSError("cannot modify an environment from within a Bertrand container")
+
+        # restart all containers in the environment
+        if image_tag is None:
+            if container_tag is not None:
+                raise TypeError("cannot specify a container when stopping all images")
+            for t in self.tags.values():
+                for c in t["containers"].values():
+                    container = Container(self.root, c)
+                    inspect = Container.inspect(container.id)
+                    if inspect is None:
+                        continue
+                    state = inspect["State"]
+                    if state["Running"]:
+                        docker_cmd(
+                            ["container", "restart", container.id, "-t", str(self.timeout)],
+                            check=False,
+                            capture_output=True
+                        )
+            return self
+
+        # restart all containers in an image
+        if container_tag is None:
+            tag = self.tags.get(image_tag)
+            if tag is None:
+                return None
+            image = Image(self.root, tag["uuid"])
+            containers = tag["containers"]
+            for c in containers.values():
+                container = Container(self.root, c)
+                inspect = Container.inspect(container.id)
+                if inspect is None:
+                    continue
+                state = inspect["State"]
+                if state["Running"]:
+                    docker_cmd(
+                        ["container", "restart", container.id, "-t", str(self.timeout)],
+                        check=False,
+                        capture_output=True
+                    )
+            return image
+
+        # restart a specific container in an image
+        tag = self.tags.get(image_tag)
+        if tag is None:
+            return None
+        containers = tag["containers"]
+        container_id = containers.get(container_tag)
+        if container_id is None:
+            return None
+        container = Container(self.root, container_id)
+        inspect = Container.inspect(container.id)
+        if inspect is None:
+            return None
+        state = inspect["State"]
+        if state["Running"]:
+            docker_cmd(
+                ["container", "restart", container.id, "-t", str(self.timeout)],
+                check=False,
+                capture_output=True
+            )
+        return container
+
+    def _rm_all(self) -> int:
+        total = 0
+        for image in self.tags.values():
+            image_id = image["uuid"]
+            containers = image["containers"]
+            for container_id in containers.values():
+                docker_cmd(
+                    ["container", "rm", "-f", container_id],
+                    check=False,
+                    capture_output=True
+                )
+                _container_file(self.root, container_id).unlink(missing_ok=True)
+            total += len(containers)
+            docker_cmd(["image", "rm", "-f", image_id], check=False, capture_output=True)
+            _image_file(self.root, image_id).unlink(missing_ok=True)
+        total += len(self.tags)
+        self.tags.clear()
+        return total
+
+    def _rm_image(self, image: str) -> int:
+        tag = self.tags.get(image)
+        if tag is None:
+            return 0
+        image_id = tag["uuid"]
+        containers = tag["containers"]
+        for container_id in containers.values():
+            docker_cmd(
+                ["container", "rm", "-f", container_id],
+                check=False,
+                capture_output=True
+            )
+            _container_file(self.root, container_id).unlink(missing_ok=True)
+        docker_cmd(["image", "rm", "-f", image_id], check=False, capture_output=True)
+        _image_file(self.root, image_id).unlink(missing_ok=True)
+        self.tags.pop(image)
+        return len(containers) + 1
+
+    def rm(self, image: str | None = None, container: str | None = None) -> int:
+        """Delete images and/or containers from this environment.
+
+        Parameters
+        ----------
+        image : str | None, optional
+            An optional image tag to remove.  If None (the default), all images and
+            containers in this environment will be removed.
+        container : str | None, optional
+            An optional container tag to remove.  If None (the default), all containers
+            in the indicated image (or whole environment if `image` is None) will be
+            removed.
+
+        Returns
+        -------
+        int
+            The number of images and containers that were removed, for posterity.
+
+        Raises
+        ------
+        OSError
+            If the environment has not been acquired as a context manager.
+        TypeError
+            If `image` is None but `container` is not.
+        """
+        if self.depth < 1:
+            raise OSError("environment must be acquired as a context manager before accessing")
+        if Environment.current() is not None:
+            raise OSError("cannot modify an environment from within a Bertrand container")
+
+        # delete all images
+        if image is None:
+            if container is not None:
+                raise TypeError("cannot specify a container when removing all images")
+            return self._rm_all()
+
+        # delete all containers in an image
+        if container is None:
+            return self._rm_image(image)
+
+        # delete specific container in an image
+        tag = self.tags.get(image)
+        if tag is None:
+            return 0
+        containers = tag["containers"]
+        container_id = containers.get(container)
+        if container_id is None:
+            return 0
+        docker_cmd(["container", "rm", "-f", container_id], check=False, capture_output=True)
+        _container_file(self.root, container_id).unlink(missing_ok=True)
+        containers.pop(container, None)
+        return 1
+
+    def top(self, image: str | None = None, container: str | None = None) -> None:
+        """Display the running processes within images and/or containers in this
+        environment.
+        """
+        # TODO: implement this
 
 
-def enter_container(env_root: Path, tag: str, *, argv: list[str]) -> DockerContainer:
-    """Start an existing container with the given tag or build arguments, or create a
-    new one by running the user's Dockerfile with the specified build arguments, and
-    then replace the current process with a shell inside the container.
-
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-    tag : str
-        An optional, human-readable tag to assign to the container.  If `argv` is empty
-        and this tag is not, then it will be searched in the environment metadata in
-        order to replace `argv`.  Otherwise, `argv` will be used directly, and the tag
-        will be associated with them, making the container accessible via
-        `<env_root>:<tag>` in the future.
-    argv : list[str]
-        An arbitrary number of command-line arguments to pass to the Dockerfile build
-        process.  These must match the expected `ARG` directives in the environment's
-        Dockerfile.
-
-    Returns
-    -------
-    DockerContainer
-        The created or loaded container metadata.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    KeyError
-        If a tag was provided without arguments, but the tag could not be found in the
-        environment metadata.
-    CommandError
-        If a Docker command fails or the container could not be created.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"No environment found at: {env_root}")
-
-    # resolve tag or normalize argv
-    argv = _normalize_argv(argv)
-    if tag and not argv:
-        argv = env.tags.get(tag, [])
-        if not argv:
-            raise KeyError(f"Environment tag not found: {tag}")
-
-    # load or create container
-    arg_hash = _arg_hash(argv)
-    digest = _docker_digest(env_root, argv)
-    container, inspect = _ensure_container(
-        env_root,
-        tag,
-        argv,
-        env=env,
-        arg_hash=arg_hash,
-        digest=digest
-    )
-
-    # start container if not already running
-    _start_container(inspect)
-
-    # replace current process with container shell
-    docker_exec([
-        "exec",
-        "-it",
-        "-w", MOUNT,
-        container.container,
-        *env.shell
-    ])
-    return container
-
-
-# TODO: `$ docker run` has a massive list of configuration options, in addition to
-# the options passed to the entry point itself.  Either I should bake the run
-# options into the container metadata, or I should come up with a scheme where you
-# pass them like:
-
-#   $ bertrand run [run-options] <env>:<tag> [entrypoint-args]
-
-# but honestly that's pretty ugly.  There should be a better way to manage all the
-# options more effectively, so it's more obvious which options go where.
-# -> The only real way I can think to avoid this is to somehow either bake all
-# these options into the container itself, so that they are also reflected within
-# `$ bertrand enter`, or to have some sort of other command that just sets options
-# for a future run/enter, which might be the same as `$ bertrand init <env>:<tag>`.
-# The former is probably better, since it keeps everything self-contained, but it's
-# hard to extend to `$ bertrand enter` because it uses `docker exec` instead of
-# `docker run`.  The only way to really solve this cleanly is to make
-# `$ bertrand enter` use `docker run` as well, which I'm not sure is totally
-# possible.
-
-# Really, this requires me to nail down the exact compilation pipeline, since that
-# affects what information can be stored where.  If compilation equates to building
-# a container, then all compilation options must be baked into the container
-# definition, which may need to include information like the number of CPUs,
-# amount of virtual memory to use, etc.  The only alternative is to somehow detect
-# these options during the Dockerfile build process, which would allow me to omit them
-# from the image metadata.  I'm not really going to know the answer to this until I
-# start implementing the compilation system more fully, so it's kind of just broken
-# for now.
 
 
 
-# TODO: run_container should actually just run via docker exec
-
-
-def run_container(env_root: Path, tag: str, *, argv: list[str]) -> DockerContainer:
-    """Invoke a tagged container's entry point with the given command-line arguments.
-    Note that the arguments here are passed to the container's entry point, not to the
-    Docker build process.
-
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-    tag : str
-        An optional, human-readable tag to assign to the container.  If `argv` is empty
-        and this tag is not, then it will be searched in the environment metadata in
-        order to replace `argv`.  Otherwise, `argv` will be used directly, and the tag
-        will be associated with them, making the container accessible via
-        `<env_root>:<tag>` in the future.
-    argv : list[str]
-        An arbitrary number of command-line arguments to pass to the environment's
-        Dockerfile-defined entry point.
-
-    Returns
-    -------
-    DockerContainer
-        The created or loaded container metadata.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    KeyError
-        If a tag was provided, but could not be found in the environment metadata.
-    CommandError
-        If a Docker command fails or the container could not be created.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"No environment found at: {env_root}")
-
-    # resolve tag or use empty build arguments
-    container_args = []
-    if tag:
-        container_args = env.tags.get(tag, [])
-        if not container_args:
-            raise KeyError(f"Environment tag not found: {tag}")
-
-    # load or create container
-    arg_hash = _arg_hash(container_args)
-    digest = _docker_digest(env_root, container_args)
-    container, inspect = _ensure_container(
-        env_root,
-        tag,
-        container_args,
-        env=env,
-        arg_hash=arg_hash,
-        digest=digest
-    )
-
-    # launch container entry point with normalized arguments
-    argv = _normalize_argv(argv)
-    docker_cmd([
-        "run",
-        _image_name(container),
-        "-w", MOUNT,
-        *argv
-    ])
-    return container
 
 
 def in_container() -> bool:
@@ -2123,289 +2457,6 @@ def container_activity(env_root: Path, tag: str, *, argv: list[str]) -> DockerCo
     return container
 
 
-def stop_container(env_root: Path, tag: str, *, argv: list[str]) -> DockerContainer:
-    """Stop a container, terminating all running processes within it.
-
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-    tag : str
-        An optional, human-readable tag to look up in order to determine the proper
-        arguments.  If `argv` is empty and this tag is not, then it will be searched in
-        the environment metadata in order to replace `argv`.  Otherwise, `argv` will be
-        used directly, and this tag must be empty.
-    argv : list[str]
-        An arbitrary number of command-line arguments to identify the container.
-        These must match the expected `ARG` directives in the environment's Dockerfile.
-        If `tag` is provided, then `argv` must be empty.
-
-    Returns
-    -------
-    DockerContainer
-        The stopped container metadata.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    KeyError
-        If no container matches the given tag.
-    CommandError
-        If any docker command fails, or if both `tag` and `argv` are provided at the
-        same time.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
-
-    # resolve tag or normalize argv
-    argv = _normalize_argv(argv)
-    if tag:
-        if argv:
-            raise CommandError(
-                returncode=1,
-                cmd=["bertrand", "stop", f"{str(env_root)}:{tag}", *argv],
-                stdout="",
-                stderr="Cannot specify both tag and build arguments when stopping a container.",
-            )
-        argv = env.tags.get(tag, [])
-        if not argv:
-            raise KeyError(f"Environment tag not found: {tag}")
-
-    # search for container
-    arg_hash = _arg_hash(argv)
-    container, inspect = _search_container(env_root, env=env, arg_hash=arg_hash)
-    if container is None or inspect is None:
-        raise KeyError("No container found for the given tag or build arguments.")
-
-    # if container was not found or was removed, nothing to do
-    _stop_container(inspect)
-    return container
-
-
-def pause_container(env_root: Path, tag: str, *, argv: list[str]) -> DockerContainer:
-    """Pause an container, suspending all running processes within it, but not
-    terminating them.
-
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-    tag : str
-        An optional, human-readable tag to look up in order to determine the proper
-        arguments.  If `argv` is empty and this tag is not, then it will be searched in
-        the environment metadata in order to replace `argv`.  Otherwise, `argv` will be
-        used directly, and this tag must be empty.
-    argv : list[str]
-        An arbitrary number of command-line arguments to identify the container.
-        These must match the expected `ARG` directives in the environment's Dockerfile.
-        If `tag` is provided, then `argv` must be empty.
-
-    Returns
-    -------
-    DockerContainer
-        The paused container's metadata.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    KeyError
-        If no container matches the given tag or build arguments.
-    CommandError
-        If any docker command fails, or if both `tag` and `argv` are provided at the
-        same time.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
-
-    # resolve tag or normalize argv
-    argv = _normalize_argv(argv)
-    if tag:
-        if argv:
-            raise CommandError(
-                returncode=1,
-                cmd=["bertrand", "stop", f"{str(env_root)}:{tag}", *argv],
-                stdout="",
-                stderr="Cannot specify both tag and build arguments when stopping a container.",
-            )
-        argv = env.tags.get(tag, [])
-        if not argv:
-            raise KeyError(f"Environment tag not found: {tag}")
-
-    # search container
-    arg_hash = _arg_hash(argv)
-    container, inspect = _search_container(env_root, env=env, arg_hash=arg_hash)
-    if container is None or inspect is None:
-        raise KeyError("No container found for the given tag or build arguments.")
-
-    # stop container if running
-    if inspect.get("State", {}).get("Running", False):
-        docker_cmd(["pause", inspect["Id"]])
-    return container
-
-
-def resume_container(env_root: Path, tag: str, *, argv: list[str]) -> DockerContainer:
-    """Resume a paused environment container, restarting all suspended processes
-    within it.
-
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-    tag : str
-        An optional, human-readable tag to look up in order to determine the proper
-        arguments.  If `argv` is empty and this tag is not, then it will be searched in
-        the environment metadata in order to replace `argv`.  Otherwise, `argv` will be
-        used directly, and this tag must be empty.
-    argv : list[str]
-        An arbitrary number of command-line arguments to identify the container.
-        These must match the expected `ARG` directives in the environment's Dockerfile.
-        If `tag` is provided, then `argv` must be empty.
-
-    Returns
-    -------
-    DockerContainer
-        The resumed container's metadata.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    KeyError
-        If no container matches the given tag or build arguments.
-    CommandError
-        If any docker command fails, or if both `tag` and `argv` are provided at the
-        same time.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
-
-    # resolve tag or normalize argv
-    argv = _normalize_argv(argv)
-    if tag:
-        if argv:
-            raise CommandError(
-                returncode=1,
-                cmd=["bertrand", "stop", f"{str(env_root)}:{tag}", *argv],
-                stdout="",
-                stderr="Cannot specify both tag and build arguments when stopping a container.",
-            )
-        argv = env.tags.get(tag, [])
-        if not argv:
-            raise KeyError(f"Environment tag not found: {tag}")
-
-    # load container
-    arg_hash = _arg_hash(argv)
-    container, inspect = _search_container(env_root, env=env, arg_hash=arg_hash)
-    if container is None or inspect is None:
-        raise KeyError("No container found for the given tag or build arguments.")
-
-    # stop container if running
-    if not inspect.get("State", {}).get("Running", False):
-        docker_cmd(["unpause", inspect["Id"]])
-    return container
-
-
-def delete_container(env_root: Path, tag: str, *, argv: list[str]) -> None:
-    """Delete a container, removing it and its associated image from the Docker
-    daemon, and deleting its metadata from the environment directory.
-
-    Parameters
-    ----------
-    env_root : Path
-        The path to the environment directory.
-    tag : str
-        An optional, human-readable tag to look up in order to determine the proper
-        arguments.  If `argv` is empty and this tag is not, then it will be searched in
-        the environment metadata in order to replace `argv`.  Otherwise, `argv` will be
-        used directly, and this tag must be empty.
-    argv : list[str]
-        An arbitrary number of command-line arguments to identify the container.
-        These must match the expected `ARG` directives in the environment's Dockerfile.
-        If `tag` is provided, then `argv` must be empty.
-
-    Raises
-    ------
-    FileNotFoundError
-        If no environment is found at the given path.
-    KeyError
-        If no container matches the given tag or build arguments.
-    CommandError
-        If any docker command fails, or if both `tag` and `argv` are provided at the
-        same time.
-    ValueError
-        If the environment or container metadata is malformed.
-    JSONDecodeError
-        If the environment or container metadata is not a valid JSON object.
-    UnicodeDecodeError
-        If the environment or container metadata cannot be decoded.
-    """
-    # load environment
-    env_root = env_root.expanduser().resolve()
-    env = _read_environment(env_root)
-    if env is None:
-        raise FileNotFoundError(f"Failed to read environment metadata at: {env_root}")
-
-    # resolve tag or normalize argv
-    argv = _normalize_argv(argv)
-    if tag:
-        if argv:
-            raise CommandError(
-                returncode=1,
-                cmd=["bertrand", "stop", f"{str(env_root)}:{tag}", *argv],
-                stdout="",
-                stderr="Cannot specify both tag and build arguments when stopping a container.",
-            )
-        argv = env.tags.get(tag, [])
-        if not argv:
-            raise KeyError(f"Environment tag not found: {tag}")
-
-    # load container
-    arg_hash = _arg_hash(argv)
-    digest = env.builds.get(arg_hash, "")
-    container, inspect = _load_container(env_root, env=env, arg_hash=arg_hash, digest=digest)
-
-    # update environment search structures
-    env = replace(
-        env,
-        tags={k: v for k, v in env.tags.items() if tag and k != tag},
-        builds={k: v for k, v in env.builds.items() if v != digest},
-        ids={k: v for k, v in env.ids.items() if v != digest},
-    )
-    _write_environment(env_root, env)
-
-    # stop container if running, then remove both container and image
-    if container is not None and inspect is not None:
-        _stop_container(inspect)
-        _remove_container(container, force=False)
 
 
 
