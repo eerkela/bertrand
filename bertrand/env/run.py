@@ -35,15 +35,16 @@ class CommandError(subprocess.CalledProcessError):
         return "\n\n".join(out)
 
 
-def confirm(prompt: str, *, assume_yes: bool) -> bool:
+def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
     """Ask the user for a yes/no confirmation for a given prompt.
 
     Parameters
     ----------
     prompt : str
         The prompt to display to the user.
-    assume_yes : bool
-        If True, automatically return True without prompting the user.
+    assume_yes : bool, optional
+        If True, automatically return True without prompting the user.  Default is
+        False.
 
     Returns
     -------
