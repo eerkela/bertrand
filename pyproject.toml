@@ -8,8 +8,6 @@ requires = [
     "numpy",
     "tomlkit",
     "packaging",
-    "beautifulsoup4",
-    "tqdm",
 ]
 build-backend = "setuptools.build_meta:__legacy__"
 
@@ -61,22 +59,21 @@ keywords = [
     "ETL",
 ]
 dependencies = [
-    "colorama",
     "conan",
-    "beautifulsoup4",
     "numpy",
     "packaging",
-    "pandas >= 2.0.0",
-    "pyarrow",
-    "pybind11 >= 2.6.1",
-    "python-dateutil",
-    "pytz",
-    "regex",
-    "requests",
+    # "pandas >= 2.0.0",
+    "psutil",
+    # "pyarrow",
+    # "pybind11 >= 2.6.1",
+    # "python-dateutil",
+    # "pytz",
+    # "regex",
+    # "requests",
     "setuptools",
-    "tqdm",
-    "tomlkit",
-    "tzlocal",
+    # "tqdm",
+    # "tomlkit",
+    # "tzlocal",
 ]
 requires-python = ">=3.12"
 
@@ -88,7 +85,7 @@ dev = [
     "black",
     "bumpver",
     "cibuildwheel",
-    "cmake>=3.28",
+    # "cmake>=3.28",
     "mypy",
     "pandas-stubs",
     "pylint",
@@ -98,15 +95,16 @@ dev = [
     "sphinx_rtd_theme",
     "sphinx-tabs",
     "sphinx-togglebutton",
-    "types-colorama",
-    "types-beautifulsoup4",
-    "types-python-dateutil",
-    "types-pytz",
-    "types-requests",
-    "types-regex",
+    # "types-colorama",
+    # "types-beautifulsoup4",
+    "types-psutil",
+    # "types-python-dateutil",
+    # "types-pytz",
+    # "types-requests",
+    # "types-regex",
     "types-setuptools",
-    "types-tqdm",
-    "types-tzlocal",
+    # "types-tqdm",
+    # "types-tzlocal",
 ]
 
 [project.urls]
