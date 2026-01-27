@@ -14,12 +14,20 @@ import platform
 import re
 import shlex
 import shutil
-import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .run import CommandError, atomic_write_text, confirm, host_username, run, sudo_prefix
+from .run import (
+    CompletedProcess,
+    CommandError,
+    atomic_write_text,
+    confirm,
+    host_username,
+    run,
+    sudo_prefix
+)
 
 #pylint: disable=redefined-builtin, global-statement
 
@@ -31,6 +39,7 @@ BERTRAND_DOCKER_CONFIG = BERTRAND_STATE / "docker-config"
 SUBUID = Path("/etc/subuid")
 SUBGID = Path("/etc/subgid")
 RANGE = re.compile(r"^(?P<user>[^:]+):(?P<start>\d+):(?P<count>\d+)\s*$")
+WAIT_DAEMON_TIMEOUT = 30.0  # seconds
 
 
 def _xdg_runtime_dir() -> Path:
@@ -40,97 +49,95 @@ def _xdg_runtime_dir() -> Path:
     return Path("/run/user") / str(os.getuid())
 
 
-def _bertrand_socket_path() -> Path:
-    return _xdg_runtime_dir() / "bertrand-docker.sock"
-
-
-def _bertrand_exec_root() -> Path:
+def _bertrand_runtime_dir() -> Path:
     return _xdg_runtime_dir() / "bertrand-docker"
 
 
+def _bertrand_socket_path() -> Path:
+    return _bertrand_runtime_dir() / "docker.sock"
+
+
+def _bertrand_exec_root() -> Path:
+    return _bertrand_runtime_dir() / "exec-root"
+
+
 def _bertrand_pidfile() -> Path:
-    return _xdg_runtime_dir() / "bertrand-docker.pid"
+    return _bertrand_runtime_dir() / "dockerd.pid"
 
 
 def _bertrand_unit_path() -> Path:
     return BERTRAND_SYSTEMD_DIR / "bertrand-docker.service"
 
 
-def _desired_unit_text(rootless_sh: Path) -> str:
-    host = f"unix://{_bertrand_socket_path()}"
-    data = str(BERTRAND_DOCKER_DATA)
-    exe = str(_bertrand_exec_root())
-    pidfile = str(_bertrand_pidfile())
+def _systemd_user_env() -> dict[str, str]:
+    env = os.environ.copy()
+    rd = _xdg_runtime_dir()
+    env.setdefault("XDG_RUNTIME_DIR", str(rd))
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={rd}/bus")
+    return env
 
-    # Note: explicit PATH helps rootless helpers be found reliably under systemd.
-    # Also, rootless networking is typically provided via RootlessKit+slirp4netns.
-    return f"""\
+
+def _ensure_unit(rootless_sh: Path) -> bool:
+    # pylint: disable=line-too-long
+    text = f"""\
 [Unit]
 Description=Bertrand Rootless Docker Daemon
-After=network-online.target
-Wants=network-online.target
+After=default.target
 
 [Service]
 Type=simple
+Delegate=yes
+TasksMax=infinity
+UMask=0077
+
+# systemd creates %t/bertrand-docker with correct ownership
+RuntimeDirectory=bertrand-docker
+RuntimeDirectoryMode=0700
+
+# rootless networking via slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=builtin
+
+# allow rootless helpers to find necessary tools
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=slirp4netns
-ExecStart={rootless_sh} --host={host} --data-root={data} --exec-root={exe} --pidfile={pidfile}
+
+# clean stale artifacts
+ExecStartPre=/usr/bin/rm -f %t/bertrand-docker/docker.sock %t/bertrand-docker/dockerd.pid
+ExecStartPre=/usr/bin/mkdir -p %t/bertrand-docker/exec-root
+
+# start rootless dockerd
+ExecStart={rootless_sh} --host=unix://%t/bertrand-docker/docker.sock --data-root=%h/.local/share/bertrand/docker-data --exec-root=%t/bertrand-docker/exec-root --pidfile=%t/bertrand-docker/dockerd.pid
+
+# reload on SIGHUP
 ExecReload=/bin/kill -s HUP $MAINPID
 Restart=on-failure
 RestartSec=2
+TimeoutStartSec={int(WAIT_DAEMON_TIMEOUT)}
 LimitNOFILE=1048576
+
+# don't kill the whole cgroup on restart/stop - that can nuke container shims
+KillMode=process
 
 [Install]
 WantedBy=default.target
 """
 
-
-def _ensure_unit(rootless_sh: Path) -> bool:
     unit_path = _bertrand_unit_path()
-    desired = _desired_unit_text(rootless_sh)
-
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     old = unit_path.read_text(encoding="utf-8") if unit_path.exists() else ""
-    if old != desired:
-        atomic_write_text(unit_path, desired)
-        run(["systemctl", "--user", "daemon-reload"])
+    if old != text:
+        atomic_write_text(unit_path, text)
+        run(["systemctl", "--user", "daemon-reload"], env=_systemd_user_env())
         return True
     return False
 
 
-def _systemd_user_available() -> bool:
-    if not shutil.which("systemctl"):
-        return False
-    try:
-        cp = run(
-            ["systemctl", "--user", "is-system-running"],
-            check=False,              # critical: degraded returns non-zero
-            capture_output=True
-        )
-    except (OSError, CommandError):
-        return False
-
-    out = (cp.stdout or "").strip().lower()
-    err = (cp.stderr or "").strip().lower()
-
-    # Hard failures: no user bus / no systemd user instance
-    if "failed to connect to bus" in err or "no medium found" in err:
-        return False
-
-    # systemctl returns these states; some may be non-zero but still mean "reachable"
-    if out in {"running", "degraded", "starting", "initializing", "maintenance", "stopping"}:
-        return True
-
-    # If we got *any* coherent state string, assume reachable.
-    return bool(out)
-
-
 def _dockerd_rootless_sh() -> Path | None:
-    # Typically provided by docker-ce-rootless-extras
+    # typically provided by docker-ce-rootless-extras
     which = shutil.which("dockerd-rootless.sh")
     candidates: list[Path] = []
     if which:
-        candidates.append(Path(which))
+        candidates.append(Path(which).expanduser().resolve())  # ensure absolute path
     candidates.extend([
         Path("/usr/bin/dockerd-rootless.sh"),
         Path("/usr/local/bin/dockerd-rootless.sh"),
@@ -142,6 +149,34 @@ def _dockerd_rootless_sh() -> Path | None:
                 return path
             raise OSError(f"{path} exists but is not executable.")
     return None
+
+
+def _systemd_reachable() -> bool:
+    if not shutil.which("systemctl"):
+        return False
+    try:
+        cp = run(
+            ["systemctl", "--user", "is-system-running"],
+            check=False,              # critical: degraded returns non-zero
+            capture_output=True,
+            env=_systemd_user_env()
+        )
+    except (OSError, CommandError):
+        return False
+
+    out = (cp.stdout or "").strip().lower()
+    err = (cp.stderr or "").strip().lower()
+
+    # hard failures: no user bus / no systemd user instance
+    if "failed to connect to bus" in err or "no medium found" in err:
+        return False
+
+    # systemctl returns these states; some may be non-zero but still mean "reachable"
+    if out in {"running", "degraded", "starting", "initializing", "maintenance", "stopping"}:
+        return True
+
+    # if we got *any* coherent state string, assume reachable.
+    return bool(out)
 
 
 @dataclass(frozen=True)
@@ -182,8 +217,7 @@ def _parse_subid_file(path: Path) -> list[SubIDRange]:
 
 
 def _has_enough_subids(user: str, ranges: Iterable[SubIDRange], needed: int = 65536) -> bool:
-    total = sum(r.count for r in ranges if r.user == user)
-    return total >= needed
+    return any(r.user == user and r.count >= needed for r in ranges)
 
 
 def _choose_non_overlapping_start(ranges: list[SubIDRange], needed: int = 65536) -> int:
@@ -212,7 +246,7 @@ def _append_subid_entry(path: Path, user: str, start: int, count: int, sudo: lis
     run([*sudo, "sh", "-lc", cmd])
 
 
-def _ensure_subids(user: str, *, assume_yes: bool) -> None:
+def _provision_subids(user: str, *, assume_yes: bool) -> None:
     uid_ranges = _parse_subid_file(SUBUID)
     gid_ranges = _parse_subid_file(SUBGID)
     if _has_enough_subids(user, uid_ranges) and _has_enough_subids(user, gid_ranges):
@@ -250,22 +284,6 @@ def _ensure_subids(user: str, *, assume_yes: bool) -> None:
         raise OSError("Failed to provision subuid/subgid ranges correctly.")
 
 
-def local_docker_env() -> dict[str, str]:
-    """Return an environment dictionary configured to use Bertrand's rootless
-    Docker daemon.
-
-    Returns
-    -------
-    dict[str, str]
-        An environment dictionary for use with Bertrand's rootless Docker daemon.
-    """
-    env = dict(os.environ)
-    env["DOCKER_HOST"] = f"unix://{_bertrand_socket_path()}"
-    env["DOCKER_CONFIG"] = str(BERTRAND_DOCKER_CONFIG)
-    env.pop("DOCKER_CONTEXT", None)  # ensure user contexts never interfere
-    return env
-
-
 @dataclass(frozen=True)
 class HostDocker:
     """A data struct representing the status of Docker on the host system."""
@@ -301,7 +319,7 @@ def host_docker() -> HostDocker:
             detail=str(err),
         )
     try:
-        run(["docker", "info"], capture_output=True, env=local_docker_env())
+        run(["docker", "info"], capture_output=True)
         return HostDocker(
             installed=True,
             rootless_sh=rootless_sh,
@@ -315,6 +333,24 @@ def host_docker() -> HostDocker:
             daemon_running=False,
             detail=f"Docker daemon not reachable:\n\n{str(err)}",
         )
+
+
+def local_docker_env() -> dict[str, str]:
+    """Return an environment dictionary configured to use Bertrand's rootless
+    Docker daemon.
+
+    Returns
+    -------
+    dict[str, str]
+        An environment dictionary for use with Bertrand's rootless Docker daemon.
+    """
+    env = os.environ.copy()
+    env["DOCKER_HOST"] = f"unix://{_bertrand_socket_path()}"
+    env["DOCKER_CONFIG"] = str(BERTRAND_DOCKER_CONFIG)
+    env.setdefault("DOCKER_BUILDKIT", "1")  # enable buildkit by default
+    for k in ("DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "DOCKER_MACHINE_NAME"):
+        env.pop(k, None)
+    return env
 
 
 def _read_os_release() -> dict[str, str]:
@@ -416,12 +452,6 @@ def _install_docker_apt(*, distro: str) -> None:
     ]
     run([*sudo, "apt", "install", "-y", *pkgs])
 
-    # Ensure rootful system daemon is not enabled/started (we are rootless-only)
-    if shutil.which("systemctl"):
-        run([*sudo, "systemctl", "disable", "--now", "docker.service"], check=False)
-        run([*sudo, "systemctl", "disable", "--now", "docker.socket"], check=False)
-        run([*sudo, "systemctl", "disable", "--now", "containerd.service"], check=False)
-
 
 def _install_docker_dnf() -> None:
     sudo = sudo_prefix()
@@ -449,17 +479,12 @@ def _install_docker_dnf() -> None:
     ]
     run([*sudo, "dnf", "install", "-y", *pkgs])
 
-    # Ensure rootful system daemon is not enabled/started (we are rootless-only)
-    if shutil.which("systemctl"):
-        run([*sudo, "systemctl", "disable", "--now", "docker.service"], check=False)
-        run([*sudo, "systemctl", "disable", "--now", "docker.socket"], check=False)
-        run([*sudo, "systemctl", "disable", "--now", "containerd.service"], check=False)
 
-
-def _ensure_linger(user: str, *, assume_yes: bool) -> None:
+def _persist_after_logout(user: str, *, assume_yes: bool) -> None:
     sudo = sudo_prefix()
     if not sudo or not shutil.which("loginctl"):
         return
+
     # Check current linger status
     try:
         cp = run(["loginctl", "show-user", user, "-p", "Linger"], capture_output=True)
@@ -467,21 +492,141 @@ def _ensure_linger(user: str, *, assume_yes: bool) -> None:
             return
     except CommandError:
         pass
-
     if confirm(
-        f"Allow Docker containers even when '{user}' is not logged in? [y/N]",
+        f"Persist Docker containers even after '{user}' logs out? [y/N]",
         assume_yes=assume_yes
     ):
         run([*sudo, "loginctl", "enable-linger", user])
 
 
-def _launch_docker(*, assume_yes: bool = False) -> None:
-    for tool in ("newuidmap", "newgidmap"):
-        if shutil.which(tool) is None:
-            raise OSError(f"Missing required tool '{tool}'. Install 'uidmap'.")
+def _read_proc_sys(path: str) -> int | None:
+    p = Path("/proc/sys") / path
+    try:
+        return int(p.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
 
-    user = host_username()
-    _ensure_subids(user, assume_yes=assume_yes)
+
+def _configure_userns(*, assume_yes: bool) -> None:
+    # These knobs vary by distro/kernel config, so treat missing as "unknown".
+    unpriv = _read_proc_sys("kernel/unprivileged_userns_clone")
+    maxns = _read_proc_sys("user/max_user_namespaces")
+
+    # If explicitly disabled, give an actionable error (and optionally fix via sudo).
+    if unpriv == 0 or (maxns is not None and maxns == 0):
+        sudo = sudo_prefix()
+        msg = (
+            "Rootless Docker needs unprivileged user namespaces enabled. "
+            f"(kernel.unprivileged_userns_clone={unpriv}, user.max_user_namespaces={maxns})"
+        )
+        if not sudo:
+            raise OSError(msg + " (sudo not available to adjust sysctl)")
+        if confirm(msg + "\nI can enable them using sudo sysctl. Proceed? [y/N] ",
+                   assume_yes=assume_yes):
+            # Best-effort set. (Some systems may require permanent config in /etc/sysctl.d/)
+            if unpriv == 0:
+                run([*sudo, "sysctl", "-w", "kernel.unprivileged_userns_clone=1"])
+            if maxns == 0:
+                run([*sudo, "sysctl", "-w", "user.max_user_namespaces=15000"])
+        else:
+            raise OSError(msg)
+
+
+def _daemon_ready_fast() -> bool:
+    sock = _bertrand_socket_path()
+    if not sock.exists():
+        return False
+    if shutil.which("curl"):
+        cp = run(
+            ["curl", "-fsS", "--unix-socket", str(sock), "http://localhost/_ping"],
+            check=False,
+            capture_output=True,
+        )
+        return (cp.stdout or "").strip() == "OK"
+    return False
+
+
+def _wait_for_daemon(timeout: float = WAIT_DAEMON_TIMEOUT) -> None:
+    deadline = time.time() + timeout
+    last: Exception | None = None
+    while time.time() < deadline:
+        try:
+            if _daemon_ready_fast():
+                return
+            # fall back to docker info if curl isn't available or ping didn't answer yet
+            run(["docker", "info"], capture_output=True, env=local_docker_env())
+            return
+        except CommandError as err:
+            last = err
+            time.sleep(0.2)
+    if last:
+        raise last
+    raise OSError("Timed out waiting for Bertrand rootless Docker daemon.")
+
+
+def start_docker(*, assume_yes: bool = False) -> HostDocker:
+    """Install everything needed for Bertrand rootless Docker and start the daemon.
+
+    One-time sudo is used for:
+    - package installation (apt/dnf)
+    - /etc/subuid and /etc/subgid provisioning (if missing)
+
+    After successful install, normal Bertrand docker operations never require sudo.
+
+    Parameters
+    ----------
+    assume_yes : bool
+        If True, automatically answer yes to all prompts.  Default is False.
+
+    Returns
+    -------
+    HostDocker
+        The status of Docker installation and daemon reachability.
+
+    Raises
+    ------
+    OSError
+        If installation fails or is declined by the user.
+    CommandError
+        If the daemon fails to start or is unreachable.
+    """
+    system = platform.system().lower()
+    if system != "linux":
+        raise OSError(
+            "Bertrand rootless Docker auto-install is implemented only for Linux (apt/dnf)."
+        )
+    os_info = _read_os_release()
+    distro = (os_info.get("ID") or "").lower()
+
+    # determine host package manager
+    installer: Callable[[], None] | None = None
+    installer_name = "unknown"
+    if shutil.which("apt") and distro in {"ubuntu", "debian"}:
+        # pylint: disable=unnecessary-lambda-assignment
+        installer = lambda: _install_docker_apt(distro=distro)
+        installer_name = f"apt ({distro})"
+    elif shutil.which("dnf"):
+        installer = _install_docker_dnf
+        installer_name = f"dnf ({distro})"
+    else:
+        raise OSError(
+            f"Unsupported Linux distro ID '{distro}', and no supported package "
+            "manager (apt/dnf) found."
+        )
+
+    # check for host docker daemon and install if missing
+    host = host_docker()
+    if not host.installed or not host.rootless_sh:
+        if not confirm(
+            "Bertrand requires a private, rootless Docker daemon.\n"
+            f"I can install the required packages now using {installer_name} (via sudo).\n"
+            "Proceed? [y/N] ",
+            assume_yes=assume_yes
+        ):
+            raise OSError("Installation declined by user.")
+        installer()
+
+    # ensure dockerd-rootless.sh is present
     rootless_sh = _dockerd_rootless_sh()
     if rootless_sh is None:
         raise OSError(
@@ -489,33 +634,75 @@ def _launch_docker(*, assume_yes: bool = False) -> None:
             "(e.g., 'docker-ce-rootless-extras')."
         )
 
-    BERTRAND_DOCKER_DATA.mkdir(parents=True, exist_ok=True)
-    _bertrand_exec_root().mkdir(parents=True, exist_ok=True)
-    if not _systemd_user_available():
-        raise OSError(
-            "systemd user units not available (systemctl --user). "
-            "Bertrand currently requires systemd user sessions for robust rootless "
-            "daemon management."
-        )
+    # ensure we can map uids/gids for rootless daemon
+    for tool in ("newuidmap", "newgidmap"):
+        if shutil.which(tool) is None:
+            raise OSError(f"Missing required tool '{tool}'. Install 'uidmap'.")
+    for tool in ("rootlesskit", "slirp4netns"):
+        if shutil.which(tool) is None:
+            raise OSError(f"Missing required tool '{tool}'. (rootless dependency)")
 
-    # Ensure config dir + unit file, then start the user service and verify
+    # ensure userns enabled in kernel
+    _configure_userns(assume_yes=assume_yes)
+
+    # reserve uid/gid ranges if needed
+    user = host_username()
+    _provision_subids(user, assume_yes=assume_yes)
+
+    # ensure systemd user session is available
+    if not _systemd_reachable():
+        raise OSError(
+            "systemd user units not available (systemctl --user). Bertrand requires "
+            "systemd user sessions for rootless daemon management."
+        )
+    BERTRAND_DOCKER_DATA.mkdir(parents=True, exist_ok=True)
+    try:
+        BERTRAND_DOCKER_DATA.chmod(0o700)
+    except OSError:
+        pass  # best-effort
+
+    # warn if configs may lead to reduced features
+    if not Path("/sys/fs/cgroup/cgroup.controllers").exists():
+        print(
+            "Warning: cgroup v2 controllers not fully enabled. "
+            "Rootless Docker may have reduced performance or functionality."
+        )
+    if shutil.which("fuse-overlayfs") is None:
+        print("Warning: fuse-overlayfs not found; rootless storage may be slow (vfs fallback).")
+
+    # ensure config dir + unit file, then start the user service and verify
     BERTRAND_DOCKER_CONFIG.mkdir(parents=True, exist_ok=True)
-    _ensure_linger(user, assume_yes=assume_yes)
+    try:
+        BERTRAND_DOCKER_CONFIG.chmod(0o700)
+    except OSError:
+        pass  # best-effort
+    _persist_after_logout(user, assume_yes=assume_yes)
     changed = _ensure_unit(rootless_sh=rootless_sh)
     if changed:
-        run(["systemctl", "--user", "try-restart", "bertrand-docker.service"], check=False)
-    run(["systemctl", "--user", "start", "bertrand-docker.service"])
+        run(
+            ["systemctl", "--user", "try-restart", "bertrand-docker.service"],
+            check=False,
+            env=_systemd_user_env()
+        )
+    run(
+        ["systemctl", "--user", "start", "bertrand-docker.service"],
+        env=_systemd_user_env()
+    )
     try:
-        run(["docker", "info"], capture_output=True, env=local_docker_env())
-        run(["systemctl", "--user", "enable", "bertrand-docker.service"])  # enable on login
+        _wait_for_daemon()
+        run(
+            ["systemctl", "--user", "enable", "bertrand-docker.service"],
+            env=_systemd_user_env()
+        )  # enable on future login
+
+    # if the daemon fails to start, report detailed diagnostics
     except CommandError as err:
-        st = run([
-            "systemctl",
-            "--user",
-            "status",
-            "bertrand-docker.service",
-            "--no-pager"
-        ], check=False, capture_output=True)
+        st = run(
+            ["systemctl", "--user", "status", "bertrand-docker.service", "--no-pager"],
+            check=False,
+            capture_output=True,
+            env=_systemd_user_env()
+        )
         orig = f"{err.stdout}\n{err.stderr}".strip()
         st_err = f"{st.stdout}\n{st.stderr}".strip()
         parts = [
@@ -541,73 +728,11 @@ def _launch_docker(*, assume_yes: bool = False) -> None:
             "\n\n".join(parts)
         ) from err
 
-
-def ensure_docker(*, assume_yes: bool = False) -> HostDocker:
-    """Install everything needed for Bertrand rootless Docker and start the daemon.
-
-    One-time sudo is used for:
-    - package installation (apt/dnf)
-    - /etc/subuid and /etc/subgid provisioning (if missing)
-
-    After successful install, normal Bertrand docker operations never require sudo.
-
-    Parameters
-    ----------
-    assume_yes : bool
-        If True, automatically answer yes to all prompts.  Default is False.
-
-    Returns
-    -------
-    HostDocker
-        The status of Docker installation and daemon reachability.
-
-    Raises
-    ------
-    OSError
-        If installation fails or is declined by the user.
-    """
-    system = platform.system().lower()
-    if system != "linux":
-        raise OSError(
-            "Bertrand rootless Docker auto-install is implemented only for Linux (apt/dnf)."
-        )
-
-    os_info = _read_os_release()
-    distro = (os_info.get("ID") or "").lower()
-
-    # Determine installer
-    installer: Callable[[], None] | None = None
-    installer_name = "unknown"
-    if shutil.which("apt") and distro in {"ubuntu", "debian"}:
-        # pylint: disable=unnecessary-lambda-assignment
-        installer = lambda: _install_docker_apt(distro=distro)
-        installer_name = f"apt ({distro})"
-    elif shutil.which("dnf"):
-        installer = _install_docker_dnf
-        installer_name = f"dnf ({distro})"
-    else:
-        raise OSError(
-            f"Unsupported Linux distro ID '{distro}', and no supported package "
-            "manager (apt/dnf) found."
-        )
-
-    host = host_docker()
-    if not host.installed or not host.rootless_sh:
-        if not confirm(
-            "Bertrand requires a private rootless Docker daemon.\n"
-            f"I can install the required packages now using {installer_name} (via sudo).\n"
-            "Proceed? [y/N] ",
-            assume_yes=assume_yes
-        ):
-            raise OSError("Installation declined by user.")
-        installer()
-
-    # Ensure daemon running (may provision /etc/subuid,gid via sudo one time)
-    _launch_docker(assume_yes=assume_yes)
+    # return updated host docker status
     return host_docker()
 
 
-def clean_docker(
+def remove_docker(
     *,
     assume_yes: bool = False,
     remove_data: bool = True,
@@ -651,14 +776,26 @@ def clean_docker(
         raise OSError("Uninstallation declined by user.")
 
     # Stop user service and remove unit
-    if _systemd_user_available():
-        run(["systemctl", "--user", "stop", "bertrand-docker.service"], check=False)
-        run(["systemctl", "--user", "disable", "bertrand-docker.service"], check=False)
+    if _systemd_reachable():
+        run(
+            ["systemctl", "--user", "stop", "bertrand-docker.service"],
+            check=False,
+            env=_systemd_user_env()
+        )
+        run(
+            ["systemctl", "--user", "disable", "bertrand-docker.service"],
+            check=False,
+            env=_systemd_user_env()
+        )
     unit_path = _bertrand_unit_path()
     if unit_path.exists():
         unit_path.unlink()
-        if _systemd_user_available():
-            run(["systemctl", "--user", "daemon-reload"], check=False)
+        if _systemd_reachable():
+            run(
+                ["systemctl", "--user", "daemon-reload"],
+                check=False,
+                env=_systemd_user_env()
+            )
 
     # Remove runtime artifacts (best-effort)
     try:
@@ -723,19 +860,18 @@ def clean_docker(
         else:
             raise OSError("Unsupported distro/package manager for package removal.")
 
-    # Remove runtime exec-root
-    shutil.rmtree(_bertrand_exec_root(), ignore_errors=True)
+    # Remove systemd runtime dir
+    shutil.rmtree(_bertrand_runtime_dir(), ignore_errors=True)
 
 
 def docker_cmd(
     args: list[str],
     *,
     check: bool = True,
-    capture_output: bool = False,
-    tee: bool = True,
+    capture_output: bool | None = False,
     input: str | None = None,
     cwd: Path | None = None
-) -> subprocess.CompletedProcess[str]:
+) -> CompletedProcess:
     """Bertrand-only docker command. Always targets the Bertrand rootless daemon.
 
     Parameters
@@ -744,11 +880,10 @@ def docker_cmd(
         The docker command arguments (excluding the "docker" executable).
     check : bool, optional
         If True, raise CommandError on non-zero exit code.  Default is True.
-    capture_output : bool, optional
-        If True, capture stdout/stderr in the returned CompletedProcess.  Default is False.
-    tee : bool, optional
-        If True, tee stdout/stderr to the console while capturing, even if
-        `capture_output` is false.  Default is True.
+    capture_output : bool | None, optional
+        If True, capture stdout/stderr in the returned `CompletedProcess` or
+        `CommandError`.  If False, do not capture output.  If None, tee output to both
+        the console and the returned objects.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
     cwd : Path | None, optional
@@ -757,7 +892,7 @@ def docker_cmd(
 
     Returns
     -------
-    subprocess.CompletedProcess[str]
+    CompletedProcess
         The completed process result.
 
     Raises
@@ -769,7 +904,6 @@ def docker_cmd(
         ["docker", *args],
         check=check,
         capture_output=capture_output,
-        tee=tee,
         input=input,
         cwd=cwd,
         env=local_docker_env()

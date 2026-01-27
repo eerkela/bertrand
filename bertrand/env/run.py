@@ -18,6 +18,20 @@ from typing import Mapping, TextIO
 HIDDEN: str = rf"^(?P<prefix>.*{re.escape(os.path.sep)})?(?P<suffix>\..*)"
 
 
+class CompletedProcess(subprocess.CompletedProcess[str]):
+    """A custom CompletedProcess that captures the output of stdout/stderr and prints
+    it when converted to a string.
+    """
+    def __str__(self) -> str:
+        out = [
+            f"Exit code {self.returncode} from command:\n\n"
+            f"    {' '.join(shlex.quote(a) for a in self.args)}"
+        ]
+        if self.stderr:
+            out.append(self.stderr.strip())
+        return "\n\n".join(out)
+
+
 class CommandError(subprocess.CalledProcessError):
     """A custom exception for command-line and docker errors, which captures the
     output of stdout/stderr and prints it when converted to a string.
@@ -72,12 +86,11 @@ def run(
     argv: list[str],
     *,
     check: bool = True,
-    capture_output: bool = False,
-    tee: bool = True,
+    capture_output: bool | None = False,
     input: str | None = None,
     cwd: Path | None = None,
     env: Mapping[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
+) -> CompletedProcess:
     """A wrapper around `subprocess.run` that defaults to text mode and properly
     formats errors.
 
@@ -88,18 +101,14 @@ def run(
     check : bool, optional
         Whether to raise a `CommandError` if the command fails (default is True).  If
         false, then any errors will be ignored.
-    capture_output : bool, optional
-        If true, or if `tee` is true (the default), then include both stdout and
-        stderr in the returned `CompletedProcess` or `CommandError`.  If false, then
-        the command's stdout and stderr will be inherited from the parent process,
-        and if `tee` is also false, they will not be captured in the resulting objects.
-    tee : bool, optional
-        If true (the default), and `capture_output` is false (the default), then stdout
-        and stderr will be printed to the console while also being captured in the
-        returned `CompletedProcess` or `CommandError`.  If false, then stdout and
-        stderr will either be captured (if `capture_output` is true) or inherited
-        from the parent process and not recorded in the resulting objects (if
-        `capture_output` is false).
+    capture_output : bool | None, optional
+        If true, then all output will be redirected to the returned `CompletedProcess`
+        or `CommandError`, and excluded from the inherited stdout/stderr streams.  If
+        false (the default), then the opposite is the case, and the returned
+        `CompletedProcess` or `CommandError` will not include any captured output.  If
+        None, then a separate thread will be used to "tee" output to both the console
+        and the returned objects simultaneously.  Note that teeing output in this way
+        may break TTY behavior for some commands.
     input : str | None, optional
         Input to send to the command's stdin (default is None).
     cwd : Path | None, optional
@@ -121,8 +130,8 @@ def run(
         the error code, original command, and captured output from stderr and stdout.
     """
     try:
-        if capture_output or not tee:
-            return subprocess.run(
+        if capture_output is not None:
+            cp = subprocess.run(
                 argv,
                 check=check,
                 capture_output=capture_output,
@@ -130,6 +139,12 @@ def run(
                 input=input,
                 cwd=cwd,
                 env=env,
+            )
+            return CompletedProcess(
+                cp.args,
+                cp.returncode,
+                cp.stdout or "",
+                cp.stderr or "",
             )
 
         # tee stdout/stderr to console while capturing both for error reporting
@@ -169,7 +184,7 @@ def run(
             t_out.join()
             t_err.join()
 
-            result = subprocess.CompletedProcess(
+            result = CompletedProcess(
                 argv,
                 rc,
                 "".join(stdout_lines),

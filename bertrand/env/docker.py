@@ -6,6 +6,7 @@ import os
 import platform
 import shlex
 import shutil
+import sys
 import time
 import uuid
 
@@ -16,7 +17,7 @@ from resource import getpagesize
 from types import TracebackType
 from typing import Iterable, Literal, TypedDict, overload
 
-from psutil import pid_exists
+import psutil
 
 from .docker_engine import docker_cmd, docker_exec
 from .run import CommandError, atomic_write_text, confirm
@@ -27,6 +28,7 @@ from .version import __version__
 
 VERSION: int = 1
 MOUNT: str = "/env"
+TMP: str = "/tmp"
 TIMEOUT: int = 30
 SHELLS: dict[str, tuple[str, ...]] = {
     "bash": ("bash", "-l"),
@@ -38,6 +40,18 @@ EDITORS: dict[str, tuple[str, ...]] = {
 
 def _bertrand_dir(env_root: Path) -> Path:
     return env_root / ".bertrand"
+
+
+def _bertrand_tmp_dir(env_root: Path) -> Path:
+    return _bertrand_dir(env_root) / "tmp"
+
+
+def _cid_file(env_root: Path, name: str) -> Path:
+    return _bertrand_tmp_dir(env_root) / f"{name}.cid"
+
+
+def _iid_file(env_root: Path, name: str) -> Path:
+    return _bertrand_tmp_dir(env_root) / f"{name}.iid"
 
 
 def _env_file(env_root: Path) -> Path:
@@ -117,10 +131,13 @@ def _validate_args(data: dict[str, object]) -> list[str]:
 
 
 def _validate_entry_point(data: dict[str, object]) -> list[str]:
-    entrypoint = data.get("entrypoint")
-    if not isinstance(entrypoint, list) or not all(isinstance(x, str) and x for x in entrypoint):
-        raise ValueError(f"missing or invalid 'entrypoint' field: {entrypoint}")
-    return _normalize_args(entrypoint)
+    entry_point = data.get("entry_point")
+    if (
+        not isinstance(entry_point, list) or
+        not all(isinstance(x, str) and x for x in entry_point)
+    ):
+        raise ValueError(f"missing or invalid 'entry_point' field: {entry_point}")
+    return _normalize_args(entry_point)
 
 
 @dataclass
@@ -140,9 +157,6 @@ class Container:
     id : str
         The unique Docker container ID.  This is equivalent to the metadata file name
         in `container_dir`.
-    uuid : str
-        The unique id used to name this container.  This is not used anywhere else, but
-        is retained so that the name can be reconstructed exactly.
     created : datetime
         The ISO timestamp when the container was created.
     args : list[str]
@@ -179,7 +193,6 @@ class Container:
 
     version: int
     id: str
-    uuid: str
     created: datetime
     args: list[str]
     entry_point: list[str]
@@ -206,7 +219,6 @@ class Container:
         return Container(
             version=_validate_version(data),
             id=_validate_id(data),
-            uuid=_validate_uuid(data),
             created=_validate_created(data),
             args=_validate_args(data),
             entry_point=_validate_entry_point(data),
@@ -223,10 +235,9 @@ class Container:
         return {
             "version": self.version,
             "id": self.id,
-            "uuid": self.uuid,
             "created": self.created.isoformat(),
             "args": self.args,
-            "entrypoint": self.entry_point,
+            "entry_point": self.entry_point,
         }
 
     def inspect(self) -> Container.Inspect | None:
@@ -243,6 +254,30 @@ class Container:
             return None
         data = json.loads(result.stdout)
         return data[0] if data else None
+
+    @staticmethod
+    def relocated(env_root: Path, inspect: Container.Inspect) -> bool:
+        """Detect whether a Docker container's mounted environment path has drifted
+        from the environment's true root directory.
+
+        Parameters
+        ----------
+        env_root : Path
+            An absolute host path to the environment directory.
+        inspect : Container.Inspect
+            The output of `Container.inspect()` for the container to query.
+
+        Returns
+        -------
+        bool
+            True if the container's mounted environment path differs from `env_root`,
+            False otherwise.
+        """
+        mount = Container.mount(inspect)
+        try:
+            return mount is None or not os.path.samefile(mount, env_root)
+        except OSError:
+            return True
 
     @staticmethod
     def mount(inspect: Container.Inspect) -> Path | None:
@@ -416,6 +451,28 @@ class Container:
             )
 
 
+def _validate_containers(data: dict[str, object]) -> dict[str, Container]:
+    result: dict[str, Container] = {}
+    containers = data.get("containers", {})
+    if not isinstance(containers, dict):
+        raise ValueError(f"missing or invalid 'containers' field: {containers}")
+    for container_tag, container_data in containers.items():
+        if not isinstance(container_tag, str):
+            raise ValueError(
+                f"invalid container tag: {container_tag}"
+            )
+        if not isinstance(container_data, dict):
+            raise ValueError(
+                f"invalid data for container tag '{container_tag}': {container_data}"
+            )
+        if container_tag in result:
+            raise ValueError(
+                f"duplicate container tag '{container_tag}'"
+            )
+        result[container_tag] = Container.from_json(container_data)
+    return result
+
+
 @dataclass
 class Image:
     """In-memory metadata representing a local Bertrand Docker image, which is a
@@ -433,9 +490,6 @@ class Image:
     id : str
         The unique Docker image ID.  This is equivalent to the metadata file name in
         `image_dir`.
-    uuid : str
-        The unique id used to name this image.  This is not used anywhere else, but
-        is retained so that the name can be reconstructed exactly.
     created : datetime
         The ISO timestamp when the image was created.
     args : list[str]
@@ -451,12 +505,9 @@ class Image:
 
     version: int
     id: str
-    uuid: str
     created: datetime
     args: list[str]
     containers: dict[str, Container]
-
-    # TODO: Image.from_json should accept the same output as to_json
 
     @staticmethod
     def from_json(data: dict[str, object]) -> Image:
@@ -481,10 +532,9 @@ class Image:
         return Image(
             version=_validate_version(data),
             id=_validate_id(data),
-            uuid=_validate_uuid(data),
             created=_validate_created(data),
             args=_validate_args(data),
-            containers={},
+            containers=_validate_containers(data),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -498,7 +548,6 @@ class Image:
         return {
             "version": self.version,
             "id": self.id,
-            "uuid": self.uuid,
             "created": self.created.isoformat(),
             "args": self.args,
             "containers": {tag: container.to_json() for tag, container in self.containers.items()}
@@ -518,6 +567,131 @@ class Image:
             return None
         data = json.loads(result.stdout)
         return data[0] if data else None
+
+    def build(
+        self,
+        env_root: Path,
+        env_uuid: str,
+        image_tag: str,
+        container_tag: str,
+        container_args: list[str] | None
+    ) -> Container:
+        """Create a new container associated with this image and parent environment,
+        with the specified tag and arguments.  If a container with the same tag and
+        arguments already exists and has not been relocated, it will be reused instead.
+
+        Parameters
+        ----------
+        env_root : Path
+            The root path of the environment directory.
+        env_uuid : str
+            The UUID of the environment.
+        image_tag : str
+            The tag of the image within the environment.
+        container_tag : str
+            The tag of the container within the image.
+        container_args : list[str] | None
+            The `docker create` arguments to use for the container.  If None, the
+            existing arguments for the container with the given tag will be reused,
+            or an empty list if no such container exists and the tag is empty.
+
+        Returns
+        -------
+        Container
+            The created or reused `Container` object.  Note that if a new container is
+            created, it will be in the "created" state, and must be started before use.
+            An equivalent key in the `containers` mapping will also be created or
+            updated to point to the new container.
+
+        Raises
+        ------
+        KeyError
+            If no previous container exists for the given tag and `container_args` is
+            None.
+        CommandError
+            If the `docker create` or `docker container rm` (for an outdated container)
+            command fails.
+        """
+        existing = self.containers.get(container_tag)
+        if container_args is None:
+            if existing is None:
+                if container_tag:
+                    raise KeyError(f"no container '{container_tag}' found for image '{image_tag}'")
+                container_args = []  # empty tag implies empty args
+            else:
+                container_args = existing.args  # reuse existing args
+        else:
+            container_args = _normalize_args(container_args)  # define new args
+
+        # reuse container if args match and container has not been relocated
+        if existing is not None and existing.args == container_args:
+            inspect = existing.inspect()
+            if inspect is not None and not Container.relocated(env_root, inspect):
+                return existing
+
+        # build new container
+        container = Container(
+            version=VERSION,
+            id="",  # corrected after create
+            created=datetime.now(timezone.utc),
+            args=container_args,
+            entry_point=[],  # default entry point
+        )
+        container_name = (
+            f"{_sanitize_name(env_root.name)}.{image_tag}.{container_tag}.{env_uuid[:13]}"
+        )
+        cid_file = _cid_file(env_root, container_name)
+        cache_prefix = f"bertrand-{env_uuid[:13]}"
+        try:
+            cid_file.parent.mkdir(parents=True, exist_ok=True)
+            docker_cmd([
+                "create",
+                "--init",
+                f"--name={container_name}",
+                f"--hostname={container_name}",
+                "--cidfile", str(cid_file),
+
+                # labels for docker-level lookup
+                "--label", "BERTRAND=1",
+                "--label", f"BERTRAND_ENV={env_uuid}",
+                "--label", f"BERTRAND_IMAGE={image_tag}",
+                "--label", f"BERTRAND_CONTAINER={container_tag}",
+
+                # mount environment directory
+                "-v", f"{str(env_root)}:{MOUNT}",
+
+                # persistent caches for incremental builds
+                "--mount", f"type=volume,src={cache_prefix}-pip,dst={TMP}/.cache/pip",
+                "--mount", f"type=volume,src={cache_prefix}-bertrand,dst={TMP}/.cache/bertrand",
+                "--mount", f"type=volume,src={cache_prefix}-ccache,dst={TMP}/.cache/ccache",
+                "-e", f"PIP_CACHE_DIR={TMP}/.cache/pip",
+                "-e", f"BERTRAND_CACHE={TMP}/.cache/bertrand",
+                "-e", f"CCACHE_DIR={TMP}/.cache/ccache",
+
+                # environment variables for Bertrand runtime
+                "-e", "BERTRAND=1",
+                "-e", f"BERTRAND_ENV={env_uuid}",
+                "-e", f"BERTRAND_IMAGE={image_tag}",
+                "-e", f"BERTRAND_CONTAINER={container_tag}",
+
+                # any additional user-specified args
+                *container_args,
+                self.id,
+                "sleep", "infinity",
+            ])
+            container.id = cid_file.read_text(encoding="utf-8").strip()
+        finally:
+            cid_file.unlink(missing_ok=True)
+
+        # remove existing container with same tag if needed
+        if existing is not None:
+            try:
+                docker_cmd(["container", "rm", "-f", existing.id], check=False)
+            except CommandError as err:
+                docker_cmd(["container", "rm", "-f", container.id], check=False)
+                raise err
+        self.containers[container_tag] = container
+        return container
 
 
 class Environment:
@@ -599,24 +773,18 @@ class Environment:
         self.code = code
         self.tags = {}
 
-    # TODO: PIDs may be reused.  The simplest fix is to store the PID's created timestamp
-    # via psutil.Process(pid).create_time() and compare it to the lock timestamp to
-    # determine staleness.
-
     def _lock(self) -> None:
         lock_dir = self.bertrand_dir / ".lock"
         lock_file = lock_dir / "owner.json"
+        pid = os.getpid()
+        create_time = psutil.Process(pid).create_time()
         start = time.time()
         while True:
             try:
                 lock_dir.mkdir(parents=True)
                 atomic_write_text(lock_file, json.dumps({
-                    "version": VERSION,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "host": platform.node(),
-                    "pid": os.getpid(),
-                    "ppid": os.getppid(),
-                    "token": uuid.uuid4().hex,
+                    "pid": pid,
+                    "pid_start": create_time,
                 }, indent=2) + "\n")
                 break
             except FileExistsError as err:
@@ -625,14 +793,20 @@ class Environment:
                 try:
                     owner = json.loads(lock_file.read_text(encoding="utf-8"))
                     if not isinstance(owner, dict):
-                        owner = {}
+                        shutil.rmtree(lock_dir, ignore_errors=True)
+                        continue
                 except Exception:
                     shutil.rmtree(lock_dir, ignore_errors=True)
                     continue
 
                 # check whether owning process is still alive
-                pid = owner.get("pid")
-                if pid and isinstance(pid, int) and not pid_exists(pid):
+                owner_pid = owner.get("pid")
+                owner_start = owner.get("pid_start")
+                tolerance = 0.001  # tolerate floating point precision issues
+                if isinstance(owner_pid, int) and isinstance(owner_start, (int, float)) and (
+                    not psutil.pid_exists(owner_pid) or
+                    psutil.Process(owner_pid).create_time() > (owner_start + tolerance)
+                ):
                     shutil.rmtree(lock_dir, ignore_errors=True)
                     continue
 
@@ -680,33 +854,8 @@ class Environment:
             if image_tag in self.tags:
                 raise ValueError(f"duplicate image tag in environment metadata: {image_tag}")
 
-            # validate + load image metadata
+            # load image metadata + containers
             image = Image.from_json(image_data)
-
-            # validate all containers
-            containers = image_data.get("containers")
-            if not isinstance(containers, dict):
-                raise ValueError(
-                    f"missing or invalid 'containers' field for image tag '{image_tag}': "
-                    f"{containers}"
-                )
-            for container_tag, container_data in containers.items():
-                if not isinstance(container_tag, str):
-                    raise ValueError(
-                        f"invalid container tag for image tag '{image_tag}': {container_tag}"
-                    )
-                if not isinstance(container_data, dict):
-                    raise ValueError(
-                        f"invalid data for container tag '{container_tag}' in image tag "
-                        f"'{image_tag}': {container_data}"
-                    )
-                if container_tag in image.containers:
-                    raise ValueError(
-                        f"duplicate container tag '{container_tag}' in image tag '{image_tag}'"
-                    )
-                image.containers[container_tag] = Container.from_json(container_data)
-
-            # add to tag map
             self.tags[image_tag] = image
 
     def __enter__(self) -> Environment:
@@ -738,7 +887,38 @@ class Environment:
         docker_ignore = self.docker_ignore
         if not docker_ignore.exists():
             docker_ignore.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_text(docker_ignore, "")
+            atomic_write_text(docker_ignore, r"""# Bertrand internal state
+.bertrand/
+**/.bertrand/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.dist/
+.build/
+.eggs/
+.venv/
+venv/
+
+# C/C++
+build/
+out/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# VCS / IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+""")
 
         # init Dockerfile
         docker_file = self.docker_file
@@ -767,18 +947,30 @@ ARG CPUS={os.cpu_count() or 1}
 # pull base Bertrand image with the specified configuration
 FROM bertrand:${{BERTRAND}}.${{DEBUG}}.${{DEV}}.${{CPUS}}.{getpagesize() // 1024}
 
+# set cwd to the mounted environment directory
+WORKDIR {MOUNT}
+
+# set up incremental builds
+ENV PIP_CACHE_DIR={TMP}/.cache/pip
+ENV BERTRAND_CACHE={TMP}/.cache/bertrand
+ENV CCACHE_DIR={TMP}/.cache/ccache
+COPY . {MOUNT}
+
 # you can extend this file in order to create a reproducible image that others can pull
 # from in their own Dockerfiles.  For example:
 
-RUN pip install .
+RUN --mount=type=cache,target={TMP}/.cache/pip,sharing=locked \
+    --mount=type=cache,target={TMP}/.cache/bertrand,sharing=locked \
+    --mount=type=cache,target={TMP}/.cache/ccache,sharing=locked \
+    pip install .
 
-# `pip install .` will compile the contents of the local environment directory (which
-# is always the default WORKDIR) and install them into the base image as Python
+# A `pip install .` command of that form will incrementally compile the contents of the
+# local environment directory (WORKDIR) and install them into the base image as Python
 # packages, C++ modules, and/or executable binaries on the container's PATH.  If you
 # then upload this image to a Docker repository, downstream users will be able to use
 # `FROM <your-image>` in their own Dockerfiles in order to inherit Bertrand's toolchain
 # along with your built artifacts and dependencies without needing to recompile them
-# from source.  This can be useful for large projects where build time is significant,
+# from scratch.  This can be useful for large projects where build time is significant,
 # or which have external dependencies or build configurations that are otherwise
 # difficult to install.  Small projects without significant configuration needs are
 # encouraged to use the bundled package managers instead, and leave this file alone.
@@ -1033,11 +1225,11 @@ RUN pip install .
         if image is None:
             return []
         if container_tag is None:
-            return [f"{self.root}:{image}:{k}" for k in image.containers]
+            return [f"{self.root}:{image_tag}:{k}" for k in image.containers]
 
         # check for specific container in an image
         if container_tag in image.containers:
-            return [f"{self.root}:{image}:{container_tag}"]
+            return [f"{self.root}:{image_tag}:{container_tag}"]
         return []
 
     def _rm_container(self, image_tag: str, container_tag: str) -> None:
@@ -1102,6 +1294,20 @@ RUN pip install .
             if ids:
                 docker_cmd(["image", "rm", "-f", *ids], check=False)
 
+        # delete cache volumes
+        cache_prefix = f"bertrand-{self.uuid[:13]}"
+        out = docker_cmd([
+            "volume",
+            "ls",
+            "--filter", f"name={cache_prefix}",
+            "--format", "{{.Name}}"
+        ], check=False, capture_output=True)
+        if out.returncode == 0:
+            names = list(out.stdout.splitlines())
+            for name in names:
+                if name.startswith(cache_prefix):
+                    docker_cmd(["volume", "rm", "-f", name], check=False)
+
         # clear metadata
         self.tags.clear()
 
@@ -1146,12 +1352,6 @@ RUN pip install .
         # delete specific container in an image
         self._rm_container(image_tag, container_tag)
 
-    def _relocated(self, inspect: Container.Inspect) -> bool:
-        mount = Container.mount(inspect)
-        if mount is None:
-            return True
-        return not os.path.samefile(Path(mount), self.root)
-
     def _build_container(
         self,
         image_tag: str,
@@ -1161,136 +1361,78 @@ RUN pip install .
         image = self.tags.get(image_tag)
         if image is None:
             raise KeyError(f"no image found for tag: '{image_tag}'")
-        container = image.containers.get(container_tag)
-        if container_args is None:
-            if container is None:
-                if container_tag:
-                    raise KeyError(f"no container found for tag: '{container_tag}'")
-                container_args = []  # empty tag implies empty args
-            else:
-                container_args = container.args  # reuse existing args
-        else:
-            container_args = _normalize_args(container_args)  # define new args
-
-        # reuse container if args match and container has not been relocated
-        if container is not None and container.args == container_args:
-            inspect = container.inspect()
-            if inspect is not None and not self._relocated(inspect):
-                return container
-
-        # build new container
-        container = Container(
-            version=VERSION,
-            id="",  # corrected after create
-            uuid=uuid.uuid4().hex,
-            created=datetime.now(timezone.utc),
-            args=container_args,
-            entry_point=[],  # default entrypoint
+        return image.build(
+            env_root=self.root,
+            env_uuid=self.uuid,
+            image_tag=image_tag,
+            container_tag=container_tag,
+            container_args=container_args
         )
-        container_name = (
-            f"{_sanitize_name(self.root.name)}.{image_tag}.{container_tag}.{container.uuid[:13]}"
-        )
-        out = docker_cmd([
-            "create",
-            "--init",
-            f"--name={container_name}",
-            f"--hostname={container_name}",
-            "--label", "BERTRAND=1",
-            "--label", f"BERTRAND_ENV={self.uuid}",
-            "--label", f"BERTRAND_IMAGE={image_tag}",
-            "--label", f"BERTRAND_CONTAINER={container_tag}",
-            "-v", f"{str(self.root)}:{MOUNT}",
-            "-e", f"BERTRAND_ENV={self.uuid}",
-            "-e", f"BERTRAND_IMAGE={image_tag}",
-            "-e", f"BERTRAND_CONTAINER={container_tag}",
-            *container_args,
-            image.id,
-            "sleep", "infinity",
-        ])
-        container.id = out.stdout.strip()  # create returns container ID
-
-        # remove any conflicting container, and then register new one
-        try:
-            self._rm_container(image_tag, container_tag)
-        except Exception as err:
-            docker_cmd(["container", "rm", "-f", container.id], check=False)
-            raise err
-        image.containers[container_tag] = container
-        return container
-
-    def _outdated(self, image: Image) -> bool:
-        return ((
-            self.docker_file.exists() and
-            self.docker_file.stat().st_mtime > image.created.timestamp()
-        ) or (
-            self.docker_ignore.exists() and
-            self.docker_ignore.stat().st_mtime > image.created.timestamp()
-        ))
-
-    # TODO: it would be better if, instead of using a temporary tag for rollback
-    # purposes, I just hold all the new containers and images in memory until the end,
-    # and only commit them to the environment metadata if everything succeeds.
 
     def _build_image(self, image_tag: str, image_args: list[str] | None) -> Image:
-        image = self.tags.get(image_tag)
+        existing = self.tags.get(image_tag)
         if image_args is None:
-            if image is None:
+            if existing is None:
                 if image_tag:
                     raise KeyError(f"no image found for tag: '{image_tag}'")
                 image_args = []  # empty tag implies empty args
             else:
-                image_args = image.args  # reuse existing args
+                image_args = existing.args  # reuse existing args
         else:
             image_args = _normalize_args(image_args)  # define new args
 
-        # reuse image if args match and image is up to date
-        containers: list[tuple[str, Container]] = []
-        if image is not None:
-            containers = list(image.containers.items())
-            if image.args == image_args and not self._outdated(image):
-                for container_tag, container in containers:
-                    try:
-                        self._build_container(image_tag, container_tag, container.args)
-                    except Exception:
-                        self._rm_container(image_tag, container_tag)
-                return image
-
-        # TODO: docker build does NOT always return the id of the built image.  I have
-        # to inspect the image name afterwards to get the correct ID.
 
         # build new image
+        # NOTE: Docker + BuildKit will automatically reuse cached layers as long as
+        # none of the inputs have changed (including the contents of the environment
+        # directory, excluding patterns in .dockerignore).  Therefore, we can build
+        # unconditionally, and check whether the ID has changed afterwards to detect
+        # whether a rebuild was necessary.
         image = Image(
             version=VERSION,
             id="",  # corrected after build
-            uuid=uuid.uuid4().hex,
             created=datetime.now(timezone.utc),
             args=image_args,
             containers={},
         )
-        image_name = f"{_sanitize_name(self.root.name)}.{image_tag}.{image.uuid[:13]}"
-        out = docker_cmd([
-            "build",
-            *image_args,
-            "-t", image_name,
-            "-f", str(self.docker_file),
-            "--label", "BERTRAND=1",
-            "--label", f"BERTRAND_ENV={self.uuid}",
-            "--label", f"BERTRAND_IMAGE={image_tag}",
-            str(self.root),
-        ])
-        image.id = out.stdout.strip()  # build returns image ID
-        image_name = f"${image_name}"  # temp tag for rollback purposes
-        self.tags[image_name] = image
-
-        # rebuild downstream containers, then remove old image and tag new one
+        image_name = f"{_sanitize_name(self.root.name)}.{image_tag}.{self.uuid[:13]}"
+        iid_file = _iid_file(self.root, image_name)
         try:
-            for container_tag, container in containers:
-                self._build_container(image_name, container_tag, container.args)
+            iid_file.parent.mkdir(parents=True, exist_ok=True)
+            docker_cmd([
+                "build",
+                *image_args,
+                "-t", image_name,
+                "-f", str(self.docker_file),
+                "--iidfile", str(iid_file),
+                "--label", "BERTRAND=1",
+                "--label", f"BERTRAND_ENV={self.uuid}",
+                "--label", f"BERTRAND_IMAGE={image_tag}",
+                str(self.root),
+            ])
+            image.id = iid_file.read_text(encoding="utf-8").strip()  # build returns image ID
+        finally:
+            iid_file.unlink(missing_ok=True)
+        if existing is not None and image.id == existing.id:
+            return existing
+
+        # rebuild downstream containers for new image, then replace existing image
+        try:
+            for container_tag, container in existing.containers.items() if existing else []:
+                image.build(
+                    env_root=self.root,
+                    env_uuid=self.uuid,
+                    image_tag=image_tag,
+                    container_tag=container_tag,
+                    container_args=container.args
+                )
             self._rm_image(image_tag)
-            self.tags[image_tag] = self.tags.pop(image_name)
         except Exception as err:
-            self._rm_image(image_name)  # rollback
+            for container in image.containers.values():
+                docker_cmd(["container", "rm", "-f", container.id], check=False)
+            docker_cmd(["image", "rm", "-f", image.id], check=False)
             raise err
+        self.tags[image_tag] = image
         return image
 
     def _build_all(self) -> Environment:
@@ -1558,6 +1700,17 @@ RUN pip install .
         """
         # start or rebuild the container, then replace current process with an inner shell
         container = self.start(image_tag, container_tag, container_args)
+
+        # ensure stdin and stdout can attach to a TTY
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise CommandError(
+                returncode=1,
+                cmd=["bertrand", "enter", f"{self.root}:{image_tag}:{container_tag}"],
+                stdout="",
+                stderr="'bertrand enter' requires both stdin and stdout to be a TTY."
+            )
+
+        # launch interactive shell
         docker_exec([
             "exec",
             "-it",
@@ -1567,13 +1720,23 @@ RUN pip install .
         ])
         return container
 
+    def _run_interactive(self) -> list[str]:
+        if (
+            sys.stdin.isatty() and
+            sys.stdout.isatty() and
+            sys.stderr.isatty() and
+            os.environ.get("TERM", "") not in ("", "dumb")
+        ):
+            return ["-i", "-t"]
+        return ["-i"]
+
     def _run_container(
         self,
         image_tag: str,
         container_tag: str,
         argv: list[str]
     ) -> Container:
-        # ensure container has a valid entrypoint
+        # ensure container has a valid entry point
         container = self._start_container(image_tag, container_tag, None)
         if not container.entry_point:
             raise CommandError(
@@ -1581,7 +1744,7 @@ RUN pip install .
                 cmd=["bertrand", "run", f"{self.root}:{image_tag}:{container_tag}", *argv],
                 stdout="",
                 stderr=
-                    "Cannot run command: container has no entrypoint defined.  Either "
+                    "Cannot run command: container has no entry point defined.  Either "
                     "write a '__main__.py' file or include a C++ source file that "
                     "implements an 'int main()' function."
             )
@@ -1589,7 +1752,7 @@ RUN pip install .
         # run the command within the container context
         docker_cmd([
             "exec",
-            "-it",
+            *self._run_interactive(),
             "-w", MOUNT,
             container.id,
             *container.entry_point,
@@ -1606,7 +1769,7 @@ RUN pip install .
             )
             Container.start(inspect)
 
-            # ensure container has a valid entrypoint
+            # ensure container has a valid entry point
             if not container.entry_point:
                 raise CommandError(
                     returncode=1,
@@ -1621,7 +1784,7 @@ RUN pip install .
             # run the command within the container context
             docker_cmd([
                 "exec",
-                "-it",
+                *self._run_interactive(),
                 "-w", MOUNT,
                 container.id,
                 *container.entry_point,
@@ -1661,7 +1824,7 @@ RUN pip install .
         container_tag: str | None = None,
         argv: list[str] | None = None
     ) -> Environment | Image | Container:
-        """Invoke a Docker container's entrypoint, starting or rebuilding it as
+        """Invoke a Docker container's entry point, starting or rebuilding it as
         necessary, and passing along any additional arguments.
 
         Parameters
@@ -1679,8 +1842,8 @@ RUN pip install .
             its original arguments.  If None (the default), all containers in the
             indicated image will be run with the same arguments.
         argv : list[str] | None
-            The arguments to pass to the container's entrypoint when running the
-            command.  The entrypoint itself is prepended automatically.  If None
+            The arguments to pass to the container's entry point when running the
+            command.  The entry point itself is prepended automatically.  If None
             (the default), then no additional arguments will be passed.
 
         Returns
@@ -1704,7 +1867,7 @@ RUN pip install .
         CommandError
             If a `docker build`, `docker image inspect`, `docker create`,
             `docker container inspect`, or `docker exec` command fails, or if the
-            container does not have a valid entrypoint.
+            container does not have a valid entry point.
         """
         if self.depth < 1:
             raise OSError("environment must be acquired as a context manager before accessing")
@@ -1971,7 +2134,7 @@ RUN pip install .
         if container is None:
             return None
         inspect = container.inspect()
-        if inspect is None or self._relocated(inspect):
+        if inspect is None or Container.relocated(self.root, inspect):
             self._rm_container(image_tag, container_tag)
             return
 
@@ -1984,7 +2147,7 @@ RUN pip install .
             return
         for container_tag, container in list(image.containers.items()):
             inspect = container.inspect()
-            if inspect is None or self._relocated(inspect):
+            if inspect is None or Container.relocated(self.root, inspect):
                 self._rm_container(image_tag, container_tag)
 
     def _prune_all(self) -> None:
@@ -1994,7 +2157,7 @@ RUN pip install .
                 continue
             for container_tag, container in list(image.containers.items()):
                 inspect = container.inspect()
-                if inspect is None or self._relocated(inspect):
+                if inspect is None or Container.relocated(self.root, inspect):
                     self._rm_container(image_tag, container_tag)
 
     def prune(self, image_tag: str | None = None, container_tag: str | None = None) -> None:
