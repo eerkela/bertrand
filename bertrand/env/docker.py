@@ -773,6 +773,9 @@ class Environment:
         self.code = code
         self.tags = {}
 
+    # TODO: this lock can be improved by reusing the LockDir class from `run`, and
+    # just manually calling its __enter__ and __exit__ methods here.
+
     def _lock(self) -> None:
         lock_dir = self.bertrand_dir / ".lock"
         lock_file = lock_dir / "owner.json"

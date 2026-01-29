@@ -1,4 +1,5 @@
 """Utility functions for running subprocesses and handling command-line interactions."""
+import json
 import os
 import pwd
 import re
@@ -10,7 +11,10 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from types import TracebackType
 from typing import Mapping, TextIO
+
+import psutil
 
 #pylint: disable=redefined-builtin
 
@@ -47,31 +51,6 @@ class CommandError(subprocess.CalledProcessError):
         if self.stderr:
             out.append(self.stderr.strip())
         return "\n\n".join(out)
-
-
-def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
-    """Ask the user for a yes/no confirmation for a given prompt.
-
-    Parameters
-    ----------
-    prompt : str
-        The prompt to display to the user.
-    assume_yes : bool, optional
-        If True, automatically return True without prompting the user.  Default is
-        False.
-
-    Returns
-    -------
-    bool
-        True if the user confirmed yes, false otherwise.
-    """
-    if assume_yes:
-        return True
-    try:
-        response = input(prompt).strip().lower()
-    except EOFError:
-        return False
-    return response in {"y", "yes"}
 
 
 def _pump_output(src: TextIO, sink: TextIO, buf_list: list[str]) -> None:
@@ -198,6 +177,35 @@ def run(
     return result
 
 
+def confirm(prompt: str, *, assume_yes: bool = False) -> bool:
+    """Ask the user for a yes/no confirmation for a given prompt.
+
+    Parameters
+    ----------
+    prompt : str
+        The prompt to display to the user.
+    assume_yes : bool, optional
+        If True, automatically return True without prompting the user.  Default is
+        False.
+
+    Returns
+    -------
+    bool
+        True if the user confirmed yes, false otherwise.
+    """
+    if assume_yes:
+        return True
+    try:
+        response = input(prompt).strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
+
+
+# TODO: sudo_prefix should maybe be rethought to be more reliable and ideally just
+# not necessary at all.
+
+
 def sudo_prefix() -> list[str]:
     """Return a base command prefix that uses `sudo` if the current user is not already
     root.
@@ -213,28 +221,210 @@ def sudo_prefix() -> list[str]:
     return ["sudo", f"--preserve-env={preserve}"]
 
 
-def host_user_ids() -> tuple[int, int] | None:
-    """Return a (uid, gid) tuple for the current host user, if one can be determined.
+class UserInfo:
+    """A simple structure representing a user identity by user ID and group ID."""
 
-    Returns
-    -------
-    tuple[int, int] | None
-        A tuple containing the user ID and group ID, or None if not determinable.
+    def __init__(self) -> None:
+        euid = os.geteuid()
+        sudo_uid = os.environ.get("SUDO_UID")
+        sudo_user = os.environ.get("SUDO_USER")
+        if euid == 0 and sudo_uid:
+            self._uid = int(sudo_uid)
+            pw = pwd.getpwuid(self._uid)
+            self._gid = pw.pw_gid
+            self._name = sudo_user or pw.pw_name
+            self._home = Path(pw.pw_dir)
+            self._shell = Path(pw.pw_shell)
+        else:
+            self._uid = os.getuid()
+            pw = pwd.getpwuid(self._uid)
+            self._gid = pw.pw_gid
+            self._name = pw.pw_name
+            self._home = Path(pw.pw_dir)
+            self._shell = Path(pw.pw_shell)
+
+    @property
+    def uid(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The numeric user ID.
+        """
+        return self._uid
+
+    @property
+    def gid(self) -> int:
+        """
+        Returns
+        -------
+        int
+            The numeric group ID.
+        """
+        return self._gid
+
+    @property
+    def name(self) -> str:
+        """
+        Returns
+        -------
+        str
+            The host username.
+        """
+        return self._name
+
+    @property
+    def home(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The path to the user's home directory.
+        """
+        return self._home
+
+    @property
+    def shell(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The path to the user's login shell.
+        """
+        return self._shell
+
+
+class LockDir:
+    """A simple context manager that implements a file-based, cross-platform mutual
+    exclusion lock for atomic file operations.
+
+    Parameters
+    ----------
+    path : Path
+        The path to use for the lock.  This should be a directory that does not
+        already exist.  A `lock.json` file will be created within this directory to
+        track the owning process and clear stale locks.  The directory and its
+        contents will be removed when the lock is released.
+    timeout : int, optional
+        The maximum number of seconds to wait for the lock to be acquired before
+        raising a `TimeoutError`.  Default is 30 seconds.
+
+    Attributes
+    ----------
+    path : Path
+        The path to the directory to use for the lock.
+    lock : Path
+        The path to the lock file within the lock directory.
+    pid : int
+        The process ID of the owning process.
+    create_time : float
+        The creation time for the owning process.
+    timeout : int
+        The maximum number of seconds to wait for the lock to be acquired.
+    depth : int
+        The current depth of nested context managers using this lock, in order to allow
+        re-entrant locking within the same process.
     """
-    if os.name != "posix":
-        return None
-    return (os.getuid(), os.getgid())
+    path: Path
+    lock: Path
+    pid: int
+    create_time: float
+    timeout: int
+    depth: int
+
+    def __init__(self, path: Path, timeout: int = 30) -> None:
+        assert not path.exists() or path.is_dir(), "Lock path must be a directory"
+        self.path = path
+        self.lock = path / "lock.json"
+        self.pid = os.getpid()
+        self.create_time = psutil.Process(self.pid).create_time()
+        self.timeout = timeout
+        self.depth = 0
+
+    def __enter__(self) -> None:
+        # allow nested context managers without deadlocking
+        self.depth += 1
+        if self.depth > 1:
+            return
+
+        # attempt to acquire lock
+        start = time.time()
+        while True:
+            try:
+                self.path.mkdir(parents=True)  # atomic
+            except FileExistsError as err:
+                # another process holds the lock - check if it's stale
+                now = time.time()
+                try:
+                    owner = json.loads(self.lock.read_text(encoding="utf-8"))
+                    if not isinstance(owner, dict):
+                        shutil.rmtree(self.path, ignore_errors=True)
+                        continue
+                except Exception:  # pylint: disable=broad-except
+                    shutil.rmtree(self.path, ignore_errors=True)
+                    continue
+
+                # check whether owning process is still alive
+                owner_pid = owner.get("pid")
+                owner_start = owner.get("pid_start")
+                tolerance = 0.001  # tolerate floating point precision issues
+                if isinstance(owner_pid, int) and isinstance(owner_start, (int, float)) and (
+                    not psutil.pid_exists(owner_pid) or
+                    psutil.Process(owner_pid).create_time() > (owner_start + tolerance)
+                ):
+                    shutil.rmtree(self.path, ignore_errors=True)
+                    continue
+
+                # error on timeout
+                if (now - start) > self.timeout:
+                    detail = f"\nlock owner: {json.dumps(owner, indent=2)})" if owner else ""
+                    raise TimeoutError(
+                        f"could not acquire environment lock within {self.timeout} seconds{detail}"
+                    ) from err
+
+                # wait and retry
+                time.sleep(0.1)
+
+            self.lock.write_text(json.dumps({
+                "pid": self.pid,
+                "pid_start": self.create_time,
+            }, indent=2) + "\n", encoding="utf-8")
+            break
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None
+    ) -> None:
+        # allow nested context managers without deadlocking
+        self.depth -= 1
+        if self.depth > 0:
+            return
+
+        # release lock
+        shutil.rmtree(self.path, ignore_errors=True)
+
+    def __bool__(self) -> bool:
+        return self.depth > 0
+
+    def __repr__(self) -> str:
+        return f"Lock(path={self.path!r}, timeout={self.timeout})"
 
 
-def host_username() -> str:
-    """Return the username of the current host user.
+def mkdir_private(path: Path) -> None:
+    """Create a directory with private permissions (0700) if it does not already exist.
 
-    Returns
-    -------
-    str
-        The host username for the active process.
+    Parameters
+    ----------
+    path : Path
+        The path to create.
     """
-    return pwd.getpwuid(os.getuid()).pw_name
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
 
 
 def atomic_write_text(path: Path, text: str) -> None:
@@ -252,6 +442,28 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp.write_text(text, encoding="utf-8")
     try:
         with tmp.open("r+", encoding="utf-8") as f:
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+    tmp.replace(path)
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Atomically write bytes to a file, avoiding race conditions and partial writes.
+
+    Parameters
+    ----------
+    path : Path
+        The path to write to.
+    data : bytes
+        The bytes to write.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{int(time.time())}")
+    tmp.write_bytes(data)
+    try:
+        with tmp.open("r+b") as f:
             f.flush()
             os.fsync(f.fileno())
     except OSError:

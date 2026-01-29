@@ -11,19 +11,23 @@ Goals:
 """
 from __future__ import annotations
 
+import json
 import os
 import platform
 import re
 import shlex
 import shutil
 import time
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Literal, Protocol
+from typing import Any, Callable, Final, Iterable, Literal, Protocol, TypedDict, cast
 
 from .run import (
     CompletedProcess,
     CommandError,
+    LockDir,
     atomic_write_text,
     confirm,
     host_username,
@@ -31,7 +35,7 @@ from .run import (
     sudo_prefix
 )
 
-# pylint: disable=redefined-builtin, unnecessary-pass
+# pylint: disable=redefined-builtin, unnecessary-pass, broad-except
 
 
 WAIT_DAEMON_TIMEOUT = 30.0  # seconds
@@ -160,6 +164,49 @@ class DockerLayout:
         return self.systemd_user_dir / "bertrand-docker.service"
 
     @property
+    def registry_dir(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The directory holding the persistent install/uninstall registries for
+            Bertrand's rootless Docker daemon.
+        """
+        return self.state_dir / "registry"
+
+    @property
+    def registry_file(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The file holding the persistent install/uninstall registry for Bertrand's
+            rootless Docker daemon.
+        """
+        return self.registry_dir / "install.json"
+
+    @property
+    def lock_path(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The lock file used to synchronize Bertrand Docker installation steps.
+        """
+        return self.registry_dir / "install.lock"
+
+    @property
+    def backup_dir(self) -> Path:
+        """
+        Returns
+        -------
+        Path
+            The directory holding backup copies of modified system files (e.g.,
+            a conflicting systemd unit) made during installation.
+        """
+        return self.state_dir / "backup"
+
+    @property
     def docker_env(self) -> dict[str, str]:
         """Environment variables that force the docker CLI to target Bertrand's
         rootless Docker socket.
@@ -207,7 +254,12 @@ class Docker:
     this object should represent a fully installed and running rootless Docker daemon.
     """
     layout: DockerLayout = field(default_factory=DockerLayout)
+    registry: ArtifactRegistry = field(init=False)
+    current_step: str | None = None
+
+    # installation options
     assume_yes: bool = False
+    remove_packages: bool = False
 
     # stable local identity so strategies can refer to the host username
     user: str = field(default_factory=host_username)
@@ -226,12 +278,39 @@ class Docker:
     systemd_reachable: bool = False
     unit_changed: bool = False
 
-    # uninstallation flags
-    remove_packages: bool = False
-
     # bookkeeping
     capabilities: set[str] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.registry = ArtifactRegistry.load(layout=self.layout, user=self.user)
+
+    def apply(self, op: Operation) -> None:
+        """Apply an operation within the current step context, and record it in the
+        installation registry so that it can be reliably uninstalled.
+
+        Parameters
+        ----------
+        op : Operation
+            The operation to apply.
+
+        Raises
+        ------
+        OSError
+            If there is no active current step in which to record the operation.
+        """
+        if self.current_step is None:
+            raise OSError("Internal error: ctx.apply() called without an active current_step.")
+
+        # TODO: maybe I need to harden this by ensuring the kind has been registered,
+        # and the current step is in-progress?
+
+        payload = op.apply(self)
+        if payload is None:
+            return
+
+        rec: OpRecord = {"kind": op.kind, "payload": payload}
+        self.registry.append_op(self.current_step, rec)
 
     def note(self, message: str) -> None:
         """Add a note to the installation log.
@@ -277,6 +356,8 @@ class Strategy(Protocol):
         where necessary as uninstallation steps are performed.
     """
     # pylint: disable=missing-function-docstring
+    # TODO: in Python 3.13, these properties can be replaced with ReadOnly[] annotations
+    # in order to avoid needing to define them as methods.
     @property
     def name(self) -> str: ...
     @property
@@ -371,6 +452,53 @@ class Pipeline:
             docker.capabilities.update(step.provides)
 
         return docker
+
+    def recover_incomplete_steps(self, ctx: Docker) -> None:
+        """If a previous run died mid-step, roll back ops for those steps (if any).
+
+        Parameters
+        ----------
+        ctx : DockerContext
+            The in-flight Docker installation state.
+        """
+        steps = ctx.registry.steps
+        # find trailing in_progress steps (or any in_progress)
+        inprog: list[StepRecord] = [s for s in steps if s.get("status") == "in_progress"]
+        if not inprog:
+            return
+
+        # rollback in reverse start order
+        for step in reversed(inprog):
+            ops: list[OpRecord] = step.get("ops", [])
+            for op in reversed(ops):
+                kind = op["kind"]
+                payload = op["payload"]
+                undo = UNDO_DISPATCH.get(kind)
+                if undo is None:
+                    continue  # unknown op kind -> ignore (forward compat)
+                try:
+                    undo(ctx, payload)
+                except Exception:
+                    # best-effort rollback; never crash recovery
+                    pass
+            step["status"] = "rolled_back"
+            step["ended_at"] = _utc_now_iso()
+        ctx.registry.write()  # pylint: disable=protected-access
+
+    def _registry_uninstall(self, ctx: Docker) -> None:
+        """Undo recorded ops in strict reverse order."""
+        for step in reversed(ctx.registry.steps):
+            ops: list[OpRecord] = step.get("ops", [])
+            for op in reversed(ops):
+                undo = UNDO_DISPATCH.get(op["kind"])
+                if undo is None:
+                    continue
+                try:
+                    undo(ctx, op["payload"])
+                except Exception:
+                    # best-effort uninstall
+                    pass
+
 
     def uninstall(
         self,
@@ -474,7 +602,7 @@ class DetectPlatform:
         system = platform.system().lower()
 
         if system == "linux":
-            docker.system = system  # type: ignore[assignment]
+            docker.system = cast(Literal["linux"], system)
             os_info = self.read_os_release()
             docker.distro = (os_info.get("ID") or "").lower()
             docker.codename = os_info.get("UBUNTU_CODENAME") or os_info.get("VERSION_CODENAME")
@@ -1526,7 +1654,7 @@ class WaitForDaemon:
             try:
                 run(["docker", "info"], capture_output=True, env=env)
                 return
-            except Exception as err:  # pylint: disable=broad-except
+            except Exception as err:
                 last = err
                 time.sleep(0.2)
         if last:
@@ -1689,7 +1817,7 @@ def pipeline(extra: Iterable[Strategy] = ()) -> Pipeline:
     return Pipeline(steps=tuple(result))
 
 
-def start_docker(
+def install(
     *,
     layout: DockerLayout | None = None,
     extra_steps: Iterable[Strategy] = (),
@@ -1730,7 +1858,7 @@ def start_docker(
     return pipe.install(assume_yes=assume_yes, layout=layout)
 
 
-def remove_docker(
+def uninstall(
     *,
     layout: DockerLayout | None = None,
     extra_steps: Iterable[Strategy] = (),
